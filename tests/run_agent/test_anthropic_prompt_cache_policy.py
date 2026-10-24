@@ -442,6 +442,48 @@ class TestCacheControlModeOptIn:
         agent._cache_disabled = True
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
+    def test_agent_init_loads_cache_control_mode_from_config(self, monkeypatch):
+        """AIAgent initialization must load model.cache_control_mode and set
+        _use_prompt_caching before initial policy evaluation (#76297)."""
+        from run_agent import AIAgent
+        import hermes_cli.config as cfg_mod
+
+        fake_cfg = {"model": {"cache_control_mode": "openrouter_envelope"}}
+        monkeypatch.setattr(cfg_mod, "load_config_readonly", lambda: fake_cfg)
+        monkeypatch.setattr(AIAgent, "_create_openai_client", lambda *args, **kwargs: MagicMock())
+
+        agent = AIAgent(
+            model="hermes-default",
+            provider="custom",
+            base_url="http://litellm.internal:4000/v1",
+            api_mode="chat_completions",
+            api_key="dummy",
+        )
+        assert agent._cache_control_mode == "openrouter_envelope"
+        assert agent._use_prompt_caching is True
+        assert agent._use_native_cache_layout is False
+
+    def test_agent_init_disabled_cache_control_mode_turns_off_caching(self, monkeypatch):
+        """AIAgent initialization with model.cache_control_mode='disabled' turns off
+        caching even for recognized Claude models (#76297)."""
+        from run_agent import AIAgent
+        import hermes_cli.config as cfg_mod
+
+        fake_cfg = {"model": {"cache_control_mode": "disabled"}}
+        monkeypatch.setattr(cfg_mod, "load_config_readonly", lambda: fake_cfg)
+        monkeypatch.setattr(AIAgent, "_create_openai_client", lambda *args, **kwargs: MagicMock())
+
+        agent = AIAgent(
+            model="anthropic/claude-sonnet-4.6",
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            api_key="dummy",
+        )
+        assert agent._cache_control_mode == "disabled"
+        assert agent._use_prompt_caching is False
+        assert agent._use_native_cache_layout is False
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Long-lived prefix cache policy (cross-session 1h tier)

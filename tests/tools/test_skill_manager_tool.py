@@ -1344,3 +1344,74 @@ class TestCuratorConsolidationDeleteGuard:
             assert allowed["success"] is True, allowed
 
         _reset_background_review_read_marks()
+
+
+class TestOperationalLearningGuard:
+    """A skill must not turn a one-off tool failure into a permanent avoidance rule."""
+
+    PERMANENT = "Never use browser tools because browser tools do not work."
+
+    @pytest.mark.parametrize("line", [
+        PERMANENT,
+        "The terminal is broken.",
+        "Avoid docker since it fails.",
+        "- Playwright doesn't work, use web_extract.",
+    ])
+    def test_create_rejects_permanent_avoidance_rule(self, tmp_path, line):
+        with _skill_dir(tmp_path):
+            result = _create_skill("my-skill", VALID_SKILL_CONTENT + f"\n{line}\n")
+        assert result["success"] is False
+        assert "permanent avoidance rule" in result["error"]
+        assert not (tmp_path / "my-skill").exists()
+
+    def test_create_allows_rule_scoped_as_transient_on_the_same_line(self, tmp_path):
+        line = ("Browser tools do not work in this environment (Playwright missing); "
+                "revalidate after setup changes.")
+        with _skill_dir(tmp_path):
+            result = _create_skill("my-skill", VALID_SKILL_CONTENT + f"\n{line}\n")
+        assert result["success"] is True
+
+    def test_qualifier_elsewhere_in_skill_does_not_excuse_rule(self, tmp_path):
+        content = (VALID_SKILL_CONTENT
+                   + "\nRetry flaky network calls after a transient error.\n"
+                   + f"{self.PERMANENT}\n")
+        with _skill_dir(tmp_path):
+            result = _create_skill("my-skill", content)
+        assert result["success"] is False
+
+    @pytest.mark.parametrize("line", [
+        "Never use git push --force because it rewrites shared history.",
+        "If the shell command fails, read stderr before changing anything.",
+        "Avoid the browser for static pages; web_extract is faster.",
+        "Git is unavailable to the sandbox user unless HOME is set; export HOME first.",
+    ])
+    def test_ordinary_advice_is_not_flagged(self, tmp_path, line):
+        with _skill_dir(tmp_path):
+            result = _create_skill("my-skill", VALID_SKILL_CONTENT + f"\n{line}\n")
+        assert result["success"] is True, result.get("error")
+
+    def test_patch_rejects_adding_permanent_rule(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _patch_skill("my-skill", "Do the thing.", self.PERMANENT)
+        assert result["success"] is False
+        assert "unsafe operational learning" in result["error"]
+        assert self.PERMANENT not in (tmp_path / "my-skill" / "SKILL.md").read_text()
+
+    def test_legacy_rule_does_not_block_unrelated_patch_or_edit(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            skill_md = tmp_path / "my-skill" / "SKILL.md"
+            skill_md.write_text(VALID_SKILL_CONTENT + f"\n{self.PERMANENT}\n", encoding="utf-8")
+
+            patched = _patch_skill("my-skill", "Do the thing.", "Do the new thing.")
+            edited = _edit_skill("my-skill", skill_md.read_text(encoding="utf-8") + "\nOne more step.\n")
+        assert patched["success"] is True, patched.get("error")
+        assert edited["success"] is True, edited.get("error")
+
+    def test_edit_rejects_adding_permanent_rule(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _edit_skill("my-skill", VALID_SKILL_CONTENT_2 + f"\n{self.PERMANENT}\n")
+        assert result["success"] is False
+        assert "permanent avoidance rule" in result["error"]

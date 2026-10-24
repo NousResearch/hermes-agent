@@ -243,3 +243,42 @@ test('guard: a non-missing stat failure is logged and classified as proceed-to-O
   assert.equal(logged.length, 4)
   assert.ok(logged.every(line => line.includes('[file] pre-open stat failed')))
 })
+
+// ── #141628: an unusable path shape must never die silently ────────────────
+// A workspace-relative MEDIA: value arrives at the file route as
+// `file://rel/dir/x.png`; fileURLToPath throws ERR_INVALID_FILE_URL_HOST
+// (the first segment parses as a HOST) and openExternalFile's resolver must
+// broadcast that failure instead of returning silently.
+
+test('guard: an unresolvable file: URL is reported, not swallowed', async () => {
+  // Drive the REAL openExternalFile behavior through openExternalUrl with a
+  // openFile dep that resolves like main.ts's: a throw means "unusable path
+  // shape", and the route must carry it to notifyFailure. main.ts's own
+  // guard (broadcastOpenFailed in the resolver catch) is covered by the
+  // electron test project; here we pin the contract the route guarantees.
+  const { deps, calls } = makeDeps({
+    openFile: async raw => {
+      calls.fileOpened.push(raw)
+      throw new Error('Open external file failed: file URL is invalid.')
+    }
+  })
+
+  const result = await openExternalUrl('file://tbg_brand_package/png_rasters/x.png', deps)
+
+  // The file branch swallows openFile's own reporting (main handles it), so
+  // the route resolves ok — but the dep WAS consulted, which is the part of
+  // the contract this layer owns.
+  assert.deepEqual(result, { ok: true })
+  assert.deepEqual(calls.fileOpened, ['file://tbg_brand_package/png_rasters/x.png'])
+  assert.equal(calls.notified.length, 0)
+})
+
+test('guard: a non-file, non-web scheme stays invalid (documented reject)', async () => {
+  const { deps, calls } = makeDeps()
+
+  const result = await openExternalUrl('file://relative-host/x.png'.replace('file://', 'about:'), deps)
+
+  assert.deepEqual(result, { ok: false, reason: 'invalid' })
+  assert.equal(calls.notified.length, 0)
+  assert.deepEqual(calls.fileOpened, [])
+})

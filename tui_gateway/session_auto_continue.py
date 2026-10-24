@@ -144,6 +144,41 @@ def _ac_inflight_original(session: dict) -> str:
     return str(turn.get("user") or "").strip() if isinstance(turn, dict) else ""
 
 
+_QUEUED_PROMPT_ORIGIN_METADATA_KEY = "queued_prompt_origin"
+
+
+def _queued_prompt_origin(session: dict, transport: Any) -> dict:
+    """Describe a queued local-RPC prompt using only server-owned transport state.
+
+    The queue can drain long after its sender disconnects, so the durable transcript
+    needs enough context to distinguish that deferred input from an ordinary turn.
+    Do not accept origin fields from RPC parameters: they would make the audit trail
+    spoofable.
+    """
+    source = session.get("source")
+    origin = {
+        "session_source": source if isinstance(source, str) and source else "unknown",
+        "transport": f"{type(transport).__module__}.{type(transport).__name__}",
+    }
+    identity = getattr(transport, "auth_identity", None)
+    if isinstance(identity, dict):
+        provider, user_id = identity.get("provider"), identity.get("user_id")
+        if isinstance(provider, str) and provider and isinstance(user_id, str) and user_id:
+            origin["authenticated_user"] = {"provider": provider, "user_id": user_id}
+    return origin
+
+
+def _queued_prompt_metadata(envelope: dict, *, waiting: bool) -> dict:
+    """Build durable metadata for one queue envelope without carrying its transient marker into a drain."""
+    metadata = {}
+    if isinstance(origin := envelope.get("origin"), dict):
+        metadata[_QUEUED_PROMPT_ORIGIN_METADATA_KEY] = origin
+    if waiting:
+        from hermes_state_common import QUEUED_PROMPT_METADATA_KEY
+        metadata[QUEUED_PROMPT_METADATA_KEY] = True
+    return metadata
+
+
 def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[str] | None = None,
                     turn_author: dict | None = None) -> dict | None:
     """Queue a message for the next turn. Text-only arrivals share a slot and merge losslessly (like the
@@ -160,10 +195,12 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[
     # A text-only self-copy of the live prompt would restart it on drain; an authored copy is another sender's message.
     if text_only and not turn_author and text.strip() == _ac_inflight_original(session) != "":
         return None
-    queued = {"text": text, "transport": transport, **({"image_paths": image_paths} if image_paths else {}),
+    origin = _queued_prompt_origin(session, transport)
+    queued = {"text": text, "transport": transport, "origin": origin,
+              **({"image_paths": image_paths} if image_paths else {}),
               **({"turn_author": turn_author} if turn_author else {})}
     existing = session.get("queued_prompt")
-    if (existing and text_only and not turn_author and isinstance(existing.get("text"), str)
+    if (existing and existing.get("origin") == origin and text_only and not turn_author and isinstance(existing.get("text"), str)
             and not existing.get("image_paths") and not existing.get("turn_author")
             and not session.get("queued_prompts")):
         prev = existing["text"]
@@ -337,10 +374,9 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
         return
     # ``display_metadata`` marker: ``reopen_session`` retires still-marked rows after a restart
     # discarded the in-memory queue (#125577); the drain's replacement row is unmarked.
-    from hermes_state_common import QUEUED_PROMPT_METADATA_KEY
     staged = _write_submit_user_row(
         session, envelope.get("text"), display_kind,
-        accept_metadata={QUEUED_PROMPT_METADATA_KEY: True})
+        accept_metadata=_queued_prompt_metadata(envelope, waiting=True))
     if staged is not None:
         envelope["_submit_user_row"] = staged
         if display_kind:
@@ -367,11 +403,11 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatchin
     # still-queued envelopes keep the never-drained marker (#125577) so a restart between drains
     # retires the row rather than gluing the never-run prompt into the previous turn.
     if is_dispatching:
-        _persist_submit_user_row(session, queued.get("text"), queued.get("_queued_display_kind"))
-    else:
-        from hermes_state_common import QUEUED_PROMPT_METADATA_KEY
         _persist_submit_user_row(session, queued.get("text"), queued.get("_queued_display_kind"),
-                                 accept_metadata={QUEUED_PROMPT_METADATA_KEY: True})
+                                 accept_metadata=_queued_prompt_metadata(queued, waiting=False))
+    else:
+        _persist_submit_user_row(session, queued.get("text"), queued.get("_queued_display_kind"),
+                                 accept_metadata=_queued_prompt_metadata(queued, waiting=True))
     fresh = session.get("_submit_user_row")
     if not (isinstance(fresh, dict) and isinstance(fresh.get("_row_id"), int)):
         return None  # re-append wrote nothing: keep the accept-time row active

@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { useSessionFileOrigin } from '@/hooks/use-session-file-origin'
 import { useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { Download, FolderOpen, MonitorPlay } from '@/lib/icons'
@@ -51,6 +52,7 @@ export function PreviewAttachment({ target }: { target: string }) {
   // This link lives in one session's transcript; resolve it against THAT
   // session's cwd, not the primary chat's.
   const cwd = useStore(useSessionView().$cwd)
+  const { resolveOrigin, storedId, runtimeId } = useSessionFileOrigin()
   const openSources = useStore($previewTabSources)
   const [opening, setOpening] = useState(false)
   const [downloading, setDownloading] = useState(false)
@@ -80,7 +82,7 @@ export function PreviewAttachment({ target }: { target: string }) {
   useEffect(() => {
     requestTokenRef.current += 1
     setOpening(false)
-  }, [cwd, target])
+  }, [cwd, target, storedId, runtimeId, resolveOrigin])
 
   // Classify the target against the local filesystem so the card offers the
   // native action instead of a Download this machine already has (#101683).
@@ -88,7 +90,15 @@ export function PreviewAttachment({ target }: { target: string }) {
     let current = true
     setLocalTarget(null)
 
-    void classifyLocalTarget(target, cwd).then(state => {
+    let owned = true
+
+    try {
+      owned = !!resolveOrigin().owner
+    } catch {
+      // Unknown session owners must never be classified against this Mac.
+    }
+
+    void (owned ? Promise.resolve(null) : classifyLocalTarget(target, cwd)).then(state => {
       if (current) {
         setLocalTarget(state)
       }
@@ -97,7 +107,7 @@ export function PreviewAttachment({ target }: { target: string }) {
     return () => {
       current = false
     }
-  }, [cwd, target])
+  }, [cwd, target, storedId, runtimeId, resolveOrigin])
 
   async function openInFileManager(path: string, directory: boolean) {
     if (opening) {
@@ -157,7 +167,8 @@ export function PreviewAttachment({ target }: { target: string }) {
     setOpening(true)
 
     try {
-      const preview = await normalizeOrLocalPreviewTarget(requestTarget, requestCwd || undefined)
+      const origin = resolveOrigin()
+      const preview = await normalizeOrLocalPreviewTarget(requestTarget, requestCwd || undefined, origin.owner)
 
       if (
         !mountedRef.current ||
@@ -172,7 +183,7 @@ export function PreviewAttachment({ target }: { target: string }) {
         throw new Error(`Could not open preview target: ${requestTarget}`)
       }
 
-      openPreview(preview)
+      openPreview(preview, storedId, runtimeId, origin.owner?.profile)
     } catch (error) {
       if (
         !mountedRef.current ||
@@ -202,7 +213,7 @@ export function PreviewAttachment({ target }: { target: string }) {
       // Works in both modes: the Electron main process fetches the bytes
       // through the session's backend connection (local gateway or remote)
       // and prompts for a save location.
-      const result = await downloadGatewayMediaFile(target)
+      const result = await downloadGatewayMediaFile(target, resolveOrigin())
 
       if (mountedRef.current && result.saved) {
         setDownloaded(true)

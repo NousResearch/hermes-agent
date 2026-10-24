@@ -60,7 +60,19 @@ describe('remote HTML previews', () => {
       ...remoteTarget,
       dataUrl
     })
-    expect(readDesktopFileDataUrl).toHaveBeenCalledWith('/srv/report.html')
+    expect(readDesktopFileDataUrl).toHaveBeenCalledWith('/srv/report.html', undefined)
+  })
+
+  it('pins HTML loading to the attachment owner and skips Mac path normalization', async () => {
+    const owner = { connectionId: 'secondary', profile: 'default' }
+    const dataUrl = `data:text/html;base64,${btoa('<h1>Secondary bot</h1>')}`
+    readDesktopFileDataUrl.mockResolvedValue(dataUrl)
+    await expect(normalizeOrLocalPreviewTarget('/srv/report.html', undefined, owner)).resolves.toMatchObject({
+      fileOwner: owner,
+      dataUrl
+    })
+    expect(readDesktopFileDataUrl).toHaveBeenCalledWith('/srv/report.html', owner)
+    expect(window.hermesDesktop!.normalizePreviewTarget).not.toHaveBeenCalled()
   })
 
   it('falls back to source mode when the transport is not canonical HTML', async () => {

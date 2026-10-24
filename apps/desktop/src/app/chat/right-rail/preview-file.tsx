@@ -10,6 +10,7 @@ import type {
 import { createContext, Fragment, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { defaultRehypePlugins, defaultRemarkPlugins, Streamdown } from 'streamdown'
 
+import type { OwnerScope } from '@/api/client'
 import { getApiRequestConnection } from '@/api/client'
 import { requestComposerFocus, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
@@ -191,10 +192,10 @@ function isTypableElement(el: Element | null): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (el as HTMLElement).isContentEditable
 }
 
-function fileEditScopeKey() {
-  // The REST wrapper has its own routing authority. Include it while the
-  // resolved connection descriptor is catching up with an activation.
-  return JSON.stringify([desktopFsCacheKey(), getApiRequestConnection()])
+function fileEditScopeKey(owner?: OwnerScope) {
+  // Explicit file owners stay pinned across window switches. Unowned files
+  // still follow both ambient routing authorities during activation.
+  return JSON.stringify([desktopFsCacheKey(undefined, owner), owner ? null : getApiRequestConnection()])
 }
 
 function filePathForTarget(target: PreviewTarget) {
@@ -287,9 +288,9 @@ function dataUrlToBlob(dataUrl: string) {
   return new Blob([bytes], { type: 'application/pdf' })
 }
 
-async function readTextPreview(filePath: string) {
+async function readTextPreview(filePath: string, owner?: OwnerScope) {
   try {
-    return await readDesktopFileText(filePath)
+    return await readDesktopFileText(filePath, owner)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
 
@@ -406,12 +407,12 @@ function MarkdownImage({ alt, src, ...rest }: ComponentProps<'img'>) {
   )
 }
 
-const PreviewNoteContext = createContext<string | undefined>(undefined)
+const PreviewNoteContext = createContext<{ filePath?: string; fileOwner?: OwnerScope }>({})
 
 const MARKDOWN_LINK_CLASS = 'text-foreground underline underline-offset-2 hover:text-primary'
 
-async function openLinkedNote(target: string, filePath?: string) {
-  const preview = await normalizeOrLocalPreviewTarget(target, noteDirectory(filePath))
+async function openLinkedNote(target: string, filePath?: string, fileOwner?: OwnerScope) {
+  const preview = await normalizeOrLocalPreviewTarget(target, noteDirectory(filePath), fileOwner)
 
   if (preview) {
     openPreview(preview)
@@ -422,7 +423,7 @@ async function openLinkedNote(target: string, filePath?: string) {
 // native; a blank window is denied by Electron), `#preview/…` → the preview
 // rail, `#fragment` → scroll this note (the hash must never reach the router).
 function MarkdownLink({ children, className, href, node: _node, ...rest }: ComponentProps<'a'> & { node?: unknown }) {
-  const filePath = useContext(PreviewNoteContext)
+  const { filePath, fileOwner } = useContext(PreviewNoteContext)
   const raw = href?.trim() ?? ''
   const fileTarget = previewTargetFromMarkdownHref(raw)
   const linkClass = cn(MARKDOWN_LINK_CLASS, className)
@@ -450,7 +451,7 @@ function MarkdownLink({ children, className, href, node: _node, ...rest }: Compo
         event.stopPropagation()
 
         if (fileTarget) {
-          void openLinkedNote(fileTarget, filePath)
+          void openLinkedNote(fileTarget, filePath, fileOwner)
 
           return
         }
@@ -492,11 +493,19 @@ const MARKDOWN_COMPONENTS = {
 const PREVIEW_REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), remarkPreviewFileLinks]
 const PREVIEW_REHYPE_PLUGINS = [...Object.values(defaultRehypePlugins), rehypePreviewHeadingIds]
 
-export function MarkdownPreview({ filePath, text }: { filePath?: string; text: string }) {
+export function MarkdownPreview({
+  filePath,
+  fileOwner,
+  text
+}: {
+  filePath?: string
+  fileOwner?: OwnerScope
+  text: string
+}) {
   const mathText = useMemo(() => normalizeFilePreviewMath(text), [text])
 
   return (
-    <PreviewNoteContext.Provider value={filePath}>
+    <PreviewNoteContext.Provider value={{ filePath, fileOwner }}>
       <div
         className="preview-markdown mx-auto max-w-3xl px-4 py-3 text-sm text-foreground"
         data-preview-markdown=""
@@ -787,7 +796,7 @@ export function LocalFilePreview({
   const readViewRef = useRef<HTMLDivElement>(null)
   const hoverRef = useRef(false)
   const connection = useStore($connection)
-  const fsCacheKey = desktopFsCacheKey(connection)
+  const fsCacheKey = desktopFsCacheKey(connection, target.fileOwner)
   const filePath = filePathForTarget(target)
   const isImage = target.previewKind === 'image'
   const isPdf = target.previewKind === 'pdf'
@@ -833,7 +842,7 @@ export function LocalFilePreview({
         if (isImage || isPdf) {
           // Prefer bytes the caller already handed us (a pasted/dropped
           // screenshot) over re-reading a path that may be transient/unreadable.
-          const dataUrl = target.dataUrl || (await readDesktopFileDataUrl(filePath))
+          const dataUrl = target.dataUrl || (await readDesktopFileDataUrl(filePath, target.fileOwner))
 
           if (active) {
             setState({ dataUrl, loading: false })
@@ -842,7 +851,7 @@ export function LocalFilePreview({
           return
         }
 
-        const result = await readTextPreview(filePath)
+        const result = await readTextPreview(filePath, target.fileOwner)
 
         if (active) {
           const shouldBlock = !forcePreview && (result.binary || (result.byteSize ?? 0) > TEXT_PREVIEW_MAX_BYTES)
@@ -861,8 +870,8 @@ export function LocalFilePreview({
           // Empty (clean file / not a repo / remote) just hides the option.
           if (!shouldBlock) {
             try {
-              const root = await desktopGitRoot(filePath)
-              const diff = root ? await desktopFileDiff(root, filePath) : ''
+              const root = await desktopGitRoot(filePath, target.fileOwner)
+              const diff = root ? await desktopFileDiff(root, filePath, target.fileOwner) : ''
 
               if (active && diff.trim()) {
                 setState(prev => (prev.text === result.text ? { ...prev, diff } : prev))
@@ -908,6 +917,7 @@ export function LocalFilePreview({
     reloadKey,
     selfReload,
     target.dataUrl,
+    target.fileOwner,
     target.language,
     target.url
   ])
@@ -966,7 +976,7 @@ export function LocalFilePreview({
 
   const beginEdit = () => {
     const text = state.text ?? ''
-    editorScopeRef.current = fileEditScopeKey()
+    editorScopeRef.current = fileEditScopeKey(target.fileOwner)
     baselineRef.current = text
     draftRef.current = text
     setDirty(false)
@@ -1036,12 +1046,12 @@ export function LocalFilePreview({
     setSaving(true)
     setSaveError(null)
 
-    // Keep the edit's owner across awaits: the FS facade routes each call via
-    // the window's current connection, which can change while validation waits.
+    // Keep the edit's owner across awaits, including legacy unowned targets
+    // whose filesystem calls still follow the window connection.
     const saveScope = editorScopeRef.current
 
     const requireEditorOwner = () => {
-      if (fileEditScopeKey() !== saveScope) {
+      if (fileEditScopeKey(target.fileOwner) !== saveScope) {
         throw new Error(t.preview.saveScopeChanged)
       }
     }
@@ -1055,7 +1065,7 @@ export function LocalFilePreview({
       // choice. `force` is the user picking "overwrite" from that banner.
       if (!force) {
         try {
-          const current = await readTextPreview(filePath)
+          const current = await readTextPreview(filePath, target.fileOwner)
 
           if (!current.binary && (current.text ?? '') !== baselineRef.current) {
             setConflict(true)
@@ -1071,7 +1081,7 @@ export function LocalFilePreview({
       // Also guards Overwrite: bypassing a content conflict never authorizes
       // writing the same path on another connection/profile or this device.
       requireEditorOwner()
-      await writeDesktopFileText(filePath, draftRef.current)
+      await writeDesktopFileText(filePath, draftRef.current, target.fileOwner)
       baselineRef.current = draftRef.current
       setDirty(false)
       setConflict(false)
@@ -1276,7 +1286,7 @@ export function LocalFilePreview({
         />
         <div className="min-h-0 flex-1 overflow-auto">
           {mode === 'rendered' ? (
-            <MarkdownPreview filePath={filePath} text={state.text} />
+            <MarkdownPreview fileOwner={target.fileOwner} filePath={filePath} text={state.text} />
           ) : mode === 'diff' ? (
             <FileDiffPanel
               className="mx-0 mb-0 h-full max-h-none"

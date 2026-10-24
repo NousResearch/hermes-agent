@@ -1251,7 +1251,11 @@ def _persist_live_session_system_prompt(session: dict | None) -> None:
     # reads its credential through get_secret, which fails closed once this process multiplexes (#112927).
     session_tokens = _set_session_context(session_key, cwd=_session_cwd(session))
     try:
-        with _session_profile_runtime_scope(session):
+        from agent.system_prompt import interim_preamble_surface
+
+        # The interim callback is cleared between turns: say whether this surface shows interim text through a
+        # context-local flag; the live callback belongs to any turn that starts meanwhile.
+        with _session_profile_runtime_scope(session), interim_preamble_surface(_load_interim_assistant_messages()):
             prompt = agent._cached_system_prompt = agent._build_system_prompt(None)
         db.update_system_prompt(getattr(agent, "session_id", None) or session_key, prompt)
     except Exception:

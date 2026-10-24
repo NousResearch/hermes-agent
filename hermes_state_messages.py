@@ -25,7 +25,8 @@ from hermes_state_common import (
 from hermes_state_detached_results import SessionDetachedResultsMixin
 from hermes_state_todo import SessionTodoResultMixin
 from hermes_state_identity import (
-    _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json, _uid_list)
+    _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json,
+    _uid_list, _tool_display_uid, _display_row_priority, _display_row_preferred, _display_row_order_sql, _TOOL_DISPLAY_VERSION_SQL)
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
@@ -285,7 +286,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             "role": role, "content": encoded_content, "timestamp": message_timestamp,
             "tool_call_id": msg.get("tool_call_id"), "tool_calls": encoded_tool_calls,
             "tool_name": encoded_tool_name, "display_kind": msg.get("display_kind"),
-            "display_metadata": display_metadata,
+            "display_metadata": display_metadata, "message_uid": message_uid_or_none(msg),
         }
         return (session_id, role, encoded_content, msg.get("tool_call_id"),
             encoded_tool_calls, encoded_tool_name,
@@ -1080,6 +1081,9 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
 
     def _display_dedupe_key(self, row) -> tuple[Any, ...]:
         """Historical display identity, including normalized live content from user handoff carriers."""
+        # Pruning changes the payload, not the durable tool-result occurrence.
+        if tool_uid := _tool_display_uid(row):
+            return ("tool", tool_uid)
         dedupe_content = row["content"]
         if row["role"] == "user":
             handoff, live_view = split_user_originated_turn({
@@ -1116,8 +1120,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
 
     def _dedupe_display_generations(self, rows, *, drop_removed: bool = False):
         """Collapse compaction generations so each logical message appears once (the protected tail is copied
-        into each generation: same role/content/timestamp, different ``active``/id); prefer the live row, then
-        the newest. The ONE definition every display projection shares. *rows* must be ordered by ``id``.
+        into each generation). Keep the original tool result, and otherwise prefer the live row, then the newest.
+        The ONE definition every display projection shares. *rows* must be ordered by ``id``.
 
         *drop_removed*: *rows* also hold the removed rows (``active=0, compacted=0``: rewound, or replaced by a
         newer copy) and ``compacted``. A message whose newest copy is removed is not shown, so a rewind in a
@@ -1131,7 +1135,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         removed_ts: set[Any] = set()
         if drop_removed:
             rows = rows if isinstance(rows, list) else list(rows)
-            # Every display key carries the row's timestamp third, so a live row can share a removed row's identity
+            # Content-based display keys include the timestamp, so a live row can share a removed row's identity
             # only at one of the removed rows' timestamps; hash just those (a sha256 per live row cost a warm
             # 30k-row resume ~0.17 s, RT-39). No removed row at all: nothing can hide a copy.
             removed_ts = {row["timestamp"] for row in rows if not row["active"] and not row["compacted"]}
@@ -1153,11 +1157,10 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             if self._is_model_only_row(row):
                 continue
             key = key or self._display_dedupe_key(row)
-            # Only the summary carrier folds by uid: other rewritten copies (a pruned tool stub) must keep
-            # their archived original visible.
+            # Summary carriers inherit the first copy's key; tool-result keys already fold by durable uid.
             key = self._fold_summary_carrier(row, key, uid_key)
             cur = seen.get(key)
-            if cur is None or (row["active"], row["id"]) > (cur["active"], cur["id"]):
+            if cur is None or _display_row_preferred(row, _display_row_priority(cur)):
                 seen[key] = row
                 identities[key] = copies
             first_id[key] = min(first_id.get(key, row["id"]), row["id"])
@@ -1175,8 +1178,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         without inheriting it) leaves one logical message in two ``display_order`` groups,
         and ``GROUP BY display_order`` then projects it twice (#122167). Folding by the same
         recomputed key :meth:`_dedupe_display_generations` uses keeps every display projection
-        on one definition of a logical message; the live copy wins its group via the read
-        path's ``ORDER BY candidate.active DESC, candidate.id DESC``. Writes only on drift."""
+        on one definition of a logical message. Reads use the same representative priority
+        to preserve original tool outputs. Writes only on drift."""
         first_id: dict[bytes, int] = {}
         uid_identity: dict[str, bytes] = {}  # message_uid -> its first copy's identity (the carrier rule)
         last_id = 0
@@ -1212,6 +1215,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             columns = set(self._message_column_names(conn))
         if not {"display_order", "display_identity"} <= columns:
             return False
+        if "message_uid" in columns and self._read_one(_TOOL_DISPLAY_VERSION_SQL) is None:
+            return False  # An unfinished layout upgrade cannot trust the payload-based tool index.
         if self._read_one(_DISPLAY_INDEX_MISSING_SQL, (session_id,)) is None:
             return True
         if getattr(self, "read_only", False):
@@ -1229,7 +1234,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
     def _legacy_display_page(self, session_id: str, *, active_clause: str, limit: Optional[int], offset: int,
                              latest: bool) -> list[Any]:
         """Project a legacy read-only display page without retaining transcript payloads."""
-        representatives: dict[bytes, tuple[int, int]] = {}
+        representatives: dict[bytes, tuple[int, int, int]] = {}
         with self._read_ctx() as conn:
             conn.execute("BEGIN")
             try:
@@ -1238,9 +1243,10 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                     ("idx_messages_session_id",),
                 ).fetchone() is not None
                 index_hint = "INDEXED BY idx_messages_session_id" if has_session_index else "NOT INDEXED"
+                uid_column = "message_uid" if "message_uid" in self._message_column_names(conn) else "NULL AS message_uid"
                 rows = conn.execute(
                     "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, active, "
-                    f"display_kind, display_metadata FROM messages {index_hint} "
+                    f"display_kind, display_metadata, {uid_column} FROM messages {index_hint} "
                     f"WHERE session_id = ?{active_clause} ORDER BY id ASC",
                     (session_id,))
                 for row in rows:
@@ -1248,14 +1254,14 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                         continue
                     identity = self._display_identity(self._display_dedupe_key(row))
                     current = representatives.get(identity)
-                    candidate = (row["active"], row["id"])
-                    if current is None or candidate > current:
+                    candidate = _display_row_priority(row)
+                    if current is None or _display_row_preferred(row, current):
                         representatives[identity] = candidate
                 rows.close()
 
                 identities = list(representatives)
                 identities = identities[::-1][offset:][:limit][::-1] if latest else identities[offset:][:limit]
-                selected_ids = [representatives[identity][1] for identity in identities]
+                selected_ids = [representatives[identity][-1] for identity in identities]
                 selected = {}
                 for start in range(0, len(selected_ids), 900):
                     chunk = selected_ids[start:start + 900]
@@ -1297,6 +1303,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                                 offset: int = 0, latest: bool = False):
         """One display-history projection for normal reads and transactional verification."""
         direction = "DESC" if latest else "ASC"
+        order = _display_row_order_sql("candidate", has_message_uid=any(
+            r[1] == "message_uid" for r in conn.execute("PRAGMA table_info(messages)")))
         return conn.execute(
             f"""WITH page AS (
                    SELECT display_order FROM messages
@@ -1310,7 +1318,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                    WHERE candidate.session_id = ?
                      AND candidate.display_order = page.display_order
                      AND (candidate.active = 1 OR candidate.compacted = 1){DISPLAY_VISIBLE_SQL}
-                   ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1
+                   ORDER BY {order} LIMIT 1
                )
                ORDER BY page.display_order ASC""",
             (session_id, -1 if limit is None else limit, offset, session_id),

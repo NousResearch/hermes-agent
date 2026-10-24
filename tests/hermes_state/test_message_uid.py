@@ -13,6 +13,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+import sqlite3
 
 import pytest
 
@@ -582,3 +583,19 @@ def test_a_chunked_copy_pairs_a_result_with_a_call_in_the_previous_chunk(db):
     db.append_messages_batch("s", [{"role": "user", "content": "q"}, call, result], chunk_rows=2)
     stored = db._conn.execute("SELECT tool_call_uid FROM messages WHERE role = 'tool'").fetchone()[0]
     assert stored == call["_tool_call_uids"]["call_1"]
+
+
+def test_tool_display_upgrade_and_legacy_projection_accept_text_ids(tmp_path):
+    """The display upgrade and original-result preference preserve converted TEXT-id stores."""
+    path = tmp_path / "legacy-tools.db"
+    with sqlite3.connect(path) as conn:
+        conn.executescript(_JSONL_CONVERTED_STORE_SQL)
+        conn.execute("INSERT INTO messages (id, session_id, role, content, timestamp, message_uid, active, compacted) "
+                     "VALUES ('tool-a', 's', 'tool', 'original', '2', 'same-tool', 0, 1)")
+        conn.execute("INSERT INTO messages (id, session_id, role, content, timestamp, message_uid, active, compacted) "
+                     "VALUES ('tool-b', 's', 'tool', 'pruned', '2', 'same-tool', 1, 0)")
+    with SessionDB(path) as db:
+        assert db.get_meta("tool_display_identity_version") == "1"
+    with SessionDB(path, read_only=True) as db:
+        messages = db.get_messages("s", include_compacted=True)
+        assert [m["content"] for m in messages if m["role"] == "tool"] == ["original"]

@@ -698,15 +698,19 @@ class _GateSpec:
     smart_log: str            # {command}{description}{session_key}
 
 
+_USER_MAY_STILL_DECIDE = (
+    " Stop the current workflow and wait for the user to respond before taking "
+    "any further destructive or irreversible action."
+)
 _STOP_COMMAND = (
     " The user has NOT consented to this action. Do NOT retry this command, do "
     "NOT rephrase it, and do NOT attempt the same outcome via a different "
-    "command. Stop the current workflow and wait for the user to respond before "
-    "taking any further destructive or irreversible action."
+    "command." + _USER_MAY_STILL_DECIDE
 )
 _STOP_ACTION = (
     " The user has NOT consented to this action. Do NOT retry it, do NOT "
     "rephrase it, and do NOT attempt the same outcome via a different path."
+    + _USER_MAY_STILL_DECIDE
 )
 
 _COMMAND_GATE = _GateSpec(
@@ -717,7 +721,8 @@ _COMMAND_GATE = _GateSpec(
     transport_denied=(
         "BLOCKED: User denied this command through the selected approval "
         "transport. The user has NOT consented to this action. Do NOT retry or "
-        "attempt the same outcome through another route.{breaker}"
+        "attempt the same outcome through another route."
+        + _USER_MAY_STILL_DECIDE + "{breaker}"
     ),
     cli_timeout="BLOCKED: Command timed out without user response." + _STOP_COMMAND
                 + " Silence is not consent.{breaker}",
@@ -730,16 +735,19 @@ _EXECUTE_CODE_GATE = _GateSpec(
     gateway_refused=(
         "BLOCKED: execute_code script {reason}.{reason_addendum} The user has "
         "NOT consented to running this code. Do NOT retry, do NOT rephrase the "
-        "script, and do NOT attempt the same outcome via a different tool.{timeout_addendum}{breaker}"
+        "script, and do NOT attempt the same outcome via a different tool."
+        + _USER_MAY_STILL_DECIDE + "{timeout_addendum}{breaker}"
     ),
     transport_denied=(
-        "BLOCKED: User denied execute_code through the selected approval transport. The user has NOT consented."
+        "BLOCKED: User denied execute_code through the selected approval transport. "
+        "The user has NOT consented." + _USER_MAY_STILL_DECIDE
     ),
     cli_timeout="BLOCKED: Action timed out without user response." + _STOP_ACTION
                 + " Silence is not consent.{breaker}",
     cli_denied=(
         "BLOCKED: User denied execute_code script execution (matched "
-        "'{description}'). Do NOT retry — the user has explicitly rejected it.{breaker}"
+        "'{description}'). Do NOT retry — the user has explicitly rejected it."
+        + _USER_MAY_STILL_DECIDE + "{breaker}"
     ),
     smart_log="Smart approval: auto-approved execute_code for session {session_key}",
 )
@@ -756,6 +764,7 @@ _ACTION_GATE = _GateSpec(
     cli_denied=(
         "BLOCKED: User denied this potentially dangerous action (matched "
         "'{description}'). Do NOT retry — the user has explicitly rejected it."
+        + _USER_MAY_STILL_DECIDE
     ),
     smart_log="",
 )

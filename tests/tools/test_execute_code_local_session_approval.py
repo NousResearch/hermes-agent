@@ -140,7 +140,10 @@ def test_local_session_skips_whole_script_prompt(child_env, turn, source):
 
 # The approval-specific refusals the gate returns (tools/approval.py _EXECUTE_CODE_GATE / _pending_result).
 _DENIED_SCRIPT = ("BLOCKED: execute_code script denied by user. The user has NOT consented to running this code. "
-                  "Do NOT retry, do NOT rephrase the script, and do NOT attempt the same outcome via a different tool.")
+                  "Do NOT retry, do NOT rephrase the script, and do NOT attempt the same outcome via a different tool."
+                  " Stop the current workflow and wait for the user to respond before taking any further destructive "
+                  "or irreversible action."
+                  )
 
 
 def _unanswered_script(code: str) -> str:

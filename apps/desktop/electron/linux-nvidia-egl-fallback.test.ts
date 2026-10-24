@@ -170,7 +170,7 @@ describe('shouldRelaunchForNvidiaGpuDeath', () => {
   })
 
   it('relaunches on a GPU launch failure', () => {
-    expect(shouldRelaunchForNvidiaGpuDeath({ ...BASE, details: { type: 'GPU', reason: 'launch-failure' } })).toBe(true)
+    expect(shouldRelaunchForNvidiaGpuDeath({ ...BASE, details: { type: 'GPU', reason: 'launch-failed' } })).toBe(true)
   })
 
   it("counts `killed`: the #40077 GPU process died to Chromium's health-check SIGTERM (exit_code=15)", () => {
@@ -179,10 +179,22 @@ describe('shouldRelaunchForNvidiaGpuDeath', () => {
   })
 
   it('never relaunches twice in one process, or when the fallback is already active', () => {
-    const details = { type: 'GPU', reason: 'crashed' }
+    const details = { type: 'GPU', reason: 'crashed' } as const
 
     expect(shouldRelaunchForNvidiaGpuDeath({ ...BASE, details, relaunchAttempted: true })).toBe(false)
     expect(shouldRelaunchForNvidiaGpuDeath({ ...BASE, details, fallbackActive: true })).toBe(false)
+  })
+
+  it('ignores deaths that arrive once a quit is already proceeding (#134888 systemd stop)', () => {
+    // Shutdown teardown kills the zygote before the GPU child, so its
+    // launch-failed/killed on a healthy host must not arm the SwiftShader
+    // marker.
+    expect(
+      shouldRelaunchForNvidiaGpuDeath({ ...BASE, details: { type: 'GPU', reason: 'launch-failed' }, quitting: true })
+    ).toBe(false)
+    expect(shouldRelaunchForNvidiaGpuDeath({ ...BASE, details: { type: 'GPU', reason: 'killed' }, quitting: true })).toBe(
+      false
+    )
   })
 
   it('ignores non-GPU deaths, clean exits, and other platforms', () => {

@@ -131,7 +131,7 @@ describe('shouldRelaunchForLinuxGpuCrash', () => {
     expect(
       shouldRelaunchForLinuxGpuCrash({
         platform: 'linux',
-        details: { type: 'GPU', reason: 'launch-failure' },
+        details: { type: 'GPU', reason: 'launch-failed' },
         alreadySoftware: false,
         relaunchAttempted: false
       })
@@ -153,7 +153,7 @@ describe('shouldRelaunchForLinuxGpuCrash', () => {
     expect(
       shouldRelaunchForLinuxGpuCrash({
         platform: 'linux',
-        details: { type: 'GPU', reason: 'launch-failure' },
+        details: { type: 'GPU', reason: 'launch-failed' },
         alreadySoftware: false,
         relaunchAttempted: true
       })
@@ -211,7 +211,7 @@ describe('linuxGpuMarkerAfterSuccessfulBoot', () => {
 })
 
 describe('linuxGpuChildDeathPath', () => {
-  const SIGTERM_DEATH = { type: 'GPU', reason: 'crashed', exitCode: 143, signalName: 'SIGTERM' }
+  const SIGTERM_DEATH = { type: 'GPU', reason: 'crashed', exitCode: 143, signalName: 'SIGTERM' } as const
 
   it('prefers the sandbox ladder on the #121954 SIGTERM signature', () => {
     expect(linuxGpuChildDeathPath({ platform: 'linux', details: SIGTERM_DEATH })).toBe('no-sandbox')
@@ -238,7 +238,7 @@ describe('linuxGpuChildDeathPath', () => {
     expect(
       linuxGpuChildDeathPath({
         platform: 'linux',
-        details: { type: 'GPU', reason: 'launch-failure', exitCode: 1002 }
+        details: { type: 'GPU', reason: 'launch-failed', exitCode: 1002 }
       })
     ).toBe('disable-gpu')
     expect(
@@ -268,6 +268,20 @@ describe('linuxGpuChildDeathPath', () => {
     expect(linuxGpuChildDeathPath({ platform: 'linux', details: { type: 'Renderer', reason: 'crashed' } })).toBeNull()
     expect(linuxGpuChildDeathPath({ platform: 'darwin', details: SIGTERM_DEATH })).toBeNull()
     expect(linuxGpuChildDeathPath({ platform: 'linux' })).toBeNull()
+  })
+
+  it('ignores deaths that arrive once a quit is already proceeding (#134888 systemd stop)', () => {
+    // Shutdown teardown kills the zygote and network service before the GPU
+    // child, so its launch-failed on a healthy host must not arm either
+    // ladder's sticky marker.
+    expect(
+      linuxGpuChildDeathPath({
+        platform: 'linux',
+        details: { type: 'GPU', reason: 'launch-failed', exitCode: 1002 },
+        quitting: true
+      })
+    ).toBeNull()
+    expect(linuxGpuChildDeathPath({ platform: 'linux', details: SIGTERM_DEATH, quitting: true })).toBeNull()
   })
 
   it('requires the full SIGTERM signature for the sandbox path, not just exit 143', () => {

@@ -929,7 +929,8 @@ if (NVIDIA_DRIVER_MAJOR !== null && process.platform === 'linux') {
       !shouldRelaunchForNvidiaGpuDeath({
         details,
         fallbackActive: nvidiaEglFallbackActive,
-        relaunchAttempted: nvidiaEglRelaunchAttempted
+        relaunchAttempted: nvidiaEglRelaunchAttempted,
+        quitting: appQuitting || quitInProgress
       })
     ) {
       return
@@ -1099,7 +1100,10 @@ if (IS_WINDOWS || process.platform === 'linux') {
   // sandbox signature is tried first (that host's matrix shows --disable-gpu
   // still crashes), then the software ladder — including the relapse after a
   // --no-sandbox boot died again. One death, one bounded relaunch; Windows
-  // keeps its breakpoint-signature fast path unchanged.
+  // keeps its breakpoint-signature fast path unchanged. Deaths during an
+  // already-proceeding quit are gated out below: shutdown teardown kills the
+  // zygote first and the GPU child's launch-failed then indicts a healthy GPU
+  // (#134888 comment: systemd stop, no rebuild).
   app.on('child-process-gone', (_event, details) => {
     if (IS_WINDOWS) {
       if (
@@ -1145,7 +1149,8 @@ if (IS_WINDOWS || process.platform === 'linux') {
       alreadyNoSandbox: windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
       alreadySoftware,
       sandboxRelaunchAttempted: windowsNoSandboxRelaunchAttempted,
-      softwareRelaunchAttempted: linuxGpuRelaunchAttempted
+      softwareRelaunchAttempted: linuxGpuRelaunchAttempted,
+      quitting: appQuitting || quitInProgress
     })
 
     if (path === 'no-sandbox') {
@@ -1180,7 +1185,7 @@ if (IS_WINDOWS || process.platform === 'linux') {
       linuxGpuFallbackSticky = true
 
       const reason =
-        String(details?.reason || '').toLowerCase() === 'launch-failure' ? 'gpu-launch-failure' : 'gpu-crash'
+        String(details?.reason || '').toLowerCase() === 'launch-failed' ? 'gpu-launch-failure' : 'gpu-crash'
 
       try {
         writeLinuxGpuMarker(app.getPath('userData'), linuxGpuFallbackMarker(reason, app.getVersion()))

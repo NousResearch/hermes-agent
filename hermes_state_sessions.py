@@ -1852,7 +1852,7 @@ class SessionSessionsMixin:
     def delete_sessions(
         self, session_ids: list[str], sessions_dir: Optional[Path] = None,
         exclude_active_write_guards: bool = False, skipped_ids: Optional[list[str]] = None,
-        include_compression_chain: bool = False,
+        include_compression_chain: bool = False, deleted_ids: Optional[list] = None,
     ) -> int:
         """Bulk delete with :meth:`delete_session` semantics per row, in ONE transaction. Unknown ids
         are skipped (UI selection can race another tab's delete). With ``exclude_active_write_guards``, rows
@@ -1868,7 +1868,7 @@ class SessionSessionsMixin:
         unique_ids = list({sid for sid in session_ids or () if isinstance(sid, str) and sid})
         if not unique_ids:
             return 0
-        removed_ids: list[str] = []
+        removed_ids: list[str] = deleted_ids if deleted_ids is not None else []  # the owning gateway retires them
         def _do(conn):
             existing = [row["id"] for chunk in _id_chunks(unique_ids) for row in conn.execute(
                 f"SELECT id FROM sessions WHERE id IN ({_session_ids_placeholders(chunk)})", chunk,
@@ -1952,10 +1952,10 @@ class SessionSessionsMixin:
         """Count of empty, ended, non-archived sessions; ended_at guards a fresh session's first message."""
         return self._read_one(f"SELECT COUNT(*) FROM sessions WHERE {self._EMPTY_SESSION_WHERE}")[0]
 
-    def delete_empty_sessions(self, sessions_dir: Optional[Path] = None) -> int:
+    def delete_empty_sessions(self, sessions_dir: Optional[Path] = None, deleted_ids: Optional[list] = None) -> int:
         """Delete every empty, ended, non-archived session in one transaction, orphaning (not cascading)
-        children; transcript files are swept too."""
-        removed_ids: list[str] = []
+        children; transcript files are swept too. ``deleted_ids`` (the owning gateway) receives the ids."""
+        removed_ids: list[str] = deleted_ids if deleted_ids is not None else []
         def _do(conn):
             session_ids = {row["id"] for row in conn.execute(
                 f"SELECT id FROM sessions WHERE {self._EMPTY_SESSION_WHERE}"

@@ -552,16 +552,21 @@ indefinitely (a few hundred bytes per executed turn).
 
 ### Bulk maintenance while a gateway owns the store
 
-`POST /api/sessions/bulk-delete`, `DELETE /api/sessions/empty`, `POST /api/sessions/prune`
-(non-dry-run) and `POST /api/sessions/owner-backfill` rewrite many rows at once and
-bypass the per-session revision fence, so they are **offline maintenance**: they take the
-profile's exclusive `gateway.lock`. While that profile's gateway is running they return
-`409` with `Exclusive maintenance refused: Gateway runtime already owns profile <home>.
-Drain and stop the gateway, then retry.` and change nothing. Stop the gateway
-(`hermes gateway stop`), run the maintenance call, then start it again. `dry_run` prune
-and every read endpoint keep working against a live gateway. The Desktop's one-shot legacy
-owner backfill treats this `409` as the steady state of an attached gateway (like a backend
-without the route) and does not retry it on every sidebar refresh.
+`POST /api/sessions/bulk-delete`, `DELETE /api/sessions/empty` and `POST /api/sessions/prune`
+(non-dry-run) rewrite many rows at once. When a gateway is running for the profile (the usual
+setup: a service gateway, or the `gateway` and `dashboard` containers of the Docker compose
+file), a standalone dashboard sends them to that gateway, which applies them on its own
+connection, the same way `hermes sessions prune` does. Sessions with a running turn are
+skipped and listed back (`skipped_active` / `skipped_open`). With no gateway running, the
+dashboard applies them itself under the profile's exclusive `gateway.lock`.
+
+`POST /api/sessions/owner-backfill` is still offline maintenance: while a standalone
+dashboard sits beside that profile's running gateway it returns `409` with `Exclusive
+maintenance refused: Gateway runtime already owns profile <home>. Drain and stop the gateway,
+then retry.` and changes nothing. The Desktop's one-shot legacy owner backfill treats this
+`409` as the steady state of an attached gateway (like a backend without the route) and does
+not retry it on every sidebar refresh. `dry_run` prune and every read endpoint keep working
+against a live gateway.
 
 ### GET /api/logs
 

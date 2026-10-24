@@ -222,7 +222,7 @@ async def test_a_prune_keeps_the_parents_secret_for_a_branch_not_yet_published(t
         monkeypatch.setattr(session_mutations, 'mutate_runtime_session', held_publication)
         pending = asyncio.create_task(mutate(child, 'branch', request_id='held-branch'))
         assert await asyncio.to_thread(committed.wait, 10)
-        assert (await _apply(owner, {'older_than_days': None, 'chat_id': child.session_id}, None))['deleted'] == 1
+        assert (await _apply(owner, 'filters', {'older_than_days': None, 'chat_id': child.session_id}))['deleted'] == 1
         release.set()
         grandchild = SessionRef(parent.profile_id, (await pending)['branched_session_id'])
         if api_key:

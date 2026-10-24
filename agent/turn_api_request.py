@@ -14,7 +14,6 @@ from typing import Any
 
 from agent.message_sanitization import sanitize_outbound_kwargs, strip_images_for_rejecting_model
 from hermes_cli.observability.shared_metrics_efficiency import observe_request_tools
-from utils import env_var_enabled
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -163,8 +162,8 @@ def build_api_request(
         effective_task_id=effective_task_id, turn_id=turn_id,
     )
 
-    if env_var_enabled("HERMES_DUMP_REQUESTS"):
-        agent._dump_api_request_debug(api_kwargs, reason="preflight")
+    # Gated inside dump_api_request_debug; one predicate, no per-site condition to drift.
+    agent._dump_api_request_debug(api_kwargs, reason="preflight")
 
     # Private to the in-process MoA facade; added after middleware/hooks/debug dumps so
     # none serializes it into the provider payload. Re-read the live client:

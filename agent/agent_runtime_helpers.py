@@ -35,6 +35,7 @@ from agent.message_metadata import MERGED_TURN_PREFIX
 from agent.turn_context import drop_stale_api_content
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
+from agent.request_dump import dump_body_for_debug as _dump_body_for_debug
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
 
@@ -413,8 +414,7 @@ def _merge_assistant_into(prev: dict, msg: dict) -> bool:
         # ``sanitize_api_messages`` only fixes the per-call wire copy, so a ``[]`` left on the repaired turn
         # survives in the live/persisted trajectory returned to callers (gateway/WebUI transcripts, session
         # resume, subagents, cron) and is replayed on the next turn — which is how #58755 kept reproducing
-        # after the chokepoint fix (#77921). Popping is non-destructive: an empty array carries no
-        # information.
+        # after the chokepoint fix (#77921). Popping is non-destructive: an empty array carries no information.
         calls_changed = "tool_calls" in prev
         prev.pop("tool_calls", None)
     # Concatenate plain-text content only; leave multimodal (list) content alone.
@@ -1520,8 +1520,7 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
     content = getattr(assistant_message, "content", None)
     if not parts and isinstance(content, list):
         # DeepSeek V4 Pro returns typed content blocks ({"type": "thinking", ...}); dropping them
-        # makes the next turn fail with HTTP 400 "thinking must be passed back".
-        # Refs #21944.
+        # makes the next turn fail with HTTP 400 "thinking must be passed back". Refs #21944.
         for block in content:
             if isinstance(block, dict) and block.get("type") == "thinking":
                 # Non-strict OpenAI-compatible backends (Mistral via custom provider)
@@ -1556,7 +1555,8 @@ def dump_api_request_debug(
 ) -> Optional[Path]:
     """Dump the request body from api_kwargs (minus transport keys) for debugging provider 4xx failures."""
     try:
-        body = {k: v for k, v in copy.deepcopy(api_kwargs).items() if v is not None and k != "timeout"}
+        if (body := _dump_body_for_debug(api_kwargs)) is None:  # gated on the writer; see agent.request_dump
+            return None
         api_key = None
         # anthropic_messages keeps its SDK client on ``_anthropic_client`` (``client`` is None):
         # read the key from there so the dump does not say "Bearer None" (#24293).

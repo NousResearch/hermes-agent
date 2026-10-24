@@ -1816,8 +1816,7 @@ def test_mid_turn_compaction_does_not_double_persist_in_place_rows(monkeypatch, 
     result = agent.run_conversation("do a tool-heavy task")
     assert result["completed"] is True
 
-    # The compacted summary row must appear exactly once in the active
-    # transcript that a resume would reload.
+    # The compacted summary row must appear exactly once in the active transcript that a resume would reload.
     active = agent._session_db.get_messages(agent.session_id)
     summary_rows = [
         m for m in active
@@ -2147,6 +2146,8 @@ def test_dump_api_request_debug_reads_the_anthropic_client_and_messages_url(monk
     the dump must show the masked key and /messages, not 'Bearer None' + /chat/completions (#24293)."""
     import json
     from types import SimpleNamespace
+    # The writer is gated on HERMES_DUMP_REQUESTS; this test is about what a dump contains.
+    monkeypatch.setenv("HERMES_DUMP_REQUESTS", "1")
     agent = _build_agent(monkeypatch)
     agent.api_mode = "anthropic_messages"
     agent.base_url = "https://relay.example.com/anthropic"
@@ -2524,8 +2525,7 @@ def _retiring_stream(agent, deltas, *, retire_after):
             if index == retire_after:
                 agent._active_codex_stream_request_token = None
             yield SimpleNamespace(type="response.output_text.delta", delta=delta)
-        # A retired stream never reaches a terminal frame on the wire; the
-        # connection is force-closed under it.
+        # A retired stream never reaches a terminal frame on the wire; the connection is force-closed under it.
 
     return _LazyCreateStream(_events)
 

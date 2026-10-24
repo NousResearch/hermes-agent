@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_cli.timefmt import coerce_epoch
-from hermes_state_common import _placeholders
+from hermes_state_common import _named_row_id, _placeholders
 from hermes_state_messages import _parse_tool_calls
 
 
@@ -50,7 +50,9 @@ class SessionCoverageMixin:
                 f"WHERE session_id = ? AND active = 1{narrow} ORDER BY id",
                 (session_id, *(ids or ())),
             ).fetchall():
-                rid = int(row["id"])
+                rid = _named_row_id(row["id"])
+                if rid is None:  # stored without an addressable id: nothing to carry or resolve
+                    continue
                 by_id[rid] = self._row_identity(
                     row["role"], self._decode_content(row["content"]), row["tool_call_id"],
                     _parse_tool_calls(row["tool_calls"]))
@@ -85,9 +87,10 @@ class SessionCoverageMixin:
         if not isinstance(content, str):
             return []
         stored = self._encode_content(self._loaded_view_content(message.get("role", "unknown"), content))
-        return [int(row["id"]) for row in conn.execute(
+        rows = conn.execute(
             "SELECT id FROM messages WHERE session_id = ? AND active = 1 AND role = ? AND content = ?",
-            (session_id, message.get("role"), stored)).fetchall()]
+            (session_id, message.get("role"), stored)).fetchall()
+        return [row_id for row in rows if (row_id := _named_row_id(row["id"])) is not None]
 
     def _matching_retired_ids(
         self, conn, session_id: str, retired: dict[str, Any], watermark: Optional[int] = None,
@@ -116,7 +119,9 @@ class SessionCoverageMixin:
             ids = [call.get("id") for call in calls if isinstance(call, dict)] if isinstance(calls, list) else []
             if ids != want_calls:
                 continue
-            matches.append(int(row["id"]))
+            row_id = _named_row_id(row["id"])
+            if row_id is not None:
+                matches.append(row_id)
         return matches
 
     def _merged_user_run(
@@ -142,11 +147,12 @@ class SessionCoverageMixin:
         content, _ = strip_leading_message_timestamps(content)
         bound = watermark is not None
         rows = [
-            (int(row["id"]), row["role"], self._loaded_view_content(row["role"], self._decode_content(row["content"])))
+            (row_id, row["role"], self._loaded_view_content(row["role"], self._decode_content(row["content"])))
             for row in conn.execute(
                 f"SELECT id, role, content FROM messages WHERE session_id = ? AND active = 1"
                 f"{' AND id <= ?' if bound else ''} ORDER BY id",
-                (session_id, *((int(watermark),) if bound else ()))).fetchall()]
+                (session_id, *((int(watermark),) if bound else ()))).fetchall()
+            if (row_id := _named_row_id(row["id"])) is not None]
         # Dropping an orphan can make user rows adjacent only in the repaired view.
         # Skip only uniquely proved retired originals, never arbitrary intervening rows.
         retired_ids = set()

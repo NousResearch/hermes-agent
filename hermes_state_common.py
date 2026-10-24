@@ -8,7 +8,7 @@ import logging
 import os
 import sys
 import time
-from typing import Any
+from typing import Any, Optional
 
 from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
 from hermes_state_keys import CRON_PRINCIPAL_ID
@@ -357,6 +357,24 @@ def _ended_by_compression(row) -> bool:
 def _placeholders(items) -> str:
     """``?,?,?`` for one bound parameter per element of *items* (a sequence or an int count)."""
     return ",".join("?" for _ in range(items if isinstance(items, int) else len(items)))
+
+
+def _named_row_id(value) -> Optional[int]:
+    """*value* as a positive message row id, or ``None`` when the row cannot be named.
+
+    ``messages.id`` is ``INTEGER PRIMARY KEY AUTOINCREMENT`` in SCHEMA_SQL, so a NULL there means the
+    table came from a pre-PK layout (an upgraded install, an imported store): the INSERT path omits
+    ``id``, every appended row keeps it NULL, and such a row can never be addressed by
+    ``UPDATE ... WHERE id IN (...)``. Callers that name rows for a compaction commit must therefore
+    skip it instead of raising ``int(None)`` — one unnameable row used to roll back the whole commit
+    and silently discard the compression result (#143402). A TEXT/REAL cell in that column (SQLite
+    dynamic typing) is coerced, since the id is only ever compared against integer bounds.
+    """
+    try:
+        row_id = int(value)
+    except (TypeError, ValueError):
+        return None
+    return row_id if row_id > 0 else None
 
 
 # A first prompt is durable in ``session_admissions`` from admission on, while its transcript row lands

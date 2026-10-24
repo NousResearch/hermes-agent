@@ -79,6 +79,23 @@ def handle_api_error(
     if agent.thinking_callback:
         agent.thinking_callback("")
 
+    # A fail-closed live-output refusal is a deterministic local policy decision,
+    # not a provider failure. It must terminate here, before phrase-driven request
+    # repairs can mutate model/runtime state and retry the provider.
+    from hermes_cli.middleware import LLMStreamMiddlewareRefusal
+    if isinstance(api_error, LLMStreamMiddlewareRefusal):
+        summary = "Turn blocked: fail-closed live-output middleware refused delivery."
+        return _verdict("return", {
+            "final_response": summary,
+            "messages": messages,
+            "api_calls": api_call_count,
+            "completed": False,
+            "failed": True,
+            "error": summary,
+            "failure_reason": "llm_stream_middleware_refusal",
+            "failure_retryable": False,
+        })
+
     _recovered, active_system_prompt = recover_before_classification(
         agent, api_error, messages=messages, api_messages=api_messages, api_kwargs=api_kwargs,
         active_system_prompt=active_system_prompt,

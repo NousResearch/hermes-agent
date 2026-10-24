@@ -111,7 +111,7 @@ def _interactive_inner(raw_message: dict[str, Any]) -> dict[str, Any]:
     return inter.get("button_reply") or inter.get("list_reply") or {}
 
 
-def _contacts_body(raw_message: Dict[str, Any]) -> str:
+def _contacts_body(raw_message: dict[str, Any]) -> str:
     """Shared contact cards as ``[Contact: <name> <numbers…>]`` lines; Meta sends no caption."""
     lines = []
     for contact in raw_message.get("contacts") or []:

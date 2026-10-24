@@ -3378,6 +3378,17 @@ export const jaOverrides = {
           body: 'このチャットの作業フォルダーが移動または削除されたため、メッセージは実行されませんでした。フォルダーを作り直すか、「Move to project」で別のフォルダーを割り当ててから、もう一度お試しください。'
         }
       },
+      errorAuthKinds: {
+        api_key: {
+          title: provider => `${provider} が API キーを拒否しました`,
+          body: provider =>
+            `${provider} 用に保存されたキーが無効か、取り消されています。キーを更新してから再試行してください。`
+        },
+        oauth: {
+          title: provider => `${provider} のサインインの有効期限が切れました`
+        }
+      },
+      errorDetails: '詳細',
       errorRetry: '再試行',
       errorSwitchToModel: (model, note) => (note ? `${model} に切り替え（${note}）` : `${model} に切り替え`),
       errorSwitchModelFailed: 'モデルを切り替えられませんでした',
@@ -3391,6 +3402,7 @@ export const jaOverrides = {
       errorRetryScheduledCancel: 'キャンセル',
       errorStartNewSession: '新しいセッションを開始',
       errorSwitchProvider: 'プロバイダーを切り替え',
+      errorUpdateApiKey: 'API キーを更新',
       errorSignInAgain: provider => `${provider} に再度サインイン`,
       errorOauthExpired: provider =>
         `${provider} のサインインが期限切れか取り消されました。続けるには再度サインインしてください。`,

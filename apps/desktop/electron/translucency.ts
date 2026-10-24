@@ -144,9 +144,14 @@ export function opacityNeedsSetting(next: number, current = 1): boolean {
 /**
  * BrowserWindow constructor options for a chat window's native opacity. Empty
  * unless the state actually asks the window to fade — see opacityNeedsSetting.
+ *
+ * `supported` is the platform gate. Linux resolves the shared default intensity
+ * (29) even though the whole setting is dead there — no Settings row to undo it
+ * — so without this every Linux window is born at 0.94 opacity, permanently
+ * see-through.
  */
-export function windowOpacityOptions(state: TranslucencyState): { opacity?: number } {
-  const opacity = windowOpacityFor(state)
+export function windowOpacityOptions(state: TranslucencyState, supported = true): { opacity?: number } {
+  const opacity = supported ? windowOpacityFor(state) : 1
 
   return opacityNeedsSetting(opacity) ? { opacity } : {}
 }

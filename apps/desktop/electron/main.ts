@@ -1536,7 +1536,7 @@ const translucencyBackedWindows = new WeakSet()
 // window's own opacity is the record of whether that door was ever opened; see
 // opacityNeedsSetting for why it matters that it stays shut.
 function applyWindowOpacity(win) {
-  const opacity = windowOpacityFor(translucencyState)
+  const opacity = TRANSLUCENCY_SUPPORTED ? windowOpacityFor(translucencyState) : 1
 
   if (typeof win.setOpacity === 'function' && opacityNeedsSetting(opacity, win.getOpacity?.() ?? 1)) {
     win.setOpacity(opacity)
@@ -1636,7 +1636,7 @@ function chatWindowSurfaceOptions() {
     // RESIZABLE transparent window is unsupported and breaks (electron#48421).
     // Every chat window is resizable.
     ...windowBackgroundMaterialOptions(translucencyState, IS_WINDOWS, GLASS_SUPPORTED),
-    ...windowOpacityOptions(translucencyState),
+    ...windowOpacityOptions(translucencyState, TRANSLUCENCY_SUPPORTED),
     ...windowBackingOptions(translucencyState, getWindowBackgroundColor())
   }
 }

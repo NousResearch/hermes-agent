@@ -108,6 +108,24 @@ def _make_adapter(
     return adapter
 
 
+@pytest.mark.parametrize("edited_field", ("edited_message", "edited_channel_post"))
+def test_effective_update_message_ignores_edited_updates(edited_field):
+    """Regression for #140845: edits are platform events, not new chat turns."""
+    adapter = _make_adapter()
+    edited = SimpleNamespace(text="corrected")
+    fields = {"edited_message": None, "edited_channel_post": None}
+    fields[edited_field] = edited
+
+    update = SimpleNamespace(
+        effective_message=edited,
+        message=None,
+        channel_post=None,
+        **fields,
+    )
+
+    assert adapter._effective_update_message(update) is None
+
+
 def _group_message(
     text="hello",
     *,

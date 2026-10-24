@@ -64,6 +64,10 @@ A manager item that lists several websites (say `amazon.co.uk`,
 `www.amazon.co.uk` and `eu.account.amazon.com`) fills on each of those exact
 origins; nothing is inferred beyond the URLs saved on the item.
 
+KeePass users: point `vault.keepass.database` at your `.kdbx` and KeePassXC's
+`keepassxc-cli` becomes a login source too (master password on stdin, or from the
+macOS Keychain). See [KeePass (KeePassXC)](../secrets/keepass.md).
+
 Prefer not to use a detected manager? `hermes vault sources --disable bitwarden`,
 or the switch in **Settings → Passwords & Logins**.
 
@@ -105,6 +109,8 @@ vault:
     service_account_token_env: OP_SERVICE_ACCOUNT_TOKEN
   bitwarden:
     enabled: false
+  keepass:
+    database: ~/Passwords/personal.kdbx   # required to enable KeePass
 ```
 
 ## What this does and does not guarantee

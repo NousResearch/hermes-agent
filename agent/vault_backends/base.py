@@ -97,13 +97,18 @@ def _cfg() -> dict:
 def external_backend_classes():
     from agent.vault_backends.bitwarden import BitwardenLoginBackend
     from agent.vault_backends.onepassword import OnePasswordLoginBackend
-    return (OnePasswordLoginBackend, BitwardenLoginBackend)
+    from agent.vault_backends.keepass import KeePassLoginBackend
+    return (OnePasswordLoginBackend, BitwardenLoginBackend, KeePassLoginBackend)
 
 
 def is_installed(name: str) -> bool:
     """Is the manager CLI reachable — honouring a configured ``binary_path`` over PATH."""
     import shutil
     section = _cfg().get(name) or {}
+    if name == "keepass":  # a database path is required; there is no "default" .kdbx to pick up
+        from agent.vault_backends.keepass import find_cli
+        cfg = section if isinstance(section, dict) else {}
+        return bool(cfg.get("database")) and find_cli(cfg) is not None
     explicit = str(section.get("binary_path") or "") if isinstance(section, dict) else ""
     if explicit:
         return Path(explicit).is_file()

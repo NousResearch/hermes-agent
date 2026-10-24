@@ -2340,8 +2340,10 @@ def cleanup_task_resources(agent, task_id: str) -> None:
         from tools.browser_session_cloud import is_headed_mode
         return is_headed_mode()
 
+    session_task = task_id == getattr(agent, "session_id", None)
     for label, skip, skip_what, cleanup in (
-        ("VM", is_persistent_env, "cleanup_vm for persistent env", lambda: _ra().cleanup_vm(task_id)),
+        ("VM", lambda tid: session_task or is_persistent_env(tid),
+         "cleanup_vm for a session task or persistent env", lambda: _ra().cleanup_vm(task_id)),
         ("browser", lambda _tid: _headed(), "cleanup_browser for headed session", lambda: _ra().cleanup_browser(task_id)),
     ):
         try:

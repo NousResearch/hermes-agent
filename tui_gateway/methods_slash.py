@@ -13,6 +13,40 @@ from .method_ctx import HandlerRegistry, bind_module
 _registry = HandlerRegistry()
 
 
+def _bundle_key_for(name: str):
+    """Skill-bundle key for ``name`` when it is NOT a registry command; None otherwise / on failure."""
+    try:
+        if _tools_mod("hermes_cli.commands").resolve_command(name) is None:
+            return _tools_mod("agent.skill_bundles").resolve_bundle_command_key(name)
+        return None
+    except Exception:
+        return None
+
+
+def _native_quick_alias(raw: str, base: str):
+    """Only native-target aliases bypass the worker; built-ins win without reading config."""
+    try:
+        resolve_command = _tools_mod("hermes_cli.commands").resolve_command
+        if not base or resolve_command(base) is not None:
+            return None
+        quick_commands = _load_cfg().get("quick_commands", {}) or {}
+        if not isinstance(quick_commands, dict):
+            return None
+        name, qc = raw, quick_commands.get(raw)
+        if qc is None:
+            name, qc = next(
+                ((k, v) for k, v in sorted(quick_commands.items()) if isinstance(k, str) and k.lower() == base),
+                (raw, None))
+        if not isinstance(qc, dict) or qc.get("type") != "alias":
+            return None
+        target = qc.get("target", "")
+        target_parts = target.lstrip("/").split(maxsplit=1) if isinstance(target, str) else []
+        return name if target_parts and resolve_command(target_parts[0]) is not None else None
+    except Exception:
+        logger.debug("Native quick alias lookup failed; retaining slash worker", exc_info=True)
+        return None
+
+
 # ── Live-session slash output ────────────────────────────────────────
 
 # Answered from the live session ONLY when the agent lives on a compute host.

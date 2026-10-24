@@ -335,7 +335,7 @@ def test_claim_falls_back_when_os_link_is_unavailable(marker, monkeypatch):
     monkeypatch.delattr(os, "link")
     lock = UpdateLock(path=marker)
     assert lock.acquire() is True
-    assert marker.read_text(encoding="utf-8").startswith(f"{os.getpid()}\\n")
+    assert marker.read_text(encoding="utf-8").splitlines()[0] == str(os.getpid())
     lock.release()
     assert not marker.exists()
 

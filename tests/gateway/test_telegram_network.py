@@ -479,3 +479,92 @@ class TestDiscoverFallbackIps:
 
         assert ips == ["149.154.167.220"]
         assert elapsed < 1.4, f"discovery gated on hung system DNS ({elapsed:.2f}s)"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Retryable transport failures — a poisoned pool must never be kept
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestRetryableConnectError:
+    """Every transport-level failure has to be classified as retryable.
+
+    A failure that is not classified is re-raised as-is, which skips the pool
+    reset AND the sticky-IP clear. The failed path then stays pinned and every
+    later attempt reuses it, so one unclassified failure wedges the adapter
+    until the process restarts.
+    """
+
+    @pytest.mark.parametrize("exc", [
+        httpx.ConnectTimeout("connect timed out"),
+        httpx.ConnectError("connect error"),
+        httpx.PoolTimeout("connection pool is full"),
+        httpx.ReadTimeout("read timed out"),
+        httpx.WriteTimeout("write timed out"),
+        httpx.ReadError("read error"),
+        httpx.RemoteProtocolError("server disconnected"),
+    ])
+    def test_transport_level_failures_are_retryable(self, exc):
+        assert tnet._is_retryable_connect_error(exc) is True
+
+    def test_non_transport_errors_are_not_retryable(self):
+        assert tnet._is_retryable_connect_error(ValueError("not a transport error")) is False
+
+
+class TestPoolTimeoutRecovery:
+    """A pool timeout must be recovered from, not propagated — the adapter layer already
+    treats ``httpx.PoolTimeout`` as safe to retry, so the transport layer must agree."""
+
+    @pytest.mark.asyncio
+    async def test_pool_timeout_discards_pool_and_walks_next_ip(self, monkeypatch):
+        calls = []
+        behavior = {
+            "api.telegram.org": "timeout",
+            "149.154.166.110": httpx.PoolTimeout("connection pool is full"),
+            "149.154.167.220": "ok",
+        }
+        factory = _fake_transport_factory(calls, behavior)
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
+
+        transport = tnet.TelegramFallbackTransport(["149.154.166.110", "149.154.167.220"])
+        resp = await transport.handle_async_request(_telegram_request())
+
+        assert resp.status_code == 200
+        hosts = [c["url_host"] for c in calls]
+        assert "149.154.166.110" in hosts, "the poisoned IP was never tried"
+        assert "149.154.167.220" in hosts, "the next IPv4 literal was never tried"
+
+        closed = [t for t in factory.instances if t.closed]
+        assert closed, "the poisoned pool was not discarded (aclose never called)"
+
+    @pytest.mark.asyncio
+    async def test_sticky_ip_is_cleared_after_pool_timeout(self, monkeypatch):
+        """The sticky IP must not survive a pool timeout — keeping it pins every
+        later attempt to the same broken path."""
+        calls = []
+        behavior = {
+            "149.154.166.110": httpx.PoolTimeout("connection pool is full"),
+            "149.154.167.220": "ok",
+        }
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+
+        transport = tnet.TelegramFallbackTransport(["149.154.166.110", "149.154.167.220"])
+        await transport.handle_async_request(_telegram_request())
+
+        assert transport._sticky_ip == "149.154.167.220", "sticky IP was not moved off the failed path"
+
+    @pytest.mark.asyncio
+    async def test_read_timeout_recovers_instead_of_wedging(self, monkeypatch):
+        """A half-open socket (peer accepted TCP then went silent) surfaces as a read
+        timeout, never as a connect error — it must be recoverable too."""
+        calls = []
+        behavior = {
+            "149.154.166.110": httpx.ReadTimeout("peer went silent"),
+            "149.154.167.220": "ok",
+        }
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+
+        transport = tnet.TelegramFallbackTransport(["149.154.166.110", "149.154.167.220"])
+        resp = await transport.handle_async_request(_telegram_request())
+
+        assert resp.status_code == 200
+        assert transport._sticky_ip == "149.154.167.220"

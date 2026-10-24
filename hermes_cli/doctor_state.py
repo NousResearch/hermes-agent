@@ -298,8 +298,10 @@ def _write_health_reason(state_db_path: Path, *, should_fix: bool):
     if not _live_writer_holds_db(state_db_path):
         return _db_opens_cleanly(state_db_path)
     if not should_fix and state_db_path.stat().st_size > _WRITE_PROBE_SNAPSHOT_MAX_BYTES:
+        # Same rule as the WAL warning (#110054 item 3): a bare "run --fix" printed while a live writer
+        # holds the store is the nudge that made users the second writer. Order "stop" first.
         check_info("state.db write-health probe skipped: store is held by a live writer and larger than 1 GB "
-                   "(run 'hermes doctor --fix' to probe it)")
+                   "(stop the profile's gateway, then run 'hermes doctor --fix' to probe it)")
         return None
     import sqlite3
     import tempfile
@@ -317,18 +319,26 @@ def _write_health_reason(state_db_path: Path, *, should_fix: bool):
         return _db_opens_cleanly(snapshot)
 
 
-# Corruption class -> (ok label, not-fixed label, failed issue, fix hint). ``{count}`` = recovered sessions.
+# Corruption class -> (ok label, not-fixed label, failed issue, fix hint, held fix hint). ``{count}`` =
+# recovered sessions. The held hint is the same command ordered behind "stop the profile's gateway": the repair
+# path itself refuses a live holder (``repair_state_db_schema``'s WAL-holder preflight), so a bare "run --fix"
+# tells the user to run something that cannot succeed, without naming the writer they have to stop (#110054).
+# The store is "held OR unprovable" here — never assert a live writer as fact (gate C1).
 # ``structural`` has no in-place repair: an FTS rebuild cannot fix a canonical b-tree, and the
 # ``.malformed-backup`` the repair path would leave beside state.db is a copy of the same damage (#88587).
 _STATE_DB_REPAIRS = {
     "fts": ("Repaired state.db FTS write health",
             "state.db FTS write-health repair did not recover automatically",
             "state.db FTS write corruption and auto-repair failed — restore from the backup copy beside state.db",
-            "state.db FTS write corruption — run 'hermes doctor --fix' (or 'hermes sessions repair') to rebuild the FTS index"),
+            "state.db FTS write corruption — run 'hermes doctor --fix' (or 'hermes sessions repair') to rebuild the FTS index",
+            "state.db FTS write corruption — cannot prove state.db is quiet (stop the profile's gateway first, then "
+            "run 'hermes doctor --fix' or 'hermes sessions repair' to rebuild the FTS index)"),
     "schema": ("Repaired state.db schema ({count} sessions recovered)",
                "state.db schema repair did not recover automatically",
                "state.db schema malformed and auto-repair failed — restore from the backup copy beside state.db",
-               "state.db schema malformed — run 'hermes doctor --fix' (or 'hermes sessions repair') to recover hidden sessions"),
+               "state.db schema malformed — run 'hermes doctor --fix' (or 'hermes sessions repair') to recover hidden sessions",
+               "state.db schema malformed — cannot prove state.db is quiet (stop the profile's gateway first, then "
+               "run 'hermes doctor --fix' or 'hermes sessions repair' to recover hidden sessions)"),
 }
 _STATE_DB_STRUCTURAL_ISSUE = (
     "state.db structural corruption (canonical tables/indexes damaged, not the FTS index) — an FTS rebuild "
@@ -345,9 +355,16 @@ def _repair_state_db(f: Finding, should_fix: bool, state_db_path: Path, kind: st
         from hermes_constants import profile_cli_selector
         return f.manual_issues.append(_STATE_DB_STRUCTURAL_ISSUE.format(
             profile_arg=profile_cli_selector(), db_path=state_db_path))
-    ok_label, not_fixed_label, failed_issue, fix_hint = _STATE_DB_REPAIRS[kind]
+    ok_label, not_fixed_label, failed_issue, fix_hint, held_fix_hint = _STATE_DB_REPAIRS[kind]
     if not should_fix:
-        return f.issues.append(fix_hint)
+        try:
+            from hermes_state_repair import _live_writer_holds_db
+            held = _live_writer_holds_db(state_db_path)
+        except Exception:
+            # Fail closed, exactly like the WAL warning: unprovable is treated as held, so the hint
+            # orders "stop" before a `--fix` the repair path would refuse.
+            held = True
+        return f.issues.append(held_fix_hint if held else fix_hint)
     from hermes_state_repair import repair_state_db_schema
     report = repair_state_db_schema(state_db_path)
     if not report.get("repaired"):

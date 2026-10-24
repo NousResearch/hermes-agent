@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { registerPreviewNav } from '@/app/chat/right-rail/preview-nav'
 import { registerPreviewPageReader } from '@/app/chat/right-rail/preview-reader'
 import { group } from '@/components/pane-shell/tree/model'
-import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
+import { $layoutTree, activateTreePane, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { runTour } from '@/lib/tour'
 import { $previewTabs, closeRightRail, openPreview, setPreviewTabPinned } from '@/store/preview'
@@ -418,13 +418,13 @@ describe('preview requests act for the session that asked (#73890)', () => {
     hasLivePreviewSurface.mockReturnValue(false)
   })
 
-  // Tile B holds focus while the primary session A's agent is the one asking.
+  // Tile B holds focus initially; workspace A must regain focus before acting.
   const focusTileB = () => {
-    $layoutTree.set(group(['session-tile:stored-b'], { active: 'session-tile:stored-b', id: 'grp-b' }))
+    $layoutTree.set(group(['workspace', 'session-tile:stored-b'], { active: 'session-tile:stored-b', id: 'grp-b' }))
     noteActiveTreeGroup('grp-b')
   }
 
-  it("drives the requesting session's page, not the focused tile's", async () => {
+  it('refuses the hidden primary, then drives its own page once focused', async () => {
     openPreview({ kind: 'url', label: 'a', source: 'https://a.example', url: 'https://a.example' }, 'stored-a')
     openPreview({ kind: 'url', label: 'b', source: 'https://b.example', url: 'https://b.example' }, 'stored-b')
     const [a, b] = $previewTabs.get()
@@ -439,6 +439,13 @@ describe('preview requests act for the session that asked (#73890)', () => {
     focusTileB()
 
     try {
+      const background = deliver('preview.act', { action: 'back', session_id: 'rt-a' }, 'rt-a')
+
+      expect(background.decline).toHaveBeenCalledTimes(1)
+      expect(background.respond).not.toHaveBeenCalled()
+      expect(backA).not.toHaveBeenCalled()
+      expect(backB).not.toHaveBeenCalled()
+      activateTreePane('grp-b', 'workspace')
       const { respond } = deliver('preview.act', { action: 'back', session_id: 'rt-a' }, 'rt-a')
 
       await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
@@ -450,10 +457,16 @@ describe('preview requests act for the session that asked (#73890)', () => {
     }
   })
 
-  it("runs a preview tour against the requesting session's tabs", async () => {
+  it('refuses a hidden-primary tour, then uses its own tabs once focused', async () => {
     focusTileB()
     vi.mocked(runTour).mockClear()
 
+    const background = deliver('tour', { action: 'discover', session_id: 'rt-a', surface: 'preview' }, 'rt-a')
+
+    expect(background.decline).toHaveBeenCalledTimes(1)
+    expect(background.respond).not.toHaveBeenCalled()
+    expect(runTour).not.toHaveBeenCalled()
+    activateTreePane('grp-b', 'workspace')
     const { respond } = deliver('tour', { action: 'discover', session_id: 'rt-a', surface: 'preview' }, 'rt-a')
 
     await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
@@ -583,20 +596,18 @@ describe('tour request routing', () => {
     }
   })
 
-  it('still refuses a scoped request naming another conversation', () => {
-    // The window hosts the request's session as a tile (so the request is
-    // routed here rather than left unanswered), but the pane shows a different
-    // conversation — the gate must still refuse.
+  it('declines a hosted request naming another conversation without settling it', () => {
+    // A hosted tile is not foreground ownership. Leave the request open for
+    // another window whose genuinely focused conversation owns the tour.
     setSessions([{ id: 'stored-tip', _lineage_root_id: 'stored-root' } as SessionInfo])
     deps.sessionStateByRuntimeIdRef.current.set('runtime-2', createClientSessionState('stored-tip'))
     $sessionTiles.set([{ runtimeId: 'runtime-2', storedSessionId: 'stored-tip' } as never])
 
     try {
-      const { respond } = deliver('tour', { action: 'discover', session_id: 'runtime-2' }, 'other-root')
+      const { decline, respond } = deliver('tour', { action: 'discover', session_id: 'runtime-2' }, 'other-root')
 
-      expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({
-        error: expect.stringContaining('the session the user is looking at')
-      })
+      expect(decline).toHaveBeenCalledTimes(1)
+      expect(respond).not.toHaveBeenCalled()
     } finally {
       $sessionTiles.set([])
       deps.sessionStateByRuntimeIdRef.current.clear()

@@ -38,6 +38,7 @@ approvals:
   unattended_mode: deny           # deny | approve — what webhook/API sessions do on a dangerous command
   mcp_reload_confirm: true        # /reload-mcp asks before invalidating the MCP tool cache
   destructive_slash_confirm: true # /clear, /new, /reset, /undo prompt before discarding state
+  audit_log: false                # true appends redacted verdicts to logs/approvals.jsonl
 ```
 
 The full set of keys:
@@ -51,6 +52,7 @@ The full set of keys:
 | `unattended_mode` | `deny` | How sessions on unattended programmatic platforms (webhook, msgraph_webhook, api_server) behave when they trigger a dangerous-command prompt. These surfaces have no human who can answer `/approve`, so instead of blocking for the full approval timeout, `deny` blocks the command instantly (the agent must find another path) and `approve` auto-approves everything in unattended context. Exception: an api_server session whose client can answer the card (`/v1/runs` and streaming chat completions, via `POST /v1/runs/{id}/approval`) still gets the approval request. Mirrors `cron_mode`. |
 | `mcp_reload_confirm` | `true` | When true, `/reload-mcp` asks before rebuilding the MCP tool set. Rebuilding invalidates the provider prompt cache (tool schemas live in the system prompt), so the next message re-sends full input tokens. Users who click **Always Approve** flip this key to `false`. |
 | `destructive_slash_confirm` | `true` | When true, destructive session slash commands (`/clear`, `/new`, `/reset`, `/undo`) prompt before discarding conversation state. Three-option dialog (Approve Once / Always Approve / Cancel) routed through native yes/no buttons on Telegram, Discord, and Slack; text fallback elsewhere. Users who click **Always Approve** flip this key to `false`. The TUI also honors this setting for its `/clear`, `/new`, and `/reset` modal; `HERMES_TUI_NO_CONFIRM=1` force-skips that modal regardless of the configured value. |
+| `audit_log` | `false` | When exactly `true`, every tool-approval request, and every command or `execute_code` guard decision other than a silent pass, is appended to `<HERMES_HOME>/logs/approvals.jsonl` as one JSON line: timestamp, rule key, description, command, surface, outcome and a hashed session key. Text fields go through secret redaction first, but redaction cannot guarantee that no personal data reaches the file, so it stays off unless enabled; any other value keeps it off. The file is created `0600`, symlinks and non-regular files are refused, and a logging failure never changes the approval verdict. Useful for tuning allowlists and auditing unattended runs. |
 
 | Mode | Behavior |
 |------|----------|

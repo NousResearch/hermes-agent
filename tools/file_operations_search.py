@@ -1011,7 +1011,8 @@ class SearchMixin:
             return SearchResult(
                 error="Content search requires ripgrep (rg) or grep. "
                       "Install ripgrep: https://github.com/BurntSushi/ripgrep#installation")
-        if (not result.error and result.total_count == 0
+        # A timed-out zero is not a real zero, and every probe would re-walk the same tree.
+        if (not result.error and result.total_count == 0 and result.limit_reason != "search_timeout"
                 and not result.matches and not result.files and not result.counts):
             try:
                 hint = self._zero_match_probe(pattern, path, file_glob)

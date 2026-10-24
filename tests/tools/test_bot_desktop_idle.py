@@ -4,7 +4,11 @@ one a human holds or that saw recent use is not."""
 from __future__ import annotations
 
 import os
+import subprocess
+import threading
 import time
+
+import pytest
 
 from tools.bot_desktop import lease, runtime
 
@@ -17,7 +21,7 @@ def _running(monkeypatch, tmp_path):
     monkeypatch.setattr(runtime, "_launcher_pid", lambda: 4242)
     monkeypatch.setattr(runtime, "idle_stop_seconds", lambda: 600.0)
     stops = []
-    monkeypatch.setattr(runtime, "stop", lambda: stops.append(True) or True)
+    monkeypatch.setattr(runtime, "stop", lambda still_due=None: stops.append(True) or True)
     return sd, stops
 
 
@@ -59,3 +63,55 @@ def test_the_launchers_idle_check_sleeps_until_the_screen_could_be_due():
     assert next_check_in(1800, 7200) == 1800, "a human holding it past the window: recheck a window later"
     assert next_check_in(1.2, None) == 2  # a window shorter than the floor is checked at its own length
     assert next_check_in(0, None) == runtime.DEFAULT_IDLE_STOP_MINUTES * 60  # off: re-read the setting later
+
+
+@pytest.mark.parametrize("judged", ["the old screen", "any screen"])
+def test_an_idle_check_that_waited_on_the_lock_never_stops_the_replacement_screen(tmp_path, monkeypatch, judged):
+    """The idle decision is taken before ``start.lock``; a stop + start that holds the lock meanwhile replaces
+    the screen. The waiting check must re-decide under the lock: the launcher's own check (it names the screen
+    it judged) keeps a replacement however idle, the gateway watcher keeps one that is in use."""
+    from tools.bot_desktop import placement, sandbox_host
+
+    sd = tmp_path / "bd"
+    sd.mkdir()
+    (sd / "env").write_text("DISPLAY=:20\n", encoding="utf-8")
+    (sd / "activity").touch()
+    _age(sd / "activity", 3600)
+    monkeypatch.setattr(runtime, "state_dir", lambda: sd)
+    monkeypatch.setattr(runtime, "idle_stop_seconds", lambda: 600.0)
+    monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
+    monkeypatch.setattr(sandbox_host, "_read_marker", dict)
+    monkeypatch.setattr(placement, "resolve", lambda: placement.Placement(placement.GATEWAY, "local"))
+    monkeypatch.setattr(lease, "get", lambda profile_key=None: lease.Lease(holder=lease.AGENT))
+
+    def launch() -> subprocess.Popen:
+        proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+        (sd / "launcher.pid").write_text(f"{proc.pid} {runtime._create_time(proc.pid)}", encoding="utf-8")
+        return proc
+
+    old, new = launch(), None
+    lock, waiting, result = runtime._flocked, threading.Event(), []
+
+    def flocked_after_signalling(path):
+        waiting.set()
+        return lock(path)
+    monkeypatch.setattr(runtime, "_flocked", flocked_after_signalling)
+    identity = (old.pid, runtime._create_time(old.pid)) if judged == "the old screen" else None
+    check = threading.Thread(target=lambda: result.append(runtime.stop_if_idle(launcher=identity)))
+    try:
+        with lock(sd / "start.lock"):  # a concurrent stop + start holds it
+            check.start()
+            assert waiting.wait(5)  # past its first decision; it gets the lock only after the swap below
+            old.kill()
+            old.wait()
+            new = launch()
+            if judged == "any screen":
+                runtime.touch_activity()  # the replacement is in use
+        check.join(15)
+        assert result == [False], "the waiting check stopped the screen it found under the lock"
+        assert new.poll() is None and runtime._launcher_pid() == new.pid
+    finally:
+        for proc in (old, new):
+            if proc is not None and proc.poll() is None:
+                proc.kill()
+                proc.wait()

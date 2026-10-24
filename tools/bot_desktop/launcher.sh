@@ -291,7 +291,7 @@ if [[ -n "${HERMES_BD_PYTHON:-}" ]]; then
     trap 'kill "$!" 2>/dev/null; exit 0' TERM
     while kill -0 "$$" 2>/dev/null; do
       delay=$(HERMES_HOME="$HERMES_BD_HOME" PYTHONPATH="$HERMES_BD_SRC_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
-              "$HERMES_BD_PYTHON" -m tools.bot_desktop.idle_watch) || delay=300  # broken check: retry slowly
+              "$HERMES_BD_PYTHON" -m tools.bot_desktop.idle_watch "$$") || delay=300  # broken check: retry slowly
       [[ -n "$delay" ]] || exit 0  # it stopped the screen
       [[ "$delay" =~ ^[0-9]+$ ]] || delay=300
       sleep "$delay" & wait "$!"

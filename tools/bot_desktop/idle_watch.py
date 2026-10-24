@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import sys
 from typing import Optional
 
 from tools.bot_desktop import runtime
@@ -33,9 +34,20 @@ def next_check_in(limit: float, idle: Optional[float]) -> int:
     return math.ceil(max(min(_MIN_DELAY_S, limit), limit - idle if idle < limit else limit))
 
 
+def _own_launcher(argv: list[str]) -> Optional[tuple[int, float]]:
+    """``(pid, create_time)`` of the launcher that ran this check (its pid is the one argument), so the
+    check stops only that screen and never a replacement started while it waited on ``start.lock``. A
+    launcher already gone gets an identity nothing matches."""
+    pid_s = argv[0] if argv else ""
+    if not pid_s.isdigit():
+        return None
+    born = runtime._create_time(int(pid_s))
+    return int(pid_s), born if born is not None else -1.0
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s idle-watch %(message)s")  # stderr = launcher.log
-    if runtime.stop_if_idle():
+    if runtime.stop_if_idle(launcher=_own_launcher(sys.argv[1:])):
         return
     delay = next_check_in(runtime.idle_stop_seconds(), runtime.idle_seconds())
     logger.info("screen kept; next idle check in %ds", delay)

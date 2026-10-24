@@ -24,7 +24,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 from agent.deadline import poll_until
 from hermes_constants import get_hermes_home
@@ -178,10 +178,10 @@ def _create_time(pid: int) -> Optional[float]:
         return None
 
 
-def _launcher_pid() -> Optional[int]:
-    """The live launcher's pid, or None. ``launcher.pid`` holds ``"<pid> <create_time>"``: a recycled pid
-    with a different start time is somebody else's process and must never be reported as ours nor
-    killed by :func:`stop`. The pre-identity single-number format is treated as not running."""
+def _launcher_identity() -> Optional[tuple[int, float]]:
+    """``(pid, create_time)`` of the live launcher, or None. ``launcher.pid`` holds ``"<pid> <create_time>"``:
+    a recycled pid with a different start time is somebody else's process and must never be reported as
+    ours nor killed by :func:`stop`. The pre-identity single-number format is treated as not running."""
     raw = _read(state_dir() / "launcher.pid")
     pid_s, _, born_s = (raw or "").partition(" ")
     if not pid_s.isdigit() or not born_s:
@@ -191,7 +191,13 @@ def _launcher_pid() -> Optional[int]:
     except ValueError:
         return None
     actual = _create_time(pid)
-    return pid if actual is not None and abs(actual - born) < 0.01 and _pid_alive(pid) else None
+    return (pid, born) if actual is not None and abs(actual - born) < 0.01 and _pid_alive(pid) else None
+
+
+def _launcher_pid() -> Optional[int]:
+    """The live launcher's pid, or None (see :func:`_launcher_identity`)."""
+    identity = _launcher_identity()
+    return identity[0] if identity is not None else None
 
 
 def _recorded_launcher_pid() -> Optional[int]:
@@ -449,20 +455,36 @@ def idle_stop_seconds() -> float:
     return max(0.0, minutes) * 60
 
 
-def stop_if_idle() -> bool:
-    """Stop this profile's screen when it has been idle past the limit and no human holds it. True when
-    it was stopped."""
+def _idle_due(launcher: Optional[tuple[int, float]]) -> Optional[float]:
+    """Idle seconds when the screen is due for the idle stop now, else None. ``launcher`` (``(pid,
+    create_time)``) limits it to that one screen: a replacement started since is never due."""
     limit = idle_stop_seconds()
     if limit <= 0 or not is_running():
-        return False
+        return None
+    if launcher is not None:
+        current = _launcher_identity()
+        if current is None or current[0] != launcher[0] or abs(current[1] - launcher[1]) >= 0.01:
+            return None
     idle = idle_seconds()
     if idle is None or idle < limit:
-        return False
+        return None
     from tools.bot_desktop import lease as _bd_lease
     if _bd_lease.get().holder == _bd_lease.HUMAN:
+        return None
+    return idle
+
+
+def stop_if_idle(launcher: Optional[tuple[int, float]] = None) -> bool:
+    """Stop this profile's screen when it has been idle past the limit and no human holds it. True when
+    it was stopped. ``launcher`` names the screen the caller judges (the launcher's own check passes it).
+
+    The decision is taken again under ``start.lock`` before anything is killed: a check that waited on the
+    lock while the screen was stopped and started again (or used) must not kill the screen it finds then."""
+    idle = _idle_due(launcher)
+    if idle is None:
         return False
     logger.info("Bot Desktop for profile %s idle for %.0f min; stopping", _profile_name(), idle / 60)
-    return stop()
+    return stop(still_due=lambda: _idle_due(launcher) is not None)
 
 
 def published_env() -> dict[str, str]:
@@ -816,11 +838,13 @@ def _sandbox_published_env() -> dict[str, str]:
     return sandbox_host.published_env(env, _profile_name())
 
 
-def stop() -> bool:
+def stop(still_due: Optional[Callable[[], bool]] = None) -> bool:
     """Stop this profile's desktop; True when a running launcher (or the X server a dead one left behind)
-    was signalled."""
+    was signalled. ``still_due`` is re-asked under ``start.lock``; False there leaves the screen running."""
     from tools.bot_desktop import sandbox_host
     if sandbox_host._read_marker() or placement.resolve().where == placement.TERMINAL:
+        if still_due is not None and not still_due():
+            return False
         # The marker names the sandbox that owns the screen; stop THAT one (re-attaching after a restart),
         # whatever the placement setting says now. A marker whose sandbox is gone is simply dropped.
         env = _owned_sandbox_env()
@@ -834,6 +858,9 @@ def stop() -> bool:
     sd = state_dir()
     sd.mkdir(parents=True, exist_ok=True)
     with _flocked(sd / "start.lock"):
+        if still_due is not None and not still_due():
+            logger.info("Bot Desktop for profile %s changed while the idle stop waited; kept", _profile_name())
+            return False
         return _stop_locked(sd)
 
 

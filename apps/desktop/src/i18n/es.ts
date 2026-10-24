@@ -4983,8 +4983,8 @@ export const esOverrides = {
           body: 'La carpeta en la que trabaja este chat se movió o se eliminó, así que tu mensaje no se ejecutó. Vuelve a crear la carpeta o usa «Mover a proyecto» para darle otra al chat, y vuelve a intentarlo.'
         },
         SESSION_NOT_OWNED: {
-          title: 'Este chat está abierto en otro sitio',
-          body: 'Este chat está abierto en otra ventana de Hermes o en un terminal. Ciérralo allí y vuelve a enviar el mensaje, o empieza un chat nuevo aquí.'
+          title: 'Otra ventana de Hermes retiene este chat',
+          body: 'Si otra ventana de Hermes o un terminal tiene este chat abierto, sigue ahí, o cierra el chat allí y vuelve a enviar tu mensaje aquí. Si ninguna lo tiene abierto, el chat se libera solo en unos minutos; envía tu mensaje entonces o empieza un chat nuevo aquí.'
         },
         disk_full: {
           title: 'Disco lleno',

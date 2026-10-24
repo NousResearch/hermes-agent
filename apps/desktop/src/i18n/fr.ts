@@ -5003,8 +5003,8 @@ export const frOverrides = {
           body: "Le dossier dans lequel travaille cette conversation a été déplacé ou supprimé ; votre message n'a donc pas été exécuté. Recréez le dossier ou utilisez « Déplacer vers un projet » pour lui en attribuer un autre, puis réessayez."
         },
         SESSION_NOT_OWNED: {
-          title: 'Cette conversation est ouverte ailleurs',
-          body: 'Cette conversation est déjà ouverte dans une autre fenêtre Hermes ou un terminal. Fermez-la là-bas puis réessayez, ou démarrez-en une nouvelle ici.'
+          title: 'Une autre fenêtre Hermes retient cette conversation',
+          body: "Si une autre fenêtre Hermes ou un terminal a cette conversation ouverte, continuez-y, ou fermez-y la conversation et renvoyez votre message ici. Si aucune ne l'a ouverte, la conversation se libère d'elle-même dans quelques minutes ; envoyez votre message à ce moment-là, ou démarrez-en une nouvelle ici."
         },
         disk_full: {
           title: 'Disque plein',

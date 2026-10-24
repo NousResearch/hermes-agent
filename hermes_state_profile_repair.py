@@ -21,6 +21,7 @@ the target holds at least as many messages). The reverse order would lose the ro
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
@@ -90,6 +91,7 @@ class SessionProfileRepairMixin:
             "FROM sessions s LEFT JOIN sessions p ON p.id = s.parent_session_id "
             "WHERE s.session_key LIKE 'agent:%' ORDER BY s.started_at, s.id")
         ledgered = self._ledgered_session_ids()
+        receipted = self._local_receipt_session_ids()
         found: dict[str, list[dict[str, Any]]] = {"mislabelled": [], "foreign": [], "crossed_parents": []}
         for row in rows:
             key_profile = session_key_profile(row["session_key"])
@@ -99,12 +101,13 @@ class SessionProfileRepairMixin:
             if label is not None and label != key_profile:
                 found["mislabelled"].append({
                     "id": row["id"], "session_key": row["session_key"],
-                    "profile_name": label, "key_profile": key_profile})
+                    "profile_name": label, "key_profile": key_profile, "receipt": row["id"] in receipted})
             if key_profile != owner:
                 found["foreign"].append({
                     "id": row["id"], "session_key": row["session_key"], "key_profile": key_profile,
                     "message_count": int(row["message_count"] or 0),
-                    "parent_session_id": row["parent_session_id"], "ledgered": row["id"] in ledgered})
+                    "parent_session_id": row["parent_session_id"], "ledgered": row["id"] in ledgered,
+                    "receipt": row["id"] in receipted})
             parent_profile = session_key_profile(row["parent_session_key"])
             if parent_profile is not None and parent_profile != key_profile:
                 found["crossed_parents"].append({
@@ -128,6 +131,22 @@ class SessionProfileRepairMixin:
                 ids.update(r[0] for r in conn.execute("SELECT DISTINCT session_id FROM worker_executions"))
             return ids
         return self._read_retrying_ioerr(_read)
+
+    def _local_receipt_session_ids(self) -> set[str]:
+        """Physical segments a LOCAL creation receipt in this store owns (its lineage and current
+        target). Their key is the receipt's route: the gateway re-keys the receipt, its rows and its
+        routing row together when the home's gateway mode changed (``respell_local_route``); moving
+        or re-keying the rows alone would leave the receipt refusing them."""
+        from hermes_state_local import POLICY_PREFIX
+        ids: set[str] = set()
+        for row in self._read_all("SELECT value FROM state_meta WHERE key GLOB ?", (POLICY_PREFIX + "*",)):
+            try:
+                receipt = json.loads(row[0])
+                ids.update(receipt.get("lineage") or [receipt["session_id"]])
+                ids.add(receipt["entry"]["session_id"])
+            except (TypeError, ValueError, KeyError, AttributeError):
+                continue  # a malformed receipt is refused by its own reads; it owns nothing here
+        return ids
 
     def list_gateway_routing_rows(self) -> list[dict[str, Any]]:
         return [dict(row) for row in self._read_all(

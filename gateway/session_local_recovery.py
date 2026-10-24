@@ -98,8 +98,9 @@ def _checked_entry(authority, receipt, source, route):
     return entry
 
 
-def owned_receipt(authority, sid):
-    """*sid*'s stored receipt with its LOCAL source, route and entry, once all are this owner's."""
+def _receipt_source(authority, sid):
+    """*sid*'s stored receipt, its LOCAL source and this owner's route for it, once the receipt's home
+    and identity are this owner's."""
     receipt = local_receipt(authority.db, sid)
     if receipt['profile_id'] != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
@@ -108,8 +109,40 @@ def owned_receipt(authority, sid):
     if receipt['session_id'] != sid or sid != chat_id:
         raise ValueError('identity mismatch')
     source = local_source(authority, chat_id, receipt['principal_id'])
-    route = authority.runner.session_store._generate_session_key(source)
+    return receipt, source, authority.runner.session_store._generate_session_key(source)
+
+
+def owned_receipt(authority, sid):
+    """*sid*'s stored receipt with its LOCAL source, route and entry, once all are this owner's."""
+    receipt, source, route = _receipt_source(authority, sid)
     return receipt, source, route, _checked_entry(authority, receipt, source, route)
+
+
+def respelled_route(authority, sid):
+    """``(receipt, route, profile)`` when *sid*'s receipt is this home's but its route and entry still
+    carry the spelling of the home's other gateway mode, else None. Read-only.
+
+    The receipt's home and identity hash bind it to this owner; only the namespace differs: a named
+    profile's own gateway (multiplexing off) keys LOCAL routes ``agent:main:…``, the multiplex host
+    serving the home ``agent:<profile>:…`` (and back, under the ``gateway.standalone`` shim). Serving the
+    old key is never an option: the multiplex store resolves ``agent:main:`` to the LAUNCH store.
+    """
+    from gateway.session import build_session_key
+    from hermes_constants import profile_name_for_home
+    try:
+        receipt, source, route = _receipt_source(authority, sid)
+        stored = receipt['route']
+        if stored == route or receipt['entry']['session_key'] != stored:
+            return None
+        config = authority.runner.session_store.config
+        flags = {'group_sessions_per_user': getattr(config, 'group_sessions_per_user', True),
+                 'thread_sessions_per_user': getattr(config, 'thread_sessions_per_user', False)}
+        name = source.profile or profile_name_for_home(Path(authority.profile_id))
+        if stored not in {build_session_key(source, profile=mode, **flags) for mode in (None, name)}:
+            return None
+    except (KeyError, TypeError, ValueError, AttributeError, OSError):
+        return None  # the restore refuses this receipt and logs the check that failed
+    return receipt, route, source.profile
 
 
 def _stray_route_target(authority, receipt, session_id):

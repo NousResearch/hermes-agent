@@ -227,6 +227,29 @@ def resolve_plugin_command_result(result: Any) -> Any:
 
 
 class PluginDispatchMixin:
+    # ``(generation, frozen hook table or None)``, always replaced as one value by
+    # ``_force_sweep_continuity``; this immutable class default is the state before the first force
+    # re-discovery. While a sweep rebuilds ``_hooks``, dispatch serves the frozen table: without it a
+    # concurrent turn sees an empty table between unload-all and re-registration, so context hooks
+    # vanish and ``pre_tool_call`` guards fail OPEN.
+    _hook_dispatch_state: tuple[int, Optional[dict[str, tuple[Callable, ...]]]] = (0, None)
+
+    def _dispatch_callbacks(self, hook_name: str) -> tuple[Callable, ...]:
+        """Callbacks dispatch runs for *hook_name*.
+
+        While a force re-discovery rebuilds ``_hooks``: the sweep's frozen copy of the last committed
+        table. Otherwise a snapshot of the live entry, kept only if the generation did not change while it
+        was taken. A changed generation means a sweep started meanwhile and unload-all may already have
+        emptied the live table, so the lookup is retried and served from the frozen copy.
+        """
+        while True:
+            generation, frozen = self._hook_dispatch_state
+            if frozen is not None:
+                return frozen.get(hook_name, ())
+            callbacks = tuple(self._hooks.get(hook_name, ()))
+            if self._hook_dispatch_state[0] == generation:
+                return callbacks
+
     @staticmethod
     def _hook_callback_kwargs(callback: Callable, payload: dict[str, Any]) -> dict[str, Any]:
         """The slice of *payload* a callback accepts: everything for ``**kwargs`` (or
@@ -275,7 +298,7 @@ class PluginDispatchMixin:
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
-        for cb in self._hooks.get(hook_name, []):
+        for cb in self._dispatch_callbacks(hook_name):
             try:
                 if use_timeout:
                     ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
@@ -532,7 +555,7 @@ class PluginDispatchMixin:
 
         if safe_worker_enabled():
             return False
-        return bool(self._hooks.get(hook_name))
+        return bool(self._dispatch_callbacks(hook_name))
 
     async def ainvoke_hook(self, hook_name: str, **kwargs: Any) -> list[Any]:
         """:meth:`invoke_hook` for callers that are already on an event loop.
@@ -552,7 +575,7 @@ class PluginDispatchMixin:
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
-        for cb in self._hooks.get(hook_name, []):
+        for cb in self._dispatch_callbacks(hook_name):
             callback_name = getattr(cb, "__name__", repr(cb))
             try:
                 ret = cb(**self._hook_callback_kwargs(cb, kwargs))
@@ -578,7 +601,7 @@ class PluginDispatchMixin:
 
         if safe_worker_enabled():
             return ()
-        return tuple(self._hooks.get(hook_name, ()))
+        return self._dispatch_callbacks(hook_name)
 
     def render_system_prompt_sections(
         self, session_info: Mapping[str, Any]

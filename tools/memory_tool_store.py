@@ -580,16 +580,18 @@ class MemoryStore:
                 matched.append(previous_content)
                 if after is not None:
                     produced[i + 1] = after
-            if entries and not working:
+            if entries and not working and not (len(ops) == 1 and ops[0].get("action") == "remove"):
                 # #103419: a consolidation batch that removes the last entry would
-                # commit an empty file as a normal successful write. Refuse; single
-                # remove() is the deliberate-wipe path.
+                # commit an empty file as a normal successful write. Refuse; a batch of
+                # exactly one remove is the deliberate single delete (operations[] is the
+                # memory tool's only advertised shape), and unattended forks never get
+                # that far: the #105921 delete gate stages their removes.
                 label = self._path_for(target).name
                 return self._batch_failure(target, (
                     f"Refusing to empty {label}: this batch would remove every entry from a "
                     f"previously non-empty store. Keep at least one entry — merge overlapping "
                     f"entries into a shorter one instead of removing the last one. To delete the "
-                    f"final entry deliberately, use single remove() calls."), "would_empty")
+                    f"final entry deliberately, remove it alone in a one-item batch."), "would_empty")
             new_total = len(ENTRY_DELIMITER.join(working))  # budget check against the FINAL state only
             if new_total > limit:
                 return self._batch_failure(target, (

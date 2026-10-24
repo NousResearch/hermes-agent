@@ -50,3 +50,21 @@ def test_each_memory_field_is_advertised_once_and_legacy_shapes_still_write(tmp_
     batch = {"target": "memory", "operations": [{"action": "patch", "old_text": "alpha", "new_text": "beta"}]}
     assert json.loads(handler(batch, store=store))["success"]
     assert store.memory_entries == ["beta fact"]
+
+
+def test_advertised_one_item_remove_deletes_the_last_entry_but_a_multi_op_batch_cannot_empty(tmp_path, monkeypatch):
+    """operations[] is the only advertised shape, so a one-item remove is how the agent forgets
+    the final fact; a larger batch that would empty the store is still refused (#103419)."""
+    monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+    store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+    store.load_from_disk()
+    handler = registry.get_entry("memory").handler
+    for fact in ("alpha fact", "beta fact"):
+        assert json.loads(handler({"target": "user", "operations": [{"action": "add", "content": fact}]}, store=store))["success"]
+    both = [{"action": "remove", "old_text": "alpha"}, {"action": "remove", "old_text": "beta"}]
+    refused = json.loads(handler({"target": "user", "operations": both}, store=store))
+    assert not refused["success"] and "one-item" in refused["error"]
+    assert store.user_entries == ["alpha fact", "beta fact"]
+    for old in ("alpha", "beta"):
+        assert json.loads(handler({"target": "user", "operations": [{"action": "remove", "old_text": old}]}, store=store))["success"]
+    assert store.user_entries == []

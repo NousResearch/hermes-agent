@@ -606,7 +606,7 @@ DEFAULT_CONFIG = {
         # lower of the ratio threshold and this count. Clamped to the model's context length.
         # Off by default: no single count suits windows from 64K to 1M+, so the ratio decides.
         "threshold_tokens": None,
-        # "progress_notices": False,    # opt-in (#52995): when True, routine compression
+        "summary_input_max_tokens": None,  # Shared source tokens; None = min(40K, 25% of summarizer window).
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         # tail_mode: "lean" = clamped 2.5%-of-window tail (10K floor / 25K cap) plus chunked
         # digests, anchor index, verbatim user messages and session_search pointers in the summary

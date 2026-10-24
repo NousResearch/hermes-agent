@@ -39,7 +39,7 @@ class SummaryDispatchMixin:
 
         allowance, window = self._summary_input_allowance(output_budget, focus, memory, has_user_turn)
         previous = self._previous_summary or ""
-        previous_budget = int(allowance * 0.4) if previous else 0
+        previous_budget = min(int(allowance * 0.4), estimate_tokens_rough(previous))
         prompt = self._build_summary_prompt(
             bound_summary_tokens(content, allowance - previous_budget), output_budget, focus, memory,
             has_user_turn, previous_summary=bound_summary_tokens(previous, previous_budget),
@@ -55,16 +55,24 @@ class SummaryDispatchMixin:
         from hermes_cli.config import load_config_readonly
         from hermes_cli.fallback_config import get_fallback_chain
 
+        config = load_config_readonly()
         window = self.context_length
         if not getattr(self, "_summary_model_fallen_back", False):
-            window = min(window, getattr(self, "_summary_model_context_length", None) or window)
+            window = getattr(self, "_summary_model_context_length", None) or window
         if (_SUMMARY_ROUTE_PIN.get() or _get_auxiliary_task_config("compression").get("fallback_chain")
-                or get_fallback_chain(load_config_readonly())):
+                or get_fallback_chain(config)):
             # One prompt can be reused by exception and stall retries. Supported compression
             # routes have at least this window; do not price it against only the primary route.
             window = min(window, MINIMUM_CONTEXT_LENGTH)
-        scaffold = self._build_summary_prompt("", output_budget, focus, memory, has_user_turn, previous_summary="")
-        allowance = min(40000, window // 4, window - output_budget - estimate_tokens_rough(scaffold) - 128)
+        scaffold = self._build_summary_prompt(
+            "", output_budget, focus, memory, has_user_turn, previous_summary=" " if self._previous_summary else "",
+        )
+        limit = config.get("compression", {}).get("summary_input_max_tokens")
+        # A larger source is opt-in: reserve a quarter-window for estimator error
+        # even then. Invalid scalars retain the conservative local-model default.
+        explicit = isinstance(limit, int) and not isinstance(limit, bool) and limit > 0
+        source_limit = min(limit, window * 3 // 4) if explicit else min(40000, window // 4)
+        allowance = min(source_limit, window - output_budget - estimate_tokens_rough(scaffold) - 128)
         if allowance <= 0:
             raise ValueError("Compression instructions leave no room in the summariser context window")
         return allowance, window
@@ -73,7 +81,9 @@ class SummaryDispatchMixin:
         """Re-sample every region at the tighter cap; publish coverage only for the sent input."""
         from agent.model_metadata import estimate_tokens_rough
 
-        cap = self._SUMMARY_INPUT_MAX_CHARS
+        # ASCII is the least token-dense input (four chars per estimated token).
+        # Starting here allows large opt-in budgets past the old 160K-char cap.
+        cap = budget * 4
         while True:
             sampled, coverage = self._sample_summary_records(records, max_chars=cap)
             tokens = estimate_tokens_rough(sampled)
@@ -173,7 +183,8 @@ class SummaryDispatchMixin:
             HISTORICAL_TASK_HEADING, _LEAN_SESSION_LOG_SECTION, _SECTION_INSTRUCTIONS,
             _memory_provider_section,
         )
-        previous_summary = self._previous_summary if previous_summary is None else previous_summary
+        if previous_summary is None:
+            previous_summary = self._bound_summary_input(self._previous_summary or "")
         _memory_section = _memory_provider_section(memory_context)
         _section = _SECTION_INSTRUCTIONS[bool(has_user_turn)]
         _language_and_provenance_rule = _section["language"]
@@ -191,14 +202,13 @@ class SummaryDispatchMixin:
         _session_log_section = _LEAN_SESSION_LOG_SECTION if getattr(self, "tail_mode", "lean") == "lean" else ""
         _template_sections = self._summary_template_sections(_section, summary_budget, _session_log_section)
         if previous_summary:
-            # Iterative update. Bound the previous summary too: a rehydrated handoff can be huge.
-            _bounded_previous_summary = self._bound_summary_input(previous_summary)
+            # Explicit previous_summary has already been fitted to the shared token budget.
             prompt = f"""{_summarizer_preamble}
 
 You are updating a context compaction summary. A previous compaction produced the summary below. New conversation turns have occurred since then and need to be incorporated.
 
 PREVIOUS SUMMARY:
-{_bounded_previous_summary}
+{previous_summary}
 
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}{_memory_section}

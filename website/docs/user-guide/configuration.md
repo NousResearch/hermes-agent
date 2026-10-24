@@ -1053,14 +1053,35 @@ The same limit is also a **fail-closed bound on what the model is sent** wheneve
 
 The value is the **first rung** of an escalating ladder, not a fixed interval: consecutive failures for the same session wait `1x`, `3x`, then `9x` this value, capped at one hour. A session whose summary model is permanently broken therefore backs off instead of retrying forever on a fixed interval, and a run that actually shrinks the transcript resets it to the first rung. Escalation is per-session and process-local — a gateway restart resets it to the first rung while the cooldown deadline itself survives.
 
-Summary source text is bounded by an estimated token allowance, shared between the previous
-handoff and the newly sampled turns. The allowance is at most a quarter of the summariser's
-resolved window and 40,000 tokens, with space reserved for the instructions and advisory
-summary output budget. Lean mode keeps samples from across the history and reports coverage
-for the input actually sent. Configured fallback routes use the supported compression
-minimum window conservatively; routes below that minimum are not qualified by this bound.
-The estimate is heuristic, not a model-specific tokenizer guarantee. No output token cap is
-added, no provider is selected by this bound, and the main-session trigger is unchanged.
+Summary source text has one estimated token allowance shared between the previous handoff
+and new turns. By default, `compression.summary_input_max_tokens: null` uses the smaller of
+40,000 tokens and a quarter of the resolved summariser window (32,768 for a 131,072-token
+local model). A positive YAML integer overrides that default, up to 75% of the window; space
+for instructions, memory/focus guidance, the advisory output budget and a 128-token framing
+reserve is always deducted too. Invalid values (including zero, booleans and quoted strings)
+use the default. A resolved dedicated summariser can have a larger window than the main model.
+
+For example, with a verified 200K-token summariser window, this allows up to 150K estimated
+source tokens instead of the default 40K:
+
+```yaml
+compression:
+  summary_input_max_tokens: 150000
+```
+
+The previous handoff receives up to 40% of the shared allowance; any unused portion goes to
+new turns. Both lean and legacy modes can use the larger allowance without an additional
+160,000-character cap. Per-message serialization limits still apply. Lean mode samples
+across the history when needed and reports coverage for the source actually sent.
+
+Configured fallback chains and pinned routes conservatively use the supported 64K minimum
+window (at most 48K source tokens with an explicit override); routes below that minimum are
+not qualified by this bound. A large primary window does not authorize a large fallback request.
+The estimate and the 25% headroom on overrides are heuristics, not model-specific tokenizer
+guarantees: token-dense input or incorrect window metadata can still overflow. Higher settings
+increase prompt processing time, request size and potentially memory use; they do not guarantee
+summary quality. No wire output token cap is added, no provider is selected by this bound,
+and the main-session trigger is unchanged.
 
 `context_timeout_seconds` (default `120`) is the same **inactivity budget** for in-agent `compress_context` — the conversation loop, preflight compaction, and manual `/compress` — so a hung summary model cannot stall a session indefinitely. Streamed summary tokens extend the wait; only a silent worker is cut off. The budget is floored at the auxiliary compression request's own timeout (`auxiliary.compression.timeout`, minimum 300s), so the host never gives up on a silent summariser before the request itself would — a reasoning summariser thinking before its first token, or a route that cannot stream, gets the same budget the provider call has. On timeout Hermes retries the summary once against the first entry of `auxiliary.compression.fallback_chain` (using that entry's own `timeout` when it declares one) — a stalled route never raises, so the auxiliary client's own fallback handling cannot see it. If that attempt also fails, or no fallback chain is configured, what happens next depends on whether the request still fits the model's context window: a request that fits is sent uncompressed this turn (the summary-failure cooldown stops the retry from repeating every turn); a request above the window cannot be sent at all, so Hermes commits its deterministic fallback summary (old tool results pruned, a static handoff in place of the summarised middle) instead of ending the turn — ending the turn with the "compression timed out" recovery result (and, on the messaging gateway, the automatic session reset) is the last resort, reached only when even the deterministic pass cannot shrink the transcript. Set to `0` to disable. A preflight pass that reclaims nothing on a request still above the window ends the turn immediately with guidance to start a new session (`/new`) instead of sending a request the model cannot accept. Gateway session hygiene keeps its own `hygiene_timeout_seconds` path and is not double-wrapped.
 

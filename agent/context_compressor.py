@@ -3657,7 +3657,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         `_bound_oversized_record`); neither includes separators or elision markers, so
         `omitted_chars = input_chars - sampled_chars` also covers truncated-away bytes.
         """
-        cap = cls._SUMMARY_INPUT_MAX_CHARS if max_chars is None else min(cls._SUMMARY_INPUT_MAX_CHARS, max_chars)
+        cap = cls._SUMMARY_INPUT_MAX_CHARS if max_chars is None else max_chars
         input_chars = sum(len(r) for r in records)
 
         def _coverage(sampled_chars: int, sampled_record_count: int) -> dict[str, int]:
@@ -3915,11 +3915,13 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             allowance, _window = self._summary_input_allowance(summary_budget, focus_topic, memory_context, has_user_turn)
             if getattr(self, "tail_mode", "lean") == "lean":
                 records = self._serialize_records_for_summary(turns_to_summarize)
-                share = int(allowance * 0.4) if self._previous_summary else 0
+                share = min(int(allowance * 0.4), estimate_tokens_rough(self._previous_summary or ""))
                 content_to_summarize, coverage = self._sample_summary_records_in_budget(records, allowance - share)
                 self._record_summary_input_coverage(coverage)
             else:
-                content_to_summarize = self._bound_summary_input(self._serialize_for_summary(turns_to_summarize))
+                # _fit_summary_prompt applies the shared token bound; an earlier
+                # character cap would discard source even with a larger allowance.
+                content_to_summarize = self._serialize_for_summary(turns_to_summarize)
             prompt = self._fit_summary_prompt(content_to_summarize, summary_budget, focus_topic, memory_context, has_user_turn)
             content = self._call_summary_llm(prompt, prompt_started_at)
             # Strip <think> blocks: they would be stored, injected, and compounded on every iterative update.

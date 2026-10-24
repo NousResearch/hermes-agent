@@ -208,9 +208,17 @@ export const SETTINGS_MANIFEST = {
         } satisfies SettingDefinition
       ])
     ),
+    muteSounds: {
+      subpage: 'sounds',
+      keywords: ['mute', 'silence', 'quiet', 'sound', 'chime', 'wake', 'haptics'],
+      copy: t => ({
+        label: t.settings.notifications.muteSoundsTitle,
+        description: t.settings.notifications.muteSoundsDesc
+      })
+    },
     completionSound: {
       subpage: 'sounds',
-      keywords: ['sound', 'chime', 'ding', 'audio', 'done', 'complete', 'mute'],
+      keywords: ['sound', 'chime', 'ding', 'audio', 'done', 'complete', 'mute', 'off', 'none', 'silence'],
       copy: t => ({
         label: t.settings.notifications.completionSoundTitle,
         description: t.settings.notifications.completionSoundDesc

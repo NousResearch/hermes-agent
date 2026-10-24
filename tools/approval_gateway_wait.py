@@ -88,11 +88,12 @@ def _cancel_cause(state: str, entry) -> str | None:
     return None
 
 
-def _finish(payload: dict, resolved: bool, choice: str | None, reason, **extra) -> dict:
+def _finish(payload: dict, resolved: bool, choice: str | None, reason, *, request_id: str, **extra) -> dict:
     """Fire the post hook and build the decision dict. Unresolved (timeout) and
     a None choice both mean the user never answered; ``cancelled`` carries the
     cause when the prompt was withdrawn rather than answered."""
-    _ctx._fire_approval_hook("post_approval_response", **payload, choice=_hook_choice(resolved, choice, extra), **extra)
+    _ctx._fire_approval_hook("post_approval_response", **payload, request_id=request_id,
+                             choice=_hook_choice(resolved, choice, extra), **extra)
     return {"resolved": resolved, "choice": choice, "reason": reason, **extra}
 
 
@@ -112,7 +113,8 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
     returns ``None``: single-use consent covers only the leader's execution,
     so the caller must issue a fresh prompt. Hooks fire with ``coalesced=True``
     so observers see the follower's lifecycle without a duplicate prompt."""
-    _ctx._fire_approval_hook("pre_approval_request", **payload, coalesced=True)
+    _ctx._fire_approval_hook("pre_approval_request", **payload, coalesced=True,
+                             request_id=leader.data["request_id"])
     state = _poll_event(leader.event, session_key,
                         interrupt_log="Coalesced approval wait interrupted — "
                                       "returning deny for session %s")
@@ -131,7 +133,8 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
         # The post hook fires for the fresh prompt's own lifecycle, not here.
         return None
     extra = {"cancelled": cancelled} if cancelled else {}
-    return _finish(payload, resolved, choice, getattr(leader, "reason", None), coalesced=True, **extra)
+    return _finish(payload, resolved, choice, getattr(leader, "reason", None),
+                   request_id=leader.data["request_id"], coalesced=True, **extra)
 
 
 def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *, surface: str = "gateway") -> dict:
@@ -221,9 +224,13 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         return choice
 
     from tools.human_input_hooks import human_input_request
-    with human_input_request("approval", prompt=payload["command"], session_key=session_key) as human:
-        # Plugins hear about the request before the gateway does (real-time observers).
-        _ctx._fire_approval_hook("pre_approval_request", **payload)
+    # One id across the generic human-input hooks, the approval hooks and the gateway card.
+    with human_input_request("approval", prompt=payload["command"], session_key=session_key,
+                             request_id=entry.data["request_id"]) as human:
+        # Plugins hear about the request before the gateway does (real-time observers). The
+        # request_id is the same one the gateway notification carries, so an observer can
+        # correlate the request or answer it through ``approval.respond``.
+        _ctx._fire_approval_hook("pre_approval_request", **payload, request_id=entry.data["request_id"])
         # Bridges sync agent thread → async gateway.
         try:
             notify_cb(dict(entry.data))
@@ -231,7 +238,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         except Exception as exc:
             logger.warning("Gateway approval notify failed: %s", exc)
             _drop_entry("notify_failed")
-            _ctx._fire_approval_hook("post_approval_response", **payload, choice="notify_failed")
+            _ctx._fire_approval_hook("post_approval_response", **payload, request_id=entry.data["request_id"],
+                                     choice="notify_failed")
             human.outcome = "notify_failed"
             return {"resolved": False, "choice": None, "notify_failed": True}
 
@@ -251,4 +259,4 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         resolved = state != "timeout" or choice is not None
         extra = {"cancelled": cancelled} if cancelled else {}
         human.outcome = _hook_choice(resolved, choice, extra)
-        return _finish(payload, resolved, choice, entry.reason, **extra)
+        return _finish(payload, resolved, choice, entry.reason, request_id=entry.data["request_id"], **extra)

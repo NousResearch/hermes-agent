@@ -340,7 +340,7 @@ def _capture_hooks(run):
     # (tests/tools/test_human_input_hooks.py); this helper compares the approval pair.
     captured = [(name, kw) for name, kw in captured if not name.startswith("on_human_input_")]
     for _, kw in captured:
-        for key in ("turn_id", "tool_call_id", "session_id"):
+        for key in ("turn_id", "tool_call_id", "session_id", "request_id"):
             kw.pop(key, None)
     return result, captured
 

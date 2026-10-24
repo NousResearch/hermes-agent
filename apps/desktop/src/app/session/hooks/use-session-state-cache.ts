@@ -12,13 +12,10 @@ import {
   $activeSessionId,
   $messages,
   setActiveSessionStoredIdRotation,
-  setCurrentFastMode,
   setCurrentModelTransient,
   setCurrentPersonality,
   setCurrentProviderTransient,
-  setCurrentReasoningEffort,
   setCurrentReasoningEffortWire,
-  setCurrentServiceTier,
   setSessionStartedAt,
   setTurnStartedAt,
   setYoloActive
@@ -69,10 +66,14 @@ function syncRuntimeMetadataToView(state: ClientSessionState) {
   // sticky localStorage selection with that runtime value (#102793).
   setCurrentModelTransient(state.model ?? '')
   setCurrentProviderTransient(state.provider ?? '')
-  setCurrentReasoningEffort(state.reasoningEffort ?? '')
+  // reasoning_effort / service_tier / fast are slice-only: the session view
+  // (pills, menus) reads them from the per-session state this sync just
+  // staged, never from the composer atoms. Writing the atoms here used the
+  // persisting setters, so the last-viewed session's runtime values replaced
+  // the user's composer picks in localStorage and shipped as explicit
+  // overrides on every later session.create (#87036). The draft fallback keeps
+  // the pick; only an explicit menu/keybind pick is 'manual' and ships.
   setCurrentReasoningEffortWire(state.reasoningEffortWire ?? '')
-  setCurrentServiceTier(state.serviceTier ?? '')
-  setCurrentFastMode(state.fast ?? false)
   setYoloActive(state.yolo ?? false)
   setCurrentPersonality(state.personality ?? '')
 }

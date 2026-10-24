@@ -8,7 +8,7 @@ permissive wherever Hermes cannot know better — see ``models_validate.static_m
 
 from __future__ import annotations
 
-import contextlib
+import logging
 
 
 def model_override_conflict(params: dict, build_scope) -> dict | None:
@@ -32,16 +32,24 @@ def model_override_conflict(params: dict, build_scope) -> dict | None:
 def create_overrides(params: dict) -> tuple:
     """PER-SESSION (model, reasoning, service_tier) overrides from the composer — never a global config
     write. An explicit ``service_tier`` wins over legacy ``fast`` (an unknown word raises ``ValueError``);
-    ``fast`` presence: omitted inherits, true pins priority, false pins normal (\"\")."""
+    ``fast`` presence: omitted inherits, true pins priority, false pins normal ("")."""
     from utils import is_truthy_value
 
     model = str(params.get("model") or "").strip()
     model_override = {"model": model, "provider": str(params.get("provider") or "").strip() or None} if model else None
     reasoning_override = None
     if effort := str(params.get("reasoning_effort") or "").strip():
-        with contextlib.suppress(Exception):
-            from hermes_constants import parse_reasoning_effort
-            reasoning_override = parse_reasoning_effort(effort)
+        from hermes_constants import parse_reasoning_effort
+
+        reasoning_override = parse_reasoning_effort(effort)
+        if reasoning_override is None:
+            # Unparseable levels used to vanish here: the agent silently built on
+            # the config default and session.info re-reported it as if chosen
+            # (#87036). Still no hard 400 — the create must not brick new
+            # sessions — but the drop is named in the gateway log.
+            logging.getLogger(__name__).warning(
+                "session.create reasoning_effort %r is not a recognized level; using the configured default", effort
+            )
     service_tier_override = None
     if params.get("service_tier") is not None:
         from agent.fast_mode import parse_exact_service_tier

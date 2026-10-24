@@ -661,9 +661,13 @@ describe('useSessionStateCache — per-session timers', () => {
 
     expect($currentModel.get()).toBe('anthropic/claude-opus-4.8')
     expect($currentProvider.get()).toBe('anthropic')
-    expect($currentReasoningEffort.get()).toBe('high')
-    expect($currentServiceTier.get()).toBe('priority')
-    expect($currentFastMode.get()).toBe(true)
+    // Effort/tier/fast no longer mirror into the composer atoms: they render
+    // from the per-session slice, and the persisting mirror overwrote the
+    // user's picks in localStorage with whatever the last-viewed session ran
+    // (#87036). The atoms keep the composer's own (here: empty) selection.
+    expect($currentReasoningEffort.get()).toBe('')
+    expect($currentServiceTier.get()).toBe('')
+    expect($currentFastMode.get()).toBe(false)
   })
 
   it('clears stale model metadata when the newly focused session has no cached value', () => {
@@ -694,9 +698,13 @@ describe('useSessionStateCache — per-session timers', () => {
 
     expect($currentModel.get()).toBe('')
     expect($currentProvider.get()).toBe('')
-    expect($currentReasoningEffort.get()).toBe('')
-    expect($currentServiceTier.get()).toBe('')
-    expect($currentFastMode.get()).toBe(false)
+    // Model/provider paint transiently clear; the effort/tier/fast picks are
+    // the composer's own and outlive the switch (#87036) — the slice renders
+    // the session's real values once it reports them.
+    expect($currentReasoningEffort.get()).toBe('high')
+    expect($currentServiceTier.get()).toBe('priority')
+    expect($currentFastMode.get()).toBe(true)
+    expect(window.localStorage.getItem('hermes.desktop.composer.reasoning-effort')).toBe('high')
   })
 
   it('mirrors runtime model/provider into the view without persisting over the composer selection (#102793)', () => {

@@ -15,7 +15,8 @@ import {
   $currentProvider,
   $currentReasoningEffort,
   $currentServiceTier,
-  getCurrentModelSource
+  getCurrentModelSource,
+  getCurrentReasoningEffortSource
 } from '@/store/session'
 import type { SessionCreateResponse } from '@/types/hermes'
 
@@ -88,9 +89,12 @@ export async function createGatewaySession(
 // mode one backend serves every profile, so an omitted profile silently lands the
 // chat on the launch (default) profile — the "rubberbands back to default" bug.
 // A no-op for single-profile/local-pooled users (a backend resolves its own launch
-// profile to None). Effort/fast still ride as per-session overrides. Model and
-// provider only ride when the composer source is 'manual' — a default-sourced
-// value is a mirror of Settings → Model and must not pin the new chat.
+// profile to None). Model and provider only ride when the composer source is
+// 'manual', and so does the effort: a default-sourced value is a mirror of
+// Settings → Model / agent.reasoning_effort and must not pin the new chat ahead
+// of config or per-model reasoning defaults. Fast/tier still ride (a
+// default-sourced `fast: false`/absent tier is inert; there is no per-model
+// tier default to clobber).
 export async function desktopSessionCreateParams(
   cwd: string,
   capturedRoute = resolveNewChatOwnerRoute(),
@@ -105,11 +109,18 @@ export async function desktopSessionCreateParams(
   // Settings → Model while a session is live leaves $currentModel painted with
   // the live agent (applySavedMainModel) and only flips the source to 'default'.
   // Shipping that stale value as an override pins every new chat to the old
-  // model. Omit model/provider unless the source is 'manual'.
+  // Omit model/provider unless the source is 'manual'.
   const isManualSelection = getCurrentModelSource() === 'manual'
 
+  // The effort pick's own manual/default split (#87036): only a value the user
+  // explicitly picked in the composer (menu, keybind, model-row preset) ships
+  // as an override. A seeded or runtime-painted level mirrors config, and the
+  // backend must resolve it — otherwise the sticky value outranked
+  // agent.reasoning_effort and per-model agent.reasoning_overrides.
+  const isManualEffort = getCurrentReasoningEffortSource() === 'manual'
+
   const selection = {
-    effort: $currentReasoningEffort.get().trim(),
+    effort: isManualEffort ? $currentReasoningEffort.get().trim() : '',
     fast: $currentFastMode.get(),
     serviceTier: $currentServiceTier.get().trim(),
     model: isManualSelection ? $currentModel.get().trim() : '',

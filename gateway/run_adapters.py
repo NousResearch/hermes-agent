@@ -780,11 +780,17 @@ class GatewayAdapterLifecycleMixin:
         """Whether a platform whose ``_create_adapter`` returned None can heal without a config change.
 
         Only an unregistered plugin can (a plugin load can fail transiently). A builtin whose probe fails
-        (missing deps/creds), a registered plugin returning None, or an empty bot credential needs a config
-        change: retrying it re-warns forever at the backoff cap (#5196 fleet nodes). Shared by startup and
-        the reconnect watcher so both classify the same platform the same way."""
+        (missing deps/creds), a registered plugin returning None, Relay without its connector URL, or an
+        empty bot credential needs a config change: retrying it re-warns forever at the backoff cap (#5196
+        fleet nodes). Shared by startup and the reconnect watcher so both classify the same platform the
+        same way."""
+        from gateway.config import Platform
         from gateway.platform_registry import platform_registry
         from gateway.run import _BUILTIN_ADAPTERS, _platform_has_bot_credential
+        if platform is Platform.RELAY:
+            from gateway.relay import relay_url
+            if not relay_url():
+                return False
         return (
             platform not in _BUILTIN_ADAPTERS
             and not platform_registry.is_registered(platform.value)

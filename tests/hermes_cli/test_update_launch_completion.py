@@ -349,6 +349,21 @@ def test_failed_launch_keeps_previous_completion_and_retries(tmp_path, monkeypat
     assert not (root / ".update-incomplete").exists()
 
 
+def test_failed_dependency_sync_counts_toward_completion_retry_limit(tmp_path, monkeypatch):
+    """A failure before the completion child still leaves an armed tail to bound (#139952)."""
+    import pm
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
+    monkeypatch.setattr(pm, "sync_venv", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("sync failed")))
+
+    with pytest.raises(RuntimeError, match="sync failed"):
+        venv_sync.prepare_launch(root, [])
+
+    assert venv_sync.completion_pending_path(root).is_file()
+    assert venv_sync._completion_attempts_path(root).read_text(encoding="utf-8").strip() == "1"
+
+
 def test_blessed_legacy_install_is_adopted_before_sync(tmp_path, monkeypatch, completion_tail):
     import pm
     from hermes_cli import _launchers

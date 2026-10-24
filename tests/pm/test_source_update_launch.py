@@ -297,6 +297,7 @@ def test_process_spawned_by_the_update_commits_dependencies_but_not_the_tail(sou
 @pytest.mark.platforms("posix")
 def test_failed_real_sync_preserves_previous_selection_and_retries(source_launch, tmp_path):
     root, store_python, _ = source_launch
+    from hermes_cli.venv_sync import _completion_attempts_path
     # Established PM installs must retain their selection, not gain legacy [all].
     pm.sync_venv(["launch-extra"], explicit=True, project_root=root)
     previous = _fact(root)
@@ -322,6 +323,11 @@ def test_failed_real_sync_preserves_previous_selection_and_retries(source_launch
         assert all(marker.read_text(encoding="utf-8") == "legacy pending install" for marker in markers)
 
     lock.write_bytes(valid_lock + b"\n# corrected source update\n")
+    # The two recorded sync failures now engage the completion retry backoff
+    # (#139132); age the record past the window so this launch may retry the
+    # repaired lock instead of waiting it out.
+    attempts = _completion_attempts_path(root)
+    os.utime(attempts, (1.0, 1.0))
     assert venv_sync.prepare_launch(root, []) == store_python
     rebuilt = _fact(root)
     assert rebuilt["environment"] != previous["environment"]
@@ -594,4 +600,39 @@ def test_failed_tail_attempt_is_counted_and_success_clears_it(source_launch, tmp
     assert venv_sync.prepare_launch(root, []) == store_python
     assert not completion_pending_path(root).exists()
     assert not _completion_attempts_path(root).exists(), "success cleared the attempt record"
+
+
+@pytest.mark.platforms("posix")
+def test_failed_sync_attempt_is_counted_like_a_failed_tail(source_launch, tmp_path, monkeypatch):
+    """A failure in the dependency-sync stage (before the tail child runs) also counts
+    toward the retry record (#139132: a broken uv/venv re-armed the marker and retried
+    on every launch because the counter only ever saw tail-child failures)."""
+    root, _store_python, _ = source_launch
+    from hermes_cli.venv_sync import _completion_attempts_path, arm_completion, completion_pending_path
+
+    pm.sync_venv(["all"], explicit=True, project_root=root)
+    arm_completion(root)
+    # Stale dependencies route the launch through the sync stage, as an interrupted
+    # update with a dead environment does.
+    (root / "uv.lock").write_text("version = 1\nnot valid TOML\n", encoding="utf-8")
+    assert not pm.venv_is_current(project_root=root)
+
+    def _uv_venv_fails(*args, **kwargs):
+        raise RuntimeError("venv: uv venv failed: ")
+
+    monkeypatch.setattr(venv_sync, "_sync_source_dependencies", _uv_venv_fails)
+    with pytest.raises(RuntimeError, match="uv venv failed"):
+        venv_sync.prepare_launch(root, [])
+    assert _completion_attempts_path(root).read_text(encoding="utf-8").strip() == "1", (
+        "a sync-stage failure must engage the backoff/cap record"
+    )
+    assert completion_pending_path(root).is_file(), "a failed sync must keep the obligation"
+
+    # The recorded failure now steers relaunches: a second attempt must wait out the
+    # backoff window instead of re-running the doomed sync immediately.
+    may_retry, attempts, _backoff = venv_sync.completion_retry_state(root)
+    assert (may_retry, attempts) == (True, 1)
+    venv_sync._record_completion_attempt(root, failed=True)
+    may_retry, attempts, _backoff = venv_sync.completion_retry_state(root)
+    assert (may_retry, attempts) == (False, 2)
 

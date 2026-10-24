@@ -1,0 +1,16 @@
+name: tracekit
+repo: https://github.com/Cygnux-Labs/Tracekit
+sha: d41c68e335a0986100b8747729659798bcf9d949
+subdir: integrations/hermes
+description: Tracekit's signer decides every tool call before it runs (deny blocks, ask waits for a person) and signs each call and its outcome into a run you can verify offline.
+maintainer: Cygnux-Labs
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Hermes
+version: "0.1.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call, post_tool_call]
+  provides_middleware: []
+  requires_env: [TRACEKIT_SIGNER_TOKEN]

@@ -93,6 +93,11 @@ class TodoStore:
     def restore(self, todos: list[dict[str, Any]], *, revision: Any = 0) -> list[dict[str, str]]:
         """Restore a trusted snapshot without manufacturing a new revision."""
         self._items = self._fresh_items(todos)[:MAX_TODO_ITEMS]
+        # Same sanitization write() applies: truncation above (or a snapshot
+        # authored around a deleted parent) can leave a child pointing at a
+        # parent that no longer exists, and such a child renders nowhere —
+        # format_for_injection would silently drop the whole list.
+        self._sanitize_parents(self._items)
         try:
             self._revision = max(0, int(revision or 0))
         except (TypeError, ValueError):

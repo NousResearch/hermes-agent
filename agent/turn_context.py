@@ -709,11 +709,12 @@ def _stage_turn_user_message(
 
 
 def _hydrate_from_history(agent: Any, conversation_history: Optional[list[Any]]) -> None:
-    """Hydrate process-local state from persisted history on the first resumed turn."""
+    """Refresh tasks each turn; recover other persisted state on the first resumed turn."""
     if not conversation_history:
         return
-    if not agent._todo_store.has_items():
-        agent._hydrate_todo_store(conversation_history)
+    # Another lease holder may have completed or cleared tasks while this agent waited.
+    # The hydration helper accepts only revisions newer than the cached store.
+    agent._hydrate_todo_store(conversation_history)
     # A live native checkpoint arms this latch while its response is captured.  A
     # restarted agent must recover the same one-response deferral before turn-start
     # compression can rewrite the restored opaque checkpoint.  Reuse the adapter's

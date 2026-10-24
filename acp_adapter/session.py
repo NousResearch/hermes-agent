@@ -6,6 +6,7 @@ survive process restarts and appear in ``session_search``; ``load_session`` /
 """
 from __future__ import annotations
 
+from acp_adapter.edit_approval import EditApprovalState
 from hermes_constants import get_hermes_home, translate_cwd_for_wsl_backend, windows_path_to_wsl
 
 import copy
@@ -151,6 +152,8 @@ class SessionState:
     # Per-session allocator for ACP assistant messageIds (lazily created by
     # the server so streamed chunks group into distinct assistant replies).
     message_ids: Any = None
+    # Never persisted: a new/restored session must ask again.
+    edit_approval_state: EditApprovalState = field(default_factory=EditApprovalState)
 
 
 class SessionManager:

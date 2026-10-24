@@ -408,3 +408,27 @@ test('typecheck uses scratch state and incomplete prepared inputs fail before pu
   await expect(buildDesktop(input)).rejects.toThrow(/native binding/)
   expect(files(input.out)).toEqual(built)
 }, 30000)
+
+test('typecheck prefers a build tsconfig when the packaged source set omits test fixtures', async () => {
+  // Packaged renderer builds stage only apps/desktop + apps/shared
+  // (nix/desktop.nix); the repo-root tests/ fixture a test file imports is
+  // absent, so type-checking the full tsconfig.json fails TS2307 (#87692).
+  // The build must fall back to tsconfig.build.json, which excludes the test
+  // surface, while a repo checkout without one keeps using tsconfig.json.
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const input = fixture()
+  const config = JSON.stringify({ compilerOptions: { composite: true, skipLibCheck: true, types: [] }, include: ['src/*.ts', 'src/*.test.ts'] })
+  put(join(input.source, 'apps/desktop/tsconfig.json'), config)
+  // The full config pulls in a test that imports a file outside the staged
+  // source set; only the build config's exclude keeps it out of the program.
+  put(join(input.source, 'apps/desktop/src/typed.ts'), 'export const value: string = "valid"')
+  put(join(input.source, 'apps/desktop/src/typed.test.ts'), 'import missing from "../../../../../tests/fixtures/absent.json"\nexport const value = missing')
+  put(join(input.source, 'apps/desktop/tsconfig.build.json'), JSON.stringify({ extends: './tsconfig.json', exclude: ['src/*.test.ts'] }))
+
+  // Without tsconfig.build.json the same staged source must fail: proves the
+  // fallback, not the fixture, carries the fix.
+  rmSync(join(input.source, 'apps/desktop/tsconfig.build.json'))
+  await expect(buildDesktop({ ...input, typecheck: true })).rejects.toThrow()
+  put(join(input.source, 'apps/desktop/tsconfig.build.json'), JSON.stringify({ extends: './tsconfig.json', exclude: ['src/*.test.ts'] }))
+  await buildDesktop({ ...input, typecheck: true })
+}, 30000)

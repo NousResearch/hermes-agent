@@ -2340,8 +2340,8 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str, target_model: Opti
     """Resolve runtime credentials for a specific provider (e.g. from channel override).
 
     ``target_model`` is the model the override will actually send: the ladder's model-keyed rungs
-    (OpenCode free tier, Zen/Go relay + api_mode) must see it rather than config's ``default``,
-    or a ``*-free`` default routes a Go-only override to the keyless Zen relay (#112600)."""
+    (Zen/Go relay + api_mode) must see it rather than config's ``default``, or a Go-only override
+    resolves an api_mode/base_url the sent model cannot use (#112600)."""
     from hermes_cli.runtime_provider import resolve_runtime_provider, format_runtime_provider_error
     try:
         runtime = resolve_runtime_provider(requested=provider, target_model=target_model or None)

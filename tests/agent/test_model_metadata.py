@@ -304,7 +304,6 @@ class TestDefaultContextLengths:
                     ) == 1_048_576
 
     @pytest.mark.parametrize("model, provider, base_url", [
-        ("muse-spark-1.3-contributor-free", "opencode-free", "https://opencode.ai/zen/v1"),
         ("muse-spark-1.3-contributor", "opencode-go", "https://opencode.ai/zen/go/v1"),
         ("muse-spark-1.3", "meta-ai", "https://api.meta.ai/v1"),
         ("meta/muse-spark-1.3", "commandcode", "https://api.commandcode.ai/provider/v1"),

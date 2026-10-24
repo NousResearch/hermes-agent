@@ -201,7 +201,7 @@ class TestPlainFallbackUnchanged:
 
 
 class TestOpenCodeFamilyPerModelWire:
-    """OpenCode Zen/Go/free serve Responses-only, Anthropic-wire and chat-completions models behind
+    """OpenCode Zen/Go serve Responses-only, Anthropic-wire and chat-completions models behind
     one provider; a fallback entry must land on the same wire the primary /model path picks
     (#102148: muse-spark on opencode-go was sent to /chat/completions → deterministic 500)."""
 
@@ -209,7 +209,6 @@ class TestOpenCodeFamilyPerModelWire:
         ("entry", "resolved_base_url", "expected_mode"),
         [
             ({"provider": "opencode-go", "model": "muse-spark-1.3-contributor"}, "https://opencode.ai/zen/go/v1", "codex_responses"),
-            ({"provider": "opencode-free", "model": "muse-spark-1.3-contributor-free"}, "https://opencode.ai/zen/v1", "codex_responses"),
             ({"provider": "opencode-go", "model": "minimax-m2.7"}, "https://opencode.ai/zen/go/v1", "anthropic_messages"),
             ({"provider": "custom", "model": "muse-spark-1.3-contributor", "base_url": "https://opencode.ai/zen/go/v1", "api_key": "k"},
              "https://opencode.ai/zen/go/v1", "codex_responses"),

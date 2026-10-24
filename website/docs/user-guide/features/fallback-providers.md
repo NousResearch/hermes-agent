@@ -78,7 +78,6 @@ OpenAI-compatible base URL continues to use the compatible client instead.
 | OpenCode Zen | `opencode-zen` | `OPENCODE_ZEN_API_KEY` |
 | CommandCode | `commandcode` (alias `commandcode-chat`; Claude via `commandcode-anthropic`) | `COMMANDCODE_API_KEY` |
 | OpenCode Go | `opencode-go` | `OPENCODE_GO_API_KEY` |
-| OpenCode Free | `opencode-free` | — (keyless, no credential) |
 | Kilo Code | `kilocode` | `KILOCODE_API_KEY` |
 | Ramp Router | `router` | `RAMP_ROUTER_API_KEY` |
 | Xiaomi MiMo | `xiaomi` | `XIAOMI_API_KEY` |

@@ -795,14 +795,6 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> Dict
     if agent.provider == "copilot-acp":
         client_kwargs["command"] = agent.acp_command
         client_kwargs["args"] = agent.acp_args
-    # OpenCode Zen free tier is served ANONYMOUSLY and 401s any bearer (incl. our keyless
-    # placeholder): send an empty Authorization header to override the SDK's "Bearer <key>".
-    with suppress(Exception):
-        from hermes_cli.models import (
-            OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER, opencode_zen_free_headers
-        )
-        if api_key == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
-            client_kwargs["default_headers"] = opencode_zen_free_headers()
     _headers_for = _host_default_headers_factory(base_url)
     if _headers_for is not None:
         client_kwargs["default_headers"] = _headers_for(api_key, base_url)

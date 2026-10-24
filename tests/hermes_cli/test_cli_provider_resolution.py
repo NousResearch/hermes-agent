@@ -314,9 +314,8 @@ def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
 
 def test_ensure_runtime_credentials_passes_cli_model_as_target_model(monkeypatch):
     """`hermes -m mimo-v2.5 --provider opencode-go` must resolve credentials for the model the
-    CLI will send: the OpenCode free-tier rung keys off the effective model, and without
-    target_model a `*-free` config default routes an explicit paid model to the keyless Zen
-    relay (#112600)."""
+    CLI will send: the Zen/Go rungs key off the effective model, and without target_model a
+    `*-free` config default decides the api_mode/base_url for an explicit paid model (#112600)."""
     cli = _import_cli()
     seen = {}
 
@@ -342,8 +341,8 @@ def test_ensure_runtime_credentials_passes_cli_model_as_target_model(monkeypatch
 
 def test_fallback_runtime_resolves_the_fallback_entry_model(monkeypatch, tmp_path):
     """The auth-fallback rung must resolve credentials for the ENTRY's model, exactly like the
-    primary path does for `-m`: with a `*-free` config default and no target_model, the OpenCode
-    free-tier rung wins and a Go-only fallback entry is built against the Zen relay (#112600)."""
+    primary path does for `-m`: a `*-free` config default must not decide the api_mode/base_url
+    a Go-only fallback entry is built with (#112600)."""
     from hermes_cli.auth import AuthError
     from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 

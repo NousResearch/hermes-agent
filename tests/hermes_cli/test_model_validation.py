@@ -348,8 +348,6 @@ class TestNormalizeOpencodeBaseUrlFamilyPath:
     @pytest.mark.parametrize("provider, api_mode, url, expected", [
         ("opencode-go", "chat_completions", "https://opencode.ai/zen/v1", "https://opencode.ai/zen/go/v1"),
         ("opencode-zen", "chat_completions", "https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/v1"),
-        # opencode-free is served on the Zen relay, so it maps back to /zen (not /zen/go).
-        ("opencode-free", "chat_completions", "https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/v1"),
         # Family healed first, then the /v1 strip for the Anthropic SDK — both apply.
         ("opencode-go", "anthropic_messages", "https://opencode.ai/zen/v1", "https://opencode.ai/zen/go"),
         ("opencode-zen", "anthropic_messages", "https://opencode.ai/zen/go", "https://opencode.ai/zen"),

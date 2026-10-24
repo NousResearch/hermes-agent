@@ -89,8 +89,9 @@ def _inventory_other_providers() -> bool:
     """Is anything usable configured BESIDES the free tier? Asks the resolver ladder itself (the
     thing that picks the provider for a turn) with the free-tier rung hidden: an explicit key, a
     config pin, a sign-in or a host credential answers; nothing else falls through to
-    ``no_provider_configured``. Not ``_has_any_provider_configured``: that first-run guard counts
-    keyless catalog providers as "configured" and is True on a blank machine."""
+    ``no_provider_configured``. Not ``_has_any_provider_configured``: that first-run guard also
+    counts host credentials (gh auth, Claude Code) and a config pin, and it does not hide the
+    free-tier rung."""
     from hermes_cli.auth import resolve_provider
     try:
         return resolve_provider("auto", skip_free_tier=True) != "nous"

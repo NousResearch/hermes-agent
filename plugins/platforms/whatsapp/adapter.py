@@ -392,6 +392,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Text debounce batching: rapid bursts (forwards, paste-splits) would otherwise each trigger a separate agent turn.
         # Telegram cadence and ceilings (#44883); ``0`` dispatches each message immediately.
         self._configure_text_batch_delays()
+        # send_or_update_status() bookkeeping: {(chat_id, status_key) -> bridge message_id}.
+        # Mirrors Telegram's adapter (#30045): tracks status bubbles owned by
+        # this adapter so subsequent calls with the same key edit the same
+        # message instead of appending new ones.
+        self._status_message_ids: Dict[tuple, str] = {}
 
     def _bridge_url(self, path: str) -> str:
         return f"http://127.0.0.1:{self._bridge_port}/{path}"
@@ -806,6 +811,43 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                               raw_response={"message_ids": sent_message_ids})
         except Exception as e:
             return SendResult(success=False, error=str(e))
+
+    async def send_or_update_status(
+        self,
+        chat_id: str,
+        status_key: str,
+        content: str,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a status message, or edit the previous one with the same key.
+
+        Mirrors the Telegram adapter's method of the same name (#30045):
+        progress/status callbacks used to append a fresh bubble on every
+        call. The first call for a (chat_id, status_key) pair sends fresh
+        and remembers the message id; subsequent calls edit that same
+        message in place. If the edit fails (message deleted, bridge error,
+        etc.) the cached id is dropped and this falls back to a fresh send.
+
+        Unlike Telegram's ``edit_message``, WhatsApp's does not accept
+        ``metadata`` and always returns the same message_id it was given on
+        success (confirmed by reading the bridge's ``/edit`` handler — an
+        edit targets the existing message key rather than creating a new
+        one), so there is no id to refresh from the edit result the way
+        Telegram's version does.
+        """
+        key = (str(chat_id), str(status_key))
+        cached_id = self._status_message_ids.get(key)
+        if cached_id is not None:
+            result = await self.edit_message(chat_id, cached_id, content)
+            if result.success:
+                return result
+            # Edit failed — clear the cached id and fall through to a fresh send.
+            self._status_message_ids.pop(key, None)
+        result = await self.send(chat_id, content, metadata=metadata)
+        if result.success and result.message_id:
+            self._status_message_ids[key] = str(result.message_id)
+        return result
 
     @_needs_bridge
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:

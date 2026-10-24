@@ -871,14 +871,13 @@ def _index_lock_holder(git_dir: Path, root: Path | None) -> str:
     return f"a running git ({held})" if isinstance(held, _Holder) else "a running git"
 
 
-def _release_dead_index_lock(git_dir: Path, root: Path | None = None, *, any_git: bool = False) -> bool:
-    """Drop a killed git's ``index.lock`` (it refuses every git command) once its owner is PROVEN gone.
+def _release_dead_lock(lock: Path, root: Path | None = None, *, any_git: bool = False) -> bool:
+    """Drop a killed git's ``lock`` (``index.lock`` refuses every git command) once its owner is PROVEN gone.
 
     False while a live git may hold it, or when this platform cannot prove it dead: the caller then
     keeps the interrupted-pull marker, so the next launch tries again instead of a rollback being lost.
     ``any_git``: every git working in ``root`` keeps it, readers included (:func:`_held_open`).
     """
-    lock = git_dir / "index.lock"
     deadline = time.monotonic() + 5
     while lock.exists():
         held = None if sys.platform == "win32" else _held_open(lock, root, any_git=any_git)
@@ -1135,7 +1134,7 @@ def _judge_index_lock(fields: dict[str, str], marker: Path, root: Path, *,
     # a live `git commit` in the editor holds it with its fd closed, which only Linux can still see.
     known_foreign = bool(fields.get("foreign_lock", "").strip()) and \
         fields["foreign_lock"].strip() == _lock_identity(lock)
-    index_free = foreign_lock or (not known_foreign and _release_dead_index_lock(git_dir, root))
+    index_free = foreign_lock or (not known_foreign and _release_dead_lock(lock, root))
     return foreign_lock, known_foreign, index_free
 
 
@@ -1280,7 +1279,7 @@ def _redo_rollback_head(git, git_dir: Path, root: Path, pre: str, mode: str, *, 
     git that exited in this very process (``after_failure``) a lock is never ours to judge.
     """
     lock = git_dir / "index.lock"
-    if lock.exists() and (after_failure or not _release_dead_index_lock(git_dir, root)):
+    if lock.exists() and (after_failure or not _release_dead_lock(lock, root)):
         return f"{_index_lock_holder(git_dir, root)} may still hold .git/index.lock"
     if mode == "detach":
         moved = git("update-ref", "--no-deref", "HEAD", pre)

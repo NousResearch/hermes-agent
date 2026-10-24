@@ -319,13 +319,21 @@ class TrajectoryCompressor:
             if not api_key:
                 raise RuntimeError(f"Missing API key. Set {self.config.api_key_env} environment variable.")
             from openai import OpenAI
-            from agent.auxiliary_client import _to_openai_base_url
-            self.client = OpenAI(api_key=api_key, base_url=_to_openai_base_url(self.config.base_url))
+            from agent.auxiliary_client import _apply_user_default_headers, _to_openai_base_url
+            # A custom endpoint behind a gateway or WAF has to see the same headers on this path as
+            # it does on the routed one (resolve_provider_client applies them): without the user's
+            # model.default_headers the summary call still carries the OpenAI SDK's own identifying
+            # headers, so it is rejected — or attributed to another client — while the main turn and
+            # the other auxiliary calls work (#40033).
+            headers = _apply_user_default_headers(None)
+            client_kwargs = {"default_headers": headers} if headers else {}
+            self.client = OpenAI(api_key=api_key, base_url=_to_openai_base_url(self.config.base_url), **client_kwargs)
             # AsyncOpenAI is created lazily in _get_async_client() so it binds to the current event
             # loop — each process_directory() runs its own asyncio.run(); a shared client would hit
             # "Event loop is closed".
             self.async_client = None
             self._async_client_api_key = api_key
+            self._async_client_headers = headers
         print(f"✅ Initialized summarizer client: {self.config.summarization_model}")
         print(f"   Max concurrent requests: {self.config.max_concurrent_requests}")
 
@@ -333,7 +341,11 @@ class TrajectoryCompressor:
         """Return a fresh AsyncOpenAI client bound to the running event loop."""
         from openai import AsyncOpenAI
         from agent.auxiliary_client import _to_openai_base_url
-        self.async_client = AsyncOpenAI(api_key=self._async_client_api_key, base_url=_to_openai_base_url(self.config.base_url))
+        # The same headers the sync client got, so a chunk summarized on either path names itself
+        # the same way (#40033).
+        headers = getattr(self, "_async_client_headers", None)
+        client_kwargs = {"default_headers": headers} if headers else {}
+        self.async_client = AsyncOpenAI(api_key=self._async_client_api_key, base_url=_to_openai_base_url(self.config.base_url), **client_kwargs)
         return self.async_client
 
     def _detect_provider(self) -> str:

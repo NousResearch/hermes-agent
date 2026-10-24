@@ -69,6 +69,13 @@ from hermes_cli.setup import (
 )
 from hermes_cli.colors import Colors, color
 from hermes_cli.gateway_profile_lifecycle import owned_gateway_pid as _owned_gateway_pid
+from hermes_cli.gateway_sudo_guidance import (
+    _print_system_scope_remediation,
+    _sudo_hermes_prefix,
+    _systemd_cli_bits,
+    _typed_gateway_args,
+    _with_runnable_sudo,
+)
 logger = logging.getLogger(__name__)
 
 # Shared ``subprocess.run`` kwargs for text-mode probes (stdout/stderr captured, decode-tolerant).
@@ -1304,12 +1311,6 @@ def _read_gateway_runtime_status() -> dict | None:
     except Exception:
         return None
     return state if isinstance(state, dict) else None
-
-
-def _systemd_cli_bits(system: bool) -> tuple[str, str, str]:
-    """``(sudo_prefix, scope_flag, user_flag)`` for printed hints: ``("sudo ", " --system", "")`` in
-    system scope, ``("", "", "--user ")`` in user scope."""
-    return ("sudo ", " --system", "") if system else ("", "", "--user ")
 
 
 def _wait_for_systemd_service_restart(
@@ -2674,7 +2675,7 @@ def remove_legacy_hermes_units(interactive: bool = True, dry_run: bool = False) 
         if os.geteuid() != 0:  # windows-footgun: ok — Linux systemd removal path, guarded by `if system == "Linux"` / systemd-only branch
             print()
             print_warning("System-scope legacy units require root to remove.")
-            print_info("  Re-run with: sudo hermes gateway migrate-legacy")
+            print_info(f"  Re-run with: {_sudo_hermes_prefix()}gateway migrate-legacy")
             remaining.extend(path for _, path in system_units)
         else:
             _remove_units(system_units, system=True)
@@ -2698,7 +2699,7 @@ def print_systemd_scope_conflict_warning() -> None:
     print_info("  Default gateway commands target the user service unless you pass --system.")
     print_info("  Keep one of these:")
     print_info("    hermes gateway uninstall")
-    print_info("    sudo hermes gateway uninstall --system")
+    print_info(f"    {_sudo_hermes_prefix()}gateway uninstall --system")
 
 
 def refuses_container_user_scope_install(system: bool) -> bool:
@@ -2722,14 +2723,14 @@ def refuses_container_user_scope_install(system: bool) -> bool:
         "  docker run --restart unless-stopped ...           # container restart policy",
         "",
         "If systemd manages this container (systemd as PID 1), install an isolated system service instead:",
-        "  sudo hermes gateway install --system --run-as-user <user>",
+        f"  {_sudo_hermes_prefix()}gateway install --system --run-as-user <user>",
     )
     return True
 
 
 def _require_root_for_system_service(action: str) -> None:
     if os.geteuid() != 0:  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
-        raise SystemScopeRequiresRootError(f"System gateway {action} requires root. Re-run with sudo.", action)
+        raise SystemScopeRequiresRootError(f"System gateway {action} requires root.", action)
 
 
 def _system_service_identity(run_as_user: str | None = None) -> tuple[str, str, str, int]:
@@ -3408,8 +3409,10 @@ def _print_linger_enable_warning(username: str, detail: str | None = None, *, sy
     print(f"    sudo loginctl enable-linger {username}")
     print()
     print("  Then restart the gateway:")
-    sudo, _, user_flag = _systemd_cli_bits(system)
-    print(f"    {sudo}systemctl {user_flag}restart {get_service_name()}.service")
+    # systemctl resolves through its own absolute path, so this recipe keeps a bare ``sudo``: only the
+    # CLI recipes need the binary spelled out.
+    _, _, user_flag = _systemd_cli_bits(system)
+    print(f"    {'sudo ' if system else ''}systemctl {user_flag}restart {get_service_name()}.service")
     print()
 
 
@@ -3493,18 +3496,6 @@ def _system_scope_wizard_would_need_root(system: bool = False) -> bool:
     if os.geteuid() == 0:  # windows-footgun: ok — systemd scope wizard decision, never invoked on Windows
         return False
     return _select_systemd_scope(system=system)
-
-
-def _print_system_scope_remediation(action: str) -> None:
-    """Print remediation when the wizard skips a system-scope action because the user isn't root."""
-    print_warning(f"Gateway is installed as a system-wide service — {action} requires root.")
-    print_info("  Options:")
-    print_info(f"    1. {action.capitalize()} it this time:")
-    print_info(f"         sudo systemctl {action} {get_service_name()}")
-    print_info("    2. Switch to a per-user service (recommended for personal use):")
-    print_info("         sudo hermes gateway uninstall --system")
-    print_info("         hermes gateway install")
-    print_info("         hermes gateway start")
 
 
 def _get_restart_drain_timeout() -> float:
@@ -4902,8 +4893,11 @@ def gateway_command(args):
         _print_indented(str(e))
         sys.exit(1)
     except SystemScopeRequiresRootError as e:
-        # System-scope action typed without sudo; the wizard intercepts this earlier with guidance.
-        print(str(e))
+        # System-scope action typed without sudo: print the runnable recipe, exactly as the wizard sibling
+        # does. ``str(e)`` alone used to say "Re-run with sudo", which cannot resolve ``hermes`` under
+        # sudo's PATH — the user then hit `sudo: hermes: command not found`.
+        action = str(e.args[1]) if len(e.args) > 1 else "restart"
+        _print_system_scope_remediation(action, _typed_gateway_args(sys.argv))
         sys.exit(1)
     except (subprocess.CalledProcessError, RuntimeError) as e:
         # systemctl exited non-zero or is missing entirely: guidance, not a traceback.
@@ -5624,7 +5618,7 @@ def _cmd_status(args):
             _print_multiplex_standalone_reason()
             _print_served_ingress_urls()
             print()
-            _print_lines(*_STATUS_RUNNING_HINTS[_status_host_kind()])
+            _print_lines(*_with_runnable_sudo(_STATUS_RUNNING_HINTS[_status_host_kind()]))
         elif snapshot.service_running:
             # s6 container: the service is up but the scan finds no PID (the `python -c` launcher
             # argv is deliberately unmatched, #123881, and there is no gateway.pid) — #125390.
@@ -5638,7 +5632,7 @@ def _cmd_status(args):
             print()
             print("To start:")
             print("  hermes gateway run      # Run in foreground")
-            _print_lines(*_STATUS_STOPPED_HINTS[_status_host_kind()])
+            _print_lines(*_with_runnable_sudo(_STATUS_STOPPED_HINTS[_status_host_kind()]))
 
     _print_duplicate_credential_warnings()
     _print_other_profiles_gateway_status()

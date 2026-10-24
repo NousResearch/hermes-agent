@@ -468,7 +468,7 @@ def _wizard_install_service(backend: str) -> None:
         _gw().print_info("  Skipped start and auto-start setup.")
         _gw().print_info("  You can install later: hermes gateway install")
         if _gw().supports_systemd_services():
-            _gw().print_info("  Or as a boot-time service: sudo hermes gateway install --system")
+            _gw().print_info(f"  Or as a boot-time service: {_gw()._sudo_hermes_prefix()}gateway install --system")
         _gw().print_info("  Or run in foreground:  hermes gateway run")
         return
     try:

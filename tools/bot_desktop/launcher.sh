@@ -275,6 +275,32 @@ setxkbmap -display "$DISPLAY" us 2>/dev/null || true   # RFB keysyms + xdotool a
 xsetroot -display "$DISPLAY" -solid '#1c1f29' 2>/dev/null || true
 xset -display "$DISPLAY" s off -dpms s noblank 2>/dev/null || true
 
+# ---- idle self-stop: the screen outlives the gateway that started it (a restarted gateway re-attaches),
+# so it must also stop itself when no gateway ever comes back. tools/bot_desktop/idle_watch.py applies the
+# gateway watcher's own rule (bot_desktop.idle_stop_minutes; never while a human holds the screen) once per
+# run and prints the seconds until the next check; nothing stays resident in between. Skipped when runtime.py
+# passed no interpreter (the sandbox-hosted screen, whose sandbox lifetime bounds it).
+WATCH_PID=
+if [[ -n "${HERMES_BD_PYTHON:-}" ]]; then
+  # A start is use: stamp it now, or an activity file left by an earlier screen could make the first check
+  # stop this one before runtime.py stamps it.
+  touch "$(dirname "$HERMES_BD_ENV_FILE")/activity"
+  # The TERM trap ends the sleep at once when the screen goes down (stop()'s group signal or the EXIT trap
+  # below); during the ~0.4 s check itself bash defers it, well inside stop()'s grace.
+  (
+    trap 'kill "$!" 2>/dev/null; exit 0' TERM
+    while kill -0 "$$" 2>/dev/null; do
+      delay=$(HERMES_HOME="$HERMES_BD_HOME" PYTHONPATH="$HERMES_BD_SRC_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
+              "$HERMES_BD_PYTHON" -m tools.bot_desktop.idle_watch) || delay=300  # broken check: retry slowly
+      [[ -n "$delay" ]] || exit 0  # it stopped the screen
+      [[ "$delay" =~ ^[0-9]+$ ]] || delay=300
+      sleep "$delay" & wait "$!"
+    done
+  ) &
+  WATCH_PID=$!
+fi
+trap 'kill "$XVNC_PID" $WATCH_PID 2>/dev/null || true' EXIT
+
 # ---- private session bus + Xfce components (no xfce4-session) ----
 # dbus-run-session scopes the bus to this subshell: no leaked dbus-daemons on restart. The env file
 # is written from INSIDE the bus so DBUS_SESSION_BUS_ADDRESS is the real one; runtime.py and every

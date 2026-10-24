@@ -1,0 +1,129 @@
+"""A Bot Desktop screen whose gateway never comes back stops itself after ``bot_desktop.idle_stop_minutes``.
+
+The real ``launcher.sh`` runs against stub X/Xfce binaries. ``runtime.start()`` runs in a separate
+"gateway" process that is SIGKILLed, so nothing in the test process holds the screen.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+from tests.waiting import wait_until
+
+pytestmark = [pytest.mark.platforms("linux"), pytest.mark.live_system_guard_bypass]
+
+_REPO = Path(__file__).resolve().parents[2]
+
+_STUBS = {
+    # Binds nothing: creates the socket path it was given, then lives like a server.
+    "Xvnc": '#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = -rfbunixpath ] && : > "$2"; shift; done\nexec sleep 600\n',
+    "dbus-run-session": '#!/bin/sh\nshift\nDBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent; export DBUS_SESSION_BUS_ADDRESS\nexec "$@"\n',
+    "xfce4-panel": "#!/bin/sh\nexec sleep 600\n",
+    **{name: "#!/bin/sh\nexit 0\n" for name in ("xdpyinfo", "setxkbmap", "xsetroot", "xset", "xauth", "xprop",
+                                                  "xfsettingsd", "xfwm4", "xfdesktop")},
+}
+
+# The gateway: starts the profile's screen through the real runtime path, reports the launcher pid, idles.
+_GATEWAY = """
+import sys, time
+from pathlib import Path
+sys.path.insert(0, {repo!r})
+from tools.bot_desktop import runtime
+runtime._X_LOCK_DIR = Path({scratch!r})
+runtime._ALLOC_LOCK = runtime._X_LOCK_DIR / "alloc.lock"
+runtime.missing_binaries = list
+print(runtime.start(wait_seconds=15).pid, flush=True)
+time.sleep(600)
+"""
+
+
+def _alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)  # windows-footgun: ok — Linux-only test
+    except ProcessLookupError:
+        return False
+    return True
+
+
+@pytest.fixture
+def abandoned_screen(tmp_path):
+    """``launch(idle_stop_minutes)`` -> (state dir, launcher pid): a running screen whose gateway is dead."""
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    for name, body in _STUBS.items():
+        (stubs / name).write_text(body, encoding="utf-8")
+        (stubs / name).chmod(0o755)
+    home = tmp_path / "home"
+    home.mkdir()
+    env = {**os.environ, "HERMES_HOME": str(home), "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}"}
+    env.pop("PYTHONPATH", None)
+    groups: list[int] = []
+
+    def launch(idle_stop_minutes: float) -> tuple[Path, int]:
+        (home / "config.yaml").write_text(f"bot_desktop:\n  idle_stop_minutes: {idle_stop_minutes}\n", encoding="utf-8")
+        gateway = subprocess.Popen([sys.executable, "-c", _GATEWAY.format(repo=str(_REPO), scratch=str(tmp_path))],
+                                   env=env, stdout=subprocess.PIPE, text=True)
+        launcher = int(gateway.stdout.readline())
+        groups.append(launcher)
+        gateway.kill()  # SIGKILL: no cleanup runs, no gateway comes back
+        gateway.wait()
+        gateway.stdout.close()
+        return home / "bot-desktop", launcher
+
+    yield launch
+    for pgid in groups:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — Linux-only test
+
+
+def test_an_abandoned_screen_stops_itself_after_the_idle_window(abandoned_screen):
+    sd, launcher = abandoned_screen(idle_stop_minutes=0.02)  # 1.2 s
+    # stop() deletes launcher.pid/env after the group is gone, so both are part of "stopped".
+    wait_until(lambda: not _alive(launcher) and not (sd / "launcher.pid").exists() and not (sd / "env").exists(),
+               timeout=30, what="the abandoned screen to be stopped the way stop() does")
+
+
+def test_a_screen_in_use_is_kept_and_a_returning_gateway_reattaches(abandoned_screen, monkeypatch):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop import runtime
+
+    sd, launcher = abandoned_screen(idle_stop_minutes=0.02)
+    log = sd / "launcher.log"
+
+    def checks_kept() -> int:
+        return log.read_text(encoding="utf-8", errors="replace").count("screen kept")
+
+    def kept_while_used(n: int) -> bool:
+        (sd / "activity").touch()  # the agent / a viewer using the screen
+        return checks_kept() >= n
+
+    wait_until(lambda: kept_while_used(2), timeout=30, what="idle checks that keep a screen in use")
+    assert _alive(launcher)
+
+    # A human holding the screen long past the window is never timed out.
+    (sd / "lease.json").write_text(json.dumps({"holder": "human", "viewer_id": "v", "epoch": 1}), encoding="utf-8")
+    old = time.time() - 3600
+    os.utime(sd / "activity", (old, old))
+    seen = checks_kept()
+    wait_until(lambda: checks_kept() > seen, timeout=30, what="an idle check while a human holds the screen")
+    assert _alive(launcher)
+
+    # A gateway that comes back inside the window re-attaches to the same screen instead of starting another.
+    monkeypatch.setattr(runtime, "missing_binaries", list)  # the stub X binaries are only on the launcher's PATH
+    token = set_hermes_home_override(sd.parent)
+    try:
+        assert runtime.start(wait_seconds=1).pid == launcher
+    finally:
+        reset_hermes_home_override(token)
+
+    (sd / "lease.json").unlink()  # handed back; nobody uses it any more
+    wait_until(lambda: not _alive(launcher), timeout=30, what="the screen to stop once nobody holds it")

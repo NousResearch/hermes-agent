@@ -50,3 +50,12 @@ def test_idle_stop_disabled_by_zero(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "idle_stop_seconds", lambda: 0.0)
     _age(sd / "env", 10 ** 6)
     assert runtime.stop_if_idle() is False and stops == []
+
+
+def test_the_launchers_idle_check_sleeps_until_the_screen_could_be_due():
+    from tools.bot_desktop.idle_watch import next_check_in
+    assert next_check_in(1800, 600) == 1200  # wakes when the window runs out at the current age
+    assert next_check_in(1800, 1795) == 30  # never a tight loop near the edge
+    assert next_check_in(1800, 7200) == 1800, "a human holding it past the window: recheck a window later"
+    assert next_check_in(1.2, None) == 2  # a window shorter than the floor is checked at its own length
+    assert next_check_in(0, None) == runtime.DEFAULT_IDLE_STOP_MINUTES * 60  # off: re-read the setting later

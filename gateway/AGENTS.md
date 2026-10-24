@@ -163,16 +163,16 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   fallback-after-miss leak); import the shared one. `tests/gateway/test_shared_platform_boilerplate.py`
   asserts every plugin's `_env_enablement` reads only through it.
 - **Scope is bound per profile activity, not per turn.** `run.py::_profile_runtime_scope(home)`
-  wraps a routed turn (`run_turn.py::_profile_scope_for_source`); the same binding wraps every path
-  that touches a session's home, secrets or terminal scope with no turn on the stack: release and
-  eviction (`run_agent_cache.py::_run_release_in_profile_scope` — TTL, LRU and memory-pressure
-  eviction all route through it so `on_session_end`/memory flush hit the OWNING profile's provider),
-  shutdown (`run_shutdown.py::_finalize_session`), post-turn media delivery
+  wraps a routed turn (`run_turn_profile_scope.py::_profile_scope_for_source`); the same binding
+  wraps every path that touches a session's home, secrets or terminal scope with no turn on the
+  stack: release and eviction (`run_agent_cache.py::_run_release_in_profile_scope` — TTL, LRU and
+  memory-pressure eviction all route through it so `on_session_end`/memory flush hit the OWNING
+  profile's provider), shutdown (`run_shutdown.py::_finalize_session`), post-turn media delivery
   (`platforms/base.py::_media_delivery_scope`), deferred callbacks (pickers, reactions — capture the
   routed home at command time, re-enter the scope in the callback), notifiers and outbound webhooks.
   Resolve the owning home from the session record (`profile_home`, `agent:<profile>:` key), never
-  from `os.environ`, which holds the launch profile. Why: eviction that flushed under the launch scope
-  wrote a secondary profile's memories into the default profile's store, silently.
+  from `os.environ`, which holds the launch profile. Why: eviction that flushed under the launch
+  scope wrote a secondary profile's memories into the default profile's store, silently.
 - **`api_server` rebuilds the agent per request but not the memory provider.** The adapter bypasses
   `TurnRunner` and the agent cache (per-request callbacks, model route, ephemeral prompt), so
   `platforms/api_server_memory_sessions.py` parks each session's initialised `MemoryManager` between
@@ -183,9 +183,10 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
 - **`multiplex_profiles: false` is not "no scope ever".** A native hosted room serving a second
   profile flips the process-wide guard (`tui_gateway/launch_profile_policy.py::
   activate_multi_profile_hosting`) inside the gateway process, after the adapters were wired; every
-  standalone entry point (`run_turn.py::_profile_scope_for_source`, the primary adapter's message /
-  busy / platform-event handlers via `run_adapters.py::_standalone_scoped`) then binds the launch
-  profile's OWN scope through `run_turn.py::_standalone_launch_scope` — `.env` over the env frozen at
+  standalone entry point (`run_turn_profile_scope.py::_profile_scope_for_source`, the primary
+  adapter's message / busy / platform-event handlers via `run_adapters.py::_standalone_scoped`)
+  then binds the launch profile's OWN scope through
+  `run_turn_profile_scope.py::_standalone_launch_scope` — `.env` over the env frozen at
   activation, never a `.env`-only rebuild (systemd / `op run` keys have no file) and never live
   `os.environ`. Gate a new standalone path on that helper, not on the config flag (#112878).
 - **Hooks and observers register per served profile.** `builtin_hooks/`, `agent/shell_hooks.py::

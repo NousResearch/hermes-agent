@@ -21,6 +21,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { clearClarifyRequest } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
 import { resetSessionBackground } from '@/store/composer-status'
+import { clearComputerUseState } from '@/store/computer-use'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
@@ -378,6 +379,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
     setSessionDraftingTool(sessionId, '')
     clearAllPrompts(sessionId)
     clearClarifyRequest(undefined, sessionId)
+    clearComputerUseState(sessionId)
 
     try {
       await withSessionNotFoundResume(
@@ -594,6 +596,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
       const messages = state.messages
 
+      clearComputerUseState(runtimeIdRef.current)
       update(current => applyReloadOptimistic(current, plan))
 
       try {
@@ -649,6 +652,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       clearSessionTodos(sessionId)
       resetSessionBackground(sessionId)
       clearPreviewArtifacts(sessionId)
+      clearComputerUseState(sessionId)
 
       const interruptFirst = shouldInterruptBeforeRewind({
         busy: readState()?.busy ?? false,
@@ -759,6 +763,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       clearSessionTodos(sessionId)
       resetSessionBackground(sessionId)
       clearPreviewArtifacts(sessionId)
+      clearComputerUseState(sessionId)
 
       const interruptFirst = shouldInterruptBeforeRewind({
         busy: readState()?.busy ?? false,

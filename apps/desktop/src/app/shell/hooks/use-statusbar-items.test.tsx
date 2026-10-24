@@ -430,6 +430,16 @@ describe('free-tier Sign in in every interface mode', () => {
     expect($statusbarVisible.get()).toBe(false)
   })
 
+  it('shows the chip to a guest with connected apps but no trial, without the free model', () => {
+    $freeTierStatus.set({ ...freeTier(false), has_guest: true })
+
+    const { leftStatusbarItems, statusbarItems } = renderStatusbarItems()
+    const chip = [...leftStatusbarItems, ...statusbarItems].find(item => item.id === 'free-tier')
+
+    expect(signInChipVisible()).toBe(true)
+    expect(chip?.title).toBe('Nous')
+  })
+
   it('holds the chip while onboarding is open and brings it back after', () => {
     $freeTierStatus.set(freeTier(true))
     setOnboardingSurfaceActive('onboarding', true)

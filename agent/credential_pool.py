@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from agent.credential_pool_admin import CredentialPoolAdminMixin
 from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
+from agent.credential_pool_priority import _next_priority, _normalize_pool_priorities, adopt_disk_priorities
 from agent.credential_pool_timestamps import _parse_absolute_timestamp
 
 import logging
@@ -30,6 +31,7 @@ from agent.credential_persistence import (
     sanitize_borrowed_credential_payload,
 )
 import hermes_cli.auth as auth_mod
+import hermes_cli.auth_pool_rows as pool_rows
 from hermes_cli.auth_oauth_grants import owned_profile_reads_root_state
 from hermes_cli.auth import (
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
@@ -357,10 +359,6 @@ def _codex_entry_tracks_singleton(entry: PooledCredential, singleton_tokens: dic
         return False
     entry_identity = _codex_principal_identity(entry.access_token)
     return entry_identity is not None and entry_identity == _codex_principal_identity(singleton_tokens.get("access_token"))
-
-
-def _next_priority(entries: list[PooledCredential]) -> int:
-    return max((entry.priority for entry in entries), default=-1) + 1
 
 
 def _is_manual_source(source: str) -> bool:
@@ -829,6 +827,7 @@ def _update_root_pool_rows(
     provider: str, payloads: list[dict[str, Any]], global_path: Path,
     *, status_cleared_ids: Optional[Iterable[str]] = None,
     token_bases: Optional[dict[str, tuple[Any, Any]]] = None,
+    priority_bases: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, Any]]:
     """UPDATE-ONLY merge of *payloads* into the root store's rows for *provider*.
 
@@ -845,9 +844,10 @@ def _update_root_pool_rows(
             store["credential_pool"] = pool
         existing = pool.get(provider)
         existing_list = existing if isinstance(existing, list) else []
-        incoming_by_id = auth_mod._entry_ids(payloads)
+        incoming_by_id = pool_rows._entry_ids(payloads)
         cleared = {cid for cid in (status_cleared_ids or ()) if cid}
         bases = token_bases or {}
+        keep_disk_order = pool_rows.writer_kept_order(payloads, pool_rows._entry_ids(existing_list), priority_bases)
         merged: list[dict[str, Any]] = []
         changed = False
         for disk_entry in existing_list:
@@ -856,9 +856,10 @@ def _update_root_pool_rows(
             if incoming is None:
                 merged.append(disk_entry)
                 continue
-            updated = auth_mod._merge_pool_row_generation(
+            updated = pool_rows._merge_pool_row_generation(
                 incoming, disk_entry, provider,
-                base_pair=bases.get(did), status_cleared=did in cleared,
+                base_pair=bases.get(did), keep_disk_priority=keep_disk_order,
+                status_cleared=did in cleared,
             )
             if updated != disk_entry:
                 changed = True
@@ -876,6 +877,7 @@ def persist_pool_entries(
     removed_ids: Optional[Iterable[str]] = None,
     status_cleared_ids: Optional[Iterable[str]] = None,
     token_bases: Optional[dict[str, tuple[Any, Any]]] = None,
+    priority_bases: Optional[dict[str, Any]] = None,
 ) -> Optional[list[dict[str, Any]]]:
     """Persist a provider's pool rows to the store that OWNS them.
 
@@ -894,6 +896,7 @@ def persist_pool_entries(
                 return _update_root_pool_rows(
                     provider, payloads, global_path,
                     status_cleared_ids=status_cleared_ids, token_bases=token_bases,
+                    priority_bases=priority_bases,
                 )
             except Exception as exc:
                 # Fail closed on the FORK, not on the save: never fall back to
@@ -907,7 +910,7 @@ def persist_pool_entries(
             return None
     return write_credential_pool(
         provider, payloads, removed_ids=removed_ids, status_cleared_ids=status_cleared_ids,
-        token_bases=token_bases,
+        token_bases=token_bases, priority_bases=priority_bases,
     )
 
 
@@ -972,6 +975,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         # providers only); set by load_pool(), consumed by add_entry().
         self._borrowed_root_ids: set[str] = set()
         self._persisted_token_pairs: dict[str, tuple[Any, Any]] = {}
+        self._persisted_priorities: dict[str, Any] = {}
         self._strategy = get_pool_strategy(provider)
         # RLock: _replace_entry/_persist self-acquire it so the DEFERRED
         # single-use-token refresh path (network I/O outside the lock by
@@ -1115,12 +1119,13 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 self.provider, payloads,
                 removed_ids=removed_ids,
                 status_cleared_ids=status_cleared_ids,
-                token_bases=self._persisted_token_pairs,
+                token_bases=self._persisted_token_pairs, priority_bases=self._persisted_priorities,
             )
             if written is None:
                 return
-            rows = auth_mod._entry_ids(written)
-            self._persisted_token_pairs = auth_mod._token_pairs_by_id(written)
+            rows = pool_rows._entry_ids(written)
+            self._persisted_token_pairs = pool_rows._token_pairs_by_id(written)
+            self._persisted_priorities = pool_rows.priorities_by_id(written)
             for entry in self._entries:
                 row = rows.get(entry.id)
                 pair = self._persisted_token_pairs.get(entry.id, (None, None))
@@ -1133,6 +1138,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 # merged into the written row) on every ordinary flush.
                 if pair != (entry.access_token, entry.refresh_token):
                     self._replace_entry(entry, PooledCredential.from_dict(self.provider, row))
+            self._entries = adopt_disk_priorities(self._entries, rows)
 
     def _adopt(self, entry: PooledCredential, *, persist: bool = True, **updates: Any) -> PooledCredential:
         """``replace(entry, **updates)``, swap it into the pool, optionally persist."""
@@ -1284,7 +1290,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 return entry
             # Same base policy as _persist/load_pool: a token-less disk row is a known
             # (blank) generation, recorded before the no-token-material bail-out below.
-            self._persisted_token_pairs[entry.id] = auth_mod._credential_token_pair(persisted)
+            self._persisted_token_pairs[entry.id] = pool_rows._credential_token_pair(persisted)
             stored = PooledCredential.from_dict(self.provider, persisted)
             # No token material at all is never a "rotation" (anthropic borrowed rows, a plugin row a
             # peer blanked mid-write): adopting it would replace a usable credential with nothing.
@@ -2476,39 +2482,6 @@ def _upsert_entry(entries: list[PooledCredential], provider: str, source: str, p
     return bool(duplicate_indices)
 
 
-_ANTHROPIC_SOURCE_RANK = {
-    "env:ANTHROPIC_TOKEN": 0,
-    "env:CLAUDE_CODE_OAUTH_TOKEN": 1,
-    "hermes_pkce": 2,
-    "claude_code": 3,
-    "env:ANTHROPIC_API_KEY": 4,
-}
-
-
-def _normalize_pool_priorities(provider: str, entries: list[PooledCredential]) -> bool:
-    if provider != "anthropic":
-        return False
-    manual_entries = sorted(
-        (entry for entry in entries if _is_manual_source(entry.source)),
-        key=lambda entry: entry.priority,
-    )
-    seeded_entries = sorted(
-        (entry for entry in entries if not _is_manual_source(entry.source)),
-        key=lambda entry: (
-            _ANTHROPIC_SOURCE_RANK.get(entry.source, len(_ANTHROPIC_SOURCE_RANK)),
-            entry.priority,
-            entry.label,
-        ),
-    )
-    id_to_idx = {entry.id: idx for idx, entry in enumerate(entries)}
-    changed = False
-    for new_priority, entry in enumerate([*manual_entries, *seeded_entries]):
-        if entry.priority != new_priority:
-            entries[id_to_idx[entry.id]] = replace(entry, priority=new_priority)
-            changed = True
-    return changed
-
-
 def _retain_sources_not_in(entries: list[PooledCredential], drop: set[str]) -> bool:
     """Remove entries whose source is in *drop*; True if anything was removed."""
     retained = [entry for entry in entries if entry.source not in drop]
@@ -3080,7 +3053,8 @@ def load_pool(provider: str) -> CredentialPool:
         changed |= _normalize_pool_priorities(provider, entries)
 
     pool = CredentialPool(provider, entries)
-    pool._persisted_token_pairs = auth_mod._token_pairs_by_id(raw_entries)
+    pool._persisted_token_pairs = pool_rows._token_pairs_by_id(raw_entries)
+    pool._persisted_priorities = pool_rows.priorities_by_id(raw_entries)
     if changed:
         pool._persist(removed_ids=sorted(disk_ids - {entry.id for entry in entries}))
     # Remember the root's borrowed rows so a later ``add_entry`` in this

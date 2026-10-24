@@ -95,3 +95,15 @@ async def test_on_timeout_disables_and_greys_embed(name):
 async def test_on_timeout_without_message_is_safe():
     for view in _views().values():
         await view.on_timeout()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["exec", "slash", "update", "clarify", "model"])
+async def test_timeout_after_resolution_keeps_the_resolved_embed(name):
+    """A prompt resolved by a click must not be relabelled 'expired' when the view times out."""
+    view = _views()[name]
+    msg = SimpleNamespace(embeds=[SimpleNamespace(color=None, set_footer=lambda **_: None)], edit=AsyncMock())
+    view._message = msg
+    view.resolved = True
+    await view.on_timeout()
+    msg.edit.assert_not_called()

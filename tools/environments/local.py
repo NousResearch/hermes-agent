@@ -678,6 +678,12 @@ def _prepend_hermes_bin_dir(existing_path: str) -> str:
     if bin_dir and _HERMES_BIN_DIR_IS_PAYLOAD:
         rest = [entry for entry in existing_path.split(os.pathsep) if entry and entry != bin_dir]
         return os.pathsep.join([bin_dir, *rest])
+    from agent.session_client_env import bound_client_env
+    if bound_client_env() is not None:
+        entries = [entry for entry in existing_path.split(os.pathsep) if entry]
+        if bin_dir and bin_dir not in entries:
+            entries.append(bin_dir)
+        return os.pathsep.join(entries)
     return _prepend_missing_path_entries(existing_path, [bin_dir] if bin_dir else [])
 
 

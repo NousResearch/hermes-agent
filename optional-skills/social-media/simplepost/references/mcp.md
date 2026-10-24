@@ -6,7 +6,7 @@ The hosted SimplePost MCP endpoint is:
 https://app.simplepost.social/mcp
 ```
 
-It uses OAuth with authorization-server discovery, dynamic client registration, PKCE, token exchange, and refresh. Hermes manages those protocol details. Social account connection, disconnection, and reauthorization remain web-app actions.
+It uses OAuth with authorization-server discovery, dynamic client registration, PKCE, and token exchange. Hermes manages those protocol details. SimplePost does not issue refresh tokens; access tokens currently expire after 90 days. Run `hermes mcp login simplepost` again when authorization expires or is revoked. Social account connection, disconnection, and reauthorization remain web-app actions.
 
 ## Tool workflow
 
@@ -16,7 +16,7 @@ It uses OAuth with authorization-server discovery, dynamic client registration, 
 4. Call `create_post` with `postingMode: "now"`, `"schedule"`, or `"draft"` when the action and inputs are explicit.
 5. Supply a new unique `idempotencyKey` for each newly intended post. Reuse that same key and unchanged content only when retrying an uncertain result.
 6. Use `preview_post` for a text and structured preflight, and `show_post_preview` when the user asks to see the rendered post.
-7. Use `validate_post` only when the user requests validation or troubleshooting without creating anything.
+7. Use `validate_post` when the user requests validation or troubleshooting without saving a post. Both validation and preview can import supplied media into managed storage; neither saves or publishes a post.
 8. Use `inspect_posts` to list or inspect drafts, scheduled posts, delivered posts, and failed posts.
 9. Use `update_scheduled_post` and `discard_scheduled_post` only for drafts or future scheduled posts.
 10. After creating or updating a draft or scheduled post, call `show_post_preview` with the returned post ID when a rendered review is useful.
@@ -29,8 +29,8 @@ Do not call tools for unsupported actions. Already-published social posts must b
 
 - `list_*`: enumerate collections.
 - `get_*`: retrieve text and structured data without UI.
-- `validate_*`: check without writing.
-- `preview_*`: compute a non-writing preflight without UI.
+- `validate_*`: check without saving a post; media may be imported into managed storage.
+- `preview_*`: compute a preflight without UI or saving a post; media may be imported into managed storage.
 - `show_*`: render MCP Apps UI with a text fallback.
 - `create_*`, `update_*`, `discard_*`, `upload_*`: mutate stored or external state.
 
@@ -43,11 +43,11 @@ Pass a future ISO 8601 datetime with an offset or `Z`:
 ```json
 {
   "postingMode": "schedule",
-  "scheduledFor": "2026-10-03T09:00:00+02:00"
+  "scheduledFor": "2027-07-03T09:00:00+02:00"
 }
 ```
 
-Never pass a date-only string or a naive local time. Resolve “tomorrow at 9” using the user's timezone before calling the tool.
+This timestamp illustrates the format; calculate a future value for the actual request. Never pass a date-only string or a naive local time. Resolve “tomorrow at 9” using the user's timezone before calling the tool.
 
 ## Content and account overrides
 
@@ -65,7 +65,7 @@ MCP media items use public or SimplePost-managed URLs:
 
 Videos may include `thumbnailUrl`. Instagram requires an image or video, and YouTube requires a video.
 
-SimplePost imports public media into managed storage before saving or publishing. If `validate_post` or `preview_post` returns `fittedMedia`, pass those returned items to `create_post` so the checked bytes are reused. Preserve `filename`, `size`, `durationSec`, and `thumbnailUrl` returned by `upload_media`.
+SimplePost imports public media into managed storage during validation and preview as well as before saving or publishing. A media preflight therefore has storage side effects even when no post is saved. For a strictly read-only check, omit media. If `validate_post` or `preview_post` returns `fittedMedia`, pass those returned items to `create_post` so the checked bytes are reused. Preserve `filename`, `size`, `durationSec`, and `thumbnailUrl` returned by `upload_media`.
 
 Use `upload_media.file` only for a structured file parameter registered by Hermes. Never construct one from a displayed path, filename, file ID, base64 data, or an earlier message. If the structured reference is unavailable and the media has a public URL, retry once with `upload_media.url`; otherwise ask the user to reattach the file or provide a public URL.
 

@@ -1,7 +1,7 @@
 ---
 name: simplepost
 description: Publish, schedule, and manage social posts safely.
-version: 0.1.0
+version: 0.1.1
 author: Vladimir Haltakov (haltakov), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -50,7 +50,7 @@ Invoke the skill with a normal request that states the action, content, targets,
 
 - “Use SimplePost to preview this exact text for my connected X and LinkedIn accounts.”
 - “Save this image and caption as a draft for my Instagram account.”
-- “Schedule this exact thread for 2026-10-03 at 09:00 Europe/Berlin.”
+- “Schedule this exact thread for tomorrow at 09:00 Europe/Berlin.”
 - “Inspect my failed SimplePost posts from today and explain each returned error.”
 
 Use the SimplePost MCP tools directly after loading the skill. Use `terminal` only for Hermes MCP installation, login, testing, or recovery.
@@ -60,8 +60,8 @@ Use the SimplePost MCP tools directly after loading the skill. Use `terminal` on
 | Need | SimplePost MCP tool | Writes data? |
 | --- | --- | --- |
 | Resolve connected targets | `list_accounts` | No |
-| Validate without saving | `validate_post` | No |
-| Preview without saving | `preview_post` | No |
+| Validate without saving a post | `validate_post` | May import media |
+| Preview without saving a post | `preview_post` | May import media |
 | Render a post preview | `show_post_preview` | No |
 | Publish, schedule, or draft | `create_post` | Yes |
 | Find drafts, queued, or delivered posts | `inspect_posts` | No |
@@ -82,7 +82,7 @@ Read [`references/mcp.md`](references/mcp.md) for payload rules, result interpre
 
 4. **Prepare media.** Pass public HTTPS URLs directly. Use `upload_media` only when Hermes exposes the attachment as a structured file parameter. Never reconstruct a file parameter from a path, filename, file ID, or base64 text. Preserve metadata and any `fittedMedia` returned by validation or preview.
 
-5. **Choose the lightest preflight.** Use `preview_post` when the user wants to inspect the proposed result, `validate_post` when they ask for a check without saving, and `show_post_preview` when they want the rendered view. A direct, complete publishing request does not require an automatic preview.
+5. **Choose the lightest preflight.** Use `preview_post` when the user wants to inspect the proposed result, `validate_post` when they ask for a check without saving a post, and `show_post_preview` when they want the rendered view. Validation and preview can import supplied media into managed storage, although they do not save or publish a post. Do not send media when the user requires a strictly read-only check. A direct, complete publishing request does not require an automatic preview.
 
 6. **Normalize scheduling.** Convert relative language into a future ISO 8601 datetime with an explicit offset or `Z`. Ask for the timezone only if it cannot be inferred safely. Repeat the absolute time and timezone in the final response.
 
@@ -105,6 +105,6 @@ Read [`references/mcp.md`](references/mcp.md) for payload rules, result interpre
 
 ## Verification
 
-For a non-writing smoke test, call `list_accounts`, then `preview_post` or `validate_post` with clearly marked test content and confirm no post was created. For a writing smoke test, save a draft, inspect the returned ID with `inspect_posts`, render it with `show_post_preview`, and discard it only if the user authorized that cleanup.
+For a non-writing smoke test, call `list_accounts`, then `preview_post` or `validate_post` with clearly marked text-only test content without media and confirm no post was created. Media preflights can write to managed storage. For a writing smoke test, save a draft, inspect the returned ID with `inspect_posts`, render it with `show_post_preview`, and discard it only if the user authorized that cleanup.
 
 For a real publish or schedule, verify every requested account has a corresponding result and report partial failures individually. Restart Hermes after the first OAuth setup and confirm the SimplePost MCP tools reconnect without requesting or exposing credentials.

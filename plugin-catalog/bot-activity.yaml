@@ -21,7 +21,7 @@ title: Bot Activity
 repo: https://github.com/risyadul/hermes-bot-activity
 sha: da1c9d10eb228cd6f0a93e255ee92c8c3a6717f2
 version: "0.1.0"
-description: "Live per-Bot activity timeline for Hermes Desktop: turns, tool calls (arguments, result, duration), approvals and Group Chat streams, grouped by Bot or by Group Chat, with one-click tracking for new Bots. Disclosure — local only, no network or telemetry; stores redacted activity in a shared SQLite file under plugin-data/bot-activity; reads each Bot profile's state.db and profile.yaml read-only to attribute Group Chats; runs `hermes plugins install/enable` only when you click Track now."
+description: "Live per-Bot activity timeline for Hermes Desktop: turns, tool calls (arguments, result, duration), approvals and Group Chat streams, grouped by Bot or by Group Chat, with one-click tracking for new Bots. Disclosure — local only, no network or telemetry; records every Bot profile's turns, assistant replies, tool arguments and results, approval commands and Group Chat streams (redacted with agent.redact, capped per field, 3-day / 20k-row retention) into one SQLite file shared by all profiles under plugin-data/bot-activity; reads each Bot profile's state.db, profile.yaml and config.yaml read-only; Track now / Update runs `hermes -p <bot> plugins install <same source> --ref <same sha> --enable --yes-deps` (or copies the plugin and runs `plugins enable`) in the Bot profiles you track, never re-enabling one you disabled."
 maintainer: risyadul
 tier: community
 category: desktop

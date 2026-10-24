@@ -39,6 +39,36 @@ _TRANSCRIPT_SPOOL_SEQ = itertools.count()
 # Spool files whose row was written but which could not be deleted. Replaying one again would write
 # its row twice, so both replay passes skip it for the rest of this process.
 _REPLAYED_UNREMOVABLE: set[Path] = set()
+# Divert files already warned about this process: startup recovery runs once per profile home, and a
+# repeated pass over the same home must not repeat the warning.
+_DIVERT_WARNED: set[Path] = set()
+
+
+def warn_undrained_divert_files() -> int:
+    """Warn once per process about ``sessions/<id>.jsonl`` divert files; return how many were new.
+
+    ``divert_session_transcript_jsonl`` appends pending transcripts there when state.db is replaced
+    under a live process, and no recovery path replays the file back into the store: the messages
+    stay on disk, invisible to search and recall, until the session is deleted with them. The
+    startup recovery pass already walks every recovery artifact under the active home, so it also
+    makes this condition visible instead of silent. Nothing is replayed or deleted here: unlike the
+    flush spool, a divert file can overlap with messages the spool already recovered (the gateway
+    divert path writes both), so replaying it needs a dedup decision, not a blind append.
+    """
+    from hermes_constants import get_hermes_home
+    sessions_dir = get_hermes_home() / "sessions"
+    try:
+        divert_files = sorted(p for p in sessions_dir.glob("*.jsonl") if p not in _DIVERT_WARNED)
+    except OSError:
+        return 0
+    for path in divert_files:
+        logger.warning(
+            "Diverted transcript file %s exists: messages diverted there when state.db was "
+            "replaced are not replayed into the session store and stay invisible to search and "
+            "recall until the session is deleted; inspect it manually if those turns are needed",
+            path)
+        _DIVERT_WARNED.add(path)
+    return len(divert_files)
 
 
 def _get_flush_dir():
@@ -332,6 +362,7 @@ def recover_pending_spool(session_db=None, *, session_resolver=None) -> tuple[in
     messages recovered, and the session ids whose spool files this pass held back after a failed
     replay, so the live writer can drain them before that session's next row.
     """
+    warn_undrained_divert_files()
     flush_files = _order_flush_files(_get_flush_dir().glob("*.json"))
     if not flush_files:
         return 0, set()

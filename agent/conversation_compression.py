@@ -4234,7 +4234,7 @@ def compress_context(
         _emit_compression_attempt_telemetry(
             agent, started_at=attempt.started_at, commit_status=lifecycle.commit_status, split_status=split_status,
             failure_class=("session_split_failed" if split_status in {"failed_not_indexed", "aborted"} else None),
-            commit_started_at=commit.commit_started_at, attempt_seed=attempt.seed, history_rewritten=rewritten,
+            commit_started_at=commit.commit_started_at, attempt_seed=attempt.seed, history_rewritten=rewritten, result_estimated_tokens=_compressed_est,
         )
         return compressed, new_system_prompt
     finally:

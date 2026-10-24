@@ -105,6 +105,7 @@ def test_compression_attempt_telemetry_is_metadata_only(caplog):
     assert payload["chunk_count"] in {0, 1}
     assert payload["commit_status"] == "committed"
     assert payload["split_status"] == "not_applicable"
+    assert payload["result_estimated_tokens"] == compressor.last_compression_rough_tokens
     assert payload["fallback_used"] is False
     assert isinstance(payload["total_duration_ms"], int)
     assert isinstance(payload["commit_ms"], int)

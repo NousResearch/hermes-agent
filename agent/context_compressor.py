@@ -4093,6 +4093,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         from agent.conversation_compression import _raise_if_stale_attempt
 
         _raise_if_stale_attempt(self)
+        kind = self._record_summary_failure_telemetry(e)
         # Only a genuine no-provider RuntimeError gets the long cooldown; empty/invalid-response
         # RuntimeErrors are transient and must get the main-model retry below first.
         # ``call_llm`` raises ``RuntimeError`` for two very different cases: 1. 2. An empty/invalid response
@@ -4110,7 +4111,6 @@ Write only the summary body. Do not include any preamble or prefix."""
                 _SUMMARY_FAILURE_COOLDOWN_SECONDS,
             )
             return None
-        kind = _classify_summary_failure(e)
         access_error = _is_summary_access_or_quota_error(e)
         # Auth/permission/quota failures are not retryable: flag so compress() preserves the
         # session. A distinct summary_model still gets the one-shot main-model fallback.

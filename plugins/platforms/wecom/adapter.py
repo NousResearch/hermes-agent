@@ -34,7 +34,11 @@ from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendR
 from gateway.platforms.event import MessageEvent, MessageType
 from utils import env_float
 
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
+from gateway.platforms._shared import (
+    extra_or_secret as _shared_extra_or_secret,
+    get_scoped_secret as _get_scoped_secret,
+    send_error,
+)
 from gateway.platforms.send_targets import StandaloneSendPolicy, parse_nonempty
 from plugins.platforms.wecom.send_queue import ChatSendQueueMixin
 from plugins.platforms.wecom.media import WeComMediaMixin, APP_CMD_SEND
@@ -818,11 +822,28 @@ def interactive_setup() -> None:
 
 
 def _is_connected(config) -> bool:
-    return bool((getattr(config, "extra", {}) or {}).get("bot_id"))
+    """Both halves, resolved through the adapter's own YAML-then-env ladder.
+
+    ``WeComAdapter._setting`` reads ``extra`` then ``WECOM_BOT_ID``/``WECOM_SECRET`` from the
+    owning profile's ``.env``, and ``connect()`` refuses to start without both
+    (``wecom_missing_credentials``). Reading ``extra`` alone made the setup picker report
+    "not configured" for the env-only shape the wizard itself writes, and an app_id-only
+    install could read as ready for an adapter that cannot start. #120870
+    """
+    extra = getattr(config, "extra", {}) or {}
+    return bool(
+        _shared_extra_or_secret(extra, "bot_id", "WECOM_BOT_ID", "")
+        and _shared_extra_or_secret(extra, "secret", "WECOM_SECRET", "")
+    )
 
 
 def _callback_is_connected(config) -> bool:
-    """Callback mode: corp_id or a multi-app `apps` block."""
+    """Callback mode: corp_id or a multi-app `apps` block.
+
+    Deliberately still ``extra``-only: ``WecomCallbackAdapter._normalize_apps(extra)`` has no
+    env rung, so a checker answering for env would claim a config the adapter cannot start
+    from. Needs the adapter-side rung first; see #120870.
+    """
     extra = getattr(config, "extra", {}) or {}
     return bool(extra.get("corp_id") or extra.get("apps"))
 

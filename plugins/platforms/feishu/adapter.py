@@ -4477,9 +4477,20 @@ def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
 
 
 def _is_connected(config) -> bool:
-    """Feishu counts as connected once app_id is configured."""
+    """Feishu counts as connected once app_id + app_secret are configured.
+
+    Both halves are read through the same YAML-then-env ladder ``_load_settings`` uses
+    (``extra_or_secret``: profile ``.env`` first, then ``config.extra``), so this answers
+    for exactly the credentials ``connect()`` will read. Reading ``extra`` alone made the
+    setup picker report "not configured" for the env-only shape the wizard itself writes:
+    ``_platform_status`` hands every registry platform a synthetic ``PlatformConfig`` with
+    an empty ``extra``, so no env-only install could ever read as connected. #120870
+    """
     extra = getattr(config, "extra", {}) or {}
-    return bool(extra.get("app_id"))
+    return bool(
+        _shared_extra_or_secret(extra, "app_id", "FEISHU_APP_ID", "")
+        and _shared_extra_or_secret(extra, "app_secret", "FEISHU_APP_SECRET", "")
+    )
 
 
 def register(ctx) -> None:

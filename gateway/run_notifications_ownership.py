@@ -4,7 +4,8 @@ Split out of ``gateway/run_notifications.py`` (itself split out of ``gateway/run
 ``GatewayRunner`` through ``GatewayNotificationsMixin``. A completion may be pinned to a delegate
 child's execution transcript: ownership follows only ``model_config._delegate_from`` to the
 human-facing session, shared by delivery preflight and route resolution, and no route moves until
-that owner is proven.
+that owner is proven. A transcript that was CREATED as a subagent but no longer carries that marker
+is refused outright — ``created_source`` survives the peer stamp that rewrites ``source``.
 """
 
 from __future__ import annotations
@@ -27,6 +28,30 @@ logger = logging.getLogger("gateway.run")
 # turning one completion event into an unbounded run of sequential session reads. Exceeding it is
 # fail-closed, like every other unresolved provenance.
 _MAX_DELEGATE_PROVENANCE_HOPS = 16
+
+# The ``source`` a subagent execution transcript is created with. Every surface (chat platform,
+# ``tui``, ``kanban``) has its own value, so matching this one is a provenance test rather than a
+# guess about the current surface.
+_SUBAGENT_SOURCE = "subagent"
+
+
+def _created_as_subagent(row: Any) -> bool:
+    """Whether a session row was CREATED as a subagent execution transcript.
+
+    ``source`` is mutable: ``record_gateway_session_peer`` overwrites it with the surface that later
+    owns a routing key, so a child transcript a chat route was mistakenly handed to reads as an
+    ordinary chat row afterwards. ``created_source`` is stamped at creation and survives those
+    flips (#56439), which leaves it as the only reliable provenance once ``_delegate_from`` is gone;
+    ``source`` remains a fallback for rows written before that column existed.
+    """
+    for key in ("created_source", "source"):
+        try:
+            value = row.get(key)
+        except Exception:  # a row-like object must not hide the other key
+            continue
+        if isinstance(value, str) and value.strip().lower() == _SUBAGENT_SOURCE:
+            return True
+    return False
 
 
 class GatewayNotificationOwnershipMixin:
@@ -95,7 +120,8 @@ class GatewayNotificationOwnershipMixin:
 
         A current route is an explicit ownership boundary, not a route to repair.
         Generic parent pointers also describe compression and branches; only
-        ``_delegate_from`` authorizes walking out of an execution transcript.
+        ``_delegate_from`` authorizes walking out of an execution transcript, and a row
+        that was CREATED as one is refused outright when that marker is missing.
         """
         from gateway.run import _USER_BOUNDARY_END_REASONS
         session_db = cast(Any, self)._session_db
@@ -130,8 +156,19 @@ class GatewayNotificationOwnershipMixin:
             if not isinstance(config, dict):
                 return "terminal", session_id, None
             if "_delegate_from" not in config:
-                verdict = "terminal" if row.get("source") == "subagent" else "deliver"
-                return verdict, session_id, row
+                if _created_as_subagent(row):
+                    # Unresolvable provenance on an execution transcript: a chat route is not this
+                    # row's to take, and the mutable ``source`` cannot say otherwise. Drop the
+                    # injection fail-closed (the completion stays readable in the delegation
+                    # records) instead of ending the real chat session and rebinding the key here.
+                    logger.warning(
+                        "Completion pinned to session %s, created as a subagent execution "
+                        "transcript with no _delegate_from provenance; dropping injection "
+                        "instead of handing it a routing key.",
+                        session_id,
+                    )
+                    return "terminal", session_id, row
+                return "deliver", session_id, row
             parent = config["_delegate_from"]
             if not isinstance(parent, str) or not parent.strip() or hops == _MAX_DELEGATE_PROVENANCE_HOPS:
                 return "terminal", session_id, None

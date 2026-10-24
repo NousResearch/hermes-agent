@@ -225,10 +225,24 @@ class TestMcpArgsOverlayFlag:
             assert "--no-overlay" in result
             assert "--no-overlay" not in original
 
+    def test_appends_configured_cursor_theme(self):
+        with patch.object(cua_backend, "_cua_no_overlay", return_value=False), \
+             patch.object(cua_backend, "_cua_cursor_theme", return_value="cua.high-visibility"), \
+             patch.object(cua_backend_driver, "_cua_driver_supports_cursor_theme", return_value=True):
+            result = cua_backend_driver._mcp_args_with_overlay_flag(["mcp"])
+        assert result == ["mcp", "--cursor-theme", "cua.high-visibility"]
+
+    def test_keeps_startup_compatible_when_cursor_theme_is_unsupported(self):
+        with patch.object(cua_backend, "_cua_no_overlay", return_value=False), \
+             patch.object(cua_backend, "_cua_cursor_theme", return_value="cua.high-visibility"), \
+             patch.object(cua_backend_driver, "_cua_driver_supports_cursor_theme", return_value=False):
+            result = cua_backend_driver._mcp_args_with_overlay_flag(["mcp"])
+        assert result == ["mcp"]
+
 
 class TestEmbeddedDaemonOverlayFlag:
     @pytest.mark.platforms("not macos")
-    def test_serve_process_disables_overlay_when_policy_requires_it(self):
+    def test_serve_process_passes_configured_overlay_controls(self):
         from tools.computer_use import cua_backend_daemon
 
         daemon = cua_backend._EmbeddedCuaDaemon("/usr/bin/cua-driver", "unrestricted")
@@ -243,7 +257,11 @@ class TestEmbeddedDaemonOverlayFlag:
         ), patch.object(
             cua_backend, "_cua_no_overlay", return_value=True,
         ), patch.object(
+            cua_backend, "_cua_cursor_theme", return_value="cua.high-visibility",
+        ), patch.object(
             cua_backend_driver, "_cua_driver_supports_no_overlay", return_value=True,
+        ), patch.object(
+            cua_backend_driver, "_cua_driver_supports_cursor_theme", return_value=True,
         ), patch.object(
             cua_backend.subprocess, "Popen", return_value=process,
         ) as popen, patch.object(
@@ -254,3 +272,4 @@ class TestEmbeddedDaemonOverlayFlag:
         command = popen.call_args.args[0]
         assert command[:2] == ["/usr/bin/cua-driver", "serve"]
         assert "--no-overlay" in command
+        assert command[-2:] == ["--cursor-theme", "cua.high-visibility"]

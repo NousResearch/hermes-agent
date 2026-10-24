@@ -64,6 +64,7 @@ export {
   isCtrl,
   type WidgetApp,
   type WidgetInput,
+  type WidgetRefresh,
   type WidgetRenderCtx
 } from './types.js'
 export { loadUserWidgets, type UserWidgetLoadResult, widgetSdk, type WidgetSdk } from './userWidgets.js'

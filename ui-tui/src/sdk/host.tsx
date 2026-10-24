@@ -1,9 +1,9 @@
 import { Box, Text, useStdout } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import { Component, type ReactNode } from 'react'
+import { Component, type ReactNode, useEffect } from 'react'
 
 import { $overlayState, patchOverlayState } from '../app/overlayStore.js'
-import { $uiTheme } from '../app/uiStore.js'
+import { $uiState, $uiTheme } from '../app/uiStore.js'
 import { recordParentLifecycle } from '../lib/parentLog.js'
 
 import { getWidgetApp } from './registry.js'
@@ -171,6 +171,156 @@ interface RenderCtx {
   t: never
 }
 
+// ── dock/rail ordering (#69269) ───────────────────────────────────────
+
+/**
+ * `display.tui_widgets.order` (#69269): listed ids render in list position,
+ * unlisted ones keep their launch order after them. null/unknown ids = the
+ * input order untouched.
+ */
+const sortByWidgetOrder = (actives: ActiveWidget[]): ActiveWidget[] => {
+  const order = $uiState.get().widgetOrder
+
+  if (!order?.length) {
+    return actives
+  }
+
+  const rank = new Map(order.map((id, i) => [id, i]))
+
+  return [...actives].sort((a, b) => {
+    const ra = rank.get(a.appId)
+    const rb = rank.get(b.appId)
+
+    if (ra !== undefined && rb !== undefined) {
+      return ra - rb
+    }
+
+    if (ra !== undefined) {
+      return -1
+    }
+
+    if (rb !== undefined) {
+      return 1
+    }
+
+    return 0 // stable — launch order among unlisted
+  })
+}
+
+// ── refresh lifecycle (#69277) ────────────────────────────────────────
+
+/**
+ * Host-managed refresh for apps that declare `refresh.fetch`. Mounted per
+ * ACTIVE app inside WidgetBoundary, so a throwing fetch or its rejection is
+ * contained like a render crash and the lifecycle ends with the slot.
+ * - fetches on mount + every intervalMs (one timer per active widget,
+ *   cleared on unmount — no leaked pollers past the slot's life)
+ * - keeps the LAST GOOD state on failure/null; `stale`/`dead` come from the
+ *   runner's bookkeeping, not mutated state, so `updateWidget` and reduce
+ *   keep their existing contracts
+ * - an in-flight fetch from a superseded definition is dropped on hot-reload
+ */
+function RefreshRunner({ app, appId }: { app: WidgetApp<never>; appId: string }): null {
+  useEffect(() => {
+    const refresh = app.refresh
+
+    if (!refresh) {
+      return
+    }
+
+    const staleMs = refresh.staleMs ?? refresh.intervalMs * 1.5
+    const maxRetries = refresh.maxRetries ?? 3
+
+    let failures = 0
+    let goodAt = Date.now()
+    let inflight = false
+
+    const isStale = () => Date.now() - goodAt > staleMs
+
+    const tick = () => {
+      if (inflight) {
+        return
+      }
+
+      inflight = true
+
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), refresh.intervalMs)
+
+      Promise.resolve()
+        .then(() => refresh.fetch(controller.signal))
+        .then(result => {
+          clearTimeout(timeout)
+
+          if (result === null || result === undefined) {
+            return // transient miss — keep the previous state
+          }
+
+          failures = 0
+          goodAt = Date.now()
+
+          // The app may have been hot-reloaded or closed while the fetch
+          // was in flight — the CURRENT registry entry owns the slot.
+          const current = getWidgetApp(appId)
+
+          if (current?.refresh !== undefined) {
+            updateWidget(current as WidgetApp<never>, () => result as never)
+          }
+        })
+        .catch(() => {
+          clearTimeout(timeout)
+          failures += 1
+        })
+        .finally(() => {
+          inflight = false
+        })
+    }
+
+    tick()
+
+    const poll = setInterval(tick, refresh.intervalMs)
+    poll.unref?.()
+
+    // `stale`/`dead` must reach render on the CLOCK, not just on a fetch
+    // settling — a data-less screen after a blip reads as a hang. The tick
+    // re-renders the app through a no-op state patch; render reads the
+    // flags from this runner's registry entry (see refreshFlags).
+    const staleClock = setInterval(
+      () => {
+        const flags = refreshFlags.get(appId)
+
+        if (flags) {
+          // Recompute BOTH flags from live counters each tick — `dead` must
+          // unlatch the moment a good fetch resets the failure count.
+          refreshFlags.set(appId, { dead: failures >= maxRetries, stale: isStale() })
+        }
+
+        const current = getWidgetApp(appId)
+
+        if (current?.refresh !== undefined) {
+          updateWidget(current as WidgetApp<never>, state => state)
+        }
+      },
+      Math.min(staleMs, 1000)
+    )
+
+    staleClock.unref?.()
+
+    refreshFlags.set(appId, { dead: false, stale: false })
+
+    return () => {
+      clearInterval(poll)
+      clearInterval(staleClock)
+      refreshFlags.delete(appId)
+    }
+  }, [appId, app])
+
+  return null
+}
+
+/** Render flags per app id — owned by RefreshRunner, read by renderApp. */
+const refreshFlags = new Map<string, { dead: boolean; stale: boolean }>()
+
 const useRenderCtx = (): RenderCtx => {
   const t = useStore($uiTheme)
   const { stdout } = useStdout()
@@ -185,20 +335,27 @@ const renderApp = (active: ActiveWidget, ctx: RenderCtx) => {
     return null
   }
 
+  const flags = app.refresh ? refreshFlags.get(active.appId) : undefined
+
   return (
     <WidgetBoundary
       appId={active.appId}
       errorColor={(ctx.t as { color: { error: string } }).color.error}
       key={active.appId}
     >
-      {app.render({ ...ctx, state: active.state as never })}
+      <RefreshRunner app={app} appId={active.appId} />
+      {app.render({
+        ...ctx,
+        ...(flags ? { dead: flags.dead, stale: flags.stale } : {}),
+        state: active.state as never
+      })}
     </WidgetBoundary>
   )
 }
 
 const CardStack = ({ apps, ctx }: { apps: ActiveWidget[]; ctx: RenderCtx }) => (
   <Box flexDirection="column" rowGap={1}>
-    {apps.map(active => (
+    {sortByWidgetOrder(apps).map(active => (
       <Box key={active.appId}>{renderApp(active, ctx)}</Box>
     ))}
   </Box>
@@ -214,12 +371,15 @@ export function ActiveWidgetSlot(): ReactNode {
 }
 
 /** An in-FLOW dock row: reserves real rows in the chrome (never covers
- *  content), right-aligned cards. `dock-top` renders under the top status
- *  bar, `dock-bottom` above the bottom one. */
+ * content), right-aligned cards. `dock-top` renders under the top status
+ * bar, `dock-bottom` above the bottom one. Cards sort by
+ * `display.tui_widgets.order` (listed ids in list position, unlisted keep
+ * launch order after them) — renaming files with numeric prefixes is no
+ * longer the only way to place widgets. */
 export function AmbientDock({ placement }: { placement: 'dock-bottom' | 'dock-top' }): ReactNode {
   const overlay = useStore($overlayState)
   const ctx = useRenderCtx()
-  const docked = overlay.ambient.filter(active => zoneOf(active) === placement)
+  const docked = sortByWidgetOrder(overlay.ambient.filter(active => zoneOf(active) === placement))
 
   if (!docked.length) {
     return null

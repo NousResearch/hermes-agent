@@ -39,6 +39,9 @@ export interface SidebarSessionGroup {
   // Exact owner for gateway/profile sidebar sections; absent for workspace lanes.
   connectionId?: null | string
   profile?: string
+  // The owner profile's display name (`display_name`, else `profile`).
+  // Presentation only: identity, routing and colors keep using `profile`.
+  profileLabel?: string
 }
 
 /** A repo node: holds its branch/worktree lanes (`repo -> lane -> sessions`). */

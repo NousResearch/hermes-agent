@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest'
 
 import type { DesktopConnectionsRegistry } from '@/global'
 import { makeSessionInfo } from '@/test/session-info'
+import type { ProfileInfo } from '@/types/hermes'
 
-import { buildGatewaySessionGroups, scopeGatewaySessionGroups } from './gateway-group-model'
+import { buildGatewaySessionGroups, ownerProfileLabeler, scopeGatewaySessionGroups } from './gateway-group-model'
 
 const registry = {
   version: 2,
@@ -58,5 +59,48 @@ describe('scopeGatewaySessionGroups', () => {
     expect(new Set(mixed.map(group => group.label)).size).toBe(mixed.length)
     expect(single[0].label).toBe(single[0].profile)
     expect(mixed.map(group => group.sessions)).toEqual(recents.map(group => group.sessions))
+  })
+})
+
+describe('owner group display names', () => {
+  const localList = [{ name: 'default', display_name: 'NEON', is_default: true }, { name: 'work' }] as ProfileInfo[]
+  const remoteList = [{ name: 'default', display_name: 'Homelab main', is_default: true }] as ProfileInfo[]
+
+  const byOwner = (groups: ReturnType<typeof buildGatewaySessionGroups>) =>
+    Object.fromEntries(groups.map(group => [group.id, group.label]))
+
+  it('labels a renamed profile by its display name on its own backend while identity keeps the key', () => {
+    const labelFor = ownerProfileLabeler({
+      active: localList,
+      activeConnectionId: null,
+      byConnection: new Map([['remote-1', remoteList]]),
+      registry
+    })
+
+    const groups = buildGatewaySessionGroups(rows, registry, {}, labelFor)
+
+    expect(byOwner(groups)).toEqual({
+      [JSON.stringify(['local', 'default'])]: 'This computer · NEON',
+      [JSON.stringify(['remote-1', 'default'])]: 'Homelab · Homelab main',
+      [JSON.stringify([null, 'default'])]: 'NEON'
+    })
+    expect(groups.every(group => group.profile === 'default')).toBe(true)
+    expect(scopeGatewaySessionGroups(groups.slice(0, 1), 'messaging:telegram')[0].label).toBe(groups[0].profileLabel)
+  })
+
+  it("never borrows a same-named profile's display name from another backend", () => {
+    // The remote is active, so `active` is ITS list; the primary's list isn't cached.
+    const labelFor = ownerProfileLabeler({
+      active: remoteList,
+      activeConnectionId: 'remote-1',
+      byConnection: new Map([['remote-1', remoteList]]),
+      registry
+    })
+
+    expect(byOwner(buildGatewaySessionGroups(rows, registry, {}, labelFor))).toEqual({
+      [JSON.stringify(['local', 'default'])]: 'This computer · default',
+      [JSON.stringify(['remote-1', 'default'])]: 'Homelab · Homelab main',
+      [JSON.stringify([null, 'default'])]: 'default'
+    })
   })
 })

@@ -42,6 +42,9 @@ _CAPABILITY_ROWS = (
     ("llm.task_override", ("llm", "allow_task_override"),
      "Route its LLM calls through the host's built-in auxiliary "
      "task lanes"),
+    ("llm.side_question", ("llm", "allow_side_question"),
+     "Ask your agent a short question after each turn. It sees the "
+     "whole session, including memory, and spends your main model's tokens."),
     ("gateway.platform_actions", ("allow_platform_actions",),
      "Act on connected chat platforms as the gateway bot "
      "(add reactions, rename threads) via ctx.platform_actions"))

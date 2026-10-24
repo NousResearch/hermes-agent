@@ -73,18 +73,19 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         "--force-venv", action="store_true", default=False,
         help="Windows: mutate the venv even while other processes are running from its interpreter (desktop backend, gateway, terminals). Those processes keep native .pyd files locked, so the dependency sync will likely fail partway and strand the install half-updated. Use only if you know the detected holders are false positives.",
     )
-    update_parser.add_argument(
+    channel_options = update_parser.add_mutually_exclusive_group()
+    channel_options.add_argument(
         "--set-channel",
         default=None,
         type=validate_name,
         metavar="CHANNEL",
         help=(
-            "Persist the update channel for THIS install (recorded per "
-            "install in config.yaml under update.installs). Names are resolved "
-            "from the release archive, not a built-in list. Official source "
-            "checkouts default to 'stable' (the latest published vX.Y.Z "
-            "release, exact commit); 'main' follows the source branch. "
-            "Package channels are baked into their identities."
+            "Save CHANNEL as the default for future source updates. The "
+            "command then exits without installing an update. Run 'hermes update' "
+            "afterward to update on the saved channel. Use 'hermes update "
+            "--check' to show the channel currently selected. This setting "
+            "is stored per install; package channels are baked into their "
+            "identities."
         ),
     )
     update_parser.add_argument(
@@ -96,15 +97,16 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
             "channel record in config.yaml) and exit."
         ),
     )
-    update_parser.add_argument(
+    channel_options.add_argument(
         "--channel",
         default=None,
         type=validate_name,
         metavar="CHANNEL",
         help=(
-            "Track CHANNEL for this run only (transient override; "
-            "--set-channel persists). 'stable' and 'canary' select published "
-            "releases, 'main' the branch tip. Source installs only."
+            "Use CHANNEL for this update only; it does not change the saved "
+            "channel. Cannot be combined with --set-channel. Common "
+            "channels are 'stable' (published release), 'canary' (published "
+            "prerelease), and 'main' (the branch tip). Source installs only."
         ),
     )
     update_parser.add_argument(

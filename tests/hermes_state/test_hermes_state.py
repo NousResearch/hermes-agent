@@ -3115,7 +3115,6 @@ class TestListSessionsRich:
 
 
 
-
     def test_subagent_session_still_hidden(self, db):
         """Sub-agent children (parent NOT ended with 'branched') remain hidden."""
         db.create_session("root", "cli")

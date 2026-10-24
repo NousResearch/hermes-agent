@@ -71,3 +71,12 @@ async def test_partial_voice_directive_is_never_shown():
 async def test_prose_mentioning_media_still_streams():
     adapter = await _stream(["La palabra MEDIA aparece ", "en un texto normal ", "y sigue."])
     assert any("La palabra MEDIA aparece" in t for t in _shown(adapter))
+
+
+@pytest.mark.asyncio
+async def test_prose_with_media_colon_streams_before_the_line_ends():
+    # "media:" followed by words, not a path, is never a directive: the open line keeps streaming.
+    adapter = await _stream(["Platforms we cover, social media: ", "Twitter, Mastodon ", "and Bluesky",
+                             " plus a few forums", " in one long line"])
+    interim = [t for t in _shown(adapter) if "in one long line" not in t]
+    assert any("Twitter, Mastodon" in t for t in interim), _shown(adapter)

@@ -58,9 +58,12 @@ _FUTURE_TYPES = (asyncio.Future, concurrent.futures.Future)
 _DEFAULT_BOUNDARY_PLACEHOLDER = "⏸ 等待审批中..."
 
 # A delivery directive still being streamed on the open (last) line: "MEDIA:" not yet
-# stripped by the cleaner, a word-start prefix of "MEDIA", or a prefix of a [[…]] flag.
+# stripped by the cleaner and opening a path the way MEDIA_TAG_CLEANUP_RE's does (quote,
+# ~/, /, a drive letter), a word-start prefix of "MEDIA", or a prefix of a [[…]] flag.
+# Prose such as "social media: X" is not a path, so it never holds the line back.
 _PENDING_MEDIA_RE = re.compile(
-    r"""MEDIA:|(?:^|\s)[`"'*_]{0,3}M(?:E(?:D(?:I(?:A)?)?)?)?$""", re.IGNORECASE)
+    r"""MEDIA:\s*(?:$|[`"'~/\\]|[A-Za-z](?::|$))|(?:^|\s)[`"'*_]{0,3}M(?:E(?:D(?:I(?:A)?)?)?)?$""",
+    re.IGNORECASE)
 _PENDING_DIRECTIVE_RE = re.compile(r"\[\[?[A-Za-z_]*\]?$")
 _STREAM_DIRECTIVES = ("[[audio_as_voice]]", "[[as_document]]")
 

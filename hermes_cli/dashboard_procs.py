@@ -163,6 +163,86 @@ def _pid_passwd_home(pid: int) -> str | None:
     return None
 
 
+def _is_osascript_wrapper_argv(argv: list[str]) -> bool:
+    """True for the Local Network wrapper launchd gateway jobs run (#57812).
+
+    The gateway command hides inside a single JXA ``-e`` string, so argv flag
+    parsing that works for plain Hermes processes never sees the profile flag.
+    """
+    return bool(argv) and os.path.basename(argv[0]) == "osascript" and "-e" in argv[1:]
+
+
+def _launchd_plist_env_home(wrapper_argv: list[str]) -> str | None:
+    """``HERMES_HOME`` from the launchd job plist whose JXA matches *wrapper_argv*.
+
+    The plist's ``ProgramArguments`` are what launchd execs, so the wrapper's last
+    argv token is byte-identical to the plist's last ProgramArguments entry; that
+    match pins the label without launchctl. ``None`` when nothing (or more than one
+    job) matches with a home, leaving the caller its existing fallback.
+    """
+    jxa = wrapper_argv[-1] if wrapper_argv else ""
+    if not jxa:
+        return None
+    with contextlib.suppress(Exception):
+        import plistlib
+
+        from hermes_cli.gateway import get_launchd_plist_path
+
+        agents_dir = get_launchd_plist_path().parent
+        homes: list[str] = []
+        for path in sorted(agents_dir.glob("ai.hermes.gateway*.plist")):
+            data: dict = {}
+            with contextlib.suppress(Exception):
+                with open(path, "rb") as fh:
+                    data = plistlib.load(fh)
+            if not data:
+                continue
+            args = data.get("ProgramArguments")
+            if not args and isinstance(data.get("Program"), dict):
+                args = data["Program"].get("ProgramArguments")
+            if not args or args[-1] != jxa:
+                continue
+            home = str((data.get("EnvironmentVariables") or {}).get("HERMES_HOME", "")).strip()
+            if home and home not in homes:
+                homes.append(home)
+        # Same JXA across labels (legacy label migration keeps old plists around)
+        # repeats one home, not two conflicting ones: dedupe before the ambiguity
+        # check so a migrated install still resolves instead of always returning
+        # None, while genuinely different homes per label stay rejected.
+        if len(set(homes)) == 1:
+            return homes[0]
+    return None
+
+
+def _wrapper_env_home(pid: int, wrapper_argv: list[str]) -> str | None:
+    """Hermes home behind an osascript wrapper whose own environment is unreadable.
+
+    The wrapper is an Apple platform binary: its environment reads as empty, and the
+    wrapped gateway's ``HERMES_HOME``/``--profile`` sit inside the JXA string, so the
+    plain resolver attributes the wrapped gateway to the root home — every update
+    drain request lands on the default gateway and profile gateways are never asked
+    (#143930). Launch-time evidence is used instead, strongest first: the wrapped
+    child's own environment, then the job plist's ``EnvironmentVariables``.
+    Discovery only: destructive callers keep their existing refuse-without-proof path.
+    """
+    with contextlib.suppress(Exception):
+        import psutil
+
+        for child in psutil.Process(pid).children(recursive=True):
+            with contextlib.suppress(Exception):
+                if not any("hermes" in str(tok) for tok in (child.cmdline() or [])):
+                    continue
+            child_env: dict = {}
+            with contextlib.suppress(Exception):
+                child_env = child.environ() or {}
+            home = str(child_env.get("HERMES_HOME", "")).strip()
+            if home:
+                return home
+    if sys.platform == "darwin":
+        return _launchd_plist_env_home(wrapper_argv)
+    return None
+
+
 def _hermes_home_for_pid(pid: int, *, require_launch_identity: bool = False) -> str | None:
     """Resolve a process home for discovery, or require pinned launch identity for termination.
 
@@ -194,6 +274,16 @@ def _hermes_home_for_pid(pid: int, *, require_launch_identity: bool = False) -> 
         return None
     argv = argv or []
     env_home = env.get("HERMES_HOME", "").strip()
+    if not env_home and not require_launch_identity and _is_osascript_wrapper_argv(argv):
+        # The Local Network wrapper (#57812) is an Apple platform binary: its
+        # environment reads as empty and the wrapped gateway's HERMES_HOME / profile
+        # flag sit inside the JXA string, so the plain path below would anchor at the
+        # *inspecting* user's home and attribute the wrapped gateway to the root home.
+        # Recover launch-time evidence instead (#143930): the wrapped child's
+        # environment, then the job plist's EnvironmentVariables.
+        discovered = _wrapper_env_home(pid, argv)
+        if discovered:
+            return discovered
     profile = _profile_flag_value(argv)
     if require_launch_identity:
         anchor = (env.get('LOCALAPPDATA') or env.get('USERPROFILE')) if sys.platform == 'win32' else env.get('HOME')

@@ -19,6 +19,7 @@ import sys
 import textwrap
 import time
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from hermes_cli import gateway_service_owner, setup_platforms
 
@@ -3925,7 +3926,8 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
 # =============================================================================
 
 
-from hermes_cli.gateway_launchd import (
+from hermes_cli.gateway_launchd import (  # noqa: E402,F401 — facade re-exports; tests patch here
+    LaunchdReload,
     get_launchd_label,
     _probe_launchd_domain_for_label,
     _launchd_domain,
@@ -3973,6 +3975,7 @@ from datetime import UTC
 
 # Cached launchd domain — probe once per process invocation.
 _resolved_launchd_domain: str | None = None
+
 
 
 

@@ -110,8 +110,10 @@ set/get/unset <NAME>` route any bare name registered in `OPTIONAL_ENV_VARS` / `_
   key: `rg -n '"<key>"' hermes_cli/config_defaults.py` AND `rg -n '<key>' --glob '!tests' .` both hit,
   and one invariant test sets it in a temp `config.yaml` and asserts the behaviour through the loader
   the consuming surface uses. Under multiplex the process env never overrides a profile's YAML.
-- **Working directory:** CLI uses `os.getcwd()`; messaging uses `terminal.cwd`, bridged to
-  `TERMINAL_CWD` for child tools.
+- **Working directory:** CLI uses `os.getcwd()`; messaging uses `terminal.cwd` via `TERMINAL_CWD`.
+  Startup `--in`/`--no-restore-cwd` aligns a nonblank inherited tool cwd with launch cwd;
+  absent/blank stays unchanged. Same-directory resume refreshes only a nonblank tool cwd;
+  model/YOLO and mid-chat `/resume` still restore session state.
 
 ## Skin engine (`hermes_cli/skin_engine.py`)
 

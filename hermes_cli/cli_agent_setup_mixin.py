@@ -4,6 +4,7 @@ imported lazily inside each method (import cycle)."""
 
 from __future__ import annotations
 
+import os
 import sys
 
 from rich.markup import escape as _escape
@@ -570,9 +571,14 @@ class CLIAgentSetupMixin:
                 self.session_id = resolved_id
         return session_meta
 
-    def _restore_session_state(self, session_meta, *, quiet: bool = False) -> None:
+    def _restore_session_state(self, session_meta, *, quiet: bool = False, restore_cwd: bool = True) -> None:
         """Restore cwd / yolo / model from the resumed session's metadata."""
-        self._restore_session_cwd(session_meta, quiet=quiet)
+        if restore_cwd:
+            self._restore_session_cwd(session_meta, quiet=quiet)
+        elif os.environ.get("TERMINAL_CWD", "").strip():
+            # Keep inherited tool cwd aligned with the explicit launch directory;
+            # absent/blank stays unchanged so remote defaults are not replaced.
+            os.environ["TERMINAL_CWD"] = os.getcwd()
         self._restore_session_yolo(session_meta, quiet=quiet)
         self._restore_session_model(session_meta, quiet=quiet)
 
@@ -635,7 +641,9 @@ class CLIAgentSetupMixin:
                 f"{t('cli.resume.resumed_session')} {self.session_id}{title_part} {counts}",
                 f"[bold {_accent_hex()}]{_escape(t('cli.resume.resumed_session'))}[/] [bold]{_escape(self.session_id)}[/]"
                 f"[bold {_accent_hex()}]{_escape(title_part)}[/] {counts}")
-            self._restore_session_state(session_meta, quiet=_quiet_mode)
+            self._restore_session_state(
+                session_meta, quiet=_quiet_mode,
+                restore_cwd=not getattr(self, "_startup_no_restore_cwd", False))
         else:
             no_messages = t("cli.resume.session_no_messages", session_id=self.session_id)
             _say(no_messages, f"[bold {_accent_hex()}]{_escape(no_messages)}[/]")
@@ -867,7 +875,8 @@ class CLIAgentSetupMixin:
         self._console_print(
             f"[{accent_color}]{_escape(t('cli.resume.resumed_session'))} [bold]{self.session_id}[/bold]"
             f"{title_part} {_resume_counts(msg_count, len(restored))}[/]")
-        self._restore_session_state(session_meta)
+        self._restore_session_state(
+            session_meta, restore_cwd=not getattr(self, "_startup_no_restore_cwd", False))
         self._reopen_session()
         return True
 

@@ -7756,14 +7756,25 @@ def _credential_rung_accepts(exc: Exception) -> bool:
 
 
 # Immutable route context shared by the recovery rungs.
-_LadderRoute = NamedTuple("_LadderRoute", [
-    ("client", Any), ("task", Optional[str]), ("tag", str), ("async_mode", bool), ("base_info", str),
-    ("resolved_provider", str), ("resolved_model", Optional[str]), ("resolved_base_url", Optional[str]),
-    ("resolved_api_key", Optional[str]), ("resolved_api_mode", Optional[str]),
-    ("final_model", Optional[str]), ("main_runtime", Optional[Dict[str, Any]]),
-    ("route_info", Optional[Dict[str, str]]), ("timeout", Optional[float]),
-    ("required_tokens", Optional[int]),
-])
+class _LadderRoute(NamedTuple):
+    client: Any
+    task: Optional[str]
+    tag: str
+    async_mode: bool
+    base_info: str
+    resolved_provider: str
+    resolved_model: Optional[str]
+    resolved_base_url: Optional[str]
+    resolved_api_key: Optional[str]
+    resolved_api_mode: Optional[str]
+    final_model: Optional[str]
+    main_runtime: Optional[Dict[str, Any]]
+    route_info: Optional[Dict[str, str]]
+    timeout: Optional[float]
+    # The size of the request the route is about to carry. ``None`` means "not sized" —
+    # the context screen then applies only the task floor, which keeps older callers that
+    # build a route without sizing information working unchanged.
+    required_tokens: Optional[int] = None
 
 
 def _without_temperature(kwargs: dict) -> Optional[dict]:

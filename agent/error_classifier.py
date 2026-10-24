@@ -354,6 +354,11 @@ _PROVIDER_POLICY_BLOCKED_PATTERNS = (
     "no endpoints found matching your data policy",
 )
 
+# Relay/proxy 404 when its provider entry has no usable credentials (9Router's wording,
+# #141820): the credential layer refused before any model was consulted — permanent auth,
+# not a missing model, and retrying the same route can only fail identically.
+_NO_ACTIVE_CREDENTIALS_PATTERNS = ("no active credentials",)
+
 # Upstream account ban relayed by an aggregator, often as HTTP 200 + an SSE error
 # event (no status): permanent for this account, so never the transient retry ladder.
 _ACCOUNT_POLICY_BLOCK_PATTERNS = ("blocked for a previous policy violation",)
@@ -637,7 +642,10 @@ _OVERFLOW_AS_5XX_RULES = (
 
 # 404: Nous API surfaces credit depletion as a paid model vanishing from the
 # Free Tier (billing, not missing model); policy block before model_not_found.
+# A no-active-credentials 404 goes first: the credential layer refused, so the
+# model-adjacent rules below must not reframe it as a model problem.
 _404_RULES = (
+    (_NO_ACTIVE_CREDENTIALS_PATTERNS, _v(_R.auth_permanent, retryable=False, should_fallback=True)),
     (_BILLING_PATTERNS, _V_BILLING), (_PROVIDER_POLICY_BLOCKED_PATTERNS, _V_POLICY_BLOCKED),
     (_MODEL_NOT_FOUND_PATTERNS, _V_MODEL_NOT_FOUND),
 )

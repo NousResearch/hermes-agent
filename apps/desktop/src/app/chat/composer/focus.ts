@@ -66,6 +66,8 @@ const VOICE_TOGGLE_EVENT = 'hermes:composer-voice-toggle'
 const SPELLCHECK_EVENT = 'hermes:composer-spellcheck'
 const SPELLCHECK_REPLY_EVENT = 'hermes:composer-spellcheck-reply'
 
+/** The spell-check state requested for one composer, echoed back by the
+ *  surface that applied it. */
 interface SpellcheckDetail {
   enabled: boolean
   target: ComposerTarget
@@ -696,35 +698,35 @@ export const onComposerDictationRequest = (handler: (target: ComposerTarget) => 
   subscribe<{ target: ComposerTarget }>(DICTATION_EVENT, ({ target }) => handler(target))
 
 /**
- * Turn Chromium's spell check on or off for ONE composer.
+ * Turn Chromium's spell check (the red squiggles) on or off for ONE composer.
  *
  * The composer inputs have spell check OFF (#44415): browser spellcheck
  * flagged code, paths and slash commands, which was more annoying than the
  * squiggles were useful. That stays the default -- this verb does not change
  * it for anyone.
  *
- * It exists for a plugin that provides its own dictionary and rules, where
- * the user installed the plugin precisely to get spell checking. Such a
- * plugin knows which of its suggestions are code or paths and can leave them
- * alone; the core inputs cannot, because the core has no dictionary of its
- * own.
+ * It exists for a plugin that ships a dictionary, where the user installed the
+ * plugin precisely to get spell checking. Chromium still decides WHAT is
+ * flagged; the plugin's control over that is its dictionary (`host.spellcheck`
+ * add/remove one word at a time), not this verb. This one only decides whether
+ * the composer is checked at all.
  *
- * The setting is per-surface, like the other verbs on this bus: it addresses
- * ONE composer, so a plugin can spell check the primary composer and leave a
- * tile alone.
+ * ACKED, unlike the fire-and-forget mutations on this bus: the request carries
+ * a token and the addressed surface echoes whether it ACTUALLY applied the
+ * setting (a mounted surface with no editable attached yet has not). A plain
+ * dispatch could not say that -- the event is dropped when no surface is
+ * subscribed for the target, and the caller would be told "on" for a composer
+ * that never received it.
  *
- * ACKED, unlike the other mutations on this bus: the request carries a token
- * and the addressed surface echoes it, so the caller learns whether the
- * setting was actually applied. A fire-and-forget dispatch cannot say that --
- * the event is simply dropped when no surface is subscribed for the target,
- * so the requester would be told "on" for a composer that never received it.
- * That matters more here than for the other verbs: the setting is a standing
- * preference, and a plugin that painted "spell check on" for a composer that
- * is not mounted has no way to learn the setting was never applied.
- *
- * Resolves false when no mounted surface claims the address, or when none
- * answers within the settle window -- the same fail-closed signal
- * `setDraft`/`insertText` give.
+ * FAIL-CLOSED and stateless: when no mounted surface claims the address, none
+ * answers within the settle window, or the claimant has nothing to write to,
+ * the promise settles false and NOTHING is remembered about it. There is
+ * deliberately no standing preference -- a stored one would make false mean
+ * both "not applied" and "applied when you open it", would outlive the plugin
+ * that asked for it (there is no unload hook to clear it), and would let a
+ * plugin address sessions that never existed. A plugin wanting the setting on a
+ * surface that is not mounted yet calls again once it is; false is the signal
+ * to retry.
  */
 export const requestComposerSpellcheck = (
   enabled: boolean,
@@ -738,13 +740,6 @@ export const requestComposerSpellcheck = (
 
   const token = ++spellcheckToken
   const resolvedTarget = resolve(target)
-
-  // The setting is a STANDING PREFERENCE for the surface, not a one-shot
-  // event. A plugin turns spell check on for a session; that session's
-  // composer may not be open yet, and the user may open it later. Recording
-  // the preference against the surface is what makes the setting land then,
-  // instead of being lost with the dropped event.
-  spellcheckDesired.set(resolvedTarget, enabled)
 
   return new Promise<boolean>(settle => {
     pending.set(token, settle)
@@ -767,43 +762,23 @@ export const onComposerSpellcheckRequest = (handler: (detail: SpellcheckDetail) 
 
 /**
  * Subscriber-side ack for {@link requestComposerSpellcheck}: the surface that
- * applied the setting reports back so the requester's promise settles.
+ * applied the setting reports the REAL outcome so the requester's promise
+ * settles. `ok: false` is a surface that claimed the address but had no
+ * editable to write to.
  */
 export const ackComposerSpellcheck = (token: number | undefined, ok: boolean) => {
   if (token === undefined || typeof window === 'undefined') {
     return
   }
 
-  window.dispatchEvent(
-    new CustomEvent<SpellcheckReplyDetail>(SPELLCHECK_REPLY_EVENT, { detail: { ok, token } })
-  )
+  window.dispatchEvent(new CustomEvent<SpellcheckReplyDetail>(SPELLCHECK_REPLY_EVENT, { detail: { ok, token } }))
 }
 
 const SPELLCHECK_REPLY_TIMEOUT_MS = 50
 
 let spellcheckToken = 0
 
-/**
- * The spell-check preference per surface, as last requested.
- *
- * Keyed by the RESOLVED target, so `'active'` and an explicit `'main'` land
- * on the same entry. A surface reads its entry when it mounts, which is how
- * a request made before the surface existed is not lost.
- *
- * This is the composer's own standing setting rather than a plugin's: the
- * composer keeps spell check on once it has been asked for, the same way it
- * keeps any other per-surface preference.
- */
-const spellcheckDesired = new Map<ComposerTarget, boolean>()
-
-/** The spell-check preference last requested for a surface, if any. */
-export const getComposerSpellcheckDesired = (target: ComposerTarget): boolean | undefined =>
-  spellcheckDesired.get(target)
-
-
-
-const spellcheckReplies =
-  typeof window === 'undefined' ? null : new Map<number, (ok: boolean) => void>()
+const spellcheckReplies = typeof window === 'undefined' ? null : new Map<number, (ok: boolean) => void>()
 
 if (typeof window !== 'undefined') {
   window.addEventListener(SPELLCHECK_REPLY_EVENT, event => {

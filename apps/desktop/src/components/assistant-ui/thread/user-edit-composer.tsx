@@ -879,7 +879,10 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
             <div
               aria-label={copy.editMessage}
               autoCapitalize="off"
-              // Match the main composer: allow macOS replacements, not spellcheck.
+              // Match the main composer: `autocorrect` keeps the user's custom
+              // macOS Text replacements, while `spellcheck={false}` below keeps
+              // the language substitutions (smart quotes, dashes, ellipses) and
+              // the red squiggles off.
               autoCorrect={isMacPlatform() ? 'on' : 'off'}
               className={cn(
                 'ui-prompt-input-editor__input max-h-48 w-full resize-none overflow-y-auto bg-transparent p-0 pr-7 text-[length:var(--conversation-text-font-size)] text-foreground/95 outline-none',

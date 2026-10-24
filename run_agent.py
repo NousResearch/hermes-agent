@@ -1350,7 +1350,12 @@ class AIAgent(
             goal=function_args.get("goal"), context=function_args.get("context"),
             tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
             max_iterations=function_args.get("max_iterations"), role=function_args.get("role"),
-            background=not (getattr(self, "_delegate_depth", 0) > 0), images=function_args.get("images"),
+            # ACP sessions hold the turn open for their children (see acp_adapter/server.py), so
+            # they join the batch in-turn instead of returning a dispatch handle.
+            background=not (
+                getattr(self, "_delegate_depth", 0) > 0
+                or getattr(self, "_hold_delegations_in_turn", False)
+            ), images=function_args.get("images"),
             action=function_args.get("action"),
             subagent_id=function_args.get("subagent_id"), message=function_args.get("message"), parent_agent=self,
         )

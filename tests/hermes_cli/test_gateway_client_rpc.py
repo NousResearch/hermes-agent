@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from hermes_cli.gateway_client import GatewayClient, GatewayRPCError
+from hermes_cli.gateway_client import GatewayClient, GatewayClientError, GatewayRPCError
 
 
 class _Socket:
@@ -73,3 +73,19 @@ async def test_compress_waits_past_the_default_rpc_budget(monkeypatch):
     assert result == {'status': 'applied'}
     # The budget is a client-side knob, never a wire parameter the closed contract would refuse.
     assert all('_timeout' not in req['params'] for req in sent)
+
+
+@pytest.mark.asyncio
+async def test_send_on_a_dead_socket_is_a_client_error_not_a_raw_websockets_one():
+    """A keepalive timeout closes the socket under a poller (the dock's ``subagent.list``): the send
+    must surface as the transport's own error, which every caller catches, never as websockets'."""
+    from websockets.exceptions import ConnectionClosedError
+
+    class _Dead(_Socket):
+        async def send(self, raw):
+            raise ConnectionClosedError(None, None)
+
+    async with GatewayClient(_Dead(lambda req: None)) as client:
+        with pytest.raises(GatewayClientError, match='turn outcome is unknown'):
+            await client.rpc('subagent.list', session_id='s')
+        assert client.pending == {}

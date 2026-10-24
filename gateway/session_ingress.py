@@ -405,17 +405,23 @@ async def deliver_settled(authority, admission_id):
 
 async def deliver_response(adapter, event, session_key, response):
     from gateway.platforms.base import _thread_metadata_for_event, _mark_notify_metadata
-    text, ttl = adapter._unwrap_ephemeral(response)
-    if not text:
-        return
-    extracted = await adapter._extract_response_content(text, event, session_key, is_ephemeral_response=ttl > 0)
-    metadata = _mark_notify_metadata(_thread_metadata_for_event(event))
-    results = []
-    if extracted.text_content:
-        await adapter._send_final_text(event, session_key, extracted.text_content,
-                                       metadata, ttl > 0, ttl, results.append)
-    await adapter._deliver_attachments(event, extracted, metadata, anything_sent=bool(results),
-                                       record_delivery=results.append)
+    metadata = _thread_metadata_for_event(event)
+    try:
+        text, ttl = adapter._unwrap_ephemeral(response)
+        if not text:
+            return
+        extracted = await adapter._extract_response_content(text, event, session_key, is_ephemeral_response=ttl > 0)
+        final_metadata = _mark_notify_metadata(metadata)
+        results = []
+        if extracted.text_content:
+            await adapter._send_final_text(event, session_key, extracted.text_content,
+                                           final_metadata, ttl > 0, ttl, results.append)
+        await adapter._deliver_attachments(event, extracted, final_metadata, anything_sent=bool(results),
+                                           record_delivery=results.append)
+    finally:
+        # Busy/recovered replies have no adapter background lifecycle to retire typing.
+        # Do not clear the chat's pause: another session may still own an approval wait.
+        await adapter._stop_typing_quietly(event.source.chat_id, metadata)
 
 
 async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):

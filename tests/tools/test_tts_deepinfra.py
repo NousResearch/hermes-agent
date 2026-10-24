@@ -52,6 +52,10 @@ def test_unselected_cloud_credentials_do_not_expose_edge_tool(monkeypatch):
 
     monkeypatch.setattr(tts_tool, "_load_tts_config", dict)
     monkeypatch.setattr(tts_tool, "_import_edge_tts", MagicMock(side_effect=ImportError))
+    # The pm extra check probes the real venv: a developer machine with edge-tts
+    # installed would report the provider usable and fail this test (CI has no
+    # extra). Pin it so the test asserts the credential-selection logic only.
+    monkeypatch.setattr(tts_tool, "_pm_extra_available", lambda extra: False)
     monkeypatch.setenv("OPENAI_API_KEY", "unselected-key")
 
     assert tts_tool.check_tts_requirements() is False

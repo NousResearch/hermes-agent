@@ -10,6 +10,17 @@ DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
 DEFAULT_LOG_BACKUP_COUNT = 1
 
 
+def open_worker_log(task, board: Optional[str]):
+    """Append to a task's board-scoped log after applying the configured rotation."""
+    from hermes_cli import kanban_db as kb
+
+    log_dir = kb.worker_logs_dir(board=board)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{task.id}.log"
+    rotate_worker_log(log_path, *worker_log_rotation_config())
+    return open(log_path, "ab")
+
+
 def worker_log_rotation_config(kanban_cfg: Optional[dict] = None) -> tuple[int, int]:
     """Return ``(rotate_bytes, backup_count)`` for worker log rotation.
     Defaults: rotate at 2 MiB, keep one backup (``.log.1``); both overridable

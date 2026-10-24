@@ -55,9 +55,7 @@ def build_kanban_policy(connection, params, config):
             params_policy[name] = value
     private = {}
     policy = build_policy(params_policy, config, private_secrets=private)
-    if policy.model is None:
-        from gateway.run import _resolve_gateway_model
-        policy = replace(policy, model=_resolve_gateway_model(policy.config()))
+    policy = replace(policy, model=resolve_worker_model(task, policy.config()))
     context = dict(params, workspace=cwd, branch=task.branch_name, tenant=task.tenant,
         profile=task.assignee, workspaces_root=str(kb.workspaces_root(board=board).resolve()),
         skills=skills, goal_mode=task.goal_mode, goal_max_turns=task.goal_max_turns,
@@ -68,6 +66,18 @@ def build_kanban_policy(connection, params, config):
     request.update(source='kanban', board=board, task_id=task.id, run_id=task.current_run_id)
     return replace(policy, source='kanban', platform='cli', toolsets=tuple(sorted(set(policy.toolsets) | {'kanban'})),
                    request_json=json.dumps(request, sort_keys=True), kanban_json=json.dumps(context)), private
+
+
+def resolve_worker_model(task, config):
+    """Resolve the claimed task's model before an empty name can reach a durable receipt."""
+    from gateway.run import _resolve_gateway_model
+
+    model = task.model_override or _resolve_gateway_model(config)
+    if not isinstance(model, str) or not model.strip():
+        raise RuntimeStoreError('invalid_params', field='model',
+            detail=("No model configured for this profile; "
+                    f"run `hermes -p {task.assignee} model` or set a task model override"))
+    return model
 
 
 async def run_task(connection, params):

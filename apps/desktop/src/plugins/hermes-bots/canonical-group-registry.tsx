@@ -101,6 +101,7 @@ export function CanonicalGroupList({ onOpen }: { onOpen: (key: string, origin: C
   const labels = useCanonicalGroupLabels()
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
+  const gatewayState = useValue(host.state.gateway)
   const [rooms, setRooms] = useState<Array<{ key: string; name: string }>>([])
   const [error, setError] = useState('')
   const [refresh, setRefresh] = useState(0)
@@ -108,6 +109,11 @@ export function CanonicalGroupList({ onOpen }: { onOpen: (key: string, origin: C
     let cancelled = false
     setRooms([])
     setError('')
+
+    // The route is published before its socket opens. Retry on readiness instead
+    // of latching that startup race as a disconnected-gateway error.
+    if (!connectionId || gatewayState !== 'open') {return}
+
     void (async () => {
       const route = captureCanonicalGroupRoute()
       const result = await discoverCanonicalGroups(route)
@@ -116,7 +122,7 @@ export function CanonicalGroupList({ onOpen }: { onOpen: (key: string, origin: C
     })().catch(e => { if (!cancelled) {setError(e instanceof Error ? e.message : String(e))} })
 
     return () => { cancelled = true }
-  }, [connectionId, profile, refresh])
+  }, [connectionId, profile, gatewayState, refresh])
 
   return <div className="grid gap-1 px-2">
     <Button onClick={() => setRefresh(value => value + 1)} variant="ghost">{labels.refreshGroups}</Button>

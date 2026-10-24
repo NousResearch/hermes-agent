@@ -220,3 +220,45 @@ class TestExecuteJobForEvent:
         assert result["claimed"] is False
         assert result["success"] is False
         assert "ambiguous" in result["error"].lower()
+
+
+# ===================================================================
+# hjs-5cm: transient extra_prompt must ride the job dict through the
+# external cron worker handoff (payload carries only the job dict)
+# ===================================================================
+
+class TestEventRunTransientCarries:
+    def _captured_run(self, extra_prompt):
+        """Drive _execute_job_now with the scheduler seam captured, return the
+        job dict + kwargs run_one_job received (what the worker would get)."""
+        from tools import cronjob_tools
+
+        claimed = {"id": "job-1", "name": "j", "fire_claim": {"by": "owner-1"}}
+        captured = {}
+
+        def fake_run_one_job(job, **kw):
+            captured["job"] = job
+            captured["kw"] = kw
+            return True
+
+        with patch.object(cronjob_tools, "_claim_for_manual_run",
+                          return_value=(dict(claimed), None)), \
+             patch.object(cronjob_tools, "get_job", return_value={"last_status": "ok"}), \
+             patch("cron.scheduler.try_register_running_job", return_value=True), \
+             patch("cron.scheduler.release_running_job"), \
+             patch("cron.scheduler.run_one_job", side_effect=fake_run_one_job):
+            result = cronjob_tools._execute_job_now(
+                {"id": "job-1"}, extra_prompt=extra_prompt)
+        assert result["claimed"] is True
+        return captured
+
+    def test_event_run_stamps_transient_prompt_on_job(self):
+        cap = self._captured_run("CTX")
+        # The external worker payload is json(job): a kwarg alone does not cross.
+        assert cap["job"]["manual_run_prompt"] == "CTX"
+        assert cap["job"]["manual_run_at"]  # same stamp string, trigger_job parity
+
+    def test_plain_run_gets_no_stamp(self):
+        cap = self._captured_run(None)
+        assert "manual_run_prompt" not in cap["job"]
+        assert "manual_run_at" not in cap["job"]

@@ -2200,6 +2200,12 @@ body.guest-pointer-lock :is(webview, iframe) {
   mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 1.5rem), rgb(0 0 0 / 64%) 100%);
 }
 
+/* Typography's default keycap palette stays dark even in a dark theme. */
+.aui-md {
+  --tw-prose-kbd: var(--dt-foreground);
+  --tw-prose-kbd-shadows: color-mix(in srgb, var(--dt-foreground) 10%, transparent);
+}
+
 /* Themed at the renderer root so every `aui-md` consumer (assistant turns,
    system-message reports, session-import previews) inherits it; the room
    selector covers the plugin's raw-Streamdown fallback, which has no `.aui-md`. */

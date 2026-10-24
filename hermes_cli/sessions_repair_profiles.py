@@ -126,10 +126,10 @@ def enumerate_stores() -> list[Store]:
     """Default root plus every live named profile (a live profile claims its namespace whether or not
     it has written a ``state.db`` yet). The root store owns the routing index: the multiplexer's
     ``_routing_home`` is its launch home, the root."""
-    from hermes_cli.profiles import _get_default_hermes_home, _iter_named_profile_dirs
+    from hermes_cli.profiles import _get_default_hermes_home, iter_named_profile_dirs
     root = _get_default_hermes_home()
     stores = [Store("default", root, routing=True)]
-    stores.extend(Store(entry.name, entry) for entry in _iter_named_profile_dirs())
+    stores.extend(Store(entry.name, entry) for entry in iter_named_profile_dirs())
     return stores
 
 

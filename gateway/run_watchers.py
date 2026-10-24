@@ -84,9 +84,9 @@ class GatewaySessionWatchersMixin:
 
         See #72039.
         """
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run import AGENT_PENDING_SENTINEL
         agent = (getattr(self, "_running_agents", None) or {}).get(session_key)
-        if agent is None or agent is _AGENT_PENDING_SENTINEL:
+        if agent is None or agent is AGENT_PENDING_SENTINEL:
             return None
         try:
             summary = agent.get_activity_summary()

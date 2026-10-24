@@ -220,8 +220,17 @@ def _build_child_system_prompt(
 
 def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     """Best-effort local workspace hint for child prompts: only a concrete
-    absolute directory is ever injected (never a fake container path)."""
+    absolute directory is ever injected (never a fake container path).
+
+    On SSH, skip the Hermes home and the subprocess home. Inside the official
+    Docker image ``TERMINAL_CWD=.`` resolves to ``/opt/data`` because that
+    directory exists on the machine running Hermes, and the child prompt would
+    tell the subagent to use it as its workdir.
+    """
     from agent.runtime_cwd import scope_terminal_cwd
+    from tools.terminal_tool_config import _ssh_host_only_dir, _tenv
+
+    ssh = _tenv("TERMINAL_ENV", "local").strip().lower() == "ssh"
     candidates = [
         scope_terminal_cwd(), getattr(getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None),
         getattr(parent_agent, "terminal_cwd", None), getattr(parent_agent, "cwd", None),
@@ -229,6 +238,8 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     for candidate in filter(None, candidates):
         with _quiet(None):
             text = os.path.abspath(os.path.expanduser(str(candidate)))
+            if ssh and _ssh_host_only_dir(text):
+                continue
             if os.path.isabs(text) and os.path.isdir(text):
                 return text
     return None

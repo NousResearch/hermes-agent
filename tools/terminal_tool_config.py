@@ -168,6 +168,26 @@ def _in_sandbox_home(cwd: Any, env: Any) -> bool:
     return cwd == home or cwd.startswith(home + "/")
 
 
+def _ssh_host_only_dir(path: str) -> bool:
+    """True when *path* is this machine's Hermes home or its subprocess home.
+
+    In the official Docker image those are ``/opt/data`` and ``/opt/data/home``.
+    They exist on the machine running Hermes and not on an SSH target. A path
+    that is the OS user's real home is kept: the remote may use that same path.
+    """
+    if not isinstance(path, str) or not posixpath.isabs(path):
+        return False
+    from hermes_constants import get_hermes_home, get_real_home, get_subprocess_home
+
+    norm = posixpath.normpath(path)
+    real = posixpath.normpath(get_real_home() or "")
+    roots = [posixpath.normpath(str(get_hermes_home()))]
+    sub = get_subprocess_home()
+    if sub:
+        roots.append(posixpath.normpath(sub))
+    return any(root and root != real and norm == root for root in roots)
+
+
 @overload
 def coerce_ssh_remote_cwd(cwd: str, env_type: str | None) -> str: ...
 @overload
@@ -179,19 +199,25 @@ def coerce_ssh_remote_cwd(cwd: str | None, env_type: str | None) -> str | None:
     SSH user's home. The Hermes process's subprocess home (``/opt/data/home``
     in the official Docker image) is a directory on the machine running
     Hermes: it and anything under it are rewritten onto the remote ``~``, since
-    ``cd`` into the host path exits 126 on the target. A subprocess home that is
-    the OS user's real home is left alone: a remote path may legitimately match
-    it. Other backends are unchanged.
+    ``cd`` into the host path exits 126 on the target. The Hermes home itself
+    (``/opt/data``) is that directory's parent, so the relative check leaves it
+    unchanged; it is rewritten to ``~`` as well. A path that is the OS user's
+    real home is left alone: a remote path may legitimately match it. Other
+    backends are unchanged.
     """
     if not isinstance(cwd, str) or (env_type or "").strip().lower() != "ssh":
         return cwd
     text = cwd.strip()
     if not text or text.startswith("~"):
         return text or "~"
+    if not posixpath.isabs(text):
+        return text
+    if _ssh_host_only_dir(text):
+        return "~"
     from hermes_constants import get_real_home, get_subprocess_home
 
     home = get_subprocess_home()
-    if not home or not posixpath.isabs(text) or posixpath.normpath(home) == posixpath.normpath(get_real_home()):
+    if not home or posixpath.normpath(home) == posixpath.normpath(get_real_home()):
         return text
     rel = posixpath.relpath(posixpath.normpath(text), posixpath.normpath(home))
     if rel == ".":

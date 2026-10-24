@@ -327,7 +327,13 @@ def admission_display(payload):
 
 
 def _route_identity(source):
-    return {key: value for key, value in source.to_dict().items() if key != 'message_id'}
+    # Thread-creation metadata (auto_thread_created, auto_thread_initial_name) rides the
+    # session ORIGIN (the channel message that auto-created the thread) but never the later
+    # in-thread messages whose committed envelopes are compared here — leaving it in made
+    # every automation wake into an auto-created thread fail provenance (admission_conflict,
+    # requeued forever). It is rename/display metadata, not route identity: strip it.
+    return {key: value for key, value in source.to_dict().items()
+            if key not in ('message_id', 'auto_thread_created', 'auto_thread_initial_name')}
 
 
 def committed_route_envelope(authority, entry):

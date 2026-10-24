@@ -33,7 +33,7 @@ from agent.model_metadata import (
 )
 from agent.image_token_cost import bind_image_token_cost
 from agent.usage_anchor import anchored_context_tokens, restore_usage_anchor
-from agent.turn_author import parse_turn_author
+from agent.turn_author import parse_turn_author, turn_author_payload
 
 logger = logging.getLogger(__name__)
 
@@ -819,6 +819,7 @@ def _collect_pre_llm_call_context(
             platform=getattr(agent, "platform", None) or "",
             parent_session_id=getattr(agent, "_parent_session_id", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            turn_author=turn_author_payload(agent),
         )
         try:
             # Spill oversized per-hook context to disk so a runaway plugin can't inflate every subsequent

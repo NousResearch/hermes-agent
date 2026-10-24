@@ -42,7 +42,11 @@ def _append_moa_context(agent: Any, api_messages: Any, moa_config: Any, original
     message (as a trailing text part on multimodal turns). Fail-open."""
     try:
         from agent.message_content import flatten_message_text as _flatten_mt
-        from agent.moa_loop import _preset_temperature, aggregate_moa_context
+        from agent.moa_loop import (
+            _preset_temperature,
+            _preset_tool_result_budget,
+            aggregate_moa_context,
+        )
 
         _moa_context = aggregate_moa_context(
             user_prompt=(
@@ -67,6 +71,7 @@ def _append_moa_context(agent: Any, api_messages: Any, moa_config: Any, original
             degraded_reference_policy=str(
                 moa_config.get("degraded_reference_policy") or "loud"
             ),
+            reference_tool_result_budget=_preset_tool_result_budget(moa_config),
             agent=agent,
         )
         if not _moa_context:

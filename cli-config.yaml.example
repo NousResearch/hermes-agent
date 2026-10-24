@@ -412,6 +412,19 @@ kanban:
   review_dispatch: true
 
 # =============================================================================
+# Mixture of Agents — advisory tool-result previews
+# =============================================================================
+# Optional per-preset input budget. Lower it to reduce advisor input, or raise it
+# for document analysis. This limits retained characters from EACH tool result,
+# not total input or model output; omission markers are additional text.
+# Valid range: 200–50000; default: 4000. Keep your preset's model slots too.
+# moa:
+#   presets:
+#     review:
+#       reference_tool_result_budget: 12000
+# Set with: hermes config set moa.presets.review.reference_tool_result_budget 12000
+
+# =============================================================================
 # Terminal Tool Configuration
 # =============================================================================
 # Choose ONE of the following terminal configurations by uncommenting it.

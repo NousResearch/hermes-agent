@@ -31,10 +31,11 @@ a2a_agents:
 
 ## Outbound — call other agents
 
-The agent gets five tools:
+The agent gets these tools:
 
 - `a2a_discover(url)` — what can this agent do?
-- `a2a_call(agent, message, context_id?)` — send it a task, get the reply.
+- `a2a_call(agent, message, context_id?, return_immediately?)` — send it a task, get the reply. Set `return_immediately` for long jobs to get a task id back at once.
+- `a2a_get_task(agent, task_id)` — check a running task (state and, when done, the reply).
 - `a2a_list()` — configured peers, saved conversations, metrics.
 - `a2a_history(context_id)` — recall a saved A2A conversation.
 - `a2a_orchestrate(capability, message, mode?)` — fan-out a task to every

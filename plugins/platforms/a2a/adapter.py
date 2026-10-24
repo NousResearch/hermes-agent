@@ -20,6 +20,7 @@ import urllib.request
 from collections import OrderedDict, deque
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeout
+from contextvars import copy_context
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
 
@@ -32,6 +33,7 @@ from . import protocol, security
 
 logger = logging.getLogger(__name__)
 
+_BACKGROUND_WAIT_SECONDS = 24 * 60 * 60
 _DEFAULT_PORT = 9900
 # seconds: orphan grace floor / ceiling / watchdog period. The ceiling keeps the sweep
 # meaningful when A2A_REPLY_TIMEOUT is absurd (1e18 would never fail an orphan).
@@ -288,10 +290,14 @@ class A2AAdapter(BasePlatformAdapter):
         self._watchdog_stop = threading.Event()
         # Per-adapter protocol state (not module-global).
         self.tasks, self._turns, self._rate_limiter = protocol.TaskStore(), protocol.TurnTracker(), protocol.RateLimiter()
-        # Pending reply futures: task_id -> (context_id, Future). _pending_order keeps per-context
-        # FIFO so adapter.send() — which only knows the context — resolves the oldest task.
+        # Pending reply futures: task_id -> (context_id, Future). send() resolves the task named by
+        # the final's reply anchor (the gateway anchors on the inbound message id == task id).
         self._pending: dict[str, tuple[str, Future]] = {}
-        self._pending_order: dict[str, deque[str]] = {}
+        # One dispatched turn per context. The gateway's busy queue merges or replaces queued text
+        # for a session, which would fold two tasks into one turn: one gets the other's answer and
+        # the other never settles. Later tasks wait here until the in-flight one is popped.
+        self._inflight: dict[str, str] = {}
+        self._queued: dict[str, deque[tuple[str, MessageEvent]]] = {}
         # Request ownership outlives reply Futures and also covers synchronous profile forwards.
         self._active_tasks: set[str] = set()
         # Admission ids this process already forwarded; a resend of one is a retry, not a new turn.
@@ -349,7 +355,8 @@ class A2AAdapter(BasePlatformAdapter):
             for tid in list(self._pending):
                 self._resolve_locked(tid, protocol.STATE_FAILED, "[agent shutting down]")
             self._pending.clear()
-            self._pending_order.clear()
+            self._inflight.clear()
+            self._queued.clear()
             self._active_tasks.clear()
 
     def _watchdog_loop(self) -> None:
@@ -484,7 +491,6 @@ class A2AAdapter(BasePlatformAdapter):
         with self._pending_lock:
             self._active_tasks.add(task_id)
             self._pending[task_id] = (context_id, fut)
-            self._pending_order.setdefault(context_id, deque()).append(task_id)
         return fut
 
     def _activate_task(self, task_id: str) -> None:
@@ -512,11 +518,38 @@ class A2AAdapter(BasePlatformAdapter):
         with self._pending_lock:
             self._active_tasks.discard(task_id)
             entry = self._pending.pop(task_id, None)
-            order = self._pending_order.get(entry[0]) if entry else None
-            if order and task_id in order:
-                order.remove(task_id)
-            if order is not None and not order:
-                self._pending_order.pop(entry[0], None)
+            nxt = self._advance_context_locked(entry[0]) if entry and self._inflight.get(entry[0]) == task_id else None
+        if nxt is not None:
+            self._dispatch_queued(*nxt)
+
+    def _claim_context(self, context_id: str, task_id: str, event: MessageEvent) -> bool:
+        """True if ``task_id`` may dispatch now; otherwise it waits behind the in-flight task."""
+        with self._pending_lock:
+            if context_id in self._inflight:
+                self._queued.setdefault(context_id, deque()).append((task_id, event))
+                return False
+            self._inflight[context_id] = task_id
+            return True
+
+    def _advance_context_locked(self, context_id: str) -> Optional[tuple[str, MessageEvent]]:
+        """Hand the context to the next queued task still waiting (cancelled ones were popped)."""
+        queue = self._queued.get(context_id)
+        while queue:
+            task_id, event = queue.popleft()
+            entry = self._pending.get(task_id)
+            if entry and not entry[1].done():
+                self._inflight[context_id] = task_id
+                return task_id, event
+        self._queued.pop(context_id, None)
+        self._inflight.pop(context_id, None)
+        return None
+
+    def _dispatch_queued(self, task_id: str, event: MessageEvent) -> None:
+        try:
+            asyncio.run_coroutine_threadsafe(self.handle_message(event), self._loop)
+        except RuntimeError as e:  # the gateway loop is closed
+            # Its waiter finalizes the failure and pops it, which hands the context on.
+            self._resolve_task(task_id, protocol.STATE_FAILED, security.redact_outbound(f"Dispatch failed: {e}"))
 
     def _resolve_locked(self, task_id: str, state: str, text: str) -> bool:
         entry = self._pending.get(task_id)
@@ -529,9 +562,14 @@ class A2AAdapter(BasePlatformAdapter):
         with self._pending_lock:
             return self._resolve_locked(task_id, state, text)
 
-    def _resolve_oldest_for_context(self, context_id: str, state: str, text: str) -> bool:
+    def _resolve_final(self, context_id: str, anchor: Optional[str], text: str) -> bool:
+        """Resolve the task that owns a final: its anchor, else the context's in-flight task. A
+        late final anchored on a finished task settles nothing, so it can't answer a sibling."""
         with self._pending_lock:
-            return any(self._resolve_locked(tid, state, text) for tid in self._pending_order.get(context_id, ()))
+            task_id = anchor or self._inflight.get(context_id)
+            entry = self._pending.get(task_id or "")
+            return bool(entry and entry[0] == context_id
+                        and self._resolve_locked(task_id, protocol.STATE_COMPLETED, text))
 
     def _scope_for_agent(self, agent: Optional[dict]) -> tuple[str, str]:
         return tuple(str((agent or self._agents[""]).get(k) or "") for k in ("slug", "tenant"))
@@ -542,7 +580,7 @@ class A2AAdapter(BasePlatformAdapter):
         protocol.metrics.tasks_failed += state == protocol.STATE_FAILED
         return protocol.build_task(rec["task_id"], rec["context_id"], state, text, created_at=rec["created_iso"]), None
 
-    def _prepare_task(self, params: dict, peer: str, agent: Optional[dict] = None) -> tuple[Optional[dict], Optional[dict]]:
+    def _prepare_task(self, params: dict, peer: str, agent: Optional[dict] = None, *, defer_forward: bool = False) -> tuple[Optional[dict], Optional[dict]]:
         """Validate, register, and dispatch an inbound message (HTTP worker thread). Returns
         (terminal_task, None) when it ends immediately, else (None, pending) with the future to wait on."""
         agent = agent or self._agents[""]
@@ -584,6 +622,12 @@ class A2AAdapter(BasePlatformAdapter):
         self._register_inline_push(task_id, params, agent=agent)
         if forwarded:
             self._activate_task(task_id)
+            if defer_forward:
+                self.tasks.set_state(task_id, protocol.STATE_WORKING)
+                return None, {"task_id": task_id, "context_id": context_id, "peer": peer,
+                              "created_iso": rec["created_iso"], "started": time.time(),
+                              "forward": ({**agent, "timeout": _BACKGROUND_WAIT_SECONDS}, peer, context_id, framed,
+                                          input_id or task_id)}
             try:
                 reply, state = self._forward_to_profile(agent, peer, context_id, framed, input_id=input_id or task_id)
                 self._record_outcome(task_id, context_id, peer, state, reply)
@@ -596,7 +640,8 @@ class A2AAdapter(BasePlatformAdapter):
         event = MessageEvent(text=framed, message_type=MessageType.TEXT, message_id=task_id,
                              source=self.build_source(chat_id=context_id, chat_name=f"a2a:{peer}", chat_type="dm", user_id=peer, user_name=peer))
         try:
-            asyncio.run_coroutine_threadsafe(self.handle_message(event), self._loop)
+            if self._claim_context(context_id, task_id, event):
+                asyncio.run_coroutine_threadsafe(self.handle_message(event), self._loop)
         except Exception as e:
             msg = security.redact_outbound(f"Dispatch failed: {e}")
             try:
@@ -650,6 +695,10 @@ class A2AAdapter(BasePlatformAdapter):
         """Record a dispatched task's outcome; returns (state, reply) after redaction and
         input-required detection (a leading marker flags a clarification request)."""
         task_id, context_id, peer = pending["task_id"], pending["context_id"], pending["peer"]
+        rec = self.tasks.get(task_id)
+        if rec and rec["state"] in protocol.TERMINAL_STATES:
+            self._pop_pending(task_id)
+            return rec["state"], rec.get("reply") or ""
         try:
             reply = security.redact_outbound(reply or "")
             stripped = reply.lstrip()
@@ -682,8 +731,62 @@ class A2AAdapter(BasePlatformAdapter):
         return self._await_future(pending["future"], pending["started"] + _reply_timeout(), keepalive,
                                   (protocol.STATE_FAILED, "[agent did not reply in time]"))
 
+    @staticmethod
+    def _config_return_immediately(params: dict) -> bool:
+        """True when the caller asked for a task id now, not a blocking wait.
+
+        A2A v1.0 uses configuration.returnImmediately. Older peers used
+        configuration.blocking = false. Either one is enough.
+        """
+        cfg = params.get("configuration") if isinstance(params, dict) else None
+        if not isinstance(cfg, dict):
+            return False
+        if cfg.get("returnImmediately") is True or cfg.get("return_immediately") is True:
+            return True
+        if cfg.get("blocking") is False:
+            return True
+        return False
+
+    def _wait_in_background(self, pending: dict) -> None:
+        """Wait for the agent, then record the result.
+
+        Used when returnImmediately is set. The HTTP caller already has the
+        working task. A2A_REPLY_TIMEOUT applies only to blocking callers.
+        The wait still stops after _BACKGROUND_WAIT_SECONDS so a hung
+        gateway turn cannot pin a daemon thread and a forever-WORKING task.
+        """
+
+        def _run() -> None:
+            try:
+                if "forward" in pending:
+                    *args, input_id = pending["forward"]
+                    reply, state = self._forward_to_profile(*args, input_id=input_id)
+                else:
+                    state, reply = pending["future"].result(timeout=_BACKGROUND_WAIT_SECONDS)
+            except FuturesTimeout:
+                logger.warning("A2A: background waiter for task %s hit the %ss ceiling",
+                               pending.get("task_id"), _BACKGROUND_WAIT_SECONDS)
+                state, reply = protocol.STATE_FAILED, "[agent did not reply in time]"
+            except Exception:
+                # Boundary: no caller is left to raise to, so the task records the failure.
+                logger.warning("A2A: background waiter for task %s failed", pending.get("task_id"), exc_info=True)
+                state, reply = protocol.STATE_FAILED, "[agent did not reply]"
+            self._finalize_task(pending, state, reply)
+
+        threading.Thread(
+            target=copy_context().run,
+            args=(_run,),
+            name=f"a2a-wait-{pending['task_id'][:12]}",
+            daemon=True,
+        ).start()
+
     def _rpc_message_send(self, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None, v1_response: bool = False) -> dict:
-        task, pending = self._prepare_task(params, peer, agent=agent)
+        options = {"defer_forward": True} if agent and not agent.get("local", True) and self._config_return_immediately(params) else {}
+        task, pending = self._prepare_task(params, peer, agent=agent, **options)
+        if task is None and self._config_return_immediately(params):
+            self._wait_in_background(pending)
+            task = protocol.build_task(pending["task_id"], pending["context_id"], protocol.STATE_WORKING,
+                                       created_at=pending["created_iso"])
         if task is None:
             state, reply = self._finalize_task(pending, *self._await_reply(pending))
             task = protocol.build_task(pending["task_id"], pending["context_id"], state, reply, created_at=pending["created_iso"])
@@ -848,13 +951,15 @@ class A2AAdapter(BasePlatformAdapter):
         logger.debug("A2A: push notification sent for task %s", task_id)
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None):
-        """Fulfil the oldest pending reply Future for this context (``chat_id`` = A2A context id).
+        """Fulfil the reply Future of the task this final belongs to (``chat_id`` = A2A context id).
         Only sends carrying ``metadata['notify']`` (the base adapter's final-reply marker) satisfy
         the caller; progress/status/preview sends must not."""
+        # Stream-consumer finals carry their anchor in metadata instead of ``reply_to``.
+        anchor = str(reply_to or (metadata or {}).get("reply_to_message_id") or "") or None
         if not (metadata or {}).get("notify"):
             logger.debug("A2A: ignoring non-final send for context %s", chat_id)
-        elif not self._resolve_oldest_for_context(chat_id, protocol.STATE_COMPLETED, content or ""):
-            logger.debug("A2A: send() for context %s had no pending waiter", chat_id)  # late chunk / out-of-band
+        elif not self._resolve_final(chat_id, anchor, content or ""):
+            logger.info("A2A: final for context %s (anchor %s) matched no pending task", chat_id, anchor)
         return SendResult(success=True, message_id=str(int(time.time() * 1000)))
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:

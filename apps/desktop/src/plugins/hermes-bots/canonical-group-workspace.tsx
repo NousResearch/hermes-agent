@@ -177,6 +177,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 
   const composerLocked = !restored || busy || !!pending
   const phases = canonicalMemberPhases(state?.driver_status)
+  const pendingActions = state?.driver_status?.pending_actions ?? []
   const mentionMembers = (state?.room.members ?? []).map(member => ({ name: member.handle, handle: member.handle, display_name: member.display_name }))
 
   // Text pastes stay in the composer; only files go through the picker's upload.
@@ -189,7 +190,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     if (!composerLocked) {uploader.current?.upload(files)}
   }
 
-  return <section className="flex h-full min-h-0 flex-col gap-3 p-3">
+  return <section className="flex h-full min-h-0 min-w-0 flex-col gap-3 p-3">
     <CanonicalGroupHeader busy={busy} canStop={!!state?.driver_status} onBack={onBack} onDisband={end} onRename={rename}
       onStop={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: crypto.randomUUID() }))} phases={phases} room={state?.room} />
     {readError && <div role="alert">{readError}<Button onClick={() => void refresh().catch(e => setReadError(String(e)))}>{labels.refresh}</Button></div>}
@@ -199,19 +200,21 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       <CanonicalGroupHistory binding={binding} disabled={!visible} events={events} members={state?.room.members} />
       <CanonicalGroupWorkingLine driver={state?.driver_status} labels={labels} members={state?.room.members} phases={phases} />
     </div>
-    {(state?.driver_status?.pending_actions || []).map(action => <div className="flex items-center gap-2" key={`${action.kind}:${action.task_id}:${action.execution_generation}`}>
-      <span>{action.member_id}</span>
-      {action.kind === 'discard' && <Button disabled={busy} onClick={() => setDiscard({ ...action })}>{labels.discard}</Button>}
-      {action.kind === 'retry' && <Button disabled={busy} onClick={() => void act({ ...action })}>{labels.retry}</Button>}
-      {action.kind === 'approval' && <><Button disabled={busy} onClick={() => void act({ ...action }, 'once')}>{labels.allowOnce}</Button><Button disabled={busy} onClick={() => void act({ ...action }, 'deny')}>{labels.deny}</Button></>}
-    </div>)}
+    <ul className="min-h-0 max-h-[30%] shrink-0 space-y-2 overflow-y-auto" hidden={pendingActions.length === 0}>
+      {pendingActions.map(action => <li className="flex min-w-0 flex-wrap items-center gap-2" key={`${action.kind}:${action.task_id}:${action.execution_generation}`}>
+        <span className="min-w-0 flex-1 wrap-anywhere">{action.member_id}</span>
+        {action.kind === 'discard' && <Button disabled={busy} onClick={() => setDiscard({ ...action })}>{labels.discard}</Button>}
+        {action.kind === 'retry' && <Button disabled={busy} onClick={() => void act({ ...action })}>{labels.retry}</Button>}
+        {action.kind === 'approval' && <><Button disabled={busy} onClick={() => void act({ ...action }, 'once')}>{labels.allowOnce}</Button><Button disabled={busy} onClick={() => void act({ ...action }, 'deny')}>{labels.deny}</Button></>}
+      </li>)}
+    </ul>
     {discard && <div aria-label={labels.discardUnknown} role="alertdialog">
       <p>{labels.discardWarning}</p>
       <Button disabled={busy} onClick={() => { const exact = discard; setDiscard(null); void act(exact) }}>{labels.confirmDiscard}</Button>
       <Button onClick={() => setDiscard(null)}>{labels.cancel}</Button>
     </div>}
     {restoredPending && <p role="status">{labels.restoredPendingSend}</p>}
-    <form className="flex gap-2" onDragOver={event => { if (event.dataTransfer.types.includes('Files')) {event.preventDefault()} }}
+    <form className="flex shrink-0 gap-2" onDragOver={event => { if (event.dataTransfer.types.includes('Files')) {event.preventDefault()} }}
       onDrop={event => attachTransfer(event, event.dataTransfer)} onPaste={event => attachTransfer(event, event.clipboardData)} onSubmit={event => { event.preventDefault(); send() }}>
       <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={composerLocked} onChange={setAttachments} onUploadingChange={setUploading} ref={uploader} />
       <GroupMentionInput aria-label={labels.groupMessage} className="min-w-0 flex-1" disabled={composerLocked} handleFor={member => member.handle}

@@ -18,7 +18,9 @@ let
   python = pythonLock.interpreter;
   pythonPackages = python.pkgs;
 
-  workspace = uv2nix.lib.workspace.loadWorkspace { workspaceRoot = pythonSrc; };
+  # Read from unfiltered repo root at eval time; the hermes-agent package
+  # override re-binds its build-time src back to filtered pythonSrc below.
+  workspace = uv2nix.lib.workspace.loadWorkspace { workspaceRoot = ./..; };
   hacks = callPackage pyproject-nix.build.hacks { };
 
   overlay = workspace.mkPyprojectOverlay {
@@ -138,6 +140,8 @@ let
           # must remain blocked.
           (final: prev: {
             hermes-agent = prev.hermes-agent.overrideAttrs (_old: {
+              # loadWorkspace reads the unfiltered root; build from the filtered source
+              src = pythonSrc;
               HERMES_NIX_BUILD = "1";
             });
           })

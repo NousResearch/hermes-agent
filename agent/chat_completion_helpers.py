@@ -1960,9 +1960,70 @@ def _candidate_pool_exhausted(agent, fb_provider: str, fb_model: str) -> bool:
     return until is None or until - time.time() > 600
 
 
+def _session_context_tokens(agent) -> Optional[int]:
+    """Rough size of the session's current prompt, or None when it cannot be sized.
+
+    Prefers the provider's own last usage (anchored, so it accounts for the messages appended
+    since) and falls back to the compressor's last real prompt count. ``None`` means "unknown",
+    and every caller treats unknown as "do not block" — we cannot prove a candidate is too
+    small, so we must not refuse it.
+    """
+    try:
+        from agent.usage_anchor import anchored_context_tokens
+        anchored = anchored_context_tokens(
+            getattr(agent, "messages", None) or [], getattr(agent, "_usage_anchor", None))
+        if anchored is not None and anchored > 0:
+            return int(anchored)
+    except Exception as exc:
+        logger.debug("Fallback skip: could not size the session context: %s", exc)
+    try:
+        compressor = getattr(agent, "context_compressor", None)
+        tokens = int(getattr(compressor, "last_real_prompt_tokens", 0) or 0)
+        if tokens > 0:
+            return tokens
+        tokens = int(getattr(compressor, "last_prompt_tokens", 0) or 0)
+        return tokens if tokens > 0 else None
+    except Exception:
+        return None
+
+
+def _fallback_candidate_context_too_small(agent, fb: dict, fb_provider: str, fb_model: str) -> Optional[str]:
+    """Skip reason when the candidate's context window cannot hold this session's prompt.
+
+    A fallback that switches to a model with a SMALLER window than the session needs turns a
+    provider outage into a hard 400: the server rejects the request with "exceeds the
+    available context size". During the 2026-10-23 MiniMax plan-cap incident that is exactly
+    what the 32K local llama.cpp model received — a 182K-token session — and the server
+    rejected every request (t_e94832a1).
+
+    This is the agent-level twin of the auxiliary-level screen in ``agent.auxiliary_client``:
+    the aux screen protects the compression path, this one protects the main turn. Both compare
+    the candidate's REAL window (resolved from its endpoint) against the request that is about
+    to be sent, so a long session fails fast with a clear reason instead of a doomed round-trip.
+    """
+    required = _session_context_tokens(agent)
+    if not required or required <= 0:
+        return None  # session size unknown — never block on a guess
+    try:
+        from agent.model_metadata import get_model_context_length
+        from agent.auxiliary_health import _custom_health_base_url
+        base_url = str(fb.get("base_url") or "").strip() or _custom_health_base_url(fb_provider)
+        ctx = get_model_context_length(fb_model, base_url=base_url, provider=fb_provider)
+    except Exception as exc:
+        logger.debug("Fallback skip: could not resolve the context window for %s/%s: %s",
+                     fb_provider, fb_model, exc)
+        return None
+    if not isinstance(ctx, int) or ctx <= 0:
+        return None  # window unknown — do not block
+    if ctx >= required:
+        return None
+    return f"context window {ctx} cannot hold this session's ~{required} tokens"
+
+
 def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set) -> bool:
-    """True when the entry is already unavailable, malformed, locally unusable, or resolves
-    to the backend that just failed (falling back to it would loop the failure)."""
+    """True when the entry is already unavailable, malformed, locally unusable, cannot hold the
+    session's context, or resolves to the backend that just failed (falling back to it would
+    loop the failure)."""
     if fb_key in unavailable:
         logger.debug("Fallback skip: %s previously marked unavailable", fb_key)
         return True
@@ -1979,6 +2040,11 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
     if local_skip_reason:
         unavailable.add(fb_key)
         logger.warning("Fallback skip: %s/%s is not locally usable (%s); suppressing for this session", fb_provider, fb_model, local_skip_reason)
+        return True
+    context_reason = _fallback_candidate_context_too_small(agent, fb, fb_provider, fb_model)
+    if context_reason:
+        logger.warning("Fallback skip: %s/%s %s; skipping instead of sending a request the "
+                       "server would reject", fb_provider, fb_model, context_reason)
         return True
     # Identity semantics (axes, shim aliases, credential surfaces, multi-endpoint pools)
     # are owned by agent.backend_identity — do not re-implement comparisons here.

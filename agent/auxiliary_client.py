@@ -4296,10 +4296,18 @@ def _failed_backend_skip(
 def _try_main_agent_model_fallback(
     failed_provider: str, task: str = None, reason: str = "error",
     failed_model: Optional[str] = None, failed_base_url: str = "", failure_scope: Any = None,
+    required_tokens: Optional[int] = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Last-resort fallback to the main agent provider + model after the configured chain is exhausted.
     ``failed_model`` scoping per ``_failed_backend_skip``; same-URL custom endpoints serve many models,
-    so a hung aux model says nothing about the main model's health. Returns (client, model, label) or (None, None, "")."""
+    so a hung aux model says nothing about the main model's health. Returns (client, model, label) or (None, None, "").
+
+    ``required_tokens`` screens the main model by its own context window before it is used. This
+    rung used to skip that screen entirely, and that is the leak that started the 2026-10-23
+    incident: an auxiliary task with an EXPLICIT provider (so ``is_auto`` is False and the
+    configured chains are bypassed) whose provider ran out of credit landed here, and the main
+    agent had itself fallen back to a 32K local model — so compression replayed a 182K-token
+    conversation onto it and the server rejected every request (t_e94832a1)."""
     main_provider = (_read_main_provider() or "").strip()
     main_model = (_read_main_model() or "").strip()
     if main_provider.lower() == "moa":
@@ -4311,7 +4319,7 @@ def _try_main_agent_model_fallback(
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
         return None, None, ""
     if task == "vision" and (
-            main_provider in _PROVIDERS_WITHOUT_VISION or not _main_model_supports_vision(main_provider, main_model)):
+        main_provider in _PROVIDERS_WITHOUT_VISION or not _main_model_supports_vision(main_provider, main_model)):
         # Same capability gate as the auto-route (_vision_main_provider_client): handing an image to a
         # text-only main model turns a transient 429 into a guaranteed 400 (#108349).
         logger.info("Auxiliary vision: %s on %s — main agent provider %s accepts no image input, not falling back",
@@ -4332,6 +4340,17 @@ def _try_main_agent_model_fallback(
     if client is None:
         return None, None, ""
     label = f"main-agent({main_provider})"
+    too_small = _context_too_small(
+        {}, main_provider, resolved_model or main_model, _task_minimum_context_length(task),
+        task=task, label=label, required_tokens=required_tokens,
+    )
+    if too_small:
+        logger.info(
+            "Auxiliary %s: skipping %s — its context window cannot hold this request (%d tokens); "
+            "failing closed instead of sending a request the server will reject",
+            task or "call", label, required_tokens if required_tokens else 0,
+        )
+        return None, None, ""
     logger.info("Auxiliary %s: %s on %s — falling back to main agent model %s (%s)",
                 task or "call", reason, failed_provider, label, resolved_model or main_model)
     return client, resolved_model or main_model, label
@@ -4357,10 +4376,80 @@ def _task_minimum_context_length(task: Optional[str]) -> Optional[int]:
     return MINIMUM_CONTEXT_LENGTH if task == "compression" else None
 
 
+# ── Request-size screening for runtime fallback chains ──────────────────────────────
+# The floor above (MINIMUM_CONTEXT_LENGTH) answers "is this candidate big enough to be a
+# sensible compressor at all?". It does NOT answer "can this candidate hold THE request we
+# are about to send?". A session carrying 182K tokens needs a 182K+ window; a 64K model passes
+# the floor and then dies server-side with "request (44622 tokens) exceeds the available
+# context size (32768 tokens)" — the server-side rejection that flooded the llama-server log
+# during the 2026-10-23 MiniMax plan-cap incident (t_e94832a1).
+#
+# Compression is the pathological case: its prompt IS the conversation, so the request grows
+# with the session. Every other aux task has a bounded prompt (a title, an extract, a
+# rewrite), which is why this only bites there. The screen below compares the candidate's
+# effective context window against the ACTUAL outgoing prompt size, so an oversized request
+# fails closed in the gateway — a clear, fast error naming the cause — instead of becoming a
+# doomed round-trip to a server that will reject it.
+
+def _request_token_requirement(kwargs: Optional[Dict[str, Any]]) -> Optional[int]:
+    """Rough prompt-token count of an outgoing auxiliary request; None when it cannot be sized.
+
+    ``kwargs`` is the wire kwargs of the request being replayed onto a fallback candidate.
+    Only the prompt is measured: the output cap is the provider's business, and the point of
+    the screen is "will the prompt fit in the candidate's window at all".
+    """
+    if not isinstance(kwargs, dict):
+        return None
+    messages = kwargs.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return None
+    try:
+        from agent.model_metadata import estimate_messages_tokens_rough
+        tokens = int(estimate_messages_tokens_rough(messages))
+    except Exception as exc:
+        logger.debug("Auxiliary fallback: could not estimate request size: %s", exc)
+        return None
+    return tokens if tokens > 0 else None
+
+
+def _candidate_fits_request(
+    provider: str, model: str, base_url: str = "", api_key: str = "", *,
+    task: Optional[str] = None, required_tokens: Optional[int] = None,
+) -> Optional[str]:
+    """Return a rejection note when the candidate's window cannot hold the request; None when it fits.
+
+    Two independent screens, both required:
+      1. the task floor (``min_ctx``) — the candidate must be big enough for the task at all;
+      2. the request size (``required_tokens``) — the candidate must be big enough for THIS
+         request, which for compression is the whole conversation.
+
+    A candidate whose window is unknown (``None``) is not blocked: we cannot prove it is too
+    small, and refusing every unrecognised model would gut the fallback surface. The floor
+    screen keeps its original "pass through unknown" behaviour for the same reason.
+    """
+    fb_ctx = _candidate_context_window(provider, model, base_url=base_url, api_key=api_key)
+    if fb_ctx is None:
+        return None
+    min_ctx = _task_minimum_context_length(task)
+    if min_ctx is not None and fb_ctx < min_ctx:
+        return f"context too small: {fb_ctx}<{min_ctx}"
+    if required_tokens is not None and fb_ctx < required_tokens:
+        return f"context too small: {fb_ctx}<{required_tokens}"
+    return None
+
+
 def _candidate_context_window(provider: str, model: str, base_url: str = "", api_key: str = "") -> Optional[int]:
     """Best-effort context window for a fallback candidate; ``None`` = unknown (never raises; callers pass it through)."""
     if not model:
         return None
+    # A named custom provider (e.g. ``local-llama``) carries its endpoint in the CONFIG, not in the
+    # fallback entry, so an entry without its own ``base_url`` must still resolve to the provider's
+    # real URL. Without this the resolution falls through to the hardcoded catalog, which guesses
+    # from the model NAME — ``/app/models/qwen2.5-7b-instruct-q4_k_m.gguf`` matches the ``qwen``
+    # entry (131072) even though the llama-server runs at 32768 (APP_CTX_SIZE). The screen then
+    # believes the local model has 128K and waves a 182K-token request through to a server that
+    # rejects it. See #8731 and t_e94832a1.
+    base_url = str(base_url or "").strip() or _custom_health_base_url(provider)
     try:
         ctx = get_model_context_length(model, base_url=base_url, api_key=api_key, provider=provider)
     except Exception as exc:
@@ -4371,31 +4460,56 @@ def _candidate_context_window(provider: str, model: str, base_url: str = "", api
 
 def _context_too_small(
     entry: Dict[str, Any], provider: str, model: str, min_ctx: Optional[int], *,
-    task: Optional[str], label: str, name_model: bool = False,
+    task: Optional[str], label: str, name_model: bool = False, required_tokens: Optional[int] = None,
 ) -> Optional[str]:
-    """Screen one fallback candidate by context window; returns the ``tried`` note when it is too small."""
-    if min_ctx is None:
+    """Screen one fallback candidate by context window; returns the ``tried`` note when it is too small.
+
+    Two screens, either of which rejects the candidate:
+      * ``min_ctx`` — the task floor (compression needs a window of at least
+        ``MINIMUM_CONTEXT_LENGTH`` to be a sensible compressor at all);
+      * ``required_tokens`` — the size of the request about to be replayed onto this
+        candidate. A 64K model passes the floor but cannot hold a 182K-token conversation,
+        and the server rejects it with "exceeds the available context size" (t_e94832a1).
+
+    The floor-only case returns early, as before: a task with no floor still gets the
+    request-size screen, because "no floor" means "no minimum context requirement", NOT
+    "no context requirement".
+    """
+    if min_ctx is None and required_tokens is None:
         return None
     fb_ctx = _candidate_context_window(
         provider, model, base_url=str(entry.get("base_url") or ""), api_key=_fallback_entry_api_key(entry) or "")
-    if fb_ctx is None or fb_ctx >= min_ctx:
+    if fb_ctx is None:
+        return None
+    # The larger of the two requirements is the binding one.
+    effective_min = min_ctx
+    reason = ""
+    if min_ctx is not None and fb_ctx < min_ctx:
+        effective_min = min_ctx
+        reason = "min"
+    elif required_tokens is not None and fb_ctx < required_tokens:
+        effective_min = required_tokens
+        reason = "request"
+    else:
         return None
     if name_model:
-        logger.info("Auxiliary %s: skipping %s (%s context=%d < min=%d), continuing chain",
-                    task, label, model, fb_ctx, min_ctx)
+        logger.info("Auxiliary %s: skipping %s (%s context=%d < %s=%d), continuing chain",
+                    task, label, model, fb_ctx, reason, effective_min)
     else:
-        logger.info("Auxiliary %s: skipping %s (context=%d < min=%d), continuing chain",
-                    task or "call", label, fb_ctx, min_ctx)
-    return f"{label} (context too small: {fb_ctx}<{min_ctx})"
+        logger.info("Auxiliary %s: skipping %s (context=%d < %s=%d), continuing chain",
+                    task or "call", label, fb_ctx, reason, effective_min)
+    return f"{label} (context too small: {fb_ctx}<{effective_min})"
 
 
 def _try_configured_fallback_chain(
     task: str, failed_provider: str, reason: str = "error", failed_model: Optional[str] = None, *,
-    failed_base_url: str = "", failure_scope: Any = None,
+    failed_base_url: str = "", failure_scope: Any = None, required_tokens: Optional[int] = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Try auxiliary.<task>.fallback_chain entries in order (each needs ``provider``; model/base_url/api_key optional).
     ``failed_model`` scoping per ``_failed_backend_skip`` (sibling models on the same provider still
-    run after a model-scoped failure). Returns (client, model, provider_label) or (None, None, "")."""
+    run after a model-scoped failure). ``required_tokens`` is the size of the request being replayed
+    onto the chain — a candidate whose window cannot hold it is skipped rather than sent (t_e94832a1).
+    Returns (client, model, provider_label) or (None, None, "")."""
     if not task:
         return None, None, ""
     chain = _get_auxiliary_task_config(task).get("fallback_chain")
@@ -4428,6 +4542,7 @@ def _try_configured_fallback_chain(
         if fb_client is not None:
             too_small = _context_too_small(
                 entry, fb_provider, resolved_model, min_ctx, task=task, label=label, name_model=True,
+                required_tokens=required_tokens,
             ) if resolved_model else None
             if too_small:
                 tried.append(too_small)
@@ -4478,10 +4593,13 @@ def _resolve_fallback_entry(entry: Dict[str, Any]) -> Tuple[Optional[Any], Optio
 def _try_main_fallback_chain(
     task: Optional[str], failed_provider: str = "", reason: str = "error", *,
     failed_model: Optional[str] = None, failed_base_url: str = "", failure_scope: Any = None,
+    required_tokens: Optional[int] = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Top-level main-agent fallback chain for a ``provider: auto`` auxiliary call: auto tasks honour the
     user's main fallback policy before the built-in discovery chain; read via ``get_fallback_chain`` so
-    ``fallback_providers`` and legacy ``fallback_model`` keep the main agent's order."""
+    ``fallback_providers`` and legacy ``fallback_model`` keep the main agent's order.
+    ``required_tokens`` is the size of the request being replayed onto the chain — a candidate whose
+    window cannot hold it is skipped rather than sent (t_e94832a1)."""
     try:
         from hermes_cli.config import load_config_readonly
         from hermes_cli.fallback_config import get_fallback_chain
@@ -4520,6 +4638,7 @@ def _try_main_fallback_chain(
         if fb_client is not None:
             too_small = _context_too_small(
                 entry, fb_provider, resolved_model or fb_model, min_ctx, task=task, label=label,
+                required_tokens=required_tokens,
             )
             if too_small:
                 tried.append(too_small)
@@ -7643,6 +7762,7 @@ _LadderRoute = NamedTuple("_LadderRoute", [
     ("resolved_api_key", Optional[str]), ("resolved_api_mode", Optional[str]),
     ("final_model", Optional[str]), ("main_runtime", Optional[Dict[str, Any]]),
     ("route_info", Optional[Dict[str, str]]), ("timeout", Optional[float]),
+    ("required_tokens", Optional[int]),
 ])
 
 
@@ -7860,13 +7980,15 @@ def _next_fallback_after_quarantine(
     reason = "fallback candidate unavailable"
     fb = _try_configured_fallback_chain(
         task, resolved_provider or "auto", reason=reason, failed_model=failed_model,
-        failed_base_url=route.base_info, failure_scope=failure_scope)
+        failed_base_url=route.base_info, failure_scope=failure_scope,
+        required_tokens=route.required_tokens)
     if task_chain_only:
         return fb
     if fb[0] is None and is_auto:
         fb = _try_main_fallback_chain(
             task, resolved_provider or "auto", reason=reason, failed_model=failed_model,
-            failed_base_url=route.base_info, failure_scope=failure_scope)
+            failed_base_url=route.base_info, failure_scope=failure_scope,
+            required_tokens=route.required_tokens)
     if fb[0] is None:
         fb = _try_payment_fallback(
             resolved_provider, task, reason=reason, failed_base_url=route.base_info,
@@ -7927,11 +8049,13 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     )
     fb_client, fb_model, fb_label = _try_configured_fallback_chain(
         task, resolved_provider or "auto", reason=reason, failed_model=_chain_failed_model,
-        failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
+        failed_base_url=route.base_info, failure_scope=_chain_failure_scope,
+        required_tokens=route.required_tokens)
     if fb_client is None and is_auto:
         fb_client, fb_model, fb_label = _try_main_fallback_chain(
             task, resolved_provider or "auto", reason=reason, failed_model=_chain_failed_model,
-            failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
+            failed_base_url=route.base_info, failure_scope=_chain_failure_scope,
+            required_tokens=route.required_tokens)
         if fb_client is None:
             fb_client, fb_model, fb_label = _try_payment_fallback(
                 resolved_provider, task, reason=reason, failed_base_url=route.base_info,
@@ -7939,7 +8063,8 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     elif fb_client is None and not explicit_auth_with_task_chain:
         fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
             resolved_provider, task, reason=reason, failed_model=_chain_failed_model,
-            failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
+            failed_base_url=route.base_info, failure_scope=_chain_failure_scope,
+            required_tokens=route.required_tokens)
     # Ordered walk: a candidate that returns None was quarantined (dead credential or a capacity
     # error such as a quota 429) and is now unhealthy, so re-walking the CONFIGURED chains first
     # lands on the next entry, then discovery where the selection policy allows it (#106367).
@@ -7983,7 +8108,7 @@ def _aux_recovery_ladder(
     route = _LadderRoute(
         client, task, tag, async_mode, base_info, resolved_provider, resolved_model,
         resolved_base_url, resolved_api_key, resolved_api_mode, final_model, main_runtime, route_info,
-        kwargs.get("timeout"))
+        kwargs.get("timeout"), _request_token_requirement(kwargs))
     resp, first_err, kwargs = yield from _ladder_parameter_rungs(first_err, route, kwargs, max_tokens)
     if first_err is None:
         return resp

@@ -713,6 +713,8 @@ The base URL can be overridden with `HF_BASE_URL`.
 
 Hermes Agent works with **any OpenAI-compatible API endpoint**. If a server implements `/v1/chat/completions`, you can point Hermes at it. This means you can use local models, GPU inference servers, multi-provider routers, or any third-party API.
 
+Pointing Hermes at a router or gateway of your own — rather than directly at an inference server — has one extra wrinkle (how the router answers streamed requests); the walkthrough is in [Run Hermes Through a Custom OpenAI-Compatible Router](../guides/custom-openai-compatible-router.md).
+
 ### General Setup
 
 Three ways to configure a custom endpoint:

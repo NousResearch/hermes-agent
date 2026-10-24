@@ -2209,6 +2209,23 @@ body.guest-pointer-lock :is(webview, iframe) {
   color: var(--ui-inline-code-foreground);
 }
 
+/* Key caps in markdown have no app-side theme rule: Tailwind Typography styles
+   `kbd` with `var(--tw-prose-kbd)` (near-black) and a ring of
+   `var(--tw-prose-kbd-shadows)`, and the dark palette's invert variants are
+   never applied — `prose-invert` is not used and nothing re-points the tokens
+   under `.dark`. Body text survives via the container's `text-foreground`, but
+   the element-specific kbd rules still resolve against the light palette, so
+   key caps are near-black on every dark theme (#144072). Re-point them to the
+   app's own foreground mix, mirroring the chat inline-code tokens; light mode
+   keeps Typography's palette untouched. */
+.dark .aui-md :where(kbd) {
+  color: color-mix(in srgb, var(--dt-foreground) 88%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--dt-foreground) 22%, transparent),
+    0 3px 0 color-mix(in srgb, var(--dt-foreground) 22%, transparent);
+}
+
+
 [data-slot='aui_assistant-message-content'] .aui-md :where(.aui-shiki, .aui-shiki > pre) {
   margin: 0 !important;
 }

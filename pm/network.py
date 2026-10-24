@@ -90,7 +90,7 @@ def _delay(exc: Exception, attempt: int) -> float:
 
 def retry_network(
     operation: Callable[[], _T], *, wait: Callable[[float], None] | None = None,
-    progress: Callable[[], int] | None = None,
+    progress: Callable[[], int] | None = None, fallback_available: bool = False,
 ) -> _T:
     """Retry the complete request and body read, never an install or publish.
 
@@ -98,6 +98,7 @@ def retry_network(
     A download supplies an interruptible wait so pause does not wait for backoff.
     Downloads supply ``progress``: durable forward progress renews their
     budget. Metadata and non-resumable requests still get four attempts.
+    A resumable request yields to an available fallback before a long wait.
     """
     failures_since_progress = 0
     backoff = 0
@@ -122,7 +123,7 @@ def retry_network(
             delay = _delay(exc, backoff)
             if progress is None:
                 delay = min(delay, _MAX_DELAY)
-            elif delay > _MAX_RECOVERY_DELAY:
+            elif delay > (_MAX_DELAY if fallback_available else _MAX_RECOVERY_DELAY):
                 raise
             backoff += 1
             logging.getLogger(__name__).warning(

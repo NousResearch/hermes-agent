@@ -393,7 +393,8 @@ class Download:
             configured_connections = self.connections
             try:
                 size = retry_network(fetch, wait=self._wait_retry,
-                                     progress=(lambda: self._durable_done) if self.resume and resumable else None)
+                                     progress=(lambda: self._durable_done) if self.resume and resumable else None,
+                                     fallback_available=bool(source.fallbacks))
             except (OSError, http.client.HTTPException) as exc:
                 if isinstance(exc, urllib.error.URLError) or is_transient(exc):
                     raise DownloadTransportError(source.url, exc) from exc

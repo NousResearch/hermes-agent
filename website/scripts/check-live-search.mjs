@@ -156,6 +156,8 @@ async function checkBrowser() {
       if (r.url().includes('algolia')) algoliaErrors.push(`${r.failure()?.errorText} ${r.url().split('?')[0]}`);
     });
     await page.goto(`${DOCS_URL}/`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    // The server-rendered button is visible before Docusaurus attaches its event handlers.
+    await page.locator('html[data-has-hydrated="true"]').waitFor({ timeout: 20_000 });
     await page.locator('.DocSearch-Button').first().click({ timeout: 20_000 });
     await page.locator('.DocSearch-Input').fill(QUERIES[0], { timeout: 10_000 });
     try {

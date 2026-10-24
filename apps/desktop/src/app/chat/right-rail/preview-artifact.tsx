@@ -1,5 +1,4 @@
 import { useStore } from '@nanostores/react'
-import DOMPurify from 'dompurify'
 import { useEffect, useMemo, useState } from 'react'
 
 import { CopyButton } from '@/components/ui/copy-button'
@@ -8,6 +7,7 @@ import { useI18n } from '@/i18n'
 import { artifactDownloadName, type ArtifactKind } from '@/lib/artifact-detect'
 import { downloadTextFile } from '@/lib/download-text'
 import { ChevronLeft, ChevronRight, Download, ExternalLink } from '@/lib/icons'
+import { svgImageSrc } from '@/lib/svg-image'
 import { $artifactRegistry, $artifactVersionSelection, findArtifact, selectArtifactVersion } from '@/store/artifacts'
 import { notifyError } from '@/store/notifications'
 import type { PreviewTarget } from '@/store/preview'
@@ -76,19 +76,16 @@ async function openHtmlInBrowser(content: string): Promise<void> {
  *
  * HTML runs in an `<iframe sandbox="allow-scripts">` — scripts execute in an
  * opaque origin with no same-origin access, no top navigation, no popups, no
- * form submission out of the frame. The parent app is unreachable. SVG is
- * DOMPurify-sanitized with the same profile as the inline ```svg embed.
+ * form submission out of the frame. The parent app is unreachable. SVG is an
+ * <img>, like the inline ```svg embed (see svgImageSrc).
  */
 function ArtifactLiveView({ content, kind, title }: { content: string; kind: ArtifactKind; title: string }) {
-  const svgClean = useMemo(
-    () => (kind === 'svg' ? DOMPurify.sanitize(content, { USE_PROFILES: { svg: true, svgFilters: true } }) : ''),
-    [content, kind]
-  )
+  const svgSrc = useMemo(() => (kind === 'svg' ? svgImageSrc(content) : null), [content, kind])
 
   if (kind === 'svg') {
     return (
-      <div className="grid h-full place-items-center overflow-auto bg-background p-4 [&_svg]:h-auto [&_svg]:max-h-full [&_svg]:w-auto [&_svg]:max-w-full">
-        <div dangerouslySetInnerHTML={{ __html: svgClean }} />
+      <div className="grid h-full place-items-center overflow-auto bg-background p-4">
+        {svgSrc && <img alt={title} className="h-auto max-h-full w-auto max-w-full" src={svgSrc} />}
       </div>
     )
   }

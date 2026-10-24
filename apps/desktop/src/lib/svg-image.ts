@@ -110,6 +110,35 @@ export function svgSize(svg: string): { height: number; width: number } {
   return viewBoxSize(el) ?? { height: 600, width: 800 }
 }
 
+// Model-authored SVG renders as an <img>, never as inline DOM. Blink loads an
+// SVG image in secure mode: no scripts, no outside fetches, and its <style>
+// rules and ids stay inside the image. Inline markup shared the app's
+// document, so one SVG's `body{…}` repainted the whole window and a second
+// `id="g"` gradient painted the first one's colours; the sanitizer that made
+// inline safe also dropped <use> and SMIL animation.
+export function svgImageSrc(svg: string): null | string {
+  if (!/<svg[\s>]/i.test(svg)) {
+    return null
+  }
+
+  // HTML-parse + XML-serialise: adds the xmlns a model often omits (an image
+  // without it renders nothing) and repairs HTML-only syntax.
+  const xml = normalizeSvgSize(xmlWellFormedSvg(svg))
+  const el = new DOMParser().parseFromString(xml, 'image/svg+xml').documentElement
+  const box = el.tagName === 'svg' ? viewBoxSize(el) : null
+
+  // No width/height at all: an image would fall back to 300×150. Use the
+  // viewBox so it keeps the size the author drew it at.
+  if (box && !el.hasAttribute('width') && !el.hasAttribute('height')) {
+    el.setAttribute('width', String(box.width))
+    el.setAttribute('height', String(box.height))
+  }
+
+  const out = el.tagName === 'svg' ? new XMLSerializer().serializeToString(el) : xml
+
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(out)}`
+}
+
 export function svgToPngBlob(svg: string, scale = 2): Promise<Blob> {
   const { height, width } = svgSize(svg)
 

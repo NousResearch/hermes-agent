@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { normalizeSvgSize, svgSize, xmlWellFormedSvg } from './svg-image'
+import { normalizeSvgSize, svgImageSrc, svgSize, xmlWellFormedSvg } from './svg-image'
 
 // Real mermaid 11.16 render output shape (verified against the installed
 // package): width="100%" + inline style="max-width: Npx" + viewBox.
@@ -87,5 +87,25 @@ describe('xmlWellFormedSvg', () => {
 
     expect(label?.querySelectorAll('br')).toHaveLength(1)
     expect(label?.textContent).toBe('ab c')
+  })
+})
+
+describe('svgImageSrc', () => {
+  const decode = (src: null | string) => decodeURIComponent((src ?? '').replace(/^data:image\/svg\+xml;charset=utf-8,/, ''))
+
+  it('keeps <style>, <use> and SMIL, which only an image can render without leaking into the app', () => {
+    const svg = `<svg viewBox="0 0 160 60"><style>.a{fill:#10b981}</style><defs><circle id="c" r="9"/></defs><use href="#c"/><rect class="a" width="9" height="9"><animate attributeName="fill" to="#7c3aed" dur="1s"/></rect></svg>`
+    const out = decode(svgImageSrc(svg))
+
+    expect(out).toContain('xmlns="http://www.w3.org/2000/svg"')
+    expect(out).toMatch(/<style>\.a\{fill:#10b981\}<\/style>/)
+    expect(out).toContain('<use href="#c"')
+    expect(out).toContain('<animate')
+    expect(out).toContain('width="160"')
+    expect(out).toContain('height="60"')
+  })
+
+  it('returns null for text with no svg in it', () => {
+    expect(svgImageSrc('just a fence')).toBeNull()
   })
 })

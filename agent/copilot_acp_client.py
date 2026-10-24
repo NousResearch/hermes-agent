@@ -314,6 +314,14 @@ class CopilotACPClient:
         except Exception:
             with contextlib.suppress(Exception):
                 proc.kill()
+        # Close stdin now. A CLI that exits before our first write (e.g. VS Code's `copilot`
+        # shim when the real CLI is not installed) leaves the unflushed request in its buffer;
+        # left to the GC, the finalizer retries that flush and prints "Exception ignored while
+        # finalizing file ... BrokenPipeError" on every startup. stdout/stderr are left to their
+        # pump threads: closing a reader mid-read can block while a grandchild holds the pipe.
+        if proc.stdin is not None:
+            with contextlib.suppress(OSError, ValueError):
+                proc.stdin.close()
 
     def _release_process(self, proc: subprocess.Popen[str]) -> None:
         """Reap one session's own child. ``is_closed`` flips only when the last live

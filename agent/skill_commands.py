@@ -250,7 +250,9 @@ def _resolve_skill_commands_project() -> Optional[str]:
     return str(root) if root is not None else None
 
 
-def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
+def _load_skill_payload(
+    skill_identifier: str, task_id: str | None = None, *, disabled_platform: str | None = None,
+) -> tuple[dict[str, Any], Path | None, str] | None:
     """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
     from agent.safe_worker_policy import safe_worker_enabled
 
@@ -279,7 +281,16 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
             skill_dir = _skills_dir() / Path(skill_path).parent
         except Exception:
             skill_dir = None
-    return loaded_skill, skill_dir, str(loaded_skill.get("name") or normalized)
+    skill_name = str(loaded_skill.get("name") or normalized)
+    if disabled_platform and loaded_skill.get("_source_path"):
+        from tools.skills_tool import _is_resolved_skill_disabled, _skill_search_dirs
+        roots, _ = _skill_search_dirs()
+        if _is_resolved_skill_disabled(
+            skill_name, skill_dir, Path(loaded_skill["_source_path"]), [d for _t, d in roots],
+            platform=disabled_platform,
+        ):
+            return None
+    return loaded_skill, skill_dir, skill_name
 
 
 def ambiguous_skill_label(identifier: str, payload: dict) -> Optional[str]:
@@ -886,19 +897,21 @@ def _disabled_skill_names(platform: str | None = None) -> set:
 def _load_skill_blocks(
     identifiers: list[str], load, activation_note, task_id: str | None, *,
     missing_label=lambda ident: ident, disabled_names: set | None = None, disabled_as_missing: bool = False,
-    already_loaded: set | None = None,
+    already_loaded: set | None = None, deduplicate_loaded: bool = False,
 ) -> tuple[list[str], list[str], list[str], list[str]]:
     """Load each distinct identifier via *load* and render its block; returns
     ``(loaded_names, missing, disabled, blocks)``. With *disabled_names*, members
     whose canonical (LOADED — identifiers may be paths) name or identifier is
     disabled go to ``disabled`` (or ``missing`` when *disabled_as_missing*).
     Canonical names in *already_loaded* (e.g. skills.auto_load) count as resolved
-    but render no block, so one skill never lands in the prompt twice."""
+    but render no block. *deduplicate_loaded* coalesces aliases of the same physical source,
+    not distinct skills that happen to declare the same name."""
     loaded_names: list[str] = []
     missing: list[str] = []
     disabled: list[str] = []
     blocks: list[str] = []
     seen: set[str] = set()
+    loaded_sources: set[Path | str] = set()
     for identifier in identifiers:
         if not identifier or identifier in seen:
             continue
@@ -908,6 +921,11 @@ def _load_skill_blocks(
             missing.append(missing_label(identifier))
             continue
         skill_name = loaded[2]
+        if deduplicate_loaded:
+            source = loaded[0].get("_source_path")
+            source_identity = Path(source).resolve() if source else identifier
+            if source_identity in loaded_sources:
+                continue
         if disabled_names and (skill_name in disabled_names or identifier in disabled_names
                                or (":" in skill_name and skill_name.split(":", 1)[1] in disabled_names)):
             if disabled_as_missing:
@@ -920,6 +938,8 @@ def _load_skill_blocks(
             continue
         blocks.append(_render_skill_block(loaded, activation_note(skill_name), task_id))
         loaded_names.append(skill_name)
+        if deduplicate_loaded:
+            loaded_sources.add(source_identity)
     return loaded_names, missing, disabled, blocks
 
 
@@ -956,14 +976,20 @@ def build_preloaded_skills_prompt(
 def resolve_auto_load_skills(user_config: dict | None = None) -> list[str]:
     """``skills.auto_load`` from *user_config* (else the active profile config), deduplicated;
     empty when unset, malformed, or the config is unreadable."""
+    return _resolve_configured_skills("auto_load", user_config)
+
+
+def _resolve_configured_skills(key: str, user_config: dict | None = None) -> list[str]:
+    """Resolve an explicit skill allowlist using the normal profile config loader."""
     if user_config is None:
         try:
             from hermes_cli.config import load_config_readonly
             user_config = load_config_readonly()
         except Exception:
+            logger.debug("Could not resolve skills.%s from profile config", key, exc_info=True)
             return []
     skills_block = user_config.get("skills") if isinstance(user_config, dict) else None
-    auto_load = skills_block.get("auto_load") if isinstance(skills_block, dict) else None
+    auto_load = skills_block.get(key) if isinstance(skills_block, dict) else None
     if not isinstance(auto_load, list):
         return []
     names = [entry.strip() for entry in auto_load if isinstance(entry, str) and entry.strip()]
@@ -972,8 +998,10 @@ def resolve_auto_load_skills(user_config: dict | None = None) -> list[str]:
 
 def build_auto_load_prompt(
     task_id: str | None = None, user_config: dict | None = None, home_override: Path | None = None,
+    *, inherited: bool = False,
 ) -> tuple[str, list[str], list[str]]:
-    """Render ``skills.auto_load`` as fully loaded skill blocks for a new session; returns
+    """Render ``skills.auto_load`` (or ``skills.inherit_to_subagents`` when *inherited*)
+    as fully loaded skill blocks for a new session; returns
     ``(prompt_text, loaded_names, missing)``. Missing and operator-disabled names are reported,
     never raised: a typo in config must not block session start on any surface.
 
@@ -982,18 +1010,24 @@ def build_auto_load_prompt(
     that lost the HERMES_HOME ContextVar cannot pin the launch profile's skills into another profile's prompt.
     """
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    key = "inherit_to_subagents" if inherited else "auto_load"
     home_token = set_hermes_home_override(str(home_override)) if home_override is not None else None
     try:
-        auto_skills = resolve_auto_load_skills(user_config)
+        auto_skills = _resolve_configured_skills(key, user_config)
         if not auto_skills:
             return "", [], []
+        disabled = _disabled_skill_names()
+        if inherited:
+            # Keep the calling surface's exclusions as well as subagent-specific ones.
+            disabled |= _disabled_skill_names(platform="subagent")
         loaded_names, missing, _disabled, prompt_parts = _load_skill_blocks(
             auto_skills,
-            lambda identifier: _load_skill_payload(identifier, task_id=task_id),
-            lambda name: (f'[IMPORTANT: The "{name}" skill is auto-loaded via config (skills.auto_load). '
+            lambda identifier: _load_skill_payload(
+                identifier, task_id=task_id, disabled_platform="subagent" if inherited else None),
+            lambda name: (f'[IMPORTANT: The "{name}" skill is auto-loaded via config (skills.{key}). '
                           "Treat its instructions as active guidance for the duration of this session unless "
                           "the user overrides them.]"),
-            task_id, disabled_names=_disabled_skill_names(), disabled_as_missing=True,
+            task_id, disabled_names=disabled, disabled_as_missing=True, deduplicate_loaded=True,
         )
         return "\n\n".join(prompt_parts), loaded_names, missing
     finally:

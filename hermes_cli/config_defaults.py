@@ -1446,9 +1446,8 @@ DEFAULT_CONFIG = {
     # and resolved; read-only — creation goes to ~/.hermes/skills/ unless create_dir redirects it.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
-        # Where skill_manage-created skills go (empty = profile-local dir). When set, new skills
-        # land here AND agent-facing instructions name this path; expanded (~, ${VAR}), relative to
-        # HERMES_HOME, scanned alongside the local dir.
+        # skill_manage destination (empty = profile-local); expanded (~, ${VAR}) relative to
+        # HERMES_HOME, scanned alongside local skills and named in agent-facing instructions.
         "create_dir": "",
         # In a git checkout, <root>/.hermes/skills/ and <root>/.agents/skills/ load as the
         # highest-precedence tier — ONLY if the root is in trusted_project_dirs. false = no scan, no
@@ -1457,9 +1456,10 @@ DEFAULT_CONFIG = {
         # Trusted project roots; managed by `hermes skills trust` / `untrust`.
         "trusted_project_dirs": [],
         # Skill names pinned as fully loaded in every new session (CLI, TUI, gateway, cron, API).
-        # Resolved once when the agent's prompt is first built; missing/disabled names warn and
-        # skip; HERMES_IGNORE_RULES suppresses the list like the other auto-injected context.
+        # Resolved once; missing/disabled names warn and skip. HERMES_IGNORE_RULES suppresses it.
         "auto_load": [],
+        # Native subagent opt-in at every depth; same disabling gates, no project context enabled.
+        "inherit_to_subagents": [],
         # Substitute ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} in SKILL.md content.
         "template_vars": True,
         # Pre-execute !`cmd` snippets in SKILL.md, inlining stdout (dates, git state...). Off:

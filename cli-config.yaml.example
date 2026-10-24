@@ -1163,6 +1163,12 @@ streaming:
 # also create new skills after completing complex tasks.
 #
 skills:
+  # Main-session skill bodies, resolved once per agent. Missing/disabled skills warn and skip.
+  auto_load: []
+  # Independent opt-in list for native subagents, including nested delegations.
+  # Does not inherit all parent skills or enable personal context/memory loading.
+  inherit_to_subagents: []
+
   # Nudge the agent to create skills after complex tasks.
   # Every N tool-calling iterations, remind the model to consider saving a skill.
   # Set to 0 to disable.

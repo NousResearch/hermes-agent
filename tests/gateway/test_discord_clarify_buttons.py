@@ -126,6 +126,18 @@ class TestClarifyChoiceViewConstruction:
             f"Label cuts mid-word at {last_char!r}: {first_label!r}"
         )
 
+    def test_choice_and_other_buttons_are_ephemeral(self):
+        """custom_id would make discord.py persist the view; unregistered
+        persistent clicks become the localized "Unknown button" error (#108443)."""
+        view = ClarifyChoiceView(
+            choices=["yes", "no"],
+            clarify_id="cid-ephemeral",
+            allowed_user_ids=set(),
+        )
+        assert len(view.children) == 3
+        for child in view.children:
+            assert getattr(child, "custom_id", None) in (None, "")
+
 
 # ===========================================================================
 # Choice callback → resolve_gateway_clarify

@@ -170,6 +170,13 @@ def _config_reasoning_budget(
 class LlamaCppProfile(ProviderProfile):
     """llama.cpp servers, bare or behind llama-swap."""
 
+    # Replayed assistant messages keep their reasoning_content so
+    # llama-server's --reasoning-preserve can reuse the prompt cache.
+    # Consulted by AIAgent._needs_thinking_reasoning_pad; a
+    # plain class attr like the activation opt-in, so the plugin still
+    # loads against a stock core that lacks the base-class field.
+    echo_reasoning_content = True
+
     # Custom-provider entries named llamacpp / llama-swap activate this
     # profile: providers.resolve_provider_profile does its requested-first
     # lookup only for profiles carrying this opt-in.

@@ -577,6 +577,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     def _preflight(self) -> bool:
         """Node + bridge script + creds.json + aiohttp present, else a named fatal error (an unpaired bridge only prints QR codes; retries would pay 30s each)."""
+        if find_node_executable("node") is None:
+            import pm
+
+            try:
+                pm.ensure("node")
+            except pm.InstallError as exc:
+                self._set_fatal_error("whatsapp_node_missing", str(exc), retryable=False)
+                return False
         bridge_path = Path(self._bridge_script)
         creds_path = self._session_path / "creds.json"
         checks = (
@@ -605,15 +613,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return True
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        """Start (or adopt) the Node.js bridge and wait for it to be ready."""
-        if find_node_executable("node") is None:
-            import pm
+        """Start (or adopt) the Node.js bridge and wait for it to be ready.
 
-            try:
-                await asyncio.to_thread(pm.ensure, "node")
-            except pm.InstallError as exc:
-                self._set_fatal_error("whatsapp_node_missing", str(exc), retryable=False)
-                return False
+        On a reconnect, first try a matching live bridge before cold startup.
+        """
         secondary = bool(getattr(self, "_runtime_status_platform_key", ""))
         prior_bridge_is_ours = False
         if secondary:
@@ -638,12 +641,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except Exception as e:
             logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
         try:
+            # Acquire session ownership before adopting the bridge, but avoid
+            # npm, pidfile and port cleanup when a reconnect can reuse it.
+            if is_reconnect and lock_acquired and (not secondary or prior_bridge_is_ours) and await self._reuse_running_bridge(bridge_path):
+                return True
             if not self._ensure_bridge_deps(bridge_path.parent):
                 return False
             self._session_path.mkdir(parents=True, exist_ok=True)
             # A secondary adopts or reaps only a bridge its own pidfile identifies (crash restart);
             # the default keeps its historical adopt-or-clear-the-port path.
-            if (not secondary or prior_bridge_is_ours) and await self._reuse_running_bridge(bridge_path):
+            if not is_reconnect and (not secondary or prior_bridge_is_ours) and await self._reuse_running_bridge(bridge_path):
                 return True
             if self._foreign_bridge_session:
                 # The port is served by another profile's bridge. Never adopt

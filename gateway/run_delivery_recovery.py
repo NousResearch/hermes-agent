@@ -58,6 +58,22 @@ def relay_platforms(runner, profile=None):
     return platforms
 
 
+def relay_recovery_pending(runner):
+    """Keep reconnect-only replies awake without adding them to restart drain work."""
+    maps = [runner.adapters, *(getattr(runner, "_profile_adapters", {}) or {}).values()]
+    if not any(Platform.RELAY in adapters for adapters in maps):
+        return False
+    from gateway.delivery_ledger import ledger_enabled, pending_reconnects
+
+    if not ledger_enabled():
+        return False
+    for platform, profile in pending_reconnects():
+        transport = _transport(runner, Platform(platform), profile)
+        if transport is not None and transport.is_relay:
+            return True
+    return False
+
+
 async def obligation_transport(runner, row):
     try:
         platform = Platform(row["platform"])

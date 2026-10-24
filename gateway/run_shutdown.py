@@ -452,6 +452,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
 
     def _scale_to_zero_is_idle(self) -> bool:
         from gateway.scale_to_zero import is_idle
+        from gateway.run_delivery_recovery import relay_recovery_pending
         # FULL work aggregate with fail-AWAKE reads: the drain counters swallow errors to 0, which a
         # suspend predicate would read as idle, so an unreadable source counts as work here.
 
@@ -475,7 +476,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             active_work_count=_read_or_awake("messaging work count", lambda: messaging_work_count(self), 1) + cron_count + api_count,
             seconds_since_last_inbound=time.time() - last_inbound,
             idle_timeout_seconds=self._scale_to_zero_idle_timeout_seconds(),
-            has_live_background_work=self._scale_to_zero_has_live_background_work(),
+            has_live_background_work=self._scale_to_zero_has_live_background_work()
+            or _read_or_awake("relay recovery ledger", lambda: relay_recovery_pending(self), True),
         )
 
     def _scale_to_zero_note_real_inbound(self) -> None:

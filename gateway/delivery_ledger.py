@@ -19,6 +19,7 @@ import re
 import sqlite3
 import threading
 import time
+from contextlib import closing
 from typing import Any, Dict, List, Optional
 
 from gateway.dead_targets import classify_dead_error
@@ -512,6 +513,46 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
                                             attempts, adapter_profile, needs_marker=True, runtime=True,
                                             flood=is_flood_error(last_error), last_error=last_error))
     return claimed
+
+
+def pending_reconnects(now: Optional[float] = None) -> set[tuple[str, str]]:
+    """Owned, retry-eligible bot identities awaiting reconnect rather than a timer.
+
+    Suspension must not strand these rows before the reconnect sweep starts. This
+    is observational: do not claim, re-stamp, or spend attempts during idle checks.
+    Unknown ownership is not proof of idle; the suspend caller must fail awake.
+    """
+    path = _db_path()
+    if not path.exists():
+        return set()
+    now, (pid, started) = now if now is not None else time.time(), _owner_stamp()
+    if started is None:
+        raise RuntimeError("cannot establish delivery recovery ownership")
+    # This probe runs on the gateway loop. Never wait behind a writer or invoke
+    # the normal opener's schema migrations and 10-second busy timeout.
+    if not _DB_LOCK.acquire(blocking=False):
+        raise RuntimeError("delivery recovery ledger is busy")
+    try:
+        with closing(
+            sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=0)
+        ) as conn:
+            if not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='delivery_obligations'"
+            ).fetchone():
+                return set()  # no reply has been recorded on this install yet
+            rows = conn.execute(
+                """SELECT platform, adapter_profile, last_error FROM delivery_obligations
+                   WHERE state='failed' AND owner_pid IS ? AND owner_started_at IS ?
+                     AND attempts < ? AND created_at >= ?""",
+                (pid, started, MAX_ATTEMPTS, now - STALE_AFTER_SECONDS),
+            ).fetchall()
+    finally:
+        _DB_LOCK.release()
+    return {
+        (platform, profile or "default")
+        for platform, profile, error in rows
+        if is_reconnect_only(error)
+    }
 
 
 def pending_retries(now: Optional[float] = None) -> list[dict[str, Any]]:

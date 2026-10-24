@@ -58,10 +58,18 @@ try:  # sibling modules; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
     from .adapter_slash_lane import SlashHandoffLanes
     from .adapter_slash_payload import slash_command_text, slash_thread_id
+    from .adapter_text_dedupe import (
+        FENCED_CODE_RE, normalize_slack_text_for_dedupe, plain_autolink_mirror,
+        unescape_slack_entities,
+    )
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
     from adapter_slash_lane import SlashHandoffLanes  # type: ignore
     from adapter_slash_payload import slash_command_text, slash_thread_id  # type: ignore
+    from adapter_text_dedupe import (  # type: ignore
+        FENCED_CODE_RE, normalize_slack_text_for_dedupe, plain_autolink_mirror,
+        unescape_slack_entities,
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -643,71 +651,13 @@ def _extract_text_from_slack_attachments(attachments: list) -> str:
     return "\n".join(line for line in lines if line).strip()
 
 
-#: Any ``<scheme:target|label>`` autolink (Slack is not limited to https/mailto).
-_SLACK_MRKDWN_LINK_RE = re.compile(r"<([a-zA-Z][a-zA-Z0-9+.\-]*:[^>|]+)(?:\|([^>]+))?>")
-#: Optional label Slack adds to a mention in flat text while blocks carry the bare id
-#: (``<@U…|name>``, ``<#C…|general>``, ``<!subteam^S…|@marketing>``, ``<!here|@here>``).
-_SLACK_ENTITY_LABEL_RE = re.compile(r"<([@#!][^>|]*)\|[^>]*>")
-_SLACK_FENCED_CODE_RE = re.compile(r"(?<!`)\n*```[ \t]*\n?(.*?)\n?[ \t]*```\n*(?!`)", re.DOTALL)
-_SLACK_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
-_SLACK_DATE_RE = re.compile(r"<!date\^([^>|]*)(?:\|([^>]*))?>")
-#: Message permalink reduced to the tail :func:`_slack_permalink_path` rebuilds (host and thread
-#: query differ between flat text and a ``channel_id``/``message_ts``-only payload).
-_SLACK_PERMALINK_RE = re.compile(r"https?://[^\s/]+/(archives/[A-Za-z0-9]+/p\d+)(?:\?[^\s)]*)?")
-_SLACK_INLINE_STYLE_RE = re.compile(r"([*_~])([^\n]+?)\1")
-_SLACK_HTML_ENTITY_RE = re.compile(r"&(amp|lt|gt);")
-_SLACK_HTML_ENTITIES = {"amp": "&", "lt": "<", "gt": ">"}
-
-
-def _unescape_slack_entities(text: str) -> str:
-    """Undo Slack's ``&``/``<``/``>`` escaping in flat ``text``.
-    ``blocks`` are raw, so text-vs-blocks comparison needs a common form (every "Copy link"
-    permalink carries ``?thread_ts=…&cid=…``)."""
-    return _SLACK_HTML_ENTITY_RE.sub(lambda match: _SLACK_HTML_ENTITIES[match.group(1)], text or "")
-
-
-def _normalize_slack_text_for_dedupe(text: str, bot_uid: str = "") -> str:
-    """Normalize Slack text for comparison with rendered rich text."""
-
-    def _link(match: re.Match) -> str:
-        url, label = match.group(1), match.group(2)
-        return f"{label} ({url})" if label and label != url else url
-
-    def _date(match: re.Match) -> str:
-        # ``<!date^ts^format^url|fallback>`` → what rich-text renders: fallback, else URL.
-        fallback = match.group(2)
-        if fallback:
-            return fallback
-        parts = match.group(1).split("^")
-        return parts[2] if len(parts) > 2 else ""
-
-    canonical = text or ""
-    # Order matters: unescape before links (same brackets/``&``); permalinks after links (bare
-    # URL); labels after dates (dates carry a label); bot mention after labels (``<@U…|hermes>``).
-    canonical = _unescape_slack_entities(canonical)
-    canonical = _SLACK_MRKDWN_LINK_RE.sub(_link, canonical)
-    canonical = _SLACK_DATE_RE.sub(_date, canonical)
-    canonical = _SLACK_PERMALINK_RE.sub(r"\1", canonical)
-    canonical = _SLACK_ENTITY_LABEL_RE.sub(r"<\1>", canonical)
-    if bot_uid:
-        canonical = canonical.replace(f"<@{bot_uid}>", "")
-    canonical = _SLACK_FENCED_CODE_RE.sub(r"\1", canonical)
-    canonical = _SLACK_INLINE_CODE_RE.sub(r"\1", canonical)
-    while True:
-        unstyled = _SLACK_INLINE_STYLE_RE.sub(r"\2", canonical)
-        if unstyled == canonical:
-            break
-        canonical = unstyled
-    return re.sub(r"\s+", " ", canonical).strip()
-
-
 def _extract_additional_text_from_slack_blocks(
     blocks: list, primary_text: str, bot_uid: str = "") -> str:
     """Render rich-text content not already represented by primary_text."""
-    primary = _normalize_slack_text_for_dedupe(primary_text, bot_uid)
+    primary = normalize_slack_text_for_dedupe(primary_text, bot_uid)
     primary_fenced = {
-        _normalize_slack_text_for_dedupe(match.group(0), bot_uid)
-        for match in _SLACK_FENCED_CODE_RE.finditer(primary_text or "")}
+        normalize_slack_text_for_dedupe(match.group(0), bot_uid)
+        for match in FENCED_CODE_RE.finditer(primary_text or "")}
     parts: list[str] = []
     for block in blocks or []:
         block_type = (block or {}).get("type")
@@ -726,11 +676,14 @@ def _extract_additional_text_from_slack_blocks(
                 [{"type": "rich_text", "elements": [element]}]).strip()
             if not rendered:
                 continue
-            normalized = _normalize_slack_text_for_dedupe(rendered, bot_uid)
+            normalized = normalize_slack_text_for_dedupe(rendered, bot_uid)
             if element_type == "rich_text_preformatted":
                 is_duplicate = normalized in primary_fenced
             else:
                 is_duplicate = normalized == primary or normalized in primary
+            if not is_duplicate:
+                mirror = plain_autolink_mirror(element, primary_text or "", bot_uid)
+                is_duplicate = mirror is not None and normalized == mirror
             if normalized and is_duplicate:
                 continue
             parts.append(rendered)
@@ -3224,7 +3177,7 @@ class SlackAdapter(BasePlatformAdapter):
             (r"~~(.+?)~~", lambda m: _ph(f"~{m.group(1)}~"), 0))
         for step in passes:
             if step is None:
-                text = _SLACK_HTML_ENTITY_RE.sub(lambda m: _SLACK_HTML_ENTITIES[m.group(1)], text)
+                text = unescape_slack_entities(text)
                 text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             else:
                 pattern, fn, flags = step
@@ -5781,7 +5734,7 @@ class SlackAdapter(BasePlatformAdapter):
         if blocks:
             # ``msg.text`` escapes ``&`` in URLs but blocks keep it raw; compare unescaped
             # so already-shown URLs aren't re-listed.
-            msg_text_raw = _unescape_slack_entities(msg_text)
+            msg_text_raw = unescape_slack_entities(msg_text)
             urls = _extract_urls_from_slack_blocks(blocks)
             new_urls = [u for u in urls if _unseen(u, msg_text_raw)]
             if new_urls:

@@ -2892,8 +2892,8 @@ class BasePlatformAdapter(ABC):
         session_key: str, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Clarify prompt; button-capable adapters SHOULD override. Multiple choice (``choices``):
         one button per choice plus "Other"; callbacks MUST resolve via
-        ``tools.clarify_gateway.resolve_gateway_clarify(clarify_id, response)``, "Other" calls
-        ``mark_awaiting_text(clarify_id)``. Open-ended: send the question as text (the gateway
+        ``tools.clarify_gateway.resolve_gateway_clarify(clarify_id, response, session_key=session_key)`` with the retained key.
+        ID-only calls fail. "Other" calls ``mark_awaiting_text(clarify_id)``. Open-ended: send the question as text (the gateway
         text-intercept resolves the next message). Default: numbered list +
         ``mark_awaiting_text``. Adapters whose prompt is a persistent card MAY define
         ``async retire_clarify_card(clarify_id, notice)``; the gateway calls it when the clarify

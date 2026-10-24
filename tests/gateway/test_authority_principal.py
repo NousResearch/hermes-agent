@@ -37,7 +37,8 @@ async def test_connection_preserves_server_grant(tmp_path, binding):
 
 
 @pytest.mark.asyncio
-async def test_question_response_does_not_grant_execution_control(tmp_path):
+@pytest.mark.parametrize('prompt_route', ['route', 'foreign-route'])
+async def test_question_response_does_not_grant_execution_control(tmp_path, prompt_route):
     from gateway.session_contract import Principal, SessionRef
     from hermes_state_runtime import RuntimeStoreError, admit_session_input, claim_session_input
     from tools import clarify_gateway
@@ -55,14 +56,20 @@ async def test_question_response_does_not_grant_execution_control(tmp_path):
         ref = SessionRef('owned', 's')
         actor = Principal('human', 'owned', frozenset({'session:read', 'session:respond'}), 'viewer')
         await authority.attach(actor, ref)
-        entry = clarify_gateway.register('scoped-question', 'scoped-route', 'Choose', ['a', 'b'])
+        entry = clarify_gateway.register('scoped-question', prompt_route, 'Choose', ['a', 'b'])
         try:
             authority.register_clarify('s', generation, entry)
             with pytest.raises(RuntimeStoreError, match='permission_denied'):
                 await authority.interrupt(actor, ref, generation)
             with pytest.raises(RuntimeStoreError, match='permission_denied'):
                 await authority.respond(actor, ref, generation, entry.clarify_id, {'choice': 'once'})
-            await authority.respond(actor, ref, generation, entry.clarify_id, {'answer': 'a'}, kind='clarify')
-            assert clarify_gateway.wait_for_response(entry.clarify_id, timeout=.1) == 'a'
+            result = await authority.respond(actor, ref, generation, entry.clarify_id, {'answer': 'a'}, kind='clarify')
+            if prompt_route == 'route':
+                assert result['status'] == 'resolved'
+                assert clarify_gateway.wait_for_response(entry.clarify_id, timeout=.1) == 'a'
+            else:
+                assert result['status'] == 'already_resolved'
+                assert entry.response is None and not entry.event.is_set()
+                assert authority.sessions['s'].controls.snapshot('s', generation)[0]['prompt_id'] == entry.clarify_id
         finally:
             clarify_gateway.clear_session(entry.session_key)

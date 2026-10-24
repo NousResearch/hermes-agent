@@ -1001,7 +1001,8 @@ class SessionAuthority:
             self.check_approval_generation(ref.session_id, generation)
             if not isinstance(prompt_id, str) or not prompt_id:
                 raise RuntimeStoreError("invalid_params")
-            return live.controls.respond(ref.session_id, generation, prompt_id, response, kind=kind)
+            return live.controls.respond(ref.session_id, generation, prompt_id, response,
+                                         kind=kind, session_key=live.route)
 
     async def _claim_next(self, ref, live):
         # False asks the pump to re-read after a queued head changed during preflight.

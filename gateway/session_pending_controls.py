@@ -63,7 +63,7 @@ class PendingControls:
                         'execution_generation': prompt['execution_generation']}, event_type=prompt['kind'] + '.settled')
             return tuple(deepcopy(prompt) for _, prompt in self.pending.values())
 
-    def respond(self, session_id, generation, prompt_id, response, *, kind="approval"):
+    def respond(self, session_id, generation, prompt_id, response, *, kind="approval", session_key=None):
         with self.events.lock:
             self.snapshot(session_id, generation)
             entry = self.pending.get(prompt_id)
@@ -89,7 +89,7 @@ class PendingControls:
                 if (not isinstance(response, dict) or set(response) != {'answer'}
                         or not isinstance(response['answer'], str)):
                     raise RuntimeStoreError('invalid_params')
-                resolved = resolve_gateway_clarify(prompt_id, response['answer'])
+                resolved = resolve_gateway_clarify(prompt_id, response['answer'], session_key=session_key)
                 self.snapshot(session_id, generation)
                 return {'status': 'resolved' if resolved else 'already_resolved', 'prompt_id': prompt_id}
             if not isinstance(response, dict) or set(response) != {'choice'} or response['choice'] not in prompt['choices']:

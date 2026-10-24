@@ -772,8 +772,13 @@ class SearchMixin:
         escaped_pattern = self._escape_shell_arg(pattern)
         q_roots = [escaped_path]
         hidden_prune = self._hidden_prune_expr(q_roots)
+        # Keep find's operand spelling (e.g. './Pictures') so -path prunes
+        # protected subtrees before descent, including in the BSD fallback.
+        protected_paths = [posixpath.join(path, relative)
+                           for relative in self._macos_search_exclusions(path)]
+        protected_prune = f"{self._prune_expr(protected_paths)} -o " if protected_paths else ""
         cmd = (
-            f"find -H {escaped_path} -mindepth 1 {hidden_prune} -o -type d "
+            f"find -H {escaped_path} -mindepth 1 {protected_prune}{hidden_prune} -o -type d "
             f"! -name '.*' -name {escaped_pattern} -printf '%T@ %p\\n' "
             f"2>/dev/null | sort -rn"
         )
@@ -783,8 +788,8 @@ class SearchMixin:
         if not stdout.strip() and not limit_reason:
             # Try without -printf (BSD find compatibility -- macOS)
             cmd_simple = (
-                f"find -H {escaped_path} -mindepth 1 {hidden_prune} -o -type d "
-                f"! -name '.*' -name {escaped_pattern} 2>/dev/null"
+                f"find -H {escaped_path} -mindepth 1 {protected_prune}{hidden_prune} -o -type d "
+                f"! -name '.*' -name {escaped_pattern} -print 2>/dev/null"
             )
             result = self._exec(cmd_simple, timeout=30)
             stdout, limit_reason = _search_stdout_and_limit(result)

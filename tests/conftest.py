@@ -310,6 +310,27 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
         monkeypatch.setattr(_hc, "_PINNED_PROCESS_HERMES_HOME", None, raising=False)
     except Exception:
         pass
+    # gateway.platforms.base freezes the launch home and the media safe roots at import. A
+    # collection-time import runs before the session sandbox, so a custom pre-set HERMES_HOME
+    # (guarded as a real root) becomes the frozen home and media-path validation then does I/O
+    # under it and trips the real-home guard. Repoint them at this test's home, as a fresh
+    # import would resolve them.
+    if (_gateway_base := sys.modules.get("gateway.platforms.base")) is not None:
+        _test_home = hermes_constants.get_hermes_home()
+        monkeypatch.setattr(_gateway_base, "_HERMES_HOME", _test_home, raising=False)
+        monkeypatch.setattr(
+            _gateway_base, "_HERMES_ROOT", hermes_constants.get_default_hermes_root(), raising=False
+        )
+        monkeypatch.setattr(
+            _gateway_base,
+            "MEDIA_DELIVERY_SAFE_ROOTS",
+            (
+                *(_test_home / d for d in ("image_cache", "audio_cache", "video_cache",
+                                           "document_cache", "browser_screenshots")),
+                *(_test_home / "cache" / d for d in _gateway_base._MEDIA_DELIVERY_CACHE_SUBDIRS),
+            ),
+            raising=False,
+        )
     # The install probe looks past HERMES_HOME (other roots, gateway services, the launcher on
     # PATH) and writes a marker at a fixed per-user path: confine it to this test's directory.
     from hermes_cli import install_state

@@ -2059,6 +2059,8 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)
+    from agent.fallback_auth_scope import rejected_fallback_entries
+    rejected = rejected_fallback_entries(agent, reason)
     while True:
         if agent._fallback_index >= len(agent._fallback_chain):
             return _fallback_chain_exhausted(agent, reason)
@@ -2070,7 +2072,7 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
         unavailable = agent._unavailable_fallback_keys
         fb_provider = (fb.get("provider") or "").strip().lower()
         fb_model = (fb.get("model") or "").strip()
-        if _should_skip_fallback_candidate(agent, fb, fb_key, fb_provider, fb_model, unavailable):
+        if agent._fallback_index - 1 in rejected or _should_skip_fallback_candidate(agent, fb, fb_key, fb_provider, fb_model, unavailable):
             continue
 
         try:
@@ -2098,8 +2100,6 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
             _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb_provider)
             from hermes_cli.observability.shared_metrics_events import record_fallback
             record_fallback(from_provider=old_provider, to_provider=fb_provider, reason=reason)
-            # The stale-call streak measured the OLD provider; carrying it over would
-            # short-circuit the fresh fallback before its first stream attempt.
             _reset_stale_streak(agent)
             from agent.native_compaction import resolve_native_compaction_capabilities
             agent.runtime_capabilities = resolve_native_compaction_capabilities(

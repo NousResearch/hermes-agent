@@ -111,7 +111,10 @@ def _augment_path_with_known_tools() -> None:
         os.path.join(local_appdata, "hermes", "git", "cmd"),
         os.path.join(local_appdata, "hermes", "git", "bin"),
         os.path.join(local_appdata, "hermes", "git", "usr", "bin"),
-        os.path.join(local_appdata, "hermes", "hermes-agent", "venv", "Scripts"),
+        # The running install's Scripts dir, not the hardcoded default install: a source checkout
+        # with its own venv must not hand child ``hermes`` calls to %LOCALAPPDATA%'s hermes.exe
+        # (a different install_id writing the same HERMES_HOME → shared-profile warning loop).
+        os.path.join(sys.prefix, "Scripts"),
         os.path.join(local_appdata, "Microsoft", "WinGet", "Links")]
     existing = os.environ.get("PATH", "")
     existing_lower = {p.lower() for p in existing.split(os.pathsep) if p}

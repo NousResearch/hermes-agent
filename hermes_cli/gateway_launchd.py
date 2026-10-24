@@ -10,6 +10,7 @@ from pathlib import Path
 import contextlib
 import json
 import os
+import plistlib
 import shlex
 import subprocess
 import sys
@@ -222,8 +223,93 @@ def _gateway_run_command() -> list[str]:
                            python=_gw().get_python_path())
 
 
+LAUNCHD_JOB_IDENTITIES = ("osascript", "bundle")
+
+
+def configured_launchd_job_identity() -> str:
+    """Configured macOS launchd job-root identity (``gateway.launchd_network_identity``, #123118).
+
+    Fail-safe by construction: a missing key, unloadable config, or any value other than the
+    exact string ``bundle`` selects ``osascript`` — the shipped behavior. ``bundle`` is opt-in
+    per host and roots the LaunchAgent in a generated, named app bundle so TCC grants can
+    target the gateway by name; see ``ensure_launcher_bundle``.
+    """
+    try:
+        from hermes_cli.config import load_config
+        value = load_config().get("gateway", {}).get("launchd_network_identity")
+    except Exception:
+        return "osascript"
+    return "bundle" if isinstance(value, str) and value.strip().lower() == "bundle" else "osascript"
+
+
+def launcher_bundle_path() -> Path:
+    """Profile-scoped path of the generated gateway launcher bundle (#123118)."""
+    suffix = _gw()._profile_suffix()
+    name = f"HermesGateway-{suffix}.app" if suffix else "HermesGateway.app"
+    return _gw().get_hermes_home() / name
+
+
+def _launcher_bundle_id() -> str:
+    suffix = _gw()._profile_suffix()
+    return f"ai.hermes.gateway.launcher-{suffix}" if suffix else "ai.hermes.gateway.launcher"
+
+
+def ensure_launcher_bundle(command: list[str], stdout_log: Path, stderr_log: Path) -> list[str]:
+    """Generate/update the named launcher bundle and return its ``ProgramArguments``.
+
+    macOS TCC attributes responsibility to the process launchd spawned for the job, so any
+    grant a host needs (Full Disk Access, removable volumes, Calendar, File Provider) must
+    target a stable, named, user-visible binary — not ``osascript`` (never grantable) and not
+    the versioned interpreter path (re-rolls on every Hermes/Python upgrade and strands the
+    grant, #123118). A minimal ``.app`` bundle with a fixed ``CFBundleIdentifier`` satisfies
+    all three, and grants on it propagate to every descendant.
+
+    The launcher body is the identical shell command the JXA shape runs (``exec`` + log appends):
+    ``exec`` keeps the gateway in the launchd job's process group so ``bootout`` /
+    ``kickstart -k`` signal it directly, and the child's exit code propagates natively,
+    preserving KeepAlive ``SuccessfulExit`` semantics. The bundle is rewritten only when the
+    command changes (idempotent refresh); ad-hoc codesign gives TCC a stable csidentity to key
+    on, and signing failure is non-fatal (job still runs; attribution degrades to path-based).
+    """
+    app = launcher_bundle_path()
+    macos_dir = app / "Contents" / "MacOS"
+    exe = macos_dir / "HermesGateway"
+    shell = f"exec {shlex.join(command)} >> {shlex.quote(str(stdout_log))} 2>> {shlex.quote(str(stderr_log))}"
+    launcher = f"#!/bin/sh\n{shell}\n"
+    info_plist = plistlib.dumps({
+        "CFBundleExecutable": "HermesGateway",
+        "CFBundleIdentifier": _launcher_bundle_id(),
+        "CFBundleName": "HermesGateway",
+        "CFBundlePackageType": "APPL",
+        "CFBundleShortVersionString": "1.0",
+        "LSUIElement": True,
+    }, fmt=plistlib.FMT_XML)
+
+    macos_dir.mkdir(parents=True, exist_ok=True)
+    changed = not exe.exists() or exe.read_text(encoding="utf-8") != launcher
+    if changed:
+        exe.write_text(launcher, encoding="utf-8")
+        exe.chmod(0o755)
+    info_path = app / "Contents" / "Info.plist"
+    if not info_path.exists() or info_path.read_bytes() != info_plist:
+        info_path.write_bytes(info_plist)
+    if changed:
+        # Ad-hoc signature over the whole bundle (covers the launcher script). Failure is
+        # advisory only: an unsigned bundle is functional, just keyed by path in TCC.
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(["codesign", "-s", "-", "--force", str(app)],
+                           capture_output=True, timeout=30, check=False)
+    return [str(exe)]
+
+
 def launchd_program_arguments(command: list[str], stdout_log: Path, stderr_log: Path) -> list[str]:
-    """launchd ``ProgramArguments`` that run ``command`` with a Local Network identity macOS accepts (#71206).
+    """launchd ``ProgramArguments`` for the gateway job; the job-root identity is host-configurable (#123118).
+
+    With ``gateway.launchd_network_identity: bundle`` the root is the generated
+    ``HermesGateway.app`` executable (``ensure_launcher_bundle``): grantable by name in
+    Privacy & Security, with grants propagating to every descendant.
+
+    The default keeps the Local Network identity macOS accepts for a bare job root (#71206).
 
     macOS Local Network Privacy attributes a socket to the process launchd spawned for the job. A bare
     venv Python has no application ID and is not platform-entitled, so every LAN connect from the
@@ -243,6 +329,8 @@ def launchd_program_arguments(command: list[str], stdout_log: Path, stderr_log: 
     command because ``system()`` otherwise inherits osascript's plist log handles. The encoded wait status
     is translated back to a process exit code so KeepAlive's ``SuccessfulExit`` semantics are preserved.
     """
+    if configured_launchd_job_identity() == "bundle":
+        return ensure_launcher_bundle(command, stdout_log, stderr_log)
     shell = f"exec {shlex.join(command)} >> {shlex.quote(str(stdout_log))} 2>> {shlex.quote(str(stderr_log))}"
     javascript = (
         'ObjC.import("stdlib"); '

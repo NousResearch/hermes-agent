@@ -22,6 +22,7 @@ from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
+from gateway.slash_confirm_scope import config_home_scope, current_config_home
 from gateway.whatsapp_identity import canonical_whatsapp_identifier
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -1523,11 +1524,15 @@ class GatewayBusySessionMixin:
             return await execute()
 
         session_key = self._session_key_for_source(event.source)
+        # The gate above read the PROFILE's config (the inbound handler binds that profile's
+        # scope), but this callback fires later, outside it: an unscoped save would write the
+        # launch home's config.yaml and the profile would never see the opt-out (#142157).
+        config_home = current_config_home()
 
         async def _on_confirm(choice: str):
             # Via the class, not ``self``: tests drive this gate on a bare SimpleNamespace runner.
             return await GatewayBusySessionMixin._run_confirmed_destructive_slash(
-                choice, command, execute, session_key
+                choice, command, execute, session_key, config_home=config_home
             )
 
         _p = self._typed_command_prefix_for(event.source.platform)
@@ -1544,8 +1549,13 @@ class GatewayBusySessionMixin:
         return t("gateway.confirm.destructive_optout" if persisted else "gateway.confirm.destructive_optout_save_failed")
 
     @staticmethod
-    async def _run_confirmed_destructive_slash(choice: str, command: str, execute, session_key: str):
-        """Confirm-callback body: ``cancel`` → message; ``always`` persists the opt-out, then runs."""
+    async def _run_confirmed_destructive_slash(
+        choice: str, command: str, execute, session_key: str, config_home=None
+    ):
+        """Confirm-callback body: ``cancel`` → message; ``always`` persists the opt-out, then runs.
+
+        ``config_home`` is the home the gate was read from (the routed profile's). The write goes
+        there, not to whatever home is ambient when the callback fires (#142157)."""
         if choice == "cancel":
             return t("gateway.confirm.cancelled", command=command)
         persisted = False
@@ -1554,7 +1564,8 @@ class GatewayBusySessionMixin:
                 from cli import save_config_value
                 # save_config_value swallows its own errors and reports the outcome in the return
                 # value, so the try block alone says nothing about whether the write landed.
-                persisted = bool(save_config_value("approvals.destructive_slash_confirm", False))
+                with config_home_scope(config_home):
+                    persisted = bool(save_config_value("approvals.destructive_slash_confirm", False))
                 if persisted:
                     logger.info("User opted out of destructive slash confirm (session=%s)", session_key)
                 else:

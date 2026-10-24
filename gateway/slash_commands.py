@@ -30,6 +30,7 @@ from gateway.slash_commands_model import GatewayModelCommandsMixin
 from gateway.slash_commands_session import GatewaySessionCommandsMixin
 from gateway.slash_commands_login import GatewayLoginCommandsMixin
 from gateway.slash_commands_status import GatewayStatusCommandsMixin, history_unreadable
+from gateway.slash_confirm_scope import config_home_scope, current_config_home
 from hermes_cli.config import atomic_config_write, cfg_get
 from utils import atomic_json_write, is_truthy_value
 
@@ -1090,6 +1091,10 @@ class GatewaySlashCommandsMixin(
         # Route through slash-confirm. The primitive sends the prompt and stores the resume handler;
         # the button/text response triggers ``_resolve_slash_confirm`` which invokes the handler
         # with the chosen outcome.
+        # The gate above read the PROFILE's config; the callback fires later, outside that scope,
+        # so the opt-out is written to the home the gate was read from (#142157).
+        config_home = current_config_home()
+
         async def _on_confirm(choice: str) -> Optional[str]:
             if choice == "cancel":
                 return t("gateway.reload_mcp.cancelled")
@@ -1097,7 +1102,8 @@ class GatewaySlashCommandsMixin(
                 # Persist the opt-out and run the reload.
                 try:
                     from cli import save_config_value
-                    save_config_value("approvals.mcp_reload_confirm", False)
+                    with config_home_scope(config_home):
+                        save_config_value("approvals.mcp_reload_confirm", False)
                     logger.info("User opted out of /reload-mcp confirmation (session=%s)", session_key)
                 except Exception as exc:
                     logger.warning("Failed to persist mcp_reload_confirm=false: %s", exc)

@@ -6,6 +6,10 @@ Approve / Cancel and call ``resolve()``; text-only adapters get a prompt and the
 intercepts ``/approve``, ``/always``, ``/cancel``. State is module-level (like ``tools.approval``)
 so adapters can resolve without a ``GatewayRunner`` backreference. The CLI has its own
 synchronous variant (``_prompt_slash_confirm`` in ``cli.py``).
+
+The handler runs in the scope of whoever resolved the prompt - the button's interaction handler,
+not the one that raised it - so a handler that writes home-relative state must capture the home
+with the prompt and re-enter it (``gateway/slash_confirm_scope.py``).
 """
 
 from __future__ import annotations

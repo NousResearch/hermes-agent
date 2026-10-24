@@ -29,7 +29,7 @@ _PUBLIC = frozenset({
     "agent.account_usage", "agent.browser_provider", "agent.context_engine", "agent.credential_pool",
     "agent.delegation_backends", "agent.delegation_provider", "hermes_cli.auth_model_picker:prompt_model_selection",
     "agent.image_gen_provider", "agent.memory_manager", "agent.memory_provider", "agent.secret_scope",
-    "agent.secret_sources.base", "agent.subagent_lifecycle", "agent.terminal_env_provider",
+    "agent.secret_sources.base", "agent.subagent_lifecycle", "agent.subagent_extension", "agent.terminal_env_provider",
     "agent.transports", "agent.transports.chat_completions", "agent.video_gen_provider",
     "agent.web_search_provider", "cli", "gateway.config", "gateway.platform_registry",
     "gateway.platforms._shared", "gateway.platforms.base", "gateway.platforms.event",

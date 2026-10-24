@@ -823,7 +823,9 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     stored_prompt = None
     stored_state = "missing"
     session_row = None
-    if conversation_history and agent._session_db:
+    # Retained delegates explicitly refresh capabilities/instructions at each
+    # activation. Ordinary session resumes keep their byte-stable cached prefix.
+    if conversation_history and agent._session_db and getattr(agent, "_delegate_resumable", False) is not True:
         try:
             session_row = agent._session_db.get_session(agent.session_id)
             if session_row is not None:

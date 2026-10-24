@@ -396,6 +396,9 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
                    content: str) -> Optional[dict[str, Any]]:
     """Read-before-write guard (existing targets only), atomic write, then the security scan;
     a blocked scan restores the original (or unlinks a new file). Error dict or None."""
+    from tools.skill_manager_guards import background_review_cancellation_guard
+    if cancelled := background_review_cancellation_guard():
+        return cancelled
     original = None
     if target.exists():
         if read_guard := _background_review_read_before_write_guard(name, target, action, label):
@@ -406,6 +409,10 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
     scan_error = _security_scan_skill(skill_dir)
     if not scan_error:
+        # Our own successful write is the new baseline, including successive
+        # operations in one atomic batch. The enclosing per-skill lock still holds.
+        from tools.skill_manager_guards import mark_background_review_skill_read
+        mark_background_review_skill_read(target, content=content)
         return None
     if original is not None:
         atomic_write_text(target, original, preserve_mode=True)

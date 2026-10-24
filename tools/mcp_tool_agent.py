@@ -180,6 +180,8 @@ def tool_pin_version() -> str:
 def persist_agent_tool_names(agent) -> None:
     """Best-effort: write ``agent.tools`` to the session row (freeze pin). The full definitions,
     keyed by the code that built them: another process or surface derives different bytes."""
+    if getattr(agent, "_delegate_resumable", False) is True:
+        return  # each activation resolves current capabilities instead of restoring a pin
     db = getattr(agent, "_session_db", None)
     session_id = getattr(agent, "session_id", None)
     if not db or not session_id:

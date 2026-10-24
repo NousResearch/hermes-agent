@@ -595,7 +595,7 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
             # to have been seen. No-op outside review forks (mark_background_review_skill_read gates on
             # is_background_review).
             from tools.skill_manager_guards import mark_background_review_skill_read
-            mark_background_review_skill_read(Path(resolved_str))
+            mark_background_review_skill_read(Path(resolved_str), version=version)
         except Exception:
             logger.debug("background-review read-mark failed", exc_info=True)
     return count

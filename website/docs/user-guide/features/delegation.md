@@ -521,6 +521,25 @@ A delegation the stall monitor has flagged shows as
 children show their quiet time so you can tell "slow" from "stuck" at a
 glance.
 
+## Continuing a completed child through a plugin
+
+The host exposes retained conversations through `ctx.subagent_lifecycle` and a
+profile-scoped delegation extension. A plugin supplies the model-facing continuation
+commands, discovery/search presentation, assignment formatting, and retention/review
+policy. Native delegation remains unchanged without an enabled extension.
+
+Retained spawns use the active delegation backend's routing and task parameters.
+The companion plugin offers an optional `per-task` backend (`resumable` is a legacy alias) declaring `child_model`
+and `child_provider`; other backends keep their own vocabulary. Selection policy
+lives in the routing plugin, while core resolves credentials and executes the route.
+Resuming an existing child can change its model within the saved provider; changing
+providers requires a new child.
+
+See [the plugin lifecycle API](../../developer-guide/subagent-lifecycle-api.md#retained-conversations-opt-in)
+for the host contract. Conversation IDs and history survive plugin reload or removal;
+normal transcript deletion still applies. This is conversation continuation, not
+recovery or replay of an interrupted run.
+
 ## Steering a Running Subagent
 
 Interrupting a child throws away its in-flight work; often you just want to redirect it.

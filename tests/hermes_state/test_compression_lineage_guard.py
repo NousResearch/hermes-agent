@@ -158,6 +158,24 @@ def test_compression_lineage_includes_continuation_with_foreign_markers(
     ]
 
 
+@pytest.mark.parametrize("marker", ["_delegate_from", "_branched_from"])
+def test_compression_tip_follows_inherited_markers_but_not_fresh_forks(db, marker):
+    """A fork's compression copies its marker; only a new fork edge splits the chain."""
+    db.create_session("origin", source="discord")
+    db.end_session("origin", "compression")
+    db.create_session("fork", source="subagent", parent_session_id="origin",
+                      model_config={marker: "origin"})
+    assert db.get_compression_tip("origin") == "origin"
+    db.end_session("fork", "compression")
+    db.create_session("tip", source="subagent", parent_session_id="fork",
+                      model_config={marker: "origin"})
+    db.create_session("new-fork", source="subagent", parent_session_id="fork",
+                      model_config={marker: "fork"})
+    assert db.get_compression_chain("fork") == ["fork", "tip"]
+    assert db.get_compression_tip("fork") == "tip"
+    assert db.get_compression_tip("origin") == "origin"
+
+
 def test_reopen_orphaned_compression_session_fails_closed_with_active_lease(
     db: SessionDB,
 ) -> None:

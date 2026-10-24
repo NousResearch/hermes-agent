@@ -30,6 +30,7 @@ from hermes_constants import get_hermes_home, get_process_hermes_home, hermes_ho
 from registration_lifecycle import replacement_coordinator
 from utils import env_var_enabled
 from hermes_cli.config import load_config_readonly
+from hermes_cli.plugins_subagents import SubagentExtensionContextMethods
 from hermes_cli.middleware import VALID_MIDDLEWARE
 from hermes_cli.plugin_capabilities import plugin_capability_granted
 from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV, legacy_relay_plugin_keys
@@ -226,7 +227,7 @@ class LoadedPlugin:
     deferred: bool = False
 
 
-class PluginContext:
+class PluginContext(SubagentExtensionContextMethods):
     """Facade given to plugins so they can register tools and hooks."""
 
     def __init__(self, manifest: PluginManifest, manager: PluginManager):
@@ -381,13 +382,6 @@ class PluginContext:
             from agent.plugin_llm import PluginLlm
             self._llm = PluginLlm(plugin_id=self.plugin_id)
         return self._llm
-
-    @cached_property
-    def subagent_lifecycle(self) -> Any:
-        """Plugin-safe subagent lifecycle service: serializable handles and immutable snapshots,
-        never a live agent or private registry."""
-        from agent.subagent_lifecycle import SubagentLifecycleService, get_active_subagent_parent
-        return SubagentLifecycleService(get_active_subagent_parent)
 
     @cached_property
     def delegation_backends(self) -> Any:

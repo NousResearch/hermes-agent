@@ -57,6 +57,43 @@ async def test_completion_after_compression_admits_to_the_logical_root(tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_subagent_process_notice_reenters_its_own_parent_route(tmp_path, monkeypatch):
+    from gateway.platforms.event import MessageEvent
+    from hermes_state_runtime import list_session_admissions
+
+    runner, _, authority, source = await _discord_owner(tmp_path, monkeypatch)
+    receipt = await _admit_human(runner, authority, MessageEvent(text='human', source=source, message_id='human'))
+    key = runner.session_store._generate_session_key(source)
+    root = receipt.ref.session_id
+    child = root + '-worker'
+    authority.db.create_session(child, source='subagent', parent_session_id=root)
+    event = {'type': 'completion', 'session_id': 'proc-worker-finished', 'started_at': 1,
+             'session_key': key, 'parent_session_id': child}
+    assert await runner._inject_watch_notification('worker-finished', event) is True
+    rows = list_session_admissions(authority.db, session_id=root, pending_only=False)
+    assert len(rows) == 2 and 'worker-finished' in rows[-1]['payload']['text']
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_old_subagent_notice_cannot_enter_reset_route(tmp_path, monkeypatch):
+    from gateway.platforms.event import MessageEvent
+
+    runner, _, authority, source = await _discord_owner(tmp_path, monkeypatch)
+    receipt = await _admit_human(runner, authority, MessageEvent(text='human', source=source, message_id='human'))
+    key = runner.session_store._generate_session_key(source)
+    root = receipt.ref.session_id
+    child = root + '-worker'
+    authority.db.create_session(child, source='subagent', parent_session_id=root)
+    runner.session_store.reset_session(key)
+    event = {'type': 'completion', 'session_id': 'proc-old-worker', 'started_at': 1,
+             'session_key': key, 'parent_session_id': child}
+    # Current main drops (None) a notice pinned to a session /new closed, instead of requeueing it.
+    assert await runner._inject_watch_notification('old-worker', event) is None
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
 async def test_text_completion_after_a_released_photo_input_is_admitted(tmp_path, monkeypatch):
     from gateway.platforms.base import get_image_cache_dir
     from gateway.platforms.event import MessageEvent, MessageType

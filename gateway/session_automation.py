@@ -269,8 +269,19 @@ def _owner(runner, event, authority):
     if not expected:
         raise RuntimeStoreError('admission_conflict')
     if expected != entry.session_id:
-        # A completed child may follow compression, but never /new or an unrelated resume.
-        if authority.db.get_compression_tip(expected) != entry.session_id:
+        # Process notifications spawned by a subagent carry that worker's session id,
+        # while the pinned chat route belongs to its parent conversation. Permit only
+        # a verified subagent ancestry of this route, never an unrelated /new owner.
+        ancestor, visited = expected, set()
+        while ancestor and ancestor not in visited:
+            visited.add(ancestor)
+            worker = authority.db.get_session(ancestor)
+            if not worker or worker.get('source') != 'subagent':
+                break
+            ancestor = worker.get('parent_session_id')
+        worker_on_route = (ancestor and ancestor != expected
+                           and authority.logical_owner(ancestor) == authority.logical_owner(entry.session_id))
+        if not worker_on_route and authority.db.get_compression_tip(expected) != entry.session_id:
             raise RuntimeStoreError('admission_conflict')
     return entry
 

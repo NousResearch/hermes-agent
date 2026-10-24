@@ -89,6 +89,10 @@ def wants_latest(args):
 
 
 def validate_options(args):
+    if getattr(args, "interrupt_on_exit", False) and (
+        not getattr(args, "oneshot_exit", False) or getattr(args, "tui", False)
+    ):
+        raise GatewayClientError("Unsupported --interrupt-on-exit: requires --oneshot and cannot be used with --tui")
     unsupported = [name for name in _UNSUPPORTED if getattr(args, name, None)]
     if getattr(args, "create_if_missing", False) and not continue_title(args):
         unsupported.append("create-if-missing without -c <name>")
@@ -242,7 +246,9 @@ async def run_gateway_chat(args, emitter=None):
                 merged = isinstance(metadata, dict) and metadata.get(MODEL_ONLY_DISPLAY_METADATA_KEY)
                 if row.get("role") in {"user", "assistant"} and isinstance(row.get("content"), str) and not merged:
                     print(f"{row['role']}: {row['content']}")
-        return await view.run(query, oneshot=oneshot)
+        from hermes_cli.gateway_chat_signals import run_with_exit_policy
+        return await run_with_exit_policy(view, query, oneshot=oneshot,
+                                          interrupt_on_exit=getattr(args, "interrupt_on_exit", False))
 
 
 _RESUME_POLICY_MISMATCH = "Resume retains gateway session policy; creation overrides are unsupported on resume."

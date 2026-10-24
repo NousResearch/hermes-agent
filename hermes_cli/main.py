@@ -1684,7 +1684,7 @@ def cmd_chat(args):
     from hermes_cli.stream_json import stream_json_requested
     # stream-json and the --safe-mode / --ignore-user-config bypass keep the transport client; the
     # classic CLI (interactive, -q/-Q) is main's HermesCLI with a gateway-backed agent (gateway_agent.py).
-    if stream_json_requested(args) or _bypass_chat_launch(args):
+    if stream_json_requested(args) or _bypass_chat_launch(args) or getattr(args, "interrupt_on_exit", False):
         from hermes_cli.gateway_chat_startup import launch_gateway_chat
         sys.exit(launch_gateway_chat(args))
     _apply_safe_mode(args)

@@ -53,6 +53,7 @@ class GatewayChatView:
         self.resume_footer = False  # `chat -q` without -Q: main's "Resume this session with:" block
         self.launch_api_key = None  # `--api-key` of this terminal's launch; never durable (/new reuses it)
         self.finite_admission = None
+        self.submission_ready = asyncio.Event()
         self._finite_events = []
         self.streams = {}
         self.completions = {}
@@ -514,6 +515,7 @@ class GatewayChatView:
                 if admission is None:
                     return 0  # the voice chat ended; no turn was admitted, so none is awaited
                 self.finite_admission = admission
+                self.submission_ready.set()
                 for kind, event_admission, payload in self._finite_events:
                     if event_admission == admission and admission not in self.completions:
                         self._dispatch_event(kind, event_admission, payload)

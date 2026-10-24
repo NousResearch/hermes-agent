@@ -303,8 +303,13 @@ if [[ -n "${HERMES_BD_PYTHON:-}" ]]; then
       wait "$sleeper"
       sleeper=
       kill -0 "$$" 2>/dev/null || exit 0
+      # `hermes update` may rebuild the environment at a new path, leaving the starter's interpreter gone:
+      # use the install's current one then (both layouts are in the wild), or no check ever runs again.
+      py="$HERMES_BD_PYTHON"
+      [[ -x "$py" ]] || py="$HERMES_BD_SRC_ROOT/venv/bin/python"
+      [[ -x "$py" ]] || py="$HERMES_BD_SRC_ROOT/.venv/bin/python"
       HERMES_HOME="$HERMES_BD_HOME" PYTHONPATH="$HERMES_BD_SRC_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
-        "$HERMES_BD_PYTHON" -m tools.bot_desktop.idle_watch "$$" >"$out" &
+        "$py" -m tools.bot_desktop.idle_watch "$$" >"$out" &
       if wait "$!"; then delay=$(<"$out"); else delay=300; fi  # broken check: retry slowly
       [[ -n "$delay" ]] || exit 0  # it stopped the screen
     done

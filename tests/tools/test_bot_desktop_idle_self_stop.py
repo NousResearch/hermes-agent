@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -41,6 +42,7 @@ from tools.bot_desktop import runtime
 runtime._X_LOCK_DIR = Path({scratch!r})
 runtime._ALLOC_LOCK = runtime._X_LOCK_DIR / "alloc.lock"
 runtime.missing_binaries = list
+{prelude}
 print(runtime.start(wait_seconds=15).pid, flush=True)
 time.sleep(600)
 """
@@ -68,9 +70,9 @@ def abandoned_screen(tmp_path):
     env.pop("PYTHONPATH", None)
     groups: list[int] = []
 
-    def launch(idle_stop_minutes: float) -> tuple[Path, int]:
+    def launch(idle_stop_minutes: float, prelude: str = "") -> tuple[Path, int]:
         (home / "config.yaml").write_text(f"bot_desktop:\n  idle_stop_minutes: {idle_stop_minutes}\n", encoding="utf-8")
-        gateway = subprocess.Popen([sys.executable, "-c", _GATEWAY.format(repo=str(_REPO), scratch=str(tmp_path))],
+        gateway = subprocess.Popen([sys.executable, "-c", _GATEWAY.format(repo=str(_REPO), scratch=str(tmp_path), prelude=prelude)],
                                    env=env, stdout=subprocess.PIPE, text=True)
         launcher = int(gateway.stdout.readline())
         groups.append(launcher)
@@ -90,6 +92,36 @@ def test_an_abandoned_screen_stops_itself_after_the_idle_window(abandoned_screen
     # stop() deletes launcher.pid/env after the group is gone, so both are part of "stopped".
     wait_until(lambda: not _alive(launcher) and not (sd / "launcher.pid").exists() and not (sd / "env").exists(),
                timeout=30, what="the abandoned screen to be stopped the way stop() does")
+
+
+@pytest.mark.parametrize("venv", ["venv", ".venv"])
+def test_a_screen_started_before_an_update_still_stops_itself(abandoned_screen, tmp_path, venv):
+    """``hermes update`` can rebuild the environment at a new path, so the interpreter that started the screen
+    is gone by its next idle check. The check then uses the install's current interpreter; before, every
+    check failed and was retried in 300 s, forever, and the abandoned screen never stopped."""
+    # The checkout, with the rebuilt environment in ``venv`` or ``.venv``. tools/bot_desktop is a real copy:
+    # runtime.py resolves symlinks when it names its source root.
+    install = tmp_path / "install"
+    (install / "tools").mkdir(parents=True)
+    for entry in _REPO.iterdir():
+        if entry.name not in {"venv", ".venv", "tools"}:
+            (install / entry.name).symlink_to(entry)
+    for entry in (_REPO / "tools").iterdir():
+        if entry.name != "bot_desktop":
+            (install / "tools" / entry.name).symlink_to(entry)
+    shutil.copytree(_REPO / "tools" / "bot_desktop", install / "tools" / "bot_desktop",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    used = tmp_path / "current-python-used"
+    python = install / venv / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text(f'#!/bin/sh\n: > "{used}"\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+    python.chmod(0o755)
+    prelude = (f"runtime.__file__ = {str(install / 'tools/bot_desktop/runtime.py')!r}\n"
+               f"sys.executable = {str(tmp_path / 'old-env/bin/python')!r}  # removed by the update")
+    sd, launcher = abandoned_screen(idle_stop_minutes=0.02, prelude=prelude)
+    wait_until(lambda: not _alive(launcher) and not (sd / "launcher.pid").exists(), timeout=30,
+               what="the abandoned screen to stop itself with the install's current interpreter")
+    assert used.exists()
 
 
 def test_the_first_idle_check_waits_until_the_screen_could_be_due(abandoned_screen):

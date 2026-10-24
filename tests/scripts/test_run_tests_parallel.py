@@ -645,6 +645,52 @@ def test_clean_run_summary_has_no_errors_note(tmp_path: Path) -> None:
     assert "error" not in summary, summary
 
 
+def test_import_error_file_is_a_failed_file_on_the_summary_line(tmp_path: Path) -> None:
+    """A file that dies at import is a FAILED file on the Summary line, with its cause.
+
+    pytest interrupts it with exit 2 and ``collected 0 items / 1 error``, so
+    it has no failed-test count: the Summary used to read "2 tests passed,
+    0 failed" beside it. A file that collects nothing (pytest exit 5, e.g.
+    platform-gated) stays a pass.
+    """
+    probe_dir = _make_probe_dir(tmp_path)
+    (probe_dir / "test_probe_import_error.py").write_text(
+        "@pytest.mark.parametrize('n', [1])\ndef test_n(n):\n    assert n\n"
+    )
+    (probe_dir / "test_probe_collects_nothing.py").write_text("VALUE = 1\n")
+
+    proc = _run_runner(probe_dir, "--file-retries", "0")
+
+    assert proc.returncode == 1, proc.stdout
+    summary = next(l for l in proc.stdout.splitlines() if "=== Summary:" in l)
+    assert "2 tests passed, 0 failed, 1 error" in summary, summary
+    assert "FAILED: 1 of 3 files (1 at import/collection)" in summary, summary
+    lines = proc.stdout.splitlines()
+    header = lines.index("=== 1 file that FAILED AT IMPORT/COLLECTION (0 tests ran) ===")
+    cause = lines[header + 1]
+    assert "test_probe_import_error.py" in cause, proc.stdout
+    assert "NameError: name 'pytest' is not defined" in cause, proc.stdout
+    assert "where no tests ran" not in proc.stdout
+
+
+def test_named_test_path_that_does_not_exist_fails_the_run(tmp_path: Path) -> None:
+    """A mistyped or deleted file named on the command line must not run green without it."""
+    probe_dir = _make_probe_dir(tmp_path)
+    runner = _probe_root(tmp_path) / "scripts" / "run_tests_parallel.py"
+    missing = probe_dir / "test_probe_not_there.py"
+
+    proc = subprocess.run(
+        [sys.executable, str(runner), str(probe_dir / "test_flagprobe.py"), str(missing),
+         "-j", "1", "--file-timeout", "30"],
+        cwd=probe_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        encoding="utf-8", errors="replace", timeout=60, check=False,
+    )
+
+    assert proc.returncode == 2, proc.stdout
+    assert f"no such test path: {missing}" in proc.stdout
+    assert "=== Summary:" not in proc.stdout
+
+
 # ── --files-from: file-backed explicit file lists ───────────────────────────
 #
 # --files carries the whole list as ONE argv element, and Linux caps a

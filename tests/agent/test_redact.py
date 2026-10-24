@@ -104,6 +104,36 @@ class TestKnownPrefixes:
         ]:
             assert redact_sensitive_text(benign) == benign
 
+    def test_context7_api_key_prefix(self):
+        """Context7 keys carry a fixed vendor prefix (``ctx7sk-``) and must redact on every surface.
+
+        The generic ``sk-`` family cannot catch them: the matcher's lookbehind
+        rejects a prefix preceded by a word char, and here the ``sk-`` sits
+        INSIDE ``ctx7sk-`` - so a bare Context7 key passed through unmasked
+        (#142576).
+        """
+        # NOTE: prefix + suffix CONCATENATION so no contiguous token literal
+        # exists in this file - GitHub push protection blocks realistic
+        # vendor-token-shaped literals.
+        token = ("ctx7sk-" + "0" * 8 + "-" + "0" * 4 + "-" + "0" * 4
+                 + "-" + "0" * 4 + "-" + "0" * 12)
+        for surface in (
+            f"key is {token}\n",
+            f'["{token}"]\n',
+            f"headers:\n  CONTEXT7_API_KEY: {token}\nurl: https://mcp.context7.com/mcp\n",
+            f"CONTEXT7_API_KEY={token}\n",
+        ):
+            assert token not in redact_sensitive_text(surface, force=True), surface
+
+    def test_context7_prefix_requires_word_boundary_and_length(self):
+        """Prose and embedded identifiers must not false-positive."""
+        for benign in [
+            "the glossary explains context7 keys",
+            "ctx7sk-short",
+            "myctx7sk-" + "A" * 20,
+        ]:
+            assert redact_sensitive_text(benign) == benign
+
     def test_agentmail_prefix_needs_a_key_shaped_hex_suffix(self):
         """``am_`` is a common identifier prefix; only the documented hex key body is a secret (#10983)."""
         for benign in ["schema.am_example_identifier_123", "path/to/am_monthly_report.sql"]:

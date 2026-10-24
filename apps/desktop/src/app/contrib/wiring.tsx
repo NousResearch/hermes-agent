@@ -96,7 +96,7 @@ import {
 import { reportPendingUpdateRun } from '@/store/shared-metrics'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
-import { armWakeWord, stopClientCapture } from '@/store/wake-word'
+import { armWakeWord, setWakeWordSessionId, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow, isMainWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
 import type { SessionInfo } from '@/types/hermes'
@@ -868,12 +868,15 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   })
 
   useEffect(() => {
+    setWakeWordSessionId(activeSessionId)
+
     if (gatewayState === 'open') {
       // Status-then-arm, syncing $wakeWord so the composer toggle reflects the
-      // same listener this auto-arm claims.
+      // same listener this auto-arm claims. Re-running for a session change
+      // rebinds an already-owned detector to the foreground conversation.
       void armWakeWord(requestGateway)
     }
-  }, [gatewayState, requestGateway])
+  }, [activeSessionId, gatewayState, requestGateway])
 
   useEffect(() => {
     if (gatewayState !== 'open' || isAuxiliaryWindow()) {

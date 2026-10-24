@@ -327,6 +327,11 @@ async def test_busy_recovery_interrupt_queues_complete_event_before_text_interru
         async def _hm_busy_slash_or_photo(self, event, source, session_key):
             return False, None
 
+        async def _busy_skill_turn(self, event, source, session_key):
+            # Upstream's busy fast-path consults the skill handler before the
+            # generic interrupt/queue routing this test exercises.
+            return False, None
+
         def _effective_busy_input_mode(self, source):
             return "interrupt"
 

@@ -84,7 +84,9 @@ class TestClampEffort:
         assert clamp_effort("", ("low",)) == ""
 
     def test_overrides_win(self):
-        assert clamp_effort("medium", KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES) == "high"
+        # ``medium`` is served directly on the Kimi Code endpoints (#142365) — no silent
+        # upgrade to ``high``; only ``xhigh`` still rounds up to K3's top tier.
+        assert clamp_effort("medium", KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES) == "medium"
         assert clamp_effort("xhigh", KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES) == "max"
 
     def test_override_ignored_when_target_unsupported(self):

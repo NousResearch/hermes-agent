@@ -379,6 +379,11 @@ def _resolve_chat_argv(
     # scope overrides HERMES_HOME before config is bridged into the env.
     from tools.environments.local import build_subprocess_env
     env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
+    # A fork-mode supervisor (pm2) leaves its node IPC channel vars in our env; the
+    # TUI node child would adopt the named fd — closed here by close_fds — and abort
+    # in libuv on exit (#139556).
+    env.pop("NODE_CHANNEL_FD", None)
+    env.pop("NODE_CHANNEL_SERIALIZATION_MODE", None)
     if profile_dir is not None:
         env["HERMES_HOME"] = str(profile_dir)
     try:

@@ -636,6 +636,23 @@ class TestProfileScopedChatPty:
         # Scoped chat must NOT attach to the dashboard's in-memory gateway.
         assert "HERMES_TUI_GATEWAY_URL" not in env
 
+    def test_chat_argv_strips_supervisor_node_ipc_vars(self, isolated_profiles, monkeypatch):
+        """Regression for #139556: pm2 fork mode injects NODE_CHANNEL_FD into the
+        dashboard process; the PTY's node child would adopt the (already closed)
+        fd and SIGABRT in libuv at exit, so the argv env must never carry it."""
+
+        monkeypatch.setenv("NODE_CHANNEL_FD", "13")
+        monkeypatch.setenv("NODE_CHANNEL_SERIALIZATION_MODE", "json")
+        monkeypatch.setattr(
+            "hermes_cli.main_tui_launch._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], None),
+            raising=False,
+        )
+        _argv, _cwd, env = _web_server_chat._resolve_chat_argv()
+        assert env is not None
+        assert "NODE_CHANNEL_FD" not in env
+        assert "NODE_CHANNEL_SERIALIZATION_MODE" not in env
+
     def test_chat_argv_bridges_selected_profile_terminal_config(
         self, isolated_profiles, monkeypatch
     ):

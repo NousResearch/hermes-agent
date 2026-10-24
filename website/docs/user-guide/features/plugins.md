@@ -1042,7 +1042,39 @@ ctx.inject_message(
 )
 ```
 
-**Signature:** `ctx.inject_message(content: str, role: str = "user", *, session_key: str | None = None, origin: Mapping[str, Any] | None = None) -> bool`
+**Signature:** `ctx.inject_message(content: str, role: str = "user", *, session_key: str | None = None, origin: Mapping[str, Any] | None = None, message_ref: str | None = None) -> bool`
+
+`message_ref` is an optional, non-empty producer-owned identity, for example an initiative occurrence
+ID. Invalid values raise `ValueError`. The gateway namespaces it by plugin ID and session key; two
+plugins or sessions can reuse a reference without colliding. With the durable session authority,
+retry the **same immutable content** with the same reference to collect the existing admission,
+not run another turn. Conflicting content is refused by the authority. `None` retains a fresh
+identity per call. A `True` return means scheduling/admission, **not platform delivery**.
+Standalone gateway paths carry the identity but do not promise durable deduplication. The legacy
+in-process REPL refuses identity-bearing injections (`False`) rather than silently discarding the
+reference; local gateway-owned sessions use the durable path. Identity-bearing calls bypass the
+legacy TUI injector and require the gateway host.
+
+Observe `post_message_delivered` for the gateway's final-text send outcome. It reports
+`session_key`, `message_ref` (the supplied reference, or the host-generated/inbound identity),
+`platform`, `platform_message_id`, `success`, and `error`. The hook fires after the adapter's
+send/retry result, under the destination profile scope, for normal, queued and authority-recovered
+final-text sends. `success=True` means the adapter acknowledged sending; it is not a read receipt.
+Failures retain the adapter's error and may still have a platform ID after partial delivery.
+No receipt is invented for model completion, a suppressed/empty response, native streaming, local
+viewer delivery, attachments-only output or a send that raises without returning a result.
+This observer is not a durable receipt queue: a crash can lose the callback, and consumers should
+handle repeated observations idempotently. Detect support with `"post_message_delivered" in
+hermes_cli.plugins.VALID_HOOKS`; older hosts have neither this hook nor the `message_ref` parameter.
+
+```python
+def delivered(session_key, message_ref, success, error, **kwargs):
+    if success:
+        mark_initiative_delivered(session_key, message_ref)
+
+ctx.register_hook("post_message_delivered", delivered)
+ctx.inject_message("Check the pending task", session_key=target, message_ref=occurrence_id)
+```
 
 When the classic CLI runs plugins in its own process (no gateway session):
 

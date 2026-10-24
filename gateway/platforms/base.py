@@ -4347,26 +4347,11 @@ class BasePlatformAdapter(ABC):
         self, event: MessageEvent, session_key: str, text_content: str, metadata: dict[str, Any], *,
         reply_to: Optional[str], is_ephemeral_response: bool = False,
     ) -> "tuple[SendResult, BasePlatformAdapter]":
-        """The delivery-ledger bracket every final text goes through, on the CURRENT transport
-        (a reconnect may have replaced this adapter): record the obligation before the send,
-        send with retry, finalize from the result — so a refused final (flood control, a dead
-        transport) leaves a ledger row the boot sweep / runtime redelivery can act on. ``event``
-        supplies the source and the ledger identity (``ledger_message_id`` or ``message_id``).
-        Returns the result with the adapter that sent it: that adapter owns ``result.message_id``
-        (an ephemeral delete must go to the same transport)."""
-        delivery_adapter = self._final_delivery_adapter(event.source)
-        logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
-                    len(text_content), event.source.chat_id)
-        obligation_id = await self._record_delivery_obligation(
-            event, session_key, text_content, delivery_adapter, is_ephemeral_response)
-        if obligation_id is not None:
-            await self._release_turn_marker(event)  # the ledger now owns the crash recovery
-        result = await delivery_adapter._send_with_retry(
-            chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
-        stop_reply_clock(delivery_adapter, event.source.chat_id, result)
-        if obligation_id is not None:
-            await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
-        return result, delivery_adapter
+        """Ledger and report a final-text send on the current transport."""
+        from gateway.plugin_delivery import send_final
+        return await send_final(
+            self, event, session_key, text_content, metadata,
+            reply_to=reply_to, is_ephemeral_response=is_ephemeral_response)
 
     async def _release_turn_marker(self, event: MessageEvent) -> None:
         """Clear the crash marker handed to this delivery lifecycle only once the final reply is ledgered or

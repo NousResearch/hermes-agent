@@ -1141,6 +1141,8 @@ def build_turn_context(
     # System prompt is cached per session for prefix caching.
     if agent._cached_system_prompt is None:
         restore_or_build_system_prompt(agent, system_message, conversation_history)
+    from agent.instruction_refresh import refresh_instructions
+    refresh_instructions(agent, system_message)
     active_system_prompt = agent._cached_system_prompt
     # `/delegation <backend> --now`: after the pin restore, so a fresh agent rebuilds too.
     from agent.delegation_backends import apply_requested_tool_rebuild

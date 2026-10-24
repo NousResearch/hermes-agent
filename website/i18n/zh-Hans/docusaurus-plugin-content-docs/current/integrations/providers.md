@@ -27,6 +27,7 @@ sidebar_position: 1
 | **Kimi / Moonshot（中国）** | `~/.hermes/.env` 中的 `KIMI_CN_API_KEY`（provider: `kimi-coding-cn`；别名：`kimi-cn`、`moonshot-cn`） |
 | **Arcee AI** | `~/.hermes/.env` 中的 `ARCEEAI_API_KEY`（provider: `arcee`；别名：`arcee-ai`、`arceeai`） |
 | **GMI Cloud** | `~/.hermes/.env` 中的 `GMI_API_KEY`（provider: `gmi`；别名：`gmi-cloud`、`gmicloud`） |
+| **Kosmik** | `~/.hermes/.env` 中的 `KOSMIK_API_KEY`（provider: `kosmik`；别名：`koscompute`、`kosmik-ai`、`kos`） |
 | **MiniMax** | `~/.hermes/.env` 中的 `MINIMAX_API_KEY`（provider: `minimax`） |
 | **MiniMax 中国** | `~/.hermes/.env` 中的 `MINIMAX_CN_API_KEY`（provider: `minimax-cn`） |
 | **xAI（Grok）— Responses API** | `~/.hermes/.env` 中的 `XAI_API_KEY`（provider: `xai`） |
@@ -481,6 +482,25 @@ model:
 ```
 
 基础 URL 可通过 `GMI_BASE_URL` 覆盖（默认：`https://api.gmi-serving.com/v1`）。
+
+### Kosmik
+
+通过 [Kosmik](https://koscompute.com) 使用开源和推理模型——欧洲 AI 算力基础设施与推理（捷克布拉格），OpenAI 兼容 API，API key 认证。
+
+```bash
+# Kosmik
+hermes chat --provider kosmik --model qwen/qwen3.8-27b
+# 需要：~/.hermes/.env 中的 KOSMIK_API_KEY
+```
+
+或在 `config.yaml` 中设置：
+```yaml
+model:
+  provider: "kosmik"
+  default: "qwen/qwen3.8-27b"
+```
+
+基础 URL 可通过 `KOSMIK_BASE_URL` 覆盖（默认：`https://api.koscompute.com/v1`）。
 
 ### StepFun
 

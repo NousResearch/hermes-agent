@@ -93,7 +93,7 @@ def _write_jsonl(path: Path, entries) -> None:
 # YAML section -> keys; "yaml_key:attr" when the config attribute name differs.
 _YAML_SECTIONS: dict[str, tuple[str, ...]] = {
     "tokenizer": ("name:tokenizer_name", "trust_remote_code"),
-    "compression": ("target_max_tokens", "summary_target_tokens"),
+    "compression": ("target_max_tokens", "summary_target_tokens", "toon_encode_tool_results", "toon_min_rows"),
     "protected_turns": ("first_system:protect_first_system", "first_human:protect_first_human",
                         "first_gpt:protect_first_gpt", "first_tool:protect_first_tool", "last_n_turns:protect_last_n_turns"),
     "summarization": ("model:summarization_model", "base_url", "api_key_env", "temperature", "max_retries", "retry_delay"),
@@ -110,6 +110,10 @@ class CompressionConfig:
     trust_remote_code: bool = True
     target_max_tokens: int = 15250
     summary_target_tokens: int = 750
+    # Opt-in: rewrite unprotected JSON-array-of-objects tool results as a compact TOON-style table
+    # before budgeting, so a trajectory may fit without (or with a smaller) summary.
+    toon_encode_tool_results: bool = False
+    toon_min_rows: int = 2
     protect_first_system: bool = True
     protect_first_human: bool = True
     protect_first_gpt: bool = True
@@ -168,6 +172,7 @@ class TrajectoryMetrics:
     skipped_under_target: bool = False
     summarization_api_calls: int = 0
     summarization_errors: int = 0
+    toon_encoded_tool_results: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -199,6 +204,7 @@ class AggregateMetrics:
     total_turns_removed: int = 0
     total_summarization_calls: int = 0
     total_summarization_errors: int = 0
+    total_toon_encoded_tool_results: int = 0
     compression_ratios: list[float] = field(default_factory=list)
     tokens_saved_list: list[int] = field(default_factory=list)
     turns_removed_list: list[int] = field(default_factory=list)
@@ -217,6 +223,7 @@ class AggregateMetrics:
         self.total_turns_removed += metrics.turns_removed
         self.total_summarization_calls += metrics.summarization_api_calls
         self.total_summarization_errors += metrics.summarization_errors
+        self.total_toon_encoded_tool_results += metrics.toon_encoded_tool_results
         if metrics.was_compressed:
             self.trajectories_compressed += 1
             self.compression_ratios.append(metrics.compression_ratio)
@@ -239,9 +246,43 @@ class AggregateMetrics:
                          "avg_turns_removed_per_compressed": round(_mean(self.turns_removed_list, 0), 2)},
             "summarization": {"total_api_calls": self.total_summarization_calls, "total_errors": self.total_summarization_errors,
                               "success_rate": round(1 - (self.total_summarization_errors / max(self.total_summarization_calls, 1)), 4)},
+            "tool_result_encoding": {"toon_encoded_tool_results": self.total_toon_encoded_tool_results},
             "processing": {"start_time": self.processing_start_time, "end_time": self.processing_end_time,
                            "duration_seconds": round(self.processing_duration_seconds, 2)},
         }
+
+
+def _toon_cell(value: Any) -> str:
+    """One table cell: scalars verbatim, nested values as compact JSON; escapes keep rows one line."""
+    if value is None:
+        text = ""
+    elif isinstance(value, bool):
+        text = "true" if value else "false"
+    elif isinstance(value, (int, float, str)):
+        text = str(value)
+    else:
+        text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return text.replace("\\", "\\\\").replace("\r", "\\r").replace("\n", "\\n").replace("|", "\\|")
+
+
+def toon_encode_json_array(value: str, min_rows: int = 2) -> Optional[str]:
+    """Encode a JSON array of same-keyed objects as a TOON-style table, or None when the value is
+    not such an array, has fewer than ``min_rows`` rows, or the table would not be shorter."""
+    try:
+        rows = json.loads(value)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(rows, list) or not rows or len(rows) < min_rows or not all(isinstance(r, dict) for r in rows):
+        return None
+    fields = list(rows[0])
+    if not fields or any(not isinstance(f, str) or not f or any(c in f for c in "{}|,\n\r") for f in fields):
+        return None
+    if any(set(row) != set(fields) for row in rows):
+        return None
+    encoded = "\n".join(["[TOON_ENCODED_TOOL_RESULT]", f"rows[{len(rows)}]{{{','.join(fields)}}}",
+                         *("|".join(_toon_cell(row[f]) for f in fields) for row in rows),
+                         "[/TOON_ENCODED_TOOL_RESULT]"])
+    return encoded if len(encoded) < len(value) else None
 
 
 # Ordered (hostname, provider) table for _detect_provider (codex is matched separately).
@@ -491,18 +532,44 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                     return _SUMMARY_FALLBACK
                 await asyncio.sleep(delay)
 
-    def _plan_compression(self, trajectory: list[dict[str, str]], metrics: TrajectoryMetrics) -> Optional[tuple[int, int]]:
+    def _encode_tool_results(self, trajectory: list[dict[str, str]],
+                             metrics: TrajectoryMetrics) -> tuple[list[dict[str, str]], Optional[int]]:
+        """Opt-in TOON pass over ``tool`` turns -> ``(trajectory, pre-encoding token count)``.
+
+        Protected turns (first system/human/gpt/tool, last N) are kept byte-for-byte, the same
+        contract the summarizer honours. The count is None when the pass is off."""
+        if not self.config.toon_encode_tool_results:
+            return trajectory, None
+        original_tokens = self.count_trajectory_tokens(trajectory)
+        protected, _, _ = self._find_protected_indices(trajectory)
+        encoded_trajectory = []
+        for i, turn in enumerate(trajectory):
+            if i not in protected and turn.get("from") == "tool":
+                encoded = toon_encode_json_array(turn.get("value", ""), self.config.toon_min_rows)
+                if encoded is not None:
+                    turn = dict(turn, value=encoded)
+                    metrics.toon_encoded_tool_results += 1
+            encoded_trajectory.append(turn)
+        return encoded_trajectory, original_tokens
+
+    def _plan_compression(self, trajectory: list[dict[str, str]], metrics: TrajectoryMetrics,
+                          original_tokens: Optional[int] = None) -> Optional[tuple[int, int]]:
         """Choose the ``[start, until)`` region to summarize, or None if nothing can be.
 
-        Fills the pre-compression metrics either way. Accumulates turns from the
-        start of the compressible middle until the savings cover the overage plus
-        the summary itself, then snaps both boundaries off ``tool`` turns.
+        Fills the pre-compression metrics either way (``original_tokens``: the count before the
+        TOON pass, when it ran). Accumulates turns from the start of the compressible middle until
+        the savings cover the overage plus the summary itself, then snaps both boundaries off
+        ``tool`` turns.
         """
         cfg = self.config
         turn_tokens = self.count_turn_tokens(trajectory)
         total_tokens = sum(turn_tokens)
         metrics.original_turns = metrics.compressed_turns = len(trajectory)
         metrics.original_tokens = metrics.compressed_tokens = total_tokens
+        if original_tokens is not None:
+            metrics.original_tokens = original_tokens
+            metrics.tokens_saved = original_tokens - total_tokens
+            metrics.compression_ratio = total_tokens / max(original_tokens, 1)
         if total_tokens <= cfg.target_max_tokens:
             metrics.skipped_under_target = True
             return None
@@ -555,7 +622,8 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
     def compress_trajectory(self, trajectory: list[dict[str, str]]) -> tuple[list[dict[str, str]], TrajectoryMetrics]:
         """Compress one trajectory into the target budget; returns ``(trajectory, metrics)``."""
         metrics = TrajectoryMetrics()
-        region = self._plan_compression(trajectory, metrics)
+        trajectory, original_tokens = self._encode_tool_results(trajectory, metrics)
+        region = self._plan_compression(trajectory, metrics, original_tokens)
         if region is None:
             return trajectory, metrics
         summary = self._generate_summary(self._extract_turn_content_for_summary(trajectory, *region), metrics)
@@ -564,7 +632,8 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
     async def compress_trajectory_async(self, trajectory: list[dict[str, str]]) -> tuple[list[dict[str, str]], TrajectoryMetrics]:
         """Async twin of ``compress_trajectory``."""
         metrics = TrajectoryMetrics()
-        region = self._plan_compression(trajectory, metrics)
+        trajectory, original_tokens = self._encode_tool_results(trajectory, metrics)
+        region = self._plan_compression(trajectory, metrics, original_tokens)
         if region is None:
             return trajectory, metrics
         summary = await self._generate_summary_async(self._extract_turn_content_for_summary(trajectory, *region), metrics)
@@ -576,7 +645,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             return entry, TrajectoryMetrics()
         compressed_trajectory, metrics = await self.compress_trajectory_async(entry["conversations"])
         result = dict(entry, conversations=compressed_trajectory)
-        if self.config.metrics_per_trajectory and metrics.was_compressed:
+        if self.config.metrics_per_trajectory and (metrics.was_compressed or metrics.toon_encoded_tool_results):
             result["compression_metrics"] = metrics.to_dict()
         return result, metrics
 

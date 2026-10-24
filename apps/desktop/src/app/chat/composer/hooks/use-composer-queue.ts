@@ -805,6 +805,24 @@ export function useComposerQueue({
     setQueueEditSnapshot(null)
   }, [activeQueueSessionKey, editingQueuedPrompt, queueEdit, setQueueEditSnapshot]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Deliver captured text as a mid-turn redirect — the queue-panel sibling of the
+  // composer's steer-on-Enter, for a row whose admission has just been withdrawn.
+  // `steerQueuedNow` cannot serve server-owned rows (`isSteerableEntry` gates them out),
+  // but their text must still reach the live turn: the gateway restarts the active
+  // request with it, so the wrong turn is corrected now and the queue keeps its place.
+  const redirectQueuedText = useCallback(
+    async (text: string): Promise<boolean> => {
+      const trimmed = text.trim()
+
+      if (!onSteer || !trimmed || isSlashCommandText(trimmed)) {
+        return false
+      }
+
+      return Boolean(await Promise.resolve(onSteer(trimmed)))
+    },
+    [onSteer]
+  )
+
   return {
     beginQueuedEdit,
     deliverQueuedNow,
@@ -815,6 +833,7 @@ export function useComposerQueue({
     queueEdit,
     queueParked,
     queuedPrompts,
+    redirectQueuedText,
     sendQueuedNow,
     steerQueuedNow,
     stepQueuedEdit

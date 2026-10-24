@@ -660,9 +660,9 @@ class WebSocketRelayTransport:
         # Fail fast during teardown: the disconnect() fail-pending loop may already
         # have run, so a future registered now would never be settled.
         if self._closing:
-            return {"success": False, "error": "relay transport closed"}
+            return {"success": False, "error": "relay transport closed", "not_sent": True}
         if self._ws is None:
-            return {"success": False, "error": "relay transport not connected"}
+            return {"success": False, "error": "relay transport not connected", "not_sent": True}
         request_id = uuid.uuid4().hex
         fut: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = fut
@@ -679,7 +679,11 @@ class WebSocketRelayTransport:
         try:
             await self._send(frame)
             frame_sent = True
-            return await asyncio.wait_for(fut, timeout=self._outbound_timeout_s)
+            result = await asyncio.wait_for(fut, timeout=self._outbound_timeout_s)
+            # Only the local pre-write guards can prove that this attempt never
+            # reached the connector. Never accept that claim from its response.
+            result.pop("not_sent", None)
+            return result
         except TimeoutError:
             # AMBIGUOUS by contract: the frame reached the wire and only the ack is
             # missing — the connector may have applied it. The fail-fast paths

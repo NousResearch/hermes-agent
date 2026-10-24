@@ -281,10 +281,12 @@ async def test_primary_install_recovers_before_scheduling_unanswered_turns(
     )
     resumed = []
 
-    def resume(*, platform):
+    def resume(*, platform, profile):
+        assert profile == "default"
         runner._async_session_store.clear_resume_pending.assert_awaited_once()
         adapter.send.assert_awaited_once()
         resumed.append(platform)
+        return 0
 
     resume_hook = Mock(side_effect=resume)
     monkeypatch.setattr(runner, "_schedule_resume_pending_sessions", resume_hook)

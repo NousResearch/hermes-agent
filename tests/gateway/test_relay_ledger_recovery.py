@@ -14,6 +14,7 @@ from gateway.relay.adapter import RelayAdapter
 from gateway.relay.transport import RelayTransport
 from gateway.relay.ws_transport import WebSocketRelayTransport
 from gateway.run import GatewayRunner
+from gateway.session import SessionStore
 from tests.gateway.relay.stub_connector import StubConnector
 from tests.gateway.relay.test_relay_adapter import make_desc
 
@@ -38,9 +39,12 @@ def setup_runner(tmp_path, monkeypatch):
     runner._primary_profile_name = "default"
     runner._running_agents = {}
     runner._running = True
-    runner.session_store = cast(Any, None)
+    runner.session_store = SessionStore(
+        sessions_dir=tmp_path / "sessions", config=runner.config
+    )
     runner._async_session_store = cast(
-        Any, SimpleNamespace(_store=None, clear_resume_pending=AsyncMock())
+        Any,
+        SimpleNamespace(_store=runner.session_store, clear_resume_pending=AsyncMock()),
     )
     runner._arm_flood_timers_for_waiting_rows = AsyncMock()
     adapter.gateway_runner = runner

@@ -218,10 +218,12 @@ def _secondary_recovery_runner(*, running=True):
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig(multiplex_profiles=True)
     runner._running = running
+    runner.adapters = {}
     runner._profile_adapters = {}
     runner._profile_failed_platforms = {}
     runner._background_tasks = set()
-    runner.session_store = object()
+    runner.session_store = MagicMock()
+    runner.session_store._entries = {}
     runner._handle_active_session_busy_message = object()
     runner._recover_telegram_topic_thread_id = object()
     runner._busy_text_mode = "queue"
@@ -401,7 +403,9 @@ class TestSecondaryProfileFatalRecovery:
         if recovery_result is None:
             runner._schedule_resume_pending_sessions.assert_not_called()
         else:
-            runner._schedule_resume_pending_sessions.assert_called_once_with(platform=Platform.DISCORD)
+            runner._schedule_resume_pending_sessions.assert_called_once_with(
+                platform=Platform.DISCORD, profile="reviewer"
+            )
 
 
     @pytest.mark.asyncio

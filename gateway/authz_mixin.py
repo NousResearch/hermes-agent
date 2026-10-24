@@ -315,12 +315,24 @@ class GatewayAuthorizationMixin:
         # fixture) uses the unique-owner heuristic below.
         from gateway.session_identity import identity_of
         identity = identity_of(source)
-        if identity is not None and identity.multiplexed and not identity.transport_inferred:
+        profile = (
+            identity.transport_profile
+            if identity is not None and identity.multiplexed and not identity.transport_inferred
+            else getattr(source, "profile", None)
+        )
+        # Restored sources deliberately have no live relay trust flag. Resolve
+        # delivery through their persisted receiving bot, including its advertised
+        # logical platforms, without changing intake or authorization grants.
+        from gateway.delivery import resolve_delivery_transport
+        config = getattr(self, "config", None)
+        if config is None:
             return None
-        # No identity, or one whose transport was only inferred (hand-built source, pre-column row):
-        # the unique owner of ``(platform, runtime_profile)`` delivers.
-        # ``getattr``: test fixtures build bare SimpleNamespace sources without ``profile``.
-        return self._authorization_adapter(getattr(source, "platform", None), getattr(source, "profile", None))
+        adapters = self._adapters_for_profile(profile)
+        configs = getattr(self, "_profile_configs", {}) or {}
+        config = config if adapters is getattr(self, "adapters", None) else configs.get(profile, config)
+        platform = getattr(source, "platform", None)
+        transport = resolve_delivery_transport(platform, config, adapters) if platform else None
+        return transport.adapter if transport is not None else None
 
     def _owning_profile(self, adapter, platform):
         """Return (registered, profile) for a live adapter: profile is None for primary."""

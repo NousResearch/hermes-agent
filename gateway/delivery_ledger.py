@@ -51,8 +51,9 @@ RECONNECTED_MARKER = ("♻️ Recovered reply — the messaging platform reconne
 FLOOD_MARKER = ("♻️ Recovered reply — the messaging platform's rate limit refused the original, so part of "
                 "it may already have arrived above:\n\n")
 
-# Errors whose send contract proves the platform never saw the request: retried as soon as the adapter
-# is back, no backoff. Every other rejection is retried too (#91653: a 5xx or a transient parse error
+# Transport failures retried when the adapter is back, without a timer. A lost connection can mean
+# a lost acknowledgement, so membership alone is NOT proof that no content was sent.
+# Every other rejection is retried too (#91653: a 5xx or a transient parse error
 # used to strand the reply in ``failed`` until the next restart), but only after a backoff that grows
 # with the attempts already spent, so a platform-side outage is not hammered by the redelivery timer.
 # A whole-chat death (blocked bot, deleted group, deactivated user) is never retried: the target is gone.
@@ -338,7 +339,7 @@ def release_runtime_claim(obligation_id: str, error: str = "") -> bool:
     redelivery budget. Fail-closed to the exact current process instance and ``attempting`` state."""
     pid, started = _owner_stamp()
     if started is None:
-        return False
+        raise RuntimeError("cannot establish delivery recovery ownership")
     with _DB_LOCK, _transaction() as conn:
         cursor = conn.execute(
             """UPDATE delivery_obligations
@@ -453,7 +454,8 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                 # the marker.
                 claimed.append(_claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts,
                                             adapter_profile or "default",
-                                            needs_marker=state != "pending" or attempts > 0, flood=flood_row))
+                                            needs_marker=state != "pending" or attempts > 0, flood=flood_row,
+                                            last_error=last_error))
     return claimed
 
 
@@ -561,6 +563,34 @@ def pending_reconnects(now: Optional[float] = None) -> set[tuple[str, str]]:
         for platform, profile, error in rows
         if is_reconnect_only(error)
     }
+
+
+def pending_resume_sessions() -> set[str]:
+    """Answered turns cannot auto-resume while another recovery owns their reply.
+
+    This includes in-flight claims and flood waits, not just reconnect-only rows.
+    Do not create a database or wait on a writer from the synchronous resume pass.
+    Failure is uncertainty: callers must defer auto-resume, never assume an empty ledger.
+    """
+    path = _db_path()
+    if not path.exists():
+        return set()
+    if not _DB_LOCK.acquire(blocking=False):
+        raise RuntimeError("delivery recovery ledger is busy")
+    try:
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=0)) as conn:
+            if not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='delivery_obligations'"
+            ).fetchone():
+                return set()
+            return {
+                key for (key,) in conn.execute(
+                    """SELECT DISTINCT session_key FROM delivery_obligations
+                       WHERE state IN ('pending', 'attempting', 'failed')"""
+                )
+            }
+    finally:
+        _DB_LOCK.release()
 
 
 def pending_retries(now: Optional[float] = None) -> list[dict[str, Any]]:

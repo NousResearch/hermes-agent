@@ -308,10 +308,10 @@ class TestPlatformReconnectWatcher:
 
         assert Platform.TELEGRAM in runner.adapters
         runner._redeliver_failed_obligations_for_platform.assert_awaited_once_with(
-            Platform.TELEGRAM
+            Platform.TELEGRAM, profile=None
         )
         runner._schedule_resume_pending_sessions.assert_called_once_with(
-            platform=Platform.TELEGRAM
+            platform=Platform.TELEGRAM, profile="default"
         )
 
 

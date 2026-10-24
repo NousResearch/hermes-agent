@@ -925,24 +925,12 @@ class GatewayAdapterLifecycleMixin:
             logger.info("✓ %s reconnected successfully", platform.value)
         self._schedule_planned_restart_replay()
         # Recover old and current owners before resuming any interrupted model work.
-        recovered = None
-        with _log_suppressed(
-            logging.DEBUG, "failed-obligation redelivery after %s reconnect failed",
-            platform.value, exc_info=True,
-        ):
-            recovered = await self._redeliver_failed_obligations_for_platform(platform)
+        from gateway.run_reconnect_recovery import recover_reconnected_sessions
+        await recover_reconnected_sessions(self, platform)
         # Rebuild channel directory with the new adapter
         with suppress(Exception):
             from gateway.channel_directory import build_channel_directory
             await build_channel_directory(self.adapters)
-        # A platform offline at startup skipped its restart-interrupted sessions; resume them now.
-        if recovered is None:
-            logger.warning("Deferring %s auto-resume until reply recovery succeeds", platform.value)
-            return
-        try:
-            self._schedule_resume_pending_sessions(platform=platform)
-        except Exception:
-            logger.debug("resume-pending reschedule after %s reconnect failed", platform.value, exc_info=True)
 
     async def _cancel_secondary_profile_reconnect_tasks(self) -> None:
         """Cancel profile-scoped reconnects before tearing down their registry, so a reconnect
@@ -1491,21 +1479,11 @@ class GatewayAdapterLifecycleMixin:
                             hand_over_held_inbound(predecessor, adapter)
                             self._sync_voice_mode_state_to_adapter(adapter)
                             logger.info("✓ %s reconnected (profile: %s)", platform.value, profile_name)
-                            recovered = await self._redeliver_failed_obligations_for_platform(
-                                platform, profile=profile_name
-                            )
+                            from gateway.run_reconnect_recovery import recover_reconnected_sessions
+                            await recover_reconnected_sessions(self, platform, profile_name)
                             # What a primary reconnect replays too: the owed notice spans served profiles' home
                             # channels, and sessions boot skipped for this offline adapter wait for this call.
                             self._schedule_planned_restart_replay()
-                            if recovered is None:
-                                logger.warning("Deferring %s auto-resume for profile %s until reply recovery succeeds",
-                                               platform.value, profile_name)
-                                return
-                            try:
-                                self._schedule_resume_pending_sessions(platform=platform)
-                            except Exception:
-                                logger.debug("resume-pending reschedule after %s reconnect failed (profile: %s)",
-                                             platform.value, profile_name, exc_info=True)
                             return
                     # Not installed (newer reconnect won the slot, shutdown began, or connect failed):
                     # release partial resources and return its held inbound; stop only for a non-retryable fatal.

@@ -31,14 +31,16 @@ async def test_reconnect_before_claim_refund_still_delivers(
     live = runner.adapters
     runner.adapters = {}
     entered, release = asyncio.Event(), asyncio.Event()
-    original = runner._release_runtime_claim_quiet
+    from gateway.run_delivery_recovery import refund_unsent_claims
 
     async def held_refund(*args, **kwargs):
         entered.set()
         await release.wait()
-        await original(*args, **kwargs)
+        return await refund_unsent_claims(*args, **kwargs)
 
-    monkeypatch.setattr(runner, "_release_runtime_claim_quiet", held_refund)
+    monkeypatch.setattr(
+        "gateway.run_delivery_recovery.refund_unsent_claims", held_refund
+    )
     replay = asyncio.create_task(runner._redeliver_claimed_obligations(claimed))
     try:
         await asyncio.wait_for(entered.wait(), 10)

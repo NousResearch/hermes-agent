@@ -671,12 +671,29 @@ _CHROME_FLOOR = None
 
 
 def _set_chrome_floor(rows) -> None:
-    global _CHROME_FLOOR
+    global _CHROME_FLOOR, _CHROME_PINNED
     _CHROME_FLOOR = rows
+    if rows is None:  # a clear moved the chrome to the top of the screen
+        _CHROME_PINNED = False
 
 
 def _chrome_floor():
     return _CHROME_FLOOR
+
+
+# The startup output left the cursor on the bottom row (``_tui_print_startup``), so the chrome
+# starts out on the terminal's bottom rows; a clear that moves it up (``_set_chrome_floor(None)``,
+# a viewport refill) unpins it. Read by the CPR-less mouse mapping (``cli_dock_footer._chrome_reaches_bottom``).
+_CHROME_PINNED = False
+
+
+def _pin_chrome(pinned: bool = True) -> None:
+    global _CHROME_PINNED
+    _CHROME_PINNED = pinned
+
+
+def _chrome_pinned() -> bool:
+    return _CHROME_PINNED
 
 
 # Rows output scrolled into scrollback while the terminal's width changed under it: a terminal

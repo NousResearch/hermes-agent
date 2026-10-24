@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent.context_engine import automatic_compaction_status_message
+from agent.compression_topic_gate import should_defer_automatic_compression
 from agent.conversation_compression import (
     IDLE_COMPACTION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
     compression_skipped_due_to_lock, conversation_history_after_compression,
@@ -311,6 +312,11 @@ def _preflight_compression(
         _should_compress_now = _compressor.should_compress(_preflight_tokens)
         if not _should_compress_now:
             _compress_block_reason = _blocked_compress_reason(_compressor, _preflight_tokens)
+    if _should_compress_now and should_defer_automatic_compression(
+        agent, out.messages, current_tokens=_preflight_tokens
+    ):
+        logger.info("Deferring automatic preflight compression for an unrelated user turn")
+        _should_compress_now = False
     if _should_compress_now:
         # Managed local runtime: growing the window beats compressing (ladder order;
         # same seam as _maybe_grow_local_window in the loop).

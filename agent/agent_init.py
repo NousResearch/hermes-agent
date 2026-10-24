@@ -1548,6 +1548,7 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
     # Opt-in idle compaction: compact up front when a session resumes after this many
     # seconds idle (0 = disabled). Consumed by build_turn_context().
     idle_compact_after_seconds = max(0, int(cfg.get("idle_compact_after_seconds", 0)))
+    topic_gate = _cfg_dict(cfg, "topic_gate")
     return CompressionSettings(
         threshold=threshold,
         autoraise_notice_enabled=autoraise_notice_enabled,
@@ -1595,6 +1596,7 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         codex_responses_native=responses_native,
         codex_responses_compact_threshold=compact_threshold,
         idle_compact_after_seconds=idle_compact_after_seconds,
+        topic_gate_enabled=_cfg_flag(topic_gate, "enabled", False),
     )
 
 
@@ -2017,6 +2019,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         with suppress(Exception):
             _bind_session_state(session_db=session_db, session_id=agent.session_id)
     agent.compression_enabled = cs.enabled
+    agent.compression_topic_gate_enabled = cs.topic_gate_enabled
     agent.compression_in_place = cs.in_place
     _cc = agent.context_compressor
     # Micro-compaction has no pre-compress checkpoint hook; suppress it while the gate is

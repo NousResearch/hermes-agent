@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent.context_engine import automatic_compaction_status_message
+from agent.compression_topic_gate import should_defer_automatic_compression
 from agent.conversation_compression import (
     PRE_API_COMPRESSION_STATUS_TEMPLATE, _reset_read_dedup_caches, compression_blocked_transiently,
     compression_skipped_due_to_lock, context_compression_timed_out,
@@ -100,6 +101,12 @@ def run_preflight_compression(
         and (not defer_preflight(request_pressure_tokens) or provider_overflow_preflight)
         and not _compression_cooldown
         and compressor.should_compress(request_pressure_tokens)
+        and (
+            provider_overflow_preflight
+            or not should_defer_automatic_compression(
+                agent, v.messages, current_tokens=request_pressure_tokens
+            )
+        )
     ):
         # Managed local runtime: grow the context window before compressing (last
         # resort). Only for a llamacpp provider at the supervised base_url.
@@ -303,6 +310,7 @@ def compress_after_tool_results(
             getattr(_compressor, "awaiting_real_usage_after_compression", False)
         )
         and _compressor.should_compress(_real_tokens)
+        and not should_defer_automatic_compression(agent, messages, current_tokens=_real_tokens)
     ):
         compression_attempts += 1
         # Compression is running: reset blocked-overflow warning dedup so a

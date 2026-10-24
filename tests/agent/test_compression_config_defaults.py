@@ -24,3 +24,11 @@ def test_threshold_tokens_default_and_null_opt_out(agent_cfg, expected):
     cs = _parse_compression_config(_agent(), agent_cfg)
     assert cs.threshold_tokens == expected
     assert cs.threshold == DEFAULT_CONFIG["compression"]["threshold"]
+
+
+@pytest.mark.parametrize(
+    ("agent_cfg", "expected"),
+    [({}, False), ({"compression": {"topic_gate": {"enabled": True}}}, True)],
+)
+def test_topic_gate_is_opt_in(agent_cfg, expected):
+    assert _parse_compression_config(_agent(), agent_cfg).topic_gate_enabled is expected

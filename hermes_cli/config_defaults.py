@@ -590,6 +590,9 @@ DEFAULT_CONFIG = {
         # lower of the ratio threshold and this count. Clamped to the model's context length.
         # Off by default: no single count suits windows from 64K to 1M+, so the ratio decides.
         "threshold_tokens": None,
+        # topic_gate: opt-in lexical relevance check. An unrelated user turn that still fits in
+        # the model window defers automatic threshold compression for that turn.
+        "topic_gate": {"enabled": False},
         # "progress_notices": False,    # opt-in (#52995): when True, routine compression
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         # tail_mode: "lean" = clamped 2.5%-of-window tail (10K floor / 25K cap) plus chunked

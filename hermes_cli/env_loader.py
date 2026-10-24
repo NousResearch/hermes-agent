@@ -16,6 +16,9 @@ from pathlib import Path
 # The parser internals are imported lazily below because gateway tests stub ``sys.modules["dotenv"]``.
 import dotenv
 from utils import atomic_replace, load_yaml_file_readonly, mkstemp_beside
+from hermes_cli.secret_source_process_token import capture_operator_op
+
+_PROCESS_TOKEN_OP = capture_operator_op()
 
 logger = logging.getLogger(__name__)
 

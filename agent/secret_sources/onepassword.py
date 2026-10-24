@@ -286,6 +286,10 @@ class OnePasswordSource(SecretSource):
     def config_schema(self) -> dict:
         return {
             "enabled": {"description": "Master switch", "default": False},
+            "share_process_token": {"description": "Operator-managed config only: allow cold-profile "
+                                                     "fetches to use the process service-account token; "
+                                                     "requires an absolute managed binary_path and restart",
+                                    "default": False},
             "env": {"description": "Map of ENV_VAR -> op://vault/item/field reference", "default": {}},
             "account": {"description": "op --account shorthand (empty = default account)", "default": ""},
             "service_account_token_env": {"description": "Env var holding the service-account token "

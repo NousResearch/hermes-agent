@@ -6,7 +6,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -59,6 +59,7 @@ AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE AWS_DEFAUL
 AWS_REGION AWS_SHARED_CREDENTIALS_FILE AWS_CONFIG_FILE AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN
 CLAUDE_CODE_OAUTH_TOKEN AUXILIARY_VISION_PROVIDER AUXILIARY_VISION_MODEL GATEWAY_RELAY_URL
 GATEWAY_RELAY_PLATFORMS MY_APP_KEY MY_CUSTOM_VAR
+OP_SERVICE_ACCOUNT_TOKEN BWS_ACCESS_TOKEN
 """.split()
 
 
@@ -985,7 +986,12 @@ class TestNativeEnvironmentContracts:
             proc.poll.return_value = 0
             return proc
 
-        with patch("tools.code_execution_tool._load_config",
+        # The fake child never connects to RPC. Isolate its unused transport so
+        # this environment-composition contract also runs without socket access.
+        with patch("tools.code_kernel._bind_rpc_socket",
+                   return_value="tcp://127.0.0.1:1"), \
+             patch("tools.code_kernel._rpc_forever"), \
+             patch("tools.code_execution_tool._load_config",
                    return_value={"mode": "strict"}), \
              patch("model_tools.handle_function_call",
                    side_effect=_mock_handle_function_call), \

@@ -842,6 +842,22 @@
     background: var(--ui-selection-background);
     color: inherit;
   }
+
+  /* Find-in-page (⌘F) matches, painted through the CSS Custom Highlight API
+     (lib/find-in-page-scope.ts). Highlights accept only the paint properties
+     that decorate text — background-color, color, text-decoration — and they
+     layer in registry-insertion order, which is why the module registers the
+     active match last. Same yellow as a text selection for "these are your
+     hits", accent fill for the one the bar is sitting on. */
+  ::highlight(hermes-find) {
+    background-color: var(--ui-selection-background);
+    color: inherit;
+  }
+
+  ::highlight(hermes-find-active) {
+    background-color: color-mix(in srgb, var(--ui-accent) 62%, var(--ui-selection-background));
+    color: inherit;
+  }
 }
 
 .dither {

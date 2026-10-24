@@ -1,11 +1,16 @@
 import { configure } from '@testing-library/react'
 
-import { InertResizeObserver } from './src/test/jsdom'
+import { InertResizeObserver, installHighlightRegistry } from './src/test/jsdom'
 
 // Shared tooltips measure their arrow through Radix's useSize hook.
 // Geometry assertions still belong in a real browser, not this inert observer. Assigned,
 // not `vi.stubGlobal`, so a test's `vi.unstubAllGlobals()` cannot strip it.
 globalThis.ResizeObserver ??= InertResizeObserver as unknown as typeof ResizeObserver
+
+// Find-in-page paints through the CSS Custom Highlight API, which jsdom does
+// not implement. Installed here (not in one test file) because the walker reads
+// `globalThis.CSS.highlights` directly and every find-bar test depends on it.
+installHighlightRegistry()
 
 // Node 26 defines its own `localStorage` accessor on the global object, which
 // returns `undefined` unless the process was started with --localstorage-file

@@ -540,16 +540,26 @@ def _with_entry_pick(params, config):
     built-in in raw provider resolution, so the bare spelling would route, and be frozen, as a
     different provider than the entry the profile runs (#140107). Only the held entry's bare key
     is that entry (Desktop's guard). A keyed entry's display name is not; a keyless legacy
-    ``custom_providers:`` entry's is (``configured_entry_key``). Other picks stay as they came.
+    ``custom_providers:`` entry's is (``configured_entry_key``).
+
+    The class slug ``custom`` is that entry too: it names the provider class, not any endpoint, and
+    the Desktop picker sends it for every row of a named entry. Resolving it raw freezes a route
+    with no endpoint and no credential pointer, so every turn after the pick either fails closed
+    (``provider 'custom' resolved without credentials``) or silently answers on a fallback model
+    (#142101). A pick that carries its own ``base_url`` names a different host and stays as it came.
     """
     from gateway.session_route_identity import configured_entry_key, profile_route_identity
     picked = params.get('provider')
     if not isinstance(picked, str):
         return params
     identity = profile_route_identity(config)
-    if identity == 'auto' or picked.strip().lower() != (configured_entry_key(identity, config) or None):
+    if identity == 'auto':
         return params
-    return {**params, 'provider': identity}
+    key = configured_entry_key(identity, config) or None
+    spelling = picked.strip().lower()
+    if spelling == key or (spelling == 'custom' and key and 'base_url' not in params):
+        return {**params, 'provider': identity}
+    return params
 
 
 def _apply_launch_overrides(params, config):

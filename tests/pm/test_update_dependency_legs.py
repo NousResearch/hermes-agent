@@ -172,6 +172,7 @@ def test_npm_refresh_uses_its_installed_entry_and_owned_project(monkeypatch, cap
         if os.name == 'nt':
             (npm_entry / 'npm.cmd').write_text(
                 f'@echo off\r\n"{sys.executable}" "%~dp0lib\\npm_cli.py" %*\r\n', encoding='utf-8')
+            (npm_entry / 'npx.cmd').write_text('@echo off\r\nexit /b 0\r\n', encoding='utf-8')
         else:
             npm_binary = npm_entry / 'bin/npm'
             npm_binary.parent.mkdir()
@@ -180,6 +181,9 @@ def test_npm_refresh_uses_its_installed_entry_and_owned_project(monkeypatch, cap
                 encoding='utf-8',
             )
             npm_binary.chmod(0o755)
+            npx_binary = npm_entry / 'bin/npx'
+            npx_binary.write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
+            npx_binary.chmod(0o755)
         version = 'fixture'
         lock.set_pin('npm', version, {target: {'url': 'https://example.invalid/npm', 'sha256': '2' * 64}})
         facts.record('npm', version, str(npm_entry), npm.env(npm_entry, target), runtime,

@@ -81,6 +81,22 @@ def _heal_exec_bit(binary: Path) -> bool:
     return os.access(binary, os.X_OK)
 
 
+def _launchers_present(package: Package, entry: Path, target: str) -> bool:
+    """Primary binary plus a paired sibling (npm's npx) must both be real files.
+
+    A cleared exec bit is restored in place. A missing sibling is not installed,
+    so ensure() re-realizes that package and does not replace a healthy one.
+    """
+    for path in (package.binary(entry, target), package.companion(entry, target)):
+        if path is None:
+            continue
+        if not path.is_file():
+            return False
+        if target == current_target() and not _heal_exec_bit(path):
+            return False
+    return True
+
+
 def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
                         verify: bool = False, allow_outdated: bool = False,
                         roots: tuple[Path, ...] | None = None):
@@ -93,10 +109,7 @@ def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
         fact = facts.get(package.name)
         if not fact or not facts.installed(package.name, None, store.root):
             continue
-        binary = package.binary(store.entry(fact["entry"]), target)
-        if binary is not None and not binary.is_file():
-            continue
-        if binary is not None and target == current_target() and not _heal_exec_bit(binary):
+        if not _launchers_present(package, store.entry(fact["entry"]), target):
             continue
         if verify and not _entry_verified(package, fact, store, target):
             continue

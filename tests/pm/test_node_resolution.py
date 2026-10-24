@@ -201,6 +201,11 @@ def npm_probe(node_store, monkeypatch):
         encoding="utf-8",
     )
     binary.chmod(0o755)
+    # A healthy managed npm entry carries npx beside npm. The missing-sibling
+    # case is a separate repair, not this fixture.
+    npx = binary.with_name("npx")
+    npx.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    npx.chmod(0o755)
     lock = Lockfile(paths.lockfile_path())
     lock.set_pin("npm", "1.0.0", {})
     lock.save()

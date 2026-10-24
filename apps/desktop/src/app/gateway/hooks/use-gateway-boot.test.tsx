@@ -127,6 +127,7 @@ function fakeDesktop() {
       return !key || key === 'default' ? primaryConn : coderConn
     }),
     getGatewayWsUrl: vi.fn(async (conn?: { wsUrl?: string }) => conn?.wsUrl ?? primaryConn.wsUrl),
+    getConnectionConfig: vi.fn(async () => ({ mode: 'local' })),
     getBootProgress: vi.fn(async () => ({
       error: null as null | string,
       fakeMode: false,
@@ -1704,6 +1705,133 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect($desktopBoot.get().error).toBeTruthy()
   })
+
+  it.each([false, true])('recovers a late local backend only while the original startup still owns the route (#98124, superseded=%s)', async superseded => {
+    // The main process keeps starting the local child after withTimeout()
+    // rejects in the renderer. Its later backend.ready must re-run the normal
+    // connection + WebSocket handshake exactly once instead of leaving the
+    // failure overlay latched forever.
+    const desktop = fakeDesktop()
+    desktop.getConnection = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise(() => undefined))
+      .mockResolvedValue(primaryConn)
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS)
+    })
+
+    expect($desktopBoot.get().error).toContain('Timed out connecting to Hermes backend')
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+
+    if (superseded) {
+      desktop.getConnectionConfig.mockResolvedValue({ mode: 'remote' })
+      desktop.getConnection.mockRejectedValueOnce(new Error('Remote connection apply failed'))
+      act(() => connectionApplied?.())
+      await flushAsync()
+      expect($desktopBoot.get().error).toContain('Remote connection apply failed')
+    }
+
+    act(() => {
+      desktop.emitBootProgress({
+        error: null,
+        fakeMode: false,
+        message: 'Hermes backend is ready. Finalizing desktop startup',
+        phase: 'backend.ready',
+        progress: 94,
+        running: true,
+        timestamp: Date.now()
+      })
+    })
+    await flushAsync()
+
+    expect(desktop.getConnection).toHaveBeenCalledTimes(2)
+    expect(FakeWebSocket.instances).toHaveLength(superseded ? 0 : 1)
+
+    if (superseded) {
+      expect($desktopBoot.get().error).toContain('Remote connection apply failed')
+    } else {
+      expect($gatewayState.get()).toBe('open')
+      expect($desktopBoot.get().error).toBeNull()
+      expect($desktopBoot.get().visible).toBe(false)
+    }
+
+    // Duplicate ready notifications cannot create a second socket or restart
+    // the finished boot path.
+    act(() => {
+      desktop.emitBootProgress({
+        error: null,
+        fakeMode: false,
+        message: 'Hermes backend is ready. Finalizing desktop startup',
+        phase: 'backend.ready',
+        progress: 94,
+        running: true,
+        timestamp: Date.now()
+      })
+    })
+    await flushAsync()
+
+    expect(desktop.getConnection).toHaveBeenCalledTimes(2)
+    expect(FakeWebSocket.instances).toHaveLength(superseded ? 0 : 1)
+  })
+
+  it.each(['local', 'coder-remote'])(
+    'uses the captured startup source for late-ready recovery instead of the ambient mode (%s)',
+    async connectionId => {
+      const base = fakeDesktop()
+      const isLocal = connectionId === 'local'
+
+      const desktop = {
+        ...base,
+        // The saved route overrides this legacy/global connection setting.
+        getConnectionConfig: vi.fn(async () => ({ mode: isLocal ? 'remote' : 'local' })),
+        getConnectionFor: vi
+          .fn()
+          .mockImplementationOnce(() => new Promise(() => undefined))
+          .mockResolvedValue({ ...primaryConn, connectionId, mode: isLocal ? 'local' : 'remote' }),
+        profile: { ...base.profile, getDefault: vi.fn(async () => ({ connectionId, profile: 'default' })) }
+      }
+
+      ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+      render(<Harness />)
+      await flushAsync()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS)
+      })
+
+      expect($desktopBoot.get().error).toContain('Timed out connecting to Hermes backend')
+
+      act(() => {
+        desktop.emitBootProgress({
+          error: null,
+          fakeMode: false,
+          message: 'Hermes backend is ready. Finalizing desktop startup',
+          phase: 'backend.ready',
+          progress: 94,
+          running: true,
+          timestamp: Date.now()
+        })
+      })
+      await flushAsync()
+
+      expect(desktop.getConnectionFor).toHaveBeenCalledTimes(isLocal ? 2 : 1)
+      expect(desktop.getConnection).not.toHaveBeenCalled()
+      expect(desktop.getConnectionConfig).not.toHaveBeenCalled()
+
+      if (isLocal) {
+        expect($gatewayState.get()).toBe('open')
+        expect($desktopBoot.get().error).toBeNull()
+      } else {
+        expect(FakeWebSocket.instances).toHaveLength(0)
+        expect($desktopBoot.get().error).toContain('Timed out connecting to Hermes backend')
+      }
+    }
+  )
 
   it('softSwitch(): a getConnection() that hangs on a connection-apply switch does not latch $gatewaySwitching forever (#93454)', async () => {
     // Repro: main applies a new connection (onConnectionApplied), softSwitch()

@@ -170,6 +170,10 @@ class GatewayTurnPersistenceMixin:
             _show_reasoning_effective = (
                 False if source.platform == Platform.MATTERMOST else getattr(self, "_show_reasoning", False)
             )
+        # Live reasoning relay: if reasoning was already delivered live in stream consumer bubbles,
+        # never prepend the duplicate reasoning block at the end.
+        if agent_result.get("reasoning_delivered"):
+            return response
         last_reasoning = agent_result.get("last_reasoning")
         if not (_show_reasoning_effective and response and not _intentional_silence and last_reasoning):
             return response

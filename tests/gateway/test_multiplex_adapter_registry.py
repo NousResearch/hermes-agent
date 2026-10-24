@@ -1102,8 +1102,10 @@ class TestSecondaryProfileConfigHandling:
         assert connected == (2 if paired else 1)
         assert factory_calls == ([Platform.WHATSAPP, Platform.DISCORD] if paired else [Platform.DISCORD])
         if not paired:
-            assert statuses[-1][1]["error_code"] == "whatsapp_unpaired"
-            assert "hermes -p clientbot whatsapp" in statuses[-1][1]["error_message"]
+            # Not "the last write": a later clean DISCORD connect also publishes connected (#141781).
+            unpaired = [kw for (_args, kw) in statuses if kw.get("error_code") == "whatsapp_unpaired"]
+            assert unpaired, "unpaired WhatsApp must publish whatsapp_unpaired"
+            assert "hermes -p clientbot whatsapp" in unpaired[0]["error_message"]
 
 
 class TestSecondaryProfileHookRegistration:

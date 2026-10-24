@@ -1344,6 +1344,17 @@ class GatewayAdapterLifecycleMixin:
                 if claim is not None:
                     claimed[claim] = profile_name
             connected += 1
+            # A clean first-try connect publishes no state — this loop only logs, and adapters that
+            # don't stamp themselves (Email) leave no runtime entry, so the Messaging card falls
+            # back to "Restart needed" forever (#141781). Match the primary cold start and the
+            # reconnect install: same degraded guard, and clear any retry flags a failure left.
+            # getattr: duck-typed test doubles may omit the property.
+            _degraded = getattr(adapter, "send_path_degraded", False)
+            self._update_platform_runtime_status(
+                f"{profile_name}:{platform.value}", platform_state="retrying" if _degraded else "connected",
+                error_code=None, error_message=adapter.DEGRADED_STATUS_MESSAGE if _degraded else None,
+                needs_attention=False, retrying_since=None,
+            )
             logger.info("✓ %s connected (profile: %s)", platform.value, profile_name)
         return connected
 

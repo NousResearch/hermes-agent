@@ -3593,8 +3593,87 @@ class BasePlatformAdapter(ABC):
             return live_adapter
         return self
 
+    async def _prepare_gateway_text_send(
+        self, chat_id: str, content: str, reply_to: Optional[str], metadata: Any
+    ) -> tuple[str, bool]:
+        """Let trusted plugins rewrite or intentionally suppress one logical text send.
+
+        This hook runs once before retry handling. A suppressed send is an intentional
+        success so the durable delivery ledger does not try to deliver it later.
+        Hook errors fail open: an optional plugin must never stop a user response.
+        """
+        try:
+            from hermes_cli.lifecycle import ainvoke_hook, has_hook
+
+            if not has_hook("pre_gateway_text_send"):
+                return content, False
+            results = await ainvoke_hook(
+                "pre_gateway_text_send",
+                platform=getattr(self.platform, "value", str(self.platform)),
+                chat_id=chat_id,
+                text=content,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+        except Exception:
+            logger.warning("[%s] pre_gateway_text_send hook failed", self.name, exc_info=True)
+            return content, False
+
+        rewritten = content
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            action = result.get("action")
+            if action == "block":
+                return rewritten, True
+            if action == "rewrite" and isinstance(result.get("text"), str):
+                rewritten = result["text"]
+        return rewritten, False
+
+    async def _notify_gateway_text_sent(
+        self, chat_id: str, content: str, reply_to: Optional[str], metadata: Any,
+        result: SendResult, *, suppressed: bool = False,
+    ) -> None:
+        """Notify trusted plugins of one logical text-send outcome without raw responses."""
+        try:
+            from hermes_cli.lifecycle import ainvoke_hook, has_hook
+
+            if not has_hook("post_gateway_text_send"):
+                return
+            await ainvoke_hook(
+                "post_gateway_text_send",
+                platform=getattr(self.platform, "value", str(self.platform)),
+                chat_id=chat_id,
+                text=content,
+                reply_to=reply_to,
+                metadata=metadata,
+                success=result.success,
+                message_id=result.message_id,
+                error_kind=result.error_kind,
+                suppressed=suppressed,
+            )
+        except Exception:
+            logger.warning("[%s] post_gateway_text_send hook failed", self.name, exc_info=True)
+
     @records_delivery
     async def _send_with_retry(
+        self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Any = None,
+        max_retries: int = 2, base_delay: float = 2.0) -> SendResult:
+        """Run the outbound hooks once around the normal retrying send path."""
+        content, suppressed = await self._prepare_gateway_text_send(chat_id, content, reply_to, metadata)
+        if suppressed:
+            result = SendResult(success=True, raw_response={"suppressed_by_plugin": True})
+        else:
+            result = await self._send_with_retry_impl(
+                chat_id, content, reply_to=reply_to, metadata=metadata,
+                max_retries=max_retries, base_delay=base_delay,
+            )
+        await self._notify_gateway_text_sent(
+            chat_id, content, reply_to, metadata, result, suppressed=suppressed,
+        )
+        return result
+
+    async def _send_with_retry_impl(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Any = None,
         max_retries: int = 2, base_delay: float = 2.0) -> SendResult:
         """Send with exponential-backoff retry on transient network errors; permanent

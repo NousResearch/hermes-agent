@@ -76,6 +76,73 @@ async def test_server_retry_after_is_honoured_by_every_adapter(monkeypatch):
     assert slept == [7.0]
 
 
+@pytest.mark.asyncio
+async def test_outbound_hooks_rewrite_once_and_observe_the_final_result(monkeypatch):
+    """One logical send gets one pre-hook and one post-hook, not one per retry."""
+    from hermes_cli import lifecycle
+
+    calls = []
+
+    async def invoke(name, **kwargs):
+        calls.append((name, kwargs))
+        if name == "pre_gateway_text_send":
+            return [{"action": "rewrite", "text": "safe text"}]
+        return []
+
+    monkeypatch.setattr(lifecycle, "has_hook", lambda name: name in {
+        "pre_gateway_text_send", "post_gateway_text_send"
+    })
+    monkeypatch.setattr(lifecycle, "ainvoke_hook", invoke)
+    adapter = _Adapter([
+        SendResult(success=False, error="connection refused", retryable=True),
+        SendResult(success=True, message_id="done"),
+    ])
+    monkeypatch.setattr("gateway.platforms.base.random.uniform", lambda _a, _b: 0.0)
+
+    result = await adapter._send_with_retry("c", "original", base_delay=0)
+
+    assert result.success
+    assert adapter.sent == ["safe text", "safe text"]
+    assert [name for name, _ in calls] == ["pre_gateway_text_send", "post_gateway_text_send"]
+    assert calls[0][1]["text"] == "original"
+    assert calls[1][1] == {
+        "platform": "telegram",
+        "chat_id": "c",
+        "text": "safe text",
+        "reply_to": None,
+        "metadata": None,
+        "success": True,
+        "message_id": "done",
+        "error_kind": None,
+        "suppressed": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_outbound_hook_can_suppress_a_send_without_triggering_retry(monkeypatch):
+    """An intentional quiet-hours suppression is terminal, not a delivery failure."""
+    from hermes_cli import lifecycle
+
+    calls = []
+
+    async def invoke(name, **kwargs):
+        calls.append((name, kwargs))
+        return [{"action": "block"}] if name == "pre_gateway_text_send" else []
+
+    monkeypatch.setattr(lifecycle, "has_hook", lambda name: name in {
+        "pre_gateway_text_send", "post_gateway_text_send"
+    })
+    monkeypatch.setattr(lifecycle, "ainvoke_hook", invoke)
+    adapter = _Adapter([])
+
+    result = await adapter._send_with_retry("c", "quiet message")
+
+    assert result.success
+    assert result.raw_response == {"suppressed_by_plugin": True}
+    assert adapter.sent == []
+    assert calls[-1][1]["suppressed"] is True
+
+
 def _http_date_in(seconds: int) -> str:
     return format_datetime(datetime.now(UTC) + timedelta(seconds=seconds), usegmt=True)
 

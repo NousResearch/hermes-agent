@@ -37,14 +37,21 @@ def _session_home(session: dict) -> Path:
     return Path(session.get("profile_home") or _hermes_home)
 
 
-def _retire_turn_marker(session: dict, *keys: str) -> None:
+def _retire_turn_marker(session: dict, *keys: str, turn_token: str | None = None) -> None:
     """Drop the crash marker right before the terminal frame (not at turn-thread end: post-turn work outlives the
     client's answer, and quitting in that window would leave a marker that re-runs a finished turn). Extra ``keys``
-    cover a session_key that compression rotated mid-turn."""
+    cover a session_key that compression rotated mid-turn.
+
+    Scoped to the turn's IMMUTABLE token (captured when the marker was written, here or in ``st.marker_token``): a
+    superseded runtime retiring its own concluded turn therefore cannot drop a NEWER owner's marker for the same
+    stored session key. With no token this turn recorded no marker, so there is nothing to prove ownership of — the
+    retirement no-ops rather than clearing by key."""
     home = _session_home(session)
+    token = turn_token if turn_token is not None else session.get("_active_turn_marker_token")
+    identity = {"turn_token": str(token)} if token else {}
     for key in dict.fromkeys((*keys, str(session.get("session_key") or ""))):
         if key:
-            clear_turn_marker(home, key)
+            clear_turn_marker(home, key, identity=identity)
 
 
 def _auto_continue_note(prompt: str) -> str:
@@ -80,7 +87,9 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
     enabled, freshness_secs, max_attempts = _auto_continue_config()
     age = time.time() - marker["started_at"]
     if not enabled or age > freshness_secs or marker["attempts"] >= max_attempts:
-        clear_turn_marker(home, session_key)  # stale/disabled/crash-looping: a manual message continues
+        # Retire exactly the stale/disabled/crash-looping marker this reader judged — a token-bearing
+        # newer owner's marker for the same key (written since the read) is left alone.
+        clear_turn_marker(home, session_key, identity=marker_identity(marker))  # stale/disabled/crash-looping: a manual message continues
         return None
     if session.get("_auto_continue_scheduled"):
         return None

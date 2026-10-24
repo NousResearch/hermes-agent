@@ -98,10 +98,12 @@ def _(rid, params: dict) -> dict:
         _interrupt_session_turn(sid, session)
         # Retire the crash-recovery marker NOW: until the run thread's finally, a backend exit looks like a crash
         # and session.resume auto-continues the turn the user just stopped (the extra key covers compression
-        # rotating session_key mid-turn).
+        # rotating session_key mid-turn). Scoped to THIS turn's immutable marker token, so a superseded runtime's
+        # Stop can never drop a newer owner's marker for the same stored session key.
         with session["history_lock"]:
             active_marker_key = str(session.pop("_active_turn_marker_key", "") or "")
-        _retire_turn_marker(session, active_marker_key)
+            active_marker_token = str(session.get("_active_turn_marker_token") or "")
+        _retire_turn_marker(session, active_marker_key, turn_token=active_marker_token)
         return _ok(rid, {"status": "interrupted"})
     finally:
         if resume_wake:

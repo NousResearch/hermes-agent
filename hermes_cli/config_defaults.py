@@ -2313,6 +2313,11 @@ DEFAULT_CONFIG = {
         # Max active messages per session for in-memory export (`hermes sessions export`); checked
         # per session, so full-DB backups of small sessions work.
         "max_export_messages": 20000,
+        # Seconds without turn progress after which a lease holder's turn counts as HUNG for the
+        # cross-client handoff (tui_gateway.session_lifecycle._holder_turn_fresh). A device switch
+        # takes a chat over only when the old client is provably idle; this bound decides when a
+        # silent turn stops being believed. 0 or unreadable keeps the 900s default.
+        "takeover_stale_turn_s": 900,
     },
     # First-touch onboarding hints (agent/onboarding.py), each latched under `seen` once shown.
     "onboarding": {

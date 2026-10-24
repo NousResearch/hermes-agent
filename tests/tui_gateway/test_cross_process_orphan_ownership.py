@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import subprocess
 import sys
@@ -563,11 +564,16 @@ def test_new_runtime_takes_over_detached_sibling_lease_in_same_process(
 
 
 @pytest.mark.live_system_guard_bypass
-def test_new_runtime_never_takes_a_live_foreign_or_attached_lease(
+def test_a_live_foreign_lease_is_taken_over_only_when_provably_idle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Takeover is same-process AND client-less only: a lease held by a live foreign process, or by a sibling
-    runtime that still has a client (second window), keeps refusing."""
+    """Cross-client handoff replaces "never touch a live foreign lease" (2026-10-16).
+
+    What still holds: a chat whose turn is still producing progress is never taken over, whoever
+    holds its lease. What changed: an INTERACTIVE lease that is idle is taken over even while its
+    holder still has a client attached - "I walked away from this chat on one computer and want to
+    continue it on another".
+    """
     hermes_home = Path(os.environ["HERMES_HOME"])
     ready_file, release_file = tmp_path / "ready", tmp_path / "release"
     child = _spawn_lease_holder(home=hermes_home, session_id="foreign-chat", ready_file=ready_file,
@@ -575,20 +581,26 @@ def test_new_runtime_never_takes_a_live_foreign_or_attached_lease(
     try:
         _wait_for_child_file(child, ready_file, label="foreign lease holder")
         foreign = _runtime_record("foreign-chat", object(), running=False)
-        attached = _runtime_record("two-windows", object(), running=False)
-        second = _runtime_record("two-windows", object(), running=False)
-        monkeypatch.setattr(server, "_sessions", {"f": foreign, "w1": attached, "w2": second})
-        assert server._ensure_active_session_slot("w1", attached) is None
+        monkeypatch.setattr(server, "_sessions", {"f": foreign})
 
-        for sid, record in (("f", foreign), ("w2", second)):
-            refusal = server._ensure_active_session_slot(sid, record)
-            assert getattr(refusal, "reason", None) == SESSION_NOT_OWNED
-            assert record.get("active_session_lease") is None
-        assert attached["active_session_lease"] is not None and not attached["agent"].interrupted
-        attached["active_session_lease"].release()
+        marker = hermes_home / "desktop" / "interrupted_turns.json"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        stamp = time.time()
+        marker.write_text(json.dumps({"foreign-chat": {
+            "attempts": 0, "prompt": "busy", "started_at": stamp, "progress_at": stamp,
+            "auto_continue": False, "writer_pid": child.pid,
+        }}), encoding="utf-8")
+
+        refusal = server._ensure_active_session_slot("f", foreign)
+        assert getattr(refusal, "reason", None) == SESSION_NOT_OWNED
+        assert foreign.get("active_session_lease") is None
+
+        marker.unlink()
+        assert server._ensure_active_session_slot("f", foreign) is None
+        assert foreign["active_session_lease"] is not None
+        foreign["active_session_lease"].release()
     finally:
         _stop_child(child, release_file)
-
 
 def test_takeover_stays_within_the_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Timestamp ids collide across profiles' stores (#100029): profile B's refusal must not lift profile A's

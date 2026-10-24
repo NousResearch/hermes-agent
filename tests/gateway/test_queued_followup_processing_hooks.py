@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -107,7 +107,7 @@ def _make_runner(adapter):
     runner._running_agents = {}
     runner._session_run_generation = {}
     runner.hooks = SimpleNamespace(loaded_hooks=False)
-    runner.config = SimpleNamespace(
+    runner.config = GatewayConfig(
         thread_sessions_per_user=False,
         group_sessions_per_user=False,
         stt_enabled=False,

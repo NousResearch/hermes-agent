@@ -14,6 +14,7 @@ import logging
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 from contextlib import suppress
@@ -440,9 +441,12 @@ def _codex_quota_exhausted_error(retry_after: Optional[int]) -> AuthError:
     return _codex_err(message, CODEX_RATE_LIMITED_CODE, relogin=False)
 
 
+_CODEX_DEAD_REFRESH_CODES = frozenset({"refresh_token_expired", "refresh_token_reused", "refresh_token_invalidated"})
+
+
 def _codex_refresh_failure_error(response: httpx.Response) -> AuthError:
     """Decode a non-200 Codex token-refresh response into a shaped AuthError."""
-    from hermes_cli.auth import _nonempty_str
+    from hermes_cli.auth import _OAUTH_GRANT_DEAD_CODES, _nonempty_str
     code = "codex_refresh_failed"
     message = f"Codex token refresh failed with status {response.status_code}."
     try:
@@ -463,6 +467,8 @@ def _codex_refresh_failure_error(response: httpx.Response) -> AuthError:
                 err_desc = err.get("error_description") or err.get("message")
                 if _nonempty_str(err_desc):
                     message = f"Codex token refresh failed: {err_desc.strip()}"
+            elif _nonempty_str(err.get("code")):
+                code = err["code"].strip()
     except Exception:
         pass
     if code == "refresh_token_reused":
@@ -471,11 +477,17 @@ def _codex_refresh_failure_error(response: httpx.Response) -> AuthError:
             "(e.g. Codex CLI or VS Code extension). "
             "Run `codex` in your terminal to generate fresh tokens, "
             f"then run `{_codex_relogin_command()}` to re-authenticate.")
-    # A 401/403 from the token endpoint always means the refresh token is invalid/expired —
-    # force relogin even if the body error code wasn't one of the known strings.
-    relogin_required = (
-        code in {"invalid_grant", "invalid_token", "invalid_request", "refresh_token_reused"}
-        or response.status_code in {401, 403})
+    # Dead login, by OpenAI's own Codex CLI rule (codex-rs login/src/auth/manager.rs): any 401, or
+    # an expired/reused/invalidated code at any status. A 403 alone is not (a Cloudflare challenge
+    # on the token endpoint answers 403), so it stays a retryable failure.
+    dead = response.status_code == 401 or code in _CODEX_DEAD_REFRESH_CODES
+    relogin_required = dead or code in {"invalid_grant", "invalid_token", "invalid_request"}
+    # The pool's terminal check reads ``code``: report a dead login as ``codex_refresh_failed``
+    # unless it already carries a grant-dead code, keeping the server's code in the message.
+    if dead and code not in _OAUTH_GRANT_DEAD_CODES:
+        if code != "codex_refresh_failed" and re.fullmatch(r"[a-z0-9_]{1,64}", code):
+            message = f"{message} ({code})"
+        code = "codex_refresh_failed"
     return _codex_err(message, code, relogin=relogin_required)
 
 

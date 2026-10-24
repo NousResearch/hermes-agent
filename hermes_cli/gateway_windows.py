@@ -1862,12 +1862,41 @@ def _wait_for_gateway_absent(timeout_s: float = 30.0, interval_s: float = 0.5) -
     return _absent()
 
 
+def _stamp_planned_restart_notification() -> None:
+    """Tell the next boot to announce the gateway's return to the home channels.
+
+    The gateway writes this marker itself when a restart goes through its
+    in-band path. A Windows CLI restart is ``stop()`` + ``start()``: there is
+    no in-band restart, so the gateway never sees a restart request, the
+    marker is never written, and the "Gateway online" notice is lost - every
+    home channel gets the "shutting down" notice and nothing on the way back
+    (#142515).
+
+    The marker is written in the gateway's own home (the same path the boot
+    pass reads), so the notice lands exactly where the reader looks for it.
+    """
+    from gateway.run import _planned_restart_notification_path
+    from utils import atomic_json_write
+    try:
+        atomic_json_write(
+            _planned_restart_notification_path(),
+            {"requested_at": time.time(), "via_service": False, "detached": False},
+            indent=None,
+        )
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "Could not record the planned restart; the home channels will not get an online notice",
+            exc_info=True,
+        )
+
+
 def restart() -> None:
     """Stop then start. Waits for the old gateway to be authoritatively gone first; otherwise
     ``start()``'s "already running" guard sees the draining process and no-ops, and nothing
     replaces it when it exits (a silent outage). Fails loudly on either side."""
     _assert_windows()
 
+    _stamp_planned_restart_notification()
     stop()
 
     if not _wait_for_gateway_absent(timeout_s=30.0):

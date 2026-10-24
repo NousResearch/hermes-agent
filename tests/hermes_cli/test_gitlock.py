@@ -20,6 +20,7 @@ import os
 import shutil
 import subprocess
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -398,6 +399,10 @@ def _killed_update_receipt() -> None:
     update_receipt.begin_update_receipt()
     current = update_receipt._current.get()
     current.data.update(pid=dead.pid, pid_create_time=None, writer_pid=dead.pid, writer_create_time=None)
+    # A killed run started well before its git took the lock. Same-instant would be a coin flip: the
+    # lock's mtime comes from the kernel's coarse clock, up to a tick BEHIND this precise started_at.
+    started = datetime.fromisoformat(current.data["started_at"]) - timedelta(seconds=5)
+    current.data["started_at"] = started.isoformat()
     payload = (json.dumps(current.data) + "\n").encode("utf-8")
     for stale in update_receipt._receipt_dir().glob(f"update_*_{current.data['update_id']}.json"):
         stale.unlink()  # the run's own archive, as its dead process last wrote it

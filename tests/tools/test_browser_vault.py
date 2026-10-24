@@ -818,6 +818,25 @@ class TestTwoFactor:
         # the real widget
         assert [f["value"] for f in build_otp_fills([ctl(i + 4, maxlen=1) for i in range(6)], "246810")] == list("246810")
 
+    def test_split_widget_without_maxlength_is_recognised_by_autocomplete(self):
+        """A 6-box code widget that sets no maxlength but marks every box autocomplete=one-time-code (score 100)
+        is the same unmistakable widget: one digit per box. Looser shapes still get the whole code in one field."""
+        from agent.vault_login_classifier import ClassifiedLoginControl, LoginControl, build_otp_fills
+
+        def ctl(i, form=0, score=100):
+            return ClassifiedLoginControl(LoginControl("", form, i, "", f"code{i}", "text", None), score, "one-time-code")
+
+        fills = build_otp_fills([ctl(i + 2) for i in range(6)], "246810")
+        assert fills == [{"index": i + 2, "token": "one-time-code", "value": ch} for i, ch in enumerate("246810")]
+        # one autocomplete=one-time-code field takes the whole code
+        assert build_otp_fills([ctl(3)], "246810") == [{"index": 3, "token": "one-time-code", "value": "246810"}]
+        # non-adjacent, split across forms, or the wrong count: still one field
+        assert len(build_otp_fills([ctl(i * 2) for i in range(6)], "246810")) == 1
+        assert len(build_otp_fills([ctl(i, form=i % 2) for i in range(6)], "246810")) == 1
+        assert len(build_otp_fills([ctl(i) for i in range(5)], "246810")) == 1
+        # heuristic-only (score 70) boxes without maxlength never split
+        assert len(build_otp_fills([ctl(i, score=70) for i in range(6)], "246810")) == 1
+
     def test_no_code_field_points_at_passkey_or_device_approval(self):
         from tools import browser_vault_tool
 

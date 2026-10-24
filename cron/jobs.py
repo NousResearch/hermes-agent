@@ -8,7 +8,6 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 import json
 import logging
-import shutil
 import sys
 import threading
 import time
@@ -2258,35 +2257,9 @@ def rearm_oneshot(job_id: str, run_at: Any) -> Optional[dict[str, Any]]:
 
 
 def remove_job(job_id: str) -> bool:
-    """Remove a job by ID or name."""
-    job = resolve_job_ref(job_id)
-    if not job:
-        return False
-    canonical_id = job["id"]
-    with _jobs_lock():
-        jobs = load_jobs()
-        original_len = len(jobs)
-        jobs = [j for j in jobs if j["id"] != canonical_id]
-        if len(jobs) == original_len:
-            return False
-        # Resolve BEFORE saving so a legacy unsafe ID fails closed without a half-applied removal.
-        job_output_dir = _job_output_dir(canonical_id)
-        save_jobs(jobs, removed_ids={canonical_id})
-        marker = _self_removal_delivery.get()
-        if marker is not None and marker.job_id == canonical_id:
-            marker.removed = True
-        if job_output_dir.exists():
-            shutil.rmtree(job_output_dir)
-        try:
-            from cron.notepad import clear_notepad
-            clear_notepad(canonical_id)
-        except Exception:
-            logger.debug("Failed to clear notepad for removed job %s", canonical_id, exc_info=True)
-        # Prune the fire-fence lock entry so the registry doesn't grow monotonically.
-        _fence_key = f"{_current_cron_store().cron_dir.resolve()}::{canonical_id}"
-        with _fire_fence_locks_guard:
-            _fire_fence_locks.pop(_fence_key, None)
-        return True
+    """Remove a job by ID or name; preserve a worker subprocess's own live delivery."""
+    from cron.jobs_removal import remove_job as remove
+    return remove(job_id)
 
 
 def _set_alert_flag(job_id: str, field: str, value: bool) -> bool:

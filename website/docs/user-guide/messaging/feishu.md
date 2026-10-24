@@ -536,7 +536,7 @@ platforms:
 | `admin_only` | Only users in the global `admins` list can use the bot in this group |
 | `disabled` | Bot ignores all messages in this group |
 
-Set `require_mention: false` on a `group_rules` entry to skip the @-mention requirement for that specific chat. When omitted, the chat inherits the global `FEISHU_REQUIRE_MENTION` value.
+Set `require_mention: false` on a `group_rules` entry to skip the @-mention requirement for that specific chat. Set `ignore_at_all: true` to ignore `@all` broadcasts while still responding to direct `@bot` mentions. These options are independent. When `require_mention` is omitted, the chat inherits the global `FEISHU_REQUIRE_MENTION` value.
 
 Groups not listed in `group_rules` fall back to `default_group_policy` (defaults to the value of `FEISHU_GROUP_POLICY`).
 

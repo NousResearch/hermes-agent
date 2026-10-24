@@ -41,7 +41,44 @@ def test_feishu_load_settings_require_mention(monkeypatch, env_value, extra, exp
     assert settings.require_mention is expected
 
 
-# --- Module-level helpers --------------------------------------------------
+def test_feishu_load_settings_ignore_at_all_per_group():
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+
+    settings = FeishuAdapter._load_settings(
+        extra={"group_rules": {"oc_chat": {"policy": "open", "ignore_at_all": True}}}
+    )
+    assert settings.group_rules["oc_chat"].ignore_at_all is True
+
+
+def test_feishu_ignore_at_all_drops_only_broadcast_mentions():
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+
+    adapter = make_adapter_skeleton(group_policy="open")
+    from plugins.platforms.feishu.adapter import FeishuGroupRule
+    adapter._group_rules = {"oc_chat": FeishuGroupRule(policy="open", ignore_at_all=True)}
+    all_message = make_message(chat_type="group", chat_id="oc_chat")
+    all_message.content = '{"text":"@_all hello"}'
+    assert adapter._admit(make_sender(), all_message) == "group_at_all_ignored"
+
+    bot_message = make_message(chat_type="group", chat_id="oc_chat")
+    bot_message.mentions = [SimpleNamespace(key="@_bot")]
+    adapter._mentions_self = lambda _message: True
+    assert adapter._admit(make_sender(), bot_message) is None
+
+
+def test_feishu_ignore_at_all_still_allows_direct_bot_mention_with_broadcast():
+    from plugins.platforms.feishu.adapter import FeishuGroupRule
+
+    adapter = make_adapter_skeleton(group_policy="open")
+    adapter._group_rules = {"oc_chat": FeishuGroupRule(policy="open", ignore_at_all=True)}
+    message = make_message(chat_type="group", chat_id="oc_chat")
+    message.content = '{"text":"@_all please check with @_bot"}'
+    message.mentions = [SimpleNamespace(key="@_all"), SimpleNamespace(key="@_bot")]
+    adapter._mentions_self = lambda _message: True
+
+    assert adapter._admit(make_sender(), message) is None
+
+
 
 
 def test_sender_identity_collects_every_non_empty_id_variant():

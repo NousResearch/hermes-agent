@@ -17847,6 +17847,15 @@ app.whenReady().then(() => {
   void minimizeToTray.start()
   mainProcessLagWatchdog.start()
   f12Blocked = readPersistedDisableF12()
+  // Before the first profile read: a remembered local profile this HERMES_HOME
+  // no longer has would fail every boot with `Profile '<name>' does not exist`.
+  desktopProfilePreferences.forgetMissingLocalProfiles({
+    globalRemote: globalRemoteActive(),
+    hasRemoteOverride: profileHasRemoteOverride,
+    launchProfile: parseLaunchProfile(process.argv),
+    log: rememberLog,
+    profileExists: profile => directoryExists(path.join(HERMES_HOME, 'profiles', profile))
+  })
   // Seed this before the first window exists: a picker can open before
   // startHermes() finishes resolving the configured backend.
   const primaryProfile = primaryProfileKey()

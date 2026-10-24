@@ -81,6 +81,24 @@ def _sqlite_connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _lock_anchor(path: Path) -> Path:
+    """The path whose directory the board's sidecar lock files belong next to.
+
+    SQLite follows a symlinked ``kanban.db`` and writes its ``-wal``/``-shm``
+    sidecars next to the TARGET, so the init/dispatch locks must anchor there
+    too; deriving them from the link itself parks them in the link's directory,
+    which under ``ProtectSystem=strict`` (or any read-only mount) makes the
+    init-lock ``open()`` fail every connect and silently turns the dispatch
+    lock into a no-op (#135107). Non-symlink boards keep their exact path
+    (no ``resolve()`` normalization of relative paths)."""
+    try:
+        if path.is_symlink():
+            return path.resolve()
+    except OSError:
+        pass
+    return path
+
+
 def _try_lock_nb(handle) -> bool:
     """One non-blocking exclusive lock attempt on ``handle``; False when held elsewhere.
     Windows: 1-byte ``msvcrt.locking`` range at offset 0; POSIX: ``flock``."""
@@ -126,8 +144,9 @@ def _cross_process_init_lock(path: Path):
     because ``_INIT_LOCK`` still serializes same-process threads and init is
     idempotent: two racing first-inits mean redundant work, not corruption.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = path.with_name(path.name + ".init.lock")
+    anchor = _lock_anchor(path)
+    anchor.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = anchor.with_name(anchor.name + ".init.lock")
     handle = lock_path.open("a+b")
     acquired = False
     try:
@@ -177,7 +196,8 @@ def _dispatch_tick_lock(db_path: Path):
     lock is the defense-in-depth that prevents two dispatchers from ever writing concurrently *regardless of
     how the second one got there*.
     """
-    lock_path = db_path.with_name(db_path.name + ".dispatch.lock")
+    anchor = _lock_anchor(db_path)
+    lock_path = anchor.with_name(anchor.name + ".dispatch.lock")
     handle = None
     acquired = False
     try:

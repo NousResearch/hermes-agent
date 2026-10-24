@@ -309,7 +309,7 @@ class TestAudit:
         security.audit("inbound", "peer-y", "task-1", "hello world")
         audit_file = tmp_path / "a2a_audit.jsonl"
         assert audit_file.exists()
-        rec = json.loads(audit_file.read_text().strip().splitlines()[-1])
+        rec = json.loads(audit_file.read_text(encoding="utf-8-sig").strip().splitlines()[-1])
         assert rec["direction"] == "inbound"
         assert rec["peer"] == "peer-y"
         assert rec["task_id"] == "task-1"
@@ -600,6 +600,9 @@ class TestRegistryDispatchConvention:
         assert "required" in out and "AttributeError" not in out
 
         out = registry.dispatch("a2a_call", {"agent": "", "message": ""})
+        assert "required" in out and "AttributeError" not in out
+
+        out = registry.dispatch("a2a_get_task", {"agent": "", "task_id": ""})
         assert "required" in out and "AttributeError" not in out
 
         out = registry.dispatch("a2a_history", {})
@@ -1568,7 +1571,7 @@ class TestClientTenantAndDiscovery:
 
         monkeypatch.setattr(tools, "_http_get_json", fake_get)
         monkeypatch.setattr(tools, "_http_post_json", fake_post)
-        reply, _ctx, _state = tools._send_task(
+        reply, _ctx, _state, _task_id = tools._send_task(
             "dev", {"url": "http://peer.example", "auth": {}, "timeout": 5}, "hello", "ctx-1"
         )
         assert reply == "ok"
@@ -1640,7 +1643,7 @@ class TestV1SpecRegressionFixes:
 
         monkeypatch.setattr(tools, "_http_get_json", fake_get)
         monkeypatch.setattr(tools, "_http_post_json", fake_post)
-        reply, _ctx, state = tools._send_task(
+        reply, _ctx, state, _task_id = tools._send_task(
             "dev", {"url": "http://peer.example", "auth": {}, "timeout": 5}, "hello", "ctx-1")
         assert reply == "ok"
         assert state == protocol.STATE_COMPLETED
@@ -1757,6 +1760,8 @@ class TestV1SpecRegressionFixes:
         assert calls[0][1]['tenant'] == 'team'
         assert calls[0][1]['input_id']
         assert not (tmp_path / 'state.db').exists()
+
+
 
 
 

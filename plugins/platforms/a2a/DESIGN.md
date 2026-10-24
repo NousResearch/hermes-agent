@@ -19,10 +19,14 @@ must not touch core files.** A2A now lives entirely under
 ### Outbound — client tools (`a2a` toolset)
 - `a2a_discover(url)` — fetch + summarize a peer's Agent Card (v1.0
   `supportedInterfaces` aware, tolerates 0.3 cards).
-- `a2a_call(agent, message, context_id?)` — send a JSON-RPC `message/send`
+- `a2a_call(agent, message, context_id?, return_immediately?)` — send a JSON-RPC `message/send`
   task to a peer, return the reply. Multi-turn via `context_id` (carried
   inside the Message per v1.0). Surfaces `TASK_STATE_INPUT_REQUIRED` so the
-  model knows to answer and continue the context.
+  model knows to answer and continue the context. Long work can return an
+  accepted/working task ID without holding the HTTP request open.
+- `a2a_get_task(agent, task_id, wait_seconds?)` — read current state, the
+  latest progress snapshot, or the final reply. Optional bounded waiting
+  avoids model-side busy polling.
 - `a2a_list()` — configured peers + persisted conversations + metrics.
 - `a2a_history(context_id, limit?)` — recall a persisted conversation
   (this is the production consumer of the persistence layer).
@@ -56,9 +60,12 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
   `on_processing_complete` resolves failures/cancellations promptly.
 - **Task store:** every task (including terminal ones, bounded to the last
   500) stays queryable via `tasks/get` / `tasks/list`, and `tasks/subscribe`
-  reattaches to a running task's stream via store watchers. A watchdog fails
-  orphaned tasks after 5 minutes (idempotent transitions — no double
-  counting in metrics).
+  reattaches to a running task's stream via store watchers. `SendMessage`
+  honors `configuration.returnImmediately`; the gateway Future finalizes the
+  task without a long-lived waiter thread. Non-final user-visible sends update
+  the task's working-status message. The watchdog preserves live work, fails
+  abandoned tasks after 5 minutes, and applies a 24-hour hard ceiling.
+  Immediate admission is bounded to 32 active tasks and one per context.
 - **input-required:** the platform hint tells the agent to start a reply with
   `[INPUT_REQUIRED]` when it needs clarification; the adapter maps that to
   `TASK_STATE_INPUT_REQUIRED` with the question in `status.message`.
@@ -126,6 +133,11 @@ outbound client tools (`/metrics` and `a2a_list` report both directions).
 A2A conversations are written to `~/.hermes/a2a_conversations/<context>.jsonl`,
 outside the context-compaction pipeline — compaction and restarts can't lose
 them (#11025 requirement). The `a2a_history` tool recalls them by context id.
+Terminal results observed through repeated `a2a_get_task` calls are persisted
+and counted once per task ID. The outbound prompt is persisted when submitted;
+for non-blocking work, the caller's terminal reply is persisted when
+`a2a_get_task` observes it. If the caller never polls or subscribes, the
+receiving peer remains the task/result authority.
 
 ## Requirements traced to the cluster
 

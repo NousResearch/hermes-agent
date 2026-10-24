@@ -399,6 +399,24 @@ class TestStreamingResilience:
         assert resp.chunks_requested == 2
 
     @pytest.mark.asyncio
+    async def test_multibyte_char_split_across_chunks_survives(self, monkeypatch):
+        """Network chunks split anywhere, including inside a UTF-8 sequence: per-chunk decoding
+        turned the CJK/emoji halves into U+FFFD in the delivered reply."""
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        raw = 'data: {"choices":[{"delta":{"content":"你好 🚀"}}]}\n\ndata: [DONE]\n\n'.encode()
+        cut1, cut2 = raw.index("你".encode()) + 1, raw.index("🚀".encode()) + 2
+        resp = _FakeSSEResponse(status=200, sse_chunks=[raw[:cut1], raw[cut1:cut2], raw[cut2:]])
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(_FakeSession(resp)):
+                with patch("aiohttp.ClientTimeout"):
+                    result = await _make_runner()._run_agent_via_proxy(
+                        message="hi", context_prompt="", history=[], source=_make_source(), session_id="test")
+
+        assert result["final_response"] == "你好 🚀"
+
+    @pytest.mark.asyncio
     async def test_residual_buffer_flushed_after_eof(self, monkeypatch):
         """A final SSE frame without a trailing newline must not be dropped.
 

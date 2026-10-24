@@ -1672,6 +1672,27 @@ describe('isSessionRemote (#94640)', () => {
     expect(isSessionRemote('unknown-session')).toBe(false)
   })
 
+  it('treats an SSH connection as remote for uploads (#142877)', () => {
+    // SSH is a remote transport even when an older shell or a persisted owner
+    // route still carries the saved-config mode instead of the resolved one.
+    $connection.set({ mode: 'ssh' } as never)
+    expect(isSessionRemote('unknown-session')).toBe(true)
+  })
+
+  it('treats a persisted SSH owner route as remote for uploads (#142877)', () => {
+    $connection.set({ mode: 'local' } as never)
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'vps', mode: 'ssh' as never, profile: 'default' },
+        runtimeId: 'rt-ssh',
+        storedSessionId: 'stored-ssh-owner'
+      }
+    ])
+
+    expect(isSessionRemote('rt-ssh')).toBe(true)
+    expect(isSessionRemote('stored-ssh-owner')).toBe(true)
+  })
+
   it("prefers the session's OWN owner route over an ambient connection of a different mode", () => {
     // The window's active/ambient connection is local, but this session
     // belongs to a registered secondary REMOTE connection (Bot Mode / the

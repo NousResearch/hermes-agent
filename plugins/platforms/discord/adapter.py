@@ -3289,6 +3289,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             message_ids = []
             reference = self._reply_reference_for_send(reply_to, channel)
             for i, chunk in enumerate(chunks):
+                # 2026-09-12: skip empty chunks — Discord 400s on empty content
+                # (code 50006 "Cannot send an empty message").
+                if not chunk or not chunk.strip():
+                    continue
                 if self._reply_to_mode == "all":
                     chunk_reference = reference
                 else:  # "first" (default) or "off"

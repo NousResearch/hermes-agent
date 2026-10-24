@@ -1,0 +1,50 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://kubrick.zero-state.dev/schemas/model-adapter-packet.schema.yaml
+title: Kubrick Model Adapter Packet
+type: object
+additionalProperties: false
+required: [schema_version, adapter_id, provider, source_graph_id, mode, shared_constraints, frames, private_state_policy, validation]
+properties:
+  schema_version: {const: 1.0.0}
+  adapter_id: {type: string, minLength: 1}
+  provider: {type: string, minLength: 1}
+  source_graph_id: {type: string, minLength: 1}
+  mode: {enum: [single-frame, storyboard]}
+  shared_constraints:
+    type: object
+    additionalProperties: false
+    required: [visual_identity, continuity_rules, prohibited_resets, negative_constraints]
+    properties:
+      visual_identity: {type: array, items: {type: string}}
+      continuity_rules: {type: array, items: {type: string}}
+      prohibited_resets: {type: array, items: {type: string}}
+      negative_constraints: {type: array, items: {type: string}}
+  frames:
+    type: array
+    minItems: 1
+    items:
+      type: object
+      additionalProperties: false
+      required: [frame_id, prompt, state_constraints, continuity_from_previous]
+      properties:
+        frame_id: {type: string, minLength: 1}
+        prompt: {type: string, minLength: 1}
+        state_constraints: {type: array, items: {type: string}}
+        continuity_from_previous: {type: array, items: {type: string}}
+        provider_parameters: {type: object}
+  private_state_policy:
+    type: object
+    additionalProperties: false
+    required: [graph_mutation_allowed, pattern_links_exposed, lexicon_links_exposed]
+    properties:
+      graph_mutation_allowed: {const: false}
+      pattern_links_exposed: {const: false}
+      lexicon_links_exposed: {const: false}
+  validation:
+    type: object
+    additionalProperties: false
+    required: [status, errors, warnings]
+    properties:
+      status: {enum: [VALID, INVALID, NOT_COMPUTABLE]}
+      errors: {type: array, items: {type: string}}
+      warnings: {type: array, items: {type: string}}

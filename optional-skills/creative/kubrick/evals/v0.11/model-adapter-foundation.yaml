@@ -1,0 +1,38 @@
+suite: model-adapter-foundation-v0.11
+runtime: standalone-hermes
+entrypoints:
+  neutral: scripts/build_model_adapter_packet.py
+  grok_imagine: scripts/adapt_grok_imagine.py
+cases:
+  - id: valid_single_frame_adapter
+    expected_status: VALID
+    expectations:
+      source_graph_identity_preserved: true
+      private_links_exposed: false
+      frame_count: 1
+  - id: valid_storyboard_adapter
+    expected_status: VALID
+    expectations:
+      frame_count_min: 2
+      continuity_from_previous_present: true
+      residue_preserved: true
+      ownership_preserved_until_declared_change: true
+  - id: invalid_source_graph
+    expected_status: INVALID
+    expected_error: source graph is not VALID
+  - id: prohibited_reset_propagation
+    expected_neutral_constraint: prohibited_resets
+  - id: provider_mismatch
+    expected_status: INVALID
+    expected_error: incompatible with Grok Imagine adapter
+  - id: grok_prompt_privacy
+    expected_absent_terms: [pattern_links, lexicon_links, nigredo, rubedo, syzygy]
+  - id: adapter_no_generation_call
+    expected_network_required: false
+    expected_credentials_required: false
+invariants:
+  graph_mutation_allowed: false
+  adapter_changes_syntax_only: true
+  model_api_required: false
+  forge_required: false
+  mcp_required: false

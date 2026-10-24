@@ -1,0 +1,51 @@
+suite: corpus-wave1-batch4
+runtime: standalone-hermes
+cases:
+  - id: labyrinth_route
+    brief:
+      dramatic_problem: the destination stays fixed while each detour reveals a cost and new route knowledge
+      desired_state_change: confusion becomes readiness at the center
+      observable_evidence: [repeated junction, blocked path, destination sound]
+    expected_primary: labyrinth_route_pressure
+  - id: doorway_transfer
+    brief:
+      dramatic_problem: access to a room changes hands when the former gatekeeper is left outside
+      desired_state_change: spatial authority transfers through crossing
+      observable_evidence: [held door, changed gatekeeper, altered sound field]
+    expected_primary: doorway_ownership_transfer
+  - id: vertical_descent
+    brief:
+      dramatic_problem: a senior official descends through restricted levels and returns with bodily evidence of material consequence
+      desired_state_change: abstract rank becomes embodied cost
+      observable_evidence: [stacked levels, denser sound, changed gait on return]
+    expected_primary: vertical_hierarchy_descent
+  - id: crowd_fracture
+    brief:
+      dramatic_problem: a synchronized group must respond when one member changes timing and direction
+      desired_state_change: conformity becomes visible conflict
+      observable_evidence: [repeated spacing, delayed movement, group reorientation]
+    expected_primary: crowd_formation_fracture
+  - id: counterpoint
+    brief:
+      dramatic_problem: a character claims control while the visible workflow shows the system ignoring them
+      desired_state_change: declared authority separates from enacted power
+      observable_evidence: [spoken claim, contradictory process, consequential edit]
+    expected_primary: image_dialogue_counterpoint
+  - id: environmental_agency
+    brief:
+      dramatic_problem: a building changes its ambient rhythm after a character overrides a system and later choices must adapt
+      desired_state_change: location becomes a persistent causal condition
+      observable_evidence: [baseline hum, altered lighting rhythm, blocked route]
+    expected_primary: environmental_response_world_agency
+  - id: costume_migration
+    brief:
+      dramatic_problem: a damaged uniform changes wearer and causes others to recognize a new authority before dialogue confirms it
+      desired_state_change: role migrates through garment state and ownership
+      observable_evidence: [changed wearer, visible damage, altered social response]
+    expected_primary: costume_state_identity_migration
+fail_closed_cases:
+  - id: generic_symbolic_space
+    brief:
+      dramatic_problem: make the architecture feel magical
+      observable_evidence: []
+    expected_status: NOT_COMPUTABLE

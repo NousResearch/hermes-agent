@@ -1,0 +1,23 @@
+{
+  "pattern_id": "sonic_motif_source_migration",
+  "title": "Sonic Source Migration",
+  "version": "0.11.0",
+  "domain": "sound-rhythmic",
+  "source_tier": "SCHOLARLY",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Michel Chion","title":"Audio-Vision","date":"1994","cultural_context":"film sound theory"}],
+  "observed_structure": ["a recurring sound begins with a stable visible source", "the source later moves offscreen, into score, or into another object", "the migration changes perceived agency or threat"],
+  "dramatic_operations": ["transfer agency through sound", "make a system feel distributed", "preserve residue after object loss"],
+  "transformation_grammars": ["source migration", "acousmatic transfer"],
+  "cinematic_affordances": ["diegetic rhythm enters score", "sound precedes its new source", "destroyed object leaves its sonic identity elsewhere", "stereo position contradicts visible ownership"],
+  "applicable_genres": ["thriller", "horror", "drama", "science fiction", "documentary"],
+  "applicable_formats": ["feature", "pilot", "short", "episode", "audio drama"],
+  "cultural_scope": ["film-sound theory; transferable across production cultures with local listening norms respected"],
+  "misuse_risks": ["generic ominous drone", "sound cue that explains the image", "unmotivated source ambiguity"],
+  "mutation_requirements": {"required":true,"variables":["source visibility","spatial position","diegetic status","frequency region","rhythm ownership"]},
+  "transferable_structure": "a stable sound identity migrates between sources so agency and residue change without verbal explanation",
+  "non_transferable_surface": "copying a famous film cue or culturally specific sonic marker without context",
+  "production_cost": {"location_dependency":0.0,"prop_dependency":0.2,"lighting_dependency":0.0,"VFX_dependency":0.0,"sound_dependency":0.8},
+  "lexicon_links": ["resonance", "psychopomp", "astral_double"],
+  "confidence": 0.87
+}

@@ -1,0 +1,35 @@
+[project]
+name = "kubrick-skill"
+version = "0.14.0"
+description = "Development metadata for the standalone Kubrick Hermes skill"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+validation = ["PyYAML>=6", "jsonschema>=4"]
+dev = [
+  "pytest>=8",
+  "ruff>=0.12",
+  "mypy>=1.16",
+  "PyYAML>=6",
+  "jsonschema>=4",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["scripts"]
+python_files = ["test_*.py"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.mypy]
+python_version = "3.10"
+check_untyped_defs = true
+warn_unused_ignores = true
+
+# Kubrick remains a self-contained Hermes skill directory. This file only
+# formalizes interpreter compatibility and optional validation/dev profiles.

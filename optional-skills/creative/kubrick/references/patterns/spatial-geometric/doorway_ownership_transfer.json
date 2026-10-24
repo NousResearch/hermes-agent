@@ -1,0 +1,23 @@
+{
+  "pattern_id": "doorway_ownership_transfer",
+  "title": "Doorway / Threshold Ownership Transfer",
+  "version": "0.11.3",
+  "domain": "spatial-geometric",
+  "source_tier": "COMPARATIVE",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Comparative spatial dramaturgy","title":"Threshold control and passage","date":"cross-period","cultural_context":"Architecture and scene blocking"}],
+  "observed_structure": ["one participant controls access to a bounded space", "crossing changes who may remain, speak, or act", "the threshold retains evidence of prior ownership after control changes"],
+  "dramatic_operations": ["transfer spatial authority", "convert entry into status change", "make access control visible"],
+  "transformation_grammars": ["threshold-crossing", "ownership-transfer"],
+  "cinematic_affordances": ["body blocking the frame edge", "door held, released, or closed by a different agent", "sound field changing at passage", "final blocking places the former gatekeeper outside"],
+  "applicable_genres": ["drama", "thriller", "romance", "horror"],
+  "applicable_formats": ["feature", "pilot", "episode", "short", "single-frame"],
+  "cultural_scope": ["general spatial operation; project-specific social rules must define what access means"],
+  "misuse_risks": ["doorway as automatic symbolism", "crossing without changed permissions", "threshold imagery replacing causal action"],
+  "mutation_requirements": {"required":true,"variables":["gatekeeper","crossing direction","permission","sound field","residual trace"]},
+  "transferable_structure": "control of a threshold changes hands and materially alters who can enter, remain, or act",
+  "non_transferable_surface": "ritual gates, sacred portals, or culturally specific thresholds used without provenance",
+  "production_cost": {"location_dependency":0.3,"prop_dependency":0.2,"lighting_dependency":0.3,"VFX_dependency":0.0},
+  "lexicon_links": ["threshold", "guardian_of_the_threshold", "circle_casting", "binding"],
+  "confidence": 0.85
+}

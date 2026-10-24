@@ -1,0 +1,23 @@
+{
+  "pattern_id": "object_residue_continuity_after_use",
+  "title": "Object Residue / Use Persists After Function",
+  "version": "0.11.2",
+  "domain": "semiotic",
+  "source_tier": "COMPARATIVE",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Material-culture and film-continuity practice","title":"Object biography, trace, and prop continuity","date":"20th-21st century","cultural_context":"Material culture and cinematic production"}],
+  "observed_structure": ["an object completes its immediate plot function", "wear, placement, sound, or contamination remains", "later action responds to the residue rather than resetting the object"],
+  "dramatic_operations": ["preserve consequence", "carry emotional load materially", "prevent symbolic and continuity reset"],
+  "transformation_grammars": ["use-to-residue", "action-to-persistent-trace"],
+  "cinematic_affordances": ["damage retained in later frames", "object sound survives relocation", "negative space where the object was removed", "another character handles the altered state"],
+  "applicable_genres": ["drama", "thriller", "horror", "comedy", "procedural"],
+  "applicable_formats": ["feature", "pilot", "episode", "short", "single-frame"],
+  "cultural_scope": ["cross-cultural material principle; specific object meanings require project-local provenance"],
+  "misuse_risks": ["prop fetishism", "residue without causal origin", "continuity detail mistaken for thematic meaning"],
+  "mutation_requirements": {"required":true,"variables":["damage","placement","ownership","sound identity","later consequence"]},
+  "transferable_structure": "an object's changed state persists after use and becomes evidence that constrains or redirects later action",
+  "non_transferable_surface": "assigning universal symbolic meaning to a specific object without cultural or narrative evidence",
+  "production_cost": {"location_dependency":0.0,"prop_dependency":0.6,"lighting_dependency":0.1,"VFX_dependency":0.0},
+  "lexicon_links": ["salt", "talisman", "after", "akashic_record"],
+  "confidence": 0.88
+}

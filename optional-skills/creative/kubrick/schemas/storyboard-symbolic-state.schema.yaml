@@ -1,0 +1,38 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://kubrick.zero-state.dev/schemas/storyboard-symbolic-state.schema.yaml
+title: Kubrick Storyboard Symbolic State
+type: object
+additionalProperties: false
+required: [schema_version, storyboard_id, graph_id, frames, validation]
+properties:
+  schema_version: {const: 1.0.0}
+  storyboard_id: {type: string, minLength: 1}
+  graph_id: {type: string, minLength: 1}
+  frames:
+    type: array
+    minItems: 2
+    items:
+      type: object
+      additionalProperties: false
+      required: [frame_id, ordinal, node_states, motif_ownership, residue, convergence_sites, prohibited_resets]
+      properties:
+        frame_id: {type: string, minLength: 1}
+        ordinal: {type: integer, minimum: 1}
+        node_states: {type: object, additionalProperties: {type: string}}
+        motif_ownership: {type: object, additionalProperties: {type: [string, 'null']}}
+        object_states: {type: object, additionalProperties: {type: string}}
+        light_states: {type: object, additionalProperties: {type: string}}
+        material_states: {type: object, additionalProperties: {type: string}}
+        residue: {type: array, items: {type: string}}
+        convergence_sites: {type: array, items: {type: string}}
+        required_mutations: {type: array, items: {type: string}}
+        prohibited_resets: {type: array, items: {type: string}}
+  validation:
+    type: object
+    additionalProperties: false
+    required: [status, errors, warnings, frame_count]
+    properties:
+      status: {enum: [VALID, INVALID, NOT_COMPUTABLE]}
+      errors: {type: array, items: {type: string}}
+      warnings: {type: array, items: {type: string}}
+      frame_count: {type: integer, minimum: 0}

@@ -1,0 +1,23 @@
+{
+  "pattern_id": "alchemical_nigredo_putrefaction",
+  "title": "Nigredo / Blackening (Putrefaction)",
+  "version": "0.11.5",
+  "domain": "alchemical",
+  "source_tier": "PRIMARY",
+  "source_refs": [{"author": "Rosarium Philosophorum tradition", "title": "Rosarium Philosophorum", "date": "16th c.", "cultural_context": "European alchemy"}],
+  "observed_structure": ["A previously stable identity visibly decomposes under pressure.", "The breakdown removes false coherence before any replacement form is permitted."],
+  "dramatic_operations": ["breakdown of identity", "necessary death of illusion"],
+  "transformation_grammars": ["putrefaction", "dissolution"],
+  "cinematic_affordances": ["reduced palette", "negative space dominance", "slow push into void"],
+  "applicable_genres": ["drama", "horror", "art film"],
+  "applicable_formats": ["feature", "limited series"],
+  "cultural_scope": ["European medieval", "Renaissance alchemy"],
+  "misuse_risks": ["cliché black imagery", "visual literalism"],
+  "mutation_requirements": {"required": true, "variables": ["scale", "ownership", "color", "material"]},
+  "transferable_structure": "Gradually break down a prior form or identity before any renewed order appears.",
+  "non_transferable_surface": "Do not default to literal black rectangles, corpses, or named alchemical stages in audience output.",
+  "production_cost": {"location_dependency": 0.2, "prop_dependency": 0.3, "lighting_dependency": 0.6, "VFX_dependency": 0.1},
+  "confidence": 0.85,
+  "usage_history": [{"date": "2026-07-29T00:52:40.013953Z", "uses_in_window": 1, "avg_retrieval_score": 0.6575, "success_rate": 1.0, "confidence_before": 0.85, "confidence_after": 0.85, "delta": 0.0, "source_projects": ["f37a62b51ee22085", "test-melodrama-lowbudget"]}],
+  "last_evolved": "2026-07-29T00:52:40.013966Z"
+}

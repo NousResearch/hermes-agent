@@ -1,0 +1,51 @@
+suite: corpus-wave1-batch5
+runtime: standalone-hermes
+cases:
+  - id: dual_light_conflict
+    brief:
+      dramatic_problem: two motivated light systems claim the same subject and one must dominate after a choice
+      desired_state_change: divided obligation becomes visible allegiance
+      observable_evidence: [two motivated sources, moving shadow boundary, one source extinguished]
+    expected_primary: dual_light_conflicting_claims
+  - id: red_culmination
+    brief:
+      dramatic_problem: a peripheral red object must expand across recurrences until it embodies irreversible consequence
+      desired_state_change: latent pressure becomes dominant material state
+      observable_evidence: [small red carrier, increased surface area, culminating action]
+    expected_primary: kubrick_red_culmination_state
+  - id: reflected_substitution
+    brief:
+      dramatic_problem: a reflection must change occupant and transfer agency before the room acknowledges it
+      desired_state_change: image ownership becomes operative replacement
+      observable_evidence: [stable mirror relation, changed reflected occupant, outside consequence]
+    expected_primary: reflection_substitution_ownership
+  - id: relational_occlusion
+    brief:
+      dramatic_problem: architecture repeatedly blocks one relationship until acknowledgment changes camera position
+      desired_state_change: denial becomes forced recognition
+      observable_evidence: [motivated obstruction, partial recurrence, exposure after action]
+    expected_primary: occlusion_relational_denial
+  - id: broken_symmetry
+    brief:
+      dramatic_problem: one half of an established paired arrangement changes after an offscreen event
+      desired_state_change: formal deviation becomes evidence
+      observable_evidence: [clear comparison axis, altered side, persistent consequence]
+    expected_primary: broken_symmetry_state_evidence
+  - id: visible_repair
+    brief:
+      dramatic_problem: a damaged object returns to use but the repair seam changes later handling
+      desired_state_change: restoration preserves consequence
+      observable_evidence: [known damage, visible seam, changed use under stress]
+    expected_primary: material_repair_visible_scar
+  - id: authority_vacancy
+    brief:
+      dramatic_problem: an established command position becomes empty while everyone still organizes around it
+      desired_state_change: absent leadership becomes succession pressure
+      observable_evidence: [known authority position, oriented eyelines, delayed claimant]
+    expected_primary: negative_space_authority_vacancy
+fail_closed_cases:
+  - id: arbitrary_color_mysticism
+    brief:
+      dramatic_problem: make the lighting symbolic and the red mysterious
+      observable_evidence: []
+    expected_status: NOT_COMPUTABLE

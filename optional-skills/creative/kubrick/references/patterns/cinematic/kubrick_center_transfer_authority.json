@@ -1,0 +1,23 @@
+{
+  "pattern_id": "kubrick_center_transfer_authority",
+  "title": "Center Transfer / Authority Migration",
+  "version": "0.11.0",
+  "domain": "cinematic",
+  "source_tier": "PRIMARY",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Stanley Kubrick","title":"Selected film compositions","date":"1957-1999","cultural_context":"20th-century Anglo-American cinema"}],
+  "observed_structure": ["a stable composition establishes who or what owns the center", "the center later becomes empty, occupied by another agent, or controlled by an object", "the transfer changes action, access, or interpretation"],
+  "dramatic_operations": ["transfer authority", "reveal absent command", "replace person with system"],
+  "transformation_grammars": ["center ownership", "symmetry mutation"],
+  "cinematic_affordances": ["repeated axial framing with changed occupant", "empty center after command failure", "object or architecture inheriting visual authority", "off-center actor forced to negotiate the central axis"],
+  "applicable_genres": ["drama", "satire", "horror", "science fiction", "war"],
+  "applicable_formats": ["feature", "pilot", "short", "single-frame"],
+  "cultural_scope": ["film-derived formal pattern; do not imitate specific Kubrick imagery"],
+  "misuse_risks": ["symmetry as prestige decoration", "one-point perspective without dramatic ownership", "shot-for-shot imitation"],
+  "mutation_requirements": {"required":true,"variables":["center occupant","axis access","frame balance","distance","institutional object"]},
+  "transferable_structure": "center ownership is established, withdrawn, and reassigned to reveal a changed power relation",
+  "non_transferable_surface": "specific corridors, costumes, carpets, monoliths, or production designs from Kubrick films",
+  "production_cost": {"location_dependency":0.5,"prop_dependency":0.2,"lighting_dependency":0.4,"VFX_dependency":0.0},
+  "lexicon_links": ["axis_mundi", "empty_center", "demiurge"],
+  "confidence": 0.88
+}

@@ -1,0 +1,23 @@
+{
+  "pattern_id": "image_dialogue_counterpoint",
+  "title": "Image–Dialogue Counterpoint / Meaning Through Nonalignment",
+  "version": "0.11.3",
+  "domain": "semiotic",
+  "source_tier": "SCHOLARLY",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Film sound and montage scholarship","title":"Audiovisual counterpoint and image-text relations","date":"20th-century film theory","cultural_context":"Cinema and audiovisual narrative"}],
+  "observed_structure": ["spoken language makes one claim", "observable action or environment supplies a distinct but causally relevant signal", "the difference remains interpretable without making the event itself unclear"],
+  "dramatic_operations": ["expose contradiction without explanation", "preserve ambiguity through clear evidence", "separate declared identity from enacted behavior"],
+  "transformation_grammars": ["counterpoint", "claim-to-evidence-gap"],
+  "cinematic_affordances": ["dialogue continuing over contradictory action", "reaction withheld while material evidence remains visible", "sound bridge carrying a claim into a changed image", "edit timed to reveal the discrepancy"],
+  "applicable_genres": ["drama", "satire", "thriller", "documentary"],
+  "applicable_formats": ["feature", "pilot", "episode", "short", "vertical video"],
+  "cultural_scope": ["general audiovisual formal pattern; interpretation must remain grounded in project evidence"],
+  "misuse_risks": ["irony without consequence", "random mismatch", "dialogue made false only to appear clever"],
+  "mutation_requirements": {"required":true,"variables":["claim","visible evidence","timing","speaker awareness","consequence"]},
+  "transferable_structure": "language and image remain causally clear while their nonalignment creates a third interpretive pressure",
+  "non_transferable_surface": "copied dialogue-image juxtapositions from specific films or generic ironic montage",
+  "production_cost": {"location_dependency":0.1,"prop_dependency":0.2,"lighting_dependency":0.1,"VFX_dependency":0.0},
+  "lexicon_links": ["polarity", "glamour", "gnosis", "coincidentia_oppositorum"],
+  "confidence": 0.87
+}

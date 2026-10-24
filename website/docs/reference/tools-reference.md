@@ -227,7 +227,7 @@ Handles are applied at the **primitive**, not the call site, so one edit names e
 
 | Handle | What it names |
 |---|---|
-| `overlay-nav` | the left nav of any route overlay (settings, cron, profiles, agents) |
+| `overlay-nav` | the left nav of any route overlay (settings, profiles, agents) |
 | `nav-<id>` | one row in that nav — `nav-models`, `nav-appearance`, … |
 | `field-<schemaKey>` | one settings row, by its config key — `field-model`, `field-provider`, … |
 | `page-tabs` | the filter tabs on any `PageSearchShell` page (artifacts, skills, …) |

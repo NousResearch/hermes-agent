@@ -20,6 +20,13 @@ vi.mock('../chat', () => ({ ChatView: () => <div data-testid="chat-view" /> }))
 vi.mock('../capabilities', () => ({ CapabilitiesView: () => null }))
 vi.mock('../messaging', () => ({ MessagingView: () => null }))
 vi.mock('../artifacts', () => ({ ArtifactsView: () => null }))
+vi.mock('../cron', () => ({
+  CronView: ({ onOpenSession }: { onOpenSession?: (id: string) => void }) => (
+    <button data-testid="cron-page" onClick={() => onOpenSession?.('run-1')}>
+      cron page
+    </button>
+  )
+}))
 vi.mock('../chat/sidebar', () => ({ ChatSidebar: () => null }))
 vi.mock('../right-sidebar/terminal/chrome', () => ({ TerminalPaneChrome: () => null }))
 vi.mock('../shell/hooks/use-status-snapshot', () => ({ useStatusSnapshot: () => ({}) }))
@@ -51,5 +58,23 @@ describe('ChatRoutesSurface and APP_ROUTES', () => {
     )
 
     expect(screen.queryByTestId('chat-view')).toBeNull()
+  })
+
+  // Scheduled jobs renders in the workspace pane (it used to be an overlay the
+  // controller mounted over the shell), and its run rows open sessions through
+  // the controller's stored-session door.
+  it('renders the Scheduled jobs page at /cron wired to the stored-session door', async () => {
+    const onResumeSession = vi.fn()
+    const actions = { getGateway: () => null, onResumeSession } as unknown as WiringActions
+
+    render(
+      <MemoryRouter initialEntries={['/cron']}>
+        <ChatRoutesSurface actions={actions} />
+      </MemoryRouter>
+    )
+
+    ;(await screen.findByTestId('cron-page')).click()
+
+    expect(onResumeSession).toHaveBeenCalledWith('run-1', undefined)
   })
 })

@@ -15,7 +15,15 @@
  *     the bridge has no session-window support.
  */
 import type { WorkspaceMode } from '@/contrib/types'
-import { $activeSessionId, $selectedStoredSessionId, markSessionRead, requestSessionResume } from '@/store/session'
+import type { SessionInfo } from '@/hermes'
+import {
+  $activeSessionId,
+  $selectedStoredSessionId,
+  forgetSessionOwnerHintsForSession,
+  markSessionRead,
+  requestSessionResume,
+  sessionOwnerRouteFromRow
+} from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import {
   focusedSessionNeedsRoute,
@@ -104,6 +112,34 @@ export function openSessionFromPicker(
   const resolved = workspaceScope.workspaceMode === 'bots' && intent === 'in-place' ? 'stack' : intent
 
   openSession(storedSessionId, navigate, resolved, workspaceScope)
+}
+
+/**
+ * One owner-aware door for "open a stored session from a list row": the
+ * sessions sidebar, the Cron page's run history (as a page or a split tile) and
+ * the command center all funnel here. The clicked ROW is the identity, not its
+ * bare id: two profiles can hold twins with the same stored id (#92454), and an
+ * id-only resume resolves against whichever cached row is found first, so the
+ * user clicks a row previewing profile A (or a cron run served by an SSH
+ * backend) and the resume dials the ambient backend instead; the transcript
+ * never loads (#82527). Pin the row's own (connection, profile) as the resume
+ * owner before navigating; untagged rows (single-profile installs and the
+ * legacy primary-SSH path) keep the ambient/id-only path. Clear any stale
+ * explicit hint first: older builds incorrectly persisted those rows as
+ * `local`, which made a remote session click switch to the Mac backend and
+ * fail with "session not found".
+ */
+export function openStoredSession(sessionId: string, navigate: OpenSessionNavigate, session?: SessionInfo): void {
+  const ownerRoute = sessionOwnerRouteFromRow(session)
+
+  if (ownerRoute) {
+    requestSessionResume(sessionId, ownerRoute)
+  } else {
+    forgetSessionOwnerHintsForSession(sessionId)
+    requestSessionResume(sessionId)
+  }
+
+  openSession(sessionId, navigate)
 }
 
 /**

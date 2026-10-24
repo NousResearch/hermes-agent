@@ -9,7 +9,8 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from hermes_cli.runtime_state import collect_generations
-from pm.generation_lifecycle import GenerationObserver, remember_activation
+from pm.environments import remember_activation
+from pm.generation_lifecycle import GenerationObserver
 from pm.plugin_inputs import Members
 from tests.pm.generation_fixture import make_install
 
@@ -75,6 +76,37 @@ print(observer.probe(), flush=True)
         if replacement.poll() is None:
             replacement.kill()
             replacement.wait(timeout=15)
+
+
+def test_base_image_boot_detects_the_first_published_dependency_generation(
+    tmp_path, monkeypatch
+):
+    install = make_install(tmp_path, monkeypatch)
+    (install.state / "facts.json").unlink()
+    script = """
+import json, sys
+from pathlib import Path
+from pm.environments import activate_dependencies, runtime_facts_path
+root = Path(sys.argv[1])
+activate_dependencies(root)
+from pm.generation_lifecycle import GenerationObserver
+observer = GenerationObserver(root)
+runtime_facts_path(root).write_text(
+    json.dumps({"packages": {"venv": {"environment": sys.argv[2]}}}),
+    encoding="utf-8",
+)
+print(observer.probe())
+"""
+    child = subprocess.run(
+        [sys.executable, "-c", script, str(install.repo), str(install.envs["new"])],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=15,
+        check=False,
+    )
+    assert child.returncode == 0, child.stderr
+    assert "new superseded" in child.stdout
 
 
 def test_observer_pins_home_and_does_not_follow_adopted_sys_path(tmp_path, monkeypatch):

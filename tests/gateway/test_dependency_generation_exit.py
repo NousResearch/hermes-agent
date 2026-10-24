@@ -1,6 +1,7 @@
 """Dependency publication drains the owning gateway through final delivery, without a time cap."""
 
 import asyncio
+import threading
 from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -152,3 +153,36 @@ async def test_a_restarted_watcher_resumes_its_drain_after_a_status_write_failur
         runner, observer=install.observer, owned=True, poll_s=0, max_polls=2
     )
     runner.request_restart.assert_called_once_with(via_service=True)
+
+
+@pytest.mark.asyncio
+async def test_operator_stop_wins_when_a_generation_probe_is_already_in_flight(
+    tmp_path, monkeypatch
+):
+    install, runner = make_install(tmp_path, monkeypatch), make_runner()
+    install.publish("new")
+    runner._dependency_restart_pending = runner._draining = True
+    entered, release = asyncio.Event(), threading.Event()
+    loop, original = asyncio.get_running_loop(), install.observer.probe
+
+    def probe():
+        loop.call_soon_threadsafe(entered.set)
+        assert release.wait(10)
+        return original()
+
+    monkeypatch.setattr(install.observer, "probe", probe)
+    task = asyncio.create_task(
+        dependency_generation_watcher(
+            runner, observer=install.observer, owned=True, poll_s=0, max_polls=1
+        )
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        runner._running = False
+        release.set()
+        await asyncio.wait_for(task, timeout=10)
+        runner.request_restart.assert_not_called()
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

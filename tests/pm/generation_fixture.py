@@ -5,8 +5,13 @@ import os
 import time
 from types import SimpleNamespace
 
-from pm.environments import install_state_dir, runtime_facts_path, site_packages
-from pm.generation_lifecycle import GenerationObserver, remember_activation
+from pm.environments import (
+    install_state_dir,
+    remember_activation,
+    runtime_facts_path,
+    site_packages,
+)
+from pm.generation_lifecycle import GenerationObserver
 
 
 def make_install(tmp_path, monkeypatch):

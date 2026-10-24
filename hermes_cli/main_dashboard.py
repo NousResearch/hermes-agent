@@ -1004,6 +1004,7 @@ def _route_named_profile_dashboard(
         (_ssh_owner_nonce, ["--ssh-owner-nonce", _ssh_owner_nonce]),
         (_token_file, ["--ssh-session-token-file", _token_file]),
         (args.no_open, ["--no-open"]),
+        (getattr(args, "external_supervisor", False), ["--external-supervisor"]),
         (getattr(args, "insecure", False), ["--insecure"]),
         (getattr(args, "skip_build", False), ["--skip-build"])):
         if enabled:

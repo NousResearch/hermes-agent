@@ -40,7 +40,6 @@ def actor(role):
     from hermes_cli.backend_retirement import RetirementFence
     from hermes_cli import web_server_idle_proof
     from hermes_cli.web_server_generation_exit import start_generation_watchdog
-    import gateway.restart
 
     activate_dependencies(REPO)
     proof_dependency = importlib.import_module("proof_dependency")

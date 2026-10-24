@@ -8,19 +8,6 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-# Installation-scoped boot identity, not the current profile or mutable sys.path.
-# adopt_selected() may change sys.path while loaded modules still need the old tree.
-_BOOT_ENVIRONMENTS: dict[Path, Path | None] = {}
-
-
-def remember_activation(project: Path, environment: Path | None) -> None:
-    from pm.environments import install_state_dir
-
-    _BOOT_ENVIRONMENTS.setdefault(
-        install_state_dir(project).resolve(),
-        environment.resolve() if environment else None,
-    )
-
 
 def collect_unused(project: Path) -> None:
     """Best-effort maintenance, retaining the collector's age, lease and selection rules."""
@@ -43,7 +30,7 @@ class GenerationObserver:
     """A service's immutable boot selection and owning data root, captured before thread hops."""
 
     def __init__(self, project: Path):
-        from pm.environments import install_state_dir
+        from pm.environments import _BOOT_ENVIRONMENTS, install_state_dir
 
         self.project = project.resolve()
         self.state = install_state_dir(project).resolve()

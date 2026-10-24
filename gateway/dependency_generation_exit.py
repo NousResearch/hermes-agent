@@ -33,8 +33,8 @@ async def dependency_generation_watcher(
     while runner._running and (max_polls is None or polls < max_polls):
         polls += 1
         reason = await asyncio.to_thread(observer.probe)
-        if runner._restart_task_started:
-            return  # an operator's restart owns the handoff
+        if not runner._running or runner._restart_task_started:
+            return  # an operator's stop or restart owns the handoff
         seen = seen + 1 if reason else 0
         if not draining and seen >= 2 and not runner._draining:
             runner._dependency_restart_pending = True

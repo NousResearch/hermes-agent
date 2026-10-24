@@ -2391,6 +2391,37 @@ class BasePlatformAdapter(ABC):
         before handling un-mentioned replies)."""
         self._session_store = session_store
 
+    def _stamp_outbound_platform_message_id(
+        self, session_key: str, platform_message_id: str, content: str,
+    ) -> None:
+        """Best-effort: write SendResult.message_id onto the latest assistant transcript row.
+
+        Lets history clients match live platform delivery ids (phone ``proactive-*``) without
+        content heuristics. No-op when the session store or session id is unavailable.
+        """
+        pid = str(platform_message_id or "").strip()
+        if not session_key or not pid:
+            return
+        try:
+            store = getattr(self, "_session_store", None)
+            if store is None:
+                runner = getattr(self, "gateway_runner", None)
+                store = getattr(runner, "session_store", None) if runner is not None else None
+            if store is None:
+                return
+            peek = getattr(store, "peek_session_id", None)
+            session_id = peek(session_key) if callable(peek) else None
+            if not session_id:
+                return
+            stamp = getattr(store, "stamp_latest_assistant_platform_message_id", None)
+            if not callable(stamp):
+                return
+            stamp(session_id, pid, content=content)
+        except Exception:
+            logger.debug(
+                "[%s] outbound platform_message_id stamp failed", self.name, exc_info=True,
+            )
+
     def set_owner_profile(self, profile_name: Optional[str]) -> None:
         """Declare the owning multiplex profile (secondary profiles only); read by
         :meth:`_session_key_profile` so adapter-level keys leave ``agent:main:``."""
@@ -4366,6 +4397,11 @@ class BasePlatformAdapter(ABC):
         stop_reply_clock(delivery_adapter, event.source.chat_id, result)
         if obligation_id is not None:
             await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
+        # Share the platform delivery id with the transcript row so clients can
+        # merge live push (e.g. phone proactive-*) with history by id.
+        if getattr(result, "success", False) and getattr(result, "message_id", None):
+            delivery_adapter._stamp_outbound_platform_message_id(
+                session_key, str(result.message_id), text_content)
         return result, delivery_adapter
 
     async def _release_turn_marker(self, event: MessageEvent) -> None:

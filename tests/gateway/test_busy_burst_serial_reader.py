@@ -158,6 +158,21 @@ async def test_new_waits_for_a_burst_still_committing(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_bot_stop_keeps_the_held_burst_and_the_running_turn(monkeypatch):
+    """A bot's /stop (allow_bots on) is ignored while busy, so it must not drop the human's held
+    text either: the text commits and runs after A, which was not cancelled."""
+    adapter, source = _signal(monkeypatch)
+    owner = await _busy_owner(monkeypatch, adapter, source, busy_text_mode='queue')
+    await adapter.handle_message(MessageEvent(text='B', source=source, message_id='B'))
+    assert owner.key in adapter._shared_bursts
+    bot = adapter.build_source(chat_id='+15550001', chat_type='dm', user_id='+15550002', is_bot=True)
+    await adapter.handle_message(MessageEvent(text='/stop', source=bot, message_id='S'))
+    await async_wait_until(lambda: not holds_busy_burst(adapter, owner.key), timeout=5, what='the burst to land')
+    assert [row['request_id'] for row in _rows(owner.authority)] == ['A', 'B']
+    assert await owner.settle(2) == [('B', 0)]
+
+
+@pytest.mark.asyncio
 async def test_next_burst_waits_while_the_chats_last_one_commits(monkeypatch, tmp_path):
     """The chat's first burst is still committing: the reader waits before holding another one,
     as main's reader waited at the first commit, so uncommitted input stays bounded."""

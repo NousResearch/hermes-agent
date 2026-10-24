@@ -4065,11 +4065,11 @@ class BasePlatformAdapter(ABC):
         # calling the message handler directly and sending the response.  Do NOT use
         # _process_message_background — it manages session lifecycle and its cleanup
         # races with the running task (split-brain, see PR #4926).
-        # Certain commands must bypass the active-session guard and be dispatched directly to the gateway
-        # runner. Without this, they are queued as pending messages and either: See #4926.
         self._canonicalize(event.source)  # identity FIRST (direct callers may skip handle_message)
         cmd = event.get_command()
         from hermes_cli.commands import (is_interrupt_then_dispatch, should_bypass_active_session)
+        if event.source.is_bot and is_interrupt_then_dispatch(cmd):
+            return  # its cancel precedes pre_gateway_dispatch: with allow_bots, a bot can't end a human's turn
         if should_bypass_active_session(cmd):
             try:
                 # /stop, /new, /reset: cancel + response + drain; other bypasses don't cancel.

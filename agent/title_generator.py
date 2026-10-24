@@ -425,8 +425,27 @@ def _title_from_reasoning(message: Any) -> str:
     return ""
 
 
+# Code pages a model's UTF-8 bytes have come back through (``à`` = C3 A0 read as cp1250 gives ``Ă`` plus
+# a no-break space, which the whitespace collapse below would then make permanent).
+_MOJIBAKE_CODECS = ("cp1252", "cp1250", "latin-1")
+
+
+def _repair_mojibake(text: str) -> str:
+    """``text`` with UTF-8 restored when it is UTF-8 read through a single-byte code page; unchanged
+    otherwise. Strict both ways, so ordinary accented text never round-trips into something else."""
+    for codec in _MOJIBAKE_CODECS:
+        try:
+            repaired = text.encode(codec).decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            continue
+        if repaired != text:
+            return repaired
+    return text
+
+
 def _clean_title(text: str) -> Optional[str]:
     """Normalize a model-produced title, or None when nothing usable remains."""
+    text = _repair_mojibake(text or "")
     title = _strip_title_prefix(" ".join((text or "").split()).strip("\"'").strip()).rstrip(".!,;:")
     if len(title) > 80:
         title = title[:77].rstrip() + "..."

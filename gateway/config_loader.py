@@ -94,6 +94,9 @@ _TOPLEVEL_BRIDGE: tuple = (
     *_presence("max_concurrent_sessions"),
     ("systemd_watchdog_seconds", "systemd_watchdog_seconds", "nested", None, None),
     ("streaming", "streaming", "dict", None, None),
+    # The declared silence-narration class (vocabulary + length guard) the delivery filter reads:
+    # a language-specific class is declared by the deployment, never hardcoded in the filter.
+    ("silence_narration", "silence_narration", "dict", None, None),
     *_presence(
         "reset_triggers", "always_log_local", "write_sessions_json", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s", "loop_watchdog_max_strikes",

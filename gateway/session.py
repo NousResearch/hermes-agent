@@ -16,6 +16,7 @@ from .config import Platform, GatewayConfig, HomeChannel
 from .whatsapp_identity import canonical_whatsapp_identifier
 from gateway.session_detached import detached_route_of
 from gateway.session_identity import transport_profile_of
+from gateway.session_scope import scope_for_context
 from gateway.session_persistence import SessionPersistenceMixin, _DB_UNPINNED
 from gateway.session_prompt_pin import SessionPromptPinMixin, sanitize_prompt_pin
 from gateway.session_recovery import SessionRecoveryMixin
@@ -1469,13 +1470,11 @@ class SessionStore(
 
 def build_session_context(
     source: SessionSource, config: GatewayConfig, session_entry: Optional[SessionEntry] = None, event: Any = None,
+    *, session_store=None,
 ) -> SessionContext:
     """Build a full session context (for system prompt injection)."""
     connected = config.get_connected_platforms()
-    shared = is_shared_multi_user_session(
-        source, group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
-        thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
-    )
+    shared = is_shared_multi_user_session(source, **scope_for_context(config, source, session_store))
     actor = event if getattr(event, "user_id", None) is not None else source
     context = SessionContext(
         source=source, connected_platforms=connected, shared_multi_user_session=shared,

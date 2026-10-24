@@ -1509,9 +1509,9 @@ class GatewayInboundMixin(
 
     def _prefix_inbound_sender_context(self, event: MessageEvent, source: SessionSource, message_text: str) -> str:
         """Attribute the sender in shared multi-user sessions and prepend history-backfill channel context."""
-        message_text = label_shared_sender(
-            source, message_text, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False))
+        from gateway.session_scope import scope_for_runner
+
+        message_text = label_shared_sender(source, message_text, **scope_for_runner(self, source))
         # After the sender-prefix so the prefix applies only to the trigger message, not the backfill.
         if getattr(event, "channel_context", None):
             message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"

@@ -6,7 +6,7 @@ import type { MediaKind } from '@/lib/media'
  * TOOL MEDIA RENDERERS — a plugin draws the media ITS OWN tools produced.
  *
  * When a transcript shows a `MEDIA:` attachment, the host finds the tool call
- * in that turn whose result produced the path. If the plugin that owns that
+ * whose result first named the path (earlier in the transcript). If the plugin that owns that
  * tool registered a renderer for the tool's name, its component replaces the
  * built-in player; every other file (core voice replies, other plugins' and
  * core tools' output, user uploads, paths no tool in the turn produced) keeps
@@ -81,25 +81,63 @@ interface MessageLike {
   role?: string
 }
 
-function payloadText(value: unknown): string {
-  if (typeof value === 'string') {
-    return value
+// The texts a value carries, decoded: a JSON-string result is parsed and its
+// string leaves read, so a path next to an escaped `\n`, or a non-ASCII path
+// written as `\u00e9`, reads as the path itself. Bounded (depth, leaf count).
+function textLeaves(value: unknown, out: string[] = [], depth = 0): string[] {
+  if (out.length >= MAX_LEAVES || depth > 6) {
+    return out
   }
 
-  try {
-    return JSON.stringify(value) ?? ''
-  } catch {
-    return ''
+  if (typeof value === 'string') {
+    out.push(value)
+    const head = value.trimStart()[0]
+
+    if ((head === '{' || head === '[' || head === '"') && value.length <= MAX_PARSE_CHARS) {
+      try {
+        const parsed: unknown = JSON.parse(value)
+
+        if (parsed !== value) {
+          textLeaves(parsed, out, depth + 1)
+        }
+      } catch {
+        // Plain text that happens to start with a bracket.
+      }
+    }
+  } else if (value && typeof value === 'object') {
+    for (const item of Array.isArray(value) ? value : Object.values(value)) {
+      textLeaves(item, out, depth + 1)
+    }
   }
+
+  return out
 }
 
-function pathNeedles(path: string): string[] {
-  const bare = path.startsWith('file:') ? decodeURIComponentSafe(path.replace(/^file:\/\//, '')) : path
+const MAX_LEAVES = 2_000
+const MAX_PARSE_CHARS = 2_000_000
 
-  // JSON-escaped forms too: a Windows path sits in a JSON result as `C:\\Users\\…`.
-  return [...new Set([path, bare, JSON.stringify(path).slice(1, -1), JSON.stringify(bare).slice(1, -1)])].filter(
-    Boolean
-  )
+const WINDOWS_PATH = /^(?:[a-z]:[\\/]|\\\\|\/\/)/i
+
+/** One spelling for every form a path takes: `file://` URLs unwrapped,
+ *  backslashes as `/`, and Windows paths (case-insensitive) lower-cased. */
+function canonicalText(text: string, windows: boolean): string {
+  const unwrapped = text.replace(/file:\/\/(?:\/(?=[a-z]:))?/gi, '')
+  const slashed = windows ? unwrapped.replace(/\\/g, '/') : unwrapped
+
+  return windows ? slashed.toLowerCase() : slashed
+}
+
+interface PathNeedle {
+  needles: string[]
+  windows: boolean
+}
+
+function pathNeedle(path: string): PathNeedle {
+  const bare = canonicalText(path, false)
+  const windows = WINDOWS_PATH.test(bare)
+  const decoded = decodeURIComponentSafe(bare)
+
+  return { needles: [...new Set([bare, decoded].map(p => canonicalText(p, windows)))].filter(Boolean), windows }
 }
 
 function decodeURIComponentSafe(value: string): string {
@@ -112,11 +150,19 @@ function decodeURIComponentSafe(value: string): string {
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
+// A path continues through these; anything else (whitespace, quotes, `:`,
+// brackets, a sentence's final `.`) ends it.
+const PATH_CHAR = String.raw`[\p{L}\p{N}_\-~%+@/\\]`
+
 /** Whether `text` names `needle` as a WHOLE path: `/out/a.glb` matches in
- *  `{"path":"/out/a.glb"}`, `saved to /out/a.glb.` and `MEDIA:/out/a.glb`, but
- *  never inside `/out/a.glb.bak` or `/x/out/a.glb`. */
+ *  `{"path":"/out/a.glb"}`, `saved to /out/a.glb.`, `/out/a.glb: 3 MB` and
+ *  `MEDIA:/out/a.glb`, but never inside `/out/a.glb.bak` or `/x/out/a.glb`. */
 export function namesWholePath(text: string, needle: string): boolean {
-  return new RegExp(`(?<=^|[\\s"'\`(=\\[{,:])${escapeRegExp(needle)}(?=$|[\\s"'\`),;\\]}>]|\\.(?:$|\\s))`).test(text)
+  if (!needle || !text.includes(needle)) {
+    return false
+  }
+
+  return new RegExp(`(?<!${PATH_CHAR}|\\.)${escapeRegExp(needle)}(?!${PATH_CHAR}|\\.${PATH_CHAR})`, 'u').test(text)
 }
 
 function toolCallsOf(message: MessageLike): ToolCallLike[] {
@@ -127,11 +173,101 @@ function toolCallsOf(message: MessageLike): ToolCallLike[] {
     : []
 }
 
+/** A call that failed produced nothing. A reloaded transcript marks every
+ *  stored result as a success, so the payload's own verdict counts too. */
+function callFailed(call: ToolCallLike): boolean {
+  if (call.isError) {
+    return true
+  }
+
+  let payload = call.result
+
+  if (typeof payload === 'string' && payload.trimStart().startsWith('{') && payload.length <= MAX_PARSE_CHARS) {
+    try {
+      payload = JSON.parse(payload)
+    } catch {
+      return false
+    }
+  }
+
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return false
+  }
+
+  const { error, success } = payload as { error?: unknown; success?: unknown }
+
+  return success === false || (error !== undefined && error !== null && error !== false && error !== '')
+}
+
+// Decoded, canonical texts per part and spelling. Parts and messages are the
+// thread store's own objects, stable across streaming deltas, so a long
+// transcript is decoded once instead of on every update.
+const leavesCache = new WeakMap<object, Map<boolean, string[]>>()
+
+function canonicalLeaves(owner: object, value: unknown, windows: boolean): string[] {
+  let byForm = leavesCache.get(owner)
+
+  if (!byForm) {
+    byForm = new Map()
+    leavesCache.set(owner, byForm)
+  }
+
+  let leaves = byForm.get(windows)
+
+  if (!leaves) {
+    leaves = textLeaves(value).map(text => canonicalText(text, windows))
+    byForm.set(windows, leaves)
+  }
+
+  return leaves
+}
+
+type Mention = 'user' | ToolCallLike | null
+
+const mentionCache = new WeakMap<object, Map<string, Mention>>()
+
+/** The first thing in `message` that names the path: the user's own text
+ *  (an upload, a file they pointed at) or a successful tool call's result. */
+function firstMention(message: MessageLike, target: PathNeedle): Mention {
+  const key = `${target.windows ? 'w' : 'p'}\u0000${target.needles.join('\u0000')}`
+  let cached = mentionCache.get(message)
+
+  if (cached?.has(key)) {
+    return cached.get(key) ?? null
+  }
+
+  const names = (leaves: string[]) => leaves.some(text => target.needles.some(needle => namesWholePath(text, needle)))
+  let found: Mention = null
+
+  if (message.role === 'user') {
+    found = names(canonicalLeaves(message, message.content, target.windows)) ? 'user' : null
+  } else {
+    found =
+      toolCallsOf(message).find(
+        call =>
+          call.result !== undefined &&
+          !callFailed(call) &&
+          names(canonicalLeaves(call as object, call.result, target.windows))
+      ) ?? null
+  }
+
+  if (!cached) {
+    cached = new Map()
+    mentionCache.set(message, cached)
+  }
+
+  cached.set(key, found)
+
+  return found
+}
+
 /**
- * The tool call whose result produced `path`, from the turn that holds message
- * `messageId`: that message and the assistant messages back to the user's
- * prompt. The EARLIEST matching call wins, because a file is produced once and
- * later calls (`ls`, a read) only mention it. Failed calls produced nothing.
+ * The tool call whose result produced `path`, read from the transcript up to
+ * message `messageId`. The EARLIEST mention wins, because a file is produced
+ * once and later calls (`ls`, a read, a plugin taking it as input) only name
+ * it. A path the user named first (an upload) has no producer, and failed
+ * calls produced nothing. Rewriting a file in place later never moves it to
+ * another tool: ownership stays with the call that first produced it.
  */
 export function findProducingToolCall(
   messages: readonly MessageLike[],
@@ -144,51 +280,75 @@ export function findProducingToolCall(
     return null
   }
 
-  let start = index
+  const target = pathNeedle(path)
 
-  while (start > 0 && messages[start - 1]?.role !== 'user') {
-    start -= 1
-  }
+  for (let at = 0; at <= index; at += 1) {
+    const message = messages[at]
+    const mention = message ? firstMention(message, target) : null
 
-  const needles = pathNeedles(path)
-
-  for (const message of messages.slice(start, index + 1)) {
-    for (const call of toolCallsOf(message)) {
-      if (call.isError || call.result === undefined) {
-        continue
-      }
-
-      const text = payloadText(call.result)
-
-      if (needles.some(needle => namesWholePath(text, needle))) {
-        return call
-      }
+    if (mention) {
+      return mention === 'user' ? null : mention
     }
   }
 
   return null
 }
 
+function bridgeEntries(args: Record<string, unknown>): unknown[] | null {
+  let calls: unknown = args.calls
+
+  if (calls === undefined || calls === null) {
+    calls = typeof args.name === 'string' && args.name.trim() ? [{ arguments: args.arguments, name: args.name }] : null
+  }
+
+  if (typeof calls === 'string') {
+    try {
+      calls = JSON.parse(calls)
+    } catch {
+      return null
+    }
+  }
+
+  if (calls && typeof calls === 'object' && !Array.isArray(calls)) {
+    calls = [calls]
+  }
+
+  return Array.isArray(calls) ? calls : null
+}
+
+function bridgeArguments(raw: unknown): Record<string, unknown> {
+  if (typeof raw === 'string') {
+    try {
+      raw = raw.trim() ? JSON.parse(raw) : {}
+    } catch {
+      return {}
+    }
+  }
+
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
+}
+
 /** The tool a call really ran. The deferred-tool bridge (`tool_call`) runs one
  *  local tool per call (batches are split before they run), with the tool's
- *  name and arguments in `args.calls[0]` and its own result as the result, so
- *  a plugin tool loaded on demand is still recognised. A multi-entry batch
- *  (connectors only) stays the bridge: no plugin owns it. */
+ *  name and arguments in `args.calls[0]` (or the legacy `{name, arguments}`
+ *  shape, a JSON-string `calls`, a single object) and its own result as the
+ *  result, so a plugin tool loaded on demand is still recognised. Mirrors the
+ *  backend's `normalize_tool_call_entries`. A multi-entry batch (connectors
+ *  only) stays the bridge: no plugin owns it. */
 export function effectiveToolCall(part: ToolCallLike): ToolCallLike {
-  const calls =
+  const entries =
     part.toolName === 'tool_call' && part.args && typeof part.args === 'object'
-      ? (part.args as { calls?: unknown }).calls
-      : undefined
+      ? bridgeEntries(part.args as Record<string, unknown>)
+      : null
 
-  if (!Array.isArray(calls) || calls.length !== 1) {
+  if (!entries || entries.length !== 1) {
     return part
   }
 
-  const entry = calls[0] as { arguments?: unknown; name?: unknown } | null
+  const entry = entries[0] as { arguments?: unknown; name?: unknown } | null
+  const name = typeof entry?.name === 'string' ? entry.name.trim() : ''
 
-  return typeof entry?.name === 'string' && entry.name
-    ? { ...part, args: entry.arguments ?? {}, toolName: entry.name }
-    : part
+  return name && name !== 'tool_call' ? { ...part, args: bridgeArguments(entry?.arguments), toolName: name } : part
 }
 
 /** The package that owns `toolName`: the one package whose registered tools

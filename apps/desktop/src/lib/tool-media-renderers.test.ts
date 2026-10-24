@@ -20,58 +20,100 @@ const call = (toolName: string, result: unknown, extra: Record<string, unknown> 
   ...extra
 })
 
+const turn = (...content: unknown[]) => [
+  { id: 'u', role: 'user', content: [{ type: 'text', text: 'make it' }] },
+  { id: 'a', role: 'assistant', content }
+]
+
 describe('findProducingToolCall', () => {
   const path = '/tmp/out/model.glb'
 
-  it('picks the earliest call in the turn whose result names the path (a later ls only mentions it)', () => {
+  it('picks the earliest call whose result names the path (a later ls or a plugin reading it only mentions it)', () => {
     const messages = [
       { id: 'u0', role: 'user', content: [] },
       { id: 'a0', role: 'assistant', content: [call('mcp__meshy__download', { path })] },
       { id: 'u1', role: 'user', content: [] },
-      { id: 'a1', role: 'assistant', content: [call('mcp__meshy__download', `saved to ${path}`)] },
+      { id: 'a1', role: 'assistant', content: [call('sfx_analyze', `read ${path}`)] },
       { id: 'a2', role: 'assistant', content: [call('terminal', { output: path }), { type: 'text', text: 'MEDIA' }] }
     ]
 
-    expect(findProducingToolCall(messages, 'a2', path)?.toolCallId).toBe('mcp__meshy__download-id')
-    // The previous turn's call never counts for this turn.
-    expect(findProducingToolCall(messages.slice(2), 'a2', path)?.toolName).toBe('mcp__meshy__download')
+    // Re-delivered in a later turn, the file still belongs to the call that made it.
+    expect(findProducingToolCall(messages, 'a2', path)?.toolName).toBe('mcp__meshy__download')
+    expect(findProducingToolCall(messages.slice(2), 'a2', path)?.toolName).toBe('sfx_analyze')
     expect(findProducingToolCall([messages[2], messages[4]], 'a2', path)?.toolName).toBe('terminal')
+    // Nothing after the delivering message counts.
+    expect(findProducingToolCall(messages, 'u1', path)?.toolName).toBe('mcp__meshy__download')
   })
 
   it('matches whole paths only: a longer sibling file never claims this one', () => {
-    const messages = [
-      { id: 'u', role: 'user', content: [] },
-      {
-        id: 'a',
-        role: 'assistant',
-        content: [
-          call('first', { path: `${path}.bak` }),
-          call('nested', `copied /x${path}`),
-          call('second', `saved to ${path}.`)
-        ]
-      }
-    ]
+    const messages = turn(
+      call('first', { path: `${path}.bak` }),
+      call('nested', `copied /x${path}`),
+      call('url', `https://cdn.example${path}`),
+      call('second', `saved to ${path}.`)
+    )
 
     expect(findProducingToolCall(messages, 'a', path)?.toolName).toBe('second')
     expect(namesWholePath(`MEDIA:${path}`, path)).toBe(true)
+    expect(namesWholePath(`${path}: 3 MB`, path)).toBe(true)
     expect(namesWholePath(`${path}.bak`, path)).toBe(false)
   })
 
-  it('ignores failed calls and finds Windows paths inside JSON results', () => {
-    const win = 'C:\\Users\\me\\out\\clip.wav'
+  it('reads every file of a result that joins several MCP media blocks with newlines', () => {
+    // An MCP result is text inside a JSON string: the first path is followed by
+    // the escaped `\n`, which must still end the path.
+    const result = JSON.stringify({ result: 'Saved /out/a.glb\nSaved /out/b.glb\nSaved /out/c.png' })
+    const messages = turn(call('mcp__meshy__download', result))
+
+    for (const file of ['/out/a.glb', '/out/b.glb', '/out/c.png']) {
+      expect(findProducingToolCall(messages, 'a', file)?.toolName).toBe('mcp__meshy__download')
+    }
+
+    // Stored again as an object (a reloaded transcript), the same holds.
+    expect(findProducingToolCall(turn(call('mcp__meshy__download', JSON.parse(result))), 'a', '/out/a.glb')).not.toBeNull()
+  })
+
+  it('keeps a core tool the producer when its output names the file before a newline', () => {
+    const messages = turn(
+      call('terminal', JSON.stringify({ output: 'wrote /out/a.mp3\nDone' })),
+      call('sfx_analyze', { path: '/out/a.mp3' })
+    )
+
+    expect(findProducingToolCall(messages, 'a', '/out/a.mp3')?.toolName).toBe('terminal')
+  })
+
+  it('never credits a failed call, live or reloaded (a stored result is never marked isError)', () => {
+    const messages = turn(
+      call('sfx', { path }, { isError: true }),
+      call('meshy_x', JSON.stringify({ error: `exists: ${path}` })),
+      call('meshy_y', { success: false, message: `cannot write ${path}` }),
+      call('image_generate', { path })
+    )
+
+    expect(findProducingToolCall(messages, 'a', path)?.toolName).toBe('image_generate')
+    expect(findProducingToolCall(turn(call('ok', { error: null, path })), 'a', path)?.toolName).toBe('ok')
+  })
+
+  it('gives a file the user named first (an upload) no producer, even when a plugin echoes it', () => {
+    const upload = '/home/u/uploads/voice.ogg'
 
     const messages = [
-      { id: 'u', role: 'user', content: [] },
-      {
-        id: 'a',
-        role: 'assistant',
-        content: [call('sfx', { path }, { isError: true }), call('sfx', JSON.stringify({ win }))]
-      }
+      { id: 'u', role: 'user', content: [{ type: 'text', text: `transcode ${upload}` }] },
+      { id: 'a', role: 'assistant', content: [call('sfx_transcode', { input: upload })] }
     ]
 
-    expect(findProducingToolCall(messages, 'a', path)).toBeNull()
-    expect(findProducingToolCall(messages, 'a', win)?.toolName).toBe('sfx')
-    expect(findProducingToolCall(messages, 'missing', win)).toBeNull()
+    expect(findProducingToolCall(messages, 'a', upload)).toBeNull()
+  })
+
+  it('finds Windows, file URL and escaped non-ASCII spellings of the same path', () => {
+    const win = 'C:\\Users\\me\\out\\clip.wav'
+
+    expect(findProducingToolCall(turn(call('sfx', JSON.stringify({ win }))), 'a', win)?.toolName).toBe('sfx')
+    expect(findProducingToolCall(turn(call('sfx', 'saved c:/users/ME/out/clip.wav')), 'a', win)?.toolName).toBe('sfx')
+    expect(findProducingToolCall(turn(call('sfx', { win })), 'a', 'file:///C:/Users/me/out/clip.wav')).not.toBeNull()
+    // Python's json.dumps escapes non-ASCII by default.
+    expect(findProducingToolCall(turn(call('sfx', '{"path": "/out/caf\\u00e9.wav"}')), 'a', '/out/café.wav')).not.toBeNull()
+    expect(findProducingToolCall(turn(call('sfx', { win })), 'missing', win)).toBeNull()
   })
 })
 
@@ -83,6 +125,24 @@ describe('effectiveToolCall', () => {
     expect(effectiveToolCall(bridged)).toMatchObject({ args: { prompt: 'zap' }, toolName: 'sfx_make' })
     expect(effectiveToolCall(batch).toolName).toBe('tool_call')
     expect(effectiveToolCall(call('terminal', {})).toolName).toBe('terminal')
+  })
+
+  it('reads every shape the backend runs: legacy single, JSON-string calls, one object, string arguments', () => {
+    const shapes = [
+      { name: 'sfx_make', arguments: '{"prompt":"zap"}' },
+      { calls: JSON.stringify([{ name: 'sfx_make', arguments: { prompt: 'zap' } }]) },
+      { calls: { name: ' sfx_make ', arguments: { prompt: 'zap' } } }
+    ]
+
+    for (const args of shapes) {
+      expect(effectiveToolCall(call('tool_call', {}, { args }))).toMatchObject({
+        args: { prompt: 'zap' },
+        toolName: 'sfx_make'
+      })
+    }
+
+    // The bridge never names itself.
+    expect(effectiveToolCall(call('tool_call', {}, { args: { name: 'tool_call' } })).toolName).toBe('tool_call')
   })
 })
 

@@ -58,28 +58,53 @@ def _plugin_server_rows(
     return rows
 
 
+def _server_identity(cfg: object) -> tuple:
+    """What a server config runs: a same-name native entry that runs the same thing is the user
+    widening the package server's trust; anything else is the user's own, different server."""
+    cfg = cfg if isinstance(cfg, dict) else {}
+    return cfg.get("command"), tuple(cfg.get("args") or ()), cfg.get("url")
+
+
+def _portable_server_tools(manager, native: dict) -> dict[str, set[str]]:
+    """Tools each portable package's own MCP servers registered: live connections plus lazily
+    cached (not yet connected) ones. A name the user's native config claims for a different server
+    credits no package: the native entry is the one that runs (``_portable_mcp_servers``)."""
+    core = _tools_mod("tools.mcp_tool_common")._core
+    resolve_key = _tools_mod("tools.mcp_tool_scope")._resolve_server_key
+    declared = manager.get_portable_mcp_servers()
+    listed: dict[str, set[str]] = {}
+    for server_name, owner in manager.get_portable_mcp_server_plugins().items():
+        names = listed.setdefault(owner, set())
+        if server_name in native and _server_identity(native[server_name]) != _server_identity(
+                declared.get(server_name)):
+            continue
+        key = resolve_key(server_name)
+        names.update(getattr(core._servers.get(key), "_registered_tool_names", None) or ())
+        names.update(core._lazy_server_tool_names.get(key) or ())
+    return listed
+
+
 def _plugin_tool_ownership() -> dict[str, list[str]]:
     """The exact tool names each loaded plugin's OWN code registered, by manifest key.
 
-    Desktop lets a plugin's desktop half render media only from these tools, so the answer comes
+    Desktop lets a plugin's desktop half render media only from these, so the answer comes
     from the loader's and the MCP client's records, never from a manifest claim or a name prefix.
     Native: names the plugin registered, minus built-in tool names (an approved override of
     ``text_to_speech`` is still the core voice reply to the user). Portable: the tools each MCP
-    server the loader attributed to the package registered (a server that is not connected yet
-    owns nothing until it is). A name two packages list belongs to neither."""
+    server the loader attributed to the package registered (``_portable_server_tools``; a server
+    that never connected or cached its tools owns nothing yet). A name two packages list belongs
+    to neither."""
     plugins_mod = _tools_mod("hermes_cli.plugins")
     toolsets = _tools_mod("toolsets")
-    core = _tools_mod("tools.mcp_tool_common")._core
-    resolve_key = _tools_mod("tools.mcp_tool_scope")._resolve_server_key
     plugins_mod.discover_plugins()
     manager = plugins_mod.get_plugin_manager()
+    native = _tools_mod("hermes_cli.config").load_config().get("mcp_servers")
     builtin = set(toolsets._HERMES_CORE_TOOLS)
     for entry in toolsets.TOOLSETS.values():
         builtin.update(entry.get("tools", ()))
     listed = {key: set(loaded.tools_registered) - builtin for key, loaded in manager._plugins.items()}
-    for server_name, owner in manager.get_portable_mcp_server_plugins().items():
-        server = core._servers.get(resolve_key(server_name))
-        listed.setdefault(owner, set()).update(getattr(server, "_registered_tool_names", None) or ())
+    for owner, names in _portable_server_tools(manager, native if isinstance(native, dict) else {}).items():
+        listed.setdefault(owner, set()).update(names)
     seen: dict[str, int] = {}
     for names in listed.values():
         for name in names:

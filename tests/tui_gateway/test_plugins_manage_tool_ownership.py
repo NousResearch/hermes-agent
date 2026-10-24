@@ -1,5 +1,4 @@
-"""``plugins.manage list`` names the tools each package's own code produces (``tools`` /
-``tool_prefixes``): Desktop lets a plugin's desktop half render media only from those, so the
+"""``plugins.manage list`` names the tools each package's own code produces (``tools``): Desktop lets a plugin's desktop half render media only from those, so the
 answer must come from what the loader actually registered, never from a manifest claim.
 
 Real discovery against the sandbox ``HERMES_HOME``: two native plugins and one portable MCP package.
@@ -79,3 +78,39 @@ def test_list_reports_only_tools_the_package_itself_registered():
     assert rows["other"]["tools"] == ["other_tool"]
     # A portable package owns exactly the tools its own MCP server registered.
     assert rows["meshy-ish"]["tools"] == ["mcp__meshy_3d__download"]
+
+
+def _list_meshy_tools(live: list[str] | None = None, lazy: list[str] | None = None,
+                      native: dict | None = None) -> list[str]:
+    root = Path(os.environ["HERMES_HOME"]) / "plugins"
+    if not (root / "meshy-ish").exists():
+        _portable_plugin(root)
+    cfg = load_config()
+    cfg["plugins"] = {"enabled": ["meshy-ish"]}
+    cfg["mcp_servers"] = native or {}
+    save_config(cfg)
+    from tools.mcp_tool_common import _core
+    from tools.mcp_tool_scope import _resolve_server_key
+    key = _resolve_server_key("meshy-3d")
+    servers = {key: SimpleNamespace(_registered_tool_names=live)} if live is not None else {}
+    with patch.dict(_core._servers, servers), \
+         patch.dict(_core._lazy_server_tool_names, {key: lazy} if lazy is not None else {}), \
+         patch("hermes_cli.plugins_cmd_catalog.catalog_rows_maps", return_value=({}, {}, {})):
+        resp = server.handle_request({"id": "1", "method": "plugins.manage", "params": {"action": "list"}})
+    return {row["name"]: row for row in resp["result"]["plugins"]}["meshy-ish"]["tools"]
+
+
+def test_a_lazily_cached_server_still_owns_its_tools():
+    # A cache-registered (lazy) server keeps its tool names outside the live connection table;
+    # they are still that server's tools, so its package owns them before it connects.
+    assert _list_meshy_tools(lazy=["mcp__meshy_3d__download"]) == ["mcp__meshy_3d__download"]
+    assert _list_meshy_tools() == []
+
+
+def test_a_native_server_of_the_same_name_credits_the_package_only_when_it_runs_the_same_thing():
+    live = ["mcp__meshy_3d__download"]
+    # The user's own, different server under the package's server name is the one that runs:
+    # its tools are not the package's.
+    assert _list_meshy_tools(live, native={"meshy-3d": {"command": "my-own-server"}}) == []
+    # The same server re-declared natively (the way a user widens its trust) stays the package's.
+    assert _list_meshy_tools(live, native={"meshy-3d": {"command": "python", "trust": "high"}}) == live

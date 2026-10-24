@@ -9,6 +9,8 @@ Verifies:
 from __future__ import annotations
 
 import json
+import socket
+from pathlib import Path
 
 import pytest
 
@@ -1399,68 +1401,110 @@ def _fake_public_dns(monkeypatch, mapping):
     monkeypatch.setattr(url_safety.socket, "getaddrinfo", fake_getaddrinfo)
 
 
-class _FakeStreamResponse:
-    def __init__(self, *, status_code=200, headers=None, body=b""):
-        self.status_code = status_code
-        self.headers = headers or {}
-        self._body = body
+@pytest.fixture
+def attachment_network(monkeypatch):
+    """Exercise real HTTP parsing and SSRF transport while replacing TCP with in-memory streams."""
+    import ipaddress
+    from httpcore._backends.mock import MockStream
+    from httpcore._backends.sync import SyncBackend
 
-    @property
-    def is_redirect(self):
-        return 300 <= self.status_code < 400 and "location" in {
-            k.lower() for k in self.headers
-        }
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    responses = []
+    connections = []
 
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            raise RuntimeError(f"HTTP {self.status_code}")
+    def connect(_self, host, port, **kwargs):
+        try:
+            ipaddress.ip_address(host)
+            resolved = host
+        except ValueError:
+            resolved = socket.getaddrinfo(host, port)[0][4][0]
+        connections.append((host, resolved))
+        return MockStream([responses.pop(0)])
 
-    def iter_bytes(self, chunk_size):
-        for i in range(0, len(self._body), chunk_size):
-            yield self._body[i:i + chunk_size]
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
+    monkeypatch.setattr(SyncBackend, "connect_tcp", connect)
+    return responses, connections
 
 
-def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkeypatch):
-    """A public URL passes the guard and the bytes are stored (mocked fetch)."""
-    from pathlib import Path
-
-    import httpx
-
+@pytest.mark.parametrize("blocked_ip", ["169.254.169.254", "127.0.0.1", "10.0.0.1", "::1"])
+@pytest.mark.parametrize("redirect", [False, True])
+def test_attach_url_blocks_connect_time_dns_rebind(
+    worker_env, default_url_guard, monkeypatch, attachment_network, blocked_ip, redirect,
+):
+    """Initial and redirected public DNS answers cannot rebind to internal addresses at connect."""
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
     from tools import kanban_tools as kt
 
-    _fake_public_dns(monkeypatch, {"files.example.com": "93.184.216.34"})
-
-    payload = b"public fetch body"
-
-    def fake_stream(method, url, **kwargs):
-        assert url == "http://files.example.com/docs/spec.pdf"
-        return _FakeStreamResponse(
-            status_code=200,
-            headers={"content-type": "application/pdf; charset=binary"},
-            body=payload,
+    responses, connections = attachment_network
+    if redirect:
+        responses.append(
+            b"HTTP/1.1 302 Found\r\nLocation: http://rebind.example/file.bin\r\n"
+            b"Content-Length: 0\r\nConnection: close\r\n\r\n"
         )
+    responses.append(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nsecret")
+    answers = iter(("93.184.216.34", blocked_ip))
 
-    monkeypatch.setattr(httpx, "stream", fake_stream)
+    def fake_getaddrinfo(host, port, *_args, **_kwargs):
+        ip = next(answers) if host == "rebind.example" else "93.184.216.34"
+        family = socket.AF_INET6 if ":" in ip else socket.AF_INET
+        return [(family, socket.SOCK_STREAM, 6, "", (ip, port or 0))]
 
-    out = kt._handle_attach_url({"url": "http://files.example.com/docs/spec.pdf"})
-    d = json.loads(out)
-    assert d.get("ok") is True, out
-    assert d["size"] == len(payload)
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    url = "http://start.example/file.bin" if redirect else "http://rebind.example/file.bin"
+    out = kt.registry.dispatch("kanban_attach_url", {"url": url})
+    result = json.loads(out)
+
+    assert "during connect" in result.get("error", ""), out
+    assert all(ip != blocked_ip for _host, ip in connections)
+    conn = kbc.connect()
+    try:
+        assert kb.list_attachments(conn, worker_env) == []
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("redirect", [False, True])
+@pytest.mark.parametrize("oversize", [False, True])
+def test_attach_url_happy_path_public_host(
+    worker_env, default_url_guard, monkeypatch, attachment_network, redirect, oversize,
+):
+    """Public downloads pin DNS, validate redirects and enforce the streaming cap before storing."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    _fake_public_dns(monkeypatch, {"files.example.com": "93.184.216.34", "cdn.example.com": "93.184.216.35"})
+    payload = b"public fetch body"
+    monkeypatch.setattr(kb, "KANBAN_ATTACHMENT_MAX_BYTES", len(payload) - 1 if oversize else len(payload))
+    responses, connections = attachment_network
+    if redirect:
+        responses.append(
+            b"HTTP/1.1 302 Found\r\nLocation: http://cdn.example.com/spec.pdf\r\n"
+            b"Content-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+    responses.append(
+        b"HTTP/1.1 200 OK\r\nContent-Type: application/pdf; charset=binary\r\n"
+        + f"Content-Length: {len(payload)}\r\n\r\n".encode() + payload
+    )
+    out = kt.registry.dispatch("kanban_attach_url", {"url": "http://files.example.com/docs/spec.pdf"})
+    result = json.loads(out)
+    assert connections == [("93.184.216.34", "93.184.216.34")] + (
+        [("93.184.216.35", "93.184.216.35")] if redirect else []
+    )
 
     conn = kbc.connect()
     try:
         atts = kb.list_attachments(conn, worker_env)
-        assert [a.filename for a in atts] == ["spec.pdf"]
-        assert atts[0].content_type == "application/pdf"
-        assert Path(atts[0].stored_path).read_bytes() == payload
+        if oversize:
+            assert "exceeds" in result.get("error", ""), out
+            assert atts == []
+        else:
+            assert result.get("ok") is True, out
+            assert result["size"] == len(payload)
+            assert [a.filename for a in atts] == ["spec.pdf"]
+            assert atts[0].content_type == "application/pdf"
+            assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
 

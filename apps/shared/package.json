@@ -1,4 +1,5 @@
 {
+  "minimumReleaseAge": 259200,
   "name": "@hermes/shared",
   "private": true,
   "version": "0.0.0",

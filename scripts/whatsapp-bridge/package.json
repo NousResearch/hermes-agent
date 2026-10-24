@@ -1,4 +1,5 @@
 {
+  "minimumReleaseAge": 259200,
   "name": "hermes-whatsapp-bridge",
   "version": "1.0.0",
   "description": "WhatsApp bridge for Hermes Agent using Baileys",

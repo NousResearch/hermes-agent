@@ -659,7 +659,7 @@ export function startUnrestoredTileTitleBackfill(lookup = probeStoredSession): (
       .get()
       .filter(tile => !tile.runtimeId && !tile.workspaceTabTitle && !tileStoredRow(tile.storedSessionId))
       .map(tile =>
-        lookup(tile.storedSessionId, tile.ownerRoute)
+        lookup(tile.storedSessionId, tile.ownerRoute, { passive: true })
           .then(result => {
             const draft = takeSessionDraft(tile.storedSessionId)
             const current = $sessionTiles.get().find(candidate => candidate.storedSessionId === tile.storedSessionId)

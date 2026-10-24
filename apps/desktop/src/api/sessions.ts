@@ -450,7 +450,11 @@ export function searchSessions(query: string, profile?: null | string): Promise<
 // the given `profile`). The backend resolves exact ids and unique prefixes and
 // 404s when the id isn't on that profile — so a cheap by-id lookup replaces the
 // cross-profile list scan when locating an unknown id's owner.
-export function getSession(id: string, profile?: ProfileScope): Promise<SessionInfo> {
+export function getSession(
+  id: string,
+  profile?: ProfileScope,
+  options: { passive?: boolean } = {}
+): Promise<SessionInfo> {
   // Pin the read to the session's OWNER connection (#125372): the ambient dial
   // 404s on the wrong backend whenever two connections expose a same-named
   // profile.
@@ -459,7 +463,8 @@ export function getSession(id: string, profile?: ProfileScope): Promise<SessionI
 
   return hermesApi<SessionInfo>({
     ...scope,
-    path: `/api/sessions/${encodeURIComponent(id)}${suffix}`
+    path: `/api/sessions/${encodeURIComponent(id)}${suffix}`,
+    ...(options.passive ? { passive: true } : {})
   })
 }
 

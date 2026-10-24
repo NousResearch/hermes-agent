@@ -2164,9 +2164,10 @@ export type StoredSessionProbe = { status: 'found'; session: SessionInfo } | { s
 
 export async function resolveStoredSession(
   storedSessionId: string,
-  ownerRoute?: SessionProfileRoute
+  ownerRoute?: SessionProfileRoute,
+  options: { passive?: boolean } = {}
 ): Promise<SessionInfo | undefined> {
-  const result = await probeStoredSession(storedSessionId, ownerRoute)
+  const result = await probeStoredSession(storedSessionId, ownerRoute, options)
 
   return result.status === 'found' ? result.session : undefined
 }
@@ -2178,9 +2179,13 @@ export async function resolveStoredSession(
  *  ids that live on a profile not yet listed (#125678). */
 export async function probeStoredSession(
   storedSessionId: string,
-  ownerRoute?: SessionProfileRoute
+  ownerRoute?: SessionProfileRoute,
+  options: { passive?: boolean } = {}
 ): Promise<StoredSessionProbe> {
   let allGone = true
+  const readSession = options.passive
+    ? (id: string, profile?: Parameters<typeof getSession>[1]) => getSession(id, profile, options)
+    : getSession
 
   const recordFailure = (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error ?? '')
@@ -2209,7 +2214,7 @@ export async function probeStoredSession(
     }
 
     try {
-      const session = await getSession(storedSessionId, scope)
+      const session = await readSession(storedSessionId, scope)
       session.profile = normalizeProfileKey(ownerRoute.profile)
       session.connection_id = ownerRoute.connectionId
       upsertResolvedSession(session, storedSessionId, tombstoneGenerationsAtRequestStart)
@@ -2241,7 +2246,7 @@ export async function probeStoredSession(
   const activeKey = normalizeProfileKey($activeGatewayProfile.get())
 
   try {
-    const session = await getSession(storedSessionId, activeKey)
+    const session = await readSession(storedSessionId, activeKey)
 
     // Older backends can omit `profile`; this request targeted the active
     // profile, so back-fill that rather than caching an unowned row. A present
@@ -2267,7 +2272,7 @@ export async function probeStoredSession(
 
   for (const profile of otherProfiles) {
     try {
-      const session = await getSession(storedSessionId, profile)
+      const session = await readSession(storedSessionId, profile)
 
       // Same ownership contract: the DESKTOP profile we explicitly probed is
       // authoritative, whatever the scoped backend stamped (older backends

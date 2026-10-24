@@ -63,7 +63,18 @@ def _find_balanced_calls(text: str) -> list[tuple[str, str, int, int]]:
         j = brace_start
         while j < len(text):
             ch = text[j]
-            if ch == "{":
+            if ch in ('"', "'"):
+                # Skip quoted strings so braces inside them don't affect depth.
+                quote = ch
+                j += 1
+                while j < len(text):
+                    if text[j] == "\\" and j + 1 < len(text):
+                        j += 2
+                        continue
+                    if text[j] == quote:
+                        break
+                    j += 1
+            elif ch == "{":
                 depth += 1
             elif ch == "}":
                 depth -= 1
@@ -72,6 +83,10 @@ def _find_balanced_calls(text: str) -> list[tuple[str, str, int, int]]:
                     results.append((name, args_body, i + m.start(), j + 1))
                     break
             j += 1
+        if depth != 0:
+            # Unbalanced braces — skip this call entirely.
+            i = brace_start + 1
+            continue
         i = j + 1 if j < len(text) else len(text)
     return results
 

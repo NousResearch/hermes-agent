@@ -63,6 +63,22 @@ class TestFindBalancedCalls:
         calls = _find_balanced_calls("call:fn{a:{b:1}")
         assert calls == []
 
+    def test_quoted_closing_brace(self):
+        calls = _find_balanced_calls('call:execute_code{code:print("}")}')
+        assert len(calls) == 1
+        assert calls[0][0] == "execute_code"
+        assert calls[0][1] == 'code:print("}")'
+
+    def test_quoted_opening_brace(self):
+        calls = _find_balanced_calls("call:fn{code:print('{')}")
+        assert len(calls) == 1
+        assert calls[0][1] == "code:print('{')"
+
+    def test_escaped_quote_in_string(self):
+        calls = _find_balanced_calls(r'call:fn{code:print("he said \"}\"")}')
+        assert len(calls) == 1
+        assert "print" in calls[0][1]
+
 
 # ── Schema-aware splitting ───────────────────────────────────────
 
@@ -286,3 +302,24 @@ class TestExtractGemma4ToolCalls:
         args = json.loads(tcs[0].arguments)
         assert "import math" in args["code"]
         assert "math.pi" in args["code"]
+
+    def test_code_with_quoted_braces(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "execute_code",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"code": {"type": "string"}},
+                    },
+                },
+            }
+        ]
+        tcs, _ = extract_gemma4_tool_calls(
+            'call:execute_code{code:print("}")}',
+            agent_tools=tools,
+        )
+        assert len(tcs) == 1
+        args = json.loads(tcs[0].arguments)
+        assert 'print("}")' == args["code"]

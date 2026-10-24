@@ -9,7 +9,7 @@ import re
 import sys
 import threading
 from pathlib import Path, PurePath
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
 from hermes_constants import (
     get_config_path,
@@ -856,15 +856,30 @@ def is_skill_description_truncated_for_prompt(frontmatter: dict[str, Any]) -> bo
     return len(_normalize_skill_description(frontmatter)) > SKILL_PROMPT_DESC_LIMIT
 
 
-def iter_skill_index_files(skills_dir: Path, filename: str):
-    """Walk skills_dir yielding sorted paths matching *filename*; prunes
-    EXCLUDED_SKILL_DIRS and support dirs of skill roots."""
-    matches: list[str] = []
+def walk_skill_tree(skills_dir) -> Iterator[tuple[str, list[str], list[str]]]:
+    """``os.walk(skills_dir, followlinks=True)`` pruned the way every skill scanner needs.
+
+    Drops EXCLUDED_SKILL_DIRS and the support dirs of skill roots, and visits each real
+    directory once: a symlink back into the tree (``foo/foo -> foo``, an A<->B pair, two
+    agents' skill dirs linked into each other) otherwise re-lists the tree per loop level,
+    duplicating every skill up to the kernel's symlink limit and, with two such links,
+    never finishing.
+    """
+    visited: set[str] = set()
     for root, dirs, files in os.walk(str(skills_dir), followlinks=True):
+        real_root = os.path.realpath(root)
+        if real_root in visited:
+            dirs.clear()
+            continue
+        visited.add(real_root)
         has_skill_md = "SKILL.md" in files
         dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS and not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
-        if filename in files:
-            matches.append(os.path.join(root, filename))
+        yield root, dirs, files
+
+
+def iter_skill_index_files(skills_dir: Path, filename: str):
+    """Sorted paths matching *filename* under skills_dir (see :func:`walk_skill_tree`)."""
+    matches = [os.path.join(root, filename) for root, _dirs, files in walk_skill_tree(skills_dir) if filename in files]
     yield from map(Path, sorted(matches))
 
 

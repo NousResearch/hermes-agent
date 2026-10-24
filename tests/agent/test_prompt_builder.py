@@ -346,6 +346,43 @@ class TestBuildSkillsSystemPrompt:
         second = build_skills_system_prompt()
         assert "cached-skill" not in second
 
+    def test_symlink_back_into_skills_tree_is_scanned_once(self, monkeypatch, tmp_path):
+        """A link to an ancestor re-listed the whole tree once per loop level (two such
+        links never finished); the index walk and the snapshot manifest must both stop."""
+        import json
+
+        from agent.prompt_builder import _skills_prompt_snapshot_path, clear_skills_system_prompt_cache
+        from agent.skill_utils import iter_skill_index_files
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills = tmp_path / "skills"
+        (skills / "tools" / "search").mkdir(parents=True)
+        (skills / "tools" / "search" / "SKILL.md").write_text("---\nname: search\ndescription: Search stuff\n---\n", encoding="utf-8")
+        try:
+            (skills / "tools" / "up").symlink_to(skills, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"symlinks unavailable: {exc}")
+
+        assert list(iter_skill_index_files(skills, "SKILL.md")) == [skills / "tools" / "search" / "SKILL.md"]
+        cold = build_skills_system_prompt()
+        manifest = json.loads(_skills_prompt_snapshot_path().read_text(encoding="utf-8-sig"))["manifest"]
+        assert [key for key in manifest if key.endswith("SKILL.md")] == ["tools/search/SKILL.md"]
+        clear_skills_system_prompt_cache()  # keep the disk snapshot: exercise its manifest check
+        assert build_skills_system_prompt() == cold
+
+    def test_symlinked_skill_dir_outside_tree_is_still_indexed(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        checkout = tmp_path / "elsewhere" / "linked-skill"
+        checkout.mkdir(parents=True)
+        (checkout / "SKILL.md").write_text("---\nname: linked-skill\ndescription: Lives in a checkout\n---\n", encoding="utf-8")
+        (tmp_path / "skills" / "tools").mkdir(parents=True)
+        try:
+            (tmp_path / "skills" / "tools" / "linked-skill").symlink_to(checkout, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"symlinks unavailable: {exc}")
+
+        assert "Lives in a checkout" in build_skills_system_prompt()
+
 
 # =========================================================================
 # Context files prompt builder

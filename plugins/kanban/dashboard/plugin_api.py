@@ -21,7 +21,7 @@ from contextlib import closing, contextmanager
 from dataclasses import asdict
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable, Iterator, Literal, Optional
 
 from fastapi import (
     APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status as http_status)
@@ -34,6 +34,7 @@ from hermes_cli.web_read_coalescing import coalesced_read
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_db_dispatch as kbd
+from hermes_cli import kanban_db_episode as kbe
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_diagnostics as kd
 from hermes_cli.kanban_db import KANBAN_ATTACHMENT_MAX_BYTES, _collision_free_path, _safe_attachment_name
@@ -1048,6 +1049,59 @@ def reassign_task_endpoint(task_id: str, payload: ReassignBody, board: Optional[
                 f"cannot reassign {task_id}: unknown id, or still "
                 "running (pass reclaim_first=true to release the claim first)")
         return {"ok": True, "task_id": task_id, "assignee": payload.profile or None}
+
+
+# --- Governed WAIT_AND_RESUME episode actions (exact-episode park/unblock CAS) ---
+# Narrow, additive verbs for a governing control plane; PATCH /tasks/{id} and
+# bulk keep their human semantics and mint no episode token. The token is a
+# mutation precondition, never an authority: auth stays with the dashboard gate.
+
+class GovernedScheduleBody(BaseModel):
+    mode: Literal["PRE_LAUNCH", "MID_RUN"]
+    expected_run_id: Optional[int] = None  # required iff mode == MID_RUN
+    reason: Optional[str] = None
+
+
+class GovernedUnblockBody(BaseModel):
+    expected_episode_token: str
+
+
+# ``EpisodeConflict.code`` -> HTTP status; every refusal left the task untouched.
+_EPISODE_CONFLICT_STATUS = {"TASK_NOT_FOUND": 404, "TOKEN_MALFORMED": 422, "TOKEN_FOREIGN": 422}
+
+
+@contextmanager
+def _episode_errors() -> Iterator[None]:
+    """Map governed refusals to ``{"detail": {"code", "message", "current_status"}}``
+    (409 unless listed above) and request-shape ``ValueError`` to 422."""
+    try:
+        yield
+    except kbe.EpisodeConflict as e:
+        raise HTTPException(
+            status_code=_EPISODE_CONFLICT_STATUS.get(e.code, 409),
+            detail={"code": e.code, "message": str(e), "current_status": e.current_status})
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail={"code": "INVALID_REQUEST", "message": str(e)})
+
+
+@router.post("/tasks/{task_id}/schedule")
+def governed_schedule_endpoint(task_id: str, payload: GovernedScheduleBody, board: Optional[str] = Query(None)):
+    """Governed park into ``scheduled``: PRE_LAUNCH (idle task) or MID_RUN (exact
+    ``expected_run_id``). Returns the episode token only after the park committed."""
+    with _board_conn(board) as (board, conn), _episode_errors():
+        token = kbe.schedule_task_governed(
+            conn, task_id, mode=payload.mode, expected_run_id=payload.expected_run_id, reason=payload.reason)
+    return {"ok": True, "task_id": task_id, "status": "scheduled", "episode_token": token}
+
+
+@router.post("/tasks/{task_id}/unblock")
+def governed_unblock_endpoint(task_id: str, payload: GovernedUnblockBody, board: Optional[str] = Query(None)):
+    """Exact-episode unblock: resumes the task only while ``expected_episode_token``
+    is its current wait episode (409 ``EPISODE_STALE`` otherwise, nothing changed)."""
+    with _board_conn(board) as (board, conn), _episode_errors():
+        new_status = kbe.unblock_task_governed(
+            conn, task_id, expected_episode_token=payload.expected_episode_token)
+    return {"ok": True, "task_id": task_id, "status": new_status}
 
 
 # Estimate: rough token/complexity read via the auxiliary model. NOT a dollar cost.

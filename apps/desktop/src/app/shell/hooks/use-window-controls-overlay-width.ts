@@ -22,7 +22,7 @@ export interface WindowControlsOverlayLike {
   removeEventListener: (type: 'geometrychange', cb: () => void) => void
 }
 
-const overlay = () =>
+export const windowControlsOverlay = () =>
   (navigator as Navigator & { windowControlsOverlay?: WindowControlsOverlayLike }).windowControlsOverlay ?? null
 
 export interface OverlayInsets {
@@ -52,10 +52,10 @@ const sameInsets = (a: OverlayInsets | null, b: OverlayInsets | null) => a?.left
  * fallback).
  */
 export function useWindowControlsOverlayInsets(): OverlayInsets | null {
-  const [insets, setInsets] = useState<OverlayInsets | null>(() => measureOverlayInsets(overlay(), window.innerWidth))
+  const [insets, setInsets] = useState<OverlayInsets | null>(() => measureOverlayInsets(windowControlsOverlay(), window.innerWidth))
 
   useEffect(() => {
-    const wco = overlay()
+    const wco = windowControlsOverlay()
 
     if (!wco) {
       return

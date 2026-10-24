@@ -1,4 +1,5 @@
-"""A completion for a local session no viewer is watching is written into it as a note (#134889 LC-7).
+"""A completion for a local session no viewer is watching, or one a later queued completion will answer,
+is written into it as a note (#134889 LC-7).
 
 Main's CLI and TUI hosted async delegations and background processes in their own process, so once
 the user left nothing started a turn for them. Under the gateway the owner outlives its viewers. The
@@ -8,8 +9,11 @@ it (``completion_admission``), results already admitted are left out of a new ba
 outcome, note or turn, covers the whole batch. When that admission comes up for execution with no
 viewer attached (the authority's own subscriber records) the executor records it in the session's
 history, where the next turn sees it, and settles the admission without a model call. Queue order, restart survival and
-exactly-once are the admission contract's. With a viewer attached it runs as the turn it always was;
-messaging, cron, Kanban, ``/loop`` and heartbeat wakes never reach here.
+exactly-once are the admission contract's. With a viewer attached it runs as the turn it always was,
+unless the next queued admission is a completion too: results that finished while a turn ran each
+hold their own admission, and running each as a turn replays the backlog one turn per result. Every
+completion of such a run but the last is a note, and the last runs the one turn with them in its
+history. Messaging, cron, Kanban, ``/loop`` and heartbeat wakes never reach here.
 """
 import json
 from functools import partial
@@ -32,15 +36,33 @@ def noted_completion(row):
     return descriptor is not None and _producer(descriptor['identity']) in _NOTED_PRODUCERS
 
 
+def _completion_follows(authority, ref, row):
+    """The next queued admission after the claimed *row* is a completion its own claim will admit: it
+    carries the run's turn. A successor the preclaim check refuses pauses the FIFO, so it never does."""
+    from gateway.session_automation import check_local_automation
+    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+    later = (r for r in list_session_admissions(authority.db, session_id=ref.session_id)
+             if r['status'] == 'queued' and r['seq'] > row['seq'])
+    successor = next(later, None)
+    if not noted_completion(successor):
+        return False
+    try:
+        check_local_automation(authority, ref, successor)
+    except RuntimeStoreError:
+        return False
+    return True
+
+
 async def note_if_unviewed(authority, ref, row):
-    """The claimed *row*'s response when it was written as a note instead of running, else None.
+    """The claimed *row*'s response when it was written as a note instead of running, else None: with
+    no viewer attached, or with a viewer when the next queued admission is a completion that runs the turn.
     It is the FIFO head, so the note lands after every input committed before it and before every
     input committed after; the viewer check and the decision share one loop step."""
     if not noted_completion(row):
         return None
     from gateway.session_runtime_workers import tracked_write
     live = authority.sessions.get(ref.session_id)
-    if live is None or live.subscribers:
+    if live is None or (live.subscribers and not _completion_follows(authority, ref, row)):
         # The claim left a closed row closed for a note; the turn reopens it as any first turn does.
         from gateway.session_local_recovery import reopen_local_session
         await tracked_write(authority, partial(reopen_local_session, authority, ref))

@@ -89,9 +89,19 @@ async def redeliver_claimed(runner, claimed):
                     profile_from_session_key(row["session_key"]) or "default"
                 )
             try:
-                result = await transport.send(
-                    Platform(row["platform"]), row["chat_id"], content, metadata or None
-                )
+                if transport.is_relay:
+                    result = await transport.send(
+                        Platform(row["platform"]),
+                        row["chat_id"],
+                        content,
+                        metadata or None,
+                    )
+                else:
+                    result = await transport.adapter.send(
+                        chat_id=row["chat_id"],
+                        content=content,
+                        metadata=metadata or None,
+                    )
             except Exception as error:
                 logger.warning(
                     "obligation %s: redelivery send raised: %s",

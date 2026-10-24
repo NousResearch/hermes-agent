@@ -60,7 +60,7 @@ class DeliveryTransport:
                    metadata: Optional[dict[str, Any]]) -> Any:
         """Send through this transport while preserving the logical platform."""
         return await (self.adapter.send_for_platform(logical_platform, chat_id, content, metadata=metadata)
-                      if self.is_relay else self.adapter.send(chat_id=chat_id, content=content, metadata=metadata))
+                      if self.is_relay else self.adapter.send(chat_id, content, metadata=metadata))
 
 
 def resolve_delivery_transport(platform: Platform, config: GatewayConfig,

@@ -11,6 +11,17 @@ _DONE = ("completed", "success")
 _REASON_STATUS = {"lost": "marked lost because the process backend disappeared", "failed_start": "failed to start"}
 
 
+def format_uptime_short(seconds: int) -> str:
+    s = max(0, int(seconds))
+    if s < 60:
+        return f"{s}s"
+    mins, secs = divmod(s, 60)
+    if mins < 60:
+        return f"{mins}m {secs}s"
+    hours, mins = divmod(mins, 60)
+    return f"{hours}h {mins}m"
+
+
 @dataclass(frozen=True, slots=True)
 class ProcessNotificationBatch:
     """Keep completion identity until the owning surface starts its turn."""

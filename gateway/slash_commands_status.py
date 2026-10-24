@@ -430,7 +430,8 @@ class GatewayStatusCommandsMixin:
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""
         from gateway.run import _AGENT_PENDING_SENTINEL
-        from tools.process_registry import format_uptime_short, process_registry
+        from tools.process_registry import process_registry
+        from tools.process_registry_notifications import format_uptime_short
         now = time.time()
         current_session_key = self._session_key_for_source(event.source)
         running_started: dict = getattr(self, "_running_agents_ts", {}) or {}

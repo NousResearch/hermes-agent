@@ -20,6 +20,7 @@ def inputs_fixture(tmp_path):
     (source / "pyproject.toml").write_text(
         '[project]\nname="assembly-fixture"\nversion="1.2.3"\n'
         '[project.scripts]\nprobe="entry:main"\n', encoding="utf-8")
+    (source / "uv.lock").write_text("version = 1\n", encoding="utf-8")
     (source / "entry.py").write_text(
         "import json, os, sys\nfrom pathlib import Path\nimport dependency\n"
         "from importlib.metadata import version\n"
@@ -124,6 +125,7 @@ def test_referenced_installed_code_uses_derived_command_map_without_copying(tmp_
     assert Path(mapping["env"]["HERMES_TUI_DIR"]).resolve() == Path(data["frontends"]["tui"])
     assert Path(mapping["env"]["HERMES_WEB_DIST"]).resolve() == Path(data["frontends"]["web"])
     assert mapping["env"]["HERMES_INSTALL_ROOT"] == str(out / "share/hermes-agent")
+    assert (out / "share/hermes-agent/uv.lock").read_text(encoding="utf-8") == "version = 1\n"
     assert not list(out.rglob("entry.py"))
     assert (out / "share/hermes-agent/skills").is_symlink()
     assert (out / "ui-tui").is_symlink()

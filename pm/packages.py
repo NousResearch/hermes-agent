@@ -401,9 +401,9 @@ class Venv(StatePackage):
         self._project_root = project_root
 
     def project_root(self) -> Path:
-        from pm.paths import repo_root
+        from pm.paths import install_root
 
-        return repo_root() if self._project_root is None else self._project_root
+        return install_root() if self._project_root is None else self._project_root
 
     def venv_dir(self) -> Path:
         from pm.environments import selected_venv

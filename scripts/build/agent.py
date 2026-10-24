@@ -86,6 +86,8 @@ def assemble(inputs: AgentInputs, out: Path) -> dict:
     repo = out / inputs.repo
     referenced = inputs.placement == "references"
     repo.mkdir(parents=True, exist_ok=True)
+    if referenced:
+        _copy(inputs.project.with_name("uv.lock"), repo / "uv.lock")
     if not referenced:
         if inputs.code.resolve() != repo.resolve():
             if repo == out:

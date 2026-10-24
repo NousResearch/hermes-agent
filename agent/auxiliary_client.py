@@ -945,18 +945,10 @@ _AI_GATEWAY_HEADERS = {
     "User-Agent": f"HermesAgent/{get_version_info().base_version}",
 }
 
-# Nous Portal attribution extra_body. Tags come from agent.portal_tags so the client= marker
-# tracks the canonical base version — never inline a literal here.
+# Nous Portal attribution tags, built per call. They come from agent.portal_tags so the client=
+# marker tracks the canonical base version — never inline a literal here.
 from agent.portal_tags import nous_portal_tags as _nous_portal_tags
 
-
-def _nous_extra_body() -> dict:
-    """Fresh Nous Portal ``extra_body`` (per call, so a hot-reloaded version is reflected)."""
-    return {"tags": _nous_portal_tags()}
-
-
-# Set at resolve time — True if the auxiliary client points to Nous Portal
-auxiliary_is_nous: bool = False
 
 # _OPENROUTER_MODEL MUST stay a :free SKU (matching the free_only warning): this lane engages
 # silently, and a paid default meant spend the user never opted into. User-configured values
@@ -2403,12 +2395,9 @@ def _try_nous(vision: bool = False) -> tuple[Optional[OpenAI], Optional[str]]:
     # Vision rides the same id (the backing model is multimodal; a backing that is not answers
     # the request with the upstream's own error, which the ladder handles like any other).
     from hermes_cli.anon_auth import GUEST_MODEL, route_is_welcome_host
-    global auxiliary_is_nous
     if route_is_welcome_host(base_url):
-        auxiliary_is_nous = True
         logger.debug("Auxiliary/%s: Nous free tier; using %s", lane, GUEST_MODEL)
         return _create_openai_client(api_key=api_key, base_url=base_url), GUEST_MODEL
-    auxiliary_is_nous = True
     logger.debug("Auxiliary client: Nous Portal")
     # Portal recommended-models is authoritative (tier-aware); _NOUS_MODEL when unreachable/null.
     # Probes skip the lookup: exact model is irrelevant and it hits the network.
@@ -2532,14 +2521,7 @@ def _read_main_api_key_if_same_origin(aux_base_url: str) -> str | Callable[[], s
     return _read_main_api_key()
 
 
-# Compatibility mirrors for older readers/tests; the ContextVar below is
-# authoritative (overlapping gateway sessions make a process-global unsafe).
-_RUNTIME_MAIN_PROVIDER: str = ""
-_RUNTIME_MAIN_MODEL: str = ""
-_RUNTIME_MAIN_BASE_URL: str = ""
-_RUNTIME_MAIN_API_KEY: Any = ""
-_RUNTIME_MAIN_API_MODE: str = ""
-_RUNTIME_MAIN_AUTH_MODE: str = ""
+# The live main runtime, per context: overlapping gateway sessions make a process-global unsafe.
 _RUNTIME_MAIN_CONTEXT: contextvars.ContextVar[Optional[dict[str, Any]]] = (
     contextvars.ContextVar("auxiliary_runtime_main", default=None)
 )
@@ -2722,40 +2704,9 @@ def _relay_sync_stream(
     )
 
 
-_RUNTIME_MAIN_COMPAT_SNAPSHOT: tuple[Any, ...] = ("", "", "", "", "", "")
-_RUNTIME_MAIN_COMPAT_LOCK = threading.Lock()
-
-
-def _publish_runtime_main_mirrors(values: tuple[Any, ...]) -> None:
-    """Write the legacy globals + compat snapshot (``_MAIN_RUNTIME_FIELDS`` order) under the lock."""
-    global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL, _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY
-    global _RUNTIME_MAIN_API_MODE, _RUNTIME_MAIN_AUTH_MODE, _RUNTIME_MAIN_COMPAT_SNAPSHOT
-    with _RUNTIME_MAIN_COMPAT_LOCK:
-        (_RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL, _RUNTIME_MAIN_BASE_URL,
-         _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE, _RUNTIME_MAIN_AUTH_MODE) = values
-        _RUNTIME_MAIN_COMPAT_SNAPSHOT = tuple(values)
-
-
-def _compat_runtime_main() -> Optional[dict[str, Any]]:
-    """Expose deliberately patched legacy globals as a main context.
-
-    Mirrors must never become runtime inputs: a direct patch counts only when it differs from
-    the mirrored snapshot and only on the main thread.
-    """
-    if threading.current_thread() is not threading.main_thread():
-        return None
-    values = (_RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL, _RUNTIME_MAIN_BASE_URL,
-              _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE, _RUNTIME_MAIN_AUTH_MODE)
-    if values == _RUNTIME_MAIN_COMPAT_SNAPSHOT:
-        return None
-    return dict(zip(_MAIN_RUNTIME_FIELDS, values))
-
-
 def _runtime_main_value(field: str) -> Any:
-    """Read one runtime field through context-local/controlled legacy state."""
+    """Read one field of the current context's main runtime ("" when unbound)."""
     runtime = _RUNTIME_MAIN_CONTEXT.get()
-    if runtime is None:
-        runtime = _compat_runtime_main()
     return (runtime.get(field) or "") if isinstance(runtime, dict) else ""
 
 
@@ -2766,9 +2717,7 @@ def set_runtime_main(
 ) -> contextvars.Token:
     """Record the current context's live main runtime for auxiliary routing.
 
-    Context-local so concurrent gateway sessions don't clobber each other; legacy mirrors are
-    updated for old readers. ``cache_scope`` is the rotation-stable logical cache scope,
-    preferred over ``session_id`` for prompt_cache_key derivation.
+    Context-local so concurrent gateway sessions don't clobber each other.
 
     ``cache_scope`` is the rotation-stable logical cache scope (compression- lineage root —
     agent/prompt_cache_scope.py) resolved once per turn by turn_context; auxiliary Responses calls prefer it
@@ -2785,10 +2734,7 @@ def set_runtime_main(
         "session_id": (session_id or "").strip(),
         "cache_scope": (cache_scope or "").strip(),
     }
-    # Publish authoritative context before updating the locked mirrors.
-    token = _RUNTIME_MAIN_CONTEXT.set(runtime)
-    _publish_runtime_main_mirrors(tuple(runtime[field] for field in _MAIN_RUNTIME_FIELDS))
-    return token
+    return _RUNTIME_MAIN_CONTEXT.set(runtime)
 
 
 def reset_runtime_main(token: contextvars.Token) -> None:
@@ -2803,7 +2749,7 @@ def reset_runtime_main(token: contextvars.Token) -> None:
 
 @contextlib.contextmanager
 def scoped_runtime_main(main_runtime: Optional[dict[str, Any]]):
-    """Temporarily bind an explicit runtime without touching legacy mirrors."""
+    """Temporarily bind an explicit runtime for the current context."""
     runtime = _normalize_main_runtime(main_runtime)
     token = _RUNTIME_MAIN_CONTEXT.set(runtime or None)
     try:
@@ -2815,7 +2761,6 @@ def scoped_runtime_main(main_runtime: Optional[dict[str, Any]]):
 def clear_runtime_main() -> None:
     """Clear the runtime override in the current context."""
     _RUNTIME_MAIN_CONTEXT.set(None)
-    _publish_runtime_main_mirrors(("", "", "", "", "", ""))
 
 
 def _resolve_custom_runtime() -> tuple[Optional[str], Optional[str], Optional[str]]:
@@ -3115,10 +3060,7 @@ def _normalize_main_runtime(main_runtime: Optional[dict[str, Any]]) -> dict[str,
     — preserved as-is so aux clients share main-agent auth.
     """
     if main_runtime is None:
-        # Context-local state first; compat mirrors may hold another concurrent session's endpoint/key.
         main_runtime = _RUNTIME_MAIN_CONTEXT.get()
-        if main_runtime is None:
-            main_runtime = _compat_runtime_main()
     if not isinstance(main_runtime, dict):
         return {}
     normalized: dict[str, Any] = {}
@@ -4671,8 +4613,6 @@ def _resolve_auto_route(
     per-task overrides still win); (2) configured fallback policy — task chain, then the main agent's
     top-level chain; (3) OpenRouter → Nous → custom → Codex → API-key providers, only with no policy
     and no working main client."""
-    global auxiliary_is_nous
-    auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
     runtime = _normalize_main_runtime(main_runtime)
     _warn_stale_openai_base_url(runtime.get("provider", ""))
     main_provider, main_model, base_url, api_key, api_mode = _main_route_target(runtime, task)
@@ -5720,11 +5660,6 @@ def resolve_vision_provider_client(
         raw_requested, resolved_model, async_mode, api_mode=resolved_api_mode, main_runtime=runtime, is_vision=True,
     )
     return requested, client, (final_model if client is not None else None)
-
-
-def get_auxiliary_extra_body() -> dict:
-    """Return extra_body kwargs (Nous Portal product tags when Nous-backed, else {})."""
-    return _nous_extra_body() if auxiliary_is_nous else {}
 
 
 def auxiliary_max_tokens_param(value: int, *, model: Optional[str] = None) -> dict:

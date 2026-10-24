@@ -482,15 +482,11 @@ class TestResolveVisionCustomProvider:
     ``set_runtime_main()`` recorded for the turn.
     """
 
-    def test_custom_main_forwards_runtime_endpoint(self, monkeypatch):
+    def test_custom_main_forwards_runtime_endpoint(self):
         """custom main with recorded runtime endpoint → Step 1 builds a client."""
         import agent.auxiliary_client as aux
 
-        monkeypatch.setattr(aux, "_RUNTIME_MAIN_BASE_URL", "https://my.endpoint.example/v1")
-        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_KEY", "sk-runtime-key")
-        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_MODE", "anthropic_messages")
-
-        with patch(
+        with aux.scoped_runtime_main({"base_url": "https://my.endpoint.example/v1", "api_key": "sk-runtime-key", "api_mode": "anthropic_messages"}), patch(
             "agent.auxiliary_client._read_main_provider", return_value="custom",
         ), patch(
             "agent.auxiliary_client._read_main_model", return_value="claude-opus-4-8",
@@ -517,15 +513,11 @@ class TestResolveVisionCustomProvider:
         assert kwargs.get("explicit_api_key") == "sk-runtime-key"
         assert kwargs.get("is_vision") is True
 
-    def test_custom_prefixed_main_forwards_runtime_endpoint(self, monkeypatch):
+    def test_custom_prefixed_main_forwards_runtime_endpoint(self):
         """A ``custom:<name>`` provider id also forwards the runtime endpoint."""
         import agent.auxiliary_client as aux
 
-        monkeypatch.setattr(aux, "_RUNTIME_MAIN_BASE_URL", "https://named.example/v1")
-        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_KEY", "sk-named")
-        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_MODE", "")
-
-        with patch(
+        with aux.scoped_runtime_main({"base_url": "https://named.example/v1", "api_key": "sk-named"}), patch(
             "agent.auxiliary_client._read_main_provider",
             return_value="custom:copilot-gateway",
         ), patch(
@@ -550,15 +542,11 @@ class TestResolveVisionCustomProvider:
         assert kwargs.get("explicit_api_key") == "sk-named"
         assert kwargs.get("is_vision") is True
 
-    def test_custom_main_no_runtime_falls_back_to_configured_endpoint(self, monkeypatch):
+    def test_custom_main_no_runtime_falls_back_to_configured_endpoint(self):
         """No recorded runtime endpoint → resolve the configured custom endpoint."""
         import agent.auxiliary_client as aux
 
-        monkeypatch.setattr(aux, "_RUNTIME_MAIN_BASE_URL", "")
-        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_KEY", "")
-        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_MODE", "")
-
-        with patch(
+        with aux.scoped_runtime_main({}), patch(
             "agent.auxiliary_client._read_main_provider", return_value="custom",
         ), patch(
             "agent.auxiliary_client._read_main_model", return_value="claude-opus-4-8",

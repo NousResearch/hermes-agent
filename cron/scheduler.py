@@ -1,4 +1,4 @@
-# health: allow FILE_LINES -- security fix for #82010: distinguish an explicitly-empty toolset allowlist (fail closed, nothing allowed) from an absent one (no restriction); the added lines are minimal fail-closed branches at this existing chokepoint
+# health: allow FILE_LINES -- security fix for #82010: distinguish an explicitly-empty toolset allowlist (fail closed, nothing allowed) from an absent one (no restriction); the added lines are minimal fail-closed branches at this existing chokepoint. Also #141468: match the `mcp-<server>` toolset spelling so a narrow job's MCP allowlist is not widened into every enabled server — a minimal branch at the same chokepoint.
 """Cron job scheduler: tick() runs due jobs (gateway calls it every 60s from a background thread).
 A file lock (~/.hermes/cron/.tick.lock) keeps overlapping processes to one tick at a time.
 """
@@ -445,7 +445,15 @@ def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]
     # lazy: avoid heavy hermes_cli import at module load; shares MCP-membership with gateway/CLI
     from hermes_cli.tools_config import enabled_mcp_server_names
     enabled_mcp = enabled_mcp_server_names(cfg)
-    if set(result) & enabled_mcp:
+    # A job names an MCP server by its TOOLSET name (``mcp-<server>``) or by the bare alias the
+    # registry registers for it; compare against BOTH, or a job that named one server never matched
+    # and the fallback below unioned EVERY enabled server into its allowlist (#141468).
+    # A server that is CONFIGURED but disabled still counts as named: it is the user's selection, it
+    # stays off, and it must not fall through to every enabled server either - the same rule the
+    # interactive resolver follows (hermes_cli.tools_config._merge_mcp_servers).
+    configured = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
+    known = enabled_mcp | {str(name) for name in configured}
+    if set(result) & (known | {f"mcp-{name}" for name in known}):
         return result
     for name in sorted(enabled_mcp):
         if name not in result:

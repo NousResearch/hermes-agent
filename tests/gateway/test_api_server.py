@@ -862,6 +862,52 @@ class TestHealthDetailedEndpoint:
 
 
     @pytest.mark.asyncio
+    async def test_health_detailed_drops_rows_from_a_dead_writer(self, adapter):
+        """Regression (#142482): startup deliberately preserves plain platform entries across
+        restarts, so gateway_state.json can carry a retired platform's "connected" row stamped
+        by the previous (dead) writer. /health/detailed must not project that row as a live
+        platform. Rows stamped by this process still project, as do legacy rows with no
+        writer identity at all (pre-stamp files)."""
+        import gateway.status as gateway_status
+        adapter._running = True
+        with patch.object(adapter, "_write_runtime_status_safe"):
+            adapter._record_api_metrics({"total_tokens": 9}, 0.02)
+        identity = gateway_status._build_pid_record()
+        app = _create_app(adapter)
+        with patch("gateway.status.read_runtime_status", return_value={
+            "gateway_state": "running",
+            "platforms": {
+                "telegram": {"state": "connected",
+                             "writer_pid": identity["pid"],
+                             "writer_start_time": identity["start_time"]},
+                "weixin": {"state": "connected",
+                           "writer_pid": 999999, "writer_start_time": 1},
+                "legacy": {"state": "connected"},
+            },
+            "active_agents": 0,
+            "exit_reason": None,
+            "updated_at": "2026-04-14T00:00:00Z",
+        }), patch("gateway.run._resolve_gateway_model", return_value="test/model"), patch(
+            "gateway.readiness.shutil.disk_usage",
+            return_value=types.SimpleNamespace(total=100, used=25, free=75),
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/health/detailed")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["platforms"]["telegram"]["state"] == "connected"
+                assert data["platforms"]["legacy"]["state"] == "connected"
+                assert "weixin" not in data["platforms"]
+                assert "api_server" in data["platforms"]
+                # The readiness block is a SECOND projection of the same file: it counts
+                # connected rows from the map it is handed. If the dead writer's row is
+                # dropped from `platforms` but still handed to the readiness collector, the
+                # response describes two different files (telegram + legacy + weixin = 3 here).
+                gateway_check = data["readiness"]["checks"]["gateway"]
+                assert gateway_check["platforms"] == 2
+                assert gateway_check["connected_platforms"] == 2
+
+    @pytest.mark.asyncio
     async def test_public_health_does_not_run_readiness_probes(self, adapter):
         app = _create_app(adapter)
         with patch("gateway.platforms.api_server.collect_runtime_readiness") as probe:

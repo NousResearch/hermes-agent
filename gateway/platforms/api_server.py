@@ -2285,8 +2285,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     async def _handle_health_detailed(self, request: web.Request) -> web.Response:
         """GET /health/detailed — gateway state, platforms, PID for dashboard probing (Bearer auth)."""
         from gateway.status import (
-            derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
-            read_runtime_status)
+            _build_pid_record, derive_gateway_busy, derive_gateway_drainable, normalize_updated_at,
+            parse_active_agents, read_runtime_status)
         runtime = read_runtime_status() or {}
         gw_state = runtime.get("gateway_state")
         gw_active = parse_active_agents(runtime.get("active_agents", 0))
@@ -2296,7 +2296,18 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         platforms = runtime.get("platforms", {})
         if not isinstance(platforms, dict):
             platforms = {}
-        platforms = dict(platforms)
+        # Startup preserves plain entries across restarts by design, so the raw map can still
+        # carry a retired platform's "connected" row stamped by the previous, now-dead writer
+        # (#142482). Drop rows another process wrote — the same exact (pid, start_time)
+        # ownership check the /api/status aggregation applies — before projecting them for
+        # dashboards; legacy rows without writer identity predate the stamps and stay projected.
+        identity = _build_pid_record()
+        owned = {
+            key: value for key, value in platforms.items()
+            if not isinstance(value, dict) or value.get("writer_pid") is None
+            or (value.get("writer_pid") == identity["pid"]
+                and value.get("writer_start_time") == identity["start_time"])}
+        platforms = dict(owned)
         api_status = self._api_server_status_payload(heartbeat_at=time.time())
         api_platform = dict(platforms.get("api_server", {}))
         api_platform.setdefault("state", "connected" if self.is_connected else "disconnected")
@@ -2306,8 +2317,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # drainable use the same shared contract as /api/status so the two never disagree.
         active_api_runs, process_depth, active_delegations = self._readiness_work_counts()
         from gateway.run import _resolve_gateway_model
+        # Readiness is the SECOND projection of the same file: it derives its platform counts by
+        # iterating the map it is handed. Handing it the raw runtime dict would keep counting the
+        # row just dropped above, so the body's `platforms` map and its `readiness` counts would
+        # describe different files (#142482, one field over). `owned` (not `platforms`) so the
+        # counts keep describing persisted rows and the injected api_server overlay is not
+        # double-counted.
         readiness = collect_runtime_readiness(
-            configured_model=_resolve_gateway_model(), runtime_status=runtime,
+            configured_model=_resolve_gateway_model(),
+            runtime_status={**runtime, "platforms": owned},
             active_api_runs=active_api_runs, process_completion_queue_depth=process_depth,
             active_delegations=active_delegations)
         return web.json_response({

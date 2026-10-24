@@ -32,12 +32,15 @@ _PROPERTIES: dict[str, Any] = {
             "list_apps",
             "list_windows",
             "focus_app",
+            "run_steps",
         ],
         "description": (
             "Which action to perform. `capture` is free (no side effects). All other actions "
             "require approval unless auto-approved. Use `set_value` for select/popup elements and "
             "sliders — it selects the matching option directly without opening the native menu (no "
-            "focus steal)."
+            "focus steal). Use `run_steps` to send an ordered BATCH of actions in ONE call; "
+            "separate calls do not provide batch-level validation or one end-of-batch observation. "
+            "Parallel tool calls have no guaranteed input order."
         ),
     },
     "mode": {
@@ -181,6 +184,47 @@ _PROPERTIES: dict[str, Any] = {
         "description": (
             "If true, take a follow-up capture after the action and include it in the response. "
             "Saves a round-trip when you need to verify an action's effect."
+        ),
+    },
+    "steps": {
+        "type": "array",
+        "items": {"type": "object"},
+        "maxItems": 64,
+        "description": (
+            "For action='run_steps': the ordered actions to run. Each step is "
+            "{'tool': <click|double_click|right_click|set_value|type_text|press_key|hotkey|scroll|drag|move_cursor>, "
+            "'args': {...}} — or the short form {'<tool>': {...}}. 'args' are exactly that tool's "
+            "arguments; a step may instead name its target with role/name/nth/app/window instead of "
+            "pid/window_id/element_token. A step may add 'wait_for' (must hold before the action) "
+            "and/or 'expect' (checks that must hold after it). Steps run IN ORDER and stop at the "
+            "first failure; all steps are validated before the first one runs, so a malformed step "
+            "changes nothing. The 'key' alias supports key combo spellings; 'type' accepts text= or "
+            "value=; 'middle_click' maps to a middle-button click. Capture a target window (or use "
+            "focus_app) before the batch; role/name steps need a window to address. Use this for "
+            "ordered multi-step sequences. "
+            "press_key takes a KEY NAME, and cua-driver's key vocabulary is narrow: letters, digits, "
+            "and named keys like 'return', 'enter', 'escape', 'space', 'tab', 'delete', '=', '-' work. "
+            "Arithmetic/operator names do NOT: 'plus'/'+'/'percent' are silently re-routed to "
+            "type_text (one CGEvent character, unverified), and 'add'/'equals'/'multiply'/'subtract'/"
+            "'divide' fail with 'Unknown key'. Click an app's operator button by role/name instead "
+            "(e.g. {'tool':'click','args':{'role':'AXButton','name':'加'}})."
+        ),
+    },
+    "observe": {
+        "type": "object",
+        "description": (
+            "For action='run_steps': optional end-of-batch observation — arguments for ONE "
+            "get_window_state read after the last step. Pass include_screenshot=true to see the "
+            "window. Defaults to a since='latest' diff of what changed."
+        ),
+    },
+    "delay_ms": {
+        "type": "integer",
+        "maximum": 2000,
+        "minimum": 0,
+        "description": (
+            "For action='run_steps': pause between steps in milliseconds (not after the last). "
+            "Default 0. Use a small delay (e.g. 50) when a target needs a moment to settle."
         ),
     },
 }

@@ -169,3 +169,144 @@ class _InputMixin:
         if element is None:
             return _refuse("set_value", "set_value requires element= (element index).")
         return self._action("set_value", {**args, "element_index": element, "value": value})
+
+    # ── Batch (run_steps) ───────────────────────────────────────────────────
+    # Hermes exposes the driver's native run_steps tool so an ordered sequence of actions runs in ONE
+    # driver call. Separate calls are not a batch: they have no shared up-front validation or single
+    # end-of-batch observation, and parallel tool calls do not promise an input order. A wrong result
+    # alone does not identify which layer omitted or changed a step. The driver validates every step
+    # before running the first one, so a malformed step changes nothing.
+    _RUN_STEP_TOOLS = ("click", "double_click", "right_click", "set_value", "type_text", "press_key",
+                       "hotkey", "scroll", "drag", "move_cursor")
+    # Hermes-level action names the model naturally reaches for, mapped onto the driver's tool names.
+    # `key` and `type` are Hermes spellings; the driver splits press_key (one key) from hotkey (modifiers)
+    # and calls typed text `type_text`. `middle_click` is a `click` with button=middle.
+    _RUN_STEP_ALIASES = {"key": "press_key", "type": "type_text", "middle_click": "click"}
+
+    def _run_step_args(self, step: dict[str, Any]) -> tuple[Optional[str], dict[str, Any]]:
+        """Translate one Hermes step into a driver step: ``(tool, args)``.
+
+        A step is ``{"tool": t, "args": {...}}`` or the short form ``{"<tool>": {...}}``. Hermes-level
+        argument names are mapped onto the driver's own schema: ``element`` (index) becomes
+        ``element_token`` on a strict token-only driver, ``keys``/``key`` become ``press_key``/``hotkey``,
+        and coordinates become ``x``/``y``.
+        """
+        if not isinstance(step, dict):
+            return None, {}
+        accepted = self._RUN_STEP_TOOLS + tuple(self._RUN_STEP_ALIASES)
+        if "tool" in step:
+            tool = step.get("tool")
+            raw = step.get("args") or {}
+        else:
+            named = [k for k in step if k in accepted]
+            if len(named) != 1:
+                return None, {}
+            tool = named[0]
+            raw = step.get(tool) or {}
+        if not isinstance(tool, str) or not isinstance(raw, dict):
+            return None, {}
+        requested_tool = tool
+        tool = self._RUN_STEP_ALIASES.get(tool, tool)
+        if tool not in self._RUN_STEP_TOOLS:
+            return None, {}
+        args = dict(raw)
+        if requested_tool == "middle_click":
+            args.setdefault("button", "middle")
+        # Hermes `element` is a 1-based SOM index; the driver wants the token from the latest capture.
+        idx = args.pop("element", None)
+        if isinstance(idx, int):
+            token = self._snapshot_tokens.get(idx)
+            if token and self._session.supports_input_property(tool, "element_token"):
+                args["element_token"] = token
+            elif not self._session.supports_input_property(tool, "element_token"):
+                args["element_index"] = idx
+            else:
+                return None, {}
+        # Hermes spells the combo `keys="cmd+s"`; the driver splits press_key (one key) from hotkey (modifiers).
+        combo = args.pop("keys", None)
+        if isinstance(combo, str):
+            key_name, modifiers = _parse_key_combo(combo)
+            if not key_name:
+                return None, {}
+            if modifiers:
+                tool = "hotkey"
+                args["keys"] = modifiers + [key_name]
+            else:
+                tool = "press_key"
+                args["key"] = key_name
+        elif isinstance(combo, list):
+            tool = "hotkey"
+            args["keys"] = combo
+        elif isinstance(args.get("key"), str) and isinstance(args.get("modifiers"), list) and args["modifiers"]:
+            tool = "hotkey"
+            args["keys"] = [*args.pop("modifiers"), args.pop("key")]
+        # Hermes `text` is the driver's `type_text` argument; `type` is not a driver tool name.
+        if tool == "type_text" and "text" not in args and "value" in args:
+            args["text"] = args.pop("value")
+        if tool == "type_text" and "text" not in args and isinstance(args.get("keys"), str):
+            args["text"] = args.pop("keys")
+        # Hermes `middle_click` is a `click` carrying button=middle.
+        if tool == "click" and "button" not in args and raw.get("button") == "middle":
+            args["button"] = "middle"
+        # Hermes coordinate pair -> driver x/y.
+        coord = args.pop("coordinate", None)
+        if isinstance(coord, (list, tuple)) and len(coord) == 2 and "x" not in args:
+            args["x"], args["y"] = coord[0], coord[1]
+        # A step must not carry the batch's own session/pid/window; the driver inherits them.
+        for k in ("session", "pid", "window_id"):
+            args.pop(k, None)
+        return tool, args
+
+    def run_steps(self, steps: list[Any], *, observe: Optional[dict[str, Any]] = None,
+                  delay_ms: Optional[int] = None, delivery_mode: Optional[str] = None,
+                  foreground_fallback: bool = False) -> ActionResult:
+        """Run an ordered batch of actions in one driver call (the driver's native ``run_steps`` tool).
+
+        Older drivers without the tool refuse with ``run_steps_unsupported`` rather than silently
+        splitting a batch into individual calls. Capture or focus an exact target first so the driver
+        has a default window for steps that use role/name addressing.
+        """
+        refusal, _ = self._target_args("run_steps", need_window=True)
+        if refusal is not None:
+            return _refuse("run_steps", "run_steps needs a current window target — call capture() or focus_app() first.",
+                           code="run_steps_target_required")
+        if not self._session._has_tool("run_steps"):
+            return _refuse("run_steps",
+                           "This cua-driver does not provide the run_steps batch tool — send the steps one "
+                           "action per call and verify the resulting app state after the sequence.",
+                           code="run_steps_unsupported")
+        if not steps:
+            return _refuse("run_steps", "run_steps requires a non-empty `steps` list.")
+        if len(steps) > 64:
+            return _refuse("run_steps", f"run_steps accepts at most 64 steps (got {len(steps)}).")
+        translated: list[dict[str, Any]] = []
+        for i, step in enumerate(steps):
+            tool, args = self._run_step_args(step)
+            if tool is None:
+                return _refuse("run_steps",
+                               f"Step {i + 1} is not a valid step: use {{'tool': <tool>, 'args': {{...}}}} with tool in "
+                               f"{list(self._RUN_STEP_TOOLS)}.")
+            entry: dict[str, Any] = {"tool": tool, "args": args}
+            # wait_for / expect / timeout_ms are driver-side step modifiers, not tool arguments.
+            for k in ("wait_for", "expect", "timeout_ms"):
+                if isinstance(step, dict) and k in step:
+                    entry[k] = step[k]
+            translated.append(entry)
+        payload: dict[str, Any] = {"steps": translated}
+        # The batch inherits the sticky target: a step that names no window needs a default window, and
+        # the driver rejects the whole batch ("observe: `pid` and `window_id` are required (no step
+        # names a window to inherit from)") when none can be derived. The sticky target from the last
+        # capture/focus_app is that default.
+        if self._active_pid is not None:
+            payload["pid"] = self._active_pid
+        if self._active_window_id is not None:
+            payload["window_id"] = self._active_window_id
+        if observe is not None:
+            payload["observe"] = observe
+        if delay_ms is not None:
+            payload["delay_ms"] = max(0, min(2000, int(delay_ms)))
+        if delivery_mode == "foreground":
+            payload["delivery_mode"] = "foreground"
+        if foreground_fallback:
+            payload["foreground_fallback"] = True
+        return self._action("run_steps", payload)

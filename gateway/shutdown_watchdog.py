@@ -153,6 +153,13 @@ def _hard_exit(exit_code: int) -> None:
     with contextlib.suppress(Exception):
         from tools.environments.base import kill_live_foreground_processes
         kill_live_foreground_processes(now=True)
+    with contextlib.suppress(Exception):
+        # os._exit bypasses atexit, so the @atexit-registered computer-use teardown never runs here.
+        # A private embedded cua-driver daemon is a child of launchd (LaunchServices launch on macOS),
+        # not of the gateway, so it survives the forced exit with its approval bypass and TCC grants
+        # intact (#126364). Best-effort: the watchdog is already on a hard-exit path.
+        from tools.computer_use.tool import stop_all_computer_use_backends
+        stop_all_computer_use_backends()
     os._exit(exit_code)
 
 

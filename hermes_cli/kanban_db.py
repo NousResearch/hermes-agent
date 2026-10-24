@@ -571,23 +571,6 @@ def workspaces_root(board: Optional[str] = None) -> Path:
     return _board_path("HERMES_KANBAN_WORKSPACES_ROOT", board, ("kanban", "workspaces"), "workspaces")
 
 
-def attachments_root(board: Optional[str] = None) -> Path:
-    """Per-board attachments root (``HERMES_KANBAN_ATTACHMENTS_ROOT`` wins). Workers
-    read attachments by absolute path, so remote terminal backends must mount it."""
-    return _board_path("HERMES_KANBAN_ATTACHMENTS_ROOT", board, ("kanban", "attachments"), "attachments")
-
-
-def task_attachments_dir(task_id: str, board: Optional[str] = None) -> Path:
-    """Return the per-task attachment directory ``<root>/<task_id>/``."""
-    return attachments_root(board=board) / task_id
-
-
-def worker_logs_dir(board: Optional[str] = None) -> Path:
-    """Per-board worker log dir (logs follow the board so ``hermes kanban log``
-    is unambiguous when two boards share a task id)."""
-    return _board_path(None, board, ("kanban", "logs"), "logs")
-
-
 # --- Data classes ---
 
 @dataclass
@@ -4207,6 +4190,9 @@ def current_run_started_ats(conn: sqlite3.Connection, task_ids: Iterable[str]) -
 # --- Split modules (imported at the tail: they import this module as ``_kb``) ---
 from hermes_cli.kanban_db_boards import (
     _default_board_display_name,
+    board_dispatch_enabled,
+    board_is_archived_stub,
+    list_dispatch_boards,
     _dir_holds_board,
     board_metadata_path,
     create_board,
@@ -4219,6 +4205,11 @@ from hermes_cli.kanban_db_connect import (
     _INITIALIZED_PATHS,
     init_db,
     write_txn,
+)
+from hermes_cli.kanban_db_paths import (
+    attachments_root,
+    task_attachments_dir,
+    worker_logs_dir,
 )
 from hermes_cli.kanban_db_workspace import (
     _cleanup_workspace,

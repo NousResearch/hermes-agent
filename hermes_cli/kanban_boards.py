@@ -79,10 +79,14 @@ def _cmd_boards_create(args: argparse.Namespace) -> int:
     meta = kb.create_board(
         normed, name=args.name, description=args.description, icon=args.icon, color=args.color,
         default_workdir=args.default_workdir,
+        dispatch=False if getattr(args, "no_dispatch", False) else None,
     )
     print(f"Board {meta['slug']!r} {'already exists' if already else 'created'}.\n"
           f"  Display name: {meta.get('name', '')}\n"
           f"  DB path:      {meta['db_path']}")
+    if meta.get("dispatch", True) is False:
+        print("  Dispatch:     DISABLED — this is an estate/scratch board; the "
+              "dispatcher will not serve it (safe by construction).")
     if getattr(args, "switch", False):
         kb.set_current_board(meta["slug"])
         print(f"  Switched to {meta['slug']!r}.")
@@ -136,6 +140,9 @@ def _cmd_boards_show(args: argparse.Namespace) -> int:
         print(f"  Description:  {meta['description']}")
     print(f"  DB path:      {meta['db_path']}\n"
           f"  Tasks:        {sum(counts.values())} total" + (f" ({_fmt_counts(counts)})" if counts else ""))
+    if meta.get("dispatch", True) is False:
+        print("  Dispatch:     DISABLED — estate/scratch board; the dispatcher "
+              "will not serve it.")
     return 0
 
 
@@ -157,6 +164,33 @@ def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
         print(f"Board {normed!r} default workdir set to {new_val!r}.")
     else:
         print(f"Board {normed!r} default workdir cleared.")
+    return 0
+
+
+def _cmd_boards_set_dispatch(args: argparse.Namespace) -> int:
+    """Admit or exclude a board from the dispatcher's set.
+
+    ``off`` marks an ESTATE/scratch board: the dispatcher's own enumeration
+    (:func:`kanban_db.list_dispatch_boards`) drops it and its per-tick spawn guard
+    refuses it, so a card filed there can never become lane work — which is what
+    redirecting a SEV1 to a "scratch" board actually required (card t_17c9c847).
+    """
+    normed, rc = _board_slug_arg(args, "set-dispatch", must_exist=True)
+    if rc:
+        return rc
+    state = str(getattr(args, "state", "") or "").strip().lower()
+    if state not in ("on", "off"):
+        return _err("kanban boards set-dispatch: state must be 'on' or 'off'", 2)
+    enabled = state == "on"
+    meta = kb.write_board_metadata(normed, dispatch=enabled)
+    admitted = bool(meta.get("dispatch", True))
+    if _json_out(args, {"board": normed, "dispatch": admitted}):
+        return 0
+    if enabled:
+        print(f"Board {normed!r}: dispatch ENABLED — the dispatcher serves it again.")
+    else:
+        print(f"Board {normed!r}: dispatch DISABLED — the dispatcher will not serve it "
+              f"(estate/scratch board, out of the dispatch set by construction).")
     return 0
 
 
@@ -214,6 +248,7 @@ _BOARD_HANDLERS = {
     "show": _cmd_boards_show, "current": _cmd_boards_show,
     "rename": _cmd_boards_rename,
     "set-default-workdir": _cmd_boards_set_default_workdir,
+    "set-dispatch": _cmd_boards_set_dispatch,
     "export": _cmd_boards_export,
     "import": _cmd_boards_import,
 }

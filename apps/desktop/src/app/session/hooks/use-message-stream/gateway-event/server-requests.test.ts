@@ -47,6 +47,8 @@ function deliver(method: string, params: Record<string, unknown>, activeSessionI
   const fail = vi.fn()
   const decline = vi.fn()
 
+  deps.activeSessionIdRef.current = activeSessionId
+
   const handled = handleServerRequest(
     { decline, fail, id: 'srq-1', method, params, profile: 'default', replayed, respond },
     deps,
@@ -424,7 +426,7 @@ describe('preview requests act for the session that asked (#73890)', () => {
     noteActiveTreeGroup('grp-b')
   }
 
-  it("drives the requesting session's page, not the focused tile's", async () => {
+  it("drives the requesting session's page after refocusing the primary", async () => {
     openPreview({ kind: 'url', label: 'a', source: 'https://a.example', url: 'https://a.example' }, 'stored-a')
     openPreview({ kind: 'url', label: 'b', source: 'https://b.example', url: 'https://b.example' }, 'stored-b')
     const [a, b] = $previewTabs.get()
@@ -437,6 +439,9 @@ describe('preview requests act for the session that asked (#73890)', () => {
     ]
 
     focusTileB()
+    noteActiveTreeGroup(null)
+    $layoutTree.set(group(['workspace'], { active: 'workspace', id: 'grp-a' }))
+    noteActiveTreeGroup('grp-a')
 
     try {
       const { respond } = deliver('preview.act', { action: 'back', session_id: 'rt-a' }, 'rt-a')

@@ -1,0 +1,37 @@
+name: lithermes
+repo: https://github.com/wjgoarxiv/lithermes
+sha: 7baecfc738e2a12b4f93d16d81305051236c2deb
+subdir: packages/lithermes-installer/assets/lithermes-plugin
+description: Adds lit to Hermes Agent so a request is planned, built with tests and recorded checks, reviewed, and closed with a handoff note. 37 skills. MIT.
+maintainer: wjgoarxiv
+tier: community
+category: automation
+version: "1.0.28"
+docs_url: https://github.com/wjgoarxiv/lithermes
+capabilities:
+  provides_tools:
+    - goal_status
+    - goal_set
+    - goal_add_criterion
+    - goal_evidence
+    - goal_criterion_status
+    - goal_steer
+    - goal_status_set
+    - goal_checkpoint
+    - goal_complete
+    - lithermes_work_progress
+    - lithermes_knowledge_capture
+  provides_hooks:
+    - on_session_start
+    - pre_llm_call
+    - pre_tool_call
+    - pre_command
+    - post_tool_call
+    - transform_tool_result
+    - post_api_request
+    - subagent_stop
+    - transform_llm_output
+    - on_session_finalize
+    - on_session_reset
+  provides_middleware: []
+  requires_env: []

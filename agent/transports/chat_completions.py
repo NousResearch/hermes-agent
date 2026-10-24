@@ -405,6 +405,21 @@ def _finish_kwargs(api_kwargs: dict[str, Any], sanitized: list, params: dict, *,
     return api_kwargs
 
 
+def _inject_unsigned_gemini_tool_calls(tool_calls: list, copied_tool_calls: list | None) -> list | None:
+    """Add Gemini's skip-validation marker on wire copies of unsigned tool calls."""
+    for tc_idx, tc in enumerate(tool_calls):
+        if not isinstance(tc, dict) or "extra_content" in tc:
+            continue
+        if copied_tool_calls is None:
+            copied_tool_calls = list(tool_calls)
+        if copied_tool_calls[tc_idx] is tc:
+            copied_tool_calls[tc_idx] = dict(tc)
+        copied_tool_calls[tc_idx]["extra_content"] = {
+            "google": {"thought_signature": "skip_thought_signature_validator"},
+        }
+    return copied_tool_calls
+
+
 # Mistral's validator accepts only ``^[A-Za-z0-9]{9}$`` ("Tool call id was ... but must be a-z,
 # A-Z, 0-9, with a length of 9"); ``call_`` + 12 hex from a split tool_call batch or another
 # provider's id is rejected on replay. Ids are mapped on the wire copy only: stored history stays
@@ -508,6 +523,10 @@ def _sanitize_message(
                 copied_tool_calls[tc_idx] = {k: v for k, v in tc.items() if k not in keys}
                 if mapped is not None:
                     copied_tool_calls[tc_idx]["id"] = mapped
+        # Gemini rejects unsigned calls replayed after provider fallback. Add the
+        # native adapter's sentinel only for Gemini-family targets on wire copies.
+        if not strip_extra_content:
+            copied_tool_calls = _inject_unsigned_gemini_tool_calls(tool_calls, copied_tool_calls)
         if copied_tool_calls is not None:
             out_msg["tool_calls"] = copied_tool_calls
     return out_msg if strip_keys or remapped or copied_tool_calls is not None else None
@@ -562,7 +581,8 @@ class ChatCompletionsTransport(ProviderTransport):
         # Read before convert_messages strips the key; only a profile that asks for it consumes it.
         params["data_use"] = data_use_requirement(messages)
         sanitized = self.convert_messages(
-            messages, model=model, base_url=params.get("base_url"), provider_profile=_profile,
+            messages, model=params.get("message_target_model") or model,
+            base_url=params.get("base_url"), provider_profile=_profile,
             provider=params.get("provider_name"),
         )
         if _profile:

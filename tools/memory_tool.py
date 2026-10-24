@@ -41,7 +41,16 @@ def get_memory_dir() -> Path:
 
 
 from tools.memory_tool_store import (
-    ENTRY_DELIMITER, FAILURE_CLASS, MEMORY_BLOCK_HEADERS, PATCH_DROP_HINT, MemoryStore, _scan_memory_content)
+    ENTRY_DELIMITER, FAILURE_CLASS, MEMORY_BLOCK_HEADERS, PATCH_DROP_HINT, MemoryStore,
+    _scan_memory_content)
+try:
+    from tools.memory_tool_store import DOC_TARGET_PREFIX, doc_name, doc_target
+except ImportError:
+    # The doc-chain primitives (the #116673 work) are absent from the store —
+    # the doc-chain arms degrade to the plain-memory path (fail-closed, the E1 pattern).
+    DOC_TARGET_PREFIX = None
+    doc_name = None
+    doc_target = None
 
 
 def load_on_disk_store() -> MemoryStore:
@@ -55,7 +64,8 @@ def load_on_disk_store() -> MemoryStore:
         memory_enabled, user_profile_enabled = get_builtin_memory_store_flags(config)
         store = MemoryStore(int(mem_cfg.get("memory_char_limit", 2200)), int(mem_cfg.get("user_char_limit", 1375)),
                             memory_enabled=memory_enabled, user_profile_enabled=user_profile_enabled)
-    except Exception:
+    except Exception:  # health: allow BLE001 -- config may be absent/invalid in contexts with no live config (gateway/Desktop/`/memory`); fall back to MemoryStore defaults rather than break the memory tooling
+        logger.debug("Could not load memory config; using defaults", exc_info=True)
         store = MemoryStore()  # config optional — fall back to defaults rather than break /memory
     store.load_from_disk()
     return store
@@ -84,9 +94,49 @@ def _pin_matched_entries(store: MemoryStore, payload: dict[str, Any]) -> Optiona
 def _gate_or_stage(store: MemoryStore, summary: str, detail: str, payload: dict[str, Any]) -> Optional[str]:
     """JSON tool-result string when the write must NOT proceed (blocked or staged
     for approval), None to proceed. Fails open if the gate module can't load."""
+    # Phase 7 — acceptance_pipeline (7-stage gate) runs BEFORE wa.evaluate_gate.
+    # Fail-open on Exception (not just ImportError): a gate logic error degrades
+    # to proceed rather than hard-breaking chain-doc editing; the store's own
+    # guards (cap, _anchor_gate, drift) still run and keep the system safe.
+    try:
+        from tools.write_gate import acceptance_pipeline
+        # Resolve caller provenance: foreground == user's direct turn; anything
+        # else (background_review, etc.) is non-user (the agent fork).  On an
+        # unresolvable origin, use the "unknown" sentinel — never silently
+        # promote agent-inferred content to user-trusted (T2-1).
+        try:
+            from tools.write_approval import current_origin
+            origin = current_origin()
+            caller = "user" if origin == "foreground" else origin
+        except Exception:  # health: allow BLE001 -- origin resolution is best-effort; an unresolvable caller degrades to the "unknown" sentinel, never promoting agent-inferred content to user-trusted (T2-1)
+            caller = "unknown"
+        # Build the entries snapshot for the stale-entry stage via the store's
+        # doc-aware arm, so a doc: target anchors against the DOC's entries,
+        # not the anchor's (INTEG-2).
+        target = payload.get("target", "memory")
+        entries = list(store._entries_for(target))
+        refusal = acceptance_pipeline(
+            store,
+            action=payload.get("action", "add"),
+            target=target,
+            content=payload.get("content"),
+            old_text=payload.get("old_text"),
+            operations=payload.get("operations"),
+            caller=caller,
+            entries=entries,
+        )
+        if refusal is not None:
+            FAILURE_CLASS.set(refusal.failure_class)
+            return tool_error(refusal.rationale, success=False,
+                              failure_class=refusal.failure_class,
+                              reroute_target=refusal.reroute_target,
+                              action=refusal.action)
+    except Exception:  # health: allow BLE001 -- deliberate fail-open gate boundary: origin/_entries_for/acceptance_pipeline faults must not block a memory write (documented lazy-gate fail-open precedent)
+        logger.warning("acceptance_pipeline failed; degrading open to store guards", exc_info=True)
     try:
         from tools import write_approval as wa
-    except Exception:
+    except Exception:  # health: allow BLE001 -- write_approval import is optional; if it can't load, proceed to the store's own gate (wa.evaluate_gate only ADDS an approval layer, so a missing module degrades to store-guarded behavior, not a hard failure)
+        logger.debug("write_approval unavailable; proceeding without approval gate", exc_info=True)
         return None
     decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
     if decision.allow:
@@ -211,7 +261,7 @@ def _background_delete_gate(store, action, operations, target="memory", content=
                         f"{'batch' if operations is not None else action} was staged for your approval — "
                         "review it with /memory pending (approve to apply, discard to drop)."),
         }, ensure_ascii=False)
-    except Exception:
+    except Exception:  # health: allow BLE001 -- staging/verify boundary already logs the traceback (exc_info=True); on failure it DENIES the destructive op rather than silently proceeding
         logger.warning("Failed to stage background-review consolidation; denying", exc_info=True)
         FAILURE_CLASS.set("gate_refused")
         return tool_error(
@@ -219,17 +269,35 @@ def _background_delete_gate(store, action, operations, target="memory", content=
             "batch); 'add' is still available.", success=False)
 
 
+def _resolve_target(target: str, doc: Optional[str]) -> tuple[str, Optional[str]]:
+    """``(store target, error)``. ``doc`` addresses a chain document hung off the MEMORY.md
+    anchor (#116564): chain docs live in ``memories/docs/<name>.md``, are reached ONLY through
+    ``target='memory'`` + ``doc='<name>'``, and their name is a bare filename (no separators),
+    so a doc can never escape the memories dir."""
+    if not doc:
+        return target, None
+    if target != "memory":
+        return target, ("Chain docs hang off the MEMORY.md anchor: pass target='memory' together "
+                        "with doc='<name>' (the 'user' profile has no chain).")
+    name = doc_name(doc)
+    if name is None:
+        return target, (f"Invalid chain doc name {doc!r}. Use a bare filename — letters, digits, "
+                        "'.', '_', '-' — e.g. doc='conventions-2026-09'.")
+    return doc_target(name), None
+
+
 def memory_tool(action: str | None = None, target: str = "memory", content: str | None = None, old_text: str | None = None,
                 new_text: str | None = None, operations: Optional[list[dict[str, Any]]] = None,
-                store: Optional[MemoryStore] = None) -> str:
+                doc: str | None = None, store: Optional[MemoryStore] = None) -> str:
     """Tool entry point; returns a JSON string. Single op (action + content/old_text)
     or batch (``operations``, atomic against the final budget). ``new_text``
-    aliases ``content``."""
+    aliases ``content``. ``doc`` addresses a MEMORY.md chain document
+    (read/add/patch/remove)."""
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
     token = FAILURE_CLASS.set("other")
     try:
-        outcome, result = _memory_tool(action, target, content, old_text, new_text, operations, store)
+        outcome, result = _memory_tool(action, target, content, old_text, new_text, operations, doc, store)
         failure_class = "none" if outcome == "success" else FAILURE_CLASS.get()
     finally:
         FAILURE_CLASS.reset(token)
@@ -247,14 +315,19 @@ def _invalid(message: str) -> tuple[str, str]:
     return "rejected", tool_error(message, success=False)
 
 
-def _memory_tool(action, target, content, old_text, new_text, operations, store) -> tuple[str, str]:
+def _memory_tool(action, target, content, old_text, new_text, operations, doc, store) -> tuple[str, str]:
     """``(outcome, result_json)``: ``rejected`` when refused or held before touching the store."""
     # An omitted optional string can arrive as "" (#90468): let the new_text alias fill it.
     if not content and new_text:
         content = new_text
+    target, doc_error = _resolve_target(target, doc)
+    if doc_error is not None:
+        return _invalid(doc_error)
     target_error = _memory_target_error(store, target, operations)
     if target_error is not None:
         return "rejected", json.dumps(target_error)
+    if action == "read":
+        return _applied(store.read(target))
     if operations:
         if not isinstance(operations, list):
             return _invalid("operations must be a list of {action, content?, old_text?} objects.")
@@ -286,7 +359,15 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
                or _apply_write_gate(store, action, target, content, old_text))
     if invalid is not None:
         return "rejected", invalid
-    return _applied(_STORE_ACTIONS[action][0](store, target, content, old_text))
+    result = _STORE_ACTIONS[action][0](store, target, content, old_text)
+    # Stage 7 — post-write read-back (T1-2): after an admitted replace/patch/remove,
+    # re-read the target and confirm old_text is gone. Bounded: one read per write.
+    if result.get("success"):
+        from tools.write_gate import verify_post_write
+        readback = verify_post_write(store, target, action, old_text, content=content)
+        if readback is not None:
+            return "failed", readback
+    return _applied(result)
 
 
 def get_builtin_memory_config(config: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -328,6 +409,12 @@ def _memory_target_error(
             "Missing required target. Retry with target='memory' or target='user' at the top level. "
             "For a batch, remove target from every operation; use separate calls for different stores. "
             "Nothing was written or staged.")}
+    if DOC_TARGET_PREFIX and isinstance(target, str) and target.startswith(DOC_TARGET_PREFIX):  # chain doc: gated with the anchor it hangs off
+        if store.target_enabled("memory"):
+            return None
+        FAILURE_CLASS.set("disabled")
+        return {"success": False, "error": "Built-in MEMORY.md writes are disabled in memory config.",
+                "target": target}
     if not isinstance(target, str) or target not in {"memory", "user"}:
         from tools.registry import _bound_error_text
         FAILURE_CLASS.set("invalid_args")
@@ -390,6 +477,11 @@ MEMORY_SCHEMA = {
         "stay small.\n\n"
         "IF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that "
         "removes or shortens enough stale entries and adds the new one together.\n\n"
+        "CHAIN DOCS: MEMORY.md is an ANCHOR — an entry mentioning '@doc:<name>' chains the "
+        "document memories/docs/<name>.md, which has NO char limit (the anchor's limit is the "
+        "only budget injected into the prompt). Read a chain doc with action='read', doc='<name>'; "
+        "write one with target='memory' + doc='<name>' — writes are refused until MEMORY.md "
+        "references it. Use chain docs for the long tail of dated notes and keep the anchor small.\n\n"
         "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
         "notes (environment, conventions, tool quirks, lessons).\n\n"
         "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
@@ -401,8 +493,10 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "patch", "remove"],
-                "description": "The action to perform (single-op shape). Omit when using 'operations'."
+                "enum": ["add", "patch", "remove", "read"],
+                "description": ("The action to perform (single-op shape). Omit when using 'operations'. "
+                                "'read' returns stored entries without changing anything — with "
+                                "doc='<name>' it reads that chain document.")
             },
             "target": {
                 "type": "string",
@@ -416,6 +510,14 @@ MEMORY_SCHEMA = {
             "old_text": {
                 "type": "string",
                 "description": "REQUIRED for 'patch' and 'remove': text from one entry. 'patch' replaces exactly this span (it must occur once in the entry); 'remove' deletes the whole entry. Omit for 'add'."
+            },
+            "doc": {
+                "type": "string",
+                "description": ("Chain document hung off the MEMORY.md anchor (target must be 'memory'): "
+                                "a bare name whose document lives at memories/docs/<name>.md. Its entries "
+                                "are uncapped and NOT injected into the prompt; read one with "
+                                "action='read'. A write is refused until an entry of MEMORY.md mentions "
+                                "'@doc:<name>'.")
             },
             "new_text": {
                 "type": "string",
@@ -478,7 +580,8 @@ registry.register(
     toolset="memory",
     schema=MEMORY_SCHEMA,
     handler=lambda args, **kw: memory_tool(
-        action=args.get("action", ""), target=args.get("target"), store=kw.get("store"),
+        action=args.get("action", ""), target=args.get("target"), doc=args.get("doc"),
+        store=kw.get("store"),
         **{k: args.get(k) for k in ("content", "old_text", "new_text", "operations")}),
     check_fn=check_memory_requirements,
     emoji="🧠",

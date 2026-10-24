@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- the read-only contract is the ensure_home guards inside _load_config_impl, the one config load path, and the owed last-known-good copy they defer; the growth is those guards alone
 """Configuration management for Hermes Agent: config.yaml / .env loading, saving,
 validation, migration, and the ``hermes config`` command."""
 
@@ -177,6 +178,9 @@ _LAST_EXPANDED_CONFIG_BY_PATH: dict[str, Any] = {}
 # the config writer seam, which produces a fresh inode, so stat() sees a new signature and the next load
 # repopulates automatically — no explicit invalidation hook. See #58514.
 _LOAD_CONFIG_CACHE: dict[str, tuple[int, ...]] = {}
+# Paths whose cache entry a read-only load filled from a good parse without writing the
+# last-known-good copy; the next load_config() hit on that entry writes it.
+_LKG_BACKUP_OWED: set[str] = set()
 # path -> (mtime_ns, size, ino, ctime_ns, raw yaml dict) for read_raw_config() (no defaults merged in).
 _RAW_CONFIG_CACHE: dict[str, tuple[int, ...]] = {}
 
@@ -2096,7 +2100,7 @@ def load_config_readonly() -> dict[str, Any]:
     """``load_config()`` without the defensive deepcopy (~half of the 265us cache-hit cost).
     **Mutating the returned dict (or any nested structure) corrupts the in-process cache for
     every subsequent caller** — only for code paths that never write to the result."""
-    return _load_config_impl(want_deepcopy=False)
+    return _load_config_impl(want_deepcopy=False, ensure_home=False)
 
 
 def _ensure_dict(parent: dict[str, Any], key: str) -> dict[str, Any]:
@@ -2322,7 +2326,7 @@ def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[dict[str, 
     return None
 
 
-def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
+def _load_config_impl(*, want_deepcopy: bool, ensure_home: bool = True) -> dict[str, Any]:
     snapshot = _worker_config_snapshot()
     if snapshot is not None:
         return _deep_merge(copy.deepcopy(DEFAULT_CONFIG), snapshot)
@@ -2337,7 +2341,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
         if path_key in _LOAD_CONFIG_CACHE:
             _, fast_sig = _load_config_cache_sig(config_path)
             hit = _load_config_cache_hit(path_key, fast_sig)
-            if hit is not None:
+            if hit is not None and not (ensure_home and path_key in _LKG_BACKUP_OWED):
                 return copy.deepcopy(hit) if want_deepcopy else hit
     except Exception:
         # Any surprise here falls through to the locked path, which is the
@@ -2345,7 +2349,8 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
         pass
 
     with _CONFIG_LOCK:
-        ensure_hermes_home()
+        if ensure_home:  # read-only loads never scaffold the home; below tolerates its absence
+            ensure_hermes_home()
         config_path = get_config_path()
         path_key = str(config_path)
 
@@ -2353,6 +2358,10 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
 
         hit = _load_config_cache_hit(path_key, cache_sig)
         if hit is not None:
+            if ensure_home and path_key in _LKG_BACKUP_OWED:
+                _LKG_BACKUP_OWED.discard(path_key)
+                from hermes_cli.config_backups import backup_config
+                backup_config(config_path, "good")
             return copy.deepcopy(hit) if want_deepcopy else hit
 
         config = copy.deepcopy(DEFAULT_CONFIG)
@@ -2376,8 +2385,12 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
                 # A copy of the file that just parsed is what a FRESH process falls back to when the
                 # next edit breaks the YAML (see _last_known_good_fallback). backup_config() skips
                 # byte-identical repeats and keeps a bounded count, so steady-state loads cost one stat.
-                from hermes_cli.config_backups import backup_config
-                backup_config(config_path, "good")
+                if ensure_home:  # read-only loads never write; only load_config() keeps the backup
+                    _LKG_BACKUP_OWED.discard(path_key)
+                    from hermes_cli.config_backups import backup_config
+                    backup_config(config_path, "good")
+                else:  # the next load_config() that hits this cache entry writes the copy
+                    _LKG_BACKUP_OWED.add(path_key)
             except Exception as e:
                 lkg_copy = _last_known_good_fallback(config_path, path_key, cache_sig, e)
                 if lkg_copy is not None:

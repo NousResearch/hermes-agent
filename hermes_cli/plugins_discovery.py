@@ -109,23 +109,23 @@ def _classify_entrypoint_value_kind(value: str) -> str:
         return "standalone"
 
 
-def _get_disabled_plugins() -> set:
+def _get_disabled_plugins(config: Optional[Any] = None) -> set:
     """Read ``plugins.disabled`` — a deny-list that wins over ``plugins.enabled``."""
     try:
-        from hermes_cli.config import load_config
-        disabled = cfg_get(load_config(), "plugins", "disabled", default=[])
+        from hermes_cli.config import load_config_readonly
+        disabled = cfg_get(load_config_readonly() if config is None else config, "plugins", "disabled", default=[])
         return set(disabled) if isinstance(disabled, list) else set()
     except Exception:
         return set()
 
 
-def _get_enabled_plugins() -> Optional[set]:
+def _get_enabled_plugins(config: Optional[Any] = None) -> Optional[set]:
     """Read the ``plugins.enabled`` allow-list (plugins are opt-in). ``None`` = key missing/malformed ("nothing
     enabled yet"; the first ``migrate_config`` run grandfathers installed user plugins); ``set()`` = explicitly
     empty; else the allow-list."""
     try:
-        from hermes_cli.config import load_config
-        enabled = cfg_get(load_config(), "plugins", "enabled")
+        from hermes_cli.config import load_config_readonly
+        enabled = cfg_get(load_config_readonly() if config is None else config, "plugins", "enabled")
         return set(enabled) if isinstance(enabled, list) else None
     except Exception:
         return None

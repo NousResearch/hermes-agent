@@ -57,7 +57,7 @@ def test_slash_exec_spawns_with_the_live_agent_provider(monkeypatch):
     worker_args = None
 
     class _RecordingWorker:
-        def __init__(self, session_key, model, profile_home=None, provider=None):
+        def __init__(self, session_key, model, profile_home=None, provider=None, cwd=None):
             nonlocal worker_args
             worker_args = (session_key, model, profile_home, provider)
             self.stderr_tail = []

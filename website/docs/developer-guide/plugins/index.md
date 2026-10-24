@@ -277,6 +277,65 @@ the same seam. The plugin catalog refuses it at admission (`hermes plugins
 validate`, `no core override` check). If a public hook you need is missing,
 open an issue describing it.
 
+### Admitted gateway turn origin
+
+An inbound integration may register one origin projector per platform and profile with
+`ctx.register_inbound_origin_projector(platform="slack", capture=..., validate=...)`.
+`capture(event)` returns a small JSON object or `None`; `validate(claim, source)`
+checks that object's identity against the gateway's `SessionSource`. Hermes freezes
+the projection before native admission yields, limits it to 16 KiB, stores it in
+the native admission, and revalidates it after recovery. It never persists the
+platform SDK event. An unavailable or changed projector refuses a claimed row;
+older rows without a projection do not acquire one on replay.
+
+Plugin-owned tools can call `gateway.trusted_turn_origin.current_origin()` to
+read an immutable `TrustedTurnOrigin` for the executing human turn. The claim is
+available as `origin.claims[plugin_id]`; absent claims grant nothing. The origin
+also carries the gateway's platform, runtime `profile`, receiving
+`transport_profile`, workspace, channel, user, message and thread identifiers.
+The transport is derived from pinned ingress identity or verified native
+provenance; it is `None` if that proof is unavailable. Queued human follow-ups
+rebind it to their own sender; internal and eventless turns expose `None`.
+`admission_id` is optional, since a
+queued follow-up need not have a separate native admission. Plugins should use
+the `TRUSTED_TURN_ORIGIN_API_VERSION` constant for this contract's version.
+
+This API supplies origin evidence to plugin tools. It does not restrict other
+tools or enforce a channel's tool policy; those need a separate execution gate.
+
+### Required MCP dispatch guards
+
+An optional `pre_tool_call` hook cannot enforce an MCP authorization policy: a
+missing or failed hook may leave the call dispatchable. For a server shared by
+several gateway users, a profile can instead require a plugin callback at the
+native MCP dispatch boundary:
+
+```yaml
+mcp:
+  required_dispatch_guards:
+    - server: knowledge
+      plugin: knowledge-access
+      profile: assistant
+      platform: slack
+```
+
+The enabled plugin registers `ctx.register_required_mcp_dispatch_guard(server="knowledge",
+callback=guard)`. The callback receives `server`, `tool_name`, a JSON-object
+`args`, an optional host-recorded `plugin_call`, and available call IDs. It
+returns the complete canonical argument object. It should read
+`current_origin()` and reject a missing, internal, mismatched, or unadmitted
+turn; the remote service still makes the final access decision. A raw model MCP
+alias receives no `plugin_call`, while `ctx.call_mcp(...)` has one-use plugin
+provenance for the exact server and tool.
+
+When the policy exists, an absent or disabled plugin, missing callback, invalid
+origin, callback error, timeout, or invalid returned arguments denies the call
+before transport. A registered required guard whose policy is removed also
+denies. Other MCP servers keep their existing behavior. A policy may separately
+allow exact built-in scheduled job hashes and explicitly listed tools that
+advertise `readOnlyHint=true`; that exception does not accept Slack actor fields
+in arguments. Keep scheduler access narrower than human access.
+
 ### Deprecation policy
 
 A documented native plugin behavior may be deprecated only with all of the

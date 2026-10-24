@@ -3,6 +3,20 @@
 
 export const CANONICAL_GATEWAY_PROTOCOL = 'hermes-gateway-v1'
 
+/** Dial `/api/ws` or a sibling stream beside it. A local gateway's one-use ticket leaves the URL
+ *  for the gateway subprotocol; a remote route keeps its own query credential. */
+export function openGatewaySocket(url: string): WebSocket {
+  const parsed = new URL(url)
+
+  if (!parsed.searchParams.has('native_dial')) {return new WebSocket(url)}
+  const ticket = parsed.searchParams.get('ticket')
+
+  if (!ticket) {throw new Error('Native gateway requires a fresh private ticket')}
+  parsed.searchParams.delete('ticket')
+
+  return new WebSocket(parsed.toString(), [CANONICAL_GATEWAY_PROTOCOL, `hermes-gateway-ticket.${ticket}`])
+}
+
 export const canonicalProfile = (profile: unknown): string =>
   typeof profile === 'string' && profile ? profile : 'default'
 

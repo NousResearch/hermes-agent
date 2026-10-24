@@ -8,7 +8,7 @@ xiaomi = ProviderProfile(
     base_url="https://api.xiaomimimo.com/v1",
     supports_health_check=False,  # /v1/models returns 401 even with valid key
     supports_vision=True,  # mimo-v2-omni is vision-capable
-    supports_vision_tool_messages=False,  # rejects list-type tool content (400 "text is not set")
+    supports_vision_tool_messages=True,  # re-verified 2026-09-25: api.xiaomimimo.com accepts list-type tool content with image_url (mimo-v2.5 and mimo-v2.6-flash); the #41072 veto's 400 "text is not set" no longer reproduces
 )
 
 register_provider(xiaomi)

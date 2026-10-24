@@ -28,6 +28,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query
 
+from hermes_cli.session_background_work import stamp_background_work
 from hermes_cli.session_listing import subagent_listing_scope
 from hermes_cli.web_deps import late
 from hermes_cli.config import get_process_hermes_home
@@ -241,8 +242,9 @@ def _scoped_profile_targets(log_label: str, profile: Optional[str]) -> list[tupl
 
 
 def _tag_rows(rows: list[dict[str, Any]], name: str, now: float) -> list[dict[str, Any]]:
-    """Stamp session rows with their owning profile and the 300s active heuristic; SQLite
-    stores flags as 0/1 and the sidebar needs booleans."""
+    """Stamp session rows with their owning profile, the 300s active heuristic and live
+    background work; SQLite stores flags as 0/1 and the sidebar needs booleans."""
+    stamp_background_work(rows)
     for s in rows:
         s["profile"] = name
         s["is_default_profile"] = name == "default"

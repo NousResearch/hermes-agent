@@ -755,6 +755,17 @@ def has_live_for_session(session_key: str = "", origin_ui_session_id: str = "", 
     return bool(_session_records(_LIVE_STATES, session_key, origin_ui_session_id, parent_session_id))
 
 
+def live_counts_by_session() -> dict[str, int]:
+    """Live delegations per owning session id (the spawner's durable id, else the routing key)."""
+    counts: dict[str, int] = {}
+    with _records_lock:
+        for r in _records.values():
+            key = str(r.get("parent_session_id") or r.get("session_key") or "")
+            if key and r.get("status") in _LIVE_STATES:
+                counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
 def _new_delegation_id() -> str:
     return f"deleg_{uuid.uuid4().hex[:8]}"
 

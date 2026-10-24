@@ -453,10 +453,21 @@ def _delegation_attribution_line(evt: dict) -> str | None:
             + (f' Task: "{goal}"' if goal else ""))
 
 
+# A session-level teardown killed it (``agent_close:<end reason>``, agent/client_lifecycle.py).
+_SESSION_CLOSE_KILL = "agent_close:"
+_STOPPED_UNFINISHED_GUIDANCE = (
+    "It did NOT finish, so do not report it as done or as still running. Tell the user plainly, "
+    "starting with \"Stopped: <what> didn't finish\", then the next step (e.g. offer to rerun it).")
+
+
 def _completion_status(evt: dict) -> str:
     reason = evt.get("completion_reason") or "exited"
+    source = str(evt.get("termination_source") or "")
+    if source.startswith(_SESSION_CLOSE_KILL):  # the reader may record the exit before the kill does
+        why = source[len(_SESSION_CLOSE_KILL):]
+        return f"was STOPPED by Hermes before it finished (its session was closed: {why})"
     if reason == "killed":
-        return f"terminated by {evt.get('termination_source') or 'Hermes'}"
+        return f"terminated by {source or 'Hermes'}"
     return _REASON_STATUS.get(reason) or ("completed normally" if evt.get("exit_code", "?") == 0 else "exited")
 
 
@@ -501,6 +512,8 @@ def format_process_notification(evt: dict) -> str | None:
         # Say so where the output is the payload (a teammate's reply): a silent tail reads as whole.
         _out = (f"...(first {evt['output_cut']} characters cut — process(action=\"log\", "
                 f"session_id=\"{_sid}\") has the full output)\n{_out}")
+    _status = _completion_status(evt)
+    _guidance = f"{_STOPPED_UNFINISHED_GUIDANCE}\n" if _status.startswith("was STOPPED") else ""
     return (
-        f"[IMPORTANT: Background process {_sid} {_completion_status(evt)} (exit code {_exit}{_signal}).\n"
-        f"{attribution}Command: {_cmd}\nOutput:\n{_out}]")
+        f"[IMPORTANT: Background process {_sid} {_status} (exit code {_exit}{_signal}).\n"
+        f"{_guidance}{attribution}Command: {_cmd}\nOutput:\n{_out}]")

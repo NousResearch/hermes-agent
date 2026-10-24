@@ -375,6 +375,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/creative/creative-baoyu-comic',
                     'user-guide/skills/optional/creative/creative-brag',
                     'user-guide/skills/optional/creative/creative-brag-slim',
+                    'user-guide/skills/optional/creative/creative-cad',
                     'user-guide/skills/optional/creative/creative-comfyui',
                     'user-guide/skills/optional/creative/creative-concept-diagrams',
                     'user-guide/skills/optional/creative/creative-creative-ideation',
@@ -396,6 +397,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/creative/creative-system-atlas',
                     'user-guide/skills/optional/creative/creative-tldraw-offline',
                     'user-guide/skills/optional/creative/creative-unreal-mcp',
+                    'user-guide/skills/optional/creative/creative-urdf',
                   ],
                 },
                 {

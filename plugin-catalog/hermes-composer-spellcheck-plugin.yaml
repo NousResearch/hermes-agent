@@ -7,7 +7,7 @@
 # origin. No earlier commit contains the rewrite.
 name: hermes-composer-spellcheck-plugin
 repo: https://github.com/thileman/hermes-composer-spellcheck-plugin
-sha: "9212367b6e9ba31325a381e6d3470b4826d76ea3"
+sha: "eb74f797284f6e60f73261d0663abe7b3607320b"
 title: Composer Spellcheck
 description: "Spell check for the Hermes Desktop composer - Desktop-only, one desktop/plugin.js inside the plugin SDK surface, with no agent tools, hooks, middleware or environment variables. It contributes right-click spelling suggestions as rows in the app's own composer context menu through the SDK's COMPOSER_AREAS.contextMenu contribution, so the app renders, orders and caps them and the plugin never draws, queries or mutates a menu of its own; candidates are ranked with Damerau-Levenshtein distance over the standard SCOWL/Hunspell English dictionary - the corpus Firefox and LibreOffice ship - embedded and affix-expanded at load. It keeps the dictionary's capitalisation: a lowercase proper noun such as 'english' is flagged, and the suggestion offered is the capitalised 'English'. The red squiggles need the app to expose host.composer.setSpellcheck, which ships in an unreleased upstream version; the plugin feature-detects it, and until that lands its own suggestions work while Chromium's underline stays off - there is deliberately no DOM-attribute fallback. Words are managed on the Custom Words page and each one is added to the app's own spell-check dictionary through the SDK (host.spellcheck.addWord, removed symmetrically with removeWord), so a word you add is remembered by the app itself. Disclosures: the plugin keeps one write to the composer's DOM - with 'Ignore code spans' on it wraps backtick code spans in <code spellcheck=\"false\">, because no SDK surface exists yet for marking a region as non-prose (an upstream request is filed); and for a non-English locale it fetches that locale's .dic/.aff word list from raw.githubusercontent.com (the wooorm/dictionaries repo, pinned to a commit SHA), while English is embedded so an English user is fully offline - the fetched files are data only, and no code is fetched or executed."
 maintainer: thileman
@@ -15,11 +15,11 @@ tier: community
 category: desktop
 docs_url: https://github.com/thileman/hermes-composer-spellcheck-plugin
 version: "1.0.0"
-image: https://raw.githubusercontent.com/thileman/hermes-composer-spellcheck-plugin/9212367b6e9ba31325a381e6d3470b4826d76ea3/docs/images/banner.png
+image: https://raw.githubusercontent.com/thileman/hermes-composer-spellcheck-plugin/eb74f797284f6e60f73261d0663abe7b3607320b/docs/images/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/thileman/hermes-composer-spellcheck-plugin/9212367b6e9ba31325a381e6d3470b4826d76ea3/docs/images/context-menu.png
-  - https://raw.githubusercontent.com/thileman/hermes-composer-spellcheck-plugin/9212367b6e9ba31325a381e6d3470b4826d76ea3/docs/images/settings.png
-  - https://raw.githubusercontent.com/thileman/hermes-composer-spellcheck-plugin/9212367b6e9ba31325a381e6d3470b4826d76ea3/docs/images/custom-words.png
+  - https://raw.githubusercontent.com/thileman/hermes-composer-spellcheck-plugin/eb74f797284f6e60f73261d0663abe7b3607320b/docs/images/context-menu.png
+  - https://raw.githubusercontent.com/thileman/hermes-composer-spellcheck-plugin/eb74f797284f6e60f73261d0663abe7b3607320b/docs/images/settings.png
+  - https://raw.githubusercontent.com/thileman/hermes-composer-spellcheck-plugin/eb74f797284f6e60f73261d0663abe7b3607320b/docs/images/custom-words.png
 platforms: []
 capabilities:
   provides_tools: []

@@ -182,7 +182,8 @@ _MEDIA_KIND_KEYS = {
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
-from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
+from plugins.platforms.telegram.telegram_ids import (
+    message_origin_fields, normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id)
 from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, apply_root_dm_topic_transfer
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
@@ -6649,15 +6650,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             lambda ev: logger.info("[Telegram] Flushing photo batch %s with %d image(s)", batch_key, len(ev.media_urls)))
 
     def _merge_into_pending(self, pending: dict, key: str, event: MessageEvent) -> None:
-        """Merge ``event`` into ``pending[key]`` (media + caption) or seed it."""
-        existing = pending.get(key)
-        if existing is None:
-            pending[key] = event
+        """Merge ``event`` into ``pending[key]`` (media, caption, origins) or seed it."""
+        existing = pending.setdefault(key, event)
+        if existing is event:
             return
         existing.media_urls.extend(event.media_urls)
         existing.media_types.extend(event.media_types)
         if event.text:
             existing.text = self._merge_caption(existing.text, event.text)
+        existing.absorb_origins(event)
 
     def _enqueue_photo_event(self, batch_key: str, event: MessageEvent) -> None:
         """Merge photo events into a pending batch and schedule flush."""
@@ -7143,7 +7144,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             message_id=str(message.message_id), platform_update_id=update_id,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
             channel_prompt=group_identity_prompt(self, message, channel_prompt),
-            edit_revision=self._edit_revision(message, update_id), timestamp=message.date)
+            edit_revision=self._edit_revision(message, update_id),
+            timestamp=message.date, **message_origin_fields(message, update_id))
 
     @staticmethod
     def _edit_revision(message, update_id: Optional[int]) -> Optional[str]:

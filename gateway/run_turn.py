@@ -269,17 +269,16 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 session_id=_run_start_session_id, session_key=session_key,
                 run_generation=run_generation, event_message_id=self._reply_anchor_for_event(event),
                 inbound_message_id=str(event.message_id) if event.message_id else None,
+                source_origins=event.source_origins, source_origins_complete=event.source_origins_complete,
                 channel_prompt=_turn_channel_prompt, moa_config=getattr(event, "_moa_config", None),
-                title_user_message=prepared.title_user_message,
-                persist_user_message=prepared.persist_user_message,
+                title_user_message=prepared.title_user_message, persist_user_message=prepared.persist_user_message,
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 reply_expected=event.reply_expected,
                 persist_user_display_metadata={
                     "gateway_input_owner": prepared.persistence_owner, **display_metadata_for_event(event),
                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
-                message_type=event.message_type,
-                scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
+                message_type=event.message_type, scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -1968,9 +1967,10 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
                 event_message_id=next_message_id, inbound_message_id=next_inbound_id,
                 channel_prompt=next_channel_prompt, message_type=next_message_type,
-                persist_user_message=next_persist_message,
-                persist_user_display_kind=next_display_kind,
+                persist_user_message=next_persist_message, persist_user_display_kind=next_display_kind,
                 reply_expected=next_reply_expected,
+                source_origins=getattr(pending_event, "source_origins", ()),
+                source_origins_complete=getattr(pending_event, "source_origins_complete", False),
                 persist_user_display_metadata={
                     **display_metadata_for_event(pending_event),
                     **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
@@ -2299,7 +2299,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
         persist_user_display_metadata: Optional[dict] = None,
-        reply_expected: Optional[bool] = None,
+        reply_expected: Optional[bool] = None, source_origins: tuple = (), source_origins_complete: bool = False,
         scheduled_heartbeat: bool = False,
         title_user_message: Optional[str] = None,
     ) -> dict[str, Any]:
@@ -2345,7 +2345,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
-            reply_expected=reply_expected,
+            reply_expected=reply_expected, source_origins=source_origins, source_origins_complete=source_origins_complete,
             persist_user_display_metadata=persist_user_display_metadata, scheduled_heartbeat=scheduled_heartbeat,
             voice_turn=str(getattr(message_type, "value", message_type) or "").lower() == "voice",
         )

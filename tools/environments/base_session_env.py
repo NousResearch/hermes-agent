@@ -81,6 +81,12 @@ def _export_dump_excluding_session_vars(tmp_path: str, excluded_names: Iterable[
         # leaked token in the snapshot would re-export into every later command
         # on the backend and outlive the private dir it protects.
         "${!HERMES_RPC_*} HERMES_KERNEL_DIR "
+        # Provider auth tokens that may leak from ~/.bashrc (e.g. ANTHROPIC_AUTH_TOKEN
+        # set by user's shell profile). These tokens are NOT needed by terminal children
+        # (claude CLI reads from ~/.claude/settings.json or Keychain), and their presence
+        # in the snapshot file is a security risk: the snapshot is world-readable by the
+        # user's processes and may persist after session end.
+        "ANTHROPIC_AUTH_TOKEN OPENAI_API_KEY ANTHROPIC_API_KEY OPENROUTER_API_KEY "
         f"HERMES_UI_SESSION_ID{extra_unset} 2>/dev/null; "
         "export -p; ) || true; } "
         f"> {tmp_path}")

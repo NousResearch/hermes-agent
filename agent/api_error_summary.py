@@ -68,6 +68,42 @@ def _is_xai_entitlement_text(lower: str) -> bool:
     )
 
 
+# Providers' support desks ask for this id on every bad-request report; capped so a hostile
+# header cannot bloat the status line.
+_MAX_REQUEST_ID_CHARS = 128
+_REQUEST_ID_HEADERS = ("request-id", "x-request-id")
+
+
+def provider_request_id(error: BaseException) -> str:
+    """The provider's request id for a failed call (OpenAI ``x-request-id``, Anthropic ``request-id``), or "".
+
+    Kept out of ``_summarize_api_error``: the summary is persisted and signed for dedup (cron incidents),
+    and a per-request id would make every failure of one outage look new.
+    """
+    current: Optional[BaseException] = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        value = getattr(current, "request_id", None)
+        response = getattr(current, "response", None)
+        if not value and isinstance(response, dict):  # botocore ClientError (Bedrock)
+            value = (response.get("ResponseMetadata") or {}).get("RequestId")
+        elif not value:
+            headers = getattr(response, "headers", None)
+            if headers is not None and hasattr(headers, "get"):
+                value = next((headers.get(h) for h in _REQUEST_ID_HEADERS if headers.get(h)), None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:_MAX_REQUEST_ID_CHARS]
+        current = current.__cause__ or current.__context__
+    return ""
+
+
+def request_id_suffix(error: BaseException) -> str:
+    """`` (provider request id: <id>)`` for a user-facing failure line, or "" when the provider sent none."""
+    request_id = provider_request_id(error)
+    return f" (provider request id: {request_id})" if request_id else ""
+
+
 def _http_prefix(error: Exception) -> str:
     status_code = getattr(error, "status_code", None)
     return f"HTTP {status_code}: " if status_code else ""

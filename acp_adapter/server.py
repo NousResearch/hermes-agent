@@ -762,6 +762,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         os.environ, so concurrent workers can't race a global flag onto the non-interactive
         auto-approve path (GHSA-96vc-wcxf-jjff)."""
         agent = state.agent
+        # ACP clients keep one turn open and only accept new prompts once it ends. A delegation
+        # that returns a background handle would end the turn while its children still run, so
+        # the client goes idle mid-work. Keep delegations in-turn: the prompt stays open until
+        # every child reports, and its results arrive in the same turn.
+        agent._hold_delegations_in_turn = True
         with contextlib.ExitStack() as stack:
             # HERMES_SESSION_KEY scopes per-session caches (interactive sudo password) to this
             # session, not the reused thread. ``cwd`` pins what the system prompt reports as the
@@ -831,16 +836,34 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
         # Slash commands are text-only; a prompt with media goes to the agent even if it starts with "/".
         if text_only_prompt and isinstance(user_content, str) and user_text.startswith("/"):
-            # Off the loop: /model validates through switch_model (network I/O) and /compress
-            # calls the LLM; handlers are sync and hold no loop-bound state.
-            response_text = await asyncio.to_thread(self._handle_slash_command, user_text, state)
-            if response_text is not None:
-                if self._conn:
-                    await self._conn.session_update(session_id, acp.update_agent_message_text(response_text))
-                    await self._send_usage_update(state)
-                # A mutating command held command_op; prompts that arrived mid-op are queued.
-                await self._drain_queued_prompts(state, session_id, self._conn)
-                return PromptResponse(stop_reason="end_turn")
+            # A skill invocation becomes the prompt: its body has to reach the model, so it
+            # cannot be answered like an ordinary command.
+            skill = await asyncio.to_thread(self._expand_skill_command, user_text, state)
+            if skill is not None:
+                kind, payload = skill
+                if kind == "message":
+                    if self._conn:
+                        await self._conn.session_update(session_id, acp.update_agent_message_text(payload))
+                    return PromptResponse(stop_reason="end_turn")
+                user_text, user_content = payload, payload
+            else:
+                # `/queue` on an idle session has nothing to wait for: run its text as this
+                # turn, so the reply is one message instead of the command note plus a drained
+                # turn concatenated behind it.
+                queued = self._take_idle_queue_prompt(user_text, state)
+                if queued is not None:
+                    user_text, user_content = queued, queued
+                else:
+                    # Off the loop: /model validates through switch_model (network I/O) and /compress
+                    # calls the LLM; handlers are sync and hold no loop-bound state.
+                    response_text = await asyncio.to_thread(self._handle_slash_command, user_text, state)
+                    if response_text is not None:
+                        if self._conn:
+                            await self._conn.session_update(session_id, acp.update_agent_message_text(response_text))
+                            await self._send_usage_update(state)
+                        # A mutating command held command_op; prompts that arrived mid-op are queued.
+                        await self._drain_queued_prompts(state, session_id, self._conn)
+                        return PromptResponse(stop_reason="end_turn")
 
         absorbed = self._claim_turn_or_queue(state, session_id, user_text, user_content, text_only_prompt)
         if absorbed is not None:

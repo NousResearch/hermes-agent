@@ -2718,8 +2718,8 @@ def probe_api_models(
         from hermes_cli.chat_catalog import note_catalog_item
 
         probed = []
-        for item in data.get("data", []):
-            if isinstance(item, dict) and note_catalog_item(item):
+        for item in _payload_items(data):
+            if note_catalog_item(item):
                 continue
             probed.append(item.get("id", ""))
         return _probe_result(

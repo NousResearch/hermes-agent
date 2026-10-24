@@ -88,6 +88,21 @@ def _pull(root: Path) -> None:
                              discard_local_changes=False, keep_stash=False)
 
 
+def test_live_checkout_under_pytest_does_not_probe_recovery_marker(tmp_path, monkeypatch):
+    """The test guard must run before any stat under the executing checkout's git directory."""
+    root = tmp_path / "live-checkout"
+
+    class ForbiddenMarker:
+        def is_file(self):
+            raise AssertionError("live checkout marker was probed")
+
+    monkeypatch.setattr(er, "_project_root", lambda: root)
+    monkeypatch.setattr(er, "interrupted_pull_marker", lambda _root: ForbiddenMarker())
+    monkeypatch.setattr(er, "_pytest_owns_live_checkout", lambda candidate: candidate == root)
+
+    assert er.restore_interrupted_pull() is False
+
+
 def test_killed_pull_is_restored_on_next_launch_and_update_reruns(checkout, monkeypatch):
     root, a, b = checkout
     real = update_cmd._git_run
@@ -288,7 +303,7 @@ def test_concurrent_launches_take_turns_and_all_rerun_from_the_restored_tree(tmp
         (origin / name).write_text(f"V = 'new {i}'\n" * 50, encoding="utf-8", newline="")
     _git(origin, "commit", "-qam", "B")
     root = tmp_path / "install"
-    _git(tmp_path, "clone", "-q", str(origin), str(root))
+    _git(tmp_path, "clone", "-q", "--no-local", str(origin), str(root))
     _git(root, "reset", "-q", "--hard", "HEAD~1")
     pre, target = _git(root, "rev-parse", "HEAD"), _git(root, "rev-parse", "origin/main")
     for i, name in enumerate(names[:150]):  # git got halfway

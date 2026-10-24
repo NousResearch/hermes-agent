@@ -100,6 +100,7 @@ import {
   shouldLatchSshClientFailure,
   sshClientFailedError
 } from './backend-start-failure'
+import { clampBootProgress } from './boot-progress'
 import { describeBootstrapFailure } from './bootstrap-failure-copy'
 import {
   detectRemoteDisplay,
@@ -426,6 +427,7 @@ import {
 } from './payload-backend'
 import { petOverlayClickThrough, shouldPopInOnOverlayClosed } from './pet-overlay'
 import { placePetOverlay, registerPetOverlayIpc } from './pet-overlay-ipc'
+import { createDesktopPlayerHost } from './player/desktop-host'
 import {
   buildRegistryProfileRoutes,
   isLocalEnumerationFailure,
@@ -772,6 +774,7 @@ if (process.env.HERMES_DESKTOP_TMPDIR) {
   process.env.TMPDIR = process.env.HERMES_DESKTOP_TMPDIR
   delete process.env.HERMES_DESKTOP_TMPDIR
 }
+const desktopPlayer = createDesktopPlayerHost()
 
 const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
 const IS_PACKAGED = app.isPackaged || Boolean(process.env.HERMES_DESKTOP_IS_PACKAGED)
@@ -2388,16 +2391,6 @@ function ensureWslWindowsFonts() {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-function clampBootProgress(value) {
-  const numeric = Number(value)
-
-  if (!Number.isFinite(numeric)) {
-    return 0
-  }
-
-  return Math.max(0, Math.min(100, Math.round(numeric)))
 }
 
 function broadcastBootProgress() {
@@ -16576,6 +16569,7 @@ app.on('before-quit', () => {
 // Close the pooled keep-alive sockets on quit so lingering connections can't
 // hold the event loop open or leak FDs past app teardown.
 app.on('will-quit', () => {
+  desktopPlayer.dispose()
   closeGatewayTicketBridges()
   killTimedGitChildren()
   sshIsolatedKeepalives.stopAll()
@@ -17978,6 +17972,7 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
 // before-quit with the latch set and falls through.
 function registerChatWindow(window: BrowserWindow) {
   chatWindows.add(window)
+  desktopPlayer.registerOwner(window, DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString())
   window.on('close', (event: Electron.Event) => {
     // The tray's close-to-tray handler runs first (registered first) and
     // absorbs the close into a hide — the work keeps running, so there is

@@ -24,6 +24,8 @@ import {
   runPluginAppAction
 } from '@/lib/keybinds/plugin-actions'
 import { readKey, writeKey } from '@/lib/storage'
+import { createDesktopMedia } from '@/sdk/desktop-media'
+import type { DesktopMedia } from '@/sdk/desktop-media'
 import { dispatchPluginNativeNotification, type PluginNativeNotificationInput } from '@/store/native-notifications'
 import { $petActive } from '@/store/pet'
 import { clearPetMessages, type PetSayOptions, sayPetMessage } from '@/store/pet-plugin-messages'
@@ -37,12 +39,13 @@ import { type PluginSettingsPage, settingsPageContribution } from './settings-pa
 
 export type { PluginFileEntry, PluginFiles, PluginFilesResult, PluginFolder } from './plugin-files'
 export type { PluginPreview } from './plugin-preview'
+export type { PluginSettingsPage, PluginSettingsSubpage } from './settings-pages'
 import type { Contribution } from './types'
 
-export type { PluginSettingsPage, PluginSettingsSubpage } from './settings-pages'
 export type { PluginRestOptions } from '@/hermes'
 export type { HermesOpenTarget } from '@/lib/hermes-open-target'
 export type { PluginAppActionId, PluginAppActionInfo, PluginRunActionResult } from '@/lib/keybinds/plugin-actions'
+export type { DesktopMedia, DesktopMediaSurfaceProps, MediaPlayerController } from '@/sdk/desktop-media'
 export type { PluginNativeNotificationInput, PluginNotificationAction } from '@/store/native-notifications'
 export type { PetMessageTone, PetSayOptions } from '@/store/pet-plugin-messages'
 
@@ -190,6 +193,8 @@ export interface PluginContext {
   /** Plugin-scoped i18n: ship + register locale bundles under this plugin,
    *  resolved against the app's active locale — no core `en.ts` edit. */
   i18n: PluginI18n
+  /** Optional host-owned native media surface. Feature-detect before use. */
+  readonly media?: DesktopMedia
 }
 
 export interface HermesPlugin {
@@ -378,6 +383,7 @@ export function createPluginContext(
 ): PluginContext {
   const source = `plugin:${pluginId}`
   const scope = (c: PluginContribution): Contribution => ({ ...c, id: `${pluginId}:${c.id}`, source })
+  let media: DesktopMedia | undefined
 
   const track = (dispose: () => void) => {
     onDispose?.(dispose)
@@ -402,6 +408,9 @@ export function createPluginContext(
     preview: createPluginPreview(pluginId, capabilities),
     storage: createPluginStorage(pluginId),
     files: createPluginFiles(pluginId),
-    i18n: createPluginI18n(pluginId, track)
+    i18n: createPluginI18n(pluginId, track),
+    get media() {
+      return (media ??= createDesktopMedia(pluginId, track))
+    }
   }
 }

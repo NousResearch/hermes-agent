@@ -13,6 +13,7 @@ import type { UpdateRunReport } from '../electron/updater/update-metrics'
 import type { WindowSizeMode } from '../electron/window-size-types'
 
 import type { UiPreferencesBridge } from './lib/ui-preferences/sync'
+import type { PlayerBridge } from './lib/player-contract'
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
   PetOverlayBounds,
@@ -34,6 +35,7 @@ export type DesktopMachineProfile = MachineProfile
 declare global {
   interface Window {
     hermesDesktop: {
+      player?: PlayerBridge
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
       // the window's backend; pass a named profile to dial/reuse that profile's
       // cached gateway descriptor.

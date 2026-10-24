@@ -64,6 +64,7 @@ from hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
     _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting,
 )
+from hermes_cli.plugins_context_capabilities import PluginContextCapabilitiesMixin
 
 
 def get_bundled_plugins_dir() -> Path:
@@ -227,7 +228,7 @@ class LoadedPlugin:
     deferred: bool = False
 
 
-class PluginContext(PluginCapabilityCtxMixin):
+class PluginContext(PluginCapabilityCtxMixin, PluginContextCapabilitiesMixin):
     """Facade given to plugins so they can register tools and hooks."""
 
     def __init__(self, manifest: PluginManifest, manager: PluginManager):
@@ -373,16 +374,6 @@ class PluginContext(PluginCapabilityCtxMixin):
         )
         logger.info("Plugin '%s' registered %s: %s", self.manifest.name, label, registry_name)
         return handle
-
-    @property
-    def llm(self) -> Any:
-        """Host-owned :class:`agent.plugin_llm.PluginLlm` facade: completions on the user's active
-        model/auth. Overrides (model, agent id, auth profile) are fail-closed, gated by
-        ``plugins.entries.<plugin_id>.llm.*``."""
-        if self._llm is None:
-            from agent.plugin_llm import PluginLlm
-            self._llm = PluginLlm(plugin_id=self.plugin_id)
-        return self._llm
 
     @cached_property
     def subagent_lifecycle(self) -> Any:

@@ -252,6 +252,7 @@ class AIAgent(
         tool_complete_callback: Callable[..., Any] | None = None, thinking_callback: Callable[..., Any] | None = None,
         reasoning_callback: Callable[..., Any] | None = None, clarify_callback: Callable[..., Any] | None = None,
         read_terminal_callback: Callable[..., Any] | None = None, read_preview_callback: Callable[..., Any] | None = None,
+        player_agent_callback: Callable[..., Any] | None = None,
         drive_preview_callback: Callable[..., Any] | None = None, read_window_below_callback: Callable[..., Any] | None = None,
         connection_callback: Callable[..., Any] | None = None, tour_callback: Callable[..., Any] | None = None,
         theme_callback: Callable[..., Any] | None = None,

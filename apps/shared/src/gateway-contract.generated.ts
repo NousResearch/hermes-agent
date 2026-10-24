@@ -5573,6 +5573,43 @@ export interface VaultCodeRequestParams {
   site?: string | null
   hint?: string | null
 }
+/** Closed player operation family; session scope is owned by the transport. */
+export interface PlayerAgentRequestParams {
+  session_id: string
+  operation: PlayerAgentContextOperation | PlayerAgentControlOperation | PlayerAgentTranscriptOperation | PlayerAgentDownloadOperation | PlayerAgentJobsOperation | PlayerAgentJobOperation
+}
+export interface PlayerAgentContextOperation {
+  type: 'context'
+}
+export interface PlayerAgentControlOperation {
+  type: 'control'
+  context_token: string
+  navigation_generation: number
+  action: 'play' | 'pause' | 'mute' | 'unmute' | 'seek' | 'pin' | 'unpin' | 'fullscreen' | 'exit-fullscreen'
+  position_seconds?: number | null
+}
+export interface PlayerAgentTranscriptOperation {
+  type: 'transcript.start'
+  context_token: string
+  language?: string | null
+  range?: PlayerAgentRange | null
+}
+export interface PlayerAgentRange {
+  start_seconds?: number | null
+  end_seconds?: number | null
+}
+export interface PlayerAgentDownloadOperation {
+  type: 'download.start'
+  context_token: string
+  quality?: 'best' | '720p' | '1080p' | 'audio' | null
+}
+export interface PlayerAgentJobsOperation {
+  type: 'jobs.list'
+}
+export interface PlayerAgentJobOperation {
+  type: 'job.status' | 'job.cancel'
+  job_id: string
+}
 export interface ReadRangeRequestParams {
   session_id: string
   start?: number | null
@@ -7078,6 +7115,8 @@ export interface ServerRequestMap {
   clarify: { params: ClarifyRequestParams; result: ClarifyResult }
   /** Masked sudo password for the Bot Screen package install; app-level (empty session). */
   'display.install.sudo': { params: DisplayInstallSudoParams; result: ValueResult }
+  /** Route a fixed player operation to the desktop renderer linked to this session. */
+  'player.agent.request': { params: PlayerAgentRequestParams; result: ValueResult }
   /** Click / type / scroll / annotate inside the in-app browser preview. */
   'preview.act': { params: PreviewActRequestParams; result: ValueResult }
   /** Read the in-app browser preview's text (JSON text answer). */
@@ -7110,6 +7149,7 @@ export const SERVER_REQUEST_METHODS = [
   'approval',
   'clarify',
   'display.install.sudo',
+  'player.agent.request',
   'preview.act',
   'preview.read',
   'secret',

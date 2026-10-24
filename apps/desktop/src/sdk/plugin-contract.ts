@@ -1,7 +1,10 @@
 // The plugin authoring contract types; the SDK barrel re-exports them.
 
 export type {
+  DesktopMedia,
+  DesktopMediaSurfaceProps,
   HermesPlugin,
+  MediaPlayerController,
   PetMessageTone,
   PetSayOptions,
   PluginAppActionId,

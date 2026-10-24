@@ -52,10 +52,6 @@ def test_is_destructive_command_treats_cp_as_mutating():
     assert _is_destructive_command("cp .env.local .env") is True
 
 
-
-
-
-
 @pytest.fixture(autouse=True)
 def _mock_plugin_discovery(monkeypatch):
     # Tool definitions are supplied by these unit fixtures. Scanning every

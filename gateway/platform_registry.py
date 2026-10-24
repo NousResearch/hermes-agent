@@ -150,6 +150,8 @@ class PlatformEntry:
     # rules / channel directory, it also re-parses channel-directory hits, and it keeps
     # ``pass_unresolved_references`` lenient.
     target_ref_syntax_fn: Optional[Callable[[str], Any]] = None
+    # Native reply metadata from the triggering source and explicit reply anchor (Signal quotes).
+    reply_metadata_for_source_fn: Optional[Callable[[Any, Optional[str]], dict]] = None
     # ``gateway.platforms.send_targets.StandaloneSendPolicy`` or None (generic send routing).
     standalone_send: Optional[Any] = None
     # --- dashboard ---

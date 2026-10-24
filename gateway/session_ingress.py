@@ -404,7 +404,7 @@ async def deliver_settled(authority, admission_id):
 
 
 async def deliver_response(adapter, event, session_key, response):
-    from gateway.platforms.base import _thread_metadata_for_event, _mark_notify_metadata
+    from gateway.platforms.reply_context import _thread_metadata_for_event, _mark_notify_metadata
     text, ttl = adapter._unwrap_ephemeral(response)
     if not text:
         return

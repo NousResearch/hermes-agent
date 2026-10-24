@@ -77,7 +77,8 @@ test('typed /reasoning sets the session level through the owner mutation; --glob
       { session_id: 's', operation: 'reasoning', payload: { effort: 'low' }, expected_revision: 5 }
     ])
     expect(sent.filter(frame => frame.method === 'config.set').map(frame => frame.params)).toEqual([
-      { key: 'reasoning', session_id: 's', value: 'high', scope: 'global' }
+      // The attached session's learned owner (default included) rides the explicit route.
+      { key: 'reasoning', session_id: 's', value: 'high', scope: 'global', profile: 'default' }
     ])
     // The bare form's read still reaches the owner.
     await expect(client.request('config.get', { key: 'reasoning', session_id: 's' })).resolves.toEqual({

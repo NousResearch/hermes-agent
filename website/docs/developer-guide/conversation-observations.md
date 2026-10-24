@@ -94,8 +94,10 @@ requires the exact request ID and its turn; `turn_id` always fences the **curren
 generation. Resolving a badge is **not approval to mutate any business data**.
 
 `tui_gateway.server_requests` brackets real `send`/`send_async` requests, not
-tool-name heuristics. The closed human-method list is `clarify`, `setup_choose`, `approval`,
-`sudo`, `secret`, `vault.unlock_prompt`, `vault.save_login`, `vault.code`.
+tool-name heuristics. The closed human-method list is `clarify`, `setup_beat`,
+`theme.pick`, `approval`, `sudo`, `secret`, `vault.unlock_prompt`, `vault.save_login`,
+`vault.code`. Upstream removed `setup_choose`; observations use the current
+onboarding/picker contracts rather than restoring the obsolete request.
 Publication precedes the request frame; full response, final clarify lock,
 timeout, cancellation, undelivered refusal and frame-write failure settle it.
 Partial clarify locks leave the request open. The owner is resolved through the
@@ -181,6 +183,7 @@ introduced.
 Use `HERMES_PYTHON=<isolated-test-env>/bin/python scripts/run_tests.sh` for
 `tests/hermes_state/test_conversation_observations.py`,
 `test_observation_terminal.py`, `test_observation_identity.py`,
+`test_observation_transactions.py`, `test_observation_readonly.py` (unprivileged),
 `tests/agent/test_conversation_observations.py`,
 `tests/tui_gateway/test_conversation_observations.py`, `test_observation_native_requests.py` and
 `tests/hermes_cli/test_session_observations.py`, plus native lease/protocol tests.

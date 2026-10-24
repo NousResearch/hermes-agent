@@ -10,8 +10,12 @@ from hermes_state import SessionDB
 @pytest.mark.parametrize("source", ["desktop", "tui"])
 @pytest.mark.parametrize("method,params,kind", [
     ("sudo", {"command": "synthetic-private-sentinel"}, "approval"),
-    ("setup_choose", {"kind": "question", "question": "synthetic-private-sentinel"}, "question"),
+    ("approval", {"request_id": "synthetic", "command": "synthetic-private-sentinel"}, "approval"),
+    ("secret", {"env_var": "SYNTHETIC_TEST", "prompt": "synthetic-private-sentinel"}, "question"),
+    ("setup_beat", {"beat": "name", "card": {"suggested": "synthetic-private-sentinel"}}, "question"),
+    ("theme.pick", {"picker": "accent"}, "question"),
     ("window.read", {}, "none"),
+    ("theme.apply", {"accent": "synthetic"}, "none"),
 ])
 def test_real_server_binding_uses_owner_db_not_launch_profile(tmp_path, monkeypatch, source, method, params, kind):
     from hermes_cli import banner
@@ -40,7 +44,9 @@ def test_real_server_binding_uses_owner_db_not_launch_profile(tmp_path, monkeypa
         try:
             results = []
             settle = requests.send_async(method, "native-ui", params, results.append)
-            answer = {"picked": "synthetic"} if method == "setup_choose" else {"value": "synthetic"}
+            answer = ({"answer": {"name": "synthetic"}} if method == "setup_beat" else
+                      {"picked": {"accent": "synthetic"}} if method == "theme.pick" else
+                      {"choice": "once"} if method == "approval" else {"value": "synthetic"})
             assert requests.resolve_response({"id": frames[-1]["id"], "result": answer})
             assert results == [answer]
             assert db.read_session_observations(["same"], profile="secondary")[0]["attention"]["kind"] == "none"

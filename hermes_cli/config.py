@@ -1719,6 +1719,81 @@ def split_model_config_default(raw_default: Any) -> tuple[str, str]:
     return (str(raw_default or "").strip(), "")
 
 
+_WARNED_PROVIDER_PREFIX_NOTICES: set[str] = set()
+
+
+def redundant_provider_prefix_notice(config: dict[str, Any]) -> Optional[str]:
+    """Actionable notice for a ``model.default`` that repeats its custom provider as a prefix (#142839).
+
+    ``model.provider: china`` already selects the endpoint, so ``model.default: china/<model>``
+    names the same provider twice and the *whole* string is forwarded upstream as the ``model``
+    field. Exact-name routers (New API / one-api style) answer ``503 model_not_found`` for it, the
+    retry ladder burns through its attempts, and the turn silently continues on the fallback
+    model — from the user's seat an upstream outage, not a config typo.
+
+    The notice never rewrites the value: a slash is part of the real id for whole classes of
+    providers (``openrouter/auto``, ``openrouter/pareto-code``, ``nvidia/<catalog id>``, a LiteLLM
+    proxy that serves ``openai/gpt-4o``), so stripping at load would corrupt valid configs and
+    persist the corruption on the next save. It is scoped to *declared custom* endpoints
+    (``providers:`` entries that are not builtin, bare ``custom``, ``custom:<slug>``), where the
+    prefix is a paste artifact far more often than an upstream namespace.
+
+    Returns the one-line message, or None when the pair is fine.
+    """
+    model = config.get("model")
+    if not isinstance(model, dict):
+        return None
+    default, provider = model.get("default"), model.get("provider")
+    if not isinstance(default, str) or not isinstance(provider, str):
+        return None
+    provider = provider.strip().lower()
+    if not provider:
+        return None
+    prefix, sep, bare = default.strip().partition("/")
+    prefix, bare = prefix.strip().lower(), bare.strip()
+    if not sep or not bare or prefix != provider.rsplit(":", 1)[-1]:
+        return None
+    if not _is_custom_provider(config, provider):
+        return None
+    return (
+        f"model.default '{default}' repeats the provider name, and model.provider is already "
+        f"'{provider}' — Hermes sends the whole string upstream, which exact-name routers reject "
+        f"with model_not_found (the turn then falls back to the fallback model). If the endpoint "
+        f"serves the bare id, run `hermes config set model.default {bare}`."
+    )
+
+
+def _is_custom_provider(config: dict[str, Any], provider: str) -> bool:
+    """True for ``custom``/``custom:<slug>`` and for non-builtin names declared under ``providers:``.
+
+    The distinction matters: a *builtin* route may serve ids whose slash IS part of the model
+    name (``openrouter/auto``, ``nvidia/<catalog id>``, a LiteLLM proxy behind ``providers.openai``
+    that serves ``openai/gpt-4o``), so only a self-declared endpoint makes the prefix a paste
+    artifact worth reporting. ``allow_network=False`` keeps the config load path offline.
+    """
+    if provider == "custom" or provider.startswith("custom:"):
+        return True
+    declared = config.get("providers")
+    if not isinstance(declared, dict):
+        return False
+    if provider not in {str(k).strip().lower() for k in declared}:
+        return False
+    with suppress(Exception):
+        from hermes_cli.providers import get_provider
+        return get_provider(provider, allow_network=False) is None
+    return False
+
+
+def _warn_redundant_provider_prefix(config: dict[str, Any]) -> None:
+    """Log the notice once per distinct message — ``_normalize_root_model_keys`` runs on every
+    load *and* every save, and a per-turn repeat would bury the line it exists to surface."""
+    notice = redundant_provider_prefix_notice(config)
+    if not notice or notice in _WARNED_PROVIDER_PREFIX_NOTICES:
+        return
+    _WARNED_PROVIDER_PREFIX_NOTICES.add(notice)
+    logger.warning("%s", notice)
+
+
 def _normalize_root_model_keys(config: dict[str, Any]) -> dict[str, Any]:
     """Canonicalize the ``model`` section at the single load/save chokepoint.
     Root-level ``provider``/``base_url``/``context_length`` (older layouts) are moved under
@@ -1744,6 +1819,11 @@ def _normalize_root_model_keys(config: dict[str, Any]) -> dict[str, Any]:
     explicit ``default``, so existing configs are unaffected).
     """
     model_in = config.get("model")
+    # ``default: <provider>/<model>`` with ``provider`` already selected (#142839): the prefix is
+    # not part of the upstream id and the whole string goes on the wire, which exact-name routers
+    # reject. Reported, never rewritten — see ``redundant_provider_prefix_notice``. Ahead of the
+    # early return below because the redundant-prefix shape is otherwise a no-op for this pass.
+    _warn_redundant_provider_prefix(config)
     model_provider = model_in.get("provider") if isinstance(model_in, dict) else None
     needs_model_work = (model_provider is not None and not isinstance(model_provider, str)) or (
         isinstance(model_in, dict) and (

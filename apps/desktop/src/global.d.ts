@@ -35,13 +35,16 @@ declare global {
     hermesDesktop: {
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
       // the window's backend; pass a named profile to dial/reuse that profile's
-      // cached gateway descriptor.
-      getConnection: (profile?: string | null) => Promise<HermesConnection>
+      // cached gateway descriptor. `redial` is for the gateway boot hook only:
+      // it may re-drive a remote primary boot that just failed, which main
+      // otherwise answers with that failure until its retry window closes.
+      getConnection: (profile?: string | null, opts?: { redial?: boolean }) => Promise<HermesConnection>
       // Registry-scoped backend resolution: dial (connectionId, profile). An
       // empty/local connectionId delegates to the legacy getConnection path.
       getConnectionFor?: (payload: {
         connectionId?: null | string
         profile?: null | string
+        redial?: boolean
       }) => Promise<HermesConnection>
       // Registry-scoped fresh WS URL (same result contract as getGatewayWsUrl).
       getGatewayWsUrlFor?: (payload: {

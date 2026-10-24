@@ -4,6 +4,8 @@ import { test } from 'vitest'
 
 import { isReauthRequiredError, makeUnsignedOauthError } from './backend-health'
 import {
+  classifyPrimaryBootFailure,
+  createRemoteBootRetryWindow,
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
   isSshAuthFailedBootFailure,
@@ -252,4 +254,97 @@ test('FIX #103288: the desktop.ssh_path hint is Windows-only', () => {
 
   assert.equal(isSshClientFailedBootFailure(error), true)
   assert.doesNotMatch(error.message, /ssh_path/)
+})
+
+test('a failed primary boot latches when it cannot self-heal and only retries when it is a transient remote fault', () => {
+  const remote = { attemptedRemote: true, isReauth: false }
+  const transient = new Error('Could not reach the remote Hermes gateway while refreshing its WebSocket ticket.')
+
+  assert.deepEqual(
+    classifyPrimaryBootFailure(new Error('spawn hermes ENOENT'), { ...remote, attemptedRemote: false }),
+    {
+      latchStart: true,
+      latchReauth: false,
+      retryable: false
+    }
+  )
+  assert.deepEqual(classifyPrimaryBootFailure(transient, remote), {
+    latchStart: false,
+    latchReauth: false,
+    retryable: true
+  })
+
+  for (const terminal of [
+    Object.assign(new Error('SSH refused to connect.'), { kind: 'host-key-changed' }),
+    new Error('me@box: Permission denied (publickey).'),
+    sshClientFailedError('ssh', new Error('Command failed: ssh -G -- box'), 'darwin')
+  ]) {
+    assert.deepEqual(classifyPrimaryBootFailure(terminal, remote), {
+      latchStart: true,
+      latchReauth: false,
+      retryable: false
+    })
+  }
+
+  assert.deepEqual(classifyPrimaryBootFailure(transient, { ...remote, isReauth: true }), {
+    latchStart: false,
+    latchReauth: true,
+    retryable: false
+  })
+})
+
+test('FIX #123225: inside the retry window a background caller gets the remote failure back instead of re-driving boot', () => {
+  let now = 0
+  const retry = createRemoteBootRetryWindow({ baseMs: 5_000, capMs: 300_000, now: () => now })
+
+  const unreachable = new Error(
+    'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket. Try reconnecting.'
+  )
+
+  assert.equal(retry.deferredFailure({ redial: false }), null, 'nothing has failed yet: every caller boots')
+
+  retry.fail(unreachable)
+
+  // Background polls kept re-driving the whole boot every 1-3s for days.
+  // Inside the window each one is answered with the failure instead.
+  for (; now < 5_000; now += 250) {
+    assert.equal(retry.deferredFailure({ redial: false }), unreachable)
+  }
+
+  // The renderer's boot hook owns the retry pacing (bounded cold-boot retry,
+  // reconnect loop): its own dial always re-drives.
+  now = 1_000
+  assert.equal(retry.deferredFailure({ redial: true }), null)
+
+  // Never a latch: once the window closes, the next caller re-drives.
+  now = 5_000
+  assert.equal(retry.deferredFailure({ redial: false }), null)
+})
+
+test('the remote retry window doubles per consecutive failure up to its cap, and clear() restarts it', () => {
+  let now = 0
+  const retry = createRemoteBootRetryWindow({ baseMs: 5_000, capMs: 60_000, now: () => now })
+  const refused = new Error('net::ERR_CONNECTION_REFUSED')
+
+  for (const windowMs of [5_000, 10_000, 20_000, 40_000, 60_000, 60_000]) {
+    retry.fail(refused)
+    const failedAt = now
+
+    now = failedAt + windowMs - 1
+    assert.equal(retry.deferredFailure({ redial: false }), refused, `still open just before ${windowMs}ms`)
+    now = failedAt + windowMs
+    assert.equal(retry.deferredFailure({ redial: false }), null, `closed at ${windowMs}ms`)
+  }
+
+  // A remote that answered, or an explicit recovery path (reset, repair,
+  // apply-config), closes the window at once and restarts the ladder.
+  retry.fail(refused)
+  retry.clear()
+  assert.equal(retry.deferredFailure({ redial: false }), null)
+
+  retry.fail(refused)
+  now += 4_999
+  assert.equal(retry.deferredFailure({ redial: false }), refused)
+  now += 1
+  assert.equal(retry.deferredFailure({ redial: false }), null, 'after clear() the ladder starts at the base again')
 })

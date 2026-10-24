@@ -80,9 +80,17 @@ def bootstrap(start: bool, recover: bool = False) -> dict:
     endpoint = receipt.endpoint
     # A profile served by the default multiplexer has no socket of its own; the host mints its ticket.
     control = control_home_for(home, endpoint)
-    request = json.dumps({"protocol": 1, "id": 1, "verb": "session-ticket", "params": {
-        "profile_id": endpoint.profile_id, "instance_id": endpoint.instance_id,
-        "purpose": "interactive"}}).encode() + b"\n"
+    # A standalone dashboard hands its authenticated login down with the chat PTY (#144140):
+    # naming it here (the mint relabels only for a verified same-user peer, and only for the
+    # structured ``auth:v1:`` form) lets the resume adopt the login-stamped rows that same
+    # login created through the serve backend, instead of refusing them as the host UID's.
+    params = {"profile_id": endpoint.profile_id, "instance_id": endpoint.instance_id,
+              "purpose": "interactive"}
+    session_subject = os.environ.get("HERMES_TUI_SESSION_SUBJECT", "")  # health: allow HX002 -- per-request dashboard login crossing the process boundary to the spawned child; env is this boundary's existing contract (HERMES_TUI_RESUME, HERMES_TUI_GATEWAY_URL), not a behavioural setting
+    if session_subject:
+        params["subject"] = session_subject
+    request = json.dumps({"protocol": 1, "id": 1, "verb": "session-ticket",
+                          "params": params}).encode() + b"\n"
     if os.name == "nt":
         from gateway.runtime_bootstrap_windows import query_runtime_control
         raw = query_runtime_control(control, request, 5)

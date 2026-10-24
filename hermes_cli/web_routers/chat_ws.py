@@ -472,6 +472,26 @@ async def _pty_channel_marker_state(
     return active_session_file, marker_preexisting, resume
 
 
+def _pty_session_subject_kwargs(ws: WebSocket) -> dict:
+    """The chat argv kwarg carrying the opening login's structured subject, or {}.
+
+    Forwarded to the PTY child's gateway bootstrap (#144140): without it the
+    resume admits as the host UID and refuses a login-stamped ``desktop`` row the
+    same login created through the serve backend. Only a real dashboard login is
+    forwarded — the server-internal credential stays unforwarded, and the
+    identityless legacy-token path stamps no identity at all, so both bootstrap
+    exactly as before. A forwarded login still only ever adopts rows its own
+    label owns (``hermes_state_local_migration.login_owned_by``).
+    """
+    identity = getattr(ws, "_hermes_auth_identity", None)
+    if identity is None:
+        return {}
+    from gateway.session_identity import authenticated_subject, is_authenticated_identity
+    if not is_authenticated_identity(identity):
+        return {}
+    return {"session_subject": authenticated_subject(identity)}
+
+
 @router.websocket("/api/pty")
 async def pty_ws(ws: WebSocket) -> None:
     from hermes_cli.web_server_chat import PTY_REGISTRY, PtyBridge, PtyUnavailableError, _PTY_BRIDGE_AVAILABLE, _RESIZE_RE
@@ -510,6 +530,7 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.send_json({"type": "resume", "id": resume})
 
     resolve_kwargs = {"resume": resume, "sidecar_url": sidecar_url, "profile": profile}
+    resolve_kwargs.update(_pty_session_subject_kwargs(ws))
     if active_session_file is not None:
         resolve_kwargs["active_session_file"] = str(active_session_file)
     # A picked workspace only applies to a FRESH chat; a resumed session keeps its own cwd.

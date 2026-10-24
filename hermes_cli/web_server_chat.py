@@ -491,7 +491,8 @@ async def _pty_fail(ws: WebSocket, exc: BaseException, *, surface: str = "Chat")
 def _resolve_chat_argv(
     resume: Optional[str] = None, sidecar_url: Optional[str] = None, profile: Optional[str] = None,
     active_session_file: Optional[str] = None,
-    workspace_cwd: Optional[str] = None) -> tuple[list[str], Optional[str], Optional[dict]]:
+    workspace_cwd: Optional[str] = None,
+    session_subject: Optional[str] = None) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve the argv + cwd + env for the chat PTY (what ``hermes --tui`` runs).
 
     Tests monkeypatch this with a tiny fake command.  Env contract: resume goes
@@ -506,6 +507,12 @@ def _resolve_chat_argv(
     (where a self-spawned gateway starts) and ``HERMES_TUI_CWD`` (what the TUI
     passes as the explicit ``cwd`` of ``session.create`` when attached to the
     in-memory gateway, whose own cwd is the dashboard's launch dir).
+    ``session_subject`` is the authenticated dashboard login's structured subject
+    (``gateway.session_identity.authenticated_subject``): it rides to the child as
+    ``HERMES_TUI_SESSION_SUBJECT`` so the private-control-socket bootstrap can name
+    it on the session-ticket (``gateway/control_socket.py``, #138915) — without it
+    the resume admits as the host UID and refuses a login-stamped ``desktop`` row
+    the same login created through the serve backend (#144140).
     """
     from hermes_cli.web_server_profiles import _config_profile_scope, _resolve_profile_dir
     from hermes_cli.web_server_sessions import _open_session_db_for_profile, _session_latest_descendant
@@ -553,6 +560,8 @@ def _resolve_chat_argv(
     # deploys have no COLORTERM, so hex colors would snap to the 256 palette.
     env.setdefault("COLORTERM", "truecolor")
     env["HERMES_TUI_DASHBOARD"] = "1"
+    if session_subject:
+        env["HERMES_TUI_SESSION_SUBJECT"] = session_subject
 
     if resume:
         _resume_db = _open_session_db_for_profile(
@@ -634,7 +643,8 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
 async def _resolve_chat_argv_async(
     resume: Optional[str] = None, sidecar_url: Optional[str] = None, profile: Optional[str] = None,
     active_session_file: Optional[str] = None,
-    workspace_cwd: Optional[str] = None) -> tuple[list[str], Optional[str], Optional[dict]]:
+    workspace_cwd: Optional[str] = None,
+    session_subject: Optional[str] = None) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve chat argv off the event loop (it may run ``npm run build``); the
     async lock keeps one-build-at-a-time without parking worker threads."""
     from hermes_cli.web_server import _get_chat_argv_lock, app
@@ -643,6 +653,8 @@ async def _resolve_chat_argv_async(
         kwargs["active_session_file"] = active_session_file
     if workspace_cwd is not None:
         kwargs["workspace_cwd"] = workspace_cwd
+    if session_subject is not None:
+        kwargs["session_subject"] = session_subject
 
     async with _get_chat_argv_lock(app):
         return await asyncio.to_thread(_resolve_chat_argv, **kwargs)

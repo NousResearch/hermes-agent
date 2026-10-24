@@ -27,6 +27,7 @@ from gateway.kanban_watchers_common import (
 from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
 from gateway.kanban_watchers_dispatcher import (
     _KanbanDispatcher,
+    _dispatch_saturated,
     _log_spawn_results,
     _resolve_dispatcher_settings,
 )
@@ -320,10 +321,7 @@ class GatewayKanbanWatchersMixin:
                     # credential loss). The 2026-10-24 "stuck" warnings were
                     # this false positive: 3 running workers against
                     # ``kanban.max_spawn: 3``, a perfectly healthy board.
-                    saturated = any(
-                        res is not None and res.capacity_saturated
-                        for res in (results or [])
-                    )
+                    saturated = _dispatch_saturated(results)
                     if saturated:
                         logger.info(
                             "kanban dispatcher at capacity: ready queue non-empty "

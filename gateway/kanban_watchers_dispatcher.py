@@ -344,3 +344,23 @@ def _log_spawn_results(results: Optional[list]) -> bool:
                 len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
             )
     return any_spawned
+
+
+def _dispatch_saturated(results: Optional[list]) -> bool:
+    """Did any board's tick hold ready work back because it was AT CAPACITY?
+
+    AT CAPACITY is not a fault: the ready queue stays non-empty precisely
+    because the running workers are busy, and 0 spawns is the expected
+    outcome of a cap, not a symptom of a broken profile. The 2026-10-24
+    "dispatcher stuck" warnings were this false positive: 3 running workers
+    against ``kanban.max_spawn: 3``, a perfectly healthy board.
+
+    ``results`` is a list of ``(slug, DispatchResult)`` PAIRS — the same shape
+    ``_log_spawn_results`` consumes. Reading ``res.capacity_saturated`` off
+    the pair instead of the result raises AttributeError inside the watcher
+    loop, which kills the whole tick and silently disables the warning.
+    """
+    return any(
+        res is not None and getattr(res, "capacity_saturated", None)
+        for _slug, res in (results or [])
+    )

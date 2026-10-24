@@ -113,8 +113,9 @@ class TestSendTelegramStandaloneProxy:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Without TELEGRAM_PROXY (and no inherited HTTPS_PROXY/etc), Bot()
-        is constructed plainly — no ``request``/``get_updates_request``
-        kwargs, and HTTPXRequest is not invoked at all.
+        is constructed with no ``proxy=`` on its request and no
+        ``get_updates_request`` kwarg. The request DOES carry the standalone
+        read timeout (#133164), so HTTPXRequest is invoked — without a proxy.
         """
         from tools.send_message_tool import _send_telegram
 
@@ -156,7 +157,12 @@ class TestSendTelegramStandaloneProxy:
         call_args = bot_factory.call_args.args
         # token may be passed positionally or as a kwarg; either is fine.
         assert call_kwargs.get("token", call_args[0] if call_args else None) == "tok"
-        assert "request" not in call_kwargs
+        assert "request" in call_kwargs, (
+            "request= kwarg missing — the standalone read timeout is not wired (#133164)"
+        )
         assert "get_updates_request" not in call_kwargs
-        httpx_request_factory.assert_not_called()
+        httpx_request_factory.assert_called_once()
+        assert httpx_request_factory.call_args.kwargs.get("proxy") is None, (
+            "no proxy is configured; the request must not carry one"
+        )
         bot.send_message.assert_awaited_once()

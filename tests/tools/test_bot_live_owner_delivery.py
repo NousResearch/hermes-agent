@@ -1,6 +1,7 @@
 """Canonical delivery invariants: stable envelope IDs, authority-only admission,
 immutable receipts. The mailbox is receipt storage, never an execution queue."""
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -388,3 +389,35 @@ def test_pre_dial_failure_on_a_retried_intent_stays_ambiguous(tmp_path, monkeypa
     with pytest.raises(live.PreDialError):
         bot_mode_dm._admit_live_dm(None, dm_file)
     assert intent.exists() and Path(dm_file).exists()
+
+
+def test_a_dead_ticket_is_quarantined_by_a_bulk_scan_and_preserved(tmp_path, caplog):
+    """One unreadable byte must not be re-read on every sweep, and must never be deleted."""
+    root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+    root.mkdir(parents=True)
+    dead = root / f"{'d' * 32}.json"
+    dead.write_text("{not json", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="tools.bot_live_delivery"):
+        assert mailbox._next_sequence(root) == 1  # a dead ticket never wedges the scan
+
+    assert not dead.exists()
+    quarantined = root / mailbox.QUARANTINE_DIR_NAME / dead.name
+    assert quarantined.read_text(encoding="utf-8") == "{not json"  # preserved, not dropped
+    assert any("Quarantined unreadable delivery record" in r.getMessage() for r in caplog.records)
+    # The next pass sees a clean directory: no second warning, no quarantine reshuffle.
+    with caplog.at_level(logging.WARNING, logger="tools.bot_live_delivery"):
+        assert mailbox._next_sequence(root) == 2
+    assert not any("Quarantined" in r.getMessage() for r in caplog.records[1:])
+
+
+def test_a_foreign_json_ticket_without_a_sequence_does_not_wedge_the_scan(tmp_path):
+    """A parsed-but-damaged ticket is uninspectable, not dead: the scan skips it and keeps it."""
+    root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+    root.mkdir(parents=True)
+    foreign = root / "notes.json"
+    foreign.write_text(json.dumps({"hello": "world"}), encoding="utf-8")
+
+    assert mailbox._next_sequence(root) == 1
+    assert json.loads(foreign.read_text(encoding="utf-8")) == {"hello": "world"}
+    assert not (root / mailbox.QUARANTINE_DIR_NAME).exists()

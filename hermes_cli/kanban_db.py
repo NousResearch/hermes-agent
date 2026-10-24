@@ -2125,14 +2125,21 @@ def _claim_and_open_run(
     *, event_extra: Optional[dict] = None,
 ) -> Optional[int]:
     """CAS ``source_status -> running``, open a run row, emit ``claimed``; None
-    when the CAS lost. Caller holds the txn."""
+    when the CAS lost. Caller holds the txn.
+
+    Resets ``last_heartbeat_at``: the column is the CURRENT run's liveness
+    signal, and a retry inherits the previous run's last beat otherwise — which
+    reads as "the worker is dead" on every board for the whole boot window of
+    the fresh run (its first heartbeat only lands once the agent fully boots,
+    ~2 min after claim)."""
     cur = conn.execute(
         f"""
         UPDATE tasks
            SET status        = 'running',
                claim_lock    = ?,
                claim_expires = ?,
-               started_at    = COALESCE(started_at, ?)
+               started_at    = COALESCE(started_at, ?),
+               last_heartbeat_at = NULL
          WHERE id = ?
            AND status = '{source_status}'
            AND claim_lock IS NULL

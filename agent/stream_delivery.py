@@ -11,6 +11,7 @@ from typing import Any, Dict, List
 from agent.memory_context import sanitize_context
 from agent.message_content import flatten_message_text
 from agent.history_commentary import visible_commentary
+from agent.codex_responses_adapter import _leaked_tool_call_text
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
@@ -191,6 +192,14 @@ class StreamDeliveryMixin:
             return
         visible = self._visible_commentary(text)
         if not visible or visible == "(empty)" or self._interim_text_was_delivered(visible):
+            return
+        # The settled path drops commentary messages that carry leaked tool-call echo text (#125458);
+        # the live delivery runs BEFORE normalization, so it must apply the same predicate or the
+        # echo reaches chat as the turn preview even though normalization later discards it.
+        if _leaked_tool_call_text(visible):
+            logger.debug(
+                "dropping leaked tool-call echo from live codex commentary delivery (%r...)", visible[:160],
+            )
             return
         self._deliver_interim(visible, already_streamed=False, record=[visible])
 

@@ -1114,8 +1114,8 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     import model_tools
     from agent.oneshot_footprint import agent_is_oneshot
     from toolsets import agent_tool_surface, session_disabled_toolsets
-    disabled_toolsets = session_disabled_toolsets(
-        disabled_toolsets, getattr(agent, "platform", None), oneshot=agent_is_oneshot(agent))
+    agent._configured_disabled_toolsets, disabled_toolsets = disabled_toolsets, session_disabled_toolsets(
+        disabled_toolsets, getattr(agent, "platform", None), oneshot=agent_is_oneshot(agent))  # pin restore reads both
     agent.disabled_toolsets = disabled_toolsets  # so the tool_search bridge and delegate children drop them too
     agent.tools = agent_tool_surface(agent, model_tools.get_tool_definitions(
         enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets, quiet_mode=agent.quiet_mode) or [])

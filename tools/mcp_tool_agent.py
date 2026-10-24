@@ -40,6 +40,7 @@ def _resolve_refresh_toolsets(agent, enabled_override, disabled_override):
         if disabled_override is not None:
             from agent.oneshot_footprint import agent_is_oneshot
             from toolsets import session_disabled_toolsets
+            agent._configured_disabled_toolsets = disabled_override
             disabled = session_disabled_toolsets(
                 disabled_override, getattr(agent, "platform", None), oneshot=agent_is_oneshot(agent))
         agent.enabled_toolsets, agent.disabled_toolsets = enabled, disabled
@@ -210,8 +211,9 @@ def _config_permitted_names(agent) -> set:
     if enabled is not None:
         enabled = [*enabled, *CLIENT_SURFACE_TOOLSETS]
     disabled = getattr(agent, "disabled_toolsets", None)
-    if disabled and agent_is_oneshot(agent):  # the one-shot gate is no config choice either: a pinned clarify stays
-        disabled = [name for name in disabled if name not in ONESHOT_DISABLED_TOOLSETS]
+    if disabled and agent_is_oneshot(agent):  # the one-shot gate is no config choice either: a pinned clarify stays,
+        configured = set(getattr(agent, "_configured_disabled_toolsets", None) or ())  # unless config disables it
+        disabled = [name for name in disabled if name not in ONESHOT_DISABLED_TOOLSETS or name in configured]
     return _select_tool_names(enabled, disabled, True)
 
 

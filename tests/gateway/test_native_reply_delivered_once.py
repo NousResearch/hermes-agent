@@ -16,7 +16,7 @@ async def test_native_waiter_registered_after_the_claim_still_gets_the_only_deli
     from gateway.platforms.event import MessageEvent
     from gateway.session import SessionSource
     from gateway.session_authority import LiveSession
-    from gateway.session_contract import Principal, SessionRef
+    from gateway.session_contract import SessionActor, SessionRef
     from tests.gateway.test_prompt_attachments import _authority as _store_authority
 
     turn_started = asyncio.Event()
@@ -33,7 +33,7 @@ async def test_native_waiter_registered_after_the_claim_still_gets_the_only_deli
     async def deliver(adapter, event, session_key, response):
         drain_sent.append(response)
     monkeypatch.setattr(session_ingress, 'deliver_response', deliver)
-    actor = Principal('human', 'p', frozenset({'session:submit'}), 't')
+    actor = SessionActor('human', 'p', frozenset({'session:submit'}), 't')
 
     async def admit_native(event):
         receipt = await authority.submit(actor, Submission('m1', SessionRef('p', 's'), {'text': 'hi'}, 'queue'))

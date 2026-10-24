@@ -7,7 +7,7 @@ import pytest
 
 
 def test_kanban_submission_enters_single_query_approval_context(tmp_path, monkeypatch):
-    from gateway.session_contract import AdmissionReceipt, Principal, SessionRef
+    from gateway.session_contract import AdmissionReceipt, SessionActor, SessionRef
     from gateway.session_finite import execute_finite_admission, finite_turn_required, unattended_turn
     from gateway.session_kanban import run_task
     from hermes_cli import kanban_db as kb
@@ -54,7 +54,7 @@ def test_kanban_submission_enters_single_query_approval_context(tmp_path, monkey
 
     authority = SimpleNamespace(profile_id=str(tmp_path), submit=submit,
                                 db=SimpleNamespace(get_session=lambda sid: None, db_path=str(tmp_path / 'state.db')))
-    actor = Principal('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
+    actor = SessionActor('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
     connection = SimpleNamespace(authority=authority, actor=actor, native_owner=True, resume=resume)
     params = dict(board='owned', task_id=task.id, run_id=task.current_run_id, claim_lock=task.claim_lock)
     result = asyncio.run(run_task(connection, params))

@@ -240,9 +240,9 @@ def _queued_tick(row, process, route):
 
 async def _withdraw(authority, row):
     """Cancel the gateway's own queued automation *row*; False when it was claimed or settled first."""
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     # The row's own principal, with the operator access a LOCAL route requires of anyone but its viewer.
-    actor = Principal(row['principal_id'], authority.profile_id,
+    actor = SessionActor(row['principal_id'], authority.profile_id,
                       frozenset({'session:submit', 'session:control', 'session:operator'}), 'producer-withdraw')
     try:
         receipt = await authority.cancel_queued(
@@ -504,7 +504,7 @@ async def move_route_wakes(runner, session_key, old_session_id):
     import asyncio
     from functools import partial
     from gateway.session_authority import LiveSession
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_runtime_workers import tracked_write
     from hermes_state_runtime import list_session_admissions
     old = SessionRef(authority.profile_id, authority.logical_owner(old_session_id))
@@ -514,7 +514,7 @@ async def move_route_wakes(runner, session_key, old_session_id):
     rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=old.session_id)
     if any(row['status'] == 'unknown' for row in rows):
         return
-    actor = Principal('messaging-control', authority.profile_id, frozenset({'session:submit', 'session:control'}), 'reset')
+    actor = SessionActor('messaging-control', authority.profile_id, frozenset({'session:submit', 'session:control'}), 'reset')
     for row in rows:
         automation = row['payload'].get('native_text_v1', {}).get('automation', {})
         identity = json.loads(row['request_id']) if automation and row['request_id'].startswith('[') else None

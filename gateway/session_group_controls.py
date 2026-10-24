@@ -292,12 +292,12 @@ def _roster_siblings(connection, params):
     subject and capabilities, which is what the routed connection would carry; none is built, so
     no poll (routed or not) adds connections."""
     from gateway.session_authorities import local_bots
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     authority, actor = connection.authority, connection.actor
     if getattr(getattr(authority, 'runner', None), 'session_authorities', None) is None:
         return []
     readable = connection.host_scoped and params.get('include_sessions', True) is True
-    return [(bot, Principal(actor.subject, bot.authority.profile_id, actor.capabilities, actor.transport_id)
+    return [(bot, SessionActor(actor.subject, bot.authority.profile_id, actor.capabilities, actor.transport_id)
              if readable and bot.problem is None else None)
             for bot in local_bots(authority.runner) if bot.authority is not authority]
 

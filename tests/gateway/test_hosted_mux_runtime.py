@@ -159,13 +159,13 @@ def test_secondary_owner_transport_routes_both_directions_through_mux(mux):
 
 
 def test_private_rpc_builds_policy_in_destination_scope(mux):
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
     from gateway.session_policy import policy_for_source
 
     runner, homes, loop, _ = mux
     authority = runner.session_authorities.require(homes['beta'])
-    actor = Principal('alice', authority.profile_id,
+    actor = SessionActor('alice', authority.profile_id,
                       frozenset({'session:create', 'session:read'}), 'private-owner')
     rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='helper',
                                 profile='beta', principal=actor, authorize=lambda *args: True)

@@ -93,7 +93,7 @@ async def test_input_queued_behind_a_live_worker_is_released_then_runs_when_it_f
     import asyncio
     from gateway.config import Platform
     from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_contract import SessionActor, SessionRef, Submission
     from gateway.session_ingress import admit_message
     from gateway.session_worker import worker_request
     from gateway import session_finite
@@ -115,7 +115,7 @@ async def test_input_queued_behind_a_live_worker_is_released_then_runs_when_it_f
     monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
     process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,  # noqa: ASYNC220 -- Popen returns immediately; the test drives the child through its handle
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    actor = Principal('human', 'p', frozenset({'session:submit', 'session:control', 'worker:adopt'}), 't')
+    actor = SessionActor('human', 'p', frozenset({'session:submit', 'session:control', 'worker:adopt'}), 't')
     connection = SimpleNamespace(authority=authority, actor=actor)
     ref = SessionRef('p', 'owned')
     scope = {'profile_id': 'p', 'session_id': 'owned', 'execution_id': 'compute', 'generation': 0,

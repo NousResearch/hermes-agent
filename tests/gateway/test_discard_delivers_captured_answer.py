@@ -16,7 +16,7 @@ async def test_discard_of_a_captured_answer_delivers_it_once(tmp_path, monkeypat
     from gateway.config import Platform
     from gateway.session import SessionSource
     from gateway.session_authority import LiveSession
-    from gateway.session_contract import Principal, SessionRef
+    from gateway.session_contract import SessionActor, SessionRef
     from tests.gateway.test_prompt_attachments import _authority as _store_authority
 
     calls, sent = [], []
@@ -36,7 +36,7 @@ async def test_discard_of_a_captured_answer_delivers_it_once(tmp_path, monkeypat
         raise OSError('database is locked')
     monkeypatch.setattr(session_results, 'finish_result', unavailable)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
-    actor = Principal('human', 'p', frozenset({'session:submit', 'session:control'}), 't')
+    actor = SessionActor('human', 'p', frozenset({'session:submit', 'session:control'}), 't')
     ref = SessionRef('p', 's')
     receipt = await authority.submit(actor, Submission('owed', ref, {'text': 'hi'}, 'queue'))
     waiter = None

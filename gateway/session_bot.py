@@ -11,7 +11,7 @@ import time
 
 from agent.turn_author import parse_turn_author
 
-from gateway.session_contract import Principal, SessionRef
+from gateway.session_contract import SessionActor, SessionRef
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from hermes_state_runtime import RuntimeStoreError, get_session_admission
@@ -507,7 +507,7 @@ async def _maybe_retry(authority, home, path, record):
     # transport granted ``session:operator`` (a local delivery into api-peer's Bot Chat), and the
     # session check below still pins the retry to the admitted target.
     operator = {'session:operator'} if record.get('operator') is True else set()
-    actor = Principal(record['principal_id'], authority.profile_id,
+    actor = SessionActor(record['principal_id'], authority.profile_id,
                       frozenset({'session:submit', 'session:read'} | operator), 'bot-delivery-retry')
     try:
         authority._require_admission_open()
@@ -675,7 +675,7 @@ async def recover_bot_deliveries(authority):
                 (POLICY_PREFIX + (target.get('chat_id') or target['id']),)).fetchone()
         if not bound:
             return  # Unowned history requires a native ticket, never the first remote sender.
-        actor = Principal(target['user_id'], authority.profile_id,
+        actor = SessionActor(target['user_id'], authority.profile_id,
                           frozenset({'session:submit', 'session:read'}), 'bot-owner-recovery')
         await _migrate(authority, actor, home, root)
 

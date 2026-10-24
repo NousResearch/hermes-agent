@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_contract import Principal, SessionRef
+from gateway.session_contract import SessionActor, SessionRef
 
 CHILD = """import json, os, sys, time, psutil
 me = psutil.Process()
@@ -52,7 +52,7 @@ def test_finished_worker_keeps_its_result_on_slow_or_nonzero_exit(tmp_path, monk
     authority = SessionAuthority(runner, profile_id='owned', instance_id='i', db=db,
                                  epoch=begin_runtime_epoch(db, instance_id='i'))
     authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c'), 'route')
-    actor = Principal('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
+    actor = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
     ref = SessionRef('owned', 's')
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     spawned = []

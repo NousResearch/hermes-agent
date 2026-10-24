@@ -23,6 +23,7 @@ from agent.credential_pool import (  # custom_provider_pool_key_candidates is re
     load_pool,
 )
 from agent.secret_scope import get_secret_str
+from agent.credential_persistence import is_borrowed_credential_source
 from hermes_cli.auth import (  # resolve_external_process_provider_credentials is read via origin by runtime_provider_backends
     ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, AuthError, DEFAULT_CODEX_BASE_URL, DEFAULT_QWEN_BASE_URL, DEFAULT_XAI_OAUTH_BASE_URL,
     PROVIDER_REGISTRY, _agent_key_is_usable, _nous_inference_env_override, format_auth_error, resolve_provider,
@@ -686,6 +687,19 @@ def _exchange_copilot_pool_entry(entry: Any, pool_api_key: str) -> str:
     return api_token
 
 
+def _explicit_anthropic_env_key_present() -> bool:
+    """True when the operator set an explicit Anthropic credential in the environment.
+
+    Mirrors the first two steps of ``agent.anthropic_credentials.resolve_anthropic_token``:
+    ``ANTHROPIC_TOKEN`` / ``CLAUDE_CODE_OAUTH_TOKEN``, then ``ANTHROPIC_API_KEY``.
+    """
+    return bool(
+        get_secret_str("ANTHROPIC_TOKEN", "").strip()
+        or get_secret_str("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+        or get_secret_str("ANTHROPIC_API_KEY", "").strip()
+    )
+
+
 def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: dict[str, Any], explicit_api_key, explicit_base_url,
                        target_model) -> Optional[dict[str, Any]]:
     """Runtime from the provider's credential pool, or None to continue down the ladder."""
@@ -699,6 +713,19 @@ def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: dict[s
         return None
     entry = pool.select(model=target_model or None)
     if entry is None:
+        return None
+    if (
+        provider == "anthropic"
+        and is_borrowed_credential_source(getattr(entry, "source", None), provider)
+        and _explicit_anthropic_env_key_present()
+    ):
+        # A borrowed OAuth grant (e.g. Claude Code credentials borrowed into the anthropic
+        # pool) must not shadow an explicit env key: the env rung runs later in the ladder,
+        # so yield here and let it resolve (#136800).
+        logger.debug(
+            "Skipping borrowed %s pool entry: explicit Anthropic env key takes precedence",
+            getattr(entry, "source", None),
+        )
         return None
     pool_api_key = _pool_entry_api_key(entry)
     if provider == "nous":

@@ -1669,7 +1669,7 @@ class _SequentialDispatch:
     execute: Callable[[dict], Any]
     spinner: Any = None
     middleware_trace_arg: Optional[list] = None  # forwarded to the middleware runner (registry closure reads it)
-    error_result: Optional[Callable[[Exception], str]] = None  # None → exceptions propagate (inline/delegate own failures)
+    error_result: Optional[Callable[[BaseException], str]] = None  # None → exceptions propagate (inline/delegate own failures)
     error_log: str = ""
     handles_keyboard_interrupt: bool = False
     is_delegate: bool = False
@@ -1798,7 +1798,7 @@ def _run_sequential_call(
             content=f"[Tool execution cancelled — {{name}} was skipped. {interrupt_skip_wording(agent)}]",
         )
         raise
-    except Exception as tool_error:
+    except (Exception, SystemExit) as tool_error:  # a plugin's sys.exit() fails the call (inline/delegate re-raise)
         if dispatch.error_result is None:
             raise
         function_result = dispatch.error_result(tool_error)

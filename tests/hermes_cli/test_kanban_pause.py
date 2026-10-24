@@ -262,3 +262,69 @@ def test_cli_pause_resume_roundtrip(fresh_home):
     out = json.loads(kc.run_slash("resume --json"))
     assert out == {"board": "default", "resumed": True}
     assert pause.is_paused() is False
+
+
+# ---------------------------------------------------------------------------
+# A bare call means "the board I am looking at"
+#
+# `board_dir(None)` answers for `default`, `connect(None)` opens the *current* board. Every
+# pause entry point used to take the raw argument, so on a switched board the pause landed on
+# `default`: the CLI held the wrong board, and a dashboard POST without `?board` paused one
+# board while its own response named another.
+# ---------------------------------------------------------------------------
+
+
+def test_bare_pause_holds_the_current_board(fresh_home):
+    kb.create_board("beta", name="Beta")
+    kb.set_current_board("beta")
+
+    state = pause.pause(reason="racing a provider switch")
+    assert state["board"] == "beta"
+    assert pause.pause_path("beta").exists()
+    assert not pause.pause_path("default").exists()
+
+    # The bare reads agree with the bare write.
+    assert pause.is_paused() is True
+    assert pause.get_state()["board"] == "beta"
+
+
+def test_bare_resume_lifts_only_the_current_board(fresh_home):
+    kb.create_board("beta", name="Beta")
+    pause.pause("default", reason="operator hold")
+    kb.set_current_board("beta")
+    pause.pause("beta")
+
+    assert pause.resume() is True
+    assert not pause.pause_path("beta").exists()
+    assert pause.pause_path("default").exists(), "resuming beta must not lift default's hold"
+
+
+def test_api_pause_without_a_board_holds_the_current_board(fresh_home):
+    from plugins.kanban.dashboard import plugin_api
+
+    kb.create_board("beta", name="Beta")
+    kb.set_current_board("beta")
+
+    # `board=None` is what FastAPI hands the endpoint when the query param is omitted.
+    out = plugin_api.pause_board(None, board=None)
+    assert out["board"] == "beta"
+    assert pause.pause_path("beta").exists()
+    assert not pause.pause_path("default").exists()
+    assert plugin_api.get_pause(board=None)["pause"]["board"] == "beta"
+
+    assert plugin_api.resume_board(board=None)["pause"] is None
+    assert not pause.pause_path("beta").exists()
+
+
+def test_board_of_connection_maps_a_nested_db_to_its_board(fresh_home):
+    """Workspaces keep their DBs below the board dir; the slug is the first segment."""
+    import sqlite3
+
+    kb.create_board("beta", name="Beta")
+    nested = kb.board_dir("beta") / "workspaces" / "one"
+    nested.mkdir(parents=True)
+    conn = sqlite3.connect(nested / "kanban.db")
+    try:
+        assert pause.board_of_connection(conn) == "beta"
+    finally:
+        conn.close()

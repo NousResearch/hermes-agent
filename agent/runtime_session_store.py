@@ -22,6 +22,57 @@ logger = logging.getLogger(__name__)
 
 _worker_process = False
 
+# The ``worker.adopt`` handshake is a round trip through the OWNER's event loop, and a live
+# gateway legitimately spends 1000 s+ inside one turn (fan/gateway.log 2026-10-22:
+# ``time=1018.3s api_calls=46``). A 5 s budget lost that race and cost a whole dispatch
+# cycle silently: the managed worker died in ``worker.adopt``, the card kept saying
+# ``running``, and nothing retried. Generous by default, overridable, and a TIMEOUT (never
+# an auth/protocol failure) is retried with backoff.
+WORKER_RPC_OPEN_TIMEOUT_SECONDS = 60.0
+WORKER_RPC_CONNECT_ATTEMPTS = 3
+WORKER_RPC_RETRY_SLEEP_SECONDS = 1.0
+
+
+def worker_rpc_open_timeout():
+    """The handshake budget: ``HERMES_WORKER_RPC_OPEN_TIMEOUT`` seconds, else 60 s."""
+    # The adopt handshake runs BEFORE the worker may import config (agent/managed_worker.py:
+    # "No agent/config imports before adopted process authority"), so no config.yaml key can
+    # size it; resolved per call, 60 s default.
+    raw = os.environ.get('HERMES_WORKER_RPC_OPEN_TIMEOUT', '').strip()  # health: allow HX002 -- the adopt handshake runs before the worker may import config, so no config.yaml key can size it; read per call, 60 s default
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            value = 0.0
+        if value > 0:
+            return value
+    return WORKER_RPC_OPEN_TIMEOUT_SECONDS
+
+
+def connect_worker_link(connect, url, protocols, *, open_timeout=None, attempts=None, sleep=None):
+    """Open the owner link, retrying a handshake that TIMED OUT because the owner was busy.
+
+    Only ``TimeoutError`` is retried: an authentication or protocol failure will not heal with
+    another attempt, and re-sending after a completed handshake is never safe. Each attempt
+    gets the full budget; ``sleep`` is a test seam.
+    """
+    import time as _time
+    budget = worker_rpc_open_timeout() if open_timeout is None else float(open_timeout)
+    tries = max(1, int(WORKER_RPC_CONNECT_ATTEMPTS if attempts is None else attempts))
+    pause = _time.sleep if sleep is None else sleep
+    last = None
+    for attempt in range(tries):
+        try:
+            return connect(url, subprotocols=protocols, open_timeout=budget, close_timeout=1,
+                           max_size=8 * 1024 * 1024, proxy=None, ping_interval=None)
+        except TimeoutError as exc:
+            last = exc
+            if attempt + 1 < tries:
+                logger.warning('owner handshake timed out after %ss (attempt %d/%d); retrying',
+                               budget, attempt + 1, tries)
+                pause(WORKER_RPC_RETRY_SLEEP_SECONDS * (2 ** attempt))
+    raise last
+
 
 def is_worker_process():
     """A successful self-registration makes this interpreter compute-only.
@@ -155,8 +206,7 @@ class WorkerRPC:
         # The owner is loopback, like connect_gateway's peer: an inherited HTTPS_PROXY must not carry it.
         # No library keepalive: its pong deadline would run independently of (and could fail) a call
         # inside its receipt budget; that budget and the observed close are the liveness checks.
-        self.link = _OwnerLink(connect(url, subprotocols=protocols, open_timeout=5, close_timeout=1,
-                                       max_size=8 * 1024 * 1024, proxy=None, ping_interval=None))
+        self.link = _OwnerLink(connect_worker_link(connect, url, protocols))
         return self.link
 
     def _drop(self):

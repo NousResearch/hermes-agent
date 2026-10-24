@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- the lost-managed-worker fix (2026-10-22 stall) needs the reclaim's run error to name the owner's own record of how the attempt ended; that is two statements at this existing chokepoint, and the topic split of this facade is a separate refactor
 """SQLite-backed Kanban board shared across profiles (the cross-profile coordination primitive).
 
 Lives under the shared Hermes root: ``default`` board DB at ``<root>/kanban.db`` (pre-boards
@@ -2394,9 +2395,14 @@ def release_stale_claims(
             )
             if cur.rowcount != 1:
                 continue
+            # Name WHY the attempt ended when the owner already recorded it (a lost managed
+            # worker, or a settled admission): a bare ``stale_lock=`` is not a disposition.
+            from hermes_cli.kanban_owner_recovery import owner_attempt_note
+            attempt_note = owner_attempt_note(conn, row["id"])
+            error = f"stale_lock={row['claim_lock']}" + (f" [{attempt_note}]" if attempt_note else "")
             run_id = _record_reclaim(
                 conn, row["id"], termination,
-                error=f"stale_lock={row['claim_lock']}",
+                error=error,
                 payload={
                     "stale_lock": row["claim_lock"],
                     "worker_pid": _opt_int(row["worker_pid"]),
@@ -2406,6 +2412,7 @@ def release_stale_claims(
                     "host_local": host_local,
                     "heartbeat_stale": bool(heartbeat_stale),
                     "retry_status": retry_status,
+                    **({"attempt_note": attempt_note} if attempt_note else {}),
                 },
             )
             reclaimed += 1
@@ -2413,7 +2420,7 @@ def release_stale_claims(
         # the run ended without a verdict, so it counts toward the breaker and a
         # trip flips the task to ``blocked`` + ``gave_up`` on top of ``reclaimed``.
         _record_task_failure(
-            conn, row["id"], f"stale_lock={row['claim_lock']}",
+            conn, row["id"], error,
             outcome="reclaimed", failure_limit=failure_limit,
             release_claim=False, end_run=False,
             event_payload_extra={"worker_pid": _opt_int(row["worker_pid"]), "retry_status": retry_status},

@@ -314,6 +314,11 @@ dependency work: one `git fetch --refetch --filter=blob:none` brings every commi
 converts it the same way. If that fetch fails, the update prints a warning, carries on, and retries
 the conversion next time.
 
+Shallow checkouts (`--depth 1` installs) keep that depth for a release update: the update fetches
+only the new release's tag, which carries the one commit the checkout moves to. A `main`-branch
+update, or a shallow checkout with local commits on top, still fills in the history, because the
+fast-forward and the version label need it.
+
 A Hermes Desktop built before the conversion existed runs path-filtered history walks every few
 minutes, so on a treeless checkout it could fill a disk with pack files (one report reached 434 GB)
 and keep going after a failed update. To recover when that already happened:

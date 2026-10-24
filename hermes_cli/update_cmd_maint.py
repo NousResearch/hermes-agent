@@ -1031,18 +1031,26 @@ def _run_post_update_maintenance(
 
     # Both shallow history and missing tags can hide the release identity.
     # Refresh them before the completion line and install stamp read it.
-    try:
-        from hermes_cli.gitlock import fetch_full_commit_graph
-        from hermes_cli.update_cmd import _no_prompt_git_kwargs
-        if fetch_full_commit_graph(Path(_m().PROJECT_ROOT), **_no_prompt_git_kwargs()):
-            print("  ✓ Fetched release history (commits only) for version identity")
-    except (OSError, subprocess.SubprocessError) as exc:
-        detail = (getattr(exc, "stderr", None) or str(exc)).strip().splitlines()[-1:] or [type(exc).__name__]
-        print(f"  ⚠ Could not refresh release history ({detail[0]}); the version label may be stale or unknown until the next update")
+    # Exception: a shallow checkout whose HEAD already carries a merged release tag — the tag
+    # fetch the release update just made — derives the version label locally, so it keeps its
+    # shallow graph instead of paying for the full commit history.
+    root = Path(_m().PROJECT_ROOT)
+    from hermes_cli.gitlock import has_merged_release_tag, is_shallow_repository
+    if not (is_shallow_repository(root) and has_merged_release_tag(root)):
+        try:
+            from hermes_cli.gitlock import fetch_full_commit_graph
+            from hermes_cli.update_cmd import _no_prompt_git_kwargs
+            if fetch_full_commit_graph(root, **_no_prompt_git_kwargs()):
+                print("  ✓ Fetched release history (commits only) for version identity")
+        except (OSError, subprocess.SubprocessError) as exc:
+            detail = (getattr(exc, "stderr", None) or str(exc)).strip().splitlines()[-1:] or [type(exc).__name__]
+            print(f"  ⚠ Could not refresh release history ({detail[0]}); the version label may be stale or unknown until the next update")
+    else:
+        logger.debug("Shallow checkout already carries the merged release tag; skipping the history fetch")
     # Keeps every later version lookup off a full history walk; detached, so it never delays this run.
     with _best_effort('Commit-graph refresh failed to start: %s'):
         from hermes_cli.git_commit_graph import spawn_commit_graph_refresh
-        spawn_commit_graph_refresh(Path(_m().PROJECT_ROOT))
+        spawn_commit_graph_refresh(root)
 
     # Seed the model-catalog cache from the checkout instead of a bot-gated, flaky fetch.
     with _best_effort('Model catalog seed during update failed: %s'):

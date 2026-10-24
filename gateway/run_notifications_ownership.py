@@ -41,7 +41,12 @@ class GatewayNotificationOwnershipMixin:
             if not target_session_id or target_session_id == pinned_session_id:
                 return "retry", None  # Rotation may not have published its continuation yet.
             tip_row = await session_db.get_session(target_session_id)
-            if tip_row is None or tip_row.get("ended_at"):
+            if tip_row is None:
+                return "retry", None
+            if tip_row.get("ended_at"):
+                from gateway.run import _USER_BOUNDARY_END_REASONS
+                if tip_row.get("end_reason") in _USER_BOUNDARY_END_REASONS:
+                    return "terminal", None
                 return "retry", None
             if session_entry is None or session_entry.session_id in {pinned_session_id, target_session_id}:
                 return "deliver", target_session_id

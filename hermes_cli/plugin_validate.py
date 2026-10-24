@@ -13,6 +13,7 @@ tools/hooks/middleware are compared against the manifest's declared
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import re
@@ -210,6 +211,7 @@ def _check_oauth(report: ValidationReport, manifest: dict, plugin_dir: Path) -> 
 # calling providers.register_provider at import.
 _PROBE_SCRIPT = r"""
 import importlib.util
+import inspect
 import json
 import sys
 
@@ -235,7 +237,13 @@ class RecordingContext:
     def register_hook(self, hook_name, callback):
         recorded["hooks"].append(str(hook_name))
 
-    def register_middleware(self, kind, callback):
+    def register_middleware(self, kind, callback, *, failure_mode="open"):
+        if failure_mode not in {"open", "closed"}:
+            raise ValueError("failure_mode must be \'open\' or \'closed\'")
+        if kind == "llm_stream_text" and (
+            inspect.iscoroutinefunction(callback) or inspect.isasyncgenfunction(callback)
+        ):
+            raise TypeError("llm_stream_text middleware must be synchronous")
         recorded["middleware"].append(str(kind))
 
     def register_command(self, name, *args, **kwargs):

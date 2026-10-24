@@ -38,7 +38,9 @@ def handle_outer_loop_error(
 ) -> OuterErrorVerdict:
     """Handle an exception that escaped the response-processing block. Shutdown and
     local-processing errors are deterministic and end the turn; API-path errors retry until
-    ``min(_MAX_OUTER_LOOP_ERRORS, max_iterations)`` escaped exceptions. The assistant
+    ``min(_MAX_OUTER_LOOP_ERRORS, max_iterations)`` escaped exceptions. A fail-closed
+    :class:`LLMStreamMiddlewareRefusal` from the final-output commit gate is terminal
+    before any of that. The assistant
     message is never appended here: a prefill/interim assistant may already be the tail
     (assistant→assistant); ``finalize_turn`` appends only when safe."""
     from agent.conversation_loop import (
@@ -51,6 +53,29 @@ def handle_outer_loop_error(
             action=action, _outer_error_count=_outer_error_count,
             _turn_exit_reason=_turn_exit_reason, failed=failed, final_response=final_response,
         )
+
+    # A fail-closed final-output refusal is a terminal policy decision, not an
+    # outer-loop error. It is raised AFTER _run_api_retry_loop() has finished, so it
+    # never reaches handle_api_error()/classify_api_error(); without this typed
+    # branch the traceback shape {middleware, turn_final_response, conversation_loop}
+    # reads as an ordinary escaped exception and "fallthrough" dispatches another
+    # provider iteration — running the same fail-closed boundary again. Settle the
+    # attempt as refused BEFORE the generic retry/failover classification; ordinary
+    # transport and local-processing errors keep their existing recovery behavior.
+    from hermes_cli.middleware import LLMStreamMiddlewareRefusal
+    if isinstance(e, LLMStreamMiddlewareRefusal):
+        logger.error(
+            "Final-output commit gate refused the turn (api_call #%d): %s",
+            api_call_count, e,
+        )
+        _turn_exit_reason = "final_output_refused"
+        # The attempt settles as refused: no dropped/refused candidate may be
+        # returned, and the turn is failed regardless of what the loop had decided.
+        final_response = None
+        failed = True
+        # Terminal regardless of remaining budget or outer-error count: the retry
+        # budget is deliberately NOT consumed (the attempt is settled, not retried).
+        return _verdict("break")
 
     # Count every escaped exception before classification so permanent failures
     # terminate even with an unlimited turn budget.

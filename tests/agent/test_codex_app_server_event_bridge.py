@@ -224,8 +224,11 @@ class TestAgentMessageInterimDispatch:
             "id": "am-1",
             "text": "I'll check the config first.",
         }))
+        # live=True marks this as a genuinely live delivery, so the synchronous
+        # llm_stream_text middleware mediates the text before it is shown.
         agent._emit_interim_assistant_message.assert_called_once_with(
-            {"role": "assistant", "content": "I'll check the config first."}
+            {"role": "assistant", "content": "I'll check the config first."},
+            live=True,
         )
 
     def test_show_commentary_off_suppresses_interim(self):

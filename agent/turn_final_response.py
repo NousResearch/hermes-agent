@@ -357,6 +357,46 @@ def finish_text_response(
         else:
             final_msg["content"] = final_response
 
+    # llm_final_output_commit hook: plugins may drop the final output BEFORE it is
+    # appended/durable. The verdict is recorded as this turn's terminal disposition
+    # (agent/turn_final_output.py) so the finalizer cannot re-create the row, return
+    # the dropped text, or re-evaluate the gate: DROP skips append_message + flush,
+    # clears ``final_response``, and carries ``final_output_dropped`` out of the loop.
+    # A fail-closed LLMStreamMiddlewareRefusal propagates to the outer error handler,
+    # which has a typed terminal branch for it (no retry / no failover).
+    from agent.turn_final_output import EXIT_REASON_DROPPED, gate_final_output
+    _commit_context = {
+        "session_id": getattr(agent, "session_id", ""),
+        "turn_id": getattr(agent, "_current_turn_id", "") or "",
+        "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
+        "provider": getattr(agent, "provider", ""),
+        "model": getattr(agent, "model", ""),
+    }
+    _commit_candidate = {
+        "content": final_response,
+        "role": "assistant",
+        "tool_calls": assistant_message.tool_calls or [],
+        "finish_reason": finish_reason,
+    }
+    _commit_verdict = gate_final_output(
+        agent, candidate=_commit_candidate, context=_commit_context,
+        turn_id=_commit_context["turn_id"],
+    )
+    if _commit_verdict != "allow":
+        logger.warning(
+            "llm_final_output_commit hook dropped final output "
+            "(turn_id=%s, content_length=%d) — terminal: no append_message, no flush, "
+            "no finalizer persistence, no replay",
+            _commit_context["turn_id"],
+            len(final_response) if isinstance(final_response, str) else 0,
+        )
+        # Terminal state every later owner must honor: without this the outer loop
+        # handed the populated value to finalize_turn, whose "_close_transcript_tail"
+        # invariant (delivered final_response => assistant row) re-created the row.
+        final_response = None
+        _turn_exit_reason = EXIT_REASON_DROPPED
+        return _verdict("break")
+
     append_message(messages, final_msg)
     # Make the answer durable before leaving the loop (_DB_PERSISTED_MARKER keeps
     # _persist_session idempotent). Failure must NOT abort the turn: finalize retries.

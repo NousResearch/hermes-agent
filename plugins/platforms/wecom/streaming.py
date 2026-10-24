@@ -238,6 +238,27 @@ class WeComStreamMixin:
         encoded = content.encode("utf-8")
         return content if len(encoded) <= limit else encoded[:limit].decode("utf-8", errors="ignore")
 
+    @classmethod
+    def _split_stream_final(cls, content: str) -> tuple[str, str]:
+        """Split turn-final content into a frame-sized head + tail for ``send()``.
+
+        Silently truncating the finalize frame LOSES the tail of long replies (the
+        stream consumer deliberately skips overflow splitting on native transports,
+        assuming the adapter delivers the rest). Head
+        cuts at the last newline that fits so markdown blocks stay contiguous; an
+        8-byte margin leaves room for the ZWSP the finalize adds (it must never push
+        the frame back over the cap). Returns ``(content, "")`` when it fits.
+        """
+        budget = cls.MAX_STREAM_CONTENT_LENGTH - 8
+        encoded = content.encode("utf-8")
+        if len(encoded) <= budget:
+            return content, ""
+        cut = encoded.rfind(b"\n", 0, budget)
+        if cut < budget // 2:
+            cut = budget
+        head = encoded[:cut].decode("utf-8", errors="ignore")
+        return head, content[len(head):]
+
     async def _send_stream_reply(self, reply_req_id: str, stream_id: str, content: str, finish: bool = False) -> dict[str, Any]:
         """Send one ``msgtype: "stream"`` frame: intermediates non-blocking/skip-if-pending, the final frame awaits
         its ack so 846608/6000 are detected. Raises WeComStreamExpiredError on expiry."""
@@ -313,9 +334,26 @@ class WeComStreamMixin:
         self._cancel_keepalive(turn)
         # A final frame identical to the last intermediate is silently dropped — differ via ZWSP.
         final_text = text + "\u200b" if text and text == turn.last_sent_content else text
-        await self._send_stream_reply(turn.req_id, turn.stream_id, final_text, finish=True)
+        # Frames are capped at MAX_STREAM_CONTENT_LENGTH bytes; delivering only the head would
+        # silently lose the tail (see _split_stream_final). Seal the stream with the head, then
+        # deliver the remainder as regular messages through send() — which re-chunks at
+        # MAX_MESSAGE_LENGTH — on the same inbound req_id (groups reject proactive sends).
+        head, tail = self._split_stream_final(final_text)
+        await self._send_stream_reply(turn.req_id, turn.stream_id, head, finish=True)
         turn.finalized = True
         self._stream_turns.pop(f"{chat}:{turn_id or turn.req_id}", None)
+        if tail.strip():
+            # send() falls back to the chat's cached inbound req_id (passive reply,
+            # works in DMs and groups alike).
+            result = await self.send(chat_id=chat, content=tail)
+            if not getattr(result, "success", False):
+                # Tail lost: let the consumer's send() fallback re-deliver the whole answer.
+                # Duplicate-head is the accepted trade-off (never silent truncation).
+                logger.warning(
+                    "[%s] Stream tail delivery failed for chat %s (%s) — declining finalize so the gateway resends in full",
+                    self.name, chat, getattr(result, "error", "unknown"),
+                )
+                return False
         return True
 
     async def _send_stream_frame_inner(self, text: str, *, chat: str, reply_to: Optional[str] = None, finalize: bool = False, turn_id: Optional[str] = None) -> bool:

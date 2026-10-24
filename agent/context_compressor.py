@@ -40,6 +40,7 @@ from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND
+from agent.tool_dispatch_helpers import _is_tool_result_role
 from agent.model_metadata import (
     CHARS_PER_TOKEN, MINIMUM_CONTEXT_LENGTH, get_model_context_length, estimate_messages_tokens_rough, estimate_tokens_rough,
     strip_opaque_replay_items,
@@ -350,13 +351,11 @@ def _fresh_compaction_message_copy(msg: dict[str, Any]) -> dict[str, Any]:
 
 
 def _template_visible_role(message: Any) -> Optional[str]:
-    """Role as counted by strict chat-template alternation checks.
-    Mistral-family templates exempt ``tool`` rows and assistant rows with ``tool_calls`` from
-    alternation. Returns ``None`` for messages the check skips."""
+    """Role counted by strict template alternation; tool results and assistant tool calls are exempt."""
     if not isinstance(message, dict):
         return None
     role = message.get("role")
-    return None if role == "tool" or (role == "assistant" and message.get("tool_calls")) else role
+    return None if _is_tool_result_role(role) or (role == "assistant" and message.get("tool_calls")) else role
 
 
 def _last_template_visible_role(messages: list[dict[str, Any]]) -> Optional[str]:
@@ -534,7 +533,7 @@ def _looks_like_compaction_summary(msg: dict[str, Any], content: str) -> bool:
     if (
         not content.rstrip().endswith(_SUMMARY_END_MARKER)
         or content.startswith(_MERGED_PRIOR_CONTEXT_HEADER)
-        or role == "tool"
+        or _is_tool_result_role(role)
         or (role in ("user", "assistant") and not msg.get(COMPRESSED_SUMMARY_METADATA_KEY))
     ):
         return False
@@ -571,12 +570,12 @@ def salvage_grown_transcript(
         return None
 
     out = [dict(msg) if isinstance(msg, dict) else msg for msg in candidate]
-    tool_indices = [i for i, msg in enumerate(out) if isinstance(msg, dict) and msg.get("role") == "tool"]
+    tool_indices = [i for i, msg in enumerate(out) if isinstance(msg, dict) and _is_tool_result_role(msg.get("role"))]
     keep_tools = set(tool_indices[-_SALVAGE_KEEP_RECENT_TOOLS:])
     for index, msg in enumerate(out):
         if not isinstance(msg, dict):
             continue
-        if msg.get("role") == "tool" and index not in keep_tools:
+        if _is_tool_result_role(msg.get("role")) and index not in keep_tools:
             content = msg.get("content")
             if isinstance(content, str) and len(content) > _PRUNE_MIN_CHARS:
                 msg["content"] = _PRUNED_TOOL_PLACEHOLDER
@@ -893,7 +892,7 @@ def _collect_ghosted_skill_names(turns: list[dict[str, Any]]) -> list[str]:
         names += _extract_pruned_skill_names(text)
         if msg.get("role") == "user":
             names += skills_loaded_by_scaffold(text)
-        elif msg.get("role") == "tool" and not _skill_view_failed(content) and not is_demoted_stub(text):
+        elif _is_tool_result_role(msg.get("role")) and not _skill_view_failed(content) and not is_demoted_stub(text):
             names.append(call_id_to_skill.get(str(msg.get("tool_call_id") or ""), ""))
     return [name for name in dict.fromkeys(names) if name]
 
@@ -1345,7 +1344,7 @@ def _pending_tool_round(messages: list[dict[str, Any]]) -> range:
     while end and messages[end - 1].get("display_kind") == STEER_DISPLAY_KIND:
         end -= 1
     start = end
-    while start > 0 and messages[start - 1].get("role") == "tool":
+    while start > 0 and _is_tool_result_role(messages[start - 1].get("role")):
         start -= 1
     return range(start, end)
 
@@ -1473,7 +1472,7 @@ def _retire_stale_tool_result_images(
     seen = pruned = 0
     for i in range(len(result) - 1, -1, -1):
         msg = result[i]
-        if not isinstance(msg, dict) or msg.get("role") != "tool" or not _tool_content_has_images(msg.get("content")):
+        if not isinstance(msg, dict) or not _is_tool_result_role(msg.get("role")) or not _tool_content_has_images(msg.get("content")):
             continue
         seen += 1
         if seen <= max(keep_newest, 0) or i in spared:
@@ -1530,7 +1529,7 @@ def evict_stale_outbound_tool_images(api_messages: list[dict[str, Any]], retired
     for i in range(len(api_messages) - 1, -1, -1):
         msg = api_messages[i]
         sources = _image_payload(msg) if isinstance(msg, dict) else []
-        if sources and msg.get("role") == "tool":
+        if sources and _is_tool_result_role(msg.get("role")):
             carriers.append((i, sources))
         else:
             reserved.extend(sources)
@@ -1607,7 +1606,7 @@ def _strip_historical_media(messages: list[dict[str, Any]], spared: range = rang
             # a ~200KB poster). When nothing newer exists the opening image IS the newest image and is kept,
             # consistent with keep-newest everywhere else.
             or (anchor == 0 and index == 0 and tool_anchor > 0)
-            or (message.get("role") == "tool" and index != tool_anchor)
+            or (_is_tool_result_role(message.get("role")) and index != tool_anchor)
         )
 
     def _stripped(i: int, msg: Any) -> Optional[dict[str, Any]]:
@@ -1616,7 +1615,7 @@ def _strip_historical_media(messages: list[dict[str, Any]], spared: range = rang
         content = msg.get("content")
         # Native multimodal envelope: route through the tool-message stripper
         # (collapses to text summary, drops stale api_content sidecar).
-        if msg.get("role") == "tool" and isinstance(content, dict) and content.get("_multimodal"):
+        if _is_tool_result_role(msg.get("role")) and isinstance(content, dict) and content.get("_multimodal"):
             return _strip_images_from_tool_msg(msg) if _tool_content_has_images(content) else None
         return _rewritten(msg, _strip_images_from_content(content)) if _content_has_images(content) else None
 
@@ -3171,7 +3170,7 @@ class ContextCompressor(
             msg = result[i]
             content = msg.get("content") or ""
             # Non-string/multimodal-envelope shapes can't be hashed by text.
-            if msg.get("role") != "tool" or not isinstance(content, str) or len(content) < _PRUNE_MIN_CHARS:
+            if not _is_tool_result_role(msg.get("role")) or not isinstance(content, str) or len(content) < _PRUNE_MIN_CHARS:
                 continue
             h = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:12]
             if h in content_hashes:
@@ -3188,7 +3187,7 @@ class ContextCompressor(
         """Replace the tool result at ``idx`` with a 1-line summary; True if modified.
         ``protected_skills`` (lower-cased) spares matching skill_view bodies; None (pressure pass) overrides the guard."""
         msg = result[idx]
-        if msg.get("role") != "tool":
+        if not _is_tool_result_role(msg.get("role")):
             return False
         content = msg.get("content", "")
         if isinstance(content, list) or (isinstance(content, dict) and content.get("_multimodal")):
@@ -3253,7 +3252,7 @@ class ContextCompressor(
                 break
         # If the recent floor is still dominated by huge tool bodies, demote all but the newest.
         if _protected_region_tokens() > soft_ceiling:
-            last_tool_idx = next((i for i in range(len(result) - 1, -1, -1) if result[i].get("role") == "tool"), None)
+            last_tool_idx = next((i for i in range(len(result) - 1, -1, -1) if _is_tool_result_role(result[i].get("role"))), None)
             for i in (i for i in range(start, len(result)) if i != last_tool_idx):
                 _shrink_at(i)
             # Last resort, unless it is the spared pending round: the newest body may exceed the soft budget
@@ -3437,7 +3436,7 @@ class ContextCompressor(
                 content = strip_think_blocks(None, content)
             if len(content) > self._CONTENT_MAX:
                 content = elide_middle(content, self._CONTENT_HEAD, self._CONTENT_TAIL)
-            if role == "tool":
+            if _is_tool_result_role(role):
                 parts.append(f"[TOOL RESULT {msg.get('tool_call_id', '')}]: {content}")
                 continue
             if role == "assistant" and msg.get("tool_calls", []):
@@ -3497,7 +3496,7 @@ class ContextCompressor(
                     assistant_actions.append("Called tool(s): " + ", ".join(tool_names[:6]))
                 elif text:
                     assistant_actions.append(text)
-            elif role == "tool":
+            elif _is_tool_result_role(role):
                 tool_name, tool_args = call_id_to_tool.get(str(msg.get("tool_call_id") or ""), ("unknown", ""))
                 tool_actions.append(_summarize_tool_result(tool_name, tool_args, text or ""))
                 if re.search(r"\b(error|failed|exception|traceback|timeout|timed out|fatal)\b", text, re.IGNORECASE):
@@ -4527,7 +4526,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         # In-flight protection: compression can fire before the executor appends the result, so the last non-tool
         # assistant's calls are presumed pending and kept verbatim (skip trailing tool results first: a multi-call
         # batch between appends is still in flight). Unanswered survivors are stubbed pre-API by sanitize_api_messages.
-        idx = next((i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") != "tool"), -1)
+        idx = next((i for i in range(len(messages) - 1, -1, -1) if not _is_tool_result_role(messages[i].get("role"))), -1)
         trailing_inflight = messages[idx] if idx >= 0 and messages[idx].get("role") == "assistant" else None
         stripped_count = 0
         for msg in messages:
@@ -4552,7 +4551,7 @@ Write only the summary body. Do not include any preamble or prefix."""
 
     def _align_boundary_forward(self, messages: list[dict[str, Any]], idx: int) -> int:
         """Push a compress-start boundary forward past any orphan tool results."""
-        while idx < len(messages) and messages[idx].get("role") == "tool":
+        while idx < len(messages) and _is_tool_result_role(messages[idx].get("role")):
             idx += 1
         return idx
 
@@ -4588,7 +4587,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         """Pull a compress-end boundary back so a tool group is not split (orphaned tail results would be dropped)."""
         if idx <= 0 or idx >= len(messages):
             return idx
-        check = next((i for i in range(idx - 1, -1, -1) if messages[i].get("role") != "tool"), -1)
+        check = next((i for i in range(idx - 1, -1, -1) if not _is_tool_result_role(messages[i].get("role"))), -1)
         # Landed on the parent assistant: move before it so the group is summarised together.
         if check >= 0 and messages[check].get("role") == "assistant" and messages[check].get("tool_calls"):
             return check
@@ -5212,7 +5211,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         if compress_end == latest_actionable_idx:
             bridge_idx = latest_actionable_idx - 1
             bridge_role = messages[bridge_idx].get("role") if bridge_idx >= 0 else None
-            if bridge_role == "tool":
+            if _is_tool_result_role(bridge_role):
                 bridge_idx = self._align_boundary_backward(messages, latest_actionable_idx)
             elif bridge_role != "assistant":
                 bridge_idx = -1
@@ -5731,7 +5730,7 @@ def reference_handoff_would_drive_next_model_call(messages: Optional[list[dict[s
             continue
         role = message.get("role")
         if (
-            role == "tool" or (role == "assistant" and message.get("tool_calls"))
+            _is_tool_result_role(role) or (role == "assistant" and message.get("tool_calls"))
             or ContextCompressor._is_real_user_turn(message)
             or (is_compaction_summary_message(message) and _handoff_carries_live_user_content(message))
         ):

@@ -5,11 +5,16 @@ import { type CommandCenterSection } from '@/app/command-center'
 import {
   AGENTS_ROUTE,
   appViewForPath,
+  type AppView,
   COMMAND_CENTER_ROUTE,
   isOverlayView,
   NEW_CHAT_ROUTE,
   STARMAP_ROUTE
 } from '@/app/routes'
+
+/** The page surfaces rendered inside the generic overlay host. The other
+ *  non-chat views keep their dedicated controller mounts. */
+const PAGE_OVERLAY_VIEWS: ReadonlySet<AppView> = new Set(['artifacts', 'capabilities', 'extension', 'messaging'])
 
 const SECTIONS = ['sessions', 'system', 'usage'] as const
 
@@ -27,6 +32,8 @@ export function useOverlayRouting() {
   const webhooksOpen = currentView === 'webhooks'
   const chatOpen = currentView === 'chat'
   const overlayOpen = isOverlayView(currentView)
+  const pageOverlayView = overlayOpen && PAGE_OVERLAY_VIEWS.has(currentView) ? currentView : null
+  const pageOverlayPath = pageOverlayView ? location.pathname : null
 
   // Overlay routes (settings/command-center/agents) stash the underlying path
   // so closing them returns there instead of bouncing to /.
@@ -70,6 +77,8 @@ export function useOverlayRouting() {
   const openStarmap = useCallback(() => navigate(STARMAP_ROUTE), [navigate])
 
   return {
+    pageOverlayPath,
+    pageOverlayView,
     agentsOpen,
     chatOpen,
     closeOverlayToPreviousRoute,

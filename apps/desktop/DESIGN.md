@@ -45,15 +45,15 @@ one-off at the call site.
 
 ## Information architecture
 
-- **Chat is the home surface.** The transcript and composer stay primary; tools,
+- **Chat is the workspace home.** The transcript and composer stay primary; tools,
   previews, files, review, and terminal complement the conversation.
-- **Pages are durable destinations.** Chat, Skills, Messaging, and Artifacts
-  remain in shell chrome. Do not hide a distinct product noun inside an
-  unrelated page.
-- **Route overlays are short tasks.** Settings, Command Center, Cron, Profiles,
-  Agents, and Starmap render as `OverlayView` cards and return to the previous
-  route on close. Model/session pickers and dialogs layer above the current
-  surface; they are not navigation stacks.
+- **Non-chat routes are overlays by default.** Sidebar destinations and contributed
+  pages render as `OverlayView` cards over the current workspace; chat routes stay
+  in the workspace. An overlay's **Open in new tab** action opens its route without
+  replacing the current tab.
+- **Overlays preserve context.** Closing one returns to the previous surface.
+  Model/session pickers and dialogs layer above the current surface; they are not
+  navigation stacks.
 - **Panes are working context.** Preview, files, review, and terminal remain
   attached to the current task. Their state survives temporary hiding and chat
   switches where the underlying tool is meant to persist.

@@ -64,11 +64,14 @@ describe('TitlebarControls fixed clusters', () => {
     cleanup()
   })
 
-  it('keeps the app clusters on a contributed page that mounts no titlebar chrome', () => {
+  it('hides the app clusters on a contributed page — it is an overlay now', () => {
+    // Contributed pages float over the workspace like Settings: the card owns
+    // the window, so there is no band for the app clusters even when the page
+    // mounts no chrome of its own.
     renderControls('/plain')
 
-    expect(windowControls()).not.toBeNull()
-    expect(appControls()).not.toBeNull()
+    expect(windowControls()).toBeNull()
+    expect(appControls()).toBeNull()
   })
 
   it('hides the app clusters on an overlay', () => {
@@ -78,11 +81,11 @@ describe('TitlebarControls fixed clusters', () => {
     expect(appControls()).toBeNull()
   })
 
-  it('a titleBar.tools item alone does not claim the band', () => {
+  it('a titleBar.tools item does not claim the band on a contributed overlay', () => {
     renderControls('/plain', { leftTools: [PLUGIN_TOOL] })
 
-    expect(windowControls()).not.toBeNull()
-    expect(pluginTool()).not.toBeNull()
+    expect(windowControls()).toBeNull()
+    expect(pluginTool()).toBeNull()
   })
 
   it('keeps a titleBar.center component mounted across a chat -> page -> chat round trip', () => {
@@ -142,18 +145,18 @@ describe('TitlebarControls fixed clusters', () => {
       act(() => disposeChrome())
     })
 
-    it('keeps plugin titlebar contributions on a contributed full-page route', () => {
+    it('hides plugin titlebar contributions on a contributed route — an overlay owns the window', () => {
       renderControls('/kanban')
 
-      expect(pluginChrome()).not.toBeNull()
+      expect(pluginChrome()).toBeNull()
       expect(windowControls()).toBeNull()
       expect(appControls()).toBeNull()
     })
 
-    it('keeps contributed titlebar tools on a chrome-owning page', () => {
+    it('hides contributed titlebar tools on a contributed route', () => {
       renderControls('/kanban', { leftTools: [PLUGIN_TOOL] })
 
-      expect(pluginTool()).not.toBeNull()
+      expect(pluginTool()).toBeNull()
     })
 
     it('hides plugin titlebar contributions on an overlay', () => {
@@ -162,14 +165,13 @@ describe('TitlebarControls fixed clusters', () => {
       expect(pluginChrome()).toBeNull()
     })
 
-    it('keeps measurable titlebar clusters on a chrome-owning contributed page', () => {
-      // usePanelTitlebar positions the sessions tab strip from these hooks;
-      // without them the tabs keep their stale chat-view offset and slide
-      // under the page's switcher (kanban's board switcher).
+    it('renders no titlebar clusters on a contributed route — it is an overlay now', () => {
+      // The old hooks existed to position the sessions tab strip around a
+      // page-mounted switcher; an overlay card has no band to measure.
       const { container } = renderControls('/kanban')
 
-      expect(container.querySelector('[data-titlebar-cluster="left"]')).not.toBeNull()
-      expect(container.querySelector('[data-titlebar-cluster="right"]')).not.toBeNull()
+      expect(container.querySelector('[data-titlebar-cluster="left"]')).toBeNull()
+      expect(container.querySelector('[data-titlebar-cluster="right"]')).toBeNull()
     })
 
     it('announces its chrome so the sessions tab reservation re-measures', () => {

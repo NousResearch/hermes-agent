@@ -67,6 +67,7 @@ import {
   $activeSessionStoredIdRotation,
   $connection,
   $currentCwd,
+  $currentCwdExplicit,
   $messages,
   $newChatWorkspaceTarget,
   $sessions,
@@ -670,6 +671,13 @@ export function useSessionActions({
               ? workspaceTarget.trim()
               : $currentCwd.get().trim() || resolveNewSessionCwd()
 
+        const cwdExplicit =
+          typeof workspaceTarget === 'string'
+            ? true
+            : workspaceTarget === null || homeScope
+              ? false
+              : $currentCwdExplicit.get()
+
         // The EXACT owner for this create: an explicit agent route, else the
         // (registry source, profile) pair the draft was made on. Read ONCE at
         // the send linearization point and threaded through the create RPC,
@@ -682,7 +690,7 @@ export function useSessionActions({
         const legacyProfileIntent = isLegacyNewChatProfile(capturedProfile)
 
         const params = {
-          ...(await desktopSessionCreateParams(cwd, capturedRoute, capturedProfile, legacyProfileIntent)),
+          ...(await desktopSessionCreateParams(cwd, capturedRoute, capturedProfile, legacyProfileIntent, true, cwdExplicit)),
           request_id: createIntent
         }
 
@@ -863,7 +871,7 @@ export function useSessionActions({
       // (same contract as createBackendSessionForSend's starting tokens).
       const startingRouteToken = getRouteToken()
       const startingSelectedStoredId = selectedStoredSessionIdRef.current
-      const params = await desktopSessionCreateParams(resolveNewSessionCwd())
+      const params = await desktopSessionCreateParams(resolveNewSessionCwd(), undefined, undefined, false, true, false)
       const created = await requestGateway<SessionCreateResponse>('session.create', params)
       const stored = created.stored_session_id
 
@@ -1097,7 +1105,8 @@ export function useSessionActions({
             capturedRoute,
             requestedProfile,
             options?.route === null || defaultTarget?.route === null,
-            workspaceScope.workspaceMode !== 'bots'
+            workspaceScope.workspaceMode !== 'bots',
+            typeof options?.cwd === 'string'
           )),
           request_id: crypto.randomUUID()
         }

@@ -47,6 +47,9 @@ def _forms(argv: list[str]) -> dict[str, list[str]]:
         "store-launcher": _launchers.runtime_command(ROOT, argv, python=Path(PY)),
         "launcher-script": [PY, "-I", "-c", _SCRIPT, *argv],
         "cmd-launcher": [PY, "-I", "-c", f"import base64; exec(base64.b64decode('{base64.b64encode(_SCRIPT.encode()).decode()}'))", *argv],
+        # The Windows .cmd fallback since #122463 runs a sibling script instead of an
+        # exec-of-base64 -c program, so the entry token is the script's basename.
+        "cmd-script-launcher": [PY, "-I", r"C:\Users\x\.hermes\bin\hermes-script.py", *argv],
         "venv-reentry": venv_sync.relaunch_command(
             Path(PY), ROOT, [str(ROOT / "hermes_cli" / "main.py"), *argv], ["/old/python", "-m", "hermes_cli.main", *argv],
             "hermes_cli.main"),

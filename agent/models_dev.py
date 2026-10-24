@@ -909,12 +909,14 @@ def _should_hide_from_provider_catalog(provider: str, model_id: str) -> bool:
 
 
 def list_agentic_models(provider: str, *, allow_network: bool = True) -> list[str]:
-    """Model IDs suitable for agentic use: tool_call=True, minus hidden and noise models. [] on any
-    failure. ``allow_network`` defaults to True (called from interactive model selection)."""
+    """Model IDs suitable for agentic use: tool_call=True, minus hidden, noise and deprecated models
+    (opencode hides ``status: deprecated`` from its picker too). [] on any failure. ``allow_network``
+    defaults to True (called from interactive model selection)."""
     models = _get_provider_models(provider, allow_network=allow_network)
     return [
         mid for mid, entry in models.items()
-        if isinstance(entry, dict) and not _should_hide_from_provider_catalog(provider, mid) and entry.get("tool_call", False) and not _NOISE_PATTERNS.search(mid)
+        if isinstance(entry, dict) and not _should_hide_from_provider_catalog(provider, mid) and entry.get("tool_call", False)
+        and entry.get("status") != "deprecated" and not _NOISE_PATTERNS.search(mid)
     ] if models is not None else []
 
 

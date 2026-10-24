@@ -171,7 +171,10 @@ from gateway.run_turn_hygiene import GatewayTurnHygieneMixin
 from gateway.run_turn_persistence import GatewayTurnPersistenceMixin
 
 
-class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, GatewayTurnPersistenceMixin):
+from gateway.run_turn_toolsets import GatewayTurnToolsetsMixin
+
+
+class GatewayTurnMixin(GatewayTurnToolsetsMixin, GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, GatewayTurnPersistenceMixin):
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
 
@@ -454,30 +457,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 prompt, source, task_id, event_message_id, media_urls, media_types,
             )
 
-    def _resolve_enabled_toolsets_for_source(
-        self, user_config: dict, source: SessionSource, platform_key: str,
-    ) -> list:
-        """Enabled toolsets for an agent run, honoring an adapter ``toolsets_for_source()`` override
-        validated through the SAME ``_get_platform_tools`` path (unknown / platform-restricted
-        toolsets dropped, not trusted)."""
-        from hermes_cli.tools_config import _get_platform_tools
-        try:
-            adapter = self._delivery_adapter_for(source)
-            override = adapter.toolsets_for_source(source) if adapter is not None else None
-        except Exception:
-            override = None
-        if override and isinstance(override, list):
-            pts = dict(user_config.get("platform_toolsets") or {})
-            pts[platform_key] = [str(x) for x in override]
-            user_config = {**user_config, "platform_toolsets": pts}
-        return sorted(_get_platform_tools(user_config, platform_key))
 
-    def _resolve_turn_toolsets(self, user_config: dict, source: SessionSource, platform_key: str):
-        """``(enabled_toolsets, disabled_toolsets)`` for an agent run on ``source``."""
-        from agent.skill_utils import parse_config_string_list
-        enabled = self._resolve_enabled_toolsets_for_source(user_config, source, platform_key)
-        disabled = parse_config_string_list((user_config.get("agent") or {}).get("disabled_toolsets")) or None
-        return enabled, disabled
 
     async def _run_background_task_inner(
         self, prompt: str, source: SessionSource, task_id: str,
@@ -510,6 +490,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             pr = self._provider_routing
             max_iterations = _current_max_iterations()
             reasoning_config = self._resolve_session_reasoning_config(source=source, model=model)
+            reasoning_is_scoped = self._has_scoped_reasoning_override(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._resolve_session_service_tier(source=source)
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
@@ -555,6 +536,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                     # See #60955.
                     fallback_model=self._refresh_fallback_model(),
                 )
+                agent._reasoning_config_fixed = reasoning_is_scoped
                 try:
                     return agent.run_conversation(user_message=enriched_prompt, task_id=task_id)
                 finally:

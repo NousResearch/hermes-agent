@@ -230,11 +230,20 @@ def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
     for flag in (["--user"], []):
         try:
             result = subprocess.run(
-                ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
+                ["systemctl", *flag, "show", unit_name,
+                 "--property=TimeoutStopUSec", "--property=LoadState"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2.0,
                 check=False,
             )
         except (subprocess.TimeoutExpired, OSError):
+            continue
+        # User bus returns default TimeoutStopUSec=90s for LoadState=not-found
+        # even when the live unit is the hardened system service (210s).
+        load_state = ""
+        for _line in result.stdout.splitlines() if result.returncode == 0 else ():
+            if _line.startswith("LoadState="):
+                load_state = _line.split("=", 1)[1].strip()
+        if load_state in {"not-found", "masked"}:
             continue
         # Output: "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
         for line in result.stdout.splitlines() if result.returncode == 0 else ():

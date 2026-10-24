@@ -600,18 +600,21 @@ class TestManifestMatchesInRepoLists:
             "git add website/static/api/model-catalog.json"
         )
 
-    def test_inclusion_ling_free_is_curated_and_published(self):
-        """inclusionai/ling-3.0-flash:free must reach the picker from BOTH sources (#73686).
+    def test_a_live_free_model_is_curated_and_published(self):
+        """A free model that OpenRouter still serves must reach the picker from BOTH sources (#73686).
 
         The model works when named explicitly via ``hermes config set model.default`` but was
         absent from the curated fallback list, so the runtime fetcher's stale-while-revalidate
         and offline floors never offered it in the Desktop model picker. The static list is
         the floor; the published manifest is what fresh installs fetch — both must carry it.
+
+        The id is the current generation of the free tier: OpenRouter retires a free SKU
+        within days, so the curated list names the live one and the retired one is dropped.
         """
         from hermes_cli.models_catalog_static import OPENROUTER_MODELS
 
         curated_ids = [mid for mid, _desc in OPENROUTER_MODELS]
-        assert "inclusionai/ling-3.0-flash:free" in curated_ids
+        assert "minimax/minimax-m3.1-flash:free" in curated_ids
 
         repo_root = Path(__file__).resolve().parents[2]
         manifest_path = repo_root / "website" / "static" / "api" / "model-catalog.json"
@@ -622,7 +625,7 @@ class TestManifestMatchesInRepoLists:
                 entry["id"]
                 for entry in json.load(fh)["providers"]["openrouter"]["models"]
             ]
-        assert "inclusionai/ling-3.0-flash:free" in manifest_ids
+        assert "minimax/minimax-m3.1-flash:free" in manifest_ids
 
     def test_nous_lists_portal_served_muse_spark_but_not_contributor_twins(self):
         """The Portal serves plain muse-spark 1.2/1.3; only the -contributor twins are OpenRouter-only."""

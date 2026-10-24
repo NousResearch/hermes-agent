@@ -115,6 +115,11 @@ The exclusion is matched case-insensitively against every key a provider can sur
 Maintainers:
 
 ```bash
+# See what the curated lists and the live provider catalogs disagree about:
+# curated ids the live catalog no longer publishes, and live free models the
+# curated list does not carry (invisible in the picker).
+python scripts/check_model_catalog_drift.py
+
 # Re-generate from the in-repo hardcoded lists (keeps manifest in sync after
 # editing OPENROUTER_MODELS or _PROVIDER_MODELS["nous"] in hermes_cli/models.py).
 python scripts/build_model_catalog.py
@@ -123,3 +128,30 @@ python scripts/build_model_catalog.py
 Then PR the resulting change to `website/static/api/model-catalog.json` to `main`. The docs site auto-deploys on merge and the new manifest is live within a few minutes.
 
 You can also hand-edit the JSON directly for fine-grained metadata changes that don't belong in the in-repo snapshot — the generator script is a convenience, not the single source of truth.
+
+### Keeping the curated list fresh
+
+The curated list names model **ids**, and the live catalog decides which of them are still
+served. OpenRouter retires or renames a free SKU within days, so a curated list that is
+not refreshed goes stale quietly: the picker drops the ids the catalog no longer serves
+(they vanish from the picker) and never offers the free models that appeared since
+(#17923, #89150, #131372).
+
+`scripts/check_model_catalog_drift.py` names both sides of that gap. Run it before a
+curation PR:
+
+```bash
+python scripts/check_model_catalog_drift.py          # report
+python scripts/check_model_catalog_drift.py --json   # machine-readable
+```
+
+It reports:
+
+- **curated ids the live catalog does not publish** — a signal to check, not proof of
+  retirement: OpenRouter does not publish every curated id (the stealth SKUs among them),
+  so a missing id may be a SKU it stopped listing rather than one it dropped.
+- **live, free, tool-capable models the curated list does not carry** — these are
+  invisible in the picker. A model is free when **both** price fields are present and
+  zero; a missing field is unknown pricing, not free pricing. Tool support is required:
+  hermes-agent is tool-calling-first, and a model without it fails at the first tool call.
+

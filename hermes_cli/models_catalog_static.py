@@ -57,10 +57,11 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
         "meta/muse-spark-1.2-contributor", "meta/muse-spark-1.3", "meta/muse-spark-1.3-contributor", "sakana/fugu-ultra",
         "upstage/solar-pro4", "upstage/solar-mini4",
         "openrouter/pareto-code", "thinkingmachines/inkling:free", "thinkingmachines/inkling-small:free",
-        "minimax/minimax-m3:free", "z-ai/glm-5.2:free", "poolside/laguna-s-2.1:free", "poolside/laguna-xs-2.1:free",
+        "poolside/laguna-s-2.1:free", "poolside/laguna-xs-2.1:free",
         "nvidia/nemotron-3-super-120b-a12b:free", "nvidia/nemotron-3-ultra-550b-a55b:free",
-        "inclusionai/ling-3.0-flash:free", "nvidia/nemotron-3.5-lightning:free", "stealth/union-alpha",
-        "stealth/space-bunny-alpha",
+        "nvidia/nemotron-3.5-lightning:free", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+        "google/gemma-4-26b-a4b-it:free", "minimax/minimax-m3.1-flash:free",
+        "stealth/union-alpha", "stealth/space-bunny-alpha",
     )
 ]
 

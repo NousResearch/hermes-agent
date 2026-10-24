@@ -2098,6 +2098,17 @@ DEFAULT_CONFIG = {
     },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
         "unmanaged_idle_exit_seconds": 600,  # client-auto-started gateway only; 0 disables
+        # Post-compression prefix-cache warmup for sessions on a LOCAL model server.
+        # A compression commit rebuilds the transcript, so the next turn's request is a
+        # brand-new token prefix and the local server's paged prefix cache misses it —
+        # the first turn after a manual /compress or a deferred hygiene adoption pays a
+        # full cold prefill. When enabled, the gateway replays the rebuilt context once
+        # with max_tokens=1 while the session is idle, so the next real turn hits the
+        # cache. Opt-in: only a local route can benefit, and warming a cloud provider
+        # would be pure cost.
+        "prefix_cache_warmup": {
+            "enabled": False,
+        },
         # Seconds a SIGTERM-interrupted agent unwinds before teardown (short: service stop budgets).
         "signal_interrupt_grace_timeout": 1,
         "service_install_choice": None,  # null | install | decline; never authorizes ordinary launch installation.

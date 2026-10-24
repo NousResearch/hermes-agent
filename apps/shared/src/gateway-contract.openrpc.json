@@ -13774,6 +13774,26 @@
         "title": "ConnectionTargetState",
         "type": "string"
       },
+      "ConnectionTurnSource": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "connection",
+            "title": "Kind",
+            "type": "string"
+          },
+          "socket_id": {
+            "title": "Socket Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "socket_id"
+        ],
+        "title": "ConnectionTurnSource",
+        "type": "object"
+      },
       "ConnectionUpdatePayload": {
         "additionalProperties": false,
         "description": "``methods_connectors._connection_update``: one target transition (``target``/``from``/``to``/\n``actor``) or the settlement (none of those), with the full snapshot.",
@@ -17800,6 +17820,33 @@
           "message": {
             "title": "Message",
             "type": "string"
+          },
+          "inputs": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/InputOccurrence"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Inputs"
+          },
+          "inputs_complete": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Inputs Complete"
           }
         },
         "required": [
@@ -18505,6 +18552,17 @@
           "replay_epoch": {
             "title": "Replay Epoch",
             "type": "string"
+          },
+          "shared_session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SharedSessionCapability"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "heartbeat": {
             "anyOf": [
@@ -20773,6 +20831,82 @@
         "additionalProperties": false,
         "description": "``session_auto_continue._inflight_snapshot``: the live (or retained failed) turn a reconnecting\nclient rebuilds its bubbles from.",
         "properties": {
+          "turn": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnDescriptor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "input": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectedInput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "inputs": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/InputOccurrence"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Inputs"
+          },
+          "inputs_complete": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Inputs Complete"
+          },
+          "input_observations": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/InputObservation"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Input Observations"
+          },
+          "input_observations_complete": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Input Observations Complete"
+          },
           "assistant": {
             "default": "",
             "title": "Assistant",
@@ -20894,6 +21028,28 @@
           }
         },
         "title": "InflightTurn",
+        "type": "object"
+      },
+      "InputBatchProjection": {
+        "additionalProperties": false,
+        "properties": {
+          "inputs": {
+            "items": {
+              "$ref": "#/components/schemas/InputOccurrence"
+            },
+            "title": "Inputs",
+            "type": "array"
+          },
+          "inputs_complete": {
+            "title": "Inputs Complete",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "inputs",
+          "inputs_complete"
+        ],
+        "title": "InputBatchProjection",
         "type": "object"
       },
       "InputDetectDropParams": {
@@ -21043,6 +21199,209 @@
           "matched"
         ],
         "title": "InputDetectDropResult",
+        "type": "object"
+      },
+      "InputObservation": {
+        "additionalProperties": false,
+        "properties": {
+          "inputs": {
+            "items": {
+              "$ref": "#/components/schemas/InputOccurrence"
+            },
+            "title": "Inputs",
+            "type": "array"
+          },
+          "inputs_complete": {
+            "title": "Inputs Complete",
+            "type": "boolean"
+          },
+          "kind": {
+            "enum": [
+              "steer",
+              "redirect"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "input": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectedInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "inputs",
+          "inputs_complete",
+          "kind",
+          "input",
+          "offset"
+        ],
+        "title": "InputObservation",
+        "type": "object"
+      },
+      "InputOccurrence": {
+        "additionalProperties": false,
+        "description": "A fresh accepted RPC occurrence; reused refs do not deduplicate work.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ref"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "InputOccurrence",
+        "type": "object"
+      },
+      "InputOutcome": {
+        "additionalProperties": false,
+        "properties": {
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "input": {
+            "$ref": "#/components/schemas/InputOccurrence"
+          },
+          "disposition": {
+            "$ref": "#/components/schemas/InputOutcomeDisposition"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "into_inputs": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/InputOccurrence"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Into Inputs"
+          },
+          "turn": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnDescriptor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "complete",
+                  "error",
+                  "interrupted"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Status"
+          }
+        },
+        "required": [
+          "revision",
+          "input",
+          "disposition"
+        ],
+        "title": "InputOutcome",
+        "type": "object"
+      },
+      "InputOutcomeDisposition": {
+        "enum": [
+          "cancelled",
+          "absorbed",
+          "failed_before_start",
+          "unresolved",
+          "terminal"
+        ],
+        "title": "InputOutcomeDisposition",
+        "type": "string"
+      },
+      "InputSubmission": {
+        "additionalProperties": false,
+        "properties": {
+          "input_id": {
+            "title": "Input Id",
+            "type": "string"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ref"
+          },
+          "disposition": {
+            "$ref": "#/components/schemas/SubmissionDisposition"
+          },
+          "turn": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnDescriptor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "input_id",
+          "disposition"
+        ],
+        "title": "InputSubmission",
         "type": "object"
       },
       "InsightsGetParams": {
@@ -23396,6 +23755,33 @@
               }
             ],
             "default": null
+          },
+          "inputs": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/InputOccurrence"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Inputs"
+          },
+          "inputs_complete": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Inputs Complete"
           }
         },
         "title": "MessageCompletePayload",
@@ -23445,6 +23831,53 @@
           "text"
         ],
         "title": "MessageDeltaPayload",
+        "type": "object"
+      },
+      "MessageInputPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "inputs": {
+            "items": {
+              "$ref": "#/components/schemas/InputOccurrence"
+            },
+            "title": "Inputs",
+            "type": "array"
+          },
+          "inputs_complete": {
+            "title": "Inputs Complete",
+            "type": "boolean"
+          },
+          "kind": {
+            "enum": [
+              "steer",
+              "redirect"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "input": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectedInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "inputs",
+          "inputs_complete",
+          "kind",
+          "input",
+          "offset"
+        ],
+        "title": "MessageInputPayload",
         "type": "object"
       },
       "MessageInterimPayload": {
@@ -23637,7 +24070,7 @@
       },
       "MessageStartPayload": {
         "additionalProperties": false,
-        "description": "``message.start``. Empty from the TUI gateway's emitters and for an ordinary admission;\n``gateway/session_authority._stamp_claim`` adds an automation admission's async-result card\n(``session_automation.admission_display``: a background-process completion) and its model\ntext, so a viewer that did not submit the turn paints the same header the submitter would.",
+        "description": "``message.start``. Empty for an ordinary session-authority admission;\n``gateway/session_authority._stamp_claim`` adds an automation admission's async-result card\n(``session_automation.admission_display``: a background-process completion) and its model\ntext, so a viewer that did not submit the turn paints the same header the submitter would.",
         "properties": {
           "display_kind": {
             "anyOf": [
@@ -23686,6 +24119,44 @@
             ],
             "default": null,
             "title": "Text"
+          },
+          "input": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectedInput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "inputs": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/InputOccurrence"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Inputs"
+          },
+          "inputs_complete": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Inputs Complete"
           }
         },
         "title": "MessageStartPayload",
@@ -30972,6 +31443,49 @@
         "title": "ProjectTreeSession",
         "type": "object"
       },
+      "ProjectedInput": {
+        "additionalProperties": false,
+        "description": "The canonical user transcript projection; null at the containing field suppresses display.",
+        "properties": {
+          "role": {
+            "const": "user",
+            "title": "Role",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "display_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Kind"
+          },
+          "display_metadata": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Metadata"
+          }
+        },
+        "required": [
+          "role",
+          "text"
+        ],
+        "title": "ProjectedInput",
+        "type": "object"
+      },
       "ProjectsAddFolderParams": {
         "additionalProperties": false,
         "properties": {
@@ -31863,6 +32377,10 @@
             "default": "",
             "title": "Text"
           },
+          "submission_ref": {
+            "default": null,
+            "title": "Submission Ref"
+          },
           "display_kind": {
             "anyOf": [
               {
@@ -32159,6 +32677,17 @@
             ],
             "default": null,
             "title": "Forwarded"
+          },
+          "submission": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InputSubmission"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "title": "PromptSubmitResult",
@@ -32347,6 +32876,44 @@
           "user": {
             "title": "User",
             "type": "string"
+          },
+          "input": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectedInput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "inputs": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/InputOccurrence"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Inputs"
+          },
+          "inputs_complete": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Inputs Complete"
           }
         },
         "required": [
@@ -34728,6 +35295,17 @@
               }
             ],
             "default": null
+          },
+          "submission_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubmissionState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -35987,6 +36565,14 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "submission_ref": {
+            "default": null,
+            "title": "Submission Ref"
+          },
+          "input_visibility": {
+            "default": null,
+            "title": "Input Visibility"
           }
         },
         "required": [
@@ -36000,16 +36586,55 @@
         "additionalProperties": false,
         "properties": {
           "status": {
-            "$ref": "#/components/schemas/CorrectionStatus"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CorrectionStatus"
+              },
+              {
+                "const": "streaming",
+                "type": "string"
+              }
+            ],
+            "title": "Status"
           },
           "text": {
-            "title": "Text",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Text"
+          },
+          "submission": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InputSubmission"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "turn_isolation": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Turn Isolation"
           }
         },
         "required": [
-          "status",
-          "text"
+          "status"
         ],
         "title": "SessionCorrectionResult",
         "type": "object"
@@ -36538,6 +37163,17 @@
             ],
             "default": null,
             "title": "Lazy"
+          },
+          "submission_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubmissionState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "title": "SessionCwdSetResult",
@@ -37546,6 +38182,17 @@
             ],
             "default": null,
             "title": "Lazy"
+          },
+          "submission_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubmissionState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "title": "SessionLiveInfo",
@@ -38178,6 +38825,17 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/AutoContinue"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "submission_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubmissionState"
               },
               {
                 "type": "null"
@@ -40632,6 +41290,26 @@
         "title": "SharedMetricsUpdateRunResult",
         "type": "object"
       },
+      "SharedSessionCapability": {
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "const": 1,
+            "title": "Version",
+            "type": "integer"
+          },
+          "socket_id": {
+            "title": "Socket Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "socket_id"
+        ],
+        "title": "SharedSessionCapability",
+        "type": "object"
+      },
       "ShellExecParams": {
         "additionalProperties": false,
         "properties": {
@@ -42430,6 +43108,67 @@
           "subagent_id"
         ],
         "title": "SubagentTailResult",
+        "type": "object"
+      },
+      "SubmissionDisposition": {
+        "enum": [
+          "starting",
+          "queued",
+          "merged",
+          "absorbed",
+          "steered",
+          "redirected",
+          "unresolved"
+        ],
+        "title": "SubmissionDisposition",
+        "type": "string"
+      },
+      "SubmissionState": {
+        "additionalProperties": false,
+        "description": "Bounded evidence owned by the gateway queue; absence does not prove cancellation.",
+        "properties": {
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "queued": {
+            "items": {
+              "$ref": "#/components/schemas/InputBatchProjection"
+            },
+            "title": "Queued",
+            "type": "array"
+          },
+          "queued_complete": {
+            "title": "Queued Complete",
+            "type": "boolean"
+          },
+          "outcomes": {
+            "items": {
+              "$ref": "#/components/schemas/InputOutcome"
+            },
+            "title": "Outcomes",
+            "type": "array"
+          },
+          "outcomes_truncated_before_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcomes Truncated Before Revision"
+          }
+        },
+        "required": [
+          "revision",
+          "queued",
+          "queued_complete",
+          "outcomes",
+          "outcomes_truncated_before_revision"
+        ],
+        "title": "SubmissionState",
         "type": "object"
       },
       "SubscriptionChangeEffect": {
@@ -44631,6 +45370,33 @@
         "title": "TranscriptMessage",
         "type": "object"
       },
+      "TurnDescriptor": {
+        "additionalProperties": false,
+        "description": "One runner invocation, scoped by replay epoch and runtime session.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConnectionTurnSource"
+              },
+              {
+                "$ref": "#/components/schemas/UnattributedTurnSource"
+              }
+            ],
+            "title": "Source"
+          }
+        },
+        "required": [
+          "id",
+          "source"
+        ],
+        "title": "TurnDescriptor",
+        "type": "object"
+      },
       "TurnStatus": {
         "description": "``prompt_turn._result_status``.",
         "enum": [
@@ -44655,6 +45421,24 @@
           }
         },
         "title": "UiMetaConflict",
+        "type": "object"
+      },
+      "UnattributedTurnSource": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "mixed",
+              "unknown"
+            ],
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "UnattributedTurnSource",
         "type": "object"
       },
       "UndoIntent": {
@@ -48761,6 +49545,18 @@
       ]
     },
     {
+      "name": "message.input",
+      "summary": "An accepted visible correction in the captured execution.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/MessageInputPayload"
+          }
+        }
+      ]
+    },
+    {
       "name": "message.interim",
       "summary": "Interim assistant commentary (text beside tool calls) sealed as its own segment.",
       "params": [
@@ -48786,7 +49582,7 @@
     },
     {
       "name": "message.start",
-      "summary": "A turn began streaming; an automation turn carries its async-result card.",
+      "summary": "A turn began streaming; an automation turn carries its async-result card, an observed execution its canonical input and occurrence evidence.",
       "params": [
         {
           "name": "payload",

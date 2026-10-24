@@ -22,6 +22,8 @@ import { handleDesktopBridgeEvent } from './desktop-bridge'
 import { handleFreeTierEvent } from './free-tier'
 import { handleInputRequestEvent } from './input-requests'
 import { handleLifecycleEvent } from './lifecycle'
+import { handleMessageInputEvent } from './message-input'
+import { shouldIgnoreMessageStart } from './message-start-input'
 import { handleMessageStreamEvent } from './message-stream'
 import { handleOnboardingEvent } from './onboarding'
 import { handleControlEvent } from './session-control'
@@ -90,6 +92,7 @@ const HANDLERS: GatewayEventHandler[] = [
   handleSessionInfoEvent,
   handleDeferredPickEvent,
   handleControlEvent,
+  handleMessageInputEvent,
   handleMessageStreamEvent,
   handleToolProgressEvent,
   handleToolEvent,
@@ -211,17 +214,24 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         unscopedStreamSessionIds: unscopedStreamSessionIdsRef.current
       })
 
-      unscopedStreamSessionIdsRef.current = route.nextUnscopedStreamSessionIds
-
       if (route.drop) {
         return
       }
 
       const sessionId = route.sessionId
 
+      // The owner fence runs first: an accepted newer owner start retires the interrupted latch
+      // that the shared-input start check below reads.
       if (!admitExecutionEvent(executionAuthorities.current, event, sessionId, deps)) {
         return
       }
+
+      // Rejected starts must not mutate routing or any transient status store.
+      if (event.type === 'message.start' && shouldIgnoreMessageStart({ deps, event, sessionId, explicitSid })) {
+        return
+      }
+
+      unscopedStreamSessionIdsRef.current = route.nextUnscopedStreamSessionIds
 
       // Late stragglers: an unscoped stream event attributed via the
       // active-session fallback (no pin) to a session that has no live turn

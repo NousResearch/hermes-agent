@@ -155,6 +155,7 @@ export function isSyntheticRendererId(messageId: string | undefined): boolean {
     typeof messageId === 'string' &&
     (messageId.startsWith('user-') ||
       messageId.startsWith('assistant-') ||
+      messageId.startsWith('input-') ||
       messageId.includes('-synthetic-') ||
       /^\d+-\d+-(user|assistant|tools)\b/.test(messageId))
   )
@@ -284,7 +285,8 @@ export async function runRewindSubmit(
   rebindRowIds?: readonly number[],
   // Omitted never means confirmed: restore/edit (explicit target) and a
   // confirmed deep regenerate pass true; tail regenerate passes false (#133716).
-  confirmDeepTruncate?: boolean
+  confirmDeepTruncate?: boolean,
+  submissionRef?: string
 ): Promise<SurvivorUserRowIds | undefined> {
   // Recovery may rebind the live id mid-flight; interrupt/submit must both
   // follow it rather than pinning the dead one.
@@ -349,6 +351,7 @@ export async function runRewindSubmit(
       {
         session_id: targetId,
         text,
+        ...(submissionRef ? { submission_ref: submissionRef } : {}),
         ...truncateSubmitParams(resolvedOrdinal, resolvedMessageId, resolvedRowId, confirmDeepTruncate),
         // A first-turn rewind resolves to an empty transcript, which the
         // gateway additionally gates behind confirm_empty_truncate. In
@@ -461,8 +464,13 @@ export function finalizeStoppedMessages(
  * user row, which made the post-correction reply a sibling of the sealed
  * partial and dropped the partial and the correction from view (#119015).
  */
-export function appendMidTurnUserMessage<State extends LiveStreamState>(state: State, message: ChatMessage): State {
-  const sealed = sealLiveStream(state)
+export function appendMidTurnUserMessage<State extends LiveStreamState>(
+  state: State,
+  message: ChatMessage,
+  { interruptTools = true }: { interruptTools?: boolean } = {}
+): State {
+  // An observed steer inserts a boundary without requesting an interruption.
+  const sealed = sealLiveStream(state, { keepRunningTools: !interruptTools })
 
   return { ...sealed, messages: [...sealed.messages, message] }
 }
@@ -537,6 +545,7 @@ export function sealAcceptedCorrection<State extends LiveStreamState>(
 // ---------------------------------------------------------------------------
 
 export interface ReloadPlan {
+  submissionRef: string
   branchGroupId: string
   /** True only after the user confirmed a reload that archives later user turns. */
   confirmDeepTruncate: boolean
@@ -578,6 +587,7 @@ export function planReload(messages: ChatMessage[], parentId: null | string): nu
   const isFailedTurn = isFailedUserTurn(messages, userIndex)
 
   return {
+    submissionRef: `user-${crypto.randomUUID()}`,
     branchGroupId: targetAssistant?.branchGroupId ?? branchGroupForUser(userMessage),
     confirmDeepTruncate: false,
     sourceText: text,
@@ -635,6 +645,11 @@ async function confirmIfDeepCut<P extends { truncateOrdinal: number | undefined 
   return (await confirmDeep()) ? { ...plan, confirmDeepTruncate: true } : null
 }
 
+/** A rewind submits a new occurrence; the plan alone retains the durable cut target. */
+function freshRewindMessage(message: ChatMessage, submissionRef: string): ChatMessage {
+  return { ...message, id: submissionRef, inputIds: undefined, rowId: undefined }
+}
+
 /** Optimistic reload state: keep the user turn, hide the branch's assistants. */
 export function applyReloadOptimistic(state: ClientSessionState, plan: ReloadPlan): ClientSessionState {
   const nextUserIndex = state.messages.findIndex((m, i) => i > plan.userIndex && m.role === 'user')
@@ -646,7 +661,8 @@ export function applyReloadOptimistic(state: ClientSessionState, plan: ReloadPla
     busy: true,
     interrupted: false,
     messages: [
-      ...state.messages.slice(0, plan.userIndex + 1),
+      ...state.messages.slice(0, plan.userIndex),
+      freshRewindMessage(state.messages[plan.userIndex], plan.submissionRef),
       ...state.messages
         .slice(plan.userIndex + 1, end)
         .map(m => (m.role === 'assistant' ? { ...m, branchGroupId: plan.branchGroupId, hidden: true } : m))
@@ -672,6 +688,7 @@ export interface RestoreTarget {
 }
 
 export interface RestorePlan {
+  submissionRef: string
   sourceIndex: number
   /** Original persisted text of the turn — the durable-row-id content key. */
   sourceText: string
@@ -714,6 +731,7 @@ export function planRestore(messages: ChatMessage[], messageId: string, target?:
       : target.userOrdinal
 
   return {
+    submissionRef: `user-${crypto.randomUUID()}`,
     sourceIndex,
     sourceText: sourceText || text,
     text,
@@ -728,6 +746,7 @@ export function planRestore(messages: ChatMessage[], messageId: string, target?:
 // ---------------------------------------------------------------------------
 
 export interface EditPlan {
+  submissionRef: string
   editedMessage: ChatMessage
   isFailedTurn: boolean
   sourceIndex: number
@@ -760,6 +779,7 @@ export function planEdit(messages: ChatMessage[], edited: AppendMessage): EditPl
   const isFailedTurn = isFailedUserTurn(messages, sourceIndex)
 
   return {
+    submissionRef: `user-${crypto.randomUUID()}`,
     editedMessage: { ...source, parts: [textPart(text)] },
     isFailedTurn,
     sourceIndex,
@@ -872,16 +892,18 @@ export function retryKeepsDeepConfirm(
 export function applyRewindOptimistic(
   state: ClientSessionState,
   sourceIndex: number,
-  editedMessage?: ChatMessage
+  editedMessage?: ChatMessage,
+  submissionRef = `user-${crypto.randomUUID()}`
 ): ClientSessionState {
   return {
     ...state,
     awaitingResponse: true,
     busy: true,
     interrupted: false,
-    messages: editedMessage
-      ? [...state.messages.slice(0, sourceIndex), editedMessage]
-      : state.messages.slice(0, sourceIndex + 1),
+    messages: [
+      ...state.messages.slice(0, sourceIndex),
+      freshRewindMessage(editedMessage ?? state.messages[sourceIndex], submissionRef)
+    ],
     pendingBranchGroup: null,
     sawAssistantPayload: false,
     // Same as applyReloadOptimistic: seed the clock so the no-payload settle

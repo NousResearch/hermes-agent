@@ -16,6 +16,14 @@ import tools.async_delegation as ad
 from tui_gateway import server
 
 
+def _queued_work(entry):
+    """Compare queued work independently of the separately tested volatile identity sidecar."""
+    if isinstance(entry, list):
+        return [_queued_work(item) for item in entry]
+    return {key: value for key, value in entry.items() if key != "input_batch" and not key.startswith("_")}
+
+
+
 def _session(agent=None, **extra):
     return {
         "agent": agent if agent is not None else types.SimpleNamespace(),
@@ -46,8 +54,8 @@ def test_enqueue_preserves_order_after_an_image_turn():
     server._enqueue_prompt(session, "C", "ws-1", image_paths=["/tmp/c.png"])
     server._enqueue_prompt(session, "D", "ws-1")
 
-    assert session["queued_prompt"] == {"text": "B", "transport": "ws-1"}
-    assert session["queued_prompts"] == [
+    assert _queued_work(session["queued_prompt"]) == {"text": "B", "transport": "ws-1"}
+    assert _queued_work(session["queued_prompts"]) == [
         {"text": "C", "transport": "ws-1", "image_paths": ["/tmp/c.png"]},
         {"text": "D", "transport": "ws-1"},
     ]
@@ -118,7 +126,7 @@ def test_successful_redirect_drops_queued_duplicate_of_inflight_user(monkeypatch
 
     assert resp["result"]["status"] == "redirected"
     # Self-duplicates of the live original must be gone.
-    assert session.get("queued_prompt") == {
+    assert _queued_work(session.get("queued_prompt")) == {
         "text": "unrelated later task",
         "transport": "ws-1",
     }
@@ -147,7 +155,7 @@ def test_successful_redirect_preserves_unrelated_queued_followups(monkeypatch):
     resp = server._handle_busy_submit("r1", "sid", session, "correction Q", "ws-1")
 
     assert resp["result"]["status"] == "redirected"
-    assert session.get("queued_prompt") == {
+    assert _queued_work(session.get("queued_prompt")) == {
         "text": "run this after",
         "transport": "ws-1",
     }
@@ -167,7 +175,7 @@ def test_enqueue_skips_text_duplicate_of_inflight_user():
     assert session.get("queued_prompt") is None
 
     server._enqueue_prompt(session, "different follow-up", "ws-1")
-    assert session["queued_prompt"] == {
+    assert _queued_work(session["queued_prompt"]) == {
         "text": "different follow-up",
         "transport": "ws-1",
     }
@@ -187,7 +195,7 @@ def test_enqueue_followup_does_not_merge_stale_inflight_self_duplicate():
 
     server._enqueue_prompt(session, "Q", "ws-1")
 
-    assert session.get("queued_prompt") == {"text": "Q", "transport": "ws-1"}
+    assert _queued_work(session.get("queued_prompt")) == {"text": "Q", "transport": "ws-1"}
     assert not session.get("queued_prompts")
 
 
@@ -204,7 +212,7 @@ def test_drop_rewrites_merged_inflight_prefix_to_followup_only():
 
     server._drop_queued_duplicates_of_inflight_user(session)
 
-    assert session.get("queued_prompt") == {"text": "Q", "transport": "ws-1"}
+    assert _queued_work(session.get("queued_prompt")) == {"text": "Q", "transport": "ws-1"}
 
 
 def test_enqueue_keeps_an_authored_copy_of_the_inflight_text():
@@ -215,7 +223,7 @@ def test_enqueue_keeps_an_authored_copy_of_the_inflight_text():
 
     server._enqueue_prompt(session, "status?", "ws-1", turn_author=author)
 
-    assert session.get("queued_prompt") == {"text": "status?", "transport": "ws-1", "turn_author": author}
+    assert _queued_work(session.get("queued_prompt")) == {"text": "status?", "transport": "ws-1", "turn_author": author}
 
 
 def test_drop_leaves_an_authored_entry_that_shares_the_inflight_prefix_intact():
@@ -228,7 +236,7 @@ def test_drop_leaves_an_authored_entry_that_shares_the_inflight_prefix_intact():
 
     server._drop_queued_duplicates_of_inflight_user(session)
 
-    assert session.get("queued_prompt") == {"text": text, "transport": "ws-1", "turn_author": author}
+    assert _queued_work(session.get("queued_prompt")) == {"text": text, "transport": "ws-1", "turn_author": author}
 
 
 def test_hard_interrupt_queue_path_scrubs_stale_inflight_self_duplicate(monkeypatch):
@@ -252,7 +260,7 @@ def test_hard_interrupt_queue_path_scrubs_stale_inflight_self_duplicate(monkeypa
     resp = server._handle_busy_submit("r1", "sid", session, "Q", "ws-1")
 
     assert resp["result"]["status"] == "queued"
-    assert _visible(session.get("queued_prompt")) == {"text": "Q", "transport": "ws-1"}
+    assert _queued_work(session.get("queued_prompt")) == {"text": "Q", "transport": "ws-1"}
     assert not session.get("queued_prompts")
     # Interrupt is async-threaded; policy still enqueued Q after scrubbing P.
 
@@ -313,7 +321,7 @@ def test_compress_session_rotation_bumps_queued_prompt_generation(monkeypatch):
     assert session["session_key"] == "child-after-rotation"
     assert session["_queued_prompt_generation"] == 4
     # Follow-up kept — only the claim generation bumped.
-    assert session["queued_prompt"] == {
+    assert _queued_work(session["queued_prompt"]) == {
         "text": "run after compress",
         "transport": "ws-1",
     }
@@ -584,7 +592,7 @@ def test_busy_submit_claims_attached_image_for_queued_turn(monkeypatch):
     assert redirected == []
     assert not interrupted.wait(0.1)
     assert session["attached_images"] == []
-    assert _visible(session["queued_prompt"]) == {
+    assert _queued_work(session["queued_prompt"]) == {
         "text": "is this B?",
         "image_paths": ["/tmp/b.png"],
         "transport": None,
@@ -613,7 +621,7 @@ def test_busy_image_prompts_keep_b_and_c_attachments_in_submission_order(monkeyp
         server._methods["prompt.submit"]("c", {"session_id": "sid", "text": "C"})
 
         assert session["queued_prompt"]["image_paths"] == ["/tmp/b.png"]
-        assert [_visible(e) for e in session["queued_prompts"]] == [
+        assert _queued_work(session["queued_prompts"]) == [
             {"text": "C", "image_paths": ["/tmp/c.png"], "transport": None}
         ]
 
@@ -624,6 +632,7 @@ def test_busy_image_prompts_keep_b_and_c_attachments_in_submission_order(monkeyp
     finally:
         server._sessions.pop("sid", None)
 
+    dispatched = [(rid, sid, text, _queued_work(kwargs)) for rid, sid, text, kwargs in dispatched]
     assert dispatched == [
         (
             "drain-b",
@@ -738,8 +747,8 @@ def test_drain_does_not_dispatch_a_prompt_cancelled_after_claim(monkeypatch):
     assert server._drain_queued_prompt("r1", "sid", session) is True
     assert session["running"] is False
     # Claimed B restored first; C that advanced into the slot is behind it.
-    assert session.get("queued_prompt") == {"text": "B", "transport": "ws-1"}
-    assert session.get("queued_prompts") == [{"text": "C", "transport": "ws-1"}]
+    assert _queued_work(session.get("queued_prompt")) == {"text": "B", "transport": "ws-1"}
+    assert _queued_work(session.get("queued_prompts")) == [{"text": "C", "transport": "ws-1"}]
 
 
 def test_drain_restores_claimed_prompt_when_generation_bumps_mid_claim(monkeypatch):
@@ -758,7 +767,7 @@ def test_drain_restores_claimed_prompt_when_generation_bumps_mid_claim(monkeypat
 
     assert server._drain_queued_prompt("r1", "sid", session) is True
     assert session["running"] is False
-    assert session.get("queued_prompt") == {"text": "follow-up Q", "transport": None}
+    assert _queued_work(session.get("queued_prompt")) == {"text": "follow-up Q", "transport": None}
     assert not session.get("queued_prompts")
 
 

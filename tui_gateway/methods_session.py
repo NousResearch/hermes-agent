@@ -729,9 +729,15 @@ def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
     # The chat's own pick, not the profile default: a warm reattach that reported `_resolve_model()` flipped the
     # Desktop picker on every reload while the session was still live, and back once it had been dropped.
     model, provider = _live_session_identity(live)
+    with live.setdefault("history_lock", threading.Lock()):
+        inflight, running = _inflight_snapshot(live), bool(live.get("running"))
+        queued = _queued_prompt_snapshot(live)
+    from tui_gateway.input_observation import cached_snapshot
     return _ok(ctx.rid, _attach_todo_state({
+        "submission_state": cached_snapshot(live),
         "session_id": live_sid, "stored_session_id": str(live.get("session_key") or ""),
         "message_count": len(messages), "messages": messages,
+        "running": running, "inflight": inflight, "queued": queued,
         "info": {"model": model, "provider": provider, "lazy": True,
                  "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                  "profile_name": profile_name_for_home(live.get("profile_home")) or _response_profile_name(ctx.profile)}}, live))
@@ -907,6 +913,8 @@ def _resume_response(
                "started_at": record["created_at"] if started_at is None else started_at, "status": status}
     if auto_continue is not None:
         payload["auto_continue"] = auto_continue
+    from tui_gateway.input_observation import cached_snapshot
+    payload["submission_state"] = cached_snapshot(record)
     return _ok(ctx.rid, _attach_todo_state(payload, record))
 
 

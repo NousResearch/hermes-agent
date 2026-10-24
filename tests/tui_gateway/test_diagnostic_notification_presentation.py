@@ -11,17 +11,35 @@ from tui_gateway import server
 
 @pytest.mark.parametrize("muted", [False, True])
 def test_real_tui_emitter_keeps_control_frames_and_restores_callbacks(monkeypatch, muted):
+    from tui_gateway.input_observation import new_input, project_inputs, snapshot
+    from tui_gateway.turn_observation import make_turn, turn_scope
+
     frames = []
     monkeypatch.setattr(server, "write_json", lambda frame: frames.append(frame) or True)
+    session = {"history_lock": threading.Lock()}
+    monkeypatch.setitem(server._sessions, "session", session)
+    server._start_inflight_turn(session, "diagnostic wake")
+    batch = new_input(session, "diagnostic wake", "diagnostic-ref")
+    turn = make_turn("session", session, {"kind": "connection", "socket_id": "origin"}, inputs=batch)
+    session["_turn_observation"] = turn
+    session["inflight_turn"].update(turn=turn.wire(), input_batch=batch)
     callback = Mock()
     agent = SimpleNamespace(status_callback=callback, clarify_callback=callback)
-    with notification_turn(agent, muted=muted, session_id="session"):
+    with turn_scope(turn), notification_turn(agent, muted=muted, session_id="session"):
         server._emit("message.delta", "session", {"text": "diagnostic echoed by model"})
         server._emit("message.complete", "session", {"text": "diagnostic echoed by model"})
+        server._emit("message.complete", "session", {"text": "duplicate terminal"})
         agent.clarify_callback("question", ["choice"])
         server._emit("notification.clear", "session", {"key": "cleared"})
     assert [frame["params"]["type"] for frame in frames] == (
         ["notification.clear"] if muted else ["message.delta", "message.complete", "notification.clear"])
+    assert turn.terminal and not turn.is_current()
+    outcomes = snapshot(session)["outcomes"]
+    assert len(outcomes) == 1
+    assert outcomes[0]["input"] == project_inputs(session, batch)["inputs"][0]
+    assert outcomes[0]["turn"] == turn.wire()
+    assert outcomes[0]["status"] == "complete"
+    assert outcomes[0]["disposition"] == "terminal"
     assert agent.status_callback is callback
     callback.assert_called_once_with("question", ["choice"])
     server._emit("message.delta", "session", {"text": "next human result"})

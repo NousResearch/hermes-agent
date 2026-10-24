@@ -290,7 +290,12 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
     await act(async () => {
       await expect(redirect!('use the other file', 'steer')).resolves.toBe(true)
     })
-    expect(requestGatewayMock).toHaveBeenLastCalledWith('session.steer', { session_id: SID, text: 'use the other file' })
+    expect(requestGatewayMock).toHaveBeenLastCalledWith('session.steer', {
+      session_id: SID,
+      submission_ref: expect.any(String),
+      text: 'use the other file',
+      input_visibility: 'visible'
+    })
 
     // The steer interrupts nothing: the tool it waits on still reads as running.
     const sealed = states.get(SID)!.messages[0]

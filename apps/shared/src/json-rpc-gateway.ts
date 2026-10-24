@@ -162,6 +162,7 @@ export class JsonRpcGatewayClient {
   private replayEpoch: string | null = null
   /** Canonical authorities number events per session; a session's own epoch outranks the process one. */
   private replayEpochBySession = new Map<string, string>()
+  private sharedSessionInputs = false
   private readonly stateHandlers = new Set<(state: ConnectionState) => void>()
   private readonly options: Required<
     Omit<GatewayClientOptions, 'onRequestHandlerError' | 'onUnhandledRequest' | 'socketFactory'>
@@ -232,6 +233,7 @@ export class JsonRpcGatewayClient {
     }
 
     this.setState('connecting')
+    this.sharedSessionInputs = false
 
     const socket = this.options.socketFactory?.(wsUrl) ?? new WebSocket(wsUrl)
     const transport = socketTransport(socket)
@@ -434,6 +436,13 @@ export class JsonRpcGatewayClient {
       return Promise.reject(new Error(this.options.notConnectedErrorMessage))
     }
 
+    // Optional observation fields require this socket's advertised contract.
+    if (!this.sharedSessionInputs && ['prompt.submit', 'session.redirect', 'session.steer'].includes(method)) {
+      params = { ...params }
+      delete params.submission_ref
+      delete params.input_visibility
+    }
+
     return this.channel.request<T>(
       method,
       params,
@@ -445,6 +454,7 @@ export class JsonRpcGatewayClient {
 
   private handleEvent(event: GatewayEvent): void {
     if (isGatewayReady(event)) {
+      this.sharedSessionInputs = event.payload?.shared_session?.version === 1
       if (event.payload?.heartbeat === true) {
         this.channel.startHeartbeat()
       }

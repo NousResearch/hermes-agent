@@ -399,6 +399,11 @@ def _start_inflight_turn(
     session["inflight_turn"] = turn
 
 
+def _display_turn_input(text: Any, display_kind: str | None = None) -> dict | None:
+    visible = _history_to_messages([{"role": "user", "content": text, "display_kind": display_kind}])
+    return visible[0] if visible else None
+
+
 def _append_inflight_delta(session: dict, delta: Any) -> None:
     text = "" if delta is None else str(delta)
     if not text:

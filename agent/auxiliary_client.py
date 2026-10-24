@@ -3512,16 +3512,18 @@ def _is_invalid_aux_response_error(exc: Exception) -> bool:
 
 
 def _is_statusless_structured_provider_error(exc: Exception) -> bool:
-    """Detect a structured provider failure that has no HTTP status.
+    """Detect a structured provider failure with no error HTTP status.
 
     OpenAI-compatible relays may commit SSE with status 200, then send an
     OpenAI-style ``error`` event. The SDK raises a status-less ``APIError`` with
     ``body=data["error"]`` — the INNER error object or a bare string (an
     ``{"error": ...}`` wrapper is accepted too). Any non-empty structured error in
-    that status-less shape is a route failure; ordinary HTTP errors keep their
-    existing status-based classifiers, and message text alone is insufficient.
+    that status-less or committed-200 shape is a route failure; ordinary HTTP
+    errors keep their existing status-based classifiers, and message text alone
+    is insufficient.
     """
-    if _exc_http_status(exc) is not None:
+    status = _exc_http_status(exc)
+    if status is not None and status != 200:
         return False
     body = getattr(exc, "body", None)
     err = body.get("error") if isinstance(body, dict) and "error" in body else body

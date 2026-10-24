@@ -445,11 +445,11 @@ class TestAgentInitConfig:
             skip_memory=True,
             enabled_toolsets=[],
         )
-        compressor = getattr(agent, "context_compressor")
+        compressor = agent.context_compressor
         compressor.threshold_tokens = 765_000
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
 
-        assert getattr(agent, "codex_responses_compact_threshold") == configured
+        assert agent.codex_responses_compact_threshold == configured
         assert kwargs["context_management"] == [
             {"type": "compaction", "compact_threshold": resolved}
         ]
@@ -538,17 +538,23 @@ class TestPrunePreCheckpointItems:
             "tail ask",
         ]
 
-    def test_retention_budget_newest_first_with_truncation(self):
+    @pytest.mark.parametrize(
+        ("char", "kept_chars"),
+        # ASCII 4 chars/token; Cyrillic 2 bytes/char; CJK 1 token/char.
+        [("x", 400), ("ж", 200), ("中", 100)],
+    )
+    def test_retention_budget_newest_first_with_truncation(self, char, kept_chars):
         from agent.native_compaction import prune_pre_checkpoint_items
 
-        old = {"role": "user", "content": "x" * 4000}   # ~1000 tokens
+        old = {"role": "user", "content": char * 4000}
         newer = {"role": "user", "content": "y" * 2000}  # ~500 tokens
         items = [old, newer, {"type": "compaction", "encrypted_content": "b"}]
         out = prune_pre_checkpoint_items(items, retained_user_token_budget=600)
         users = [i["content"] for i in out if i.get("role") == "user"]
-        # Newest kept whole; boundary (older) head-truncated to remaining budget.
+        # Newest kept whole; boundary (older) head-truncated to the remaining
+        # 100 tokens as costed by the budget's estimator, not budget*4 chars.
         assert users[-1] == "y" * 2000
-        assert users[0] == "x" * 400  # (600-500)*4 chars
+        assert users[0] == char * kept_chars
         assert out[0]["type"] == "compaction"
 
     def test_zero_budget_keeps_only_post_tail(self):

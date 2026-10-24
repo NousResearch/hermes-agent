@@ -20,10 +20,10 @@ permissions:
 
 jobs:
   structural:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           persist-credentials: false # this job is read-only
 
@@ -44,14 +44,17 @@ jobs:
           python3 scripts/validate_plugin_catalog.py plugin-catalog/
 
   pinned-source-validate:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
-          # The pull_request checkout is GitHub's merge commit; depth 2 brings its
-          # first parent (the base tip), which is all the diff below needs.
-          fetch-depth: 2
+          # Full commit graph + tags, blobs on demand: the diff below needs the
+          # merge commit's first parent, and Hermes resolves its own version
+          # from the release tags merged into HEAD. A shallow checkout reports
+          # "unknown", which plugins checking the host version reject (omh).
+          fetch-depth: 0
+          filter: blob:none
           # `hermes plugins validate` below runs pinned-repo code; keep the
           # job's token out of .git/config where that code could read it.
           persist-credentials: false
@@ -116,6 +119,10 @@ jobs:
           CHANGED_FILES: ${{ steps.changed.outputs.files }}
           # A hostile repo URL must never block the job on a credential prompt.
           GIT_TERMINAL_PROMPT: "0"
+          # `gh attestation verify` (README rule 17) reads the attestation from
+          # GitHub and needs a token. Read-only default token; the step runs
+          # pinned-repo code, so nothing broader is exposed here.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           FAILED=0
@@ -251,6 +258,78 @@ jobs:
             # Manifest schema + declared-vs-registered capability check.
             if ! timeout 600 hermes plugins validate --install-deps "$PLUGIN_DIR" </dev/null; then
               echo "::error file=$entry::hermes plugins validate failed"
+              FAILED=1; echo "::endgroup::"; continue
+            fi
+
+            # UNSCANNABLE-PAYLOAD GATE (README rule 17). A reviewer and the install
+            # scanner must be able to read everything shipped at the pin as source:
+            # no compiled binaries (by header), committed bytecode, or archives
+            # hiding either. Entries that genuinely need a native component list
+            # each one under `attested_binaries:` and the binary must carry a
+            # GitHub build-provenance attestation tying it to this repo's own
+            # workflow at the pinned source digest; those paths are exempted here
+            # and verified below. No stdin: the parser must not drain the entry fd.
+            ATTESTED=$(python3 -I - "$entry" <<'PYEOF' </dev/null
+          import re, shlex, sys
+          from ruamel.yaml import YAML
+          try:
+              with open(sys.argv[1], encoding="utf-8") as fh:
+                  data = YAML(typ="safe").load(fh)
+          except Exception:
+              data = None
+          paths = data.get("attested_binaries") if isinstance(data, dict) else None
+          if not isinstance(paths, list):
+              paths = []
+          ok = []
+          for p in paths:
+              # Relative path, no '.'/'..' segments, no absolute/newline: it is
+              # joined onto the clone and echoed into the log.
+              if (isinstance(p, str) and re.fullmatch(r"[A-Za-z0-9._/-]+", p)
+                      and not any(seg in ("", ".", "..") for seg in p.split("/"))):
+                  ok.append(p)
+              else:
+                  print("BAD=" + shlex.quote(f"attested_binaries entry {p!r} is not a plain relative path"))
+                  sys.exit(0)
+          print("PATHS=" + shlex.quote("\n".join(ok)))
+          PYEOF
+          ) || ATTESTED="BAD='attested_binaries parser failed'"
+            ATT_BAD=""; ATT_PATHS=""
+            eval "${ATTESTED/PATHS=/ATT_PATHS=}"; eval "${ATTESTED/BAD=/ATT_BAD=}" 2>/dev/null || true
+            if [ -n "${ATT_BAD:-}" ]; then
+              echo "::error file=$entry::$ATT_BAD"
+              FAILED=1; echo "::endgroup::"; continue
+            fi
+            # Verify each declared binary's provenance against THIS repo at the
+            # pinned commit; a verified path is dropped from the clone so the
+            # detector that follows ignores it, and any other binary still fails.
+            ATT_OK=1
+            if [ -n "${ATT_PATHS:-}" ]; then
+              OWNER_REPO=$(printf '%s' "$REPO" | sed -E 's#^https://github\.com/##; s#\.git$##; s#/$##')
+              while IFS= read -r bpath; do
+                [ -z "$bpath" ] && continue
+                BFILE="$PLUGIN_DIR/$bpath"
+                if [ ! -f "$BFILE" ] || [ -L "$BFILE" ]; then
+                  echo "::error file=$entry::attested_binaries path is not a regular file: $bpath"
+                  ATT_OK=0; break
+                fi
+                if ! timeout 120 gh attestation verify "$BFILE" \
+                    --repo "$OWNER_REPO" --source-digest "$SHA" \
+                    --predicate-type https://slsa.dev/provenance/v1 </dev/null; then
+                  echo "::error file=$entry::no build-provenance attestation for $bpath at $OWNER_REPO@$SHA (README rule 17)"
+                  ATT_OK=0; break
+                fi
+                rm -f -- "$BFILE"
+              done <<EOF_ATT
+          $ATT_PATHS
+          EOF_ATT
+            fi
+            if [ "$ATT_OK" -ne 1 ]; then
+              FAILED=1; echo "::endgroup::"; continue
+            fi
+            if ! PAYLOAD=$(python3 "$GITHUB_WORKSPACE/scripts/scan_plugin_payloads.py" "$PLUGIN_DIR" </dev/null); then
+              # Filenames are repo-controlled: strip newlines so none can forge a
+              # workflow command in the log.
+              echo "::error file=$entry::unscannable executable payload (README rule 17): $(printf '%s' "$PAYLOAD" | tr '\n' ';')"
               FAILED=1; echo "::endgroup::"; continue
             fi
 

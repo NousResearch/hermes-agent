@@ -237,7 +237,7 @@ def test_fails_when_a_profile_directory_disappears(tmp_path):
 
 def _run(args):
     return subprocess.run([sys.executable, VERIFIER, *args],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, check=False)
 
 
 def test_cli_snapshot_then_verify_round_trip(tmp_path):
@@ -341,6 +341,57 @@ def test_cron_ticker_stamps_move_but_user_cron_state_still_fails(tmp_path):
     assert report["ok"] is False
 
 
+def test_a_lock_file_is_a_sentinel_not_user_content(tmp_path):
+    """A live process's lock file is never user state and is never read.
+
+    Regression for the Windows install/update E2E: the gateway's cron ticker
+    holds a byte-range lock on ``cron/.tick.lock``, so hashing it raised
+    ``PermissionError`` and failed the upgrade for the harness's own ticker.
+    """
+    home = tmp_path / "home"
+    (home / "cron").mkdir(parents=True)
+    lock = home / "cron" / ".tick.lock"
+    lock.write_text("", encoding="utf-8")
+    snap = vus.snapshot_home(str(home))
+    assert snap["entries"]["cron/.tick.lock"] == {"kind": "lock"}
+
+    lock.write_text("held", encoding="utf-8")
+    assert vus.verify_home(str(home), snap)["ok"] is True
+
+
+@pytest.mark.platforms("windows")
+def test_snapshot_survives_a_byte_range_lock_held_by_another_handle(tmp_path):
+    import msvcrt
+
+    home = tmp_path / "home"
+    (home / "cron").mkdir(parents=True)
+    with open(home / "cron" / ".tick.lock", "w", encoding="utf-8") as holder:
+        msvcrt.locking(holder.fileno(), msvcrt.LK_NBLCK, 1)
+        try:
+            snap = vus.snapshot_home(str(home))
+        finally:
+            msvcrt.locking(holder.fileno(), msvcrt.LK_UNLCK, 1)
+    assert snap["entries"]["cron/.tick.lock"] == {"kind": "lock"}
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(os.geteuid() == 0 if hasattr(os, "geteuid") else False,
+                    reason="root reads a mode-000 file")
+def test_an_unreadable_user_file_fails_the_scan_naming_the_path(tmp_path):
+    """Skipping lock files must not hide a user file the verifier cannot read."""
+    home = tmp_path / "home"
+    (home / "memories").mkdir(parents=True)
+    note = home / "memories" / "note.md"
+    note.write_text("remember\n", encoding="utf-8")
+    note.chmod(0)
+    try:
+        with pytest.raises(vus.ScanError, match="note.md") as caught:
+            vus.snapshot_home(str(home))
+    finally:
+        note.chmod(0o600)
+    assert isinstance(caught.value.__cause__, PermissionError)
+
+
 def test_a_dotenv_changed_only_in_comments_is_reported_as_such(tmp_path):
     """The per-key digests ignore comments, order and blanks by design.
 
@@ -387,6 +438,67 @@ def test_sqlite_sidecars_may_vanish_but_the_database_may_not(tmp_path):
     report = vus.verify_home(str(home), snap)
     assert report["deleted"] == ["cron/executions.db"]
     assert report["ok"] is False
+
+
+def test_a_sidecar_vanishing_mid_walk_is_not_a_scan_crash(tmp_path, monkeypatch):
+    """listdir sees a -journal, the gateway closes its connection, the digest open fails.
+
+    Only a volatile sidecar may vanish that way; any other file vanishing still raises.
+    """
+    home = tmp_path / "home"
+    (home / "cron").mkdir(parents=True)
+    for name in ("executions.db-journal", "jobs.json"):
+        (home / "cron" / name).write_text("x\n", encoding="utf-8")
+    real = vus._entry_record
+    gone = {"executions.db-journal"}
+
+    def racing(abs_path):
+        if os.path.basename(abs_path) in gone:
+            raise FileNotFoundError(abs_path)
+        return real(abs_path)
+
+    monkeypatch.setattr(vus, "_entry_record", racing)
+    snap = vus.snapshot_home(str(home))
+    assert "cron/jobs.json" in snap["entries"]
+    # Never opened at all: recorded by kind, so the digest race cannot happen.
+    assert snap["entries"]["cron/executions.db-journal"] == {"kind": "file"}
+
+    gone.add("jobs.json")
+    with pytest.raises(FileNotFoundError):
+        vus.snapshot_home(str(home))
+
+
+def test_a_held_lock_file_is_recorded_without_reading_it(tmp_path, monkeypatch):
+    """Windows: a gateway's msvcrt-held gateway.lock raises Errno 13 on read (live on the leg)."""
+    home = tmp_path / "home"
+    (home / "profiles" / "p").mkdir(parents=True)
+    (home / "profiles" / "p" / "gateway.lock").write_text("1", encoding="utf-8")
+    real = vus._sha256_file
+
+    def locked(path):
+        if path.endswith(".lock"):
+            raise PermissionError(13, "Permission denied", path)
+        return real(path)
+
+    monkeypatch.setattr(vus, "_sha256_file", locked)
+    snap = vus.snapshot_home(str(home))
+    assert snap["entries"]["profiles/p/gateway.lock"] == {"kind": "lock"}
+    os.remove(home / "profiles" / "p" / "gateway.lock")
+    report = vus.verify_home(str(home), snap)
+    assert report["ok"] is True and report["tolerated_deleted"] == ["profiles/p/gateway.lock"]
+
+
+def test_the_running_gateways_state_record_may_change_but_not_vanish(tmp_path):
+    """The update restarts the gateway, so gateway_state.json's pid/start_time must move."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "gateway_state.json").write_text('{"pid": 1}', encoding="utf-8")
+    snap = vus.snapshot_home(str(home))
+    (home / "gateway_state.json").write_text('{"pid": 2}', encoding="utf-8")
+    assert vus.verify_home(str(home), snap)["ok"] is True
+    os.remove(home / "gateway_state.json")
+    report = vus.verify_home(str(home), snap)
+    assert report["deleted"] == ["gateway_state.json"] and report["ok"] is False
 
 
 def test_any_sqlite_database_is_judged_by_rows_not_bytes(tmp_path):

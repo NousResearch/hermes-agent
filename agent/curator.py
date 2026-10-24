@@ -17,7 +17,7 @@ import threading
 import time
 from collections import Counter
 from contextvars import copy_context
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
@@ -41,8 +41,8 @@ def _state_file() -> Path:
     return get_hermes_home() / "skills" / ".curator_state"
 
 
-def load_state() -> Dict[str, Any]:
-    base: Dict[str, Any] = {
+def load_state() -> dict[str, Any]:
+    base: dict[str, Any] = {
         "last_run_at": None, "last_run_duration_seconds": None, "last_run_summary": None,
         "last_run_summary_shown_at": None, "last_report_path": None, "paused": False, "run_count": 0,
     }
@@ -57,7 +57,7 @@ def load_state() -> Dict[str, Any]:
     return base
 
 
-def save_state(data: Dict[str, Any]) -> None:
+def save_state(data: dict[str, Any]) -> None:
     try:
         atomic_json_write(_state_file(), data, indent=2, sort_keys=True)
     except Exception as e:
@@ -74,14 +74,14 @@ def is_paused() -> bool:
 
 # --- Config access ---
 
-def _subdict(node: Any, *keys: str) -> Dict[str, Any]:
+def _subdict(node: Any, *keys: str) -> dict[str, Any]:
     """Walk nested dict keys; {} if any level is missing or not a dict."""
     for key in keys:
         node = node.get(key) if isinstance(node, dict) else None
     return node if isinstance(node, dict) else {}
 
 
-def _read_config_section(*path: str, label: str, log: logging.Logger = logger) -> Dict[str, Any]:
+def _read_config_section(*path: str, label: str, log: logging.Logger = logger) -> dict[str, Any]:
     """Read a nested section of ~/.hermes/config.yaml. Tolerates missing file."""
     try:
         from hermes_cli.config import load_config_readonly
@@ -92,7 +92,7 @@ def _read_config_section(*path: str, label: str, log: logging.Logger = logger) -
     return _subdict(cfg, *path)
 
 
-def _load_config() -> Dict[str, Any]:
+def _load_config() -> dict[str, Any]:
     return _read_config_section("curator", label="curator")
 
 
@@ -165,7 +165,7 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
         return False
     state = load_state()
     last = _parse_iso(state.get("last_run_at"))
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     if last is None:
         try:
             state["last_run_at"] = now.isoformat()
@@ -175,13 +175,13 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
             logger.debug("Failed to seed curator last_run_at: %s", e)
         return False
     if last.tzinfo is None:
-        last = last.replace(tzinfo=timezone.utc)
+        last = last.replace(tzinfo=UTC)
     return (now - last) >= timedelta(hours=get_interval_hours())
 
 
 # --- Automatic state transitions (pure function, no LLM) ---
 
-def _cron_referenced_skills() -> Set[str]:
+def _cron_referenced_skills() -> set[str]:
     """Skill names referenced by any cron job (incl. paused/disabled). Best-effort: a cron import error or corrupt jobs store yields an empty set, never a crash."""
     try:
         from cron.jobs import referenced_skill_names as _refs
@@ -206,13 +206,13 @@ def _archive_as_curator(_u, name: str) -> bool:
                 reset_ledger_actor(tok)
 
 
-def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int]:
+def apply_automatic_transitions(now: Optional[datetime] = None) -> dict[str, int]:
     """Move every curator-managed skill between active/stale/archived based on its latest real activity; pinned skills are
     never touched. Built-ins are seeded with a baseline record on first sight so their inactivity clock starts NOW, not at epoch.
     Returns a counter dict."""
     from tools import skill_usage as _u
 
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     stale_cutoff = now - timedelta(days=get_stale_after_days())
     archive_cutoff = now - timedelta(days=get_archive_after_days())
     # Cron-referenced skills are in use by definition (usage only bumps when a
@@ -243,7 +243,7 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
         # Never-active skills anchor on created_at so they don't self-archive.
         anchor = _parse_iso(row.get("last_activity_at")) or _parse_iso(row.get("created_at")) or now
         if anchor.tzinfo is None:
-            anchor = anchor.replace(tzinfo=timezone.utc)
+            anchor = anchor.replace(tzinfo=UTC)
         current = row.get("state", _u.STATE_ACTIVE)
         # use_count == 0 is absence of evidence, not staleness: never archive a
         # never-used skill younger than stale_after_days.
@@ -487,7 +487,7 @@ def _needle_in_path_component(needle: str, path: str) -> bool:
     return any(part and part.rsplit(".", 1)[0].replace("-", "_") == norm_needle for part in path.replace("\\", "/").split("/"))
 
 
-def _skill_manage_args(tc: Any, *, raw_fallback: bool) -> Optional[Dict[str, Any]]:
+def _skill_manage_args(tc: Any, *, raw_fallback: bool) -> Optional[dict[str, Any]]:
     """Parsed arguments of a ``skill_manage`` tool call (JSON string or dict), or None to skip. With *raw_fallback*,
     a malformed string yields ``{"_raw": raw}`` so substring matching still catches the common case."""
     if not isinstance(tc, dict) or tc.get("name") != "skill_manage":
@@ -502,7 +502,7 @@ def _skill_manage_args(tc: Any, *, raw_fallback: bool) -> Optional[Dict[str, Any
     return args if isinstance(args, dict) else None
 
 
-def _find_reference(args: Dict[str, Any], needles: Set[str]) -> Optional[str]:
+def _find_reference(args: dict[str, Any], needles: set[str]) -> Optional[str]:
     """First argument value (file_path, file_content, content, new_string, _raw — in that order) that references one of
     *needles*. ``file_path`` must match a whole path component; content fields match on word boundaries so "test" does not match "latest"."""
     for key in ("file_path", "file_content", "content", "new_string", "_raw"):
@@ -515,13 +515,13 @@ def _find_reference(args: Dict[str, Any], needles: Set[str]) -> Optional[str]:
 
 
 def _classify_removed_skills(
-    removed: List[str], added: List[str], after_names: Set[str], tool_calls: List[Dict[str, Any]],
-) -> Dict[str, List[Dict[str, Any]]]:
+    removed: list[str], added: list[str], after_names: set[str], tool_calls: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
     """Split ``removed`` into consolidated vs pruned. Heuristic: a ``skill_manage`` call on a DIFFERENT, surviving-or-new
     skill whose file_path/content arguments reference the removed name is the "absorbed" signal; earliest match wins.
     Returns ``{"consolidated": [{name, into, evidence}], "pruned": [{name}]}``."""
-    consolidated: List[Dict[str, Any]] = []
-    pruned: List[Dict[str, Any]] = []
+    consolidated: list[dict[str, Any]] = []
+    pruned: list[dict[str, Any]] = []
     parsed_calls = [a for a in (_skill_manage_args(tc, raw_fallback=True) for tc in tool_calls or []) if a is not None]
     destinations = set(after_names) | set(added or [])
     for name in filter(None, removed):
@@ -541,7 +541,7 @@ def _classify_removed_skills(
     return {"consolidated": consolidated, "pruned": pruned}
 
 
-def _parse_structured_summary(llm_final: str) -> Dict[str, List[Dict[str, str]]]:
+def _parse_structured_summary(llm_final: str) -> dict[str, list[dict[str, str]]]:
     """Extract the required fenced ```yaml block (``consolidations:`` / ``prunings:`` lists) from the curator's final
     response. Tolerant: missing block or malformed YAML → empty lists (caller falls back to the tool-call heuristic); a partial
     block returns what parsed. Returns ``{"consolidations": [{from, into, reason}], "prunings": [{name, reason}]}``."""
@@ -557,7 +557,7 @@ def _parse_structured_summary(llm_final: str) -> Dict[str, List[Dict[str, str]]]
     if not isinstance(data, dict):
         return {"consolidations": [], "prunings": []}
 
-    def _entries(key: str, *fields: str) -> List[Dict[str, str]]:
+    def _entries(key: str, *fields: str) -> list[dict[str, str]]:
         raw = data.get(key) or []
         entries = (e for e in raw if isinstance(e, dict)) if isinstance(raw, list) else ()
         cleaned = ({f: (v.strip() if isinstance((v := e.get(f)), str) else "") for f in (*fields, "reason")} for e in entries)
@@ -566,11 +566,11 @@ def _parse_structured_summary(llm_final: str) -> Dict[str, List[Dict[str, str]]]
     return {"consolidations": _entries("consolidations", "from", "into"), "prunings": _entries("prunings", "name")}
 
 
-def _extract_absorbed_into_declarations(tool_calls: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+def _extract_absorbed_into_declarations(tool_calls: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Model-declared absorption targets from ``skill_manage(action='delete')`` calls — the authoritative classification
     signal (beats YAML parsing and substring heuristics). Returns ``{name: {"into": umbrella | "", "declared": True}}``;
     ``into == ""`` is an explicit prune. Deletes omitting ``absorbed_into`` are absent so the caller falls back to heuristic/YAML (older runs)."""
-    out: Dict[str, Dict[str, Any]] = {}
+    out: dict[str, dict[str, Any]] = {}
     for args in (_skill_manage_args(tc, raw_fallback=False) for tc in tool_calls or []):
         if args is not None and args.get("action") == "delete":
             name, target = args.get("name"), args.get("absorbed_into")
@@ -580,9 +580,9 @@ def _extract_absorbed_into_declarations(tool_calls: List[Dict[str, Any]]) -> Dic
 
 
 def _reconcile_classification(
-    removed: List[str], heuristic: Dict[str, List[Dict[str, Any]]], model_block: Dict[str, List[Dict[str, str]]],
-    destinations: Set[str], absorbed_declarations: Optional[Dict[str, Dict[str, Any]]] = None,
-) -> Dict[str, List[Dict[str, Any]]]:
+    removed: list[str], heuristic: dict[str, list[dict[str, Any]]], model_block: dict[str, list[dict[str, str]]],
+    destinations: set[str], absorbed_declarations: Optional[dict[str, dict[str, Any]]] = None,
+) -> dict[str, list[dict[str, Any]]]:
     """Merge heuristic (tool-call evidence) with the model's structured block.
     First match wins; every removed skill lands in exactly one bucket:
     - ``absorbed_into`` declared at delete is authoritative: existing target → consolidated; ``""`` → pruned; missing target → fall through.
@@ -594,8 +594,8 @@ def _reconcile_classification(
     model_cons = {e["from"]: e for e in model_block.get("consolidations", [])}
     model_pruned = {e["name"]: e for e in model_block.get("prunings", [])}
     declared = absorbed_declarations or {}
-    consolidated: List[Dict[str, Any]] = []
-    pruned: List[Dict[str, Any]] = []
+    consolidated: list[dict[str, Any]] = []
+    pruned: list[dict[str, Any]] = []
     for name in removed:
         mc, mp, hc, dec = model_cons.get(name), model_pruned.get(name), heur_cons.get(name), declared.get(name)
         mc_reason = (mc.get("reason") or "") if mc else ""
@@ -626,14 +626,14 @@ def _reconcile_classification(
 
 
 class _RunDiff(NamedTuple):
-    after_names: Set[str]
-    removed: List[str]
-    added: List[str]
-    consolidated: List[Dict[str, Any]]
-    pruned: List[Dict[str, Any]]
+    after_names: set[str]
+    removed: list[str]
+    added: list[str]
+    consolidated: list[dict[str, Any]]
+    pruned: list[dict[str, Any]]
 
 
-def _diff_and_classify(before_names: Set[str], after_names: Set[str], tool_calls: List[Dict[str, Any]], model_final: str) -> _RunDiff:
+def _diff_and_classify(before_names: set[str], after_names: set[str], tool_calls: list[dict[str, Any]], model_final: str) -> _RunDiff:
     """Diff the before/after skill sets and classify every removal: the model's YAML block carries intent + rationale,
     the tool-call heuristic audits for hallucinated umbrellas/omissions, per-delete ``absorbed_into`` beats both."""
     removed, added = sorted(before_names - after_names), sorted(after_names - before_names)
@@ -646,11 +646,11 @@ def _diff_and_classify(before_names: Set[str], after_names: Set[str], tool_calls
     return _RunDiff(after_names, removed, added, classification["consolidated"], classification["pruned"])
 
 
-def _by_name(report: List[Dict[str, Any]]) -> Dict[Any, Dict[str, Any]]:
+def _by_name(report: list[dict[str, Any]]) -> dict[Any, dict[str, Any]]:
     return {r.get("name"): r for r in report if isinstance(r, dict)}
 
 
-def _build_rename_summary(*, before_names: Set[str], after_report: List[Dict[str, Any]], tool_calls: List[Dict[str, Any]], model_final: str) -> str:
+def _build_rename_summary(*, before_names: set[str], after_report: list[dict[str, Any]], tool_calls: list[dict[str, Any]], model_final: str) -> str:
     """The "where did my skills go?" lines appended to the user-visible ``final_summary``; "" when nothing was archived.
     Capped at 10 entries so a big consolidation doesn't flood agent.log (full list is in REPORT.md); the pin hint
     appears only when a consolidation produced an umbrella."""
@@ -672,7 +672,7 @@ def _build_rename_summary(*, before_names: Set[str], after_report: List[Dict[str
     return "\n".join(lines)
 
 
-def _rewrite_cron_refs(consolidated: List[Dict[str, Any]], pruned: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _rewrite_cron_refs(consolidated: list[dict[str, Any]], pruned: list[dict[str, Any]]) -> dict[str, Any]:
     """Point cron jobs at the umbrella when the curator consolidated a skill they list — otherwise the scheduler fails to
     load it and the job runs without its instructions. Best-effort: a cron-module issue never breaks the curator."""
     try:
@@ -697,8 +697,8 @@ def _write_file(path: Path, label: str, render: Any) -> None:
 
 
 def _write_run_report(
-    *, started_at: datetime, elapsed_seconds: float, auto_counts: Dict[str, int], auto_summary: str,
-    before_report: List[Dict[str, Any]], before_names: Set[str], after_report: List[Dict[str, Any]], llm_meta: Dict[str, Any],
+    *, started_at: datetime, elapsed_seconds: float, auto_counts: dict[str, int], auto_summary: str,
+    before_report: list[dict[str, Any]], before_names: set[str], after_report: list[dict[str, Any]], llm_meta: dict[str, Any],
 ) -> Optional[Path]:
     """Write run.json + REPORT.md under logs/curator/{YYYYMMDD-HHMMSS}[-N]/ (N disambiguates a crash-rerun in the same
     second). Returns the report dir, or None if it couldn't be created (reporting is best-effort)."""
@@ -717,7 +717,7 @@ def _write_run_report(
     diff = _diff_and_classify(before_names, set(after_by_name), tool_calls, llm_meta.get("final", "") or "")
     states = ((n, (before_by_name.get(n) or {}).get("state"), (after_by_name.get(n) or {}).get("state")) for n in sorted(diff.after_names & before_names))
     transitions = [{"name": n, "from": b, "to": a} for n, b, a in states if b and a and b != a]
-    tc_counts: Dict[str, int] = dict(Counter(tc.get("name", "unknown") for tc in tool_calls))
+    tc_counts: dict[str, int] = dict(Counter(tc.get("name", "unknown") for tc in tool_calls))
     cron_rewrites = _rewrite_cron_refs(diff.consolidated, diff.pruned)
     jobs_updated = int(cron_rewrites.get("jobs_updated", 0))
     payload = {
@@ -741,11 +741,11 @@ def _write_run_report(
     return run_dir
 
 
-def _reason_suffix(entry: Dict[str, Any]) -> str:
+def _reason_suffix(entry: dict[str, Any]) -> str:
     return f" — {reason}" if (reason := (entry.get("reason") or "").strip()) else ""
 
 
-def _consolidated_lines(entry: Dict[str, Any]) -> List[str]:
+def _consolidated_lines(entry: dict[str, Any]) -> list[str]:
     line = f"- `{entry.get('name', '?')}` → merged into `{entry.get('into', '?')}`" + _reason_suffix(entry)
     source = entry.get("source", "")
     if source and source.startswith("tool-call audit"):
@@ -755,12 +755,12 @@ def _consolidated_lines(entry: Dict[str, Any]) -> List[str]:
                      if entry.get("model_claimed_into") else [])
 
 
-def _pruned_lines(entry: Any) -> List[str]:
+def _pruned_lines(entry: Any) -> list[str]:
     # Reconciler entries are dicts {name, source, reason}; tolerate bare strings (older format).
     return [f"- `{entry.get('name', '?')}`" + _reason_suffix(entry) if isinstance(entry, dict) else f"- `{entry}`"]
 
 
-def _cron_rewrite_lines(entry: Dict[str, Any]) -> List[str]:
+def _cron_rewrite_lines(entry: dict[str, Any]) -> list[str]:
     job_name = entry.get("job_name") or entry.get("job_id") or "?"
     head = f"- `{job_name}`: `{', '.join(entry.get('before') or [])}` → `{', '.join(entry.get('after') or []) or '(none)'}`"
     return ([head] + [f"    - `{old}` → `{new}` (consolidated)" for old, new in (entry.get("mapped") or {}).items()]
@@ -787,7 +787,7 @@ _REPORT_SECTIONS = (
 )
 
 
-def _render_report_markdown(p: Dict[str, Any]) -> str:
+def _render_report_markdown(p: dict[str, Any]) -> str:
     """Render the human-readable REPORT.md."""
     mins, secs = divmod(int(p.get("duration_seconds", 0) or 0), 60)
     dur_label = f"{mins}m {secs}s" if mins else f"{secs}s"
@@ -835,9 +835,9 @@ def _render_candidate_list() -> str:
     Bundled built-ins are excluded even when ``curator.prune_builtins`` is
     on. That flag makes them eligible for *deterministic archival*
     (``apply_automatic_transitions`` → ``archive_skill``), not for the
-    rewrite/umbrella pass. Listing them here invites ``skill_manage``
-    writes that ``_background_review_write_guard`` unconditionally
-    refuses, burning tool calls until the loop guard aborts the run.
+    rewrite/umbrella pass. Listing them here invites umbrella deletes
+    that ``_background_review_delete_guard`` unconditionally refuses,
+    burning tool calls until the loop guard aborts the run.
 
     Skills in ``skills.disabled`` (global or platform list) are excluded for
     the same reason on the read side: ``skill_view`` — the pass's only read
@@ -861,7 +861,7 @@ def _render_candidate_list() -> str:
     ])
 
 
-def _llm_meta(summary: str, error: Optional[str] = None) -> Dict[str, Any]:
+def _llm_meta(summary: str, error: Optional[str] = None) -> dict[str, Any]:
     """Structured result of an LLM pass that did not run (skipped or failed)."""
     return {"final": "", "summary": summary, "model": "", "provider": "", "tool_calls": [], "error": error}
 
@@ -872,13 +872,13 @@ def _notify(on_summary: Optional[Callable[[str], None]], message: str) -> None:
             on_summary(message)
 
 
-def _safe_curated_report() -> List[Dict[str, Any]]:
+def _safe_curated_report() -> list[dict[str, Any]]:
     with contextlib.suppress(Exception):
         return skill_usage.curated_report()
     return []
 
 
-def _consolidation_pass(prefix: str, auto_summary: str, dry_run: bool, before_names: Set[str]) -> tuple:
+def _consolidation_pass(prefix: str, auto_summary: str, dry_run: bool, before_names: set[str]) -> tuple:
     """The LLM half of a run: fork (unless no candidates), then append the rename map (`old-name → umbrella`) so users
     needn't dig into REPORT.md. Returns ``(final_summary, llm_meta)``; never raises."""
     try:
@@ -915,7 +915,7 @@ def _consolidation_pass(prefix: str, auto_summary: str, dry_run: bool, before_na
 def run_curator_review(
     on_summary: Optional[Callable[[str], None]] = None, synchronous: bool = False,
     dry_run: bool = False, consolidate: Optional[bool] = None, trigger: str = "manual",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Execute a single curator review pass: (1) automatic state transitions (no LLM); (2) if *consolidate* and there are
     candidates, fork an AIAgent on the review prompt; (3) update .curator_state; (4) call *on_summary*.
     *synchronous* runs the LLM review in the calling thread (default: daemon thread). *consolidate* ``None`` reads
@@ -923,7 +923,7 @@ def run_curator_review(
     *dry_run* SKIPS the stale/archive transitions and instructs the fork to report only; REPORT.md is still written and
     recorded in ``state.last_report_path`` so users can read what WOULD have happened."""
     consolidate = get_consolidate() if consolidate is None else consolidate
-    start = datetime.now(timezone.utc)
+    start = datetime.now(UTC)
     hermes_home = get_hermes_home()  # the LLM pass may run on a thread with no profile binding
     if dry_run:  # count candidates without mutating state
         counts = {"checked": len(_safe_curated_report()), "marked_stale": 0, "archived": 0, "reactivated": 0}
@@ -967,7 +967,7 @@ def run_curator_review(
             # Prune-only run: record it and write a report, but never fork.
             final_summary = f"{prefix}{auto_summary}; llm: skipped (consolidation off)"
             llm_meta = _llm_meta("skipped (consolidation off)")
-        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+        elapsed = (datetime.now(UTC) - start).total_seconds()
         state2 = {**load_state(), "last_run_duration_seconds": elapsed, "last_run_summary": final_summary}
         # Per-run report, best-effort; path recorded for `hermes curator status`.
         after_report = _safe_curated_report()
@@ -1005,7 +1005,7 @@ def run_curator_review(
 def _record_run_metric(trigger, dry_run, counts, before_report, after_report, llm_meta, hermes_home) -> None:
     from hermes_cli.observability.shared_metrics_loop import record_curator_run
 
-    def what_changed() -> Dict[str, int]:
+    def what_changed() -> dict[str, int]:
         before, after = _by_name(before_report), _by_name(after_report)
         diff = _diff_and_classify(set(before), set(after), llm_meta.get("tool_calls") or [], llm_meta.get("final") or "")
         patched = sum(int(after[n].get("patch_count") or 0) > int(before[n].get("patch_count") or 0)
@@ -1023,10 +1023,10 @@ class _ReviewRuntimeBinding(NamedTuple):
     model: str
     explicit_api_key: Optional[str]
     explicit_base_url: Optional[str]
-    request_overrides: Dict[str, Any]
+    request_overrides: dict[str, Any]
 
 
-def _merge_request_overrides(runtime_overrides: Any, slot_extra_body: Any) -> Dict[str, Any]:
+def _merge_request_overrides(runtime_overrides: Any, slot_extra_body: Any) -> dict[str, Any]:
     """Merge resolver metadata with task-local request body fields."""
     merged = dict(runtime_overrides or {})
     if isinstance(slot_extra_body, dict) and slot_extra_body:
@@ -1034,13 +1034,13 @@ def _merge_request_overrides(runtime_overrides: Any, slot_extra_body: Any) -> Di
     return merged
 
 
-def _resolve_review_runtime(cfg: Dict[str, Any]) -> _ReviewRuntimeBinding:
+def _resolve_review_runtime(cfg: dict[str, Any]) -> _ReviewRuntimeBinding:
     """Curator is a regular auxiliary task slot (``auxiliary.curator.*``), so it rides the canonical aux-model plumbing. Precedence:
       1. ``auxiliary.curator.{provider,model}`` when both are set non-auto
       2. Legacy ``curator.auxiliary.{provider,model}`` (deprecated) when both set
       3. Main ``model.{provider,default/model}`` pair ("auto" + "" = main chat model)
     Non-empty slot ``api_key``/``base_url`` are returned as explicit overrides so ``resolve_runtime_provider`` doesn't reuse the main chat credential chain."""
-    def _slot(provider: str, model: str, slot: Dict[str, Any]) -> _ReviewRuntimeBinding:
+    def _slot(provider: str, model: str, slot: dict[str, Any]) -> _ReviewRuntimeBinding:
         api_key, base_url = ((str(v).strip() or None) if v is not None else None for v in (slot.get("api_key"), slot.get("base_url")))
         return _ReviewRuntimeBinding(provider, model, api_key, base_url, _merge_request_overrides({}, slot.get("extra_body")))
 
@@ -1061,7 +1061,7 @@ def _resolve_review_provider() -> tuple:
     """``(runtime_provider, model_name, provider_name, request_overrides)`` resolved the way the CLI does: AIAgent() without
     explicit provider/model hits an auto-resolution path that fails for OAuth-only providers and pooled credentials
     (HTTP 400 "No models provided"). Never raises."""
-    rp: Dict[str, Any] = {}
+    rp: dict[str, Any] = {}
     overrides, provider, model_name, binding = {}, None, "", None
     try:
         from hermes_cli.config import load_config_readonly
@@ -1082,10 +1082,10 @@ def _resolve_review_provider() -> tuple:
     return rp, model_name, provider, overrides
 
 
-def _run_llm_review(prompt: str) -> Dict[str, Any]:
+def _run_llm_review(prompt: str) -> dict[str, Any]:
     """Spawn an AIAgent fork on the review prompt. Returns ``final`` (untruncated response), ``summary`` (240-char cap),
     ``model``/``provider`` (what ran), ``tool_calls`` ([{name, arguments}], truncated) and ``error``. Never raises."""
-    result_meta: Dict[str, Any] = _llm_meta("")
+    result_meta: dict[str, Any] = _llm_meta("")
     try:
         from run_agent import AIAgent
     except Exception as e:
@@ -1095,7 +1095,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     result_meta["model"], result_meta["provider"] = model_name, provider or ""
     review_agent = None
     try:
-        agent_kwargs: Dict[str, Any] = {}
+        agent_kwargs: dict[str, Any] = {}
         acp_command = rp.get("command")
         if isinstance(acp_command, str) and acp_command:
             agent_kwargs.update(acp_command=acp_command, acp_args=list(rp.get("args") or []))
@@ -1195,7 +1195,7 @@ def _release_run_claim() -> None:
         _run_claim_path().unlink()
 
 
-def maybe_run_curator(*, idle_for_seconds: Optional[float] = None, on_summary: Optional[Callable[[str], None]] = None) -> Optional[Dict[str, Any]]:
+def maybe_run_curator(*, idle_for_seconds: Optional[float] = None, on_summary: Optional[Callable[[str], None]] = None) -> Optional[dict[str, Any]]:
     """Best-effort: run a curator pass if all gates pass. Returns the result dict if a pass was started, else None. Never raises."""
     try:
         # Idle gating: only enforce when the caller provided a measurement.

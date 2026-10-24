@@ -30,14 +30,25 @@ NORMAL_TIER_WORDS = frozenset({"", "normal", "default", "standard", "off", "none
 # on CLI / gateway / TUI) parses through, so a new tier is one edit.
 SERVICE_TIER_WORDS: dict[str, str] = {
     "fast": "priority", "priority": "priority", "on": "priority",
-    "ultrafast": "ultrafast", "auto": "auto", "cold": "cold",
+    "ultrafast": "ultrafast", "ultra": "ultrafast", "auto": "auto", "cold": "cold",
 }
+# Typed /fast shorthands -> canonical /fast word (pickers always send the canonical value).
+FAST_ARG_ALIASES: dict[str, str] = {"ultra": "ultrafast"}
 
 
 def parse_service_tier(raw: Any) -> str | None:
     """``agent.service_tier`` for a user/config word; None for normal and for unknown words."""
     value = str(raw or "").strip().lower()
     return None if value in NORMAL_TIER_WORDS else SERVICE_TIER_WORDS.get(value)
+
+
+def parse_exact_service_tier(raw: Any) -> str:
+    """Strict :func:`parse_service_tier` for an explicit client pick: ``""`` pins normal, an unknown
+    word raises ``ValueError`` instead of silently reading as normal."""
+    value = str(raw or "").strip().lower()
+    if value not in NORMAL_TIER_WORDS and value not in SERVICE_TIER_WORDS:
+        raise ValueError(f"unknown service tier: {value}")
+    return parse_service_tier(value) or ""
 
 
 def service_tier_word(tier: Any) -> str:
@@ -77,6 +88,8 @@ def effective_request_overrides(agent: Any) -> dict[str, Any]:
         )
     if "speed" in overrides and getattr(agent, "model", None) in (getattr(agent, "_fast_mode_unavailable_models", None) or ()):
         overrides.pop("speed", None)
+    from agent.codex_service_tiers import negotiate_request_tier
+    negotiate_request_tier(agent, overrides)
     return overrides
 
 

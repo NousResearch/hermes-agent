@@ -1,6 +1,8 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import type { TranslationOverrides } from './define-locale'
+import { zhHantDelegationRouting } from './zh-hant_delegation_routing'
+import { zhHantUpdateChannel } from './zh-hant_update_channel'
 
 export const zhHantSettings = {
   language: {
@@ -76,7 +78,17 @@ export const zhHantSettings = {
         toolsConnected: n => `已連線 ${n} 個工具`,
         skillsReady: names => (names.length === 1 ? `技能 ${names[0]} 已就緒` : `${names.length} 個技能已就緒`),
         nextChat: '更多工具將在下一次聊天中可用',
-        serverNotConnected: (server, reason) => `MCP 伺服器 ${server} 未連線${reason ? `：${reason}` : '。'}`
+        serverNotConnected: (server, reason) => `MCP 伺服器 ${server} 未連線${reason ? `：${reason}` : '。'}`,
+        verified: '已驗證',
+        unverified: '未驗證',
+        reviewedByNous: '已由 Nous 審核。',
+        installsAndEnables: profile => `安裝到 ${profile}，並立即啟用。`,
+        installsOnly: profile => `安裝到 ${profile}。`,
+        advanced: '進階',
+        versionLabel: '版本',
+        reviewedPin: sha => (sha ? `已審核的固定提交 ${sha}` : '已審核的固定提交'),
+        latestCommit: '最新提交',
+        nothingToInstall: '此套件在這裡沒有可安裝的內容。'
       }
     },
     closeSettings: '關閉設定',
@@ -86,6 +98,14 @@ export const zhHantSettings = {
     resetConfirm: '要將所有設定恢復為 Hermes 預設值嗎？',
     exportFailed: '匯出失敗',
     resetFailed: '重設失敗',
+    pluginPages: {
+      blurb: '已安裝外掛程式加入的選項。每個外掛程式都有自己的頁面，有些還有子頁面。',
+      empty: '還沒有外掛程式提供設定。',
+      manage: '管理外掛程式',
+      agentSettings: '代理程式設定',
+      pageCount: (n: number) => `${n} 個頁面`,
+      missing: '這個外掛程式沒有設定頁面，可能已停用或解除安裝。'
+    },
     nav: {
       providers: '提供方',
       providerAccounts: '帳號',
@@ -103,7 +123,8 @@ export const zhHantSettings = {
       about: '關於',
       billing: '帳單',
       notifications: '通知',
-      vault: '密碼與登入'
+      vault: '密碼與登入',
+      plugins: '外掛程式'
     },
     vault: {
       title: '密碼與登入',
@@ -218,6 +239,8 @@ export const zhHantSettings = {
       testBody: '通知運作正常。',
       testSent: '測試已傳送。若沒有出現，請檢查系統通知權限與專注模式／勿擾模式。',
       testUnsupported: '此系統不支援原生通知。',
+      muteSoundsTitle: '靜音介面提示音',
+      muteSoundsDesc: '關閉自動完成、喚醒詞和思考提示音、觸感回饋以及系統通知聲音。聲音預覽和語音回覆仍會播放。',
       completionSoundTitle: '完成提示音',
       completionSoundDesc: '代理回合結束時播放。可在此選擇預設並預覽。',
       completionSoundPreview: '預覽'
@@ -700,12 +723,6 @@ export const zhHantSettings = {
         }
       }
     },
-    poolLimits: {
-      warmBotBackendsAria: '預熱機器人後端',
-      warmBotBackendsTitle: '預熱機器人後端',
-      backendIdleTimeoutAria: '後端閒置逾時（毫秒）',
-      backendIdleTimeoutTitle: '後端閒置逾時（毫秒）'
-    },
     customEndpoints: {
       active: '已啟用',
       apiKeySet: '已設定 API 金鑰',
@@ -753,7 +770,8 @@ export const zhHantSettings = {
       driverHealth: '驅動程式健康狀態'
     },
     about: {
-      updates: '更新'
+      updates: '更新',
+      channel: zhHantUpdateChannel
     },
     config: {
       minimizeToTrayTitle: '最小化至系統匣',
@@ -951,6 +969,8 @@ export const zhHantSettings = {
       sshErrPlatform: '不支援的遠端平台。Hermes Desktop 的 SSH 模式支援 Linux、macOS 和 Windows 遠端主機。',
       sshErrTimeout: 'SSH 連線逾時。主機可能無法存取或處於睡眠狀態。',
       sshErrUpdateRequired: '使用 Desktop SSH 連線前，請更新遠端主機上的 Hermes。',
+      sshErrInteractiveAuth:
+        'Tailscale SSH 需要互動式瀏覽器驗證。請在終端機執行 `ssh <host> true` 完成驗證後重試——Hermes 以非互動方式執行 SSH。',
       sshErrUnknown: 'SSH 連線失敗。'
     },
     keys: {
@@ -1039,6 +1059,8 @@ export const zhHantSettings = {
       change: '變更',
       autoUseMain: '自動 · 使用主要模型',
       inheritMainEffort: '繼承 · 主要模型推理強度',
+      inheritsFrom: task => `繼承 ${task}`,
+      followTask: task => `跟隨 ${task}`,
       providerDefault: '(提供方預設)',
       moaTitle: '混合代理（Mixture of Agents）',
       moaPreset: '預設',
@@ -1055,10 +1077,28 @@ export const zhHantSettings = {
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '標題生成', hint: '工作階段標題' },
         review: { label: '評審', hint: '/review 評審子代理' },
+        voice_chat: { label: '語音聊天', hint: '語音模式回覆' },
         triage_specifier: { label: '分類指定', hint: '看板任務規格補全' },
         kanban_decomposer: { label: '看板分解', hint: '任務拆解' },
         profile_describer: { label: '設定檔描述', hint: '自動生成設定檔描述' },
         curator: { label: '策展器', hint: '技能使用審查' }
+      },
+      subagents: {
+        inherit: '繼承主代理設定',
+        modelOnly: '自訂模型（沿用主代理憑證）',
+        providerLabel: '子代理提供方',
+        modelLabel: '子代理模型',
+        direct: '直接端點覆寫',
+        customProvider: '自訂提供方...',
+        customProviderLabel: '自訂子代理提供方',
+        parentModel: '使用主代理模型',
+        parentModelWarning:
+          '所選提供方必須支援主代理模型。模型不相容時，僅指定提供方的路由可能失敗。若該提供方設定了自己的預設模型，子代理會改用該模型。',
+        directActive: '直接端點已啟用，優先於已儲存的提供方。選擇此模式時會保留其端點與憑證。',
+        directClear: '套用此路由會清除直接端點及其儲存的金鑰。其他請求設定維持不變。',
+        catalogFailed: '模型目錄無法使用。請手動輸入提供方與模型，或重試。',
+        draftHint: '套用前，變更只保留在本機。',
+        routing: zhHantDelegationRouting
       }
     },
     localModels: {
@@ -1082,14 +1122,14 @@ export const zhHantSettings = {
       modelsTitle: '模型',
       recommended: '推薦',
       recommendedReason: {
+        'product-default': '這台機器的預設模型，由其製造商選定。',
         'best-quality-resident': '在完全駐留 GPU 且保持全速的模型中品質最高。推薦會在品質與該硬體的預計速度之間權衡。',
         'speed-gated-quality':
-          '有更高品質的模型可以裝入這台機器，但受記憶體頻寬限制回應會太慢——這是保持流暢的最佳模型。',
-        'fastest-resident': '沒有模型能在該硬體上達到全速；這是完全駐留 GPU 記憶體中最快的一個。'
+          '有更高品質的模型可以裝入這台機器，但受記憶體頻寬限制回應會太慢——這是保持流暢的最佳模型。'
       } as Record<string, string>,
       noRecommendationTitle: '此裝置暫無自動推薦模型',
       noRecommendationDetail:
-        '自動設定需要一個可完全放入 GPU 記憶體或統一記憶體的精選模型。你仍可在下方自行選擇，或瀏覽更多模型。',
+        '自動設定需要一個可完全駐留 GPU 記憶體或統一記憶體並保持全速的精選模型。你仍可在下方自行選擇，或瀏覽更多模型。',
       noRecommendationAction: '瀏覽模型',
       quickstartConfigure: '讓我選擇',
       downloaded: '已下載',
@@ -1259,6 +1299,15 @@ export const zhHantSettings = {
         effectScheduled: (targetName, effectiveAt, creditsDelta) =>
           `變更為 ${targetName}，於 ${effectiveAt} 生效。現在不扣款；在此之前保留目前方案。${creditsDelta ? `每月額度變化：${creditsDelta}。` : ''}`
       },
+      keepGoingOnCredits: {
+        title: '用額度繼續',
+        description: '包含的用量用完後，使用你的額度。關閉時，Hermes 等待重設。',
+        approveInBrowser: '請在瀏覽器中核准 Remote Spending 以變更此設定。核准後立即生效。',
+        openAgain: '再次開啟',
+        cancel: '取消',
+        approvedRetry: 'Remote Spending 已核准，但變更未儲存。',
+        tryAgain: '重試'
+      },
       autoReload: {
         threshold: '門檻',
         thresholdAria: '自動儲值門檻',
@@ -1329,6 +1378,20 @@ export const zhHantSettings = {
             captionDefault: '預設上限',
             captionSpending: '每月遠端支出',
             valueUsed: (spent, limit) => `${limit} 中已用 ${spent}`
+          },
+          window: {
+            today: '今天',
+            week: '本週',
+            month: '本月',
+            topTier: '大型模型（每月）',
+            barLabel: title => `${title}已用包含用量`,
+            captionPaused: '已暫停：訂閱付款失敗',
+            captionPausedOther: '已暫停：請在 Portal 的帳單頁查看',
+            captionTopTierUsedUp: '每月額度已用完，剩餘部分由你的額度支付',
+            captionTopTierUsedUpKeepGoingOff: '每月額度已用完，其他包含的模型仍可使用',
+            captionResetsIn: duration => `${duration}後重設`,
+            captionIncluded: '包含用量',
+            valueUsed: percent => `已用 ${percent}`
           }
         },
         planCard: {
@@ -1560,7 +1623,27 @@ export const zhHantSettings = {
     wasPrice: '原價',
     customModel: '自訂模型',
     addCustomModelAction: '新增自訂模型…',
-    customModelPlaceholder: '輸入模型 ID，例如 openai/gpt-5'
+    customModelPlaceholder: '輸入模型 ID，例如 openai/gpt-5',
+    today: '今日',
+    week: '本週',
+    month: '本月',
+    topTier: '大型模型（每月）',
+    included: '下列模型均已包含',
+    pausedRenewal: '已暫停：續費未到帳',
+    pausedOther: '已暫停',
+    includedUsedUp: '包含用量已用完',
+    limitReached: name => `已達${name}上限`,
+    limitNames: { day: '每日', month: '每月', top_tier: '每月大型模型', week: '每週' },
+    limitThenCredits: '付費模型現在使用你的額度（按量付費）',
+    limitThenCreditsLarge: '大型模型現在使用你的額度（按量付費）',
+    limitThenWait: '在此之前僅可使用免費模型',
+    limitThenWaitLarge: '在此之前大型模型已暫停',
+    percentUsed: percent => `已用 ${percent}`,
+    resetsIn: duration => `${duration}後重設`,
+    usageLevels: { free: '免費', top_tier: '大' },
+    sectionRecommended: '推薦',
+    sectionOther: '其他模型',
+    largeFootnote: '大型模型也會消耗你的每月大型模型額度。'
   },
 
   modelVisibility: {

@@ -10,7 +10,10 @@
  * exactly like a manual pick — one policy, one owner.
  */
 
+import { atom } from 'nanostores'
+
 import { $pendingSkinApply } from './backend-sync'
+import type { ThemeMode } from './context'
 import { resolveTheme } from './user-themes'
 
 /**
@@ -31,4 +34,12 @@ export function requestTheme(name: string): boolean {
   $pendingSkinApply.set(name)
 
   return true
+}
+
+/** One-shot light/dark/system switch the ThemeProvider drains through `setMode` (it clears this). */
+export const $pendingModeApply = atom<null | ThemeMode>(null)
+
+/** Ask for a mode switch from outside React; persisted per profile like a manual pick. */
+export function requestMode(mode: ThemeMode): void {
+  $pendingModeApply.set(mode)
 }

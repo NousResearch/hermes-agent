@@ -370,15 +370,15 @@ class TestSubcommandCompletion:
             "hermes_cli.tools_config._get_platform_tools",
             lambda *_a, **_k: set(),
         )
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setattr("hermes_cli.config.load_config", dict)
         monkeypatch.setattr(
             "hermes_cli.tools_config._get_plugin_toolset_keys",
             lambda: set(),
         )
 
-        completions = _completions(SlashCommandCompleter(), "/tools enable spotify ")
+        completions = _completions(SlashCommandCompleter(), "/tools enable discord ")
         texts = {c.text for c in completions}
-        assert "spotify" not in texts
+        assert "discord" not in texts
 
 
     def _fake_gateway(self, monkeypatch, platforms):
@@ -520,7 +520,7 @@ class TestClampCommandNamesTriples:
         cmd_key = f"/{long}"
         result = _clamp_command_names([(long, "desc", cmd_key)], set())
         assert len(result) == 1
-        name, desc, key = result[0]
+        name, _desc, key = result[0]
         assert len(name) == _CMD_NAME_LIMIT
         assert key == cmd_key, "cmd_key must survive name clamping"
 
@@ -975,7 +975,7 @@ class TestDiscordSkillCommandsByCategory:
             patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
-            categories, uncategorized, hidden = discord_skill_commands_by_category(
+            categories, _uncategorized, hidden = discord_skill_commands_by_category(
                 reserved_names=set(),
             )
 

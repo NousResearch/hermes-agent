@@ -43,8 +43,8 @@ _CONTEXT_OVERFLOW_PARTIAL_FINAL = (
 )
 
 def collapse_continuation_trail(
-    agent: Any, messages: List[Dict[str, Any]], current_turn_user_idx: Any, *,
-    finish_reason: str, parts: Optional[List[str]] = None,
+    agent: Any, messages: list[dict[str, Any]], current_turn_user_idx: Any, *,
+    finish_reason: str, parts: Optional[list[str]] = None,
 ) -> str:
     """Drop this turn's ``_length_continuation_fragment``/``_nudge`` rows and append one
     assistant row holding the joined, think-stripped partial; returns that text ("" none).
@@ -59,8 +59,8 @@ def collapse_continuation_trail(
     if parts is None and not (valid_idx and idx < len(messages)):
         return ""
     turn_start = idx + 1 if valid_idx else 0
-    fragment_parts: List[str] = []
-    retained: List[Any] = []
+    fragment_parts: list[str] = []
+    retained: list[Any] = []
     found_trail = False
     for message in messages[turn_start:]:
         if isinstance(message, dict) and (
@@ -102,7 +102,7 @@ _THINKING_EXHAUSTED = (
     "for the response. Try lowering reasoning effort or increasing max_tokens.",
 )
 
-def repetition_copy(stopping: str, outcome: str, refusal: str) -> Tuple[str, str, str]:
+def repetition_copy(stopping: str, outcome: str, refusal: str) -> tuple[str, str, str]:
     """(log line, user copy, error) for a repetition-dominated abort; only the clauses naming
     where the turn stopped differ between the length path and the stop path."""
     return (
@@ -162,9 +162,9 @@ def normalize_response_for_agent(agent: Any, response: Any) -> Any:
 
 
 def partial_result(
-    messages: List[Dict[str, Any]], api_call_count: int, final_response: str,
+    messages: list[dict[str, Any]], api_call_count: int, final_response: str,
     error: Optional[str] = None, *, failed: bool = False, compression_exhausted: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Typed incomplete-turn result (``partial`` unless ``failed``); ``error`` defaults to
     ``final_response``. ``compression_exhausted`` carries the #98722 typed bit the gateway
     consumes to reset/move future input to a clean session (see run_turn.py)."""
@@ -192,10 +192,10 @@ class TruncationVerdict:
     the handler may have rebound."""
 
     action: str
-    result: Optional[Dict[str, Any]]
-    messages: List[Dict[str, Any]]
+    result: Optional[dict[str, Any]]
+    messages: list[dict[str, Any]]
     length_continue_retries: int
-    truncated_response_parts: List[Tuple[str, bool]]
+    truncated_response_parts: list[tuple[str, bool]]
     truncated_tool_call_retries: int
     retry_count: int
     compression_attempts: int
@@ -214,18 +214,18 @@ class _Trunc(TruncationVerdict):
     effective_task_id: Any
     current_turn_user_idx: Any
     action: str = "fallthrough"
-    result: Optional[Dict[str, Any]] = None
+    result: Optional[dict[str, Any]] = None
     window_filled: Optional[tuple[int, int]] = None  # (prompt_tokens, context_length)
 
-    def done(self, action: str, result: Optional[Dict[str, Any]] = None) -> TruncationVerdict:
+    def done(self, action: str, result: Optional[dict[str, Any]] = None) -> TruncationVerdict:
         self.action, self.result = action, result
         return self
 
     def end_turn(
         self, final_response: str, error: Optional[str] = None, *,
-        result_messages: Optional[List[Dict[str, Any]]] = None, cleanup: bool = True,
+        result_messages: Optional[list[dict[str, Any]]] = None, cleanup: bool = True,
         failed: bool = False, compression_exhausted: bool = False,
-        failure: Tuple[str, bool] = ("truncated", True),
+        failure: tuple[str, bool] = ("truncated", True),
     ) -> TruncationVerdict:
         """Persist and end the turn as partial (or ``failed``).
 
@@ -447,9 +447,9 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
 
 def recover_from_truncation(
     agent: Any, response: Any, finish_reason: str, _retry: TurnRetryState, *,
-    messages: List[Dict[str, Any]], conversation_history: Any, api_kwargs: Any, api_call_count: int,
+    messages: list[dict[str, Any]], conversation_history: Any, api_kwargs: Any, api_call_count: int,
     effective_task_id: Any, current_turn_user_idx: Any, length_continue_retries: int,
-    truncated_response_parts: List[Tuple[str, bool]], truncated_tool_call_retries: int, retry_count: int,
+    truncated_response_parts: list[tuple[str, bool]], truncated_tool_call_retries: int, retry_count: int,
     compression_attempts: int,
 ) -> TruncationVerdict:
     """Recover from a truncated response. Order is load-bearing: thinking exhaustion and
@@ -553,7 +553,7 @@ CODEX_FALLBACK_ACTIVATED = "codex_fallback_activated"
 
 
 def continue_codex_incomplete(
-    agent: Any, assistant_message: Any, finish_reason: str, *, messages: List[Dict[str, Any]],
+    agent: Any, assistant_message: Any, finish_reason: str, *, messages: list[dict[str, Any]],
     conversation_history: Any, api_call_count: int, response: Any = None,
 ) -> Optional[Any]:
     """Codex Responses ``status=incomplete`` continuation (max 3 per turn).
@@ -703,13 +703,13 @@ class RefusalVerdict:
     is the possibly re-synced system prompt."""
 
     action: str
-    result: Optional[Dict[str, Any]]
+    result: Optional[dict[str, Any]]
     active_system_prompt: Any
 
 
 def handle_content_policy_refusal(
     agent: Any, response: Any, _retry: TurnRetryState, *, thinking_spinner: Any,
-    messages: List[Dict[str, Any]], api_messages: Any, api_kwargs: Any, active_system_prompt: Any,
+    messages: list[dict[str, Any]], api_messages: Any, api_kwargs: Any, active_system_prompt: Any,
     conversation_history: Any, api_call_count: int, effective_task_id: Any, turn_id: Any,
     api_request_id: Any, api_start_time: float, retry_count: int, max_retries: int,
 ) -> RefusalVerdict:

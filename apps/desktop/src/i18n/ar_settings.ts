@@ -1,3 +1,5 @@
+import { arDelegationRouting } from './ar_delegation_routing'
+import { arUpdateChannel } from './ar_update_channel'
 import type { TranslationOverrides } from './define-locale'
 
 export const arSettings = {
@@ -11,6 +13,36 @@ export const arSettings = {
     noResults: 'لا توجد لغة مطابقة'
   },
   settings: {
+    // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
+    billing: {
+      keepGoingOnCredits: {
+        title: 'الاستمرار بالرصيد',
+        description: 'استخدم رصيدك عند نفاد الاستخدام المضمّن. عند الإيقاف: ينتظر Hermes إعادة التعيين.',
+        approveInBrowser: 'وافق على الإنفاق عن بُعد في متصفحك لتغيير هذا. يُطبَّق فور الموافقة.',
+        openAgain: 'الفتح مرة أخرى',
+        cancel: 'إلغاء',
+        approvedRetry: 'تمت الموافقة على الإنفاق عن بُعد، لكن لم يُحفظ التغيير.',
+        tryAgain: 'إعادة المحاولة'
+      },
+      state: {
+        usage: {
+          window: {
+            today: 'اليوم',
+            week: 'هذا الأسبوع',
+            month: 'هذا الشهر',
+            topTier: 'النماذج الكبيرة (شهريًا)',
+            barLabel: title => `المستخدم من الاستخدام المضمّن: ${title}`,
+            captionPaused: 'متوقف مؤقتًا: فشل دفع الاشتراك',
+            captionPausedOther: 'متوقف مؤقتًا: راجع الفوترة في البوابة',
+            captionTopTierUsedUp: 'نفدت الحصة الشهرية، ويغطي الرصيد الباقي',
+            captionTopTierUsedUpKeepGoingOff: 'نفدت الحصة الشهرية، ولا تزال النماذج المضمّنة الأخرى تعمل',
+            captionResetsIn: duration => `يُعاد التعيين خلال ${duration}`,
+            captionIncluded: 'الاستخدام المضمّن',
+            valueUsed: percent => `${percent} مستخدم`
+          }
+        }
+      }
+    },
     subpages: {
       appearanceTheme: 'السمة',
       appearanceTypography: 'الخطوط والتحجيم',
@@ -69,6 +101,14 @@ export const arSettings = {
     resetConfirm: 'هل تريد إعادة كل الإعدادات إلى افتراضيات Hermes؟',
     exportFailed: 'فشل التصدير',
     resetFailed: 'فشلت إعادة الضبط',
+    pluginPages: {
+      blurb: 'خيارات تضيفها الإضافات المثبّتة. لكل إضافة صفحتها الخاصة، وبعضها يضيف صفحات فرعية.',
+      empty: 'لا توجد إضافة لها إعدادات بعد.',
+      manage: 'إدارة الإضافات',
+      agentSettings: 'إعدادات الوكيل',
+      pageCount: (n: number) => `${n} صفحات`,
+      missing: 'هذه الإضافة ليس لها صفحة إعدادات. ربما عُطّلت أو أُزيلت.'
+    },
     nav: {
       providers: 'المزودون',
       providerAccounts: 'الحسابات',
@@ -83,7 +123,8 @@ export const arSettings = {
       about: 'حول',
       notifications: 'الإشعارات',
       keybinds: 'اختصارات لوحة المفاتيح',
-      vault: 'كلمات المرور وتسجيلات الدخول'
+      vault: 'كلمات المرور وتسجيلات الدخول',
+      plugins: 'الإضافات'
     },
     vault: {
       title: 'كلمات المرور وتسجيلات الدخول',
@@ -161,16 +202,10 @@ export const arSettings = {
     },
     plugins: {
       title: 'إضافات سطح المكتب',
-      blurb:
-        'امتدادات واجهة تُحمّل داخل هذا التطبيق — إما مضمّنة مع البناء، أو موضوعة في مجلد desktop-plugins (بما فيها التي يكتبها Hermes). تعطيل الإضافة يفرغها مباشرة ويبقى بعد إعادة التشغيل.',
-      count: n => `${n} مثبتة`,
       openFolder: 'فتح مجلد إضافات سطح المكتب',
       rescan: 'إعادة الفحص',
       reveal: 'إظهار في مدير الملفات',
-      enable: 'تفعيل',
-      disable: 'تعطيل',
       failed: 'فشل',
-      empty: 'لا توجد إضافات سطح مكتب مثبتة بعد.',
       kinds: { bundled: 'مضمّنة', disk: 'على القرص', runtime: 'وقت التشغيل' },
       installModal: {
         installUncertain:
@@ -178,7 +213,17 @@ export const arSettings = {
         toolsConnected: n => `تم توصيل ${n} من الأدوات`,
         skillsReady: names => (names.length === 1 ? `المهارة ${names[0]} جاهزة` : `${names.length} من المهارات جاهزة`),
         nextChat: 'أدوات أخرى متاحة في دردشتك التالية',
-        serverNotConnected: (server, reason) => `خادم MCP ${server} غير متصل${reason ? `: ${reason}` : '.'}`
+        serverNotConnected: (server, reason) => `خادم MCP ${server} غير متصل${reason ? `: ${reason}` : '.'}`,
+        verified: 'موثّق',
+        unverified: 'غير موثّق',
+        reviewedByNous: 'راجعته Nous.',
+        installsAndEnables: profile => `يُثبَّت لملف ${profile} ويعمل فورًا.`,
+        installsOnly: profile => `يُثبَّت لملف ${profile}.`,
+        advanced: 'متقدم',
+        versionLabel: 'الإصدار',
+        reviewedPin: sha => (sha ? `الإصدار المثبّت المراجَع ${sha}` : 'الإصدار المثبّت المراجَع'),
+        latestCommit: 'أحدث إيداع',
+        nothingToInstall: 'لا تحتوي هذه الحزمة على ما يُثبَّت هنا.'
       }
     },
     notifications: {
@@ -215,6 +260,9 @@ export const arSettings = {
       testBody: 'الإشعارات تعمل.',
       testSent: 'تم إرسال التجربة. إذا لم يظهر شيء، تحقق من أذونات الإشعارات في نظام التشغيل ووضع التركيز/عدم الإزعاج.',
       testUnsupported: 'هذا النظام لا يدعم الإشعارات الأصلية.',
+      muteSoundsTitle: 'كتم أصوات الواجهة',
+      muteSoundsDesc:
+        'يكتم تنبيهات الاكتمال وكلمة التنبيه والتفكير التلقائية والاستجابة اللمسية وأصوات إشعارات النظام. تظل معاينات الصوت والردود المنطوقة مسموعة.',
       completionSoundTitle: 'صوت الاكتمال',
       completionSoundDesc: 'يُشغّل عند انتهاء دور الوكيل. اختر إعدادا مسبقا وعاينه هنا.',
       completionSoundPreview: 'معاينة'
@@ -503,7 +551,8 @@ export const arSettings = {
         'عندما يحدّث Hermes نفسه من التطبيق دون موجه طرفية، احتفظ بتعديلات المصدر المحلية أو تجاهلها.'
     },
     about: {
-      updates: 'التحديثات'
+      updates: 'التحديثات',
+      channel: arUpdateChannel
     },
 
     config: {
@@ -725,6 +774,8 @@ export const arSettings = {
       defaultsLabel: 'الافتراضيات',
       reasoning: 'الاستدلال',
       reasoningOff: 'إيقاف',
+      speed: 'السرعة',
+      speedStandard: 'قياسية',
       defaultsFailed: 'فشل حفظ افتراضيات النموذج',
       loadFailed: 'تعذر تحميل النماذج',
       restartRequired: 'بعد التحديث ما زال هذا الخلفية يشغّل كودا قديما. أعد تشغيله لتحميل الكود الجديد.',
@@ -739,6 +790,8 @@ export const arSettings = {
       change: 'تغيير',
       autoUseMain: 'تلقائي · استخدام النموذج الرئيسي',
       inheritMainEffort: 'وراثة · جهد النموذج الرئيسي',
+      inheritsFrom: task => `يرث من ${task}`,
+      followTask: task => `اتباع ${task}`,
       providerDefault: '(افتراضي المزوّد)',
       tasks: {
         vision: {
@@ -769,6 +822,7 @@ export const arSettings = {
           label: 'المراجعة',
           hint: 'وكيل المراجعة الفرعي /review'
         },
+        voice_chat: { label: 'دردشة صوتية', hint: 'ردود الوضع الصوتي' },
         triage_specifier: {
           label: 'محدد الفرز',
           hint: 'توضيح مواصفات كانبان'
@@ -785,6 +839,24 @@ export const arSettings = {
           label: 'المنسّق',
           hint: 'مراجعة استخدام المهارات'
         }
+      },
+      subagents: {
+        inherit: 'الوراثة من الوكيل الرئيسي',
+        modelOnly: 'نموذج مخصص (بيانات اعتماد الوكيل الرئيسي)',
+        providerLabel: 'موفّر الوكلاء الفرعيين',
+        modelLabel: 'نموذج الوكلاء الفرعيين',
+        direct: 'نقطة نهاية مباشرة',
+        customProvider: 'موفّر مخصص...',
+        customProviderLabel: 'موفّر مخصص للوكلاء الفرعيين',
+        parentModel: 'استخدام نموذج الوكيل الرئيسي',
+        parentModelWarning:
+          'يجب أن يدعم الموفّر المختار نموذج الوكيل الرئيسي. قد يفشل المسار الذي يحدد الموفّر وحده إذا كان النموذج غير متوافق. إذا حدّد هذا الموفّر نموذجًا افتراضيًا خاصًا به، يستخدمه الوكلاء الفرعيون بدلًا من ذلك.',
+        directActive:
+          'نقطة نهاية مباشرة مفعّلة ولها الأولوية على الموفّر المحفوظ. يُحتفظ بعنوانها وبيانات اعتمادها ما دام هذا الوضع محددًا.',
+        directClear: 'تطبيق هذا المسار يمسح نقطة النهاية المباشرة ومفتاحها المحفوظ. تبقى إعدادات الطلب الأخرى كما هي.',
+        catalogFailed: 'كتالوج النماذج غير متاح. أدخل الموفّر والنموذج يدويًا أو أعد المحاولة.',
+        draftHint: 'تبقى التغييرات محلية حتى تطبيقها.',
+        routing: arDelegationRouting
       }
     },
     providers: {
@@ -897,7 +969,27 @@ export const arSettings = {
     priceTitle: 'السعر',
     customModel: 'نموذج مخصص',
     addCustomModelAction: 'إضافة نموذج مخصص…',
-    customModelPlaceholder: 'اكتب معرّف النموذج، مثل openai/gpt-5'
+    customModelPlaceholder: 'اكتب معرّف النموذج، مثل openai/gpt-5',
+    today: 'اليوم',
+    week: 'الأسبوع',
+    month: 'الشهر',
+    topTier: 'النماذج الكبيرة (شهري)',
+    included: 'كل النماذج أدناه مشمولة',
+    pausedRenewal: 'متوقف: التجديد غير مدفوع',
+    pausedOther: 'متوقف',
+    includedUsedUp: 'نفد الاستخدام المضمن',
+    limitReached: name => `تم بلوغ الحد ${name}`,
+    limitNames: { day: 'اليومي', month: 'الشهري', top_tier: 'الشهري للنماذج الكبيرة', week: 'الأسبوعي' },
+    limitThenCredits: 'النماذج المدفوعة تستخدم رصيدك الآن (الدفع حسب الاستخدام)',
+    limitThenCreditsLarge: 'النماذج الكبيرة تستخدم رصيدك الآن (الدفع حسب الاستخدام)',
+    limitThenWait: 'النماذج المجانية فقط حتى ذلك الحين',
+    limitThenWaitLarge: 'النماذج الكبيرة متوقفة مؤقتًا حتى ذلك الحين',
+    percentUsed: percent => `${percent} مستخدم`,
+    resetsIn: duration => `يُعاد التعيين خلال ${duration}`,
+    usageLevels: { free: 'مجاني', top_tier: 'كبير' },
+    sectionRecommended: 'موصى بها',
+    sectionOther: 'نماذج أخرى',
+    largeFootnote: 'تستهلك النماذج الكبيرة أيضًا حدّك الشهري للنماذج الكبيرة.'
   },
   modelVisibility: {
     title: 'النماذج',

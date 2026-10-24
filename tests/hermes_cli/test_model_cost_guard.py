@@ -72,8 +72,8 @@ def test_skips_untrusted_provider_pricing_lookup_for_custom_provider(monkeypatch
     def fake_get_pricing_entry(*_args, **_kwargs):
         pricing_calls.append(_args)
         return PricingEntry(
-            input_cost_per_million=Decimal("25"),
-            output_cost_per_million=Decimal("125"),
+            input_cost_per_million=Decimal(25),
+            output_cost_per_million=Decimal(125),
             source="provider_models_api",
         )
 

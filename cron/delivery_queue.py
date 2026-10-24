@@ -280,11 +280,15 @@ def _finish(execution_id: str, *, error: Optional[str], suppressed: bool = False
 
 
 def recover_abandoned() -> int:
-    """Fence dead delivery owners as unknown; never replay uncertain sends."""
-    changed = 0
+    """Fence dead delivery owners as unknown; never replay uncertain sends.
+
+    The firer settled long ago against a ``queued`` row, so each fenced row's outcome is written
+    back here (job ``delivery_failed`` + error, ledger ``failed``) instead of leaving the run at
+    ``delivery_queued`` forever."""
+    fenced: list[tuple[Optional[str], str]] = []
     with _transaction() as conn:
         rows = conn.execute(
-            "SELECT execution_id, owner_process_id, owner_pid, owner_started_at "
+            "SELECT execution_id, job_json, owner_process_id, owner_pid, owner_started_at "
             "FROM deliveries WHERE status='delivering'"
         ).fetchall()
         for row in rows:
@@ -310,9 +314,15 @@ def recover_abandoned() -> int:
                     row["execution_id"],
                 ),
             )
-            changed += cur.rowcount
+            if cur.rowcount:
+                # Read the job id now: pruning below redacts a terminal row's job_json.
+                fenced.append((json.loads(row["job_json"] or "{}").get("id"), row["execution_id"]))
         _prune_terminal_unlocked(conn)
-    return changed
+    from cron.delivery_outcome import settle_quietly
+
+    for job_id, execution_id in fenced:
+        settle_quietly(job_id, execution_id)
+    return len(fenced)
 
 
 def drain(
@@ -334,8 +344,11 @@ def drain(
                 )
             except BaseException as exc:
                 error = f"{type(exc).__name__}: {exc}"
-            _finish(row["execution_id"], error=error,
-                    suppressed=bool(row["job"].get("_notification_all_targets_suppressed")))
+            if _finish(row["execution_id"], error=error,
+                       suppressed=bool(row["job"].get("_notification_all_targets_suppressed"))):
+                from cron.delivery_outcome import settle_quietly
+
+                settle_quietly(row["job"].get("id"), row["execution_id"])
         finally:
             with _lock:
                 _ACTIVE_DELIVERIES.discard(row["execution_id"])

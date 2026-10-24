@@ -27,14 +27,20 @@ export interface GoalLine {
 const clock = (epochSeconds: number) =>
   new Date(epochSeconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
-/** `⊙ goal · 3/20 turns · <title>` for an active goal, `⏳ goal parked` / `⏸ goal paused` with the
+const count = (n: number, noun: string) => (n ? `${n} ${noun}${n === 1 ? '' : 's'}` : '')
+
+/** `⊙ goal · 3/20 turns · 2 subgoals · <title>` for an active goal, `⏳ goal parked` / `⏸ goal paused` with the
  * reason while held, `null` once it is done or cleared (the transcript carries the verdict). */
 export function goalLine(goal: GoalSnapshot | null): GoalLine | null {
   if (!goal || (goal.status !== 'active' && goal.status !== 'paused')) {
     return null
   }
 
-  const turns = `${goal.turns_used}/${goal.max_turns} turns`
+  // Subgoals and gates as the CLI dock counts them: a tool adding criteria mid-turn shows up here.
+  const turns = [`${goal.turns_used}/${goal.max_turns} turns`, count(goal.subgoals.length, 'subgoal'), count(goal.gates.length, 'gate')]
+    .filter(Boolean)
+    .join(' · ')
+
   const barrier = goal.status === 'active' ? goal.wait_barrier : null
 
   if (barrier) {

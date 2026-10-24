@@ -16,6 +16,7 @@ import { requestModelMenuToggle } from '@/app/chat/composer/focus'
 import { useComposerScope } from '@/app/chat/composer/scope'
 import { useSessionView } from '@/app/chat/session-view'
 import { SETTINGS_ROUTE } from '@/app/routes'
+import { useBillingApi } from '@/app/settings/billing/api'
 import { dispatchedTo } from '@/components/assistant-ui/thread/agent-delivery'
 import { ChangedFilesCard } from '@/components/assistant-ui/thread/changed-files-card'
 import {
@@ -47,7 +48,8 @@ import {
   formatLimitReset,
   formatResetClock,
   isOAuthReauthSurface,
-  scheduledRetryDelayMs
+  scheduledRetryDelayMs,
+  type UsageLimitSuggestion
 } from '@/lib/error-surface'
 import { errorCardText } from '@/lib/error-surface-copy'
 import { triggerHaptic } from '@/lib/haptics'
@@ -67,6 +69,7 @@ import { markAssistantIdSpoken } from '@/lib/spoken-reply'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
+import { requestBillingSettings } from '@/store/billing-block'
 import { DESKTOP_BUTTON_ACTIONS, recordAction } from '@/store/desktop-metrics'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { notifyError } from '@/store/notifications'
@@ -423,14 +426,26 @@ const AssistantStatusSlot: FC = () => {
       return 'none'
     }
 
-    return s.message.status?.type === 'running' && s.message.content.length === 0 ? 'placeholder' : 'activity'
+    if (s.message.status?.type !== 'running') {
+      return 'activity'
+    }
+
+    if (s.message.content.length === 0) {
+      return 'placeholder'
+    }
+
+    return s.message.content.every(part => part.type === 'reasoning') ? 'thinking' : 'activity'
   })
 
   if (slot === 'none') {
     return null
   }
 
-  return slot === 'placeholder' ? <ResponseLoadingIndicator /> : <TurnActivityIndicator />
+  return slot === 'placeholder' ? (
+    <ResponseLoadingIndicator />
+  ) : (
+    <TurnActivityIndicator thinking={slot === 'thinking'} />
+  )
 }
 
 /**
@@ -577,6 +592,16 @@ const useErrorText = () =>
     const status = s.message.status as { error?: unknown; type?: string } | undefined
 
     return status?.type === 'incomplete' && typeof status.error === 'string' ? status.error : ''
+  })
+
+// When the failure was recorded: the settled bubble's completion (the terminal frame's time), else the
+// row's own timestamp for a hydrated card. Never `createdAt`, whose fallback is render time.
+const useErrorFailedAt = () =>
+  useAuiState(s => {
+    const custom = s.message.metadata?.custom as { timelineCompletedAt?: unknown; timelineTimestamp?: unknown }
+    const at = custom?.timelineCompletedAt ?? custom?.timelineTimestamp
+
+    return typeof at === 'number' && Number.isFinite(at) && at > 0 ? at : undefined
   })
 
 const ErrorCardHeadline: FC = () => {
@@ -727,6 +752,111 @@ const CompressConversationAction: FC<{ label: string }> = ({ label }) => {
   )
 }
 
+// usage_window: "Switch to Model A" — the plan's recommended model that
+// still works past the limit (agent/plan_limits.py picked it). Switches THIS
+// session (session.info repaints the composer), then re-runs the refused turn
+// only once the switch applied: a guarded target waits for the user's answer,
+// and keeping the current model re-runs nothing. Session-only on purpose: the
+// user's default stays put.
+const SwitchToModelAction: FC<{ suggestion: UsageLimitSuggestion }> = ({ suggestion }) => {
+  const { t } = useI18n()
+  const copy = t.assistant.thread
+  const aui = useAui()
+  const view = useSessionView()
+  const sessionId = useStore(view.$runtimeId)
+  const [busy, setBusy] = useState(false)
+
+  const switchAndRetry = useCallback(async () => {
+    const switchSessionModel = sessionTileDelegate()?.switchSessionModel
+
+    if (!sessionId || !switchSessionModel) {
+      notifyError(new Error('session delegate unavailable'), copy.errorSwitchModelFailed)
+
+      return
+    }
+
+    triggerHaptic('submit')
+    setBusy(true)
+
+    try {
+      if (await switchSessionModel(sessionId, suggestion.model, suggestion.provider)) {
+        aui.message().reload()
+      }
+    } catch (error) {
+      notifyError(error, copy.errorSwitchModelFailed)
+    } finally {
+      setBusy(false)
+    }
+  }, [aui, copy.errorSwitchModelFailed, sessionId, suggestion.model, suggestion.provider])
+
+  return (
+    <button className="aui-error-action" disabled={busy} onClick={() => void switchAndRetry()} type="button">
+      {busy && <Loader2Icon className="size-3 animate-spin" />}
+      {copy.errorSwitchToModel(suggestion.label, suggestion.note)}
+    </button>
+  )
+}
+
+// usage_window, Keep going off with a balance: "Use credits" turns the account
+// setting on (the same call as Settings → Billing's switch), then re-runs the
+// turn. A refusal (remote spending not allowed yet, step-up) opens Billing, which
+// explains and fixes it.
+const UseCreditsAction: FC = () => {
+  const { t } = useI18n()
+  const copy = t.assistant.thread
+  const aui = useAui()
+  const api = useBillingApi()
+  const [busy, setBusy] = useState(false)
+
+  const turnOnCredits = useCallback(async () => {
+    triggerHaptic('submit')
+    setBusy(true)
+
+    try {
+      const result = await api.updateKeepGoingOnCredits(true)
+
+      if (result.ok) {
+        aui.message().reload()
+      } else {
+        requestBillingSettings()
+      }
+    } catch (error) {
+      notifyError(error, copy.errorUseCreditsFailed)
+    } finally {
+      setBusy(false)
+    }
+  }, [api, aui, copy.errorUseCreditsFailed])
+
+  return (
+    <button className="aui-error-action" disabled={busy} onClick={() => void turnOnCredits()} type="button">
+      {busy && <Loader2Icon className="size-3 animate-spin" />}
+      {copy.errorUseCredits}
+    </button>
+  )
+}
+
+// usage_window's own buttons, ahead of the generic ones: switch to the plan's suggested model, or turn
+// on credits. Nothing for any other failure.
+const UsageWindowLeadActions: FC<{ plan: ReturnType<typeof errorRecoveryPlan>; surface?: ErrorSurface }> = ({
+  plan,
+  surface
+}) => {
+  const suggestion = surface?.usageLimit?.suggestions[0]
+
+  return (
+    <>
+      {plan.switchToModel && suggestion && <SwitchToModelAction suggestion={suggestion} />}
+      {plan.useCredits && <UseCreditsAction />}
+    </>
+  )
+}
+
+// A plan limit names the fix as choosing another model; every other failure keeps "switch provider".
+const switchProviderLabel = (
+  copy: { errorChooseModel: string; errorSwitchProvider: string },
+  surface?: ErrorSurface
+) => (surface?.code === 'usage_window' ? copy.errorChooseModel : copy.errorSwitchProvider)
+
 // One client-side retry of THIS turn at the provider's own reset moment (#98852,
 // option B): arm → visible countdown + Cancel → fires `message().reload()` — the
 // exact call behind the Retry button — exactly once. Nothing persists: closing
@@ -808,11 +938,13 @@ const ScheduledRetryAction: FC<{ resetsAt: number }> = ({ resetsAt }) => {
   )
 }
 
+// health: allow CC -- usage-window limit card: an Open Billing button, and diagnostics hidden for plan limits; this action bar was over target on main
 const ErrorRecoveryActions: FC = () => {
   const { t } = useI18n()
   const copy = t.assistant.thread
   const surface = useErrorSurface()
   const errorText = useErrorText()
+  const failedAt = useErrorFailedAt()
 
   // useNavigate() would throw here when no Router is above us; the deep-link
   // children mount only when one is (see SettingsLinkAction).
@@ -898,10 +1030,11 @@ const ErrorRecoveryActions: FC = () => {
     () =>
       formatErrorDiagnostics({
         errorText,
+        failedAt,
         model: model || undefined,
         surface
       }),
-    [errorText, model, surface]
+    [errorText, failedAt, model, surface]
   )
 
   const startNewSession = useCallback(() => {
@@ -921,6 +1054,7 @@ const ErrorRecoveryActions: FC = () => {
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
+      <UsageWindowLeadActions plan={plan} surface={surface} />
       {plan.editMessage && <EditPreviousMessageAction label={copy.editMessage} />}
       {plan.compress && <CompressConversationAction label={copy.errorCompressConversation} />}
       {plan.chooseModel && (
@@ -978,22 +1112,31 @@ const ErrorRecoveryActions: FC = () => {
         </span>
       )}
       {plan.retry && surface?.resetsAt !== undefined && <ScheduledRetryAction resetsAt={surface.resetsAt} />}
-      {plan.switchProvider && inRouter && <SwitchProviderAction label={copy.errorSwitchProvider} />}
-      {localFolders && (
-        <button className="aui-error-action" onClick={() => void openLogs()} type="button">
-          {remoteConnection ? copy.errorOpenDesktopLogs : copy.errorOpenLogs}
+      {plan.openBilling && (
+        <button className="aui-error-action" onClick={() => requestBillingSettings()} type="button">
+          {copy.errorOpenBillingSettings}
         </button>
       )}
-      <button className="aui-error-action" onClick={() => requestSendDiagnostics(diagnosticsText())} type="button">
-        <Upload className="size-3" />
-        {copy.errorSendDiagnostics}
-      </button>
-      <CopyButton
-        appearance="inline"
-        className="aui-error-action"
-        label={copy.errorCopyDiagnostics}
-        text={diagnosticsText}
-      />
+      {plan.switchProvider && inRouter && <SwitchProviderAction label={switchProviderLabel(copy, surface)} />}
+      {plan.diagnostics && (
+        <>
+          {localFolders && (
+            <button className="aui-error-action" onClick={() => void openLogs()} type="button">
+              {remoteConnection ? copy.errorOpenDesktopLogs : copy.errorOpenLogs}
+            </button>
+          )}
+          <button className="aui-error-action" onClick={() => requestSendDiagnostics(diagnosticsText())} type="button">
+            <Upload className="size-3" />
+            {copy.errorSendDiagnostics}
+          </button>
+          <CopyButton
+            appearance="inline"
+            className="aui-error-action"
+            label={copy.errorCopyDiagnostics}
+            text={diagnosticsText}
+          />
+        </>
+      )}
     </div>
   )
 }

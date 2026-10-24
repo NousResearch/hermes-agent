@@ -1,3 +1,4 @@
+import type { PluginsManageParams } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { notifyError } from '@/store/notifications'
@@ -23,6 +24,7 @@ export type AgentPluginServerState =
   | 'no_interactive_session'
   | 'version_too_old'
   | 'missing_app'
+  | 'unsupported_gpu'
   | 'unknown'
 
 export interface AgentPluginServer {
@@ -50,8 +52,11 @@ export interface AgentPluginRow {
   catalog_sha?: string
   /** Human label the catalog attaches to that pin ("1.4.0"); shown on the Update button when present. */
   catalog_version?: string | null
-  /** Installed SHA differs from the catalog pin — an update is available. */
+  /** An update is available: the catalog pin moved past the installed SHA, or (git installs) the last
+   *  update check found a newer remote commit. */
   update_available?: boolean
+  /** Git installs: what the last update check found to move to (a commit or a feed version). */
+  update_target?: string
   /** Full commit SHA a `--ref` install is pinned to (custom sources; refuses `update`). */
   pinned_sha?: string
   /** The package folder also ships `desktop/plugin.js` (unified agent+desktop package). */
@@ -97,6 +102,11 @@ export type GatewayRequest = <T>(method: string, params?: Record<string, unknown
 export const $agentPlugins = atom<AgentPluginRow[]>([])
 export const $agentPluginsStatus = atom<AgentPluginsStatus>('idle')
 export const $agentPluginsError = atom<string | null>(null)
+/** The profile `$agentPlugins` was loaded for (`null` = the backend's launch
+ *  profile; `undefined` = nothing loaded yet). Surfaces that write a row's
+ *  settings must check it: the list is shared, and a scope switch keeps the
+ *  previous profile's rows on screen until the new list lands. */
+export const $agentPluginsProfile = atom<null | string | undefined>(undefined)
 /** Best available address of the row whose toggle RPC is in flight. */
 export const $agentPluginBusy = atom<string | null>(null)
 
@@ -163,6 +173,7 @@ export function loadAgentPlugins(request: GatewayRequest, profile?: string | nul
       }
 
       $agentPlugins.set((result?.plugins ?? []).map(normalizeAgentPluginRow))
+      $agentPluginsProfile.set(scope)
       $agentPluginsStatus.set('ready')
       $agentPluginsError.set(null)
     } catch (e) {
@@ -218,7 +229,8 @@ export async function toggleAgentPlugin(
 
     const refreshed = result.plugin
 
-    if (refreshed) {
+    // Patch only a list loaded for the profile this toggle targeted.
+    if (refreshed && $agentPluginsProfile.get() === (profile ?? null)) {
       const snapshot = normalizeAgentPluginRow(refreshed)
 
       $agentPlugins.set($agentPlugins.get().map(row => (row.key === key ? { ...row, ...snapshot } : row)))
@@ -243,6 +255,10 @@ export interface AgentPluginInstallResult {
   pluginName?: string
   warnings?: string[]
   missingEnv?: string[]
+  /** Whether the install turned the plugin on (`enabled` in the backend result). */
+  enabled?: boolean
+  /** The `<namespace>:<skill>` names the model can now load (`activation.live_now.skills`). */
+  skillIds?: string[]
   error?: string
   /** What became usable in open chats of the profile (`activation.live_now`). */
   live: AgentPluginLiveNow
@@ -291,6 +307,7 @@ export async function installAgentPlugin(
       plugin_name?: string
       warnings?: string[]
       missing_env?: string[]
+      enabled?: boolean
       activation?: {
         live_now?: {
           mcp_servers?: AgentPluginLiveServer[]
@@ -319,15 +336,19 @@ export async function installAgentPlugin(
       return { ok: false, error: result?.error || 'Install failed', live: NO_LIVE, nextChat: false }
     }
 
+    const liveSkills = result.activation?.live_now?.skills ?? []
+
     return {
       ok: true,
       pluginName: result.plugin_name,
       warnings: result.warnings,
       missingEnv: result.missing_env,
+      enabled: result.enabled,
+      skillIds: liveSkills.map(skill => skill.name),
       live: {
         mcpServers: result.activation?.live_now?.mcp_servers ?? [],
         // `<namespace>:<skill>` is what the model loads; the toast shows the skill's own name.
-        skills: (result.activation?.live_now?.skills ?? []).map(skill => skill.name.split(':').pop() ?? skill.name)
+        skills: liveSkills.map(skill => skill.name.split(':').pop() ?? skill.name)
       },
       nextChat: Object.keys(result.activation?.deferred ?? {}).length > 0
     }
@@ -344,25 +365,53 @@ export async function installAgentPlugin(
   }
 }
 
-/** Outcome of `updateAgentPlugin`: `applied` when the re-pin landed, `unchanged`
- *  when already at pin, `consent` when the new pin widens the plugin — the
- *  backend changed nothing and waits for `acceptCapabilities`. */
-export type AgentPluginUpdateOutcome =
-  { kind: 'applied' | 'unchanged' | 'failed' } | { kind: 'consent'; sha: string; deltaLines: string[] }
+/** One security-scan finding on an update the scan blocked. */
+export interface AgentPluginScanFinding {
+  severity: string
+  category: string
+  file: string
+  line: number
+  description: string
+}
 
-/** Re-pin a catalog-installed plugin to the current catalog SHA (backend
- *  `plugins.manage update`; catalog installs only). Refreshes the list on
- *  success. A pin that adds tools / hooks / deps / capabilities / a Desktop half
- *  comes back as `consent` with the delta; the caller confirms and retries with
- *  `acceptCapabilities`. */
+/** Outcome of `updateAgentPlugin`: `applied` when the update landed, `unchanged`
+ *  when already current, `consent` when a new catalog pin widens the plugin
+ *  (retry with `acceptCapabilities`), `scan` when the security scan blocked the
+ *  new code (a `caution` verdict can be retried with `force`). The backend
+ *  changed nothing for `consent` and `scan`. */
+export type AgentPluginUpdateOutcome =
+  | { kind: 'applied' | 'unchanged' | 'failed' }
+  | { kind: 'consent'; sha: string; deltaLines: string[] }
+  | { kind: 'scan'; verdict: string; findings: AgentPluginScanFinding[] }
+
+export interface AgentPluginUpdateOptions {
+  /** Apply a catalog re-pin the user confirmed after a `consent` outcome. */
+  acceptCapabilities?: boolean
+  /** Apply an update whose scan returned caution, after the user saw the findings. */
+  force?: boolean
+}
+
+/** Update an installed plugin (backend `plugins.manage update`): a catalog install
+ *  re-pins to the current catalog SHA, a git install pulls. Refreshes the list on
+ *  success. */
 export async function updateAgentPlugin(
   request: GatewayRequest,
   name: string,
   failMessage: string,
   profile?: string | null,
-  acceptCapabilities = false
+  options: AgentPluginUpdateOptions = {}
 ): Promise<AgentPluginUpdateOutcome> {
   $agentPluginBusy.set(name)
+
+  const params: PluginsManageParams = { action: 'update', name }
+
+  if (options.acceptCapabilities) {
+    params.accept_capabilities = true
+  }
+
+  if (options.force) {
+    params.force = true
+  }
 
   try {
     const result = await request<{
@@ -371,13 +420,17 @@ export async function updateAgentPlugin(
       consent_required?: boolean
       sha?: string
       delta_lines?: string[]
-    }>(
-      'plugins.manage',
-      withProfile({ action: 'update', name, ...(acceptCapabilities ? { accept_capabilities: true } : {}) }, profile)
-    )
+      scan_blocked?: boolean
+      scan_verdict?: string
+      scan_findings?: AgentPluginScanFinding[]
+    }>('plugins.manage', withProfile({ ...params }, profile), PLUGIN_INSTALL_REQUEST_TIMEOUT_MS)
 
     if (result?.consent_required) {
       return { kind: 'consent', sha: (result.sha ?? '').slice(0, 8), deltaLines: result.delta_lines ?? [] }
+    }
+
+    if (result?.scan_blocked) {
+      return { kind: 'scan', verdict: result.scan_verdict ?? 'dangerous', findings: result.scan_findings ?? [] }
     }
 
     if (!result?.ok) {
@@ -459,8 +512,12 @@ export async function saveAgentPluginSettings(
       }
     }
 
+    // A secret-only save still makes the (empty) settings call: the backend's save is what tells a
+    // Desktop half `plugin.<id>.settings.changed`, and a new API key is the change it most needs.
+    const wroteSecret = Object.values(opts.secrets).some(Boolean)
+
     const result =
-      Object.keys(opts.values).length > 0
+      Object.keys(opts.values).length > 0 || wroteSecret
         ? await request<{ ok?: boolean; plugin?: AgentPluginRow | null }>(
             'plugins.manage',
             withProfile({ action: 'settings', key: opts.key, values: opts.values }, opts.profile)
@@ -471,11 +528,16 @@ export async function saveAgentPluginSettings(
       throw new Error(opts.failMessage)
     }
 
-    if (result?.plugin) {
+    // The shared list may belong to another profile by now (a scope switch
+    // mid-save): only a list loaded for the profile this save targeted takes
+    // its refreshed row, and a refetch would hijack the other profile's view.
+    const ownsList = $agentPluginsProfile.get() === (opts.profile ?? null)
+
+    if (ownsList && result?.plugin) {
       const refreshed = result.plugin
 
       $agentPlugins.set($agentPlugins.get().map(row => (row.key === opts.key ? { ...row, ...refreshed } : row)))
-    } else {
+    } else if (ownsList) {
       await loadAgentPlugins(request, opts.profile)
     }
 

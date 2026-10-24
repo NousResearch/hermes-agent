@@ -33,7 +33,12 @@ import { SESSION_SEARCH_FOCUS_EVENT } from '@/store/layout'
 import { $profiles, $profilesByConnection, normalizeProfileKey } from '@/store/profile'
 import { $modelPickerOpen, $sessionPickerOpen } from '@/store/session'
 import { $switcherOpen } from '@/store/session-switcher'
-import { $sharedMetricsConsent, readSharedMetricsConsent, type SharedMetricsConsent } from '@/store/shared-metrics'
+import {
+  $sharedMetricsConsent,
+  readSharedMetricsConsent,
+  type SharedMetricsConsent,
+  sharedMetricsProfileRequester
+} from '@/store/shared-metrics'
 
 import { observeOnboardingMetrics } from './desktop-onboarding-metrics'
 
@@ -108,8 +113,11 @@ export function useDesktopMetrics({
   // Pinned to the focused (connection, profile): never whichever session tile is focused.
   const request = useMemo(
     () =>
-      <T>(method: string, params: Record<string, unknown> = {}) =>
-        requestGatewayForAgent<T>(connectionId, profileKey, method, params),
+      sharedMetricsProfileRequester(
+        <T>(method: string, params: Record<string, unknown> = {}) =>
+          requestGatewayForAgent<T>(connectionId, profileKey, method, params),
+        profileKey
+      ),
     [connectionId, profileKey]
   )
 

@@ -1,0 +1,18 @@
+name: limbic
+repo: https://github.com/dyiapanis/limbic
+sha: 898346568e3bfc511587521dad9e0ff594995461
+description: "Self-organising memory provider (MemoryProvider ABC): local SQLite (WAL) with sqlite-vec KNN + FTS5 hybrid recall, adaptive trust scoring, activation maturation, interference-based forgetting, NLI-based correction detection and synaptic atrophy. No LLM cost — all lifecycle mechanisms are deterministic. The optional inline chat recall indicator is off by default (recall_indicator in limbic.yaml) and memory injection works identically either way. Recall is confidence-gated: when nothing clears the calibration floor, recall abstains (no_confident_match) instead of surfacing near-misses, and the agent answers from what it knows without attributing anything to memory. Tools (remember/recall) and lifecycle hooks dispatch via the MemoryManager from the registered provider — this entry registers a MemoryProvider only, so provides_tools/provides_hooks are empty. Disclosure — on first primary session start downloads ~1.0GB of ONNX models (Arctic Embed 2.0 L int8 embedding, ~570MB; MiniLMv2 NLI, ~430MB, on first contradiction check) from huggingface.co at pinned commits with hash checks into ~/.cache/limbic/ (outside HERMES_HOME); at every model load, every file in those cache folders that is not in the pinned manifest is deleted — including unrelated files if you point embedding/nli cache_dir at a shared folder — which reclaims stale orphans from prior versions (e.g. an older fp32 cache of ~2.2GB); the memory database is never touched; spaCy NER models are optional: `hermes limbic languages --set <lang>` and `hermes limbic setup` run `python -m spacy download <model>`, which pip-installs each model package (~14.5MB, version picked by spaCy, not hash-pinned) from spaCy's GitHub releases into Hermes's own Python environment (entity extraction stays disabled without one), and `hermes limbic setup` also pre-downloads both ONNX models; memory stays local in limbic.db under HERMES_HOME, and hermes backup adds VACUUM snapshots under HERMES_HOME/backups; no telemetry. Stores created or reindexed on 0.6.0+ record the embedder that produced their vectors and report stale_embedder=true after an embedder change until `hermes limbic reindex`; stores from 0.5.x keep serving their fp32 vectors unflagged until reindexed. Since 0.7.0: supersession is enforced at recall (when a correction and the fact it contradicts both match a query, only the correction surfaces; safety-valved so a below-floor correction never hides the old fact), the NLI pair-check gate opens one band lower for correction-cued writes, the recall confidence floor is calibrated at 0.50, and trust adaptation requires at least 10 signals / 5 maturity observations before any parameter shifts. Since 0.7.1: CI-tested on Linux and Windows; on Windows the store initialises lock-free (cross-process file locks are POSIX-only) and the model cache lives under %USERPROFILE%\\.cache\\limbic. PolyForm Noncommercial 1.0.0 (commercial use requires a separate license)."
+maintainer: dyiapanis
+tier: community
+category: memory
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/dyiapanis/limbic#readme
+version: "0.7.1"
+image: https://raw.githubusercontent.com/dyiapanis/limbic/898346568e3bfc511587521dad9e0ff594995461/assets/banner.png
+readme: true
+platforms: [linux, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

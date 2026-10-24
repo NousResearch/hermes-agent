@@ -57,15 +57,22 @@ def _wire(home: Path, runs: int = 1) -> None:
                NO_COLOR="1", TERM="dumb", CI="true")
     script = f"source {shlex.quote(INSTALL_SH.as_posix())} --manifest\n" + "wire_shell_path\n" * runs
     result = subprocess.run(["bash", "-c", script], env=env, stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# The login half of bash's startup ("looks for ~/.bash_profile, ~/.bash_login, and ~/.profile, in that
+# order, and reads and executes commands from the first one that exists and is readable"), run under
+# --noprofile: the host's /etc/profile is not part of this contract and may rewrite HOME before bash looks
+# for the user files (Blacksmith CI's /etc/profile.d/blacksmith.sh resets it to the runner's passwd home).
+_LOGIN_FILES = 'for f in ~/.bash_profile ~/.bash_login ~/.profile; do if [ -r "$f" ]; then . "$f"; break; fi; done'
 
 
 def _login_path(home: Path) -> list[str]:
     # Absolute path: the pinned PATH below has no bash on hosts like NixOS.
-    result = subprocess.run([shutil.which("bash"), "-lc", 'printf %s "$PATH"'],
+    result = subprocess.run([shutil.which("bash"), "--noprofile", "--norc", "-c", f'{_LOGIN_FILES}; printf %s "$PATH"'],
                             env={"HOME": str(home), "PATH": "/usr/local/bin:/usr/bin:/bin"},
-                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     return result.stdout.split(":")
 

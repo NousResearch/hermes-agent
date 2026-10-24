@@ -1,0 +1,25 @@
+name: operations
+repo: https://github.com/c-pompa/operations-hermes-desktop-plugin
+sha: 61ffdaa5e7676afa762952d76f85af9a67efe125
+subdir: plugins/operations
+title: Operations
+description: "A Hermes Desktop page for running a fleet - topology, model traffic, handoffs, traces, merge requests and conformance checks in one place. Disclosure — reads hermes-metrics-dash's <hermes root>/metrics/metrics.db, the kanban board, every profile's config.yaml (plugin enable state, rolectl-mcp entries, default model) and plugin-data/gitlab-mr/device-aliases.json, all read-only; calls your GitLab (host and token from the plugin settings or GITLAB_HOST/GITLAB_TOKEN), the local model router (MODEL_ROUTER_URL, default 127.0.0.1:8867) and LM Studio (LMSTUDIO_URL, default 127.0.0.1:1234); runs git status/rev-parse/ls-files in the project folders it checks and shows matching lines (including any keys found) on the page. Page buttons create, assign, schedule, unblock and close kanban cards and start their workers at once, write <hermes root>/conformance/conformance.yaml, and \"Propose a rule\" pushes a branch and opens a merge request on the standard's GitLab project. A hook on every kanban dispatcher tick starts cards scheduled from the page; with alert_target set it posts new attention items through hermes send; with drift_action: automatic it files and starts a fix card for drift_profile for each drifting host with a verified report (at most daily) carrying the standard's remediate commands. With Activity summaries on (off by default), Activity sentences and each \"Explain this session\" click send log lines and trace details to the model set for the operations_summary auxiliary task. From the setup checklist's Connect GitLab step it can also adopt this profile's own login - its environment read through Hermes' secret scope, or the host the gitlab-mr plugin names - or take a host and token typed on the page; the host goes through the plugin-settings writer and the token through Hermes' .env credential route as OPERATIONS_GITLAB_TOKEN, and the token is never sent back to the page. No other credential store is read: a login that exists only in another profile's .env or in the glab CLI's config is typed in instead."
+maintainer: c-pompa
+tier: community
+category: desktop
+docs_url: https://github.com/c-pompa/operations-hermes-desktop-plugin#readme
+version: "0.3.3"
+requires_hermes: ">=0.21.5"
+image: https://raw.githubusercontent.com/c-pompa/operations-hermes-desktop-plugin/61ffdaa5e7676afa762952d76f85af9a67efe125/screenshots/card.png
+screenshots:
+  - https://raw.githubusercontent.com/c-pompa/operations-hermes-desktop-plugin/61ffdaa5e7676afa762952d76f85af9a67efe125/screenshots/overview.png
+readme: true
+platforms: []
+known_issues:
+  - Request, error, host and conformance results come from hermes-metrics-dash's metrics.db; without it those sections show "unavailable".
+  - Merge requests and the GitLab conformance standard need the GitLab host and token set in the plugin's settings (or GITLAB_HOST and GITLAB_TOKEN).
+capabilities:
+  provides_tools: []
+  provides_hooks: [on_kanban_dispatch_tick]
+  provides_middleware: []
+  requires_env: []

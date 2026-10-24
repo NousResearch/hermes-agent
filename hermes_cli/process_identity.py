@@ -17,9 +17,11 @@ import platform
 import sys
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Iterator, Optional, Sequence
 
 from utils import atomic_json_write
 
@@ -32,6 +34,10 @@ LEDGER_FILENAME = "spawn-ledger.json"
 #: Purposes a reaper may treat as "safe to kill when the owner is gone".
 #: Interactive processes (chat, REPLs) are deliberately NOT in this set.
 REAPABLE_PURPOSES = frozenset({"serve", "dashboard", "gateway", "mcp-helper"})
+
+#: Host-role owners a fresh backend may reap on a HELD_BY_OTHER conflict (#121964): the
+#: serve/dashboard/gateway subset. The mcp-helper rung stays owned by reap_orphaned_mcp_helpers.
+_BACKEND_OWNER_PURPOSES = REAPABLE_PURPOSES - {"mcp-helper"}
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -57,12 +63,35 @@ def install_id(project_root: Optional[Path] = None) -> str:
     return hashlib.sha256(canonical.encode("utf-8", "replace")).hexdigest()[:12]
 
 
+def process_birth(proc) -> float:
+    """A managed worker's identity birth for the ``psutil.Process`` *proc*, the same in every process.
+
+    On macOS psutil shifts ``create_time()`` by ``abs(INIT_BOOT_TIME - boot_time())``
+    (``psutil._psosx.adjust_proc_create_time``), with a boot-time reference frozen when psutil
+    was imported in the CALLING process. After a clock step (NTP, sleep/wake) a long-lived
+    gateway owner and a freshly spawned worker read different births for the same process, and
+    the exact identity match refused every managed worker (#140580). The kernel's own start
+    (``monotonic=True``: the unadjusted ``kinfo_proc`` epoch start) is what every process sees.
+    Other platforms keep ``create_time()``: Linux and Windows apply no per-process reference.
+    Raises ``psutil.Error`` like ``create_time()``.
+    """
+    import psutil
+    if getattr(psutil, "MACOS", False):
+        platform_proc = getattr(proc, "_proc", None)
+        if platform_proc is not None:
+            try:
+                return float(platform_proc.create_time(monotonic=True))
+            except TypeError:  # a psutil without the monotonic read: fall back to the adjusted one
+                pass
+    return float(proc.create_time())
+
+
 def _process_create_time(pid: Optional[int] = None) -> Optional[float]:
-    """``psutil`` create time for ``pid`` (default: this process); ``None`` when psutil can't say."""
+    """:func:`process_birth` of ``pid`` (default: this process); ``None`` when psutil can't say."""
     try:
         import psutil
 
-        return float(psutil.Process(os.getpid() if pid is None else pid).create_time())
+        return process_birth(psutil.Process(os.getpid() if pid is None else pid))
     except Exception:
         return None
 
@@ -178,7 +207,7 @@ def _read_ledger_or_quarantine(path: Path) -> Optional[list[dict]]:
 
 def _same_incarnation(proc, create_time: Optional[float]) -> bool:
     """Does the live ``proc`` match a recorded ``create_time`` (2 s tolerance; ``None`` matches)?"""
-    return create_time is None or abs(float(proc.create_time()) - float(create_time)) < 2.0
+    return create_time is None or abs(process_birth(proc) - float(create_time)) < 2.0
 
 
 def _pid_alive_matches(pid: int, create_time: Optional[float], *, strict: bool = False) -> Optional[bool]:
@@ -190,7 +219,7 @@ def _pid_alive_matches(pid: int, create_time: Optional[float], *, strict: bool =
     try:
         proc = psutil.Process(int(pid))
         if strict:
-            return (create_time is not None and proc.create_time() == create_time
+            return (create_time is not None and process_birth(proc) == create_time
                     and proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE)
         # A zombie keeps its create_time until its parent reaps it, but it is already dead: the
         # dashboard stop check (``gateway.status._pid_exists``) books it stopped, so the ledger must
@@ -253,6 +282,35 @@ def is_desktop_owned_backend(argv: Optional[Sequence[str]] = None) -> bool:
     from hermes_cli._startup_fast import is_desktop_ssh_backend_argv
 
     return is_desktop_ssh_backend_argv(list(sys.argv[1:] if argv is None else argv))
+
+
+# Set while this process works for the Desktop app on its own machine: one request from, or one turn of
+# a chat created by, a client ``local_desktop_client`` accepted. The gateway serves the Desktop, the CLI,
+# the TUI and bots from one process, so this is a property of the activity, never of the process.
+_SERVING_LOCAL_DESKTOP: ContextVar[bool] = ContextVar("hermes_serving_local_desktop", default=False)
+
+
+@contextmanager
+def serving_local_desktop(active: bool) -> Iterator[None]:
+    """Mark the enclosed activity (and threads it hands its context to) as work for the local Desktop."""
+    token = _SERVING_LOCAL_DESKTOP.set(bool(active) or _SERVING_LOCAL_DESKTOP.get())
+    try:
+        yield
+    finally:
+        _SERVING_LOCAL_DESKTOP.reset(token)
+
+
+def serves_local_desktop_now() -> bool:
+    return _SERVING_LOCAL_DESKTOP.get()
+
+
+def local_desktop_client(identity: Optional[dict], declared: object) -> bool:
+    """A connected client is the Desktop app on this machine when it says so (it knows its connection
+    mode) AND it redeemed a native ticket, which only this machine's private control socket mints, for
+    this OS user. Neither alone: the CLI and TUI hold native tickets too, and the claim is the client's
+    word. A remote Desktop reaches a backend through SSH, URL or Cloud credentials, never a native ticket."""
+    return (declared is True and isinstance(identity, dict) and identity.get("provider") == "local"
+            and identity.get("native_bootstrap") is True)
 
 
 def _desktop_spawner_identity() -> tuple[Optional[int], Optional[float]]:
@@ -375,6 +433,96 @@ def spawner_is_dead(entry: dict) -> Optional[bool]:
     return None if alive is None else not alive
 
 
+def _terminate_then_kill(pid: int, create_time: Optional[float]) -> bool:
+    """SIGTERM, 2 s grace, then SIGKILL. False when the incarnation moved on or is already gone."""
+    try:
+        import psutil
+
+        proc = psutil.Process(pid)
+        if not _same_incarnation(proc, create_time):
+            return False  # PID reused since registration — never signal a stranger
+        proc.terminate()
+        try:
+            proc.wait(timeout=2.0)
+        except psutil.TimeoutExpired:
+            proc.kill()
+        return True
+    except Exception:
+        logger.debug("orphan terminate failed for pid %s", pid, exc_info=True)
+        return False
+
+
+def _reparented_orphan(pid: int) -> bool:
+    """Null-spawner owner with no live supervisor: reparented to init, old, lock-unclaimed.
+
+    Mirrors ``_reap_orphaned_desktop_local_serves``: operator-managed remote backends legitimately
+    sit at ppid 1 (systemd, an exited sshd), so ppid alone is never proof — the SSH-lock claim
+    and the 180 s lock-write grace exclude live-supervised backends. Windows: the ppid probe is
+    unavailable there, so this rung never fires (desktop tree-kill reaps instead).
+    """
+    try:
+        from hermes_cli.dashboard_procs import (
+            _REAP_MIN_AGE_SECONDS, _lock_owned_serve_pids, _process_ppid)
+        if _process_ppid(pid) not in (0, 1):
+            return False
+        if pid in (_lock_owned_serve_pids() or ()):
+            return False
+        import time as _time
+
+        import psutil
+        return max(0.0, _time.time() - psutil.Process(pid).create_time()) >= _REAP_MIN_AGE_SECONDS
+    except Exception:
+        return False  # unprovable → never touch
+
+
+def reap_orphaned_backend_owner(
+    pid: int, create_time: Optional[float], *, kill_fn=None) -> Optional[int]:
+    """Kill the conflicting host owner when the ledger PROVES it is a dead session's orphan.
+
+    HELD_BY_OTHER rung for #121964: the owner PID is alive (re-parented to init), so
+    ``record_is_stale()`` never fires and a fresh backend would loop observe-only against the
+    same orphan forever. Reaped only with a live ``serve``/``dashboard``/``gateway`` entry for
+    THIS install whose spawner is provably dead — or whose spawner was never recorded and which
+    is reparented to init, old, and claimed by no Desktop SSH lock. Live-spawned, lock-claimed,
+    young, interactive, self, or unprovable owners are never touched. Returns the reaped pid,
+    else ``None``; never raises.
+
+    # ponytail: a dead session's surviving backend.lock.json still shields its orphan (the lock
+    # has no session liveness); clearing stale locks is a Desktop-side lifecycle job, not this rung.
+    """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return None
+    if pid <= 0 or pid == os.getpid():
+        return None
+    try:
+        entry = next(
+            (e for e in ledger_entries()
+             if e.get("pid") == pid
+             and e.get("purpose") in _BACKEND_OWNER_PURPOSES
+             and (e.get("create_time") is None or create_time is None
+                  or abs(float(e["create_time"]) - float(create_time)) < 2.0)),
+            None)
+    except Exception:
+        return None
+    if entry is None:
+        return None
+    if spawner_is_dead(entry) is not True and not (
+            entry.get("spawner_pid") is None and _reparented_orphan(pid)):
+        return None  # live or unprovable spawner → never touch
+    try:
+        if kill_fn is not None:
+            kill_fn(pid)
+        elif not _terminate_then_kill(pid, entry.get("create_time")):
+            return None
+    except Exception:
+        logger.debug("backend owner reap failed for %s", entry, exc_info=True)
+        return None
+    logger.info("reaped orphaned %s backend owner pid %s", entry.get("purpose"), pid)
+    return pid
+
+
 def reap_orphaned_mcp_helpers(*, project_root: Optional[Path] = None, kill_fn=None) -> list[int]:
     """Kill ledger-registered stdio MCP helpers whose spawner is provably dead.
 
@@ -438,20 +586,20 @@ def _kill_process_tree_windows(proc) -> None:
     for child in descendants:
         try:
             child.terminate()
-        except Exception:  # noqa: BLE001 - raced away or refused; keep going
+        except Exception:
             pass
     try:
         proc.terminate()
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     try:
         _, alive = psutil.wait_procs(descendants + [proc], timeout=2.0)
-    except Exception:  # noqa: BLE001 - broken fake/raced process; nothing more to force-kill
+    except Exception:
         return
     for survivor in alive:
         try:
             survivor.kill()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
 

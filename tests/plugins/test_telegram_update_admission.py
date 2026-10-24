@@ -22,6 +22,7 @@ from gateway.config import PlatformConfig
 from gateway.platforms.event import MessageType
 from plugins.platforms.telegram import adapter as tg_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.telegram.update_admission import DEFAULT_MAX_CONCURRENT_UPDATES, PerChatUpdateProcessor
 
 
 class NoNetwork(BaseRequest):
@@ -591,7 +592,7 @@ async def test_only_pre_handoff_failure_reopens_admission(monkeypatch, tmp_path,
 
             conversation = ConversationHandler(entry_points=[TypeHandler(Update, entry)], states={}, fallbacks=[])
             app.add_handler(conversation, group=-1)
-            async with connected(monkeypatch, bot_id=222) as (other, other_app, _):
+            async with connected(monkeypatch, bot_id=222) as (_other, other_app, _):
                 other_app.add_handler(conversation, group=-1)
                 for _ in range(2):
                     await other_app.process_update(update(other_app.bot))
@@ -791,3 +792,97 @@ async def test_redelivery_to_rebuilt_adapter_is_dropped(monkeypatch, tmp_path):
         await app.process_update(update(app.bot, 30))
         await asyncio.gather(*adapter._pending_text_batch_tasks.values())
         assert len(delivered) == 1
+
+
+@pytest.mark.asyncio
+async def test_connect_builds_concurrent_update_processor(monkeypatch):
+    """The PTB Application must not run with the library default max_concurrent_updates=1:
+    the update fetcher then awaits each update's full handler chain inline, so one slow
+    update deafens every other chat (and local commands) until it finishes. The adapter
+    must enable a bounded concurrent processor, overridable via config extra (#125098)."""
+    async with connected(monkeypatch) as (_adapter, app, _delivered):
+        assert isinstance(app.update_processor, PerChatUpdateProcessor)
+        assert app.concurrent_updates == DEFAULT_MAX_CONCURRENT_UPDATES
+
+    async with connected(monkeypatch, extra={"max_concurrent_updates": 7}) as (_adapter, app, _delivered):
+        assert app.concurrent_updates == 7
+
+    for bad in ("lots", float("inf")):  # .inf in YAML: int() raises OverflowError
+        async with connected(monkeypatch, extra={"max_concurrent_updates": bad}) as (_adapter, app, _delivered):
+            assert app.concurrent_updates == DEFAULT_MAX_CONCURRENT_UPDATES
+
+    # Cancelling a waiting same-chat update must neither fail its running predecessor nor
+    # let the next update of that chat overtake it.
+    processor, order, gate = app.update_processor, [], asyncio.Event()
+
+    async def handler(name):
+        order.append(f"start {name}")
+        if name == "A":
+            await gate.wait()
+        order.append(f"end {name}")
+
+    chat = SimpleNamespace(effective_chat=SimpleNamespace(id=1))
+    tasks = []
+    for name in "ABC":
+        tasks.append(asyncio.create_task(processor.process_update(chat, handler(name))))
+        await asyncio.sleep(0.01)
+    tasks[1].cancel()
+    await asyncio.sleep(0.01)
+    gate.set()
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    assert results[0] is None and results[2] is None
+    assert order == ["start A", "end A", "start C", "end C"]  # C waits for A even after B is cancelled
+
+
+@pytest.mark.asyncio
+async def test_slow_update_does_not_block_other_chats(monkeypatch):
+    """End-to-end through the real PTB fetcher path (update_queue → __update_fetcher):
+    while one chat's update is parked inside its handler chain, a different chat's
+    update must still be dequeued, dispatched and delivered (#125098). Under the PTB
+    default (max_concurrent_updates=1) the fetcher awaits each update inline, so the
+    second update is never dequeued while the first is parked. A later update of the
+    PARKED chat must wait for it: plain concurrency would deliver it first."""
+    gate = asyncio.Event()
+
+    async with connected(monkeypatch) as (adapter, app, delivered):
+        async def gate_keeper(update, context):
+            if update.update_id == 10:
+                await gate.wait()
+
+        # Group -1 runs before every core handler group inside PTB's real dispatch.
+        app.add_handler(TypeHandler(Update, gate_keeper), group=-1)
+
+        app.update_queue.put_nowait(update(app.bot, uid=10, chat=42))
+        for _ in range(200):  # event-based: u10 has been dequeued and parked in the gate
+            if adapter._inflight_update_ids:
+                break
+            await asyncio.sleep(0.01)
+        assert adapter._inflight_update_ids, "update 10 never started processing"
+
+        app.update_queue.put_nowait(update(app.bot, uid=11, chat=43))
+        app.update_queue.put_nowait(update(app.bot, uid=12, chat=42, text="second"))
+        dequeued = False
+        for _ in range(500):
+            if app.update_queue.qsize() == 0:
+                dequeued = True
+                break
+            await asyncio.sleep(0.01)
+        # THE regression discriminator: the fetcher must pull update 11 while update 10
+        # is still parked. Serial processing leaves it sitting in the queue.
+        assert dequeued, "fetcher never dequeued update 11 while update 10 was parked"
+
+        for _ in range(500):  # u11 flows through batching to the session handler
+            if delivered:
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+        assert [e.source.chat_id for e in delivered] == ["43"]
+        gate.set()
+        for _ in range(500):  # released u10 finishes its chain, then u12 follows it
+            if any("second" in e.text for e in delivered):
+                break
+            await asyncio.sleep(0.02)
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+        assert next(e.source.chat_id for e in delivered) == "43"
+        same_chat = "\n".join(e.text for e in delivered if e.source.chat_id == "42")
+        assert same_chat == "hello\nsecond"

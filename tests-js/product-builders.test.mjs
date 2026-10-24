@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, statSync, utimesSync } from 'node:fs'
+import { copyFileSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, statSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
@@ -51,10 +51,12 @@ test('product outputs exclude the source tree except supported generated destina
   const base = fixture()
   const source = path.join(base, 'source')
   mkdirSync(source)
-  for (const name of ['new-source-file', 'pm/generated', 'hermes_cli/web_dist-copy', 'apps/desktop/dist-copy', 'apps/desktop/build/native-deps-copy', 'hermes_cli/web_dist/assets']) {
+  for (const name of ['new-source-file', 'pm/generated', 'hermes_cli/web_dist-copy', 'apps/desktop/dist-copy', 'apps/desktop/build/native-deps-copy', 'hermes_cli/web_dist/assets',
+    'apps/desktop/build/native-deps-win32-x64/nested', 'apps/desktop/build/native-deps-freebsd-x64', 'apps/desktop/build/native-deps-win32-ia32']) {
     expect(() => productOutput(source, path.join(source, name), inputs), name).toThrow(/output/i)
   }
-  for (const name of ['hermes_cli/web_dist', 'apps/desktop/dist', 'apps/desktop/build/native-deps', 'apps/desktop/build/products/tui', 'apps/desktop/build/products/web', '.build/web', '.build/termux/tui']) {
+  for (const name of ['hermes_cli/web_dist', 'apps/desktop/dist', 'apps/desktop/build/native-deps', 'apps/desktop/build/native-deps-win32-x64',
+    'apps/desktop/build/native-deps-darwin-arm64', 'apps/desktop/build/products/tui', 'apps/desktop/build/products/web', '.build/web', '.build/termux/tui']) {
     const out = path.join(source, name)
     expect(productOutput(source, out, inputs).out).toBe(out)
     expect(existsSync(out)).toBe(false)
@@ -185,12 +187,22 @@ function tuiSource(source) {
   put(source, 'ui-tui/package.json', '{"type":"module"}')
   put(source, 'ui-tui/src/entry.tsx', '#!/usr/bin/env node\nimport { answer } from "@hermes/ink"; console.log(answer);')
   put(source, 'ui-tui/packages/hermes-ink/src/entry-exports.ts', 'import devtools from "react-devtools-core"; devtools.initialize(); export const answer: string = "prepared source";')
+  for (const name of ['gateway_bootstrap.py', 'clipboard_image.py']) {
+    put(source, `ui-tui/scripts/${name}`, `print(${JSON.stringify(name)})\n`)
+  }
 }
 
 test('TUI uses prepared workspace-local tools from an unrelated cwd and publishes a relocatable module product', () => {
   const base = fixture()
   const source = path.join(base, 'source with spaces')
   tuiSource(source)
+  copyFileSync(path.join(repo, 'ui-tui/src/lib/pythonHelpers.ts'), path.join(source, 'ui-tui/src/pythonHelpers.ts'))
+  put(source, 'ui-tui/src/entry.tsx', `#!/usr/bin/env node
+import { readFileSync } from 'node:fs'
+import { answer } from '@hermes/ink'
+import { pythonHelperPath } from './pythonHelpers'
+console.log(JSON.stringify({ answer, helpers: ['gateway_bootstrap.py', 'clipboard_image.py'].map(name =>
+  readFileSync(pythonHelperPath(name, process.env.HERMES_PYTHON_SRC_ROOT), 'utf8')) }))`)
   dependency(source, 'ui-tui', 'esbuild')
   const out = path.join(base, 'product one')
   execFileSync(process.execPath, [path.join(repo, 'scripts/build/tui.mjs'), '--source', source, '--out', out], { cwd: base })
@@ -198,7 +210,16 @@ test('TUI uses prepared workspace-local tools from an unrelated cwd and publishe
   const entry = path.join(out, 'dist/entry.js')
   expect(readFileSync(entry, 'utf8').startsWith('#!')).toBe(false)
   rmSync(source, { recursive: true })
-  expect(execFileSync(process.execPath, [entry], { cwd: base, encoding: 'utf8' }).trim()).toBe('prepared source')
+  // Nix keeps Python's site-packages separate from the compiled TUI (#139208).
+  const pythonRoot = path.join(base, 'site-packages')
+  mkdirSync(pythonRoot)
+  const result = execFileSync(process.execPath, [entry], {
+    cwd: base, encoding: 'utf8', env: { ...process.env, HERMES_PYTHON_SRC_ROOT: pythonRoot },
+  })
+  expect(JSON.parse(result)).toEqual({
+    answer: 'prepared source',
+    helpers: ['gateway_bootstrap.py', 'clipboard_image.py'].map(name => `print(${JSON.stringify(name)})\n`),
+  })
 })
 
 test('TUI failure does not publish or disturb a previous product, and missing prepared tools fail clearly', async () => {
@@ -325,6 +346,7 @@ test('TUI freshness invalidates source, configuration and compiler inputs and da
   }
   for (const name of [
     'ui-tui/src/value.ts', 'apps/shared/src/value.ts',
+    'ui-tui/scripts/gateway_bootstrap.py', 'ui-tui/scripts/clipboard_image.py',
     'ui-tui/packages/hermes-ink/src/entry-exports.ts',
     'ui-tui/tsconfig.json', 'ui-tui/packages/hermes-ink/tsconfig.json', 'apps/shared/tsconfig.json',
     'ui-tui/package.json', 'ui-tui/packages/hermes-ink/package.json', 'apps/shared/package.json',

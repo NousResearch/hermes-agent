@@ -20,6 +20,8 @@ _LAZY_EXPORTS: dict[str, str] = {
     "connectors_available": "tools.connectors.gateway.config",
     "dispatch_connector_batch": "tools.connectors.dispatch",
     "dispatch_connector_call": "tools.connectors.dispatch",
+    "ensure_guest_identity": "tools.connectors.gateway.config",
+    "guest_identity_pending": "tools.connectors.gateway.config",
     "is_connector_name": "tools.connectors.gateway.names",
     "manage_connections": "tools.connectors.tool",
 }

@@ -91,7 +91,7 @@ npm run build:fast --prefix website
 ```
 
 图标从 `assets/nous-girl-*.svg` 和 `assets/backgrounds/` 生成。
-`node scripts/generate-icons.mjs` 使用 Hermes 运行时 Python（`HERMES_PYTHON`，否则为 PATH 上的 `python`）渲染图标：Pillow 和 resvg-py 是核心依赖。不要提交生成的 PNG/ICO/ICNS 文件。
+`node scripts/generate-icons.mjs` 使用 Hermes 运行时 Python（`HERMES_PYTHON`，否则为 PATH 上的 `python`）渲染图标：Pillow 和 resvg-py 是核心依赖。生成的图标文件需要提交到仓库；如果文件未同步更新，CI 检查会失败。修改任何源 SVG 后，请重新运行生成器并提交生成结果。
 
 ### 运行测试
 

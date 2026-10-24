@@ -317,6 +317,30 @@ def providers_dict_to_custom_providers(providers_dict: Any) -> list[dict[str, An
     return custom_providers
 
 
+def _warn_shared_key_env_slots(entries: list[dict[str, Any]]) -> None:
+    """Flag entries that point different base URLs at a single ``key_env`` slot.
+
+    A ``key_env`` slot holds one credential, so entries sharing it across
+    distinct base URLs authenticate as one endpoint and nothing else reports the
+    collision. Upstreams that bind a key per channel reject the rest with
+    ``403 permission_error``, which reads like a bad key rather than a config
+    mistake. Only the shared var names the problem, so name it here.
+    """
+    by_env: dict[str, set] = {}
+    for entry in entries:
+        key_env = str(entry.get("key_env", "") or "").strip()
+        base_url = str(entry.get("base_url", "") or "").strip().rstrip("/").lower()
+        if key_env and base_url:
+            by_env.setdefault(key_env, set()).add(base_url)
+    for key_env, urls in by_env.items():
+        if len(urls) > 1:
+            _warn_once_per_provider(
+                key_env, "shared-key-env:" + "|".join(sorted(urls)),
+                "custom providers share the %s slot across %d different base URLs (%s); "
+                "give each endpoint its own key_env — one key cannot serve every channel on a host",
+                key_env, len(urls), ", ".join(sorted(urls)))
+
+
 def get_compatible_custom_providers(
     config: Optional[dict[str, Any]] = None) -> list[dict[str, Any]]:
     """Deduplicated list view over legacy ``custom_providers`` and v12+ ``providers``.
@@ -362,6 +386,7 @@ def get_compatible_custom_providers(
             seen_provider_keys.add(provider_key)
         if name and base_url:
             seen_name_url_pairs.add(pair)
+    _warn_shared_key_env_slots(compatible)
     return compatible
 
 

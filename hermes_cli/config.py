@@ -2812,12 +2812,24 @@ def save_env_value(key: str, value: str):
     invalidate_env_cache()
 
 
-def custom_endpoint_key_env(identity: str) -> str:
+def custom_endpoint_key_env(identity: str, path: str = "") -> str:
     """Env var name holding a custom endpoint's API key.
+
     ``identity`` is the endpoint's own id (Desktop endpoint id, or ``host:port`` for CLI setup),
     so two endpoints on one host get separate slots. The fixed ``HERMES_CUSTOM_`` prefix keeps the
-    name POSIX-valid when the slug starts with a digit (``save_env_value`` rejects those)."""
+    name POSIX-valid when the slug starts with a digit (``save_env_value`` rejects those).
+
+    ``path`` is the URL path (e.g. ``/ai-model-request/v1``) — a shared host often serves several
+    distinct API surfaces behind one hostname, each bound to its own key, and a host-only slug
+    collapses them onto one env slot (the second save silently overwrites the first's key). A
+    trailing ``/v1`` is the OpenAI wire suffix rather than a channel of its own, so it is dropped:
+    the common one-endpoint-per-host case keeps its historical, already-populated env name.
+    """
     slug = re.sub(r"[^A-Z0-9]+", "_", str(identity or "").upper()).strip("_")
+    path = re.sub(r"/v1/?$", "", str(path or "").strip(), flags=re.IGNORECASE)
+    path_slug = re.sub(r"[^A-Z0-9]+", "_", path.upper()).strip("_")
+    if path_slug:
+        slug = f"{slug}_{path_slug}" if slug else path_slug
     return f"HERMES_CUSTOM_{slug}_API_KEY" if slug else "HERMES_CUSTOM_API_KEY"
 
 

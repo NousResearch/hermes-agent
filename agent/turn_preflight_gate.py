@@ -24,7 +24,7 @@ def run_preflight_gate(
     compression_attempts: Any, max_compression_attempts: Any, effective_task_id: Any,
     final_response: Any, failed: Any, _turn_exit_reason: Any, _compression_timeout_exhausted: Any,
     _preflight_compression_blocked: Any, _provider_overflow_recovery_pending: Any,
-    _last_preflight_pressure: Any,
+    _last_preflight_pressure: Any, api_messages: Any = None, tools_for_api: Any = None,
 ) -> PreflightGateVerdict:
     """Run the pre-API guard chain in the original order. ``_last_preflight_pressure`` is
     consumed here (set to None) and re-armed only by a compression pass, so a blocked
@@ -98,5 +98,5 @@ def run_preflight_gate(
         ),
         moa_prepared_request=_moa_prepared_request, system_message=system_message,
         user_message=user_message, max_compression_attempts=max_compression_attempts,
-        effective_task_id=effective_task_id,
+        effective_task_id=effective_task_id, api_messages=api_messages, tools_for_api=tools_for_api,
     )

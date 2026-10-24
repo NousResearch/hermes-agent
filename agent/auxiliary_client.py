@@ -36,6 +36,7 @@ from agent.error_classifier import (
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_structured_output import _route_key, _without_structured_output_format, remember_structured_output_rejection
+from agent.auxiliary_summary_stream_guard import SummaryStreamGuard, summary_runaway_output_bound_chars
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
     apply_required_codex_headers as _apply_required_codex_headers,
@@ -7145,18 +7146,18 @@ def _create_with_progress_once(
         return chunks
     from agent.auxiliary_stream_watchdog import chat_stream_windows
     return _aggregate_chat_stream(
-        chunks, model=model, total_ceiling=total_ceiling, no_progress=chat_stream_windows(client, kwargs, task))
+        chunks, model=model, total_ceiling=total_ceiling, no_progress=chat_stream_windows(client, kwargs, task), task=task)
 
 
 def _aggregate_chat_stream(
     chunks: Any, *, model: str = "", total_ceiling: Optional[float] = None,
-    no_progress: Optional[tuple[float, Optional[float]]] = None,
+    no_progress: Optional[tuple[float, Optional[float]]] = None, task: Optional[str] = None,
 ) -> Any:
-    """Consume a chunk stream into a complete response; TimeoutError (phrased "timed out" so
-    ``_is_timeout_error`` matches) past *total_ceiling* or the *no_progress* windows (#100501)."""
+    """Consume a chunk stream into a complete response; TimeoutError (phrased "timed out" so ``_is_timeout_error``
+    matches) past *total_ceiling*, the *no_progress* windows (#100501) or a runaway compression summary stream."""
     from agent.auxiliary_stream_watchdog import _close_chunk_stream, consume_chat_stream
     acc = _ChatStreamAccumulator(
-        model=model, total_ceiling=total_ceiling, host_deadline=_current_aux_stream_deadline)
+        model=model, total_ceiling=total_ceiling, host_deadline=_current_aux_stream_deadline, task=task)
     try:
         consume_chat_stream(chunks, acc, no_progress)
     finally:
@@ -7172,7 +7173,7 @@ class _ChatStreamAccumulator:
     """Shared per-chunk accumulation so sync and async aggregation cannot drift."""
 
     def __init__(self, model: str = "", total_ceiling: Optional[float] = None,
-                 host_deadline: float | Callable[[], float | None] | None = None):
+                 host_deadline: float | Callable[[], float | None] | None = None, task: Optional[str] = None):
         self._started = time.monotonic()
         # llama-server prompt reading doesn't count toward the ceiling (``local_prompt_progress``).
         self._prompt_reading = PromptReadingClock(self._started)
@@ -7187,6 +7188,7 @@ class _ChatStreamAccumulator:
         self.reasoning_parts: list[str] = []
         self.reasoning_details: list[Any] = []
         self.tool_calls_acc: dict[int, dict[str, Any]] = {}
+        self._runaway = SummaryStreamGuard(summary_runaway_output_bound_chars(task), self.content_parts, self.reasoning_parts)
         self.finish_reason = self.usage = None
         self.resp_id = ""
         self.resp_model = model or ""
@@ -7195,14 +7197,10 @@ class _ChatStreamAccumulator:
         """Raise TimeoutError past the total ceiling or the host deadline."""
         now = time.monotonic()
         if self._total_ceiling is not None and (now - self._started - self._prompt_reading.seconds) >= self._total_ceiling:
-            raise TimeoutError(f"Auxiliary streamed call timed out after {self._total_ceiling:.0f}s "
-                               "total ceiling (stream still open but over budget)")
+            raise self._runaway.total_ceiling_error(self._total_ceiling)
         host_deadline = self._host_deadline() if callable(self._host_deadline) else self._host_deadline
         if host_deadline is not None and now >= host_deadline:
-            raise TimeoutError("Auxiliary streamed call timed out at the host compression "
-                               f"deadline after {time.monotonic() - self._started:.0f}s "
-                               "(the caller already stopped waiting; streaming on would only "
-                               "pin its session lease)")
+            raise self._runaway.host_deadline_error(time.monotonic() - self._started)
 
     def _feed_reasoning_details(self, delta: Any) -> bool:
         """Collect ``reasoning_details`` (OpenRouter-style thinking); True only when a detail
@@ -7288,6 +7286,7 @@ class _ChatStreamAccumulator:
         made_progress |= self._feed_tool_calls(delta)
         if made_progress:
             _notify_aux_progress()
+        self._runaway.check()
         return made_progress
 
     def finish(self) -> Any:
@@ -7308,11 +7307,11 @@ class _ChatStreamAccumulator:
 
 
 async def _aggregate_chat_stream_async(
-    chunks: Any, *, model: str = "", total_ceiling: Optional[float] = None
+    chunks: Any, *, model: str = "", total_ceiling: Optional[float] = None, task: Optional[str] = None
 ) -> Any:
     """Async mirror of :func:`_aggregate_chat_stream` (AsyncOpenAI streams need ``async for``)."""
     acc = _ChatStreamAccumulator(
-        model=model, total_ceiling=total_ceiling, host_deadline=_current_aux_stream_deadline)
+        model=model, total_ceiling=total_ceiling, host_deadline=_current_aux_stream_deadline, task=task)
     try:
         async for chunk in chunks:
             acc.feed(chunk)
@@ -7331,7 +7330,7 @@ async def _acreate_with_stream(client: Any, kwargs: dict[str, Any], task: Option
     chunks = await client.chat.completions.create(**stream_kwargs)
     if hasattr(chunks, "choices"):  # shims may hand back a complete response despite stream=True
         return chunks
-    return await _aggregate_chat_stream_async(chunks, model=model, total_ceiling=total_ceiling)
+    return await _aggregate_chat_stream_async(chunks, model=model, total_ceiling=total_ceiling, task=task)
 
 
 def _async_client_streams_internally(client: Any) -> bool:
@@ -7371,7 +7370,7 @@ async def _acreate_with_progress(
     if hasattr(chunks, "choices"):  # shims may hand back a complete response despite stream=True
         _notify_aux_provider_response()
         return chunks
-    return await _aggregate_chat_stream_async(chunks, model=model, total_ceiling=total_ceiling)
+    return await _aggregate_chat_stream_async(chunks, model=model, total_ceiling=total_ceiling, task=task)
 
 
 # Shared request head + recovery ladder for call_llm / async_call_llm: the entry points differ

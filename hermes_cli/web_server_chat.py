@@ -333,11 +333,38 @@ def _ws_auth_reason(ws: WebSocket) -> tuple[Optional[str], str]:
         return "no_credential", "none"
 
     token = ws.query_params.get("token", "")
-    if not token:
-        return "no_credential", "none"
-    if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
-        return None, "token"
-    return "token_mismatch", "token"
+    if token:
+        if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+            return None, "token"
+        return "token_mismatch", "token"
+    # A gateway-hosted dashboard also serves the sibling streams the Desktop
+    # opens on this listener (the live dictation socket ``/api/audio/
+    # transcribe-stream`` and the TTS socket ``/api/audio/speak-stream``). The
+    # Desktop puts its one-use ``interactive`` gateway ticket in the query of
+    # those sockets (the audio sockets are plain WebSockets and cannot carry a
+    # header or a subprotocol), but the runtime ticket store and this
+    # dashboard's browser-ticket store are different issuers, so the query
+    # ticket was refused here and the stream could never authenticate on a
+    # loopback bind. Redeem the same runtime store the core ``/api/ws`` socket
+    # uses (``gateway/run_api.py``) so every gateway-served socket shares one
+    # credential shape.
+    ticket = ws.query_params.get("ticket", "")
+    if ticket:
+        runner = getattr(app.state, "gateway_runner", None)
+        store = getattr(runner, "session_ticket_store", None)
+        if store is not None:
+            try:
+                grant = store.redeem(ticket, profile_id=None, purpose="interactive")
+            except PermissionError:
+                grant = None
+            if grant is not None:
+                ws._hermes_auth_identity = {
+                    "user_id": f"gateway:{grant.get('profile_id', '')}",
+                    "provider": "local",
+                }
+                return None, "ticket"
+        return "ticket_invalid", "ticket"
+    return "no_credential", "none"
 
 
 def _ws_auth_ok(ws: WebSocket) -> bool:

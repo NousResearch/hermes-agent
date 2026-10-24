@@ -4,7 +4,8 @@ The gateway drops a session's cached agent after an idle hour, under memory pres
 ``/moa`` turn, and on restart; the conversation lives on in the session's stored transcript. A
 messaging ``/refine`` read only the cached agent and answered "Nothing to refine yet — send a message
 first." It now refines the stored conversation, sends the summary into the same chat, and its review
-request carries what a resident agent's carries.
+request carries what a resident agent's carries. Both run as the user's own request (``explicit``), so a
+memory removal is applied, not staged as an unattended proposal, as on the CLI, TUI and local sessions.
 
 Real ``python -m gateway.run``, a real user-plugin messaging platform (the chaos fake), a loopback
 model that answers the review with a ``memory`` tool call. A gateway restart drops the cached agent
@@ -35,9 +36,11 @@ class _Model(BaseHTTPRequestHandler):
         self.server.requests.append(body)
         messages = body.get('messages', [])
         if _is_review(body) and messages[-1].get('role') != 'tool':
+            # A user-asked review may delete memory (an unattended one only stages the removal).
+            stale = 'COLD_FACT' if 'cold pass' in json.dumps(messages) else 'WARM_FACT'
             call = {'id': f'call_{len(self.server.requests)}', 'type': 'function', 'function': {
-                'name': 'memory', 'arguments': json.dumps({'action': 'add', 'target': 'memory',
-                                                           'content': 'REFINED_FACT'})}}
+                'name': 'memory', 'arguments': json.dumps({'action': 'remove', 'target': 'memory',
+                                                           'old_text': stale})}}
             message, finish = {'role': 'assistant', 'content': None, 'tool_calls': [call]}, 'tool_calls'
         else:
             text = next((m.get('content') or '' for m in reversed(messages) if m['role'] == 'user'), '')
@@ -83,6 +86,10 @@ def _gateway(root, url):
     (gw.hermes_home / 'prefill.json').write_text(json.dumps([
         {'role': 'user', 'content': 'PREFILL_EXAMPLE'}, {'role': 'assistant', 'content': 'Noted.'}]))
     (gw.hermes_home / '.env').write_text('OPENROUTER_API_KEY=loopback-only\n')
+    memories = gw.hermes_home / 'memories'
+    if not memories.exists():
+        memories.mkdir()
+        (memories / 'MEMORY.md').write_text('WARM_FACT\n§\nCOLD_FACT\n§\nKEEP_FACT')
     return gw
 
 
@@ -111,6 +118,7 @@ def test_messaging_refine_reviews_the_stored_conversation_once_the_cached_agent_
     out = {}
     try:
         warm = _gateway(root, url)
+        out['memory_file'] = warm.hermes_home / 'memories' / 'MEMORY.md'
         try:
             warm.start()
             mark = warm.mark()
@@ -131,5 +139,8 @@ def test_messaging_refine_reviews_the_stored_conversation_once_the_cached_agent_
         peer.server_close()
 
     assert out['cold']['saw_conversation'] and out['cold']['chat'] == 'chaos-chat', out
+    # Each /refine applied its removal as the user's own request (both surfaces pass explicit=True).
+    memory = out['memory_file'].read_text()
+    assert 'WARM_FACT' not in memory and 'COLD_FACT' not in memory and 'KEEP_FACT' in memory, memory
     assert out['warm']['provider'] == {'only': ['probe-route'], 'data_collection': 'deny'}, out
     assert out['cold'] == out['warm'], ('a cold /refine must send what a resident one sends', out)

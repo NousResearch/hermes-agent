@@ -121,7 +121,8 @@ def start_cold_refine(runner, source, session_key, session_id, history, focus):
                 parent.background_review_callback = deliver
                 parent._spawn_background_review(
                     messages_snapshot=history, review_memory=True,
-                    review_skills="skill_manage" in getattr(parent, "valid_tool_names", set()), focus=focus or None)
+                    review_skills="skill_manage" in getattr(parent, "valid_tool_names", set()), focus=focus or None,
+                    explicit=True)
                 started.set_result(None)
                 run = getattr(parent, "_background_review_run", None)
                 if run is not None:

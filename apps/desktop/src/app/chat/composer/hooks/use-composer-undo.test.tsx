@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 import { placeCaretAtEnd } from '../test-utils'
 
-import { useComposerUndo } from './use-composer-undo'
+import { recordComposerUndoPoint, useComposerUndo } from './use-composer-undo'
 
 /** Mount the hook against a real contentEditable, exposing its API. */
 function mountUndo(editorRef: RefObject<HTMLDivElement | null>, onSync: () => string) {
@@ -168,5 +168,43 @@ describe('useComposerUndo', () => {
 
     view.unmount()
     editor.remove()
+  })
+
+  // The app's own spelling suggestions replace through Chromium in main, so the
+  // editor sees the DOM change but never a beforeinput — this recorder is the
+  // only chance to bank the pre-edit state for ⌘Z.
+  it('banks a point for an edit made from outside the composer', () => {
+    const { editor, ref } = makeEditor('teh quick fox')
+    placeCaretAtEnd(editor)
+
+    const { api, view } = mountUndo(ref, () => editor.textContent || '')
+
+    recordComposerUndoPoint(editor)
+    editor.textContent = 'the quick fox'
+
+    expect(api.current!.undo()).toBe(true)
+    expect(editor.textContent).toBe('teh quick fox')
+
+    view.unmount()
+    editor.remove()
+  })
+
+  it('ignores an editor no mounted composer registered, and stops after unmount', () => {
+    const { editor, ref } = makeEditor('teh')
+    const { editor: unregistered } = makeEditor('other text')
+
+    const { api, view } = mountUndo(ref, () => editor.textContent || '')
+
+    // A settings field, an API-key input: no composer, nothing to bank.
+    expect(() => recordComposerUndoPoint(unregistered)).not.toThrow()
+
+    // The recorder belongs to the mounted surface and goes with it.
+    view.unmount()
+    recordComposerUndoPoint(editor)
+
+    expect(api.current!.undo()).toBe(false)
+
+    editor.remove()
+    unregistered.remove()
   })
 })

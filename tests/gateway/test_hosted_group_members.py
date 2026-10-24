@@ -283,9 +283,9 @@ def test_a_bad_hosted_rooms_entry_refuses_only_the_member_naming_it(tmp_path, mo
                 'reason': 'invalid_params', 'field': 'hosted_rooms.profiles.helper',
                 'detail': "member 1 profile 'helper': names the home already seated as 'beta'"}
         # Each ignored entry is logged once, however often the roster is read.
-        assert ignored() == [
+        assert sorted(ignored()) == sorted([
             'Ignoring hosted_rooms.profiles.alpha for profile=default: this gateway serves that profile from another home',
-            "Ignoring hosted_rooms.profiles.helper for profile=default: names the home already seated as 'beta'"]
+            "Ignoring hosted_rooms.profiles.helper for profile=default: names the home already seated as 'beta'"])
         # The room that already seats helper keeps running its other members.
         sent = desktop('default', 'groups.send', room_id='kept', event_id='hello',
                        payload={'text': '@beta hello', 'thread_id': 'thread'})

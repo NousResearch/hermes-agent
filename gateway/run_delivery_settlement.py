@@ -43,9 +43,7 @@ async def _apply_settlement(runner, pending, oid):
 
 
 async def settle_claim(runner, row, state, error=""):
-    pending = getattr(runner, "_delivery_settlements", None)
-    if pending is None:
-        pending = runner._delivery_settlements = {}
+    pending = runner.__dict__.setdefault("_delivery_settlements", {})
     oid = row["obligation_id"]
     pending[oid] = (row, state, error)
     return await _apply_settlement(runner, pending, oid)
@@ -53,7 +51,7 @@ async def settle_claim(runner, row, state, error=""):
 
 async def flush_settlements(runner, platform, profile):
     """Retry only DB updates, before the next claim pass for this credential owner."""
-    pending = getattr(runner, "_delivery_settlements", {})
+    pending = runner.__dict__.get("_delivery_settlements", {})
     complete = True
     for oid, (row, _, _) in list(pending.items()):
         if (row["platform"], row.get("profile") or "default") == (

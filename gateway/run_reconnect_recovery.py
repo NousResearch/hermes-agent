@@ -34,8 +34,14 @@ def resume_candidates(runner, entries, platform, profile, protected):
         and entry.origin is not None
         and entry.resume_reason in runner._AUTO_RESUME_REASONS
         and (platform is None or entry.origin.platform == platform)
-        and entry.session_key not in protected
     ]
+    for entry in candidates:
+        if entry.session_key in protected:
+            logger.debug(
+                "Deferring auto-resume for %s: a saved reply still owns delivery",
+                entry.session_key,
+            )
+    candidates = [entry for entry in candidates if entry.session_key not in protected]
     if profile is None:
         return candidates
     return [

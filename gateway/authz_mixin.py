@@ -323,14 +323,21 @@ class GatewayAuthorizationMixin:
         # Restored sources deliberately have no live relay trust flag. Resolve
         # delivery through their persisted receiving bot, including its advertised
         # logical platforms, without changing intake or authorization grants.
+        adapters = self._adapters_for_profile(profile)
+        platform = getattr(source, "platform", None)
+        # Native lookup does not need platform configuration. Only the relay
+        # fallback consults configuration to enforce its enablement gates.
+        native = adapters.get(platform)
+        if native is not None:
+            return native
+        if Platform.RELAY not in adapters:
+            return None
         from gateway.delivery import resolve_delivery_transport
         config = getattr(self, "config", None)
         if config is None:
             return None
-        adapters = self._adapters_for_profile(profile)
         configs = getattr(self, "_profile_configs", {}) or {}
         config = config if adapters is getattr(self, "adapters", None) else configs.get(profile, config)
-        platform = getattr(source, "platform", None)
         transport = resolve_delivery_transport(platform, config, adapters) if platform else None
         return transport.adapter if transport is not None else None
 

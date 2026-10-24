@@ -64,4 +64,13 @@ describe('desktop fallback switch', () => {
     expect(handleStatusEvent(ctx)).toBe(true)
     expect(updateSessionState).not.toHaveBeenCalled()
   })
+
+  it('keeps a stale-provider reconnect in the transcript', () => {
+    const notice = '⚠️ Provider stream was silent for 600s; reconnecting (stale attempt 1).'
+
+    const { ctx, updateSessionState } = statusContext(notice)
+
+    expect(handleStatusEvent(ctx)).toBe(true)
+    expect(systemText(updateSessionState)).toBe(notice)
+  })
 })

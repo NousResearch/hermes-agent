@@ -305,6 +305,9 @@ def _commit_agent_switch(sid: str, session: dict, agent, result, current_model: 
         session.pop("one_turn_model_restore", None)
 
 
+LARGE_MODEL_NOTICE_KEY = "model.large_notice"
+
+
 def _apply_model_switch(
     sid: str, session: dict, raw_input: str, *, confirm_expensive_model: bool = False,
     pin_session_override: bool = True, parsed_flags: Any | None = None,
@@ -380,6 +383,12 @@ def _apply_model_switch(
             from_provider=_switch_away_provider(agent, explicit_provider, current_provider),
             to_provider=result.target_provider, surface=_session_source(session), from_model=current_model,
             session_id=getattr(agent, "session_id", None))
+    if (notice := getattr(result, "usage_notice", "")) and sid:
+        # Window plans, Large model: a warning, never a confirm. The existing notice event, so desktop
+        # (toast) and TUI (status line) show it for every switch path, live or applied at turn start.
+        _emit("notification.show", sid, {
+            "text": f"⚠ {notice}", "level": "warn", "kind": "ttl", "ttl_ms": 8000,
+            "key": LARGE_MODEL_NOTICE_KEY, "id": LARGE_MODEL_NOTICE_KEY})
     return {
         "value": result.new_model, "warning": result.warning_message or "",
         "confirm_required": False,

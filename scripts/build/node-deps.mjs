@@ -8,6 +8,8 @@ import { delimiter, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 
+import { prepareElectronRuntime } from './electron-runtime.mjs'
+
 // npm.cmd needs a shell. Use npm's JS entrypoint so paths remain argv on Windows.
 export function npmCommand({ env = process.env } = {}) {
   const names = process.platform === 'win32' ? ['npm.cmd', 'npm'] : ['npm']
@@ -106,6 +108,8 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
     }
     return path
   }))].sort()
+  const prepareElectron = selected.includes('apps/desktop')
+    && Boolean(JSON.parse(readFileSync(join(source, 'apps/desktop/package.json'), 'utf8')).devDependencies?.electron)
   const [node, npm] = npmCommand({ env })
   const npmVersion = npmManifestVersion(npm) ?? execFileSync(
     node, [npm, '--version'], { cwd: source, env, encoding: 'utf8' }).trim()
@@ -141,6 +145,7 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
   }
   const key = inputs.digest('hex')
   if (reuse && completedInstallMatches({ source, receipt, hiddenLock, key, nativeKey })) {
+    if (prepareElectron) prepareElectronRuntime({ source, install, env })
     console.log(`node-deps: reusing completed install (${selected.join(', ')})`)
     return { source, workspaces: selected }
   }
@@ -150,6 +155,7 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
   rmSync(nativeReceipt, { force: true })
   console.log(`node-deps: installing workspace dependencies with npm ci (${selected.join(', ')})...`)
   runNpmCi(node, npm, args, { source, env })
+  if (prepareElectron) prepareElectronRuntime({ source, install, env })
   if (reuse) {
     const completed = `${key}\n${createHash('sha256').update(readFileSync(hiddenLock)).digest('hex')}\n`
     writeFileSync(receipt, completed)

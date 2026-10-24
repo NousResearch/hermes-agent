@@ -42,6 +42,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     cache_document_from_bytes_async, cache_image_from_bytes_async,
+    is_host_excluded_by_no_proxy,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import strip_markdown
@@ -306,10 +307,18 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     async def _open_ws(self, gateway_url: str) -> None:
         await self._close_ws()
-        # Honor proxy env vars for the WebSocket (WSL setups need this).
+        # Honor proxy env vars for the WebSocket (WSL setups need this) — but never for a host
+        # NO_PROXY excludes: passing ``proxy=`` explicitly makes aiohttp ignore NO_PROXY, which
+        # would route the bot's only lifeline through a proxy the user opted out of. See #142866.
         self._session = aiohttp.ClientSession(trust_env=gateway_trust_env())
         proxy_vars = ("WSS_PROXY", "wss_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
         ws_proxy = next((v for v in map(os.getenv, proxy_vars) if v), None)
+        if ws_proxy:
+            ws_host = urlparse(gateway_url).hostname or ""
+            if is_host_excluded_by_no_proxy(ws_host):
+                logger.info(
+                    "[%s] NO_PROXY excludes %s — WebSocket connects directly", self._log_tag, ws_host)
+                ws_proxy = None
         self._ws = await self._session.ws_connect(
             gateway_url, headers={"User-Agent": build_user_agent()}, timeout=CONNECT_TIMEOUT_SECONDS, proxy=ws_proxy,
         )

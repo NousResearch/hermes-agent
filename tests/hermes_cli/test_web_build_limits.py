@@ -3,17 +3,41 @@
 ``npm run build`` under ``web/`` runs Vite 8's Rust-native bundler (Rolldown) plus
 the TypeScript solution builder; on small VPS hosts it saturates every CPU and can
 OOM the machine. These tests cover the env capping helper and its propagation into
-the install/update/dashboard-triggered source build path.
+the install/update/dashboard-triggered source build path. A host without a cgroup
+limit sizes the heap from ``MemAvailable`` (#125437, mechanism H).
 """
 
 from __future__ import annotations
 
 import pytest
 
+from hermes_cli.local_runtime import hardware
 from hermes_cli.web_build_limits import (
+    _MAX_WEB_BUILD_HEAP_MB,
+    _MIN_WEB_BUILD_HEAP_MB,
     apply_web_build_limits,
     web_build_limits,
 )
+
+# A 3.8 GB VPS with 2 GiB available and no swap.
+_SMALL_VPS_AVAILABLE_MB = 2048
+_SMALL_VPS_MEMINFO = (
+    "MemTotal:        3891200 kB\n"
+    "MemFree:          412000 kB\n"
+    f"MemAvailable:    {_SMALL_VPS_AVAILABLE_MB * 1024} kB\n"
+)
+
+
+def _uncontained_host(monkeypatch, meminfo: str | None) -> None:
+    monkeypatch.setattr(
+        "hermes_cli.web_build_limits._cgroup_memory_limit_mb", lambda: None
+    )
+    monkeypatch.setattr(hardware, "_linux_meminfo_text", lambda: meminfo)
+
+
+def _heap_mb(node_options: str) -> int:
+    (flag,) = [t for t in node_options.split() if t.startswith("--max-old-space-size=")]
+    return int(flag.partition("=")[2])
 
 
 class TestWebBuildLimits:
@@ -115,6 +139,49 @@ class TestBuildSourceWebPropagatesLimits:
         # original env keys untouched
         assert captured["env"]["PATH"] == "/bin"
         assert captured["label"] == "Building the web UI"
+
+    def test_uncontained_small_host_heap_fits_available_memory(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import source_build
+
+        captured: dict = {}
+        monkeypatch.setattr(
+            source_build,
+            "run_source_script",
+            lambda project_root, script, *args, env, label: captured.update(env=env),
+        )
+        _uncontained_host(monkeypatch, _SMALL_VPS_MEMINFO)
+
+        source_build.build_source_web(tmp_path, env={"PATH": "/bin"})
+
+        heap_mb = _heap_mb(captured["env"]["NODE_OPTIONS"])
+        assert _MIN_WEB_BUILD_HEAP_MB <= heap_mb < _SMALL_VPS_AVAILABLE_MB
+
+
+class TestUncontainedHostHeapBounds:
+    @pytest.mark.parametrize(
+        ("meminfo", "expected"),
+        [
+            pytest.param(
+                "MemTotal: 8388608 kB\nMemAvailable: 0 kB\n",
+                _MIN_WEB_BUILD_HEAP_MB,
+                id="nothing-available-gets-the-floor",
+            ),
+            pytest.param(
+                "MemTotal: 134217728 kB\nMemAvailable: 67108864 kB\n",
+                _MAX_WEB_BUILD_HEAP_MB,
+                id="large-host-keeps-the-ceiling",
+            ),
+            pytest.param(
+                None, _MAX_WEB_BUILD_HEAP_MB, id="no-procfs-keeps-the-ceiling"
+            ),
+        ],
+    )
+    def test_heap_stays_within_bounds(self, monkeypatch, meminfo, expected):
+        _uncontained_host(monkeypatch, meminfo)
+
+        assert _heap_mb(web_build_limits({})["NODE_OPTIONS"]) == expected
 
 
 class TestPackageJsonBuildScriptCapped:

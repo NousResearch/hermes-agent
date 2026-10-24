@@ -18,6 +18,7 @@ from agent.reasoning_effort import (
 from agent.message_metadata import DATA_USE, MESSAGE_UID, data_use_requirement
 from agent.message_sanitization import coalesce_tool_call_id, normalize_finish_reason as _normalize_finish_reason
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
+from agent.openai_schema import is_openai_model, sanitize_openai_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
@@ -391,6 +392,8 @@ def _base_kwargs(model: str, sanitized: list, tools: Any, params: dict, profile:
     if params.get("timeout") is not None:
         api_kwargs["timeout"] = params["timeout"]
     if tools:
+        # OpenAI reads JSON-Schema nullability, not the sanitizer's ``nullable`` hint (#38366).
+        tools = sanitize_openai_tools(tools) if is_openai_model(model) else tools
         # Moonshot/Kimi uses a stricter JSON Schema flavor; rewriting here also covers aggregator routes.
         api_kwargs["tools"] = sanitize_moonshot_tools(tools) if is_moonshot_model(model) else tools
     return api_kwargs

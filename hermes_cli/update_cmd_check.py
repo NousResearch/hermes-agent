@@ -141,9 +141,11 @@ def tracking_refspec(remote: str, branch: str) -> str:
 
 def _fetch(git_cmd: list[str], root: Path, depth_args: list[str], remote: str, branch: str):
     print(f"→ Fetching from {remote}...")
-    return _git(
-        git_cmd, root, ["fetch", *depth_args, remote, tracking_refspec(remote, branch)],
-        **_uc()._no_prompt_git_kwargs())
+    # The parent updater's bounded runner, not the unbounded local ``_git``: a stalled --check
+    # fetch hits the same timeout/no-prompt guard and ends in the same diagnosable failure a
+    # real update gets, instead of hanging forever.
+    return _uc()._git_run(git_cmd, ["fetch", *depth_args, remote, tracking_refspec(remote, branch)],
+                          cwd=root, network=True)
 
 
 def fetch_compare_branch(git_cmd: list[str], root: Path, branch: str, depth_args: list[str]):
@@ -163,7 +165,7 @@ def fetch_compare_branch(git_cmd: list[str], root: Path, branch: str, depth_args
     # Marking the unmarked packs clears the git 2.53+ partial-clone pack-objects crash (#124272).
     print("→ Fetching from origin...")
     return fetch_with_partial_clone_recovery(
-        lambda gc, a: _git(gc, root, a, **_uc()._no_prompt_git_kwargs()),
+        lambda gc, a: _uc()._git_run(gc, a, cwd=root, network=True),
         git_cmd, ["fetch", *depth_args, "origin", tracking_refspec("origin", branch)], root), f"origin/{branch}"
 
 

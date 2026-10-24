@@ -62,6 +62,23 @@ def _load_updates_cfg() -> dict:
     return updates if isinstance(updates, dict) else {}
 
 
+def _sweep_timed_out_pack_temps(cwd, stderr: str) -> str:
+    """Best-effort removal of the ``tmp_pack_*`` files a just-killed fetch left behind; extends *stderr*.
+
+    ``subprocess.run`` killed and drained the git child before the ``TimeoutExpired`` reached us, so no
+    git process of ours can still own those files and ``min_age_seconds=0`` sweeps them now instead of
+    waiting out the usual 10-minute age floor. Cleanup must never turn a timeout into a crash.
+    """
+    from hermes_cli.gitlock import clear_stale_tmp_packs
+    from hermes_cli.update_cmd import _m
+    try:
+        removed = clear_stale_tmp_packs(Path(cwd or _m().PROJECT_ROOT), min_age_seconds=0)
+    except OSError as exc:
+        logger.debug("Could not sweep pack temps after the timed-out fetch: %r", exc)
+        return stderr
+    return f"{stderr}; removed {len(removed)} abandoned pack temp file(s)" if removed else stderr
+
+
 def _purge_stale_hermes_modules() -> None:
     """Historical updater hook; module-graph surgery cannot complete an update."""
     from hermes_cli._old_updater import stop_for_relaunch

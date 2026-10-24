@@ -565,6 +565,12 @@ _FETCH_FAILURE_RULES = (
     (lambda s: "Permission denied (publickey)" in s or "Host key verification failed" in s,
      "✗ SSH authentication failed — check your SSH key is added to GitHub, or switch"
      " `origin` to HTTPS: `git remote set-url origin https://github.com/NousResearch/hermes-agent.git`."),
+    # The synthetic message _git_run builds for a killed fetch (returncode 124): without its own
+    # rule it fell through to the generic "Failed to fetch updates" and named no fix.
+    (lambda s: "timed out after" in s,
+     "✗ The fetch timed out — the connection stalled, or the transfer is larger than the updater's"
+     " time budget. A manual `git fetch origin <branch>` has no time limit: run it once, then re-run"
+     " `hermes update`; the delta it leaves is small."),
 )
 
 

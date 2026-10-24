@@ -116,7 +116,7 @@ from hermes_cli.update_cmd_maint import (
     _reload_process_scan_modules, _reload_updated_runtime_modules,
     _resolve_pre_update_backup_mode, _restore_state_db_from_snapshot,
     _run_post_update_maintenance, _run_pre_update_backup,
-    _sweep_bytecode_after_update,
+    _sweep_bytecode_after_update, _sweep_timed_out_pack_temps,
     _update_complete_message, _verify_and_restore_one_state_db,
     _verify_and_restore_state_dbs_post_update)
 from datetime import UTC
@@ -286,9 +286,10 @@ def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
         # subprocess.run already killed the child; the checkout stays consistent because
         # fetch writes to tmp_pack_* and only renames on success. Report as a failed run
         # so every caller's existing stderr path prints one clear line.
-        result = subprocess.CompletedProcess(
-            exc.cmd, 124, stdout="",
-            stderr=f"git {args[0]} timed out after {NETWORK_GIT_TIMEOUT_SECONDS}s (a stalled remote, or a transfer too large for the limit)")
+        stderr = (f"git {args[0]} timed out after {NETWORK_GIT_TIMEOUT_SECONDS}s (a stalled remote, "
+                  "or a transfer too large for the limit)")
+        stderr = _sweep_timed_out_pack_temps(cwd, stderr)
+        result = subprocess.CompletedProcess(exc.cmd, 124, stdout="", stderr=stderr)
         if check:
             raise subprocess.CalledProcessError(124, exc.cmd, output="", stderr=result.stderr) from exc
         return result

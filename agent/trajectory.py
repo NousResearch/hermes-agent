@@ -54,3 +54,30 @@ def save_trajectory(trajectory: list[dict[str, Any]], model: str, completed: boo
         logger.info("Trajectory saved to %s", filename)
     except Exception as e:
         logger.warning("Failed to save trajectory: %s", e)
+
+
+def _trajectory_tool_responses(msg: dict[str, Any], messages: list[dict[str, Any]], start: int) -> tuple[list[str], int]:
+    """Collect the ``<tool_response>`` blocks for the tool run starting at ``start``; returns ``(blocks, next_index)``."""
+    tool_responses = []
+    j = start
+    while j < len(messages) and messages[j]["role"] == "tool":
+        tool_msg = messages[j]
+        tool_content = tool_msg["content"]
+        try:  # pretty-print tool content if it looks like JSON
+            if tool_content.strip().startswith(("{", "[")):
+                tool_content = json.loads(tool_content)
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        tool_index = len(tool_responses)
+        tool_name = (
+            msg["tool_calls"][tool_index]["function"]["name"]
+            if tool_index < len(msg["tool_calls"])
+            else "unknown"
+        )
+        payload = json.dumps(
+            {"tool_call_id": tool_msg.get("tool_call_id", ""), "name": tool_name, "content": tool_content},
+            ensure_ascii=False,
+        )
+        tool_responses.append(f"<tool_response>\n{payload}\n</tool_response>")
+        j += 1
+    return tool_responses, j

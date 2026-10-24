@@ -257,7 +257,8 @@ def _take_over_detached_runtime_lease(sid: str, session: dict, key: str) -> bool
         _attach_lease(session, lease)
     logger.info("Session %s took over lease for %s from detached runtime %s", sid, key, other_sid)
     try:
-        _interrupt_session_turn(other_sid, other, request_id=f"lease-takeover-{sid}")
+        _interrupt_session_turn(
+            other_sid, other, request_id=f"lease-takeover-{sid}", tool_reason="session taken over")
     except Exception:
         logger.exception("lease-takeover interrupt failed sid=%s", other_sid)
     return True
@@ -683,7 +684,8 @@ def _settle_isolated_turn_before_close(session: dict) -> None:
     if not session.get("_compute_host_turn_id") or not _session_uses_compute_host(session):
         return
     with contextlib.suppress(Exception):
-        _interrupt_session_turn(_lifecycle_own_sid(session), session)
+        _interrupt_session_turn(
+            _lifecycle_own_sid(session), session, tool_reason="session closing")
     deadline = time.monotonic() + _TURN_SETTLE_BEFORE_CLOSE_SECONDS
     while session.get("_compute_host_turn_id") and time.monotonic() < deadline:
         time.sleep(0.05)
@@ -770,12 +772,20 @@ def _ws_session_is_orphaned(session: dict | None) -> bool:
 
 def _interrupt_session_turn(
     sid: str, session: dict, *, request_id: str | None = None, orphan: bool = False,
+    tool_reason: str | None = None,
 ) -> bool:
     """Apply the shared ``session.interrupt`` contract to one claimed session; returns whether the compute-host control
     channel was used. The WS orphan reaper reuses this so a dead client gets the same partial-history/queue semantics.
 
     ``orphan=True`` (reaper path) labels dropped approvals ``ws_orphan_reap``; the label comes from the
     caller, never from request_id prefix sniffing — a future orphan caller may use another id (#106678).
+
+    ``tool_reason`` names the SYSTEM producer behind a non-user stop (client-gone reap, lease takeover, close
+    settle, process shutdown). It is forwarded to ``request_hard_interrupt`` so the turn is booked
+    ``interrupted_by_system(<slug>)`` instead of the user-attributed default
+    (``agent.interrupt_control.interrupt_issuer``, #112647). Leave it None for a human stop — the
+    ``session.interrupt`` RPC and a client interrupt control frame: an app-driven teardown must never
+    impersonate the user in the transcript or the durable turn record.
     """
     use_compute_host = _session_uses_compute_host(session)
     # A manual compaction holds `running` with no run thread and its own finally releases it: Stop must not
@@ -814,7 +824,7 @@ def _interrupt_session_turn(
     if not use_compute_host:
         if should_interrupt:
             from agent.interrupt_compat import request_hard_interrupt
-            request_hard_interrupt(session.get("agent"))
+            request_hard_interrupt(session.get("agent"), tool_reason=tool_reason)
         # Background delegations are detached from the turn's interrupt fan-out; a stop ends them too
         # (own UI sid + spawner id only — a viewer tab must not kill gateway work). Each returns as an
         # interrupted completion with its partial output.
@@ -1055,7 +1065,8 @@ def _schedule_ws_orphan_reap(
         if interrupt_session is not None:
             try:
                 isolated = _interrupt_session_turn(
-                    sid, interrupt_session, request_id=f"client-gone-{sid}", orphan=True)
+                    sid, interrupt_session, request_id=f"client-gone-{sid}", orphan=True,
+                    tool_reason="client disconnected")
                 logger.info("client_gone sid=%s action=interrupt turn_isolation=%s", sid, isolated)
             except Exception:
                 logger.exception("client_gone interrupt failed sid=%s", sid)

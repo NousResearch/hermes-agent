@@ -816,17 +816,26 @@ class SessionCompressionMixin:
         self, session_id: str, holder: str, *, ttl_seconds: float = 300.0, patience_s: Optional[float] = None,
     ) -> bool:
         """Extend a turn lease only while ``holder`` still owns it. ``expires_at`` is stamped before
-        the write-lock wait, so a caller timestamp taken before this call never exceeds it."""
+        the write-lock wait, so a caller timestamp taken before this call never exceeds it.
+
+        Renewals deliberately use a short-lived connection instead of this handle's shared writer:
+        a transcript flush, checkpoint, or FTS merge can hold the process-wide writer lock long
+        enough to exhaust an otherwise healthy turn's authority. The holder-fenced update has no
+        ordering dependency on those writes; SQLite still serializes it with other processes.
+        """
         if not session_id or not holder:
             return False
         expires_at = time.time() + max(0.1, float(ttl_seconds))
+
         def _do(conn):
             conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
             return conn.execute(
                 "UPDATE session_turn_leases SET expires_at = ? "
                 "WHERE conversation_id = ? AND holder = ?", (expires_at, conversation_id, holder),
             ).rowcount > 0
-        return bool(self._execute_write(_do, patience_s=patience_s))
+
+        from hermes_state_turn_lease_writer import execute_lease_write
+        return bool(execute_lease_write(self, _do, patience_s=patience_s))
 
     def release_session_turn_lease(self, session_id: str, holder: str) -> None:
         """Release a turn lease iff ``holder`` still owns it; idempotent."""

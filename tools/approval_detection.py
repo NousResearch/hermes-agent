@@ -373,7 +373,13 @@ DANGEROUS_PATTERNS = [
     # `reg query`, `icacls file`) does NOT prompt. Bare Remove-Item form (ACP clients, pwsh-default
     # SSH hosts, or compound commands where `powershell` appeared earlier).
     # See #69472.
+    # PowerShell accepts any unambiguous parameter prefix: `-r`/`-rec`/`-recurs` are -Recurse,
+    # `-fo`/`-forc` are -Force (validated on Windows PowerShell 5.1, #144024).
     (r'\bremove-item\b[^\n;|&]*\s(?:' + _PS_RECURSE + r'|' + _PS_FORCE + r')', "PowerShell destructive delete (Remove-Item)"),
+    # Remove-Item aliases after a pipe — `gci C:\data | ri -r -fo` runs the same recursive forced
+    # delete from a positional script whose first command is not itself a delete verb, whether or
+    # not a `powershell` prefix precedes it.
+    (r'\|\s*' + _PS_DELETE_VERB + r'\b[^\n;|&]*\s(?:' + _PS_RECURSE + r'|' + _PS_FORCE + r')', "PowerShell destructive delete (alias after pipe)"),
     # Bare cmd builtins with /s (recurse) or /q (quiet); plain `del file.txt` is covered only by the prefixed rule.
     (r'\b(?:del|erase|rd|rmdir)\s+(?:/[a-z]\s+)*/[sq]\b', "Windows destructive delete (recursive/quiet switch)"),
     # Remote content piped to Invoke-Expression — PowerShell's `curl | sh`.
@@ -393,13 +399,15 @@ DANGEROUS_PATTERNS = [
     (r'\bicacls\b[^\n]*\s/reset\b', "reset ACLs recursively (icacls /reset)"),
     # Backup/recovery destruction — classic ransomware prep.
     (r'\bvssadmin\b[^\n]*\bdelete\s+shadows\b', "delete volume shadow copies (vssadmin)"),
+    # WMIC twin of the vssadmin rule — same shadow-copy destruction, older spelling.
+    (r'\bwmic\b[^\n]*\bshadowcopy\b[^\n]*\bdelete\b', "delete volume shadow copies (wmic)"),
     (r'\bwbadmin\b[^\n]*\bdelete\b', "delete backups (wbadmin)"),
     (r'\bbcdedit\b[^\n]*\s/set\b', "modify boot configuration (bcdedit /set)"),
     # Registry deletion with force flag.
     (r'\breg(?:\.exe)?\s+delete\b', "registry delete (reg delete)"),
-    (r'\bremove-itemproperty\b[^\n]*\s-force\b', "registry value delete (Remove-ItemProperty -Force)"),
+    (r'\bremove-itemproperty\b[^\n]*\s' + _PS_FORCE, "registry value delete (Remove-ItemProperty -Force)"),
     # Windows service/system stop — analogue of systemctl stop.
-    (r'\bstop-service\b[^\n]*\s-force\b', "force stop service (Stop-Service -Force)"),
+    (r'\bstop-service\b[^\n]*\s' + _PS_FORCE, "force stop service (Stop-Service -Force)"),
     (r'\bsc(?:\.exe)?\s+(?:stop|delete)\b', "stop/delete service (sc)"),
     # Windows-form credential paths; the POSIX ~/.ssh patterns never match drive-letter or backslash spellings.
     (r'\busers[\\/][^\\/\s]+[\\/]\.ssh\b', "access to SSH keys (Windows path)"),

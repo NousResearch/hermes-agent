@@ -343,6 +343,13 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
         _retry.restart_with_length_continuation = True
         return st.done("break")
 
+    # Keep the existing bounded chunking nudges for stripped stream tool calls.
+    # At their ceiling, dropped-call metadata still means an incomplete action.
+    if filled is None and st.is_stub and getattr(st.response, "_dropped_tool_names", None):
+        fallback = _advance_incomplete_action(st, _retry)
+        if fallback is not None:
+            return fallback
+
     # Unanswered continue nudges made every later turn re-truncate: drop the trail.
     partial_response = collapse_continuation_trail(
         agent, messages, st.current_turn_user_idx, finish_reason="length",
@@ -397,7 +404,44 @@ def boosted_output_cap(agent: Any, requested_cap: Optional[int], n: int, base: O
     return min(boost, limit) if limit else boost
 
 
-def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict:
+def _advance_incomplete_action(
+    st: _Trunc, _retry: Optional[TurnRetryState],
+) -> Optional[TruncationVerdict]:
+    """Advance an exhausted action on the existing chain, from completed history only."""
+    agent = st.agent
+    if (
+        _retry is None
+        or agent._fallback_index >= len(agent._fallback_chain)
+        or not agent._try_activate_fallback(reason=(
+            FailoverReason.timeout
+            if st.is_stub and not getattr(st.response, "_clean_eof", False) else None
+        ))
+    ):
+        return None
+    # Explicit empty parts discard synthetic fragments/nudges, not completed tool
+    # batches. Reuse the canonical trail owner instead of retaining partial actions.
+    collapse_continuation_trail(
+        agent, st.messages, st.current_turn_user_idx, finish_reason="length", parts=[],
+    )
+    agent._emit_diagnostic_status(
+        "Incomplete action was not executed; retrying on the next configured provider."
+    )
+    agent._ephemeral_max_output_tokens = None
+    agent._ephemeral_reasoning_off = False
+    st.length_continue_retries = 0
+    st.truncated_response_parts = []
+    st.truncated_tool_call_retries = 0
+    st.retry_count = 0
+    st.compression_attempts = 0
+    _retry.primary_recovery_attempted = False
+    _retry.restart_with_length_continuation = False
+    _retry.restart_with_rebuilt_messages = True
+    return st.done("break")
+
+
+def _retry_truncated_tool_call(
+    st: _Trunc, api_kwargs: Any, _retry: Optional[TurnRetryState] = None,
+) -> TruncationVerdict:
     """Truncated tool call: re-run the same call (up to 4×) with a boosted max_tokens —
     a real output-cap truncation needs it, harmless for a network stall — else refuse to
     execute incomplete arguments."""
@@ -413,6 +457,13 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
             agent, agent._requested_output_cap_from_api_kwargs(api_kwargs), n
         )
         return st.done("continue")  # don't append the broken response
+    # The incomplete response was never appended or executed. Preserve every
+    # completed tool/result pair and retry from that exact checkpoint on the
+    # next configured route, rather than silently abandoning an actionable task.
+    # Each route gets a finite budget; the existing chain index bounds switches.
+    fallback = _advance_incomplete_action(st, _retry)
+    if fallback is not None:
+        return fallback
     agent._flush_status_buffer()
     _failure = FailoverReason.timeout.value if st.is_stub else "truncated"
     if st.is_stub and getattr(st.response, "_clean_eof", False):
@@ -529,7 +580,7 @@ def recover_from_truncation(
         if _trunc_msg is not None:
             if not _trunc_has_tool_calls:
                 return _continue_text(st, _retry, _trunc_msg)
-            return _retry_truncated_tool_call(st, api_kwargs)
+            return _retry_truncated_tool_call(st, api_kwargs, _retry)
 
     if len(messages) > 1:
         agent._vprint(f"{agent.log_prefix}   ⏪ Rolling back to last complete assistant turn", diagnostic=True)

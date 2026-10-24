@@ -27,6 +27,10 @@ EFFORT_LADDER: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "x
 #: Widest OpenAI-compatible wire vocabulary (OpenRouter, Nous Portal).
 OPENAI_COMPAT_WIRE_EFFORTS: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
+#: Gemini on custom OpenAI-compatible routes rejects xhigh; preserve top-tier intent as max.
+GEMINI_COMPAT_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "max")
+GEMINI_COMPAT_OVERRIDES: dict[str, str] = {"xhigh": "max"}
+
 #: OpenAI/Codex Responses per model generation (live-verified): ``minimal`` is rejected by
 #: both (clamps to low); ``max`` is gpt-5.6 / gpt-6-tier only (legacy = 5.5 and older).
 CODEX_GPT56_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh", "max")
@@ -211,7 +215,10 @@ def generic_nested_reasoning(reasoning_config: Optional[dict]) -> dict:
     return {"reasoning": {"enabled": True, "effort": reasoning_config.get("effort") or "medium"}}
 
 
-def clamp_reasoning_config(reasoning_config: Optional[dict], supported: Sequence[str] = OPENAI_COMPAT_WIRE_EFFORTS) -> Optional[dict]:
+def clamp_reasoning_config(
+    reasoning_config: Optional[dict], supported: Sequence[str] = OPENAI_COMPAT_WIRE_EFFORTS,
+    overrides: Optional[dict[str, str]] = None,
+) -> Optional[dict]:
     """Return ``reasoning_config`` with its ``effort`` clamped onto ``supported`` (non-dicts and
     configs without an effort pass through untouched).
 
@@ -222,7 +229,7 @@ def clamp_reasoning_config(reasoning_config: Optional[dict], supported: Sequence
     if not isinstance(reasoning_config, dict):
         return reasoning_config
     effort = str(reasoning_config.get("effort") or "").strip().lower()
-    clamped = clamp_effort(effort, supported) if effort else effort
+    clamped = clamp_effort(effort, supported, overrides) if effort else effort
     return {**reasoning_config, "effort": clamped} if clamped != effort else reasoning_config
 
 

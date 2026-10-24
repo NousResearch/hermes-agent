@@ -140,6 +140,22 @@ def test_same_named_server_with_other_credentials_is_a_separate_connection(two_p
     assert "s" not in disc._select_new_servers({"s": dict(cfg_s)})
 
 
+def test_adopted_stdio_server_is_counted_in_the_adopters_discovery_summary(two_profiles):
+    """A post-adoption summary must resolve B's shared connection, not B's absent own key."""
+    from tools import mcp_tool_discovery as disc, mcp_tool_registration as reg
+
+    cfg = {"command": "shared-mcp", "args": ["--stdio"]}
+    two_profiles("a")
+    server = _server("netsuite", cfg)
+    disc._adopt_server("netsuite", server)
+    server._registered_tool_names = reg._register_server_tools("netsuite", server, cfg)
+
+    two_profiles("b")
+    assert reg.register_connected_into_current_scope({"netsuite": dict(cfg)}) == 1
+
+    assert disc._connected_summary(["netsuite"]) == (1, 1, [])
+
+
 def test_oauth_server_is_not_adopted_across_profiles(two_profiles):
     import tools.mcp_tool as core
     from tools import mcp_tool_discovery as disc

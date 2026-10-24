@@ -126,12 +126,14 @@ async function probeWindowsFiles(ssh, explicitHermesPath = '') {
     '}',
     '}',
     `$explicit=${explicit}`,
-    'if($explicit){Assert-NoReparse $explicit $false;$explicitPython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($explicit), "python.exe");Assert-NoReparse $explicitPython $true}',
-    // HERMES_HOME is only trusted when it names a directory on the REMOTE: a stale User-scope
-    // value (older install.ps1 persisted one) or a client path leaked over SSH otherwise fails
-    // assertSafeRemoteHome as "Unsafe remote Hermes home" (#118988).
-    '$hermesHome=$env:HERMES_HOME',
-    'if(-not $hermesHome -or -not (Test-Path -LiteralPath $hermesHome -PathType Container)){$hermesHome=Join-Path $env:LOCALAPPDATA "hermes"}',
+    // Inspect the neighboring interpreter when present; bin launchers resolve their own runtime below.
+    'if($explicit){Assert-NoReparse $explicit $false;$explicitPython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($explicit), "python.exe");Assert-NoReparse $explicitPython $false}',
+    // Read the remote's persistent configuration instead of inheriting a client-side HERMES_HOME
+    // forwarded by SSH. A stale or invalid remote value falls back to the remote user default.
+    '$configuredHermesHome=[Environment]::GetEnvironmentVariable("HERMES_HOME","User")',
+    'if(-not $configuredHermesHome){$configuredHermesHome=[Environment]::GetEnvironmentVariable("HERMES_HOME","Machine")}',
+    'if($configuredHermesHome){$configuredHermesHome=[Environment]::ExpandEnvironmentVariables($configuredHermesHome)}',
+    'if($configuredHermesHome -and (Test-Path -LiteralPath $configuredHermesHome -PathType Container -ErrorAction SilentlyContinue)){$hermesHome=$configuredHermesHome}else{$localAppData=[Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData);if(-not $localAppData){throw "Could not resolve the remote Windows local app data directory."};$hermesHome=Join-Path $localAppData "hermes"}',
     'Assert-NoReparse $hermesHome $true',
     '$candidate=[IO.Path]::Combine($hermesHome, "hermes-agent\\venv\\Scripts\\hermes.exe")',
     '$candidatePython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($candidate), "python.exe")',
@@ -409,6 +411,7 @@ function helperCommand(runtime, operation, args = []) {
   const script = [
     '$ProgressPreference="SilentlyContinue"',
     '$ErrorActionPreference="Stop"',
+    `$env:HERMES_HOME=${psLiteral(runtime.hermesHome)}`,
     `& ${argv.map(psLiteral).join(' ')}`,
     'if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}'
   ].join(';')
@@ -442,6 +445,7 @@ function atomicWindowsSpawnCommand(runtime, reservation: any = {}, payload?: str
     WINDOWS_MARKER_JUDGE_PS,
     WINDOWS_CHECKOUT_LOCK_PS,
     `$hermesHome=${psLiteral(runtime.hermesHome)}`,
+    '$env:HERMES_HOME=$hermesHome',
     '$installRoot=$hermesHome',
     '$parent=Split-Path -Parent $hermesHome',
     'if((Split-Path -Leaf $parent) -ieq "profiles"){$installRoot=Split-Path -Parent $parent}',

@@ -43,6 +43,10 @@ test('Windows spawn holds the update mutex across marker check and helper spawn'
     /\$marker\+"\.lock",\[IO\.FileMode\]::OpenOrCreate,\[IO\.FileAccess\]::ReadWrite,\[IO\.FileShare\]::None/
   )
   assert.match(script, /windows_ssh_runtime.*spawn/)
+  assert.match(script, /remote update marker is \$verdict/)
+  const pinnedHome = '$env:HERMES_HOME=$hermesHome'
+  assert.ok(script.indexOf(pinnedHome) > script.indexOf('$hermesHome='))
+  assert.ok(script.indexOf(pinnedHome) < script.indexOf('windows_ssh_runtime'))
 })
 
 test('Windows spawn publishes the initial ownership record before releasing the mutex', () => {
@@ -316,25 +320,39 @@ test('Windows probe validates Hermes and Python topology before selection', asyn
   )
 
   const explicitCheck = script.indexOf('if($explicit){Assert-NoReparse $explicit $false;')
-  const explicitPythonCheck = script.indexOf('Assert-NoReparse $explicitPython $true')
-  const envHome = script.indexOf('$hermesHome=$env:HERMES_HOME')
-  // #118988: HERMES_HOME is trusted only when it is a directory on the remote; anything else
-  // (stale User-scope value, client path leaked over SSH) falls back to the remote default.
-  const envHomeGuard = script.indexOf('Test-Path -LiteralPath $hermesHome -PathType Container')
-  const fallbackJoin = script.indexOf('Join-Path $hermesHome')
+  // A bin launcher resolves its runtime itself, so the adjacent Python may be absent.
+  const explicitPythonCheck = script.indexOf('Assert-NoReparse $explicitPython $false')
+  const userConfiguredHome = script.indexOf('$configuredHermesHome=[Environment]::GetEnvironmentVariable("HERMES_HOME","User")')
+  const machineConfiguredHome = script.indexOf(
+    'if(-not $configuredHermesHome){$configuredHermesHome=[Environment]::GetEnvironmentVariable("HERMES_HOME","Machine")}'
+  )
+  const expandConfiguredHome = script.indexOf('[Environment]::ExpandEnvironmentVariables($configuredHermesHome)')
+  const configuredHomeGuard = script.indexOf(
+    'if($configuredHermesHome -and (Test-Path -LiteralPath $configuredHermesHome -PathType Container -ErrorAction SilentlyContinue))'
+  )
+  const remoteFallback = script.indexOf('[Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)')
+  const fallbackJoin = script.indexOf('$hermesHome=Join-Path $localAppData "hermes"')
   const candidatePythonCheck = script.indexOf('Assert-NoReparse $candidatePython $true')
   const candidateSelection = script.indexOf('Get-Item -LiteralPath $candidate')
+  const launcherWithoutPythonAllowed = script.indexOf(
+    '$pair=Test-Path -LiteralPath $candidatePython -PathType Leaf;if($pair -or (Split-Path -Leaf (Split-Path -Parent $candidate)) -ieq "bin")'
+  )
   const pythonJoin = script.indexOf('$python=[IO.Path]::Combine')
   const pythonCheck = script.indexOf('Assert-NoReparse $python $false')
   const output = script.indexOf('[ordered]@{')
 
   assert.ok(explicitCheck >= 0)
   assert.ok(explicitCheck < explicitPythonCheck)
-  assert.ok(explicitPythonCheck < envHome)
-  assert.ok(envHome < envHomeGuard)
-  assert.ok(envHomeGuard < fallbackJoin)
+  assert.ok(explicitPythonCheck < userConfiguredHome)
+  assert.ok(userConfiguredHome < machineConfiguredHome)
+  assert.ok(machineConfiguredHome < expandConfiguredHome)
+  assert.ok(expandConfiguredHome < configuredHomeGuard)
+  assert.ok(configuredHomeGuard < remoteFallback)
+  assert.ok(remoteFallback < fallbackJoin)
+  assert.doesNotMatch(script, /\$env:HERMES_HOME/)
   assert.ok(candidatePythonCheck >= 0)
   assert.ok(candidatePythonCheck < candidateSelection)
+  assert.ok(launcherWithoutPythonAllowed > candidateSelection)
   assert.ok(pythonJoin >= 0)
   assert.ok(pythonJoin < pythonCheck)
   assert.ok(pythonCheck < output)
@@ -435,7 +453,7 @@ test('every parsed Windows PowerShell script silences the progress stream', asyn
   )
   scripts.push(
     decode(atomicWindowsSpawnCommand({ hermesHome: 'C:\\h', python: 'C:\\py\\python.exe' })),
-    decode(helperCommand({ python: 'C:\\py\\python.exe' }, 'inspect', []))
+    decode(helperCommand({ hermesHome: 'C:\\h', python: 'C:\\py\\python.exe' }, 'inspect', []))
   )
 
   assert.equal(scripts.length, 3)
@@ -452,7 +470,7 @@ test('helper parsing ignores CLIXML progress blocks around its JSON line', async
   for (const output of [`${CLIXML_PROGRESS}\r\n${payload}`, `\uFEFF${payload}\r\n${CLIXML_PROGRESS}`, `${payload}`]) {
     const parsed = await helper(
       sshWith(async () => output),
-      { python: 'C:\\py\\python.exe' },
+      { hermesHome: 'C:\\h', python: 'C:\\py\\python.exe' },
       'inspect',
       ['C:\\h\\hermes.exe']
     )
@@ -559,6 +577,17 @@ test('every Windows remote command fits the cmd.exe 8191-char limit (#106716)', 
   // what the connection settings allow.
   const longHome = `C:\\Users\\${'u'.repeat(100)}\\.hermes\\profiles\\${'p'.repeat(100)}`
   const longExplicit = `C:\\${'h'.repeat(200)}\\hermes.exe`
+  const longHelperCommand = helperCommand(
+    { hermesPath: longExplicit, hermesHome: longHome, python: `${longHome}\\python.exe` },
+    'inspect',
+    [longExplicit]
+  )
+
+  assert.ok(decodePowerShellCommand(longHelperCommand).includes(`& '${longExplicit}' '--run-module'`))
+
+  assert.ok(
+    decodePowerShellCommand(longHelperCommand).includes("'inspect' '" + longExplicit + "'")
+  )
 
   await probeWindowsRemote(ssh, longExplicit)
   await assertWindowsRemoteInstallUpdateClear(ssh, longHome, `${longHome}\\python.exe`)
@@ -581,7 +610,7 @@ test('every Windows remote command fits the cmd.exe 8191-char limit (#106716)', 
         hermesPath: longExplicit
       })
     ),
-    helperCommand({ python: `${longHome}\\python.exe` }, 'inspect', [longExplicit]),
+    longHelperCommand,
     buildWindowsInteractiveCommand(longHome)
   )
 
@@ -794,17 +823,18 @@ test('platform detection preserves typed Windows probe failures', async () => {
   }
 })
 
-test('helper command enters through the launcher module dispatch and quotes path data', () => {
+test('helper command pins the remote home, enters through the launcher module dispatch, and quotes path data', () => {
   // The shape update drain and bootstrap rollback rebuild from stored state: no runtime command.
-  const command = helperCommand({ hermesPath: "C:\\Program Files\\Hermes's\\bin\\hermes.exe", hermesHome: 'C:\\h', python: '' }, 'inspect', [
-    'C:\\x y\\hermes.exe'
-  ])
+  const runtime = { hermesPath: "C:\\Program Files\\Hermes's\\bin\\hermes.exe", hermesHome: 'C:\\h', python: '' }
+  const command = helperCommand(runtime, 'inspect', ['C:\\x y\\hermes.exe'])
 
   const encoded = command.split(' ').pop()!
   const script = Buffer.from(encoded, 'base64').toString('utf16le')
   assert.match(script, /bin\\hermes\.exe' '--run-module' 'hermes_cli\.windows_ssh_runtime' 'inspect'/)
   assert.match(script, /Hermes''s/)
   assert.match(script, /C:\\x y\\hermes\.exe/)
+  assert.ok(script.includes(`$env:HERMES_HOME=${psLiteral(runtime.hermesHome)}`))
+  assert.ok(script.indexOf('$env:HERMES_HOME=') < script.indexOf('& '))
 })
 
 test('Windows lock validation is scoped and exact', () => {

@@ -162,6 +162,44 @@ class TestProviderModelsSWR:
             assert mod.cached_provider_model_ids("openai-codex", non_blocking=True) == []
         spawn.assert_called_once_with("openai-codex")
 
+    def test_anthropic_oauth_file_rewrites_keep_cached_catalog(self, tmp_path, monkeypatch):
+        """OAuth refresh rewrites auth.json / ~/.claude/.credentials.json; that must not cold-start
+        the Anthropic picker row (it showed the short curated list on the first chat ``/model``)."""
+        import hermes_cli.models as mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        (tmp_path / ".claude").mkdir()
+        auth, claude = tmp_path / "auth.json", tmp_path / ".claude" / ".credentials.json"
+
+        def touch(path, ns):
+            path.write_text("{}", encoding="utf-8")
+            os.utime(path, ns=(ns, ns))
+
+        touch(auth, 1_000_000_000)
+        touch(claude, 1_000_000_000)
+        before = mod._credential_fingerprint("anthropic")
+        other_before = mod._credential_fingerprint("openrouter")
+
+        touch(auth, 2_000_000_000)
+        touch(claude, 2_000_000_000)
+        assert mod._credential_fingerprint("anthropic") == before
+        # Providers that keep file-based credentials still invalidate on a rewrite.
+        assert mod._credential_fingerprint("openrouter") != other_before
+
+        # A real API-key change still busts the row.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-other")
+        assert mod._credential_fingerprint("anthropic") != before
+
+        # End to end: the non-blocking chat read serves the cached catalog after a rewrite.
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        models = ["claude-sonnet-5-5", "claude-opus-4-1"]
+        cache = {"anthropic": {"fp": before, "at": time.time(), "models": models}}
+        touch(auth, 3_000_000_000)
+        with patch.object(mod, "_load_provider_models_cache", return_value=cache):
+            assert mod.cached_provider_model_ids("anthropic", non_blocking=True) == models
+
     def test_force_refresh_bypasses_swr(self):
         import hermes_cli.models as mod
 

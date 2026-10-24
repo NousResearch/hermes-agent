@@ -64,6 +64,26 @@ def _valid_credential_pair(api_key: Any, base_url: Any) -> bool:
     return bool(isinstance(api_key, str) and api_key.strip() and isinstance(base_url, str) and base_url.strip())
 
 
+def _can_adopt_rotated_codex_singleton(old_key: str, base_url: str, creds: dict[str, Any]) -> bool:
+    """An expired bearer may follow its principal's fresh singleton on the same route."""
+    from agent.credential_pool import _codex_principal_identity
+    from hermes_cli.auth_codex import _codex_access_token_is_expiring
+    from hermes_cli.auth_constants import CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, _decode_jwt_claims
+
+    key, route = creds.get("api_key"), creds.get("base_url")
+    if (creds.get("source") != "hermes-auth-store" or not _valid_credential_pair(key, route)
+            or route.strip().rstrip("/") != base_url.rstrip("/")):
+        return False
+    principal = _codex_principal_identity(old_key)
+    expires = _decode_jwt_claims(key).get("exp")
+    return (
+        principal is not None and principal == _codex_principal_identity(key)
+        and _codex_access_token_is_expiring(old_key, 0)
+        and isinstance(expires, (int, float))
+        and not _codex_access_token_is_expiring(key, CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS)
+    )
+
+
 def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb_base_url: str, fb_api_mode: str) -> None:
     """Install the fallback client(s) in place, honoring request_timeout_seconds (None = SDK default)."""
     timeout = get_provider_request_timeout(fb_provider, fb_model)
@@ -585,6 +605,15 @@ class ClientLifecycleMixin:
         singleton_key = str(singleton_now.get("api_key") or "").strip()
         old_key = str(self.api_key or "").strip()
         if singleton_key and old_key and singleton_key != old_key:
+            # A peer refresh or CLI recovery changes the bearer without changing the principal.
+            # Use that already-live token instead of refusing it or spending its refresh token again.
+            if self.provider == "openai-codex" and _can_adopt_rotated_codex_singleton(old_key, self.base_url, singleton_now):
+                adopted = self._adopt_openai_credentials(
+                    singleton_key, singleton_now["base_url"], reason="openai-codex_credential_recovery")
+                if adopted:
+                    from agent.agent_runtime_helpers import sync_credential_pool_entry_id
+                    sync_credential_pool_entry_id(self)
+                return adopted
             logger.debug(
                 "%s singleton tokens differ from the active api_key; skipping singleton force-refresh to avoid "
                 "silent account swap. Reactive credential rotation should go through the pool.", self.provider,

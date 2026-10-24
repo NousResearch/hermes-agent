@@ -1761,7 +1761,7 @@ body.guest-pointer-lock :is(webview, iframe) {
    selector ties our `my-*` utility on specificity and wins on source order, so
    paragraph spacing must be reclaimed here at higher specificity. One tight
    top-margin (bottom zeroed to avoid doubling), first child reset to flush. */
-[data-slot='aui_assistant-message-content'] .aui-md :where(p) {
+[data-slot='aui_assistant-message-content'] .aui-md :where(p, [data-tool-media-paragraph]) {
   margin-block: var(--paragraph-gap) 0;
 }
 

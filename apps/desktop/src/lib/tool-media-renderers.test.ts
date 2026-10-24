@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   claimPatternOwned,
+  effectiveToolCall,
   findProducingToolCall,
   ownerOfTool,
   refusedClaimPatterns,
@@ -51,6 +52,17 @@ describe('findProducingToolCall', () => {
     expect(findProducingToolCall(messages, 'a', path)).toBeNull()
     expect(findProducingToolCall(messages, 'a', win)?.toolName).toBe('sfx')
     expect(findProducingToolCall(messages, 'missing', win)).toBeNull()
+  })
+})
+
+describe('effectiveToolCall', () => {
+  it('unwraps a single-entry deferred-tool bridge call and leaves batches and plain calls alone', () => {
+    const bridged = call('tool_call', {}, { args: { calls: [{ name: 'sfx_make', arguments: { prompt: 'zap' } }] } })
+    const batch = call('tool_call', {}, { args: { calls: [{ name: 'a' }, { name: 'b' }] } })
+
+    expect(effectiveToolCall(bridged)).toMatchObject({ args: { prompt: 'zap' }, toolName: 'sfx_make' })
+    expect(effectiveToolCall(batch).toolName).toBe('tool_call')
+    expect(effectiveToolCall(call('terminal', {})).toolName).toBe('terminal')
   })
 })
 

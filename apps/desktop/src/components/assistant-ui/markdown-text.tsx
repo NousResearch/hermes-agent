@@ -8,7 +8,16 @@ import {
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
 import type { code as streamdownCode } from '@streamdown/code'
-import { type ComponentProps, isValidElement, memo, type ReactNode, useEffect, useMemo, useState } from 'react'
+import {
+  Children,
+  type ComponentProps,
+  isValidElement,
+  memo,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useState
+} from 'react'
 import { defaultRemarkPlugins } from 'streamdown'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
@@ -17,6 +26,7 @@ import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlig
 import { TranscriptVideo } from '@/components/chat/transcript-video'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
+import { useContributions } from '@/contrib'
 import { useMediaImage } from '@/hooks/use-media-image'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
@@ -39,6 +49,7 @@ import {
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { remarkSoftBreaks } from '@/lib/remark-soft-breaks'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
+import { TOOL_MEDIA_RENDERER_AREA } from '@/lib/tool-media-renderers'
 import { remarkTranscriptDirectives } from '@/lib/transcript-directives'
 import { cn } from '@/lib/utils'
 import { useForcedTextDirection } from '@/store/text-direction'
@@ -581,6 +592,9 @@ function MarkdownParagraph({
 }: ComponentProps<'p'> & { scratchpad?: boolean; streaming?: boolean }) {
   const plain = paragraphPlainText(children)
   const resolved = useResolvedParagraph(scratchpad ? null : plain)
+  // A plugin's tool media renderer draws block content (a card, a viewer), which
+  // a <p> cannot hold; a paragraph delivering a MEDIA: file becomes a <div> then.
+  const blockMedia = useContributions(TOOL_MEDIA_RENDERER_AREA).length > 0 && holdsMediaLink(children)
 
   // Vertical rhythm is owned by styles.css (`--paragraph-gap`), which must
   // out-specify Tailwind Typography's `prose` margins — so no `my-*` here.
@@ -604,10 +618,25 @@ function MarkdownParagraph({
     )
   }
 
+  if (blockMedia) {
+    return (
+      <div className={paragraphClass} data-tool-media-paragraph="">
+        {children}
+      </div>
+    )
+  }
+
   return (
     <p className={paragraphClass} {...props}>
       {children}
     </p>
+  )
+}
+
+function holdsMediaLink(children: ReactNode): boolean {
+  return Children.toArray(children).some(
+    child =>
+      isValidElement<{ href?: unknown }>(child) && mediaPathFromMarkdownHref(String(child.props.href ?? '')) !== null
   )
 }
 

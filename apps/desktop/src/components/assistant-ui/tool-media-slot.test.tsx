@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { MessagePrimitive, type ThreadMessage, ThreadPrimitive } from '@assistant-ui/react'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest'
 
 import { $pluginRecords } from '@/contrib/plugins-store'
@@ -22,21 +22,32 @@ const SFX_PATH = '/home/u/.hermes/cache/generated/audio/boom.mp3'
 const TTS_PATH = '/home/u/.hermes/cache/audio/tts_reply.ogg'
 const UPLOAD_PATH = '/home/u/Music/upload.mp3'
 
-function turn(): ThreadMessage[] {
+function turn(bridged = false): ThreadMessage[] {
+  const sfxCall = bridged
+    ? {
+        type: 'tool-call',
+        toolCallId: 'call-sfx',
+        toolName: 'tool_call',
+        args: { calls: [{ name: 'sfx_make', arguments: { prompt: 'boom' } }] },
+        argsText: '{}',
+        result: { file_path: SFX_PATH, media_tag: `MEDIA:${SFX_PATH}` }
+      }
+    : {
+        type: 'tool-call',
+        toolCallId: 'call-sfx',
+        toolName: 'sfx_make',
+        args: { prompt: 'boom' },
+        argsText: '{"prompt":"boom"}',
+        result: { file_path: SFX_PATH, media_tag: `MEDIA:${SFX_PATH}` }
+      }
+
   return [
     userMessage('u1', 'make a boom and say hi'),
     {
       id: 'a1',
       role: 'assistant',
       content: [
-        {
-          type: 'tool-call',
-          toolCallId: 'call-sfx',
-          toolName: 'sfx_make',
-          args: { prompt: 'boom' },
-          argsText: '{"prompt":"boom"}',
-          result: { file_path: SFX_PATH, media_tag: `MEDIA:${SFX_PATH}` }
-        },
+        sfxCall,
         {
           type: 'tool-call',
           toolCallId: 'call-tts',
@@ -63,9 +74,9 @@ const Assistant = () => (
   </MessagePrimitive.Root>
 )
 
-function renderTurn() {
+function renderTurn(bridged = false) {
   return render(
-    <ThreadRuntime messages={turn()}>
+    <ThreadRuntime messages={turn(bridged)}>
       <ThreadPrimitive.Root>
         <ThreadPrimitive.Messages components={{ AssistantMessage: Assistant, UserMessage: () => null }} />
       </ThreadPrimitive.Root>
@@ -125,6 +136,7 @@ describe('tool media renderers', () => {
 
   it('renders the owning plugin component for the file its tool produced, and the built-in player for the rest', async () => {
     disposers.push(claim('sfx', ['sfx_make']))
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     const { container } = renderTurn()
 
     await waitFor(() => expect(screen.getByTestId('card-sfx').textContent).toBe('boom.mp3'))
@@ -140,6 +152,18 @@ describe('tool media renderers', () => {
     expect(props.file).toMatchObject({ kind: 'audio', name: 'boom.mp3', path: SFX_PATH })
     expect(typeof props.file.resolveUrl).toBe('function')
     expect(props.fallback).toBeTruthy()
+    // The plugin's block card never lands inside a <p> (invalid DOM nesting).
+    expect(screen.getByTestId('card-sfx').closest('p')).toBeNull()
+    expect(error.mock.calls.map(call => String(call[0])).join('\n')).not.toMatch(/descendant/)
+    error.mockRestore()
+  })
+
+  it('recognises a plugin tool the model ran through the deferred-tool bridge (tool_call)', async () => {
+    disposers.push(claim('sfx', ['sfx_make']))
+    renderTurn(true)
+
+    await waitFor(() => expect(screen.getByTestId('card-sfx').textContent).toBe('boom.mp3'))
+    expect(seen.at(-1)).toMatchObject({ args: { prompt: 'boom' }, toolName: 'sfx_make' })
   })
 
   it('refuses a claim on a core tool or another plugin’s tool, with a console warning', async () => {
@@ -169,7 +193,7 @@ describe('tool media renderers', () => {
     const { container } = renderTurn()
 
     await waitFor(() => expect(screen.getByTestId('card-sfx')).toBeTruthy())
-    dispose()
+    act(() => dispose())
     await waitFor(() => expect(container.querySelectorAll('audio[controls]')).toHaveLength(3))
     expect(screen.queryByTestId('card-sfx')).toBeNull()
   })

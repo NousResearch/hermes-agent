@@ -158,6 +158,28 @@ export function findProducingToolCall(
   return null
 }
 
+/** The tool a call really ran. The deferred-tool bridge (`tool_call`) runs one
+ *  local tool per call (batches are split before they run), with the tool's
+ *  name and arguments in `args.calls[0]` and its own result as the result, so
+ *  a plugin tool loaded on demand is still recognised. A multi-entry batch
+ *  (connectors only) stays the bridge: no plugin owns it. */
+export function effectiveToolCall(part: ToolCallLike): ToolCallLike {
+  const calls =
+    part.toolName === 'tool_call' && part.args && typeof part.args === 'object'
+      ? (part.args as { calls?: unknown }).calls
+      : undefined
+
+  if (!Array.isArray(calls) || calls.length !== 1) {
+    return part
+  }
+
+  const entry = calls[0] as { arguments?: unknown; name?: unknown } | null
+
+  return typeof entry?.name === 'string' && entry.name
+    ? { ...part, args: entry.arguments ?? {}, toolName: entry.name }
+    : part
+}
+
 /** The package that owns `toolName`: an exact registration first, else the
  *  longest MCP namespace that covers it (so `mcp__a__` never takes a server
  *  named `a__b`'s tools). */

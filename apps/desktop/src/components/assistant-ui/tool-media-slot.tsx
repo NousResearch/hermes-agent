@@ -8,6 +8,7 @@ import { type Contribution, useContributions } from '@/contrib'
 import { $pluginRecords } from '@/contrib/plugins-store'
 import { mediaKind, mediaMime, mediaName, resolveMediaPlaybackSrc } from '@/lib/media'
 import {
+  effectiveToolCall,
   findProducingToolCall,
   refusedClaimPatterns,
   resolveToolMediaClaim,
@@ -75,7 +76,8 @@ const ClaimedToolMediaSlot: FC<{ children: ReactNode; claims: readonly Contribut
   claims,
   path
 }) => {
-  const producer = useProducingToolCall(path)
+  const part = useProducingToolCall(path)
+  const producer = useMemo(() => (part ? effectiveToolCall(part) : null), [part])
   const owners = useStore($toolMediaOwners)
   // Re-resolve when a plugin record (enable state, package) changes.
   useStore($pluginRecords)

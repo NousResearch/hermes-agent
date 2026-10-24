@@ -3,6 +3,7 @@ import { mergeUsage, parseCommandDispatch, parseSlashCommand } from '@hermes/sha
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { mergeOlderTranscriptPage } from '@/app/chat/transcript-backfill'
+import { SETTINGS_ROUTE } from '@/app/routes'
 import { prepareDefaultNewSession } from '@/app/session/new-session-route'
 import { invalidateContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { getProfiles } from '@/hermes'
@@ -37,6 +38,7 @@ import {
   ensureGatewayProfile,
   normalizeProfileKey
 } from '@/store/profile'
+import { requestRoute } from '@/store/recovery-requests'
 import {
   $connection,
   $sessions,
@@ -1268,6 +1270,9 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         // Args are ignored, matching the TUI overlay behavior.
         journey: async () => {
           openMemoryGraph()
+        },
+        storage: async () => {
+          requestRoute(`${SETTINGS_ROUTE}?tab=storage`)
         },
         // /hatch opens the pet generator overlay (the desktop's rich, multi-step
         // generate→pick→hatch→adopt flow). A typed description seeds the prompt

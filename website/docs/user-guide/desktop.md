@@ -384,6 +384,14 @@ After any backend update, the app also re-checks its own version and warns with 
 
 The [manual update process](https://hermes-agent.nousresearch.com/docs/getting-started/updating) also works with the GUI.
 
+## Checking disk usage
+
+Open **Settings → Storage** (or type `/storage` in the composer) to see how much disk space Hermes uses. The page scans your Hermes home folder (`HERMES_HOME`) and lists each top-level folder and file by size, largest first, with a total. The scan itself never deletes anything and does not follow symlinks or junctions out of the folder. On very large folders the scan stops early and says so, in which case the sizes are lower bounds. Use **Rescan** to refresh.
+
+Under the breakdown, **Free up space** counts the ended sessions of the profile you are viewing that have had no activity for 30, 90 (the default), 180 or 365 days, and deletes them with their transcripts after you confirm. Pinned and still-running sessions are kept. It is the same selection as `hermes sessions prune --older-than <days>`, and the running Hermes service performs the delete, so it works while chats are open. Deleted history frees space inside `state.db` for new sessions; to shrink the file on disk, run `hermes sessions optimize` with Hermes closed.
+
+The page measures the Hermes home on this machine, not a remote gateway's, so **Free up space** is hidden while the app is connected to a remote gateway.
+
 ## Uninstalling
 
 For installations managed by the app, open **Settings → About → Danger zone** and pick how much to remove:

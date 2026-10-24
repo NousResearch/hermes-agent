@@ -84,6 +84,7 @@ export type DesktopActionId =
   | 'skin'
   | 'steer'
   | 'stop'
+  | 'storage'
   | 'timestamps'
   | 'title'
   | 'undo'
@@ -253,6 +254,8 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     aliases: ['/learning', '/memory-graph'],
     surface: action('journey')
   },
+  // Cowork-style `/storage` (claude.com/docs/cowork/changelog v3.1623.0): jump to the disk-usage page.
+  { name: '/storage', description: 'Show disk usage and free up space', surface: action('storage') },
 
   // Overlay pickers
   { name: '/model', description: 'Switch the model for this session', surface: picker('model'), hidden: true },

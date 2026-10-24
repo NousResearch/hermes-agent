@@ -6,6 +6,7 @@ import { introZh } from './intro-zh'
 import { zhCatalog, zhSkillDeepLink } from './zh_catalog'
 import { zhClarify } from './zh_clarify'
 import { zhConnectorCard } from './zh_connector_card'
+import { zhCustomEndpoints } from './zh_custom_endpoints'
 import { zhErrorLayers } from './zh_error_layers'
 import { zhFirstRun } from './zh_first_run'
 import { zhLocalModels } from './zh_local_models'
@@ -529,6 +530,7 @@ export const zhOverrides = {
       mcp: 'MCP',
       archivedChats: '已归档对话',
       sessions: '会话',
+      storage: '存储',
       about: '关于',
       billing: '账单',
       notifications: '通知',
@@ -1122,6 +1124,22 @@ export const zhOverrides = {
           'Hermes 从应用内更新时（无终端提示），保留本地源码修改（暂存）或丢弃（放弃）。通过终端更新时始终会询问。'
       }
     }),
+    storageSection: {
+      title: '存储',
+      description: path => `Hermes 在 ${path} 中占用的磁盘空间。`,
+      total: '合计',
+      refresh: '重新扫描',
+      scanning: '正在统计磁盘占用…',
+      failed: '无法统计磁盘占用。',
+      empty: '未找到任何内容。',
+      truncated: '目录过大，扫描提前结束，以下大小为下限值。',
+      folder: '文件夹',
+      file: '文件',
+      openLocation: '打开文件位置',
+      openHint: '点击文件夹查看内部占用；点击左侧图标定位到文件位置。',
+      back: '返回上一层',
+      home: 'Hermes 主目录'
+    },
     uninstallSection: {
       dangerZone: '危险操作',
       checkingInstalled: '正在检查已安装内容…',
@@ -1151,47 +1169,7 @@ export const zhOverrides = {
         }
       }
     },
-    customEndpoints: {
-      active: '已启用',
-      apiKeySet: '已设置 API 密钥',
-      use: '使用',
-      editTitle: '编辑端点',
-      addTitle: '添加端点',
-      fields: {
-        name: '名称',
-        providerId: '提供商 ID',
-        endpointUrl: '端点 URL',
-        defaultModel: '默认模型',
-        context: '上下文',
-        apiKey: 'API 密钥',
-        apiKeyNewPlaceholder: '留空以保留当前密钥',
-        apiKeyPlaceholder: '可选',
-        useNewChats: '用于新对话',
-        discoverModels: '发现模型'
-      },
-      test: '测试',
-      save: '保存',
-      newEndpoint: '新建端点',
-      apiMode: 'API 模式',
-      autoDetect: '自动检测',
-      couldNotLoad: '无法加载自定义端点',
-      endpointSaved: '自定义端点已保存。',
-      saveFailed: '保存失败',
-      endpointReachable: '端点可连接。',
-      endpointReachableTransport: transport => `端点可连接（${transport} 路由已响应）。`,
-      endpointReachableModels: (reachable, count) => `${reachable} 找到 ${count} 个模型。`,
-      endpointValidationFailed: '端点验证失败。',
-      validationFailed: '验证失败',
-      activationFailed: '启用失败',
-      deleteConfirm: name => `删除 ${name}？`,
-      deleteFailed: '删除失败',
-      title: '自定义端点',
-      deleteEndpoint: '删除端点',
-      emptyDescription: '在下方添加兼容 OpenAI 的端点。',
-      emptyTitle: '暂无自定义端点',
-      namePlaceholder: '我的代理',
-      contextPlaceholder: '自动'
-    },
+    customEndpoints: zhCustomEndpoints,
     computerUse: {
       accessibility: '辅助功能',
       screenRecording: '屏幕录制',

@@ -689,6 +689,12 @@ declare global {
         run: (mode: DesktopUninstallMode) => Promise<DesktopUninstallResult>
         openAppsSettings: () => Promise<void>
       }
+      storage: {
+        /** Scan the folder at `trail`: folder names below the Hermes home (empty = the home). */
+        summary: (trail: string[]) => Promise<DesktopStorageSummary>
+        /** Show `name` (inside the folder at `trail`) selected in the OS file manager. */
+        reveal: (trail: string[], name: string) => Promise<{ ok: boolean }>
+      }
       themes: {
         // Download a VS Code Marketplace extension and return the raw color
         // theme files it contributes. The renderer converts + persists them.
@@ -852,6 +858,20 @@ export type RuntimeSource =
   | { type: 'path'; command: string } // an existing `hermes` CLI found on PATH
   | { type: 'system-python'; command: string } // pip-installed hermes_cli on system Python
   | { type: 'bootstrap' } // nothing usable yet; the first-launch installer runs
+
+export interface DesktopStorageEntry {
+  name: string
+  bytes: number
+  kind: 'dir' | 'file'
+}
+
+export interface DesktopStorageSummary {
+  root: string
+  totalBytes: number
+  entries: DesktopStorageEntry[]
+  /** Sizes are lower bounds when the scan hit its time or entry budget. */
+  truncated: boolean
+}
 
 export type DesktopUninstallMode = 'full' | 'gui' | 'lite'
 

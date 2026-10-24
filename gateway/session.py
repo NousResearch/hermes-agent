@@ -725,9 +725,7 @@ def build_session_key(
 
     parts = [_session_key_namespace(profile), source.platform.value, chat_type_slot]
     scope_id = getattr(source, "scope_id", None)
-    if source.platform == Platform.SLACK and scope_id:
-        parts.append(str(scope_id))
-    elif (
+    if source.platform == Platform.SLACK and scope_id or (
         source.platform == Platform.TELEGRAM
         and scope_id
         and str(scope_id).startswith("telegram-business:")

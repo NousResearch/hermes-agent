@@ -1062,7 +1062,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         """
         business_kwargs = cls._business_kwargs(metadata)
 
-        def routed(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        def routed(kwargs: dict[str, Any]) -> dict[str, Any]:
             return {**kwargs, **business_kwargs}
 
         fallback = cls._dm_topic_fallback(metadata)
@@ -1086,14 +1086,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         return routed({"message_thread_id": cls._message_thread_id_for_send(thread_id)})
 
     @staticmethod
-    def _business_kwargs(metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    def _business_kwargs(metadata: Optional[dict[str, Any]]) -> dict[str, Any]:
         """Return delegated-account routing only for an exact trusted opt-in."""
         if (metadata or {}).get("allow_business_send_as_account") is not True:
             return {}
         connection_id = str((metadata or {}).get("business_connection_id") or "").strip()
         return {"business_connection_id": connection_id} if connection_id else {}
 
-    def _business_config(self) -> Dict[str, Any]:
+    def _business_config(self) -> dict[str, Any]:
         extra = getattr(self.config, "extra", None)
         raw = extra.get("business", {}) if isinstance(extra, dict) else {}
         return _normalize_business_config(raw)
@@ -3980,7 +3980,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
 
     async def _edit_text(
         self, chat_id: str, message_id: str, text: str,
-        parse_mode: Any = None, metadata: Optional[Dict[str, Any]] = None,
+        parse_mode: Any = None, metadata: Optional[dict[str, Any]] = None,
     ) -> None:
         """``editMessageText`` with normalized ids; ``parse_mode=None`` sends plain text."""
         kwargs: dict[str, Any] = {"chat_id": normalize_telegram_chat_id(chat_id), "message_id": int(message_id), "text": text}
@@ -3992,7 +3992,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
 
     async def _edit_markdown_or_plain(
         self, chat_id: str, message_id: str, formatted: str, plain: str,
-        warn_fmt: str, metadata: Optional[Dict[str, Any]] = None,
+        warn_fmt: str, metadata: Optional[dict[str, Any]] = None,
     ) -> bool:
         """MarkdownV2 edit with plain-text fallback. Returns True on a "not modified" no-op (caller may
         skip further work); the fallback edit's exceptions propagate."""
@@ -7472,11 +7472,11 @@ def interactive_setup() -> None:
     setup_platforms._setup_telegram()
 
 
-def _normalize_business_config(raw: Any) -> Dict[str, Any]:
+def _normalize_business_config(raw: Any) -> dict[str, Any]:
     """Normalize opt-in Telegram Business routing configuration."""
     raw = raw if isinstance(raw, dict) else {}
 
-    def _items(value: Any) -> List[str]:
+    def _items(value: Any) -> list[str]:
         values = value if isinstance(value, (list, tuple, set)) else [value]
         return [
             normalized

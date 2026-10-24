@@ -193,7 +193,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         source,
         content: str,
         *,
-        event_metadata: Optional[Dict[str, Any]] = None,
+        event_metadata: Optional[dict[str, Any]] = None,
     ) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
         from gateway.run import _is_slack_ignored_channel

@@ -72,7 +72,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
     @staticmethod
-    def _gateway_command_for_event(event: "MessageEvent") -> Optional[str]:
+    def _gateway_command_for_event(event: MessageEvent) -> Optional[str]:
         """Return a slash command only when the event owns control authority.
 
         Restricted delegated transports (e.g. Telegram Business customers) may

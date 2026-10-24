@@ -1078,6 +1078,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # clients that choke on named events (#12020). Default on.
         self._tool_progress_events: bool = _coerce_request_bool(
             extra.get("tool_progress_events"), default=True)
+        # ``platforms.api_server.extra.status_events: false`` drops the bare
+        # ``hermes.status`` SSE frames (memory-recall indicator, warnings, compaction
+        # notices) for strict OpenAI clients: opencode / the Vercel AI SDK parse every
+        # ``data:`` line as a chunk and reject ``{"kind": "lifecycle", "text": ...}``
+        # with "Invalid input: expected array, received undefined" on ``choices``.
+        # Default on, so the WebUI and permissive clients keep the notices.
+        self._status_events: bool = _coerce_request_bool(
+            extra.get("status_events"), default=True)
         self._app: Optional[web.Application] = None
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None

@@ -740,6 +740,11 @@ def _parse_conversation_history(raw_history: Any) -> tuple:
 class OpenAICompatRoutesMixin:
     """/v1/chat/completions and /v1/responses handlers + SSE writers."""
 
+    # Wired by the owning platform (ApiServerPlatform.__init__); declared here so the
+    # mixin type-checks standalone.
+    _tool_progress_events: bool
+    _status_events: bool
+
     def _select_request_route(
         self, body: dict[str, Any], *, session_id, gateway_session_key, model_alias) -> tuple:
         """Resolve the model_routes alias + per-request overrides ->
@@ -1142,6 +1147,8 @@ class OpenAICompatRoutesMixin:
                     # opencode and the Vercel AI SDK render as a thinking block.
                     await response.write(_sse_frame(_chunk({"reasoning_content": delta[1]})))
                 elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__status__":
+                    if not self._status_events:
+                        continue  # strict OpenAI clients reject a non-chunk data: frame
                     await response.write(_sse_frame(delta[1], event="hermes.status"))
                 elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__approval__":
                     await response.write(_sse_frame(delta[1], event="approval.request"))

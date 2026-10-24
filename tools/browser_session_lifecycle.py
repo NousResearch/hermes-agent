@@ -14,6 +14,7 @@ import contextlib
 import logging
 import threading
 import time
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -71,6 +72,24 @@ def update_session_activity(cache_key: str) -> None:
 
 
 @contextlib.contextmanager
+def inflight_session_scope(cache_key: str) -> Iterator[None]:
+    """Mark ``cache_key``'s session as having a browser_exec call RUNNING; the inactivity janitor
+    skips it for the duration. The harness daemon's CDP traffic bypasses ``update_session_activity``,
+    so without this exemption a call longer than ``browser.inactivity_timeout`` gets its browser
+    killed mid-call. Exit (including exception/timeout) clears the registration and touches
+    activity, so a finished session returns to normal idle reaping — no immortality leak."""
+    bs = _bs()
+    with bs._cleanup_lock:
+        bs._session_inflight.add(cache_key)
+    try:
+        yield
+    finally:
+        with bs._cleanup_lock:
+            bs._session_inflight.discard(cache_key)
+        update_session_activity(cache_key)
+
+
+@contextlib.contextmanager
 def _session_owner_scope(cache_key: str):
     """Run under the Hermes home + secret scope owning ``cache_key``'s session (no-op when unrecorded); the
     janitor is process-global, so each teardown re-enters ITS profile, never ``os.environ``."""
@@ -99,6 +118,7 @@ def _forget_session_tracking(cache_key: str, *, activity: bool = True, session: 
             bs._active_sessions.pop(cache_key, None)
         if activity:
             bs._session_last_activity.pop(cache_key, None)
+        bs._session_inflight.discard(cache_key)
         bs._session_owner_homes.pop(cache_key, None)
         bs._cleanup_failures.pop(cache_key, None)
 
@@ -322,7 +342,8 @@ def cleanup_inactive_sessions() -> None:
     now = time.time()
     with bs._cleanup_lock:
         idle = [(key, int(now - last)) for key, last in bs._session_last_activity.items()
-                if now - last > bs.BROWSER_SESSION_INACTIVITY_TIMEOUT]
+                if now - last > bs.BROWSER_SESSION_INACTIVITY_TIMEOUT
+                and key not in bs._session_inflight]
     for key, elapsed in idle:
         with _session_owner_scope(key):
             if _human_holds_shared_browser(key):

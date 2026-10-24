@@ -154,7 +154,7 @@ def _repair_swapped_close_brackets(text: str) -> Optional[str]:
     """
     pairs = {"}": "{", "]": "["}
     opens = {"{", "["}
-    stack: List[str] = []
+    stack: list[str] = []
     out = list(text)
     in_str = False
     esc = False
@@ -229,7 +229,7 @@ def _repair_single_char_edit(text: str) -> Optional[str]:
     guessed. Two-or-more-edit damage (double slips, truncation) is out of scope on
     purpose — the combinatorics make unique-solution checking unsound.
     """
-    results: Dict[str, str] = {}  # canonical batch JSON -> repaired text
+    results: dict[str, str] = {}  # canonical batch JSON -> repaired text
 
     def accept(candidate: str) -> None:
         try:
@@ -241,7 +241,7 @@ def _repair_single_char_edit(text: str) -> Optional[str]:
 
     # Editable positions: brackets outside string literals + backslashes inside
     # them (the escape-drift shape). A single pass that also tracks in-string state.
-    positions: List[int] = []
+    positions: list[int] = []
     in_str = False
     esc = False
     for i, ch in enumerate(text):
@@ -288,7 +288,7 @@ def _repair_missing_tail_closers(text: str) -> Optional[str]:
     (dangling string/comma), so this cannot complete garbage.
     """
     for depth in (1, 2):
-        found: Dict[str, str] = {}
+        found: dict[str, str] = {}
         for suffix in itertools.product("]}", repeat=depth):
             cand = text + "".join(suffix)
             try:
@@ -302,6 +302,120 @@ def _repair_missing_tail_closers(text: str) -> Optional[str]:
         if found:  # several valid completions at this length -> ambiguous
             return None
     return None
+
+
+def _resolve_entry_name_from_args(args: dict[str, Any]) -> tuple[Optional[str], list[str]]:
+    """Infer the ``name`` a batch entry omitted, from its argument keys.
+
+    Sound only on a UNIQUE fingerprint: exactly one registered deferrable tool
+    whose parameter schema fits the entry's keys — every declared required
+    parameter present AND every key a declared property. A tool with no
+    required parameters is never a match (an empty fingerprint fits too many).
+    Returns ``(name, candidates)``; ``name`` is None when the match is not
+    unique. Never raises — resolution failure means "no recovery".
+    """
+    try:
+        from tools.registry import registry
+        from tools.tool_search import is_deferrable_tool_name
+        known = registry.get_all_tool_names()
+    except Exception:
+        # Deliberate catch-all: recovery is best-effort and must never break
+        # the normalization it is embedded in; a broken registry is an anomaly
+        # worth a traceback, not a raised error.
+        logger.exception("entry-name recovery: registry unavailable; skipping recovery")
+        return None, []
+    keys = frozenset(args)
+    candidates: list[str] = []
+    for cand in known:
+        if cand in BRIDGE_TOOL_NAMES:
+            continue
+        try:
+            if not is_deferrable_tool_name(cand):
+                continue
+            schema = registry.get_schema(cand)
+            fn = schema.get("function") if isinstance(schema, dict) and schema.get("type") == "function" else schema
+            params = fn.get("parameters") if isinstance(fn, dict) else None
+            props = params.get("properties") if isinstance(params, dict) else None
+            required = params.get("required") if isinstance(params, dict) else None
+        except Exception:
+            logger.warning("entry-name recovery: skipping tool %s (bad schema)", cand, exc_info=True)
+            continue
+        if not isinstance(props, dict) or not props:
+            continue
+        if not (isinstance(required, list) and required):
+            continue
+        if set(required) <= keys <= set(props):
+            candidates.append(cand)
+    return (candidates[0] if len(candidates) == 1 else None), candidates
+
+
+def _recover_missing_name_entry(text: str) -> tuple[Optional[list[dict[str, Any]]], Optional[str]]:
+    """The 10-24 measured shape (session mvm57ofwgwwvvu, 8/8 attempts): the
+    stringified batch's single entry dropped BOTH its ``"name"`` field and its
+    closing ``}``, so the tail reads ``...<arguments>...]}]`` — the final
+    ``]`` lands while the entry object is still open. No bracket repair can
+    restore a missing key, so the name is resolved from the argument
+    fingerprint (:func:`_resolve_entry_name_from_args`, unique match only).
+
+    Bounded: insert one ``}`` at each trailing closer position (string-aware,
+    last eight closers plus end); accept only parses to a single entry lacking
+    ``"name"`` and carrying a non-empty ``"arguments"`` dict, and only when
+    every such parse canonicalizes to the same batch (else ambiguous).
+    Returns ``(entries, None)`` on rescue; ``(None, error)`` when the shape is
+    recognized but the name is not uniquely resolvable (the error teaches the
+    retry the exact fix); ``(None, None)`` when the shape does not apply.
+    """
+    in_str = False
+    esc = False
+    closers: list[int] = []
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch in "}]":
+            closers.append(i)
+    positions = sorted(set(closers[-8:] + [len(text)]))
+    found: dict[str, dict] = {}
+    for i in positions:
+        cand = text[:i] + "}" + text[i:]
+        try:
+            obj = json.loads(cand)
+        except json.JSONDecodeError:
+            continue
+        if not (isinstance(obj, list) and len(obj) == 1 and isinstance(obj[0], dict)):
+            continue
+        entry = obj[0]
+        if isinstance(entry.get("name"), str) and entry["name"].strip():
+            continue
+        raw_args = entry.get("arguments")
+        if isinstance(raw_args, str):
+            try:
+                raw_args = json.loads(raw_args)
+            except json.JSONDecodeError:
+                continue
+        if not isinstance(raw_args, dict) or not raw_args:
+            continue
+        canon = json.dumps(obj, sort_keys=True, ensure_ascii=False)
+        found.setdefault(canon, raw_args)
+    if not found:
+        return None, None
+    if len(found) > 1:
+        return None, None  # ambiguous — leave to the model's retry
+    raw_args = next(iter(found.values()))
+    name, candidates = _resolve_entry_name_from_args(raw_args)
+    if name is not None:
+        return [{"name": name, "arguments": raw_args}], None
+    detail = (" Closest matches: " + ", ".join(candidates) + " — pick the one you mean.") if candidates else ""
+    return None, (
+        "tool_call entry is missing its 'name' field: each entry must be "
+        "{\"name\": \"<exact tool name>\", \"arguments\": {...}} — pass the name "
+        "tool_search returned. The call was NOT made; retry with 'name'." + detail)
 
 
 def _repair_malformed_calls_string(text: str) -> Optional[str]:
@@ -354,7 +468,7 @@ def _repair_malformed_calls_string(text: str) -> Optional[str]:
     # 3. exactly one surplus close bracket (forward stack scan, delete the mismatch).
     pairs = {"}": "{", "]": "["}
     opens = {"{", "["}
-    stack: List[int] = []
+    stack: list[int] = []
     in_str = False
     esc = False
     mismatch: Optional[int] = None
@@ -421,6 +535,12 @@ def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, An
                 except json.JSONDecodeError as e2:
                     return [], f"tool_call 'calls' is not valid JSON: {e2}"
             else:
+                recovered, targeted = _recover_missing_name_entry(raw_calls)
+                if recovered is not None:
+                    logger.info("tool_call 'calls' recovered a missing-entry-name slip")
+                    return recovered, None
+                if targeted is not None:
+                    return [], targeted
                 return [], f"tool_call 'calls' is not valid JSON: {e}"
     if isinstance(raw_calls, dict):
         raw_calls = [raw_calls]
@@ -431,11 +551,6 @@ def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, An
     for position, raw in enumerate(raw_calls):
         if not isinstance(raw, dict):
             return [], f"tool_call calls[{position}] must be an object with 'name' and 'arguments'"
-        name = str(raw.get("name") or "").strip()
-        if not name:
-            return [], f"tool_call calls[{position}] requires a 'name'"
-        if name in BRIDGE_TOOL_NAMES:
-            return [], f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
         raw_args = raw.get("arguments")
         if raw_args is None or (isinstance(raw_args, str) and not raw_args.strip()):
             # "" / whitespace is how some OpenAI-compatible gateways spell "no arguments" for a
@@ -450,6 +565,26 @@ def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, An
                 return [], f"tool_call calls[{position}].arguments is not valid JSON: {e}"
         if not isinstance(raw_args, dict):
             return [], f"tool_call calls[{position}].arguments must be an object"
+        name = str(raw.get("name") or "").strip()
+        if not name:
+            # Measured 10-24 shape (session mvm57ofwgwwvvu, 8/8 attempts): a small model
+            # omits "name" on the single-entry batch. Recover it when the argument
+            # fingerprint is UNIQUE across the registered deferrable tools; otherwise
+            # teach the retry the exact shape instead of an opaque JSON error.
+            resolved, candidates = _resolve_entry_name_from_args(raw_args)
+            if resolved:
+                logger.info("tool_call calls[%d] 'name' recovered by unique schema match: %s",
+                            position, resolved)
+                name = resolved
+            else:
+                hint = (" Closest matches: " + ", ".join(candidates) + " — pick the one you mean.") if candidates else ""
+                return [], (
+                    f"tool_call calls[{position}] requires a 'name' (the exact tool name to "
+                    f"invoke): each entry must be {{\"name\": \"<tool name>\", \"arguments\": "
+                    f"{{...}}}} — pass the name tool_search returned.{hint} The call was NOT "
+                    f"made; retry with 'name'.")
+        if name in BRIDGE_TOOL_NAMES:
+            return [], f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
         entries.append({"name": name, "arguments": raw_args})
     return entries, None
 

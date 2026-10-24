@@ -593,7 +593,19 @@ def test_cached_nvidia_gpu_query_hides_console_window_and_caches(monkeypatch):
     vram = hardware._nvidia_vram()
     assert vram == (8192 << 20, 4096 << 20, "NVIDIA GeForce RTX 4060 Ti", 0x250410DE)
     facts = local_models._nvidia_smi_facts()
-    assert facts == dict(gpu_name="NVIDIA GeForce RTX 4060 Ti", gpu_util_percent=12, vram_used_bytes=4096 << 20)
+    assert facts == dict(
+        gpu_name="NVIDIA GeForce RTX 4060 Ti",
+        gpu_util_percent=12,
+        vram_used_bytes=4096 << 20,
+        gpus=[dict(
+            index=0,
+            name="NVIDIA GeForce RTX 4060 Ti",
+            util_percent=12,
+            vram_used_bytes=4096 << 20,
+            vram_total_bytes=8192 << 20,
+            vram_free_bytes=4096 << 20,
+        )],
+    )
     vendor = bootstrap._detect_gpu_vendor()
     assert vendor == "nvidia NVIDIA GeForce RTX 4060 Ti"
 
@@ -620,3 +632,35 @@ def test_cached_nvidia_gpu_query_failure_is_cached(monkeypatch):
     assert hardware._nvidia_vram() is None
     assert hardware._cached_nvidia_gpu_query() is None  # TTL hit, no second spawn
     assert len(captured) == 1, captured
+
+
+def test_cached_nvidia_gpu_query_keeps_every_adapter(monkeypatch):
+    """A second card is listed, and still cannot replace GPU 0's budget identity."""
+    from hermes_cli.local_runtime import hardware
+    from hermes_cli.web_routers import local_models
+
+    stdout = (
+        "97887, 97000, NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition, 0x2B8510DE, 887, 1\n"
+        "97887, 90000, NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition, 0x2B8510DE, 7887, 40\n"
+        "1024, [N/A], Broken Adapter, N/A, 0, 0\n"
+    )
+
+    def fake_run(cmd, **kwargs):
+        return _Completed(stdout=stdout, returncode=0)
+
+    monkeypatch.setattr(hardware, "_gpu_query_cache", None)
+    monkeypatch.setattr(hardware, "_nvidia_smi_path", lambda: "/usr/bin/nvidia-smi")
+    monkeypatch.setattr(hardware.subprocess, "run", fake_run)
+
+    vram = hardware._nvidia_vram()
+    assert vram is not None
+    assert vram[2] == "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition"
+    assert vram[0] == 97887 << 20
+    facts = local_models._nvidia_smi_facts()
+    gpus = facts["gpus"]
+    assert [gpu["index"] for gpu in gpus] == [0, 1]
+    assert gpus[1]["util_percent"] == 40
+    assert gpus[1]["vram_used_bytes"] == 7887 << 20
+    assert facts["gpu_util_percent"] == 1  # top-level fields stay on the first adapter
+    primary = hardware._cached_nvidia_gpu_query()
+    assert primary is not None and primary["index"] == 0

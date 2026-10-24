@@ -7,7 +7,7 @@ import { useI18n } from '@/i18n'
 import { Activity } from '@/lib/icons'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $statusbarHiddenIds } from '@/store/statusbar-prefs'
-import type { LocalHardware } from '@/types/hermes'
+import type { LocalHardware, LocalHardwareGpu } from '@/types/hermes'
 
 // Live host-resource readout for the bottom bar: GPU utilization + VRAM +
 // RAM, fed by /api/local-models/hardware. Hidden by default (an item most
@@ -22,6 +22,32 @@ function gb(bytes: number | null | undefined): string {
 
 function gbLong(bytes: number | null | undefined): string {
   return bytes ? `${(bytes / (1 << 30)).toFixed(1)} GB` : '—'
+}
+
+function vramPercent(used: number | null | undefined, total: number | null | undefined): number | null {
+  return used != null && total ? Math.round((used / total) * 100) : null
+}
+
+function gpuReadings(hardware: LocalHardware | null): LocalHardwareGpu[] {
+  if (hardware?.gpus && hardware.gpus.length > 0) {
+    return hardware.gpus
+  }
+
+  if (!hardware?.gpu_name) {
+    return []
+  }
+
+  // Older backends report only the first adapter on the top-level fields.
+  return [
+    {
+      index: 0,
+      name: hardware.gpu_name,
+      util_percent: hardware.gpu_util_percent,
+      vram_used_bytes: hardware.vram_used_bytes,
+      vram_total_bytes: hardware.vram_total_bytes,
+      vram_free_bytes: null
+    }
+  ]
 }
 
 function MeterRow({ label, percent, value }: { label: string; percent: number | null; value: string }) {
@@ -120,12 +146,11 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
     }
   }, [shown])
 
-  const hasGpu = Boolean(hardware?.gpu_name)
+  const gpus = gpuReadings(hardware)
+  const multi = (hardware?.gpus?.length ?? 0) > 1
+  const hasGpu = gpus.length > 0
 
-  const vramPercent =
-    hardware?.vram_used_bytes != null && hardware.vram_total_bytes
-      ? Math.round((hardware.vram_used_bytes / hardware.vram_total_bytes) * 100)
-      : null
+  const singleVramPercent = vramPercent(hardware?.vram_used_bytes, hardware?.vram_total_bytes)
 
   const ramUsed = hardware ? hardware.ram_total_bytes - hardware.ram_available_bytes : null
 
@@ -133,14 +158,19 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
     hardware?.ram_total_bytes && ramUsed != null ? Math.round((ramUsed / hardware.ram_total_bytes) * 100) : null
 
   // Compact bar label: the numbers a local-inference user glances at.
-  // "GPU 34% · 18G/32G" with a GPU; "RAM 41G/256G" without.
-  const label = hardware
-    ? hasGpu
-      ? `GPU ${hardware.gpu_util_percent ?? 0}%${
-          hardware.vram_used_bytes != null ? ` · ${gb(hardware.vram_used_bytes)}/${gb(hardware.vram_total_bytes)}` : ''
-        }`
-      : `RAM ${gb(ramUsed)}/${gb(hardware.ram_total_bytes)}`
-    : copy.loading
+  // One card keeps "GPU 34% · 18G/32G". Several cards name each index so
+  // the second adapter is not invisible in the chip either.
+  const label = !hardware
+    ? copy.loading
+    : multi
+      ? gpus.map(gpu => `GPU${gpu.index} ${gpu.util_percent ?? 0}%`).join(' · ')
+      : hasGpu
+        ? `GPU ${hardware.gpu_util_percent ?? 0}%${
+            hardware.vram_used_bytes != null
+              ? ` · ${gb(hardware.vram_used_bytes)}/${gb(hardware.vram_total_bytes)}`
+              : ''
+          }`
+        : `RAM ${gb(ramUsed)}/${gb(hardware.ram_total_bytes)}`
 
   return {
     detail: undefined,
@@ -149,37 +179,55 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
     id: 'system-resources',
     label,
     menuAlign: 'end',
-    menuClassName: 'w-64 p-0',
+    menuClassName: multi ? 'w-80 p-0' : 'w-64 p-0',
     menuContent: (
       <div className="grid grid-cols-[minmax(0,1fr)] gap-3 p-3 text-[0.75rem]" data-slot="system-resources-panel">
         {/* min-w-0 everywhere a flex/grid child must shrink: grid items
             default min-width:auto, so a long GPU name's nowrap min-content
-            props the track open past the w-64 box and overflow-x:hidden
+            props the track open past the menu box and overflow-x:hidden
             shears off every right-aligned value. With the track clamped,
             `truncate` can finally act. */}
         <div className="flex min-w-0 items-baseline justify-between gap-2">
           <p className="shrink-0 font-medium text-foreground">{copy.title}</p>
 
-          {hardware?.gpu_name && (
+          {!multi && hardware?.gpu_name && (
             <span className="min-w-0 truncate text-[0.6875rem] text-muted-foreground">{hardware.gpu_name}</span>
           )}
         </div>
 
-        {hasGpu && (
-          <MeterRow
-            label={copy.gpuUtilization}
-            percent={hardware?.gpu_util_percent ?? null}
-            value={`${hardware?.gpu_util_percent ?? 0}%`}
-          />
-        )}
+        {multi
+          ? gpus.map(gpu => (
+              <div className="grid gap-3" data-gpu-index={gpu.index} data-slot="system-resources-gpu" key={gpu.index}>
+                <div className="flex min-w-0 items-baseline justify-between gap-2">
+                  <p className="shrink-0 font-medium text-foreground">{`GPU ${gpu.index}`}</p>
 
-        {hasGpu && (
-          <MeterRow
-            label={copy.gpuMemory}
-            percent={vramPercent}
-            value={`${gbLong(hardware?.vram_used_bytes)} / ${gbLong(hardware?.vram_total_bytes)}`}
-          />
-        )}
+                  <span className="min-w-0 truncate text-[0.6875rem] text-muted-foreground">{gpu.name}</span>
+                </div>
+
+                <MeterRow label={copy.gpuUtilization} percent={gpu.util_percent} value={`${gpu.util_percent ?? 0}%`} />
+
+                <MeterRow
+                  label={copy.gpuMemory}
+                  percent={vramPercent(gpu.vram_used_bytes, gpu.vram_total_bytes)}
+                  value={`${gbLong(gpu.vram_used_bytes)} / ${gbLong(gpu.vram_total_bytes)}`}
+                />
+              </div>
+            ))
+          : hasGpu && (
+              <>
+                <MeterRow
+                  label={copy.gpuUtilization}
+                  percent={hardware?.gpu_util_percent ?? null}
+                  value={`${hardware?.gpu_util_percent ?? 0}%`}
+                />
+
+                <MeterRow
+                  label={copy.gpuMemory}
+                  percent={singleVramPercent}
+                  value={`${gbLong(hardware?.vram_used_bytes)} / ${gbLong(hardware?.vram_total_bytes)}`}
+                />
+              </>
+            )}
 
         <MeterRow
           label={copy.ram}

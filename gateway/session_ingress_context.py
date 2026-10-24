@@ -58,6 +58,15 @@ def _relay_seal(transport, source, provenance):
                     hashlib.sha256).hexdigest()
 
 
+def reseal_relay(adapter, source, provenance):
+    """*provenance* bound to the stored *source* dict instead; only for a seal the caller verified."""
+    from gateway.session import SessionSource
+    stored = SessionSource.from_dict(source)
+    stored.is_bot = source['is_bot']
+    base = {key: value for key, value in provenance.items() if key != 'relay'}
+    return {**base, 'relay': _relay_seal(adapter._transport, stored, base)}
+
+
 def register_transport_home(runner, profile, home):
     """Called when the server creates a callback, never from event home fields."""
     homes = getattr(runner, '_native_transport_homes', None)

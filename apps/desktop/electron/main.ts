@@ -2463,6 +2463,26 @@ function broadcastBootProgress() {
   webContents.send('hermes:boot-progress', bootProgressState)
 }
 
+// #96743 item 1: push the resolved primary connection to the renderer the
+// moment the backend is ready. The renderer's boot loop can then consume it
+// directly when its own getConnection() call lost the race (bounded retries
+// exhausted while main was gating on a remote update / install). This runs
+// in PARALLEL with (never replacing) the pull-based handshake — the pull path
+// is preserved as the compatibility fallback.
+function broadcastBackendReady(connection: unknown) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
+
+  const { webContents } = mainWindow
+
+  if (!webContents || webContents.isDestroyed()) {
+    return
+  }
+
+  webContents.send('hermes:backend-ready', { connection })
+}
+
 // Bootstrap-event broadcast channel + state. The bootstrap runner emits a
 // stream of events (manifest, stage, log, complete, failed) that the renderer
 // install overlay subscribes to. We also keep a running snapshot:
@@ -11915,7 +11935,14 @@ async function startHermes(requestedProfile?: string) {
         error: null
       })
 
-      return createPrimaryRemoteConnection(remote, hermesLog.slice(-80), getWindowState())
+      const remoteConnection = createPrimaryRemoteConnection(remote, hermesLog.slice(-80), getWindowState())
+
+      // #96743 item 1: push the resolved connection to the renderer NOW.
+      // The pull (getConnection IPC) can lose the race when the boot
+      // retry budget exhausts during a long update gate.
+      broadcastBackendReady(remoteConnection)
+
+      return remoteConnection
     }
 
     await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
@@ -12023,7 +12050,14 @@ async function startHermes(requestedProfile?: string) {
     // The primary descriptor names its own profile: a profile-less descriptor
     // reads as "default" downstream and breaks per-source profile memory when
     // the primary actually booted as another profile (#825324fd).
-    return { ...connection, profile: primaryProfile, logs: hermesLog.slice(-80), ...getWindowState() }
+    const localConnection = { ...connection, profile: primaryProfile, logs: hermesLog.slice(-80), ...getWindowState() }
+
+    // #96743 item 1: push the resolved connection to the renderer NOW.
+    // The pull (getConnection IPC) can lose the race when the boot retry
+    // budget exhausts during a long install/bootstrap gate.
+    broadcastBackendReady(localConnection)
+
+    return localConnection
   })().catch(async error => {
     if (!backendConnectionState.clearPromiseForAttempt(connectionAttempt)) {
       throw error

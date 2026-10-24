@@ -92,3 +92,33 @@ def test_manual_compress_reports_the_gateways_committed_summary(make_agent):
     assert result.summary == fallback
     assert len(result.after_messages) == 2
     assert agent.context_compressor.compression_count == 1
+
+
+def test_cli_compress_prints_exact_engine_refusal(make_agent, capsys, tmp_path, monkeypatch):
+    import asyncio
+    from cli import HermesCLI
+    from tests.gateway.test_session_mutation_compress_engine import engine_session
+
+    async def refusal_reply():
+        async with engine_session(tmp_path, monkeypatch, frozen='sentinel', live='sentinel',
+                                  resident='plugin') as (compress, effects):
+            reply = await compress()
+            assert effects == []
+            return reply['result']
+
+    refusal = asyncio.run(refusal_reply())
+    agent, client = make_agent([])
+    client.mutate_replies.append(refusal)
+    history = six_rows()
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.conversation_history, cli.agent, cli.session_id = list(history), agent, SID
+    cli._busy_command = lambda *_a, **_k: nullcontext()
+    cli._manual_compress('/compress')
+    out = capsys.readouterr().out
+    assert refusal['summary']['headline'] in out
+    assert all(line.strip() != 'None' for line in out.splitlines())
+    assert refusal['summary']['token_line'] in out
+    assert 'Compression failed' not in out
+    assert '✅' not in out
+    assert cli.conversation_history == history
+    assert agent.context_compressor.compression_count == 0

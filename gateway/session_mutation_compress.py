@@ -28,6 +28,44 @@ def compress_request(payload):
     return request
 
 
+def _plugin_engine(policy, config, resident):
+    """Peek at the running engine, or resolve cold selection without executing plugin code."""
+    from agent.context_compressor import ContextCompressor
+    engine = getattr(resident, 'context_compressor', None)
+    if engine is not None:
+        return not isinstance(engine, ContextCompressor)
+    managed = (policy.ignore_user_config or policy.kanban_json is not None
+               or (config.get('gateway') or {}).get('managed_workers') is True)
+    if policy.safe_mode:
+        return False
+    if not managed:
+        try:
+            from hermes_cli.config import load_config_readonly
+            config = load_config_readonly()
+        except Exception:
+            logger.debug('Context engine config read failed; using agent default', exc_info=True)
+            config = {}  # agent_init uses the same fallback on a failed config read
+    engine = 'compressor'
+    try:
+        context = config.get('context', {}) if isinstance(config, dict) else {}
+        engine = context.get('engine', 'compressor') or 'compressor'
+    except Exception:
+        logger.debug('Context engine name read failed; using agent default', exc_info=True)
+    if engine == 'compressor':
+        return False
+    try:
+        from plugins.context_engine import find_engine_dir
+        from hermes_cli.plugins import get_plugin_manager
+        if find_engine_dir(engine) is not None:
+            return True  # success or failure cannot be decided without loading it
+        manager = get_plugin_manager()  # peek only; never discover, load or clone
+        candidate = manager._context_engine
+        return not manager._discovered or (candidate is not None and candidate.name == engine)
+    except Exception:
+        logger.debug('Context engine selection uncertain; refusing native rewrite', exc_info=True)
+        return True  # uncertain plugin selection must never permit a native rewrite
+
+
 async def prepare_compress(authority, live, payload, prepared):
     from gateway.session_policy import restore_policy, policy_scope
     from agent.context_compressor import ContextCompressor
@@ -53,18 +91,24 @@ async def prepare_compress(authority, live, payload, prepared):
         head, tail = split_history_for_partial_compress(messages, request.keep_last)
         if not tail:  # degenerate split: nothing to keep verbatim → full compression
             head = messages
+    cached_agent = getattr(authority.runner, '_cached_agent_for', None)
+    resident = cached_agent(live.route) if callable(cached_agent) else None
+    if _plugin_engine(policy, config, resident):
+        # Plugin writes cannot be rolled back by the gateway's publication fence.
+        from agent.manual_compression_feedback import summarize_manual_compression
+        row = None if resident is not None else authority.db.get_session(snapshot['target'])
+        tokens = _request_tokens(resident, messages, row)
+        summary = summarize_manual_compression(messages, messages, tokens, tokens)
+        summary.update(
+            headline='Manual /compress is unavailable for the configured context engine.',
+            note='Gateway compression cannot yet commit plugin state transactionally. History is unchanged.')
+        return {'status': 'noop', 'summary': summary}
     if request.preview:
         # Read-only: the report is the whole result; the caller commits nothing.
         report = summarize_compress_preview(messages, request.partial, request.keep_last, request.focus_topic,
                                             estimate_request_tokens_rough(messages))
         return {'status': 'preview', 'lines': report['lines'], 'head_count': report['head_count'],
                 'tail_count': report['tail_count'], 'message_count': report['total']}
-    # The session's resident agent owns its memory providers; give them the same pre-compress
-    # turn (and the same best-effort contract) the in-process compressor does. No resident agent
-    # (cold session, or a managed worker that runs out of process) means no provider to call.
-    cached_agent = getattr(authority.runner, '_cached_agent_for', None)
-    resident = cached_agent(live.route) if callable(cached_agent) else None
-
     def summarize():
         with policy_scope(policy, authority=authority):
             from agent.conversation_compression import _pre_compress_memory_context

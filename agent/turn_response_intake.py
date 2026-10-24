@@ -20,7 +20,7 @@ from agent.turn_truncation import (
 
 logger = logging.getLogger("agent.conversation_loop")
 
-_REASONING_TAG_RE = re.compile(r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>')
+_REASONING_TAG_RE = re.compile(r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>|<\|channel>thought\s*|<channel\|>')
 
 
 @dataclass
@@ -135,6 +135,24 @@ def normalize_model_response(
 
     if assistant_message.content is not None and not isinstance(assistant_message.content, str):
         assistant_message.content = _coerce_content_text(assistant_message.content)
+
+    # Gemma 4 thinking extraction: when the server passes through <|channel>thought
+    # tokens, extract thinking content and route it through the reasoning pipeline
+    # so the UI can format it separately from the conversation.
+    if (
+        assistant_message.content
+        and "<|channel>thought" in assistant_message.content
+    ):
+        from agent.gemma4_text_tool_parser import is_gemma4_model, extract_gemma4_thinking
+        if is_gemma4_model(agent.model):
+            _g4_thinking, _g4_content = extract_gemma4_thinking(assistant_message.content)
+            if _g4_thinking:
+                if not getattr(assistant_message, "reasoning", None):
+                    assistant_message.reasoning = _g4_thinking
+                assistant_message.content = _g4_content or None
+                logger.info(
+                    "Gemma 4 thinking extracted: %d chars", len(_g4_thinking),
+                )
 
     # Gemma 4 text tool-call extraction: when the server strips special tokens
     # (<|tool_call>, <tool_call|>, <|"|>), tool calls arrive as plain text

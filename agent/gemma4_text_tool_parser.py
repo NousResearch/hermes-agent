@@ -29,6 +29,13 @@ from agent.transports.types import ToolCall, build_tool_call
 
 logger = logging.getLogger(__name__)
 
+# Gemma 4 thinking tokens: <|channel>thought\n...<channel|>
+_GEMMA4_THINK_OPEN = "<|channel>thought"
+_GEMMA4_THINK_CLOSE = "<channel|>"
+_GEMMA4_THINK_RE = re.compile(
+    r"<\|channel>thought\s*(.*?)<channel\|>", re.DOTALL,
+)
+
 _GEMMA4_MODEL_SUBSTRINGS = ("gemma-4", "gemma4", "gemma_4")
 
 
@@ -143,6 +150,21 @@ def _get_tool_param_names(
             props = params.get("properties", {})
             return list(props.keys()) if props else None
     return None
+
+
+def extract_gemma4_thinking(content: str) -> tuple[str, str]:
+    """Extract Gemma 4 ``<|channel>thought`` blocks from content.
+
+    Returns ``(thinking_text, cleaned_content)``.  Empty *thinking_text*
+    when no blocks are found.
+    """
+    if not content or _GEMMA4_THINK_OPEN not in content:
+        return "", content or ""
+
+    parts: list[str] = []
+    cleaned = _GEMMA4_THINK_RE.sub(lambda m: (parts.append(m.group(1).strip()), "")[1], content)
+    thinking = "\n\n".join(p for p in parts if p)
+    return thinking, cleaned.strip()
 
 
 def extract_gemma4_tool_calls(

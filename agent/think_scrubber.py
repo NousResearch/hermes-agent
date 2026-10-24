@@ -24,8 +24,8 @@ THINK_TAG_NAMES: tuple[str, ...] = (
     "think", "thinking", "reasoning", "thought", "REASONING_SCRATCHPAD",
     "思考", "反思", "推理", "推敲",
 )
-THINK_OPEN_TAGS: tuple[str, ...] = tuple(f"<{name.lower()}>" for name in THINK_TAG_NAMES)
-THINK_CLOSE_TAGS: tuple[str, ...] = tuple(f"</{name.lower()}>" for name in THINK_TAG_NAMES)
+THINK_OPEN_TAGS: tuple[str, ...] = tuple(f"<{name.lower()}>" for name in THINK_TAG_NAMES) + ("<|channel>thought",)
+THINK_CLOSE_TAGS: tuple[str, ...] = tuple(f"</{name.lower()}>" for name in THINK_TAG_NAMES) + ("<channel|>",)
 
 
 class StreamingThinkScrubber:

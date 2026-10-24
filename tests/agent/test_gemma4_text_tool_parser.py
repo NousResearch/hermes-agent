@@ -9,6 +9,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from agent.gemma4_text_tool_parser import (
+    extract_gemma4_thinking,
     extract_gemma4_tool_calls,
     is_gemma4_model,
     _find_balanced_calls,
@@ -215,6 +216,39 @@ class TestExtractGemma4ToolCalls:
         assert len(tcs) == 1
         args = json.loads(tcs[0].arguments)
         assert args["location"] == "Paris"
+
+    def test_thinking_extraction_simple(self):
+        thinking, cleaned = extract_gemma4_thinking(
+            "<|channel>thought\nLet me think about this.\n<channel|>The answer is 42."
+        )
+        assert thinking == "Let me think about this."
+        assert cleaned == "The answer is 42."
+
+    def test_thinking_extraction_empty_block(self):
+        thinking, cleaned = extract_gemma4_thinking(
+            "<|channel>thought\n<channel|>Direct answer."
+        )
+        assert thinking == ""
+        assert cleaned == "Direct answer."
+
+    def test_thinking_extraction_no_markers(self):
+        thinking, cleaned = extract_gemma4_thinking("Just a normal response.")
+        assert thinking == ""
+        assert cleaned == "Just a normal response."
+
+    def test_thinking_extraction_with_tool_calls(self):
+        content = (
+            "<|channel>thought\nI should search for this.\n<channel|>"
+            "call:web_search{query:test}"
+        )
+        thinking, cleaned = extract_gemma4_thinking(content)
+        assert thinking == "I should search for this."
+        assert "call:web_search" in cleaned
+
+    def test_thinking_stripped_from_none(self):
+        thinking, cleaned = extract_gemma4_thinking(None)
+        assert thinking == ""
+        assert cleaned == ""
 
     def test_single_param_code_execution(self):
         tools = [

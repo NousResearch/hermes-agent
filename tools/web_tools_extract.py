@@ -11,7 +11,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
-from tools.tool_backend_helpers import selection_error, selection_exists
+from tools.tool_backend_helpers import selection_error
 from tools.url_safety import normalize_url_for_request
 from tools.web_tools_rescue import _rescue_eligible, _rescue_extract
 
@@ -124,7 +124,8 @@ def _resolve_extract_provider(backend: str):
             f"{provider.display_name} is a search-only backend and cannot extract URL content. "
             "Set web.extract_backend to " + _EXTRACT_BACKENDS_HINT
         )
-    if backend and selection_exists("web"):
+    from tools.web_tools import _has_explicit_capability_backend
+    if backend and _has_explicit_capability_backend("extract"):
         return None, _extract_error_json(_strict_selection_error("extract", backend))
     provider = get_active_extract_provider()
     if provider is None:

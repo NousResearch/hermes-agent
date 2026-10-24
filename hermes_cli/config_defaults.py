@@ -213,11 +213,11 @@ DEFAULT_CONFIG = {
         "verify_guidance": True,
         # Max consecutive `pre_verify` "continue" nudges per turn (hooks can't trap the loop).
         "max_verify_nudges": 3,
-        # Verification closure: after code edits in a workspace, refuse a final answer until fresh
-        # verification evidence exists or the agent explains why it can't check (bounded loop,
-        # passive ledger). False (default) because the nudges proved more noise than signal; true =
-        # force on everywhere; "auto" = on for interactive coding surfaces and programmatic callers,
-        # off for messaging surfaces. Doc/markdown/skill-only edits never fire.
+        "max_final_continuations": 2,  # before_turn_end repair rounds per turn; a rejection past it fails the turn
+        # Verification closure: after code edits in a workspace, refuse a final answer until fresh verification evidence
+        # exists or the agent explains why it can't check (bounded loop, passive ledger). False (default) because the
+        # nudges proved more noise than signal; true = force on everywhere; "auto" = on for interactive coding surfaces
+        # and programmatic callers, off for messaging surfaces. Doc/markdown/skill-only edits never fire.
         "verify_on_stop": False,
         # Inactivity warning (seconds), once per run before gateway_timeout; no interrupt. 0 = off.
         "gateway_timeout_warning": 900,

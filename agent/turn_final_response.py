@@ -7,7 +7,7 @@ re-prompt, scaffolding pop, stop gates, then the durable final flush. Extracted 
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 from typing import Any, Dict, Optional
 
@@ -16,6 +16,7 @@ from agent.reasoning_promotion import answer_in_reasoning_capability
 from agent.repetition_guard import STOP_PATH_MIN_CHARS, is_runaway_repetition
 from agent.turn_failure_copy import stamp_failure
 from agent.turn_empty_response import recover_empty_response
+from agent.turn_end_hooks import prepare_text_candidate, review_text_candidate
 from agent.turn_stop_gates import apply_stop_gates
 from agent.turn_truncation import partial_result, repetition_copy
 
@@ -51,6 +52,8 @@ class FinalResponseVerdict:
     _pending_verification_response_previewed: Any
     api_call_count: int
     result: Optional[dict[str, Any]] = None
+    failed: bool = False
+    interrupted: bool = False
 
 
 def finish_text_response(
@@ -329,6 +332,9 @@ def finish_text_response(
     ):
         messages.pop()
 
+    final_response = prepare_text_candidate(agent, final_response, final_msg, _promoted)
+    if _gate := review_text_candidate(agent, final_response, final_msg, messages, user_message, api_call_count):
+        return replace(_verdict(_gate.pop("action")), **_gate)
     _sg = apply_stop_gates(
         agent, final_msg, final_response=final_response, messages=messages,
         conversation_history=conversation_history,
@@ -352,10 +358,7 @@ def finish_text_response(
             agent, final_response, turn_id=getattr(agent, "_current_turn_id", "") or "", logger=logger,
         )
     if _transformed:
-        if _promoted:
-            final_msg["api_content"] = final_response
-        else:
-            final_msg["content"] = final_response
+        final_msg["api_content" if _promoted else "content"] = final_response
 
     append_message(messages, final_msg)
     # Make the answer durable before leaving the loop (_DB_PERSISTED_MARKER keeps

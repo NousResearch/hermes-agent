@@ -2563,6 +2563,112 @@ class TestSystemdCgroupIsolation:
 
         assert pr._worker_memory_max_bytes() == pr._DEFAULT_WORKER_MEMORY_MAX_BYTES
 
+    # --- t_4d12c8eb: a worker's limit must come from the SLICE the scope is
+    # created under, not from the gateway unit's own control-plane budget. ---
+
+    @staticmethod
+    def _fake_cgroup_reader(monkeypatch, pr, cgroup_line, memory_max_by_path):
+        """Patch ``Path.read_text`` to serve a synthetic cgroup-v2 tree.
+
+        ``memory_max_by_path`` maps an ABSOLUTE ``/sys/fs/cgroup/.../memory.max``
+        path to its file contents ("max" for unlimited). Any other path raises
+        OSError, exactly like a path that does not exist.
+        """
+        cgroup_path = "/proc/self/cgroup"
+
+        def _read_text(self, *_args, **_kwargs):
+            path = str(self)
+            if path == cgroup_path:
+                return cgroup_line
+            if path in memory_max_by_path:
+                return memory_max_by_path[path]
+            raise OSError(f"no such file: {path}")
+
+        monkeypatch.setattr(pr.Path, "read_text", _read_text)
+
+    def test_worker_memory_limit_ignores_gateway_unit_memory_max(self, monkeypatch):
+        """The gateway unit's MemoryMax must NOT cap the workers it spawns.
+
+        Regression for t_4d12c8eb (2026-10-24). The gateway unit carried
+        ``MemoryMax=1.0G`` as part of a deliberate <=50%-of-RAM budget across
+        the five gateway units. ``_worker_memory_max_bytes`` read the
+        DISPATCHER's own cgroup (the gateway unit) and took ``min(1 GiB, ...)``,
+        so every Kanban worker was capped at 1 GiB on a host with 7.9 GiB of
+        RAM. Two workers were OOM-killed by their own cgroup
+        (``constraint=CONSTRAINT_MEMCG``, ``usage 1048576kB, limit 1048576kB``)
+        with the implementation already on disk.
+
+        The worker scope is created under the SLICE, whose limit is ``max``.
+        """
+        import tools.process_registry as pr
+
+        base = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice"
+        self._fake_cgroup_reader(
+            monkeypatch,
+            pr,
+            "0::user.slice/user-1000.slice/user@1000.service/app.slice/hermes-gateway.service\n",
+            {
+                f"{base}/memory.max": "max\n",
+                f"{base}/hermes-gateway.service/memory.max": "1073741824\n",
+            },
+        )
+        monkeypatch.setattr(pr.os, "sysconf", lambda name: {
+            "SC_PHYS_PAGES": 3_000_000, "SC_PAGE_SIZE": 4096,
+        }[name])
+
+        # 3,000,000 * 4096 = 12.29 GB physical -> half = 6.14 GB -> capped at 4 GiB.
+        assert pr._worker_memory_max_bytes() == pr._WORKER_MEMORY_MAX_CAP_BYTES
+
+    def test_worker_memory_limit_honors_bounded_slice_limit(self, monkeypatch):
+        """A genuinely bounded slice still caps the worker."""
+        import tools.process_registry as pr
+
+        base = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice"
+        self._fake_cgroup_reader(
+            monkeypatch,
+            pr,
+            "0::user.slice/user-1000.slice/user@1000.service/app.slice/hermes-gateway.service\n",
+            {f"{base}/memory.max": "2147483648\n"},
+        )
+        monkeypatch.setattr(pr.os, "sysconf", lambda name: {
+            "SC_PHYS_PAGES": 3_000_000, "SC_PAGE_SIZE": 4096,
+        }[name])
+
+        assert pr._worker_memory_max_bytes() == 2 * 1024 * 1024 * 1024
+
+    def test_worker_memory_limit_falls_back_when_no_slice_component(self, monkeypatch):
+        """A dispatcher outside any slice uses the physical-RAM bound only."""
+        import tools.process_registry as pr
+
+        self._fake_cgroup_reader(
+            monkeypatch,
+            pr,
+            "0::user.slice/user-1000.slice/user@1000.service/session-3.scope\n",
+            {},
+        )
+        monkeypatch.setattr(pr.os, "sysconf", lambda name: {
+            "SC_PHYS_PAGES": 3_000_000, "SC_PAGE_SIZE": 4096,
+        }[name])
+
+        assert pr._worker_memory_max_bytes() == pr._WORKER_MEMORY_MAX_CAP_BYTES
+
+    def test_worker_memory_limit_ignores_slice_limit_below_floor(self, monkeypatch):
+        """A slice limit under the 64 MiB floor is not a usable bound."""
+        import tools.process_registry as pr
+
+        base = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice"
+        self._fake_cgroup_reader(
+            monkeypatch,
+            pr,
+            "0::user.slice/user-1000.slice/user@1000.service/app.slice/x.service\n",
+            {f"{base}/memory.max": "1048576\n"},
+        )
+        monkeypatch.setattr(pr.os, "sysconf", lambda name: {
+            "SC_PHYS_PAGES": 3_000_000, "SC_PAGE_SIZE": 4096,
+        }[name])
+
+        assert pr._worker_memory_max_bytes() == pr._WORKER_MEMORY_MAX_CAP_BYTES
+
     def test_kill_recovered_detached_already_exited_stops_persisted_scope(
         self, registry, monkeypatch
     ):

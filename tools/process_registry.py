@@ -117,16 +117,93 @@ _SYSTEMD_RUN_NO_EXPAND = True
 _MIN_WORKER_MEMORY_MAX_BYTES = 64 * 1024 * 1024
 _DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
 _WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
+# A worker's scope is created as a child of the dispatcher's SLICE (``app.slice``),
+# not as a child of the gateway's own unit cgroup. The slice's ``memory.max`` is the
+# limit that actually bounds the worker; the gateway unit's ``MemoryMax`` is a budget
+# for the control plane and must NOT be inherited by the worker it spawns.
+#
+# Observed 2026-10-24 (t_4d12c8eb): the gateway unit carried ``MemoryMax=1.0G``
+# (a deliberate <=50%-of-RAM sum-of-MemoryMax budget for the FIVE gateway units).
+# ``_worker_memory_max_bytes`` read the DISPATCHER's own cgroup — the gateway unit —
+# and took ``min(1 GiB, half-of-RAM, 4 GiB)`` = 1 GiB. Every Kanban worker was
+# therefore capped at 1 GiB while the host had 7.9 GiB of RAM and only ~2.7 GiB in
+# use. Two workers were OOM-killed by their own cgroup
+# (``constraint=CONSTRAINT_MEMCG``, ``memory: usage 1048576kB, limit 1048576kB``)
+# mid-implementation, with the implementation already on disk.
+#
+# The scope's real parent is the slice, whose ``memory.max`` is ``max`` (unlimited).
+# Reading the SLICE's limit instead of the gateway unit's restores the intended
+# budget: a worker is bounded by the host, not by the control plane's own cap.
+_WORKER_MEMORY_SCOPE_SLICE = "app.slice"
+
+
+def _cgroup_v2_memory_max(relative_path: str) -> Optional[int]:
+    """``memory.max`` for a cgroup-v2 path relative to the unified root.
+
+    ``None`` when the path does not exist, the file is unreadable, or the limit is
+    ``max`` (unlimited). A ``max`` limit is reported as "no limit" rather than as a
+    huge number, so callers can tell an unbounded parent from a bounded one.
+    """
+    try:
+        raw = (
+            Path("/sys/fs/cgroup") / relative_path.lstrip("/") / "memory.max"
+        ).read_text(encoding="utf-8-sig").strip()
+    except (OSError, ValueError):
+        return None
+    if not raw.isdigit():
+        # "max" => unlimited.
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _scope_parent_memory_max_bytes() -> Optional[int]:
+    """``memory.max`` of the cgroup a NEW worker scope will actually live under.
+
+    A worker scope is created under the dispatcher's slice, so the binding limit is
+    the SLICE's — not the gateway unit's. The slice is found by walking UP from the
+    dispatcher's own cgroup until a component matching ``_WORKER_MEMORY_SCOPE_SLICE``
+    is found; if the dispatcher is not under such a slice (a bare user session, a
+    container), the walk yields the user's own service cgroup.
+
+    ``None`` when no bounded ancestor is found — the caller then relies on the
+    physical-RAM bound alone rather than inheriting an unrelated unit's budget.
+    """
+    try:
+        for line in Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines():
+            if not line.startswith("0::"):
+                continue
+            relative = line.partition("::")[2].strip("/")
+            if not relative:
+                return None
+            parts = relative.split("/")
+            for index in range(len(parts) - 1, -1, -1):
+                if parts[index] != _WORKER_MEMORY_SCOPE_SLICE:
+                    continue
+                ancestor = "/".join(parts[: index + 1])
+                return _cgroup_v2_memory_max(ancestor)
+            # No slice component: fall back to the user service cgroup, which is
+            # the closest ancestor the dispatcher can actually be bounded by.
+            return _cgroup_v2_memory_max("/".join(parts[:-1]) if len(parts) > 1 else relative)
+    except (OSError, ValueError):
+        pass
+    return None
 
 
 def _worker_memory_max_bytes() -> int:
     """Finite per-worker cgroup limit that can never widen host risk.
-    ``TERMINAL_LOCAL_MEMORY_MAX_MB`` is honored only when it *tightens* the safe
-    bound (min of the gateway's cgroup-v2 ``memory.max`` and half of physical RAM,
-    capped at 4 GiB), so an oversized override cannot exceed the enclosing slice.
 
-    The proposed local-memory-guard environment override is honored when it tightens the safe bound, so this
-    isolation composes with PR #57121 instead of inventing a second knob.
+    The bound is the MINIMUM of:
+      * the SLICE the worker scope will be created under (``memory.max`` of the
+        dispatcher's slice, not the gateway unit's own budget),
+      * half of physical RAM, capped at 4 GiB,
+      * ``TERMINAL_LOCAL_MEMORY_MAX_MB`` when that TIGHTENS the bound.
+
+    The slice's limit is the one that actually constrains the worker. The gateway
+    unit's ``MemoryMax`` is a control-plane budget and is deliberately NOT read
+    here — see ``_WORKER_MEMORY_SCOPE_SLICE`` for the incident that motivated it.
     """
     override_bound: Optional[int] = None
     override = os.getenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "").strip()
@@ -143,20 +220,9 @@ def _worker_memory_max_bytes() -> int:
                 "expected an integer representing at least %d MiB",
                 override, _MIN_WORKER_MEMORY_MAX_BYTES // (1024 * 1024))
     candidates: List[int] = []
-    try:
-        for line in Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines():
-            if line.startswith("0::"):
-                relative = line.partition("::")[2].lstrip("/")
-                raw_limit = (
-                    Path("/sys/fs/cgroup") / relative / "memory.max"
-                ).read_text(encoding="utf-8-sig").strip()
-                if raw_limit.isdigit():
-                    cgroup_limit = int(raw_limit)
-                    if cgroup_limit >= _MIN_WORKER_MEMORY_MAX_BYTES:
-                        candidates.append(cgroup_limit)
-                break
-    except (OSError, ValueError):
-        pass
+    slice_limit = _scope_parent_memory_max_bytes()
+    if slice_limit is not None and slice_limit >= _MIN_WORKER_MEMORY_MAX_BYTES:
+        candidates.append(slice_limit)
 
     try:
         physical_bytes = int(os.sysconf("SC_PHYS_PAGES")) * int(

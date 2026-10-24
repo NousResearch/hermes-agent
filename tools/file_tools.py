@@ -20,7 +20,7 @@ from pathlib import Path
 
 from agent.file_safety import get_nt_namespace_error, get_read_block_error
 from agent.tool_result_classification import GUARDRAIL_REFUSAL_KEY
-from tools.binary_extensions import has_binary_extension
+from tools.binary_extensions import binary_read_refusal, has_binary_extension
 from tools.skill_provenance import is_background_review
 from tools.file_operations import (
     ShellFileOperations, normalize_read_pagination, normalize_search_pagination)
@@ -655,9 +655,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         # The extension is a claim, so this message names only the extension;
         # the content-sniffing path names the actual magic-byte type.
         if has_binary_extension(str(_resolved)):
-            return tool_error(
-                f"Cannot read binary file '{path}' ({_resolved.suffix.lower()}). "
-                "Use vision_analyze for images, or terminal to inspect binary files.")
+            return tool_error(binary_read_refusal(path, str(_resolved)))
 
         resolved_str = str(_resolved)
         cached_not_found = _check_not_found_cache("read", resolved_str, task_id)

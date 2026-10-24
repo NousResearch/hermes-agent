@@ -580,6 +580,10 @@ def _launch_tui(
         if wt_info and code in {0, 130}:
             from hermes_cli.worktree_exit import ask_exit_choice
             ask_exit_choice(wt_info)
+        if wt_info and attached_session:
+            # The owner refuses new work in a tree that is going away (#134889 TUI-27); the tree is
+            # only removed if the user asks for it below, so the session id travels with it.
+            wt_info["session_id"] = attached_session
         from hermes_cli.worktree_exit import apply_exit_choice
         if wt_info and apply_exit_choice(wt_info, print):
             wt_info = None  # archived or discarded at the user's request

@@ -47282,6 +47282,50 @@
         "title": "WorkerScopeParams",
         "type": "object"
       },
+      "WorkspaceRetireParams": {
+        "additionalProperties": false,
+        "description": "The tree a launcher is about to remove, and whether the mark goes up or comes down.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "retiring": {
+            "title": "Retiring",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id",
+          "path",
+          "retiring"
+        ],
+        "title": "WorkspaceRetireParams",
+        "type": "object"
+      },
+      "WorkspaceRetireResult": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "retiring": {
+            "title": "Retiring",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id",
+          "retiring"
+        ],
+        "title": "WorkspaceRetireResult",
+        "type": "object"
+      },
       "_SessionScoped": {
         "additionalProperties": false,
         "description": "Handlers that look a live session up with ``_sessions.get(params.get(\"session_id\"))``: an\nabsent / unknown id falls back to the launch profile's config, so it is never required.",
@@ -48123,6 +48167,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/CanonicalCorrectionResult"
+        }
+      }
+    },
+    {
+      "name": "session.workspace.retire",
+      "summary": "Mark this session's workspace as retiring (a launcher removing its worktree): the owner takes no new work in it until the removal finished.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/WorkspaceRetireParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/WorkspaceRetireResult"
         }
       }
     },

@@ -108,10 +108,18 @@ def apply_exit_choice(info: dict, echo) -> bool:
         echo(f"  {t('cli.worktree.restore_hint', name=name)}")
         return True
     from hermes_cli._subprocess_compat import noninteractive_git_env
-    from hermes_cli.worktree_ops import _git_quiet, release_lsp_clients
+    from hermes_cli.worktree_ops import _git_quiet, mark_workspace_retiring, release_lsp_clients
     release_lsp_clients(path)
+    # The owner refuses new work in a tree that is going away (#134889 TUI-27): a submit that lands
+    # while the tree is removed is refused by name instead of being admitted into a directory that
+    # is about to disappear. Best-effort and silent: the removal must never wait on it.
+    session_id = info.get("session_id")
+    if session_id:
+        mark_workspace_retiring(path, session_id)
     _git_quiet(["worktree", "unlock", path], repo_root, log="git worktree unlock failed (non-fatal)")
     _git_quiet(["worktree", "remove", path, "--force"], repo_root, timeout=60, log="Failed to remove worktree")
+    if session_id:
+        mark_workspace_retiring(path, session_id, retiring=False)
     if branch and not os.path.isdir(path):
         _git_quiet(["branch", "-D", branch], repo_root, log=f"Failed to delete branch {branch}",
                    env=noninteractive_git_env())

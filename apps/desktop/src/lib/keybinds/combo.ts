@@ -268,6 +268,20 @@ export function isEditableTarget(target: EventTarget | null): boolean {
   )
 }
 
+// True when the user has a live text selection to copy: the focused
+// input/textarea's selection, or a document selection anywhere. The stop chord
+// (session.stop, Ctrl+C) yields to copy while this is true on platforms where
+// the chord IS copy — see `use-keybinds.ts`.
+export function hasTextSelection(): boolean {
+  const active = document.activeElement
+
+  if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
+    return active.selectionStart !== null && active.selectionStart !== active.selectionEnd
+  }
+
+  return Boolean(window.getSelection()?.toString())
+}
+
 const INPUT_SAFE_ACTIONS = new Set([
   'composer.modelPicker',
   'composer.voice',

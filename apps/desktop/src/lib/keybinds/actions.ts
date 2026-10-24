@@ -135,6 +135,14 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // every user — surfaced in the panel for opt-in binding (the issue suggests
   // ⌘⇧⌫ / Ctrl+Shift+⌫).
   { id: 'session.archive', category: 'session', defaults: [] },
+  // Stop the active run — the CLI/TUI interrupt gesture (Ctrl+C), carried over
+  // to the desktop. `ctrl` is physical Control: free on macOS (copy is ⌘C);
+  // off macOS it folds to `mod`, where the chord IS copy — the dispatcher
+  // yields to a text selection and to a focused terminal, so copy and the
+  // PTY's ^C keep working (see use-keybinds.ts). `editableTargetPolicy` lets
+  // the chord fire while typing in the composer, where a runaway turn most
+  // needs stopping.
+  { id: 'session.stop', category: 'session', defaults: ['ctrl+c'], editableTargetPolicy: 'modified' },
   // ⌘⇧B — "b" for branch: spin up a new git worktree from the active repo.
   { id: 'workspace.newWorktree', category: 'session', defaults: ['mod+shift+b'] },
   // ⌘O — the editor-standard "open folder" chord (VS Code ⌘O, Zed's

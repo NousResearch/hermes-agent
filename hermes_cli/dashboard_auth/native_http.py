@@ -61,8 +61,11 @@ async def _check_profile_scope(request, profile_id):
     path = request.url.path.rstrip('/')
     current = not path.startswith(('/api/profiles/', '/api/cron/jobs', '/api/sessions',
                                    '/api/fs/download', '/api/fs/read-data-url'))
-    for value in request.query_params.getlist('profile'):
-        _own_profile(value, profile_id, current=current)
+    collection = profile_collection_route(path, request.method)
+    named_profile = path.startswith('/api/profiles/') and collection is None
+    if not named_profile:
+        for value in request.query_params.getlist('profile'):
+            _own_profile(value, profile_id, current=current)
     content_type = request.headers.get('content-type', '').split(';', 1)[0].strip().lower()
     if not content_type or content_type == 'application/json' or (
             content_type.startswith('application/') and content_type.endswith('+json')):
@@ -70,7 +73,7 @@ async def _check_profile_scope(request, profile_id):
             body = await request.json()
         except (ValueError, UnicodeError):
             body = None  # Route validation still owns malformed JSON.
-        if isinstance(body, dict) and 'profile' in body:
+        if isinstance(body, dict) and 'profile' in body and not named_profile:
             _own_profile(body['profile'], profile_id, current=current)
     if path.startswith('/api/cron/jobs') and not request.query_params.get('profile'):
         # Job-id discovery and the default list scan other profiles. Require an
@@ -82,7 +85,6 @@ async def _check_profile_scope(request, profile_id):
             raise PermissionError('profile_scope_mismatch')
     elif path.startswith('/api/profiles/'):
         suffix = path.removeprefix('/api/profiles/')
-        collection = profile_collection_route(path, request.method)
         aggregate_selector = {
             'sessions': 'profile', 'sessions/sidebar': 'recents_profile',
             'projects/tree': 'profile', 'sessions/pull-requests': 'profile',

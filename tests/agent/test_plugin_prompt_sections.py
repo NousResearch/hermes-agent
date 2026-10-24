@@ -7,9 +7,22 @@ import subprocess
 import sys
 import textwrap
 
-from agent.system_prompt import build_system_prompt, invalidate_system_prompt
+import pytest
+
+from agent.system_prompt import (
+    _restore_plugin_prompt_sections,
+    build_system_prompt,
+    build_system_prompt_parts,
+    invalidate_system_prompt,
+    restore_plugin_prompt_sections,
+)
 from hermes_cli import plugins
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from hermes_cli.plugins import (
+    PLUGIN_SECTIONS_END,
+    PluginContext,
+    PluginManager,
+    PluginManifest,
+)
 from run_agent import AIAgent
 
 
@@ -87,9 +100,10 @@ def test_real_aiagent_freezes_section_within_life_and_rerenders_on_invalidate(mo
     assert "example.rules" not in agent._cached_system_prompt_static
 
 
-def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tmp_path):
+@pytest.mark.parametrize("mode", ["ordinary", "bot-zone", "bot-no-zone", "bot-no-zone-session"])
+def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tmp_path, mode):
     """The existing persisted full prompt is the only resume state required."""
-    db_path = tmp_path / "state.db"
+    db_path = tmp_path / ".hermes" / "state.db"
     calls_path = tmp_path / "calls.txt"
     child = textwrap.dedent(
         """
@@ -97,6 +111,7 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
         import json
         import os
         from pathlib import Path
+        from unittest.mock import patch
 
         from agent.conversation_loop import _restore_or_build_system_prompt
         from agent.system_prompt import build_system_prompt, invalidate_system_prompt
@@ -105,6 +120,14 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
         from hermes_state import SessionDB
         from run_agent import AIAgent
 
+        mode = os.environ["TEST_MODE"]
+        if mode.startswith("bot-"):
+            home = Path(os.environ["HERMES_HOME"])
+            home.mkdir(parents=True, exist_ok=True)
+            (home / "profile.yaml").write_text("ui_meta:\\n  hermes-bots: {}\\n")
+            patch("agent.system_prompt._zone_bits", return_value=(
+                ["UTC", "+00:00"] if mode == "bot-zone" else []
+            )).start()
         db = SessionDB(db_path=Path(os.environ["TEST_DB"]))
         session_id = "resume-plugin-section"
         db.ensure_session(session_id, source="cli", model="test/model")
@@ -120,6 +143,10 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
             session_id=session_id,
             session_db=db,
         )
+
+        if mode.startswith("bot-"):
+            agent._session_title_hint = "Bot Chat"
+            agent.pass_session_id = mode == "bot-no-zone-session"
 
         manager = PluginManager()
         manager._discovered = True
@@ -141,6 +168,11 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
         _restore_or_build_system_prompt(agent, None, history)
         restored = agent._cached_system_prompt
         calls_after_restore = int(calls_path.read_text())
+        sections = [s.content for s in agent._plugin_system_prompt_sections_snapshot]
+        if mode.startswith("bot-"):
+            assert "Conversation started:" not in restored
+            if os.environ["TEST_PHASE"] == "first":
+                assert agent._bot_chat_timeless_prompt
         rebuilt_equal = None
         rebuilt_has_changed = None
         calls_after_rebuild = None
@@ -159,6 +191,7 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
                 restored.encode("utf-8")
             ).decode("ascii"),
             "calls": calls_after_restore,
+            "sections": sections,
             "rebuilt_equal": rebuilt_equal,
             "rebuilt_has_changed": rebuilt_has_changed,
             "calls_after_rebuild": calls_after_rebuild,
@@ -171,7 +204,8 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
     for phase in ("first", "resume"):
         env = os.environ.copy()
         env.update(
-            HERMES_HOME=str(tmp_path / "hermes-home"),
+            HERMES_HOME=str(tmp_path / ".hermes"),
+            TEST_MODE=mode,
             TEST_DB=str(db_path),
             TEST_CALLS=str(calls_path),
             TEST_PHASE=phase,
@@ -183,8 +217,9 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
             text=True,
             capture_output=True,
             timeout=90,
-            check=True,
+            check=False,
         )
+        assert proc.returncode == 0, proc.stderr
         outputs.append(json.loads(proc.stdout.strip().splitlines()[-1]))
 
     first_prompt = base64.b64decode(outputs[0]["prompt_b64"])
@@ -199,6 +234,7 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
             f"first={first_prompt[diff_at - 100:diff_at + 100]!r} "
             f"resumed={resumed_prompt[diff_at - 100:diff_at + 100]!r}"
         )
+    assert outputs[0]["sections"] == outputs[1]["sections"] == ["original bytes"]
     assert b"original bytes" in first_prompt
     # RESTORE stays frozen: the resumed prompt is byte-identical, plugin
     # render never ran (calls unchanged). The REBUILD boundary re-renders:
@@ -209,3 +245,87 @@ def test_fresh_process_resume_restores_identical_full_prompt_without_callback(tm
     assert outputs[1]["rebuilt_equal"] is False
     assert outputs[1]["rebuilt_has_changed"] is True
     assert outputs[1]["calls_after_rebuild"] == 2
+
+
+def _prompt_with_section(monkeypatch, content: str) -> tuple[AIAgent, str]:
+    """A real agent and the full prompt it builds with one plugin section."""
+    monkeypatch.setattr(
+        "agent.coding_context.build_coding_workspace_block",
+        lambda cwd=None: "Workspace (snapshot at session start):\n- Root: /pinned",
+    )
+    manager = PluginManager()
+    _install_test_section(manager, content)
+    monkeypatch.setattr(plugins, "_plugin_manager", manager)
+    agent = _real_agent()
+    return agent, build_system_prompt(agent)
+
+
+def _resumed(agent: AIAgent, prompt: str) -> AIAgent:
+    """A fresh agent for the same session, seeded from the persisted prompt as
+    ``_restore_or_build_system_prompt`` does on resume."""
+    resumed = _real_agent(session_id=agent.session_id)
+    resumed._cached_system_prompt = prompt
+    restore_plugin_prompt_sections(resumed, prompt)
+    return resumed
+
+
+def test_sections_are_recovered_from_the_prompt_the_builder_emits(monkeypatch):
+    # The builder puts the active-profile paragraph between the sections and
+    # the timestamp; recovery has to read through it.
+    _agent, prompt = _prompt_with_section(monkeypatch, "persisted rules")
+    assert f"{PLUGIN_SECTIONS_END}\n\nActive Hermes profile: " in prompt
+
+    restored = _restore_plugin_prompt_sections(prompt)
+
+    assert [(s.id, s.content) for s in restored] == [
+        ("example.rules", "persisted rules")
+    ]
+
+
+def test_sections_are_recovered_from_a_prompt_without_profile_paragraph(monkeypatch):
+    # Prompts persisted before the profile paragraph moved into the volatile
+    # tier have the timestamp right after the sections.
+    _agent, prompt = _prompt_with_section(monkeypatch, "persisted rules")
+    end = prompt.index(PLUGIN_SECTIONS_END) + len(PLUGIN_SECTIONS_END)
+    timestamp = prompt.index("\n\nConversation started:", end)
+    older = prompt[:end] + prompt[timestamp:]
+
+    restored = _restore_plugin_prompt_sections(older)
+
+    assert [s.content for s in restored] == ["persisted rules"]
+
+
+def test_recovery_rejects_other_text_after_the_sections(monkeypatch):
+    # Only the builder's own profile paragraph is read through: a container
+    # followed by anything else is not the one core emitted.
+    _agent, prompt = _prompt_with_section(monkeypatch, "persisted rules")
+    end = prompt.index(PLUGIN_SECTIONS_END) + len(PLUGIN_SECTIONS_END)
+    tampered = prompt[:end] + "\n\nSome other paragraph." + prompt[end:]
+
+    assert _restore_plugin_prompt_sections(tampered) == ()
+
+
+def test_resumed_agent_keeps_persisted_section_when_rerender_raises(monkeypatch):
+    # The persisted bytes are the fail-open fallback at the next rebuild
+    # boundary: a render that raises there must not drop the section.
+    agent, prompt = _prompt_with_section(monkeypatch, "persisted rules")
+    resumed = _resumed(agent, prompt)
+
+    def broken(_session_info):
+        raise RuntimeError("plugin discovery failed")
+
+    monkeypatch.setattr(plugins, "render_system_prompt_sections", broken)
+    invalidate_system_prompt(resumed)
+    rebuilt = build_system_prompt(resumed)
+
+    assert "## Plugin Context: example.rules" in rebuilt
+    assert "persisted rules" in rebuilt
+
+
+def test_resumed_agent_prompt_parts_carry_the_persisted_section(monkeypatch):
+    # Readers that rebuild the parts of a resumed agent's prompt without a
+    # rebuild boundary (e.g. the context breakdown) see the frozen section.
+    agent, prompt = _prompt_with_section(monkeypatch, "persisted rules")
+    resumed = _resumed(agent, prompt)
+
+    assert "persisted rules" in build_system_prompt_parts(resumed)["volatile"]

@@ -492,6 +492,14 @@ For example: `agent:main:telegram:private:123456789` for the default profile, or
 
 Thread-aware platforms (Telegram forum topics, Discord threads, Slack threads) may include thread IDs in the chat_id portion. **Never construct session keys manually** — always use `build_session_key()` from `gateway/session.py`.
 
+At handler wiring, the session store registers each receiving adapter's effective
+group/thread isolation policy under its owning profile and platform, before
+`connect()` can accept input. Adapter declarations override that profile's
+gateway defaults. Store keys, runner fallback keys, context attribution and
+session controls use the same policy, including plugin platforms without a
+`config.platforms` entry. A routed turn retains its receiving bot's policy while
+its runtime profile still determines the session namespace.
+
 ### Two-Level Message Guard
 
 When an agent is actively running, incoming messages pass through two sequential guards:

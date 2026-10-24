@@ -58,4 +58,5 @@ Deletion rules (same as the original PR):
   are logged as `SKIPPED` and dropped
 - Backup/restore is scoped to `tracked.json` — the plugin never touches
   agent logs
-- Atomic writes: `.tmp` → backup → rename
+- Registry updates hold `tracked.json.lock`. Saves back up the old registry
+  and use a unique temporary file.

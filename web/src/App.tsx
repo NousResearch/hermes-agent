@@ -497,9 +497,27 @@ export default function App() {
     document.addEventListener("keydown", onKey);
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
+    // #142836: iOS chains a swipe inside the open drawer or backdrop to the
+    // page behind it. Lock the content scroller as well and contain
+    // overscroll so a swipe cannot reach it; body alone is not enough.
+    const main = document.querySelector("main");
+    const prevMainOverflow = main ? main.style.overflowY : null;
+    const prevMainOverscroll = main ? main.style.overscrollBehaviorY : null;
+    if (main) {
+      main.style.overflowY = "hidden";
+      main.style.overscrollBehaviorY = "contain";
+    }
+    const nav = document.getElementById("app-sidebar")?.querySelector("nav");
+    const prevNavOverscroll = nav ? nav.style.overscrollBehaviorY : null;
+    if (nav) nav.style.overscrollBehaviorY = "contain";
     return () => {
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = prevOverflow;
+      if (main) {
+        main.style.overflowY = prevMainOverflow ?? "";
+        main.style.overscrollBehaviorY = prevMainOverscroll ?? "";
+      }
+      if (nav) nav.style.overscrollBehaviorY = prevNavOverscroll ?? "";
     };
   }, [mobileOpen]);
 
@@ -563,7 +581,7 @@ export default function App() {
           aria-label={t.app.closeNavigation}
           onClick={closeMobile}
           className={cn(
-            "lg:hidden fixed inset-0 z-40 p-0 block",
+            "lg:hidden fixed inset-0 z-40 p-0 block touch-none",
             "bg-black/70",
           )}
         />
@@ -654,7 +672,7 @@ export default function App() {
             <ProfileSwitcher collapsed={isDesktopCollapsed} />
 
             <nav
-              className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"
+              className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain border-t border-current/10 py-2"
               aria-label={t.app.navigation}
             >
               <ul className="flex flex-col">

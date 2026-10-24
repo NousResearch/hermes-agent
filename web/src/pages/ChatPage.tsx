@@ -124,6 +124,23 @@ import { SGR_MOUSE_RE } from "@/lib/pty-mouse-report";
 // second tab — including a Chrome "Duplicate tab" — gets its own PTY instead of
 // taking over this one. See #115304.
 
+/**
+ * 【2026-10-17 手机输入补丁】移动端判定。
+ *
+ * 为什么需要：/chat 是一个 xterm.js 终端，手机上的输入落在 xterm 那个
+ * `opacity:0` 的隐藏文本框里，实测两种坏法：
+ *   · 安卓（Chrome/WebView）: 英文能进，中文输入法的候选词组合事件被吞 → 打不了中文
+ *   · 鸿蒙（ArkWeb）: 中英文都进不去 —— ArkWeb 根本不认这种不可见输入框
+ * 上游原有的正则只有 Android|iPhone|iPad|iPod|Mobile，鸿蒙机器上报的
+ * `OpenHarmony` / `ArkWeb` 不在其中，所以移动端补偿逻辑根本不会启用。
+ * 这里把它补上，供「移动端输入条」和 xterm 的移动端 IME 补偿共用。
+ */
+export function isMobileLikeUA(ua: string): boolean {
+  return /Android|iPhone|iPad|iPod|Mobile|OpenHarmony|ArkWeb|HarmonyOS|HarmonyOSNEXT/i.test(
+    ua ?? "",
+  );
+}
+
 export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termWrapRef = useRef<HTMLDivElement | null>(null);
@@ -500,6 +517,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     if (!hasActivated) return;
 
     const host = hostRef.current;
+    // 【2026-10-17 手机输入补丁】必须在 new Terminal 之前算出来
+    const mobileUA = isMobileLikeUA(typeof navigator !== "undefined" ? navigator.userAgent : "");
     if (!host) return;
     // Captured once so the effect cleanup doesn't re-read the ref (which
     // may point elsewhere by then — react-hooks/exhaustive-deps).
@@ -539,7 +558,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // Browser-embedded chat runs the TUI in inline mode. Keep transcript
       // history in xterm.js so the browser wheel can scroll it directly.
       scrollback: 5000,
-      screenReaderMode: true, // AT textarea; composer a11y (#36784)
+      // 【2026-10-17 手机输入补丁】【根因就在这一行】xterm 源码里的 inputEvent()：
+      //   if (e.data && e.inputType === "insertText" && ... && !screenReaderMode) triggerDataEvent(...)
+      // 也就是 screenReaderMode=true 时，xterm 【直接吞掉】input 事件里的 insertText 文本；
+      // keydown 同样被吞。手机上（尤其鸿蒙 ArkWeb）输入法提交中文走的就是 insertText
+      // （实测 composition 事件为 0），于是字进了输入框却永远到不了 PTY。
+      // 真机上关掉它 → 输入恢复正常；桌面端保持原样（无障碍文本框不受影响）。
+      screenReaderMode: !mobileUA, // AT textarea; composer a11y (#36784)
       theme: terminalTheme,
     });
     termRef.current = term;
@@ -828,9 +853,44 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       textarea.setAttribute("autocapitalize", "off");
       textarea.setAttribute("spellcheck", "false");
 
-      const isMobileLike =
-        typeof navigator !== "undefined" &&
-        /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+      const isMobileLike = isMobileLikeUA(
+        typeof navigator !== "undefined" ? navigator.userAgent : "",
+      );
+
+      // 【2026-10-17 手机输入补丁】根因就在这里：xterm 的隐藏文本框是
+      // opacity:0 + z-index:-5（样式表里写的），未聚焦时还被挪到 left:-9999em。
+      // 安卓/鸿蒙的输入法普遍不会给这种「不可见 / 屏幕外」的元素提交文字：
+      //   · 安卓 : 英文能进，中文输入法组合完提交不进去
+      //   · 鸿蒙 : ArkWeb 下键盘能起来，但一个字都进不去
+      // 修法：真机上把它改成「几乎看不见但真实存在」的输入元素（宿主加 class +
+      // 这里补 inline 双保险），布局与 UI 完全不变，桌面端不受影响。
+      if (isMobileLike) {
+        host.classList.add("hermes-mobile-ime");
+        const ts = textarea.style;
+        // 【2026-10-17 手机输入补丁 v3】诊断页实测：opacity:0.01 本身没问题（v4 ✅），
+        // 真凶是 xterm 把文本框放在 left:-9999em（屏幕外）+ opacity:0 ——
+        // 鸿蒙 ArkWeb/安卓输入法对这种元素【不聚焦、不弹键盘】。
+        // 所以两件事一起做：① 提高可见度 ② 把它固定回终端底部一行（全宽可点）。
+        // 文字/光标/背景全透明 → 肉眼看不到，不新增任何输入框。
+        ts.opacity = "0.01"; // 不能是 0，也不能太接近 0
+        ts.zIndex = "2147482000"; // 抬到最顶层，别被 xterm 的 canvas 压住
+        ts.position = "fixed"; // 固定在视口底部，脱离 xterm 的图层
+        ts.left = "0";
+        ts.right = "0";
+        ts.top = "auto";
+        ts.bottom = "0";
+        ts.width = "100%";
+        ts.height = "2.6em";
+        ts.border = "0";
+        ts.pointerEvents = "auto"; // 保证底部这一条可以直接点聚焦
+        ts.color = "transparent";
+        ts.setProperty("-webkit-text-fill-color", "transparent");
+        ts.caretColor = "transparent";
+        ts.background = "transparent";
+        ts.fontSize = "16px"; // 小于 16px 会被移动端自动缩放，输入法易错乱
+        textarea.setAttribute("inputmode", "text");
+        textarea.setAttribute("autocapitalize", "none");
+      }
       const markReplacementInput = (ev: Event) => {
         const input = ev as InputEvent;
         if (

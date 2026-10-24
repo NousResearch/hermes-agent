@@ -26,6 +26,8 @@ from typing import Any
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
+
 
 def structured(result: Any) -> dict[str, Any]:
     value = getattr(result, "structuredContent", None)
@@ -83,6 +85,15 @@ end run
     return result.returncode == 0 and result.stdout.strip().lower() == "true"
 
 
+async def read_window_state(client: Any, capabilities: _CuaDriverSession,
+                            pid: int, window_id: int, session_id: str) -> dict[str, Any]:
+    """This probe reads elements/values, which Cua 0.35 omits by default."""
+    args = {"pid": pid, "window_id": window_id, "session": session_id}
+    if capabilities.supports_input_value("get_window_state", "tree_format", "elements"):
+        args["tree_format"] = "elements"
+    return structured(await client.call_tool("get_window_state", args))
+
+
 async def run_smoke(socket_path: str) -> dict[str, dict[str, Any]]:
     session_id = f"hermes-cua-live-{uuid.uuid4().hex[:8]}"
     params = StdioServerParameters(
@@ -107,6 +118,8 @@ async def run_smoke(socket_path: str) -> dict[str, dict[str, Any]]:
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as client:
                 await client.initialize()
+                capabilities = _CuaDriverSession(_AsyncBridge())
+                await capabilities._populate_capabilities(client)
                 await client.call_tool("start_session", {"session": session_id})
                 try:
                     before_windows = structured(
@@ -164,16 +177,8 @@ async def run_smoke(socket_path: str) -> dict[str, dict[str, Any]]:
                             "bring_to_front",
                             {"pid": launched_pid, "window_id": window_id},
                         )
-                        before = structured(
-                            await client.call_tool(
-                                "get_window_state",
-                                {
-                                    "pid": launched_pid,
-                                    "window_id": window_id,
-                                    "session": session_id,
-                                },
-                            )
-                        )
+                        before = await read_window_state(
+                            client, capabilities, launched_pid, window_id, session_id)
                         editor = next(
                             (
                                 element
@@ -193,7 +198,7 @@ async def run_smoke(socket_path: str) -> dict[str, dict[str, Any]]:
                             type_args = {
                                 "pid": launched_pid,
                                 "window_id": window_id,
-                                "element_index": editor.get("index"),
+                                "element_index": editor.get("element_index", editor.get("index")),
                                 "text": marker,
                                 "delivery_mode": "foreground",
                                 "session": session_id,
@@ -219,16 +224,8 @@ async def run_smoke(socket_path: str) -> dict[str, dict[str, Any]]:
                             await client.call_tool(
                                 "wait", {"seconds": 0.5, "session": session_id}
                             )
-                            after = structured(
-                                await client.call_tool(
-                                    "get_window_state",
-                                    {
-                                        "pid": launched_pid,
-                                        "window_id": window_id,
-                                        "session": session_id,
-                                    },
-                                )
-                            )
+                            after = await read_window_state(
+                                client, capabilities, launched_pid, window_id, session_id)
                             fresh_contains_marker = marker in json.dumps(
                                 after.get("elements") or []
                             )

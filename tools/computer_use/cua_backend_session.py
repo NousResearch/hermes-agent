@@ -373,6 +373,28 @@ class _CuaDriverSession:
         properties = schema.get("properties") if isinstance(schema, dict) else None
         return isinstance(properties, dict) and property_name in properties
 
+    def supports_input_value(self, tool: str, property_name: str, value: Any) -> bool:
+        """Validate a value against the live property schema, never fetching remote refs.
+
+        jsonschema ships with MCP; missing/invalid schemas or an unavailable validator fail closed.
+        Property presence alone is insufficient for enums such as get_window_state.tree_format.
+        """
+        if not self.supports_input_property(tool, property_name):
+            return False
+        schema = self._tool_schemas[tool]
+        try:
+            from jsonschema.validators import validator_for
+            from referencing import Registry
+
+            validator = validator_for(schema)
+            validator.check_schema(schema)
+            return validator(schema, registry=Registry()).evolve(
+                schema=schema["properties"][property_name]).is_valid(value)
+        except Exception:
+            logger.debug("cua-driver input value schema validation failed for %s.%s", tool, property_name,
+                         exc_info=True)
+            return False
+
     @property
     def capabilities_discovered(self) -> bool:
         """tools/list populated the map; when False ``_has_tool`` is untrustworthy."""

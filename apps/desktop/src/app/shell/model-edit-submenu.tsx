@@ -82,6 +82,8 @@ interface ModelEditSubmenuProps {
   ultrafastSupported?: boolean
   /** Whether this row's model is the active one. */
   isActive: boolean
+  /** Provider-declared effort vocabulary; absent means the full ladder. */
+  reasoningEfforts?: readonly string[]
   /** This row's model id. */
   model: string
   /** Switch to a specific model id (used to swap base ⇄ -fast variant). */
@@ -123,7 +125,8 @@ export function ModelOptionsContent({
   isActive,
   onSelectModel,
   onSetOptions,
-  reasoning
+  reasoning,
+  reasoningEfforts
 }: ModelEditSubmenuProps) {
   const { t } = useI18n()
   const copy = t.shell.modelOptions
@@ -131,7 +134,8 @@ export function ModelOptionsContent({
   const effortValue = resolveReasoningEffort(effort, defaultEffort)
   const clamp = reasoningEffortClamp(effortValue, effortWire)
   const thinkingOn = isThinkingEnabled(effort, defaultEffort)
-  const showThinkingToggle = reasoning && canDisableReasoning !== false
+  const supportsReasoning = reasoning && reasoningEfforts?.length !== 0
+  const showThinkingToggle = supportsReasoning && canDisableReasoning !== false
 
   const setFast = (enabled: boolean) => {
     if (fastControl.kind === 'variant') {
@@ -157,7 +161,7 @@ export function ModelOptionsContent({
   const ultrafastOn = serviceTier === 'ultrafast'
   const fastOn = fastControl.kind === 'none' ? false : fastControl.on && !ultrafastOn
 
-  return !hasFast && !ultrafastSupported && !reasoning ? (
+  return !hasFast && !ultrafastSupported && !supportsReasoning ? (
     <div className="px-2.5 py-3 text-xs text-(--ui-text-tertiary)">{copy.noOptions}</div>
   ) : (
     <>
@@ -201,12 +205,12 @@ export function ModelOptionsContent({
           />
         </DropdownMenuItem>
       ) : null}
-      {reasoning ? (
+      {supportsReasoning ? (
         <>
           <DropdownMenuSeparator className="mx-0" />
           <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.effort}</DropdownMenuLabel>
           <DropdownMenuRadioGroup onValueChange={value => onSetOptions({ effort: value })} value={effortValue}>
-            {REASONING_EFFORTS.map(value => (
+            {REASONING_EFFORTS.filter(value => reasoningEfforts == null || reasoningEfforts.includes(value)).map(value => (
               <DropdownMenuRadioItem
                 className={dropdownMenuRow}
                 key={value}

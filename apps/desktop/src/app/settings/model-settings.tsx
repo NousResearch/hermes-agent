@@ -304,6 +304,7 @@ function MainModelDefaults({
   fastOn,
   fastSupported,
   onChange,
+  reasoningEfforts,
   reasoningSupported,
   speedValue,
   ultrafastSupported
@@ -312,6 +313,7 @@ function MainModelDefaults({
   fastOn: boolean
   fastSupported: boolean
   onChange: (key: string, value: boolean | string) => Promise<void>
+  reasoningEfforts?: readonly string[]
   reasoningSupported: boolean
   speedValue: SpeedTier
   ultrafastSupported: boolean
@@ -330,7 +332,7 @@ function MainModelDefaults({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {REASONING_EFFORT_VALUES.map(value => (
+                {REASONING_EFFORT_VALUES.filter(value => reasoningEfforts == null || reasoningEfforts.includes(value)).map(value => (
                   <SelectItem key={value} value={value}>
                     {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
                   </SelectItem>
@@ -760,7 +762,8 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     return mainModel ? row?.capabilities?.[mainModel.model] : undefined
   }, [providers, mainModel])
 
-  const reasoningSupported = mainCaps?.reasoning ?? true
+  const reasoningSupported = (mainCaps?.reasoning ?? true) && mainCaps?.reasoning_efforts?.length !== 0
+  const mainReasoningEfforts = mainCaps?.reasoning_efforts
   const fastSupported = mainCaps?.fast ?? false
   const ultrafastSupported = mainCaps?.ultrafast ?? false
 
@@ -1177,6 +1180,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
               fastOn={fastOn}
               fastSupported={fastSupported}
               onChange={writeAgentDefault}
+              reasoningEfforts={mainReasoningEfforts}
               reasoningSupported={reasoningSupported}
               speedValue={speedValue}
               ultrafastSupported={ultrafastSupported}
@@ -1299,28 +1303,35 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                               value={auxDraft.model}
                             />
                           </div>
-                          <div className="flex flex-wrap items-center gap-2 text-xs">
-                            <span className="text-muted-foreground">{m.reasoning}</span>
-                            <Select
-                              onValueChange={value => setAuxDraft(prev => ({ ...prev, reasoningEffort: value }))}
-                              value={auxDraft.reasoningEffort}
-                            >
-                              <SelectTrigger
-                                aria-label={`${copy.label} reasoning effort`}
-                                className={cn('min-w-32', CONTROL_TEXT)}
-                              >
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="__inherit__">{m.inheritMainEffort}</SelectItem>
-                                {REASONING_EFFORT_VALUES.map(value => (
-                                  <SelectItem key={value} value={value}>
-                                    {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
+                          {(() => {
+                            const caps = findCatalogProvider(providers, auxDraft.provider)?.capabilities?.[auxDraft.model]
+                            const supportsReasoning = (caps?.reasoning ?? true) && caps?.reasoning_efforts?.length !== 0
+
+                            return supportsReasoning ? (
+                              <div className="flex flex-wrap items-center gap-2 text-xs">
+                                <span className="text-muted-foreground">{m.reasoning}</span>
+                                <Select
+                                  onValueChange={value => setAuxDraft(prev => ({ ...prev, reasoningEffort: value }))}
+                                  value={auxDraft.reasoningEffort}
+                                >
+                                  <SelectTrigger
+                                    aria-label={`${copy.label} reasoning effort`}
+                                    className={cn('min-w-32', CONTROL_TEXT)}
+                                  >
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="__inherit__">{m.inheritMainEffort}</SelectItem>
+                                    {REASONING_EFFORT_VALUES.filter(value => caps?.reasoning_efforts == null || caps.reasoning_efforts.includes(value)).map(value => (
+                                      <SelectItem key={value} value={value}>
+                                        {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                            ) : null
+                          })()}
                           <div className="flex flex-wrap items-center gap-2">
                             <Button
                               disabled={!auxDraft.provider || !auxDraft.model || applying}

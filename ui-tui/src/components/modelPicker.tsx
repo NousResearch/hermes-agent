@@ -29,20 +29,27 @@ type ProviderRow = { name: string; provider: ModelOptionProvider }
  *  "keep current" (empty value = no `--reasoning` flag on the emitted command).
  *  Resolved at call time so the two labelled rows follow the active language;
  *  the ladder levels are the literal `--reasoning` values and stay as-is. */
-export function reasoningPickerRows(): ReadonlyArray<{ label: string; value: string }> {
+export function reasoningPickerRows(
+  provider?: ModelOptionProvider,
+  model?: string
+): ReadonlyArray<{ label: string; value: string }> {
   const r = messages().pickers.model.reasoning
+  const supported = model == null ? undefined : provider?.capabilities?.[model]?.reasoning_efforts
 
-  return [
+  const rows = [
     ...REASONING_EFFORTS.map(level => ({ label: level, value: level })),
     { label: r.none, value: 'none' },
     { label: r.keepCurrent, value: '' }
   ]
+
+  return supported == null ? rows : rows.filter(row => !row.value || supported.includes(row.value))
 }
 
 /** False only when the catalog says the picked model has no reasoning control;
  *  unknown capabilities keep the step (a no-op dial beats hiding a real one). */
 export function pickerOffersReasoning(provider: ModelOptionProvider | undefined, model: string): boolean {
-  return provider?.capabilities?.[model]?.reasoning !== false
+  const capabilities = provider?.capabilities?.[model]
+  return capabilities?.reasoning !== false && capabilities?.reasoning_efforts?.length !== 0
 }
 
 /** The `/model` argument the picker emits: model + provider + scope, plus
@@ -125,8 +132,6 @@ export function ModelPicker({
   const T = useT()
   const M = T.pickers.model
   const C = T.pickers.common
-  const reasoningRows = reasoningPickerRows()
-
   const { stdout } = useStdout()
   // Pin the picker to a stable width so the FloatBox parent (which shrinks-
   // to-fit with alignSelf="flex-start") doesn't resize as long provider /
@@ -206,6 +211,7 @@ export function ModelPicker({
   }, [providerRows, filter, stage])
 
   const provider = filteredProviderRows[providerIdx]?.provider
+  const reasoningRows = reasoningPickerRows(provider, pendingModel)
   const allModels = useMemo(() => provider?.models ?? [], [provider])
 
   const filteredModels = useMemo(() => {

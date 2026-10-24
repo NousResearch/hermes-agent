@@ -438,11 +438,24 @@ def _decode_data_url(data_url: str) -> tuple[bytes, str]:
 
 
 _CHAT_IMAGE_UPLOAD_MAX_BYTES = 25 * 1024 * 1024
-_CHAT_IMAGE_ALLOWED_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
 _CHAT_IMAGE_MAGIC: tuple[tuple[bytes, str], ...] = (
     (b"\x89PNG\r\n\x1a\n", ".png"), (b"\xff\xd8\xff", ".jpg"),
-    (b"GIF87a", ".gif"), (b"GIF89a", ".gif"), (b"BM", ".bmp"),
+    (b"GIF87a", ".gif"), (b"GIF89a", ".gif"),
 )
+
+
+def _chat_image_allowed_extensions() -> frozenset[str]:
+    """Clipboard upload accepts only what admission will keep (png/jpeg/gif/webp).
+
+    ``.jpeg`` is the other spelling of admitted ``image/jpeg``. BMP is outside
+    that set: accepting it here stored a file that submit then refused.
+    """
+    from gateway.session_ingress_media import _IMAGE_EXT
+
+    allowed = set(_IMAGE_EXT.values())
+    if ".jpg" in allowed:
+        allowed.add(".jpeg")
+    return frozenset(allowed)
 
 
 def _sanitize_chat_image_filename(filename: str | None) -> str:
@@ -469,7 +482,7 @@ def _decode_chat_image_upload(payload: ChatImageUpload) -> tuple[bytes, str, str
         mb = _CHAT_IMAGE_UPLOAD_MAX_BYTES // (1024 * 1024)
         raise HTTPException(status_code=413, detail=f"Image is too large; cap is {mb} MB")
     ext = _chat_image_extension(data)
-    if ext not in _CHAT_IMAGE_ALLOWED_EXTENSIONS:
+    if ext not in _chat_image_allowed_extensions():
         raise HTTPException(status_code=400, detail="Unsupported image type")
     return data, mime_type, ext
 

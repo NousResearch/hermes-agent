@@ -43,7 +43,9 @@ def refusal_text(error: BaseException | str) -> str:
     reads exactly as before."""
     data = getattr(error, "data", None)
     data = data if isinstance(data, dict) else {}
-    field, detail = str(data.get("field") or "").strip(), str(data.get("detail") or "").strip()
+    from hermes_state_runtime import seal_display
+    field = seal_display(str(data.get("field") or "").strip())
+    detail = seal_display(str(data.get("detail") or "").strip())
     if not field and not detail:
         return str(error)
     return f"{error} ({field or 'unnamed field'}{': ' + detail if detail else ''})"

@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 import uuid
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_state_runtime import RuntimeStoreError, publish_client_value, published_key
 
 
 def validate_editor(source, editor):
@@ -16,13 +16,14 @@ def validate_editor(source, editor):
         return
     if source != 'acp':
         raise RuntimeStoreError('invalid_params', field='editor',
-                                detail=f'an editor policy is only accepted from an ACP launch, not {source}')
+                                detail='an editor policy is only accepted from an ACP launch, not '
+                                + publish_client_value(source))
     if not isinstance(editor, dict):
         raise RuntimeStoreError('invalid_params', field='editor',
                                 detail=f'must be a mapping, got {type(editor).__name__}')
     unknown = sorted(set(editor) - {'mcp_servers', 'edit_approval_policy'})
     if unknown:
-        raise RuntimeStoreError('invalid_params', field=f'editor.{unknown[0]}',
+        raise RuntimeStoreError('invalid_params', field=published_key('editor', unknown[0]),
                                 detail='unknown editor key')
     if editor.get('edit_approval_policy', 'ask') != 'ask':
         raise RuntimeStoreError('invalid_params', field='editor.edit_approval_policy',

@@ -372,6 +372,25 @@ class TestAzureFoundryModelApiMode:
         assert azure_foundry_model_api_mode("codex") == "codex_responses"
         assert azure_foundry_model_api_mode("codex-mini") == "codex_responses"
 
+    def test_gpt6_family_uses_responses(self):
+        """The gpt-6 Sol/Luna/Terra line is Responses-only on Foundry too.
+
+        Azure rejects function tools + reasoning_effort on /chat/completions for
+        these deployments with::
+
+            400 "Function tools with reasoning_effort are not supported for
+                 gpt-6-luna in /v1/chat/completions."
+
+        Verified against a live Foundry deployment on 2026-10-16: the identical
+        request returns 200 on /v1/responses. Without the ``gpt-6`` prefix the
+        deployment resolves to chat completions and every tool-using turn fails.
+        """
+        assert azure_foundry_model_api_mode("gpt-6-luna") == "codex_responses"
+        assert azure_foundry_model_api_mode("gpt-6-sol") == "codex_responses"
+        assert azure_foundry_model_api_mode("gpt-6-terra") == "codex_responses"
+        assert azure_foundry_model_api_mode("gpt-6.1-sol") == "codex_responses"
+
+
 
     def test_gpt4_family_returns_none(self):
         """GPT-4, GPT-4o, etc. speak chat completions on Azure."""

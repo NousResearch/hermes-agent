@@ -41,12 +41,27 @@ def test_idle_screen_is_stopped_but_a_used_or_held_one_is_not(tmp_path, monkeypa
     runtime.touch_activity()  # a computer_use action / browser spawn a moment ago
     assert runtime.stop_if_idle() is False and stops == []
 
-    _age(sd / "activity", 3600)
+    _age(sd / "activity", 1200)
     monkeypatch.setattr(lease, "get", lambda profile_key=None: lease.Lease(holder=lease.HUMAN, viewer_id="v1"))
     assert runtime.stop_if_idle() is False and stops == [], "a human mid-login is never timed out"
 
     monkeypatch.setattr(lease, "get", lambda profile_key=None: lease.Lease(holder=lease.AGENT))
     assert runtime.stop_if_idle() is True and stops == [True]
+
+
+def test_a_human_lease_keeps_the_screen_until_nothing_has_used_it_for_four_windows(tmp_path, monkeypatch):
+    """A viewer link that dropped (laptop lid, a dead gateway) keeps the human's lease forever, and a corrupt
+    lease reads as human: with nobody coming back the screen must still stop eventually."""
+    sd, stops = _running(monkeypatch, tmp_path)
+    monkeypatch.setattr(lease, "get", lambda profile_key=None: lease.Lease(holder=lease.HUMAN, viewer_id="v1"))
+    (sd / "activity").touch()
+    windows = runtime.HUMAN_LEASE_ABANDONED_WINDOWS
+
+    _age(sd / "activity", 600 * windows - 60)
+    assert runtime.stop_if_idle() is False and stops == [], "kept: a human may still be at it"
+
+    _age(sd / "activity", 600 * windows + 60)
+    assert runtime.stop_if_idle() is True and stops == [True], "abandoned: no use for four windows"
 
 
 def test_idle_stop_disabled_by_zero(tmp_path, monkeypatch):

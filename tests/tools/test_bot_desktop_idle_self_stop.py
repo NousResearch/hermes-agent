@@ -124,7 +124,7 @@ def test_a_screen_in_use_is_kept_and_a_returning_gateway_reattaches(abandoned_sc
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tools.bot_desktop import runtime
 
-    sd, launcher = abandoned_screen(idle_stop_minutes=0.02)
+    sd, launcher = abandoned_screen(idle_stop_minutes=0.05)  # 3 s; a human lease lapses after 4 windows (12 s)
     log = sd / "launcher.log"
 
     def checks_kept() -> int:
@@ -137,14 +137,6 @@ def test_a_screen_in_use_is_kept_and_a_returning_gateway_reattaches(abandoned_sc
     wait_until(lambda: kept_while_used(2), timeout=30, what="idle checks that keep a screen in use")
     assert _alive(launcher)
 
-    # A human holding the screen long past the window is never timed out.
-    (sd / "lease.json").write_text(json.dumps({"holder": "human", "viewer_id": "v", "epoch": 1}), encoding="utf-8")
-    old = time.time() - 3600
-    os.utime(sd / "activity", (old, old))
-    seen = checks_kept()
-    wait_until(lambda: checks_kept() > seen, timeout=30, what="an idle check while a human holds the screen")
-    assert _alive(launcher)
-
     # A gateway that comes back inside the window re-attaches to the same screen instead of starting another.
     monkeypatch.setattr(runtime, "missing_binaries", list)  # the stub X binaries are only on the launcher's PATH
     token = set_hermes_home_override(sd.parent)
@@ -153,5 +145,16 @@ def test_a_screen_in_use_is_kept_and_a_returning_gateway_reattaches(abandoned_sc
     finally:
         reset_hermes_home_override(token)
 
-    (sd / "lease.json").unlink()  # handed back; nobody uses it any more
-    wait_until(lambda: not _alive(launcher), timeout=30, what="the screen to stop once nobody holds it")
+    # A human holding the screen past the window is not timed out...
+    (sd / "lease.json").write_text(json.dumps({"holder": "human", "viewer_id": "v", "epoch": 1}), encoding="utf-8")
+    old = time.time() - 3.2
+    os.utime(sd / "activity", (old, old))
+    seen = checks_kept()
+    wait_until(lambda: checks_kept() >= seen + 2, timeout=30, what="idle checks while a human holds the screen")
+    assert _alive(launcher)
+
+    # ...but a human lease nothing has used for four windows (the viewer's link dropped and never came back)
+    # no longer keeps it.
+    old = time.time() - 3600
+    os.utime(sd / "activity", (old, old))
+    wait_until(lambda: not _alive(launcher), timeout=30, what="the screen to stop once its human lease is abandoned")

@@ -91,7 +91,10 @@ reverse proxy's access log may record an already-spent ticket.
   `bot_desktop.idle_stop_minutes` (default 30) and comes back on the next use, so
   an instance pays for a desktop only while something is on it. The screen
   applies that window itself too, so it also stops when the gateway that
-  started it is gone and never restarts. Practical guidance
+  started it is gone and never restarts. A screen a human has taken over is
+  kept while their viewer keeps it in use; once nothing has used it for four
+  windows (a viewer whose link dropped and never came back) it stops as well.
+  Practical guidance
   for small instances: 4 GB runs the desktop, 8 GB is where a takeover with a
   browser is comfortable.
 

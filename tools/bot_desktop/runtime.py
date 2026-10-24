@@ -423,6 +423,11 @@ def _should_auto_start(env: dict[str, str]) -> bool:
 # human holds it. Two callers apply it: the gateway's display watcher and the screen's own launcher
 # (``idle_watch``), so a screen whose gateway never came back still stops. The next use starts it again.
 DEFAULT_IDLE_STOP_MINUTES = 30
+# A human holding the screen is never timed out while there is evidence of one: an attached viewer stamps
+# ``activity`` (every RFB update it receives, at most once a minute; the panel clock repaints every minute).
+# A human lease with no stamp for this many windows is a link that dropped and never came back, or a
+# corrupt lease file (which reads as human): the screen is stopped like any idle one.
+HUMAN_LEASE_ABANDONED_WINDOWS = 4
 
 
 def touch_activity() -> None:
@@ -469,13 +474,14 @@ def _idle_due(launcher: Optional[tuple[int, float]]) -> Optional[float]:
     if idle is None or idle < limit:
         return None
     from tools.bot_desktop import lease as _bd_lease
-    if _bd_lease.get().holder == _bd_lease.HUMAN:
+    if _bd_lease.get().holder == _bd_lease.HUMAN and idle < limit * HUMAN_LEASE_ABANDONED_WINDOWS:
         return None
     return idle
 
 
 def stop_if_idle(launcher: Optional[tuple[int, float]] = None) -> bool:
-    """Stop this profile's screen when it has been idle past the limit and no human holds it. True when
+    """Stop this profile's screen when it has been idle past the limit and no human holds it (a human lease
+    with no use for ``HUMAN_LEASE_ABANDONED_WINDOWS`` windows counts as abandoned). True when
     it was stopped. ``launcher`` names the screen the caller judges (the launcher's own check passes it).
 
     The decision is taken again under ``start.lock`` before anything is killed: a check that waited on the

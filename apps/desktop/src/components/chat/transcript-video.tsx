@@ -1,7 +1,9 @@
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, useCallback, useEffect, useRef } from 'react'
+import { type ComponentProps, useCallback, useEffect } from 'react'
 
 import { $videoPlaybackSpeed, setVideoPlaybackSpeed } from '@/store/video-playback-speed'
+
+import { useMediaElementRef } from './use-media-element-ref'
 
 // Playback position per source, remembered across remounts. Transcript rows
 // legitimately unmount while a turn streams (the render-budget slice recycles
@@ -38,7 +40,7 @@ export function recallVideoPosition(src: string): { paused: boolean; time: numbe
 // device-level preference every later player (and other open windows) starts
 // from. Ported from block/buzz#7336.
 export function TranscriptVideo(props: ComponentProps<'video'>) {
-  const videoRef = useRef<HTMLVideoElement>(null)
+  const videoRef = useMediaElementRef<HTMLVideoElement>(props.src)
   const speed = useStore($videoPlaybackSpeed)
   const src = typeof props.src === 'string' ? props.src : ''
 
@@ -48,7 +50,7 @@ export function TranscriptVideo(props: ComponentProps<'video'>) {
     if (video) {
       video.playbackRate = speed
     }
-  }, [speed])
+  }, [speed, videoRef])
 
   // Restore the last position for this source when the element (re)mounts —
   // a remount mid-turn otherwise restarts the clip from the top.
@@ -102,7 +104,7 @@ export function TranscriptVideo(props: ComponentProps<'video'>) {
     if (video && video.playbackRate !== $videoPlaybackSpeed.get()) {
       setVideoPlaybackSpeed(video.playbackRate)
     }
-  }, [])
+  }, [videoRef])
 
   return <video onRateChange={onRateChange} ref={videoRef} {...props} preload={props.preload ?? 'none'} />
 }

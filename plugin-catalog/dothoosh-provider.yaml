@@ -1,0 +1,17 @@
+name: dothoosh-provider
+title: DotHoosh
+repo: https://github.com/Alirezajalilii/hermes-provider-dothoosh
+sha: a1256951b2fc57d8ddbf5c465243dda3a253cb73
+description: "DotHoosh AI gateway (Claude, GPT-6, Gemini, DeepSeek and Kimi, billed in Toman) as three model providers (OpenAI Chat Completions, OpenAI Responses, Anthropic Messages) with the model list, context windows and prices read live from the gateway. Disclosure — registers three model providers at import and nothing else (no tools, hooks, middleware, commands, threads or file access); prompts and DOTHOOSH_API_KEY go through Hermes' own client to gateway.dothoosh.com (DotHoosh, Iran); the plugin itself only issues GET requests for the model lists, context windows and prices, to the configured base URL with the key (read with get_secret) or, without a key, to the public mirror www.dothoosh.com; the key is never sent to the mirror, in a URL or across a redirect."
+maintainer: Alirezajalilii
+tier: community
+category: models
+requires_hermes: ">=0.22.5"
+version: "1.0.0"
+docs_url: https://github.com/Alirezajalilii/hermes-provider-dothoosh#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - DOTHOOSH_API_KEY

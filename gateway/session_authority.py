@@ -1396,6 +1396,8 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     # authority is published, so the recovery below only reads.
     from gateway.session_local_adoption import adopt_local_compressions
     await adopt_local_compressions(authority)
+    from gateway.session_local_reaper import reap_startup_local_sessions
+    await reap_startup_local_sessions(authority)
     if register:
         runner.session_authority = authority
     from gateway.session_cron import bind_owner

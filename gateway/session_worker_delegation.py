@@ -40,13 +40,26 @@ def _owned(conn, session_id, execution_id, delegation_id):
     row = conn.execute('SELECT * FROM async_delegations WHERE delegation_id=?', (delegation_id,)).fetchone()
     if row is None:
         raise RuntimeStoreError('not_found')
-    if row['parent_session_id'] != session_id or row['owner_execution_id'] != execution_id:
+    if row['parent_session_id'] != session_id:
+        raise RuntimeStoreError('permission_denied')
+    if row['owner_execution_id'] is None:
+        # Legacy / process-owned rows predate the execution fence (local CLI
+        # dispatch carries no execution context, so owner_execution_id is
+        # NULL). Parent-session scoping above is the only fence; cross-session
+        # reads are still denied.
+        return row
+    if row['owner_execution_id'] != execution_id:
         raise RuntimeStoreError('permission_denied')
     return row
 
 
 def _dispatch(db, conn, session_id, payload, *, execution_id, worker_pid, worker_birth):
     _shape(payload, {'delegation_id', 'task', 'dispatched_at', *_ROUTE})
+    # Never persist a NULL-owner row from this path: it would complete
+    # (NULL matches NULL) but no later read/claim/delivery with a real
+    # execution id could ever pass _owned, stranding the row as
+    # completed/pending with zero delivery attempts. Fail loudly instead.
+    _text(execution_id)
     _text(payload['delegation_id'])
     _number(payload['dispatched_at'])
     if not isinstance(payload['task'], dict) or set(payload['task']) - _TASK_KEYS:

@@ -1927,10 +1927,11 @@ class GatewayAdapterLifecycleMixin:
 
     def _make_adapter_auth_check(
         self, platform: Platform, profile_name: Optional[str] = None
-    ) -> Callable[[str, Optional[str], Optional[str]], bool]:
+    ) -> Callable[..., bool]:
         """Platform-bound auth callback for adapters (prompt-injection mitigation for fetched
         context); delegates to :meth:`_is_user_authorized`. ``profile_name`` binds a secondary to
-        its scope; for the shared primary (None) the routed profile is stamped so its pairing store
+        its scope; a supplied full source is retained. For the shared primary (None), the routed
+        profile is stamped so its pairing store
         is consulted while allowlist reads stay under the transport home.
 
         Without this an inline-button caller approved only in the routed profile's pairing store was denied
@@ -1949,10 +1950,11 @@ class GatewayAdapterLifecycleMixin:
         def check(
             user_id: str, chat_type: Optional[str] = None, chat_id: Optional[str] = None, *,
             is_bot: bool = False, thread_id: Optional[str] = None,
+            source: Optional[SessionSource] = None,
         ) -> bool:
             if not user_id:
                 return False
-            source = SessionSource(
+            source = source if source is not None else SessionSource(
                 platform=platform, chat_id=chat_id or "", chat_type=chat_type or "group",
                 user_id=user_id, thread_id=thread_id, is_bot=bool(is_bot), profile=profile_name,
             )

@@ -1957,7 +1957,7 @@ class BasePlatformAdapter(ABC):
         # shared listener (/p/<profile>/...) instead of binding a port (gateway/platforms/shared_ingress.py).
         self._shared_listener_profile: Optional[str] = None
         # Registered by GatewayRunner (see set_authorization_check).
-        self._authorization_check: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None
+        self._authorization_check: Optional[Callable[..., bool]] = None
         # Auto-TTS on voice input: ``voice.auto_tts`` default plus per-chat /voice on|tts / off.
         self._auto_tts_default: bool = False
         self._auto_tts_enabled_chats, self._auto_tts_disabled_chats = set(), set()
@@ -2355,36 +2355,24 @@ class BasePlatformAdapter(ABC):
         self._reaction_handler = handler
 
     def set_authorization_check(
-        self, callback: Optional[Callable[[str, Optional[str], Optional[str]], bool]]) -> None:
+        self, callback: Optional[Callable[..., bool]]) -> None:
         """Register ``(user_id, chat_type, chat_id) -> bool``; adapters pulling external context
-        (Slack thread replies) use it to flag non-allowlisted senders as unverified background."""
+        (Slack thread replies) use it to flag non-allowlisted senders as unverified background.
+        Callbacks may accept keyword-only ``source`` for the full inbound routing identity."""
         self._authorization_check = callback
 
     def _is_sender_authorized(self, user_id: Optional[str], chat_type: Optional[str] = None,
                               chat_id: Optional[str] = None, *, is_bot: bool = False,
-                              thread_id: Optional[str] = None) -> Optional[bool]:
-        """True/False from the registered check, or None when no check exists ("trust unknown",
-        legacy). ``is_bot``/``thread_id`` are forwarded as keywords only when set so legacy
-        three-positional callbacks keep working. Only literal booleans propagate: a truthy
-        non-boolean is "unknown", never an authorization that gates a credentialed side effect."""
-        if not user_id or self._authorization_check is None:
-            return None
-        extra: dict[str, Any] = {}
-        if is_bot:
-            extra["is_bot"] = True
-        if thread_id is not None:
-            extra["thread_id"] = thread_id
-        try:
-            result = self._authorization_check(user_id, chat_type, chat_id, **extra)
-        except Exception:
-            logger.warning("[%s] Authorization check raised for user %s; treating as unknown",
-                           self.name, user_id, exc_info=True)
-            return None
-        if result is True or result is False:
-            return result
-        logger.warning("[%s] Authorization check returned %s for user %s; treating as unknown",
-                       self.name, type(result).__name__, user_id)
-        return None
+                              thread_id: Optional[str] = None,
+                              source: Optional[SessionSource] = None) -> Optional[bool]:
+        """Return True/False or unknown; a supplied source retains the full inbound identity.
+
+        Legacy callbacks keep their arguments. Only literal booleans authorize side effects.
+        """
+        from gateway.platforms.base_authorization import check_sender_authorization
+        return check_sender_authorization(
+            self, user_id, chat_type, chat_id,
+            is_bot=is_bot, thread_id=thread_id, source=source)
 
     def set_session_store(self, session_store: Any) -> None:
         """Set the session store (e.g. Slack checks for an active thread session

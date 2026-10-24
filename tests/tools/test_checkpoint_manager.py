@@ -490,6 +490,97 @@ class TestSafeRestore:
         assert corpus.read_bytes().startswith(b"agent appended")
         assert "corpus.jsonl" in result.get("skipped_oversize", [])
 
+    def test_safe_restore_does_not_delete_a_file_matched_by_an_oversize_glob_name(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """An oversize name must reach `git rm --cached` as a literal pathspec (#135605).
+
+        `a[12].bin` oversize + `a1.bin` small: a bare name is also a glob, so
+        the rm unstaged the sibling too, the checkpoint held only main.py, and
+        safe restore deleted `a1.bin` as an agent-created file.
+        """
+        m = self._capped_mgr(checkpoint_base, monkeypatch)
+        small = work_dir / "a1.bin"
+        small.write_text("original small file\n")
+        (work_dir / "a[12].bin").write_bytes(b"x" * (2 * 1024 * 1024))
+        base = self._checkpoint(m, work_dir)
+
+        ok, files, _ = _run_git(
+            ["ls-tree", "-r", "--name-only", _ref_name(_project_hash(str(work_dir)))],
+            _store_path(checkpoint_base), str(work_dir),
+        )
+        assert ok
+        names = set(files.splitlines())
+        assert "a1.bin" in names, "sibling matched by the oversize name's glob was dropped"
+        assert "a[12].bin" not in names
+
+        small.write_text("edited by the agent\n")
+        m.record_agent_write(str(small))
+
+        result = m.restore(str(work_dir), base, safe=True)
+
+        assert result["success"] is True
+        assert small.read_text() == "original small file\n"
+        assert "a1.bin" in result["restored_files"]
+
+    def test_literal_removal_holds_under_inherited_literal_pathspec_env(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """GIT_LITERAL_PATHSPECS=1 in the launch environment must not defeat the cap (#135605).
+
+        Under that env Git ignores pathspec magic, so a :(literal)-prefixed
+        name is read as filename text: the removal no-ops (rc 128 allowed)
+        and the oversize file stays in the snapshot.
+        """
+        monkeypatch.setenv("GIT_LITERAL_PATHSPECS", "1")
+        m = self._capped_mgr(checkpoint_base, monkeypatch)
+        small = work_dir / "a1.bin"
+        small.write_text("original small file\n")
+        (work_dir / "a[12].bin").write_bytes(b"x" * (2 * 1024 * 1024))
+        assert m.ensure_checkpoint(str(work_dir), "initial") is True
+
+        ok, files, _ = _run_git(
+            ["ls-tree", "-r", "--name-only", _ref_name(_project_hash(str(work_dir)))],
+            _store_path(checkpoint_base), str(work_dir),
+        )
+        assert ok
+        names = set(files.splitlines())
+        assert "a1.bin" in names
+        assert "a[12].bin" not in names, (
+            "an inherited literal-pathspec env must not bypass the size cap"
+        )
+        assert small.read_text() == "original small file\n"
+
+    def test_safe_restore_does_not_expand_a_glob_in_the_restore_target(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        """Checkout of plan targets must use literal identity too (#135605 review F1).
+
+        The plan selects only the agent-edited `a[12].txt`, but a bare name
+        expands as a glob at checkout: the user-edited sibling `a1.txt` is
+        overwritten with checkpoint bytes while being reported skipped.
+        """
+        m = self._capped_mgr(checkpoint_base, monkeypatch)
+        target = work_dir / "a[12].txt"
+        sibling = work_dir / "a1.txt"
+        target.write_text("original target\n")
+        sibling.write_text("original sibling\n")
+        base = self._checkpoint(m, work_dir)
+
+        target.write_text("agent edit\n")
+        m.record_agent_write(str(target))
+        sibling.write_text("USER EDIT MUST SURVIVE\n")
+
+        result = m.restore(str(work_dir), base, safe=True)
+
+        assert result["success"] is True
+        assert "a[12].txt" in result["restored_files"]
+        assert target.read_text() == "original target\n"
+        assert sibling.read_text() == "USER EDIT MUST SURVIVE\n", (
+            "checkout expanded the glob target and overwrote a skipped user edit"
+        )
+        assert "a1.txt" in result["skipped_user_edits"]
+
     def test_safe_restore_does_not_report_a_kept_file_as_restored(
         self, work_dir, checkpoint_base, monkeypatch,
     ):

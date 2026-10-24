@@ -960,6 +960,8 @@ session_search(session_id="20260510_174648_805cc2")
 
 Returns the whole session, or a bounded head/tail view for large sessions. This shape is also used to resolve an `@session:<profile>/<id>` link.
 
+Every shape takes `profile=<name>` to read another profile's sessions (read-only). `session_search.allow_profiles` decides which profiles that may be: `["*"]` (the default) allows every profile, a list allows only the profiles it names, and `[]` keeps each profile to its own sessions — useful when profiles belong to different people or teams. A profile can always read its own sessions.
+
 **4. Browse — no args:**
 
 ```python

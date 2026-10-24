@@ -71,6 +71,8 @@ async def admit_heartbeat(runner, adapter, source, session_id, route):
         metadata={'gateway_session_key': route, 'gateway_session_id': session_id})
     event._heartbeat_session_id = session_id
     try:
+        from gateway.session_automation import _canonicalize_producer_source
+        _canonicalize_producer_source(runner, authority, event, identity)
         await authority.admit_automation(adapter, event, identity)
     except BaseException:
         # Readiness is not a delivery attempt, and cancellation before commit is not ACK.

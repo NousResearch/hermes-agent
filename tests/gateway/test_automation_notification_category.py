@@ -231,16 +231,14 @@ async def test_native_completion_wake_refuses_another_adapter(tmp_path, monkeypa
 async def test_refused_watch_wake_logs_the_refusal_code(tmp_path, monkeypatch, caplog):
     """A refused wake used to requeue silently; the refusal code is what diagnoses it (#138940)."""
     import logging
-    from gateway.session_identity import replace_source
     from gateway.wake import WakeNotAccepted
-    runner, authority, _adapter, source, metadata = await _native_owner(tmp_path, monkeypatch, 'human')
+    runner, authority, _adapter, _source, metadata = await _native_owner(tmp_path, monkeypatch, 'human')
     try:
         route = metadata['gateway_session_key']
-        # Point the routing entry at a renamed user: the wake's source no longer matches the commit.
-        runner.session_store._entries[route].origin = replace_source(source, user_name='renamed')
+        # A foreign session pin must still be refused even when the producer borrows its source.
         evt = {'type': 'completion', 'session_id': 'proc_x', 'session_key': route, 'platform': 'discord',
                'chat_id': '42', 'chat_type': 'dm', 'exit_code': 0, 'output': 'done', 'started_at': 1.0,
-               'parent_session_id': metadata['gateway_session_id']}
+               'parent_session_id': 'unrelated-session'}
         with caplog.at_level(logging.WARNING, logger='gateway.run'):
             with pytest.raises(WakeNotAccepted):
                 await runner._inject_watch_notification('[done]', evt, raise_not_accepted=True)

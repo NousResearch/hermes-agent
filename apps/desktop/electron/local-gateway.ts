@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 
+import { desktopBackendSpawnEnv } from './backend-spawn-env'
 import { profileCollectionRoute, profileRouteSuffix } from './profile-routes'
 import { hiddenWindowsChildOptions, windowsShellCommand } from './windows-child-options'
 
@@ -17,9 +18,13 @@ export function runGatewayEnsure(
   { timeoutMs = GATEWAY_ENSURE_PROTOCOL_DEADLINE_MS + GATEWAY_ENSURE_CLIENT_GRACE_MS, label = 'hermes gateway ensure' }: { timeoutMs?: number; label?: string } = {}
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
+    // Scrub after merging: either the Desktop parent or the runtime overlay can
+    // carry the launching agent's current-session identity.
+    const env = desktopBackendSpawnEnv({ ...parentEnv, HERMES_HOME: home, ...backend.env })
+
     // shell: true hands cmd.exe one command line it cuts at the first unquoted space,
     // so an install under `C:\Users\John Doe\...` must arrive quoted (#74064).
-    const child = spawn(windowsShellCommand(backend.command, Boolean(backend.shell)), backend.args, hiddenWindowsChildOptions({ cwd, env: { ...parentEnv, HERMES_HOME: home, ...backend.env }, shell: backend.shell, stdio: ['ignore', 'pipe', 'pipe'] }))
+    const child = spawn(windowsShellCommand(backend.command, Boolean(backend.shell)), backend.args, hiddenWindowsChildOptions({ cwd, env, shell: backend.shell, stdio: ['ignore', 'pipe', 'pipe'] }))
     let stdout = ''
     let stderr = ''
     let expired: Error | undefined

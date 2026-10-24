@@ -5,6 +5,32 @@ import { expect, test, vi } from 'vitest'
 import { createLocalGatewayDials, ensureLocalGateway, nativeGrantRoute, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
 import { shortSocketTmpDir } from './local-gateway.test-helpers'
 
+test('the gateway client cannot inherit a foreign session from either environment layer', async () => {
+  const keys = ['CODEX_THREAD_ID', 'CODEX_SESSION_ID', 'CLAUDE_SESSION_ID', 'CODEX_HOME', 'HERMES_HOME', 'HERMES_SESSION_ID']
+
+  const result = await runGatewayEnsure(
+    {
+      command: process.execPath,
+      args: ['-e', `process.stdout.write(JSON.stringify(Object.fromEntries(${JSON.stringify(keys)}.map(key => [key, process.env[key] ?? null]))))`],
+      env: { CODEX_SESSION_ID: 'runtime-overlay-session' },
+      shell: false
+    },
+    process.cwd(),
+    '/tmp/hermes-profile',
+    { PATH: process.env.PATH, CODEX_THREAD_ID: 'parent-thread', CLAUDE_SESSION_ID: 'parent-session', CODEX_HOME: '/tmp/codex-config', HERMES_SESSION_ID: 'hermes-session' }
+  )
+
+  expect(result.code).toBe(0)
+  expect(JSON.parse(result.stdout)).toEqual({
+    CODEX_THREAD_ID: null,
+    CODEX_SESSION_ID: null,
+    CLAUDE_SESSION_ID: null,
+    CODEX_HOME: '/tmp/codex-config',
+    HERMES_HOME: '/tmp/hermes-profile',
+    HERMES_SESSION_ID: 'hermes-session'
+  })
+})
+
 test('the ensure client inherits the caller-scrubbed parent env, not the raw Desktop env', async () => {
   // #68367: a sibling profile's `gateway ensure` must not see the launch profile's dotenv
   // credentials. The parent env passed in IS the environment; only HERMES_HOME and the

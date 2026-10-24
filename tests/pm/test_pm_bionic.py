@@ -118,7 +118,13 @@ def test_registered_bionic_stage_preserves_host_facts(tmp_path, monkeypatch, loc
         cached.mkdir(parents=True)
         (cached / "fixture.deb").write_bytes(deb.read_bytes())
 
+    real_run = __import__("subprocess").run
     def no_exec(*args, **kwargs):
+        # darwin legitimately ad-hoc codesigns the staged native python
+        # (macos_signing); the guard patches the shared subprocess module.
+        argv = args[0] if args else kwargs.get("args") or []
+        if argv and "codesign" in str(argv[0]):
+            return real_run(*args, **kwargs)
         pytest.fail(f"cross-target staging executed foreign bytes: {args}")
 
     monkeypatch.setattr("pm.packages.subprocess.run", no_exec)

@@ -15,6 +15,7 @@ for any future entitlement-gated Codex slug that ships before Hermes catalogs
 it.
 """
 
+import time
 from unittest.mock import patch
 
 from hermes_cli.model_switch import switch_model
@@ -59,3 +60,56 @@ def test_switch_model_allows_openai_codex_model_missing_from_listing():
     assert result.new_model == "gpt-5.3-codex-spark"
     assert result.target_provider == "openai-codex"
     assert result.warning_message
+
+
+def test_switch_model_rejects_codex_model_benched_for_every_live_credential():
+    """A remembered entitlement rejection must stop a repeat `/model` switch locally."""
+    from agent.credential_pool import PooledCredential
+
+    entry = PooledCredential(
+        provider="openai-codex", id="codex-account", label="Codex", auth_type="oauth",
+        priority=0, source="manual", access_token="token",
+        model_cooldowns={"gpt-5.4-mini": time.time() + 3600},
+    )
+    with (
+        patch("agent.credential_pool.load_pool", return_value=type("Pool", (), {
+            "entries": lambda self: [entry],
+        })()),
+        patch("hermes_cli.models.provider_model_ids", return_value=["gpt-5.4-mini"]),
+    ):
+        result = switch_model(
+            "gpt-5.4-mini", current_provider="openai-codex", current_model="gpt-5.4",
+            current_base_url="", current_api_key="token", user_providers=None,
+        )
+
+    assert result.success is False
+    assert "remembered unsupported" in result.error_message
+
+
+def test_switch_model_keeps_codex_model_available_when_another_credential_is_unbenched():
+    """One account's remembered rejection must not hide another eligible account."""
+    from agent.credential_pool import PooledCredential
+
+    entries = [
+        PooledCredential(
+            provider="openai-codex", id="benched", label="Benched", auth_type="oauth",
+            priority=0, source="manual", access_token="first-token",
+            model_cooldowns={"gpt-5.4-mini": time.time() + 3600},
+        ),
+        PooledCredential(
+            provider="openai-codex", id="eligible", label="Eligible", auth_type="oauth",
+            priority=1, source="manual", access_token="second-token",
+        ),
+    ]
+    with (
+        patch("agent.credential_pool.load_pool", return_value=type("Pool", (), {
+            "entries": lambda self: entries,
+        })()),
+        patch("hermes_cli.models.provider_model_ids", return_value=["gpt-5.4-mini"]),
+    ):
+        result = switch_model(
+            "gpt-5.4-mini", current_provider="openai-codex", current_model="gpt-5.4",
+            current_base_url="", current_api_key="first-token", user_providers=None,
+        )
+
+    assert result.success is True

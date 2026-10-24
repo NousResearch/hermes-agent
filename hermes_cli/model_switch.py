@@ -1625,6 +1625,12 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
             provider_label=st.provider_label,
         )
 
+    if _codex_model_is_benched_for_all_live_credentials(st.target_provider, st.new_model):
+        return st.fail_on_target(
+            f"`{st.new_model}` is remembered unsupported on every available Codex account. "
+            "Run `hermes auth reset` after the account entitlement changes."
+        )
+
     if st.target_provider.strip().lower() == "ollama":
         headers = {} if st.suppress_ollama_headers else (st.validation_headers or _get_ollama_request_headers())
     else:
@@ -1660,6 +1666,29 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
         validation = {"accepted": True, "persist": True, "recognized": False, "message": validation.get("message", "")}
     st.validation = validation
     return None
+
+
+def _codex_model_is_benched_for_all_live_credentials(provider: str, model: str) -> bool:
+    """Whether each live Codex credential remembers an entitlement rejection for ``model``.
+
+    A per-model cooldown is account-scoped evidence, unlike a transient catalog
+    miss.  Read the pool without selecting or refreshing credentials, and fail
+    open if it cannot be inspected so `/model` retains its existing offline
+    behavior.
+    """
+    if provider.strip().lower() != "openai-codex":
+        return False
+    try:
+        from agent.credential_pool import STATUS_DEAD, load_pool
+        from agent.credential_pool_model_cooldowns import model_cooldown_until
+
+        entries = [
+            entry for entry in load_pool("openai-codex").entries()
+            if entry.last_status != STATUS_DEAD and entry.runtime_api_key
+        ]
+        return bool(entries) and all(model_cooldown_until(entry, model) is not None for entry in entries)
+    except Exception:
+        return False
 
 
 def _copilot_api_mode(provider: str, model: str, api_key: str) -> str:

@@ -1,4 +1,48 @@
 """Job-level visibility for a recovered, acknowledged worker death."""
+import logging
+
+
+def observe_worker_execution(execution_id: str):
+    """An unavailable observation is not a terminal worker outcome.
+
+    The live waiter retries on its next process wait. Unexpected failures still
+    surface; the post-handoff caller must preserve ownership in either case.
+    """
+    import sqlite3
+    from cron import scheduler
+
+    try:
+        return scheduler.get_execution(execution_id)
+    except sqlite3.OperationalError as exc:
+        code = getattr(exc, 'sqlite_errorcode', None)
+        if ((code is not None and (code & 0xff) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED))
+                or str(exc).lower() in ('database is locked', 'database table is locked')):
+            scheduler.logger.warning("Cron worker %s: execution observation busy; retaining ownership", execution_id)
+            return None
+        raise
+
+
+
+def worker_execution_terminal(execution_id: str) -> bool:
+    from cron import scheduler
+
+    current = observe_worker_execution(execution_id)
+    return bool(current and current.get("status") in scheduler._TERMINAL_STATES)
+
+
+def preserve_adopted_worker_outcome(job, handoff_error, *, adapters=None, loop=None):
+    """Observation failure is not worker death or authority to clear its claim."""
+    from cron.scheduler import logger
+
+    try:
+        if record_unknown_worker_outcome(job, error=str(handoff_error), adapters=adapters, loop=loop):
+            return
+    except Exception:
+        logging.exception("Job '%s': unable to observe adopted worker outcome", job['id'])
+    logger.error(
+        "Job '%s': Restart-safe cron worker failed after handoff: %s; worker ownership preserved",
+        job['id'], handoff_error,
+    )
 
 
 def record_unknown_worker_outcome(

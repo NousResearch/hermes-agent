@@ -1294,11 +1294,10 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
             os.kill(worker_pid, signal.SIGKILL)
 
 
-def test_post_handoff_waiter_failure_records_bookkeeping_without_alert(
+def test_post_handoff_waiter_failure_preserves_uncertain_ownership(
     execution_ledger, monkeypatch
 ):
-    """Once the worker is spawned it may own the row and send its own notice: a
-    waiter failure must only record bookkeeping, never a false dispatch incident."""
+    """An observer failure cannot establish worker death or authorize terminal writes."""
     from cron import incidents
     from cron import scheduler
 
@@ -1323,9 +1322,8 @@ def test_post_handoff_waiter_failure_records_bookkeeping_without_alert(
 
     assert incidents.list_incidents() == []
     assert delivered == []
-    assert len(marks) == 1 and marks[0][0][1] is False
-    assert marks[0][0][2].startswith("Restart-safe cron worker failed after handoff: ")
-    assert execution_ledger.get_execution(record["id"])["status"] == "failed"
+    assert marks == []
+    assert execution_ledger.get_execution(record["id"])["status"] == "claimed"
 
 
 def test_restart_wait_counts_exclude_only_scoped_workers(tmp_path, monkeypatch):

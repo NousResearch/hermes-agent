@@ -35,6 +35,30 @@ def _parse_wake_gate(script_output: str) -> bool:
     return not isinstance(gate, dict) or gate.get("wakeAgent", True) is not False
 
 
+def content_gate_failure(script_output: str):
+    """Opt-in BLOCKED content is a failed job, not a silent successful skip.
+
+    Legacy wake gates retain their semantics. A process exit of zero only
+    proves the preflight ran; the normal failure lane may deliver its labelled
+    notification without pretending content was produced.
+    """
+    lines = [line for line in (script_output or '').splitlines() if line.strip()]
+    try:
+        gate = json.loads(lines[-1])
+    except (IndexError, ValueError):
+        return None
+    if not isinstance(gate, dict) or gate.get('contentOutcome') != 'BLOCKED':
+        return None
+    reason = str(gate.get('reason') or 'content admission rejected')
+    if gate.get('wakeAgent') is not False or gate.get('state') != 'BLOCKED':
+        reason = 'invalid content admission envelope'
+    error = 'CONTENT_BLOCKED: ' + reason
+    response = '[CRON_FAILURE]\n' + error
+    document = ('**Content outcome:** BLOCKED\n**Preflight process:** completed\n'
+                '**Agent:** not started\n\n' + response + '\n')
+    return False, document, response, error
+
+
 def _prepend_context_block(prompt: str, heading: str, intro: str, body: str) -> str:
     """Prefix ``prompt`` with a fenced ``## heading`` data block."""
     return f"## {heading}\n{intro}\n\n```\n{body}\n```\n\n{prompt}"

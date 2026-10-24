@@ -2297,6 +2297,10 @@ def _prepare_job_prompt(
             cancel_event=cancel_event,
         )
         _ran_ok, _script_output = prerun_script
+        from cron.scheduler_prompt import content_gate_failure
+        blocked = content_gate_failure(_script_output) if _ran_ok else None
+        if blocked is not None:
+            return blocked, None
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info("Job '%s' (ID: %s): wakeAgent=false, skipping agent run", job_name, job_id)
             note_cron_skipped(job)
@@ -2837,17 +2841,15 @@ def run_one_job(
         try:
             handed_off = _launch_external_cron_worker(job)
         except Exception as handoff_error:
-            # Arbitrary waiter errors must not claim dispatch failure or resend
-            # a worker's notice. A recovered unknown execution is different:
-            # its worker never committed a terminal outcome.
+            # An observation failure does not transfer adopted-worker authority.
             post_handoff = isinstance(handoff_error, _ExternalWorkerPostHandoffError)
             stage = "failed after handoff" if post_handoff else "dispatch failed"
             error = f"Restart-safe cron worker {stage}: {handoff_error}"
             if post_handoff:
-                from cron.scheduler_worker_failure import record_unknown_worker_outcome
+                from cron.scheduler_worker_failure import preserve_adopted_worker_outcome
 
-                if record_unknown_worker_outcome(job, error=str(handoff_error), adapters=adapters, loop=loop):
-                    return True
+                preserve_adopted_worker_outcome(job, handoff_error, adapters=adapters, loop=loop)
+                return True
             logger.error("Job '%s': %s", job["id"], error)
             claim = job.get("fire_claim")
             owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
@@ -3514,9 +3516,7 @@ def _wait_for_external_cron_worker_body(
     A gateway replacement may kill this waiter; it does not kill the scoped
     worker or change its ledger ownership.
     """
-    def _is_terminal() -> bool:
-        current = get_execution(execution_id)
-        return bool(current and current.get("status") in _TERMINAL_STATES)
+    from cron.scheduler_worker_failure import worker_execution_terminal
 
     # The worker commits its terminal row before its process exits, so exit is
     # the correct wakeup.  Each ledger read opens a connection and re-runs
@@ -3526,7 +3526,7 @@ def _wait_for_external_cron_worker_body(
         try:
             returncode = process.wait(timeout=1.0)
         except subprocess.TimeoutExpired:
-            if not _is_terminal():
+            if not worker_execution_terminal(execution_id):
                 continue
             # Recovery can win between the timeout and this ledger read. If
             # the worker has since exited, consume its diagnostics below before

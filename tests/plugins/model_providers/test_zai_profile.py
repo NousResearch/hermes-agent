@@ -203,6 +203,40 @@ class TestZaiGLM53ReasoningEffort:
         assert top_level == {"reasoning_effort": "low"}
 
 
+class TestZaiFallbackModels:
+    """The curated fallback list tracks the live catalog, not a frozen snapshot.
+
+    When the live ``/v1/models`` fetch fails, ``fallback_models`` is what the picker
+    serves (flagged ``fallback: true`` in the provider-models disk cache). A fallback
+    that omits a shipping model makes that model vanish from the picker during an
+    outage — right when a session may already have been switched off it by fallback
+    routing, leaving no way to switch back.
+    """
+
+    def test_fallback_covers_headline_releases(self, zai_profile):
+        """Every GLM release generation the live catalog serves has a fallback row:
+        the newest generation's flagship AND its -flash/-flashx variants (verified
+        against api.z.ai/api/coding/paas/v4/models, Oct 2026)."""
+        fallback = set(zai_profile.fallback_models)
+        for model in ("glm-5.3", "glm-5.3-flash", "glm-5.3-flashx", "glm-5.2"):
+            assert model in fallback, f"{model} missing from zai fallback_models"
+
+    def test_fallback_entries_are_currently_served(self, zai_profile):
+        """Contract with the live catalog: a fallback row must be a model Z.AI still
+        serves. glm-4-9b predates the GLM-4.5 API generation and is not on the
+        endpoint — it must not linger in the fallback (offering it during an outage
+        routes users into guaranteed-404 picks)."""
+        fallback = zai_profile.fallback_models
+        assert "glm-4-9b" not in fallback
+
+    def test_fallback_ordered_newest_first(self, zai_profile):
+        """Newest generation leads so the degraded picker still surfaces current
+        flagships at the top."""
+        models = list(zai_profile.fallback_models)
+        flagship_indices = [models.index(m) for m in ("glm-5.3", "glm-5.2", "glm-5")
+                            if m in models]
+        assert flagship_indices == sorted(flagship_indices)
+
 
 class TestZaiModelGating:
     """GLM 4.5+ get thinking; earlier GLM models are left untouched."""

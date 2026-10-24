@@ -814,8 +814,22 @@ class AuthorityConnection:
 
     async def cancel(self, ref, params):
         admission_id = params.get('admission_id')
-        if (await self.authority.receipt(self.actor, ref, admission_id)).status != 'queued':
-            return asdict(await self.authority.cancel_queued(self.actor, ref, admission_id))  # started: unaffected
+        receipt = await self.authority.receipt(self.actor, ref, admission_id)
+        from hermes_state_runtime import get_session_admission
+        # A transferred steer also reads started (as its receiving claim): only its own claim is stopped here;
+        # the transfer is refused below and settles with that claim.
+        if receipt.status == 'started' and get_session_admission(
+                self.authority.db, admission_id=admission_id)['status'] == 'started':
+            # Stopped in this RPC: an editor that exits right after its cancel never sends a follow-up
+            # interrupt. A stale generation means the turn already settled.
+            try:
+                await self.interrupt(ref, {'execution_generation': receipt.execution_generation})
+            except RuntimeStoreError as exc:
+                if exc.reason != 'stale_generation':
+                    raise
+            return asdict(await self.authority.receipt(self.actor, ref, admission_id))
+        if receipt.status != 'queued':
+            return asdict(await self.authority.cancel_queued(self.actor, ref, admission_id))
         # Queued at this read, claimed by the drain before the cancel commit: Stop that exact claim (as
         # API and ACP do) instead of refusing while the withdrawn prompt runs.
         row = await self.authority.cancel_or_claimed(self.actor, ref, admission_id)

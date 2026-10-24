@@ -1,0 +1,393 @@
+{
+  "format": "normalized-selected-tools-list-v1",
+  "contract_epoch": "cua-driver-0.33",
+  "observed_reported_version": "0.33.1",
+  "capability_version": "",
+  "observed_tool_count": 4,
+  "tools": [
+    {
+      "capabilities": [],
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "description": "Accessibility action for an element_token target. \"expand\" opens the element through UIA ExpandCollapsePattern, or clicks the dropdown half of an MSAA split button. Omit for the default invoke.",
+            "type": "string"
+          },
+          "button": {
+            "description": "Mouse button. Default \"left\".",
+            "enum": [
+              "left",
+              "right",
+              "middle"
+            ],
+            "type": "string"
+          },
+          "capture_id": {
+            "description": "Optional ID from get_window_state or get_desktop_state. When present, x and y are admitted against that exact capture and the ID is consumed before native dispatch.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "count": {
+            "description": "Click count \u2014 1 (single), 2 (double), 3 (triple). Default 1.",
+            "maximum": 3,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "delivery_mode": {
+            "description": "Input delivery mode. 'background' (default) never swaps foreground: it routes through UIA Invoke / PostMessage and the window is never raised. For targets whose input stack silently drops posted events (Chromium/Electron content, GTK buttons, VCL/LibreOffice accelerators) the tool returns a structured background_unavailable error rather than fronting. 'foreground' is the explicit escalation: a brief SetForegroundWindow swap + SendInput, restoring the prior foreground afterward. IMPORTANT: 'background' is not a hint to weigh \u2014 it is the mandatory first attempt. Do NOT pass 'foreground' preemptively because a target 'looks like' GTK/Chromium/Electron; the DRIVER decides when background is impossible and tells you so via a background_unavailable error (or a verified no-op). Only THEN re-issue the same action with 'foreground'. The lists above are the driver's detectors, not a checklist for you to front on a guess \u2014 fronting up-front needlessly steals the user's focus and is a bug, not a shortcut. Matches the macOS delivery_mode surface.",
+            "enum": [
+              "background",
+              "foreground"
+            ],
+            "type": "string"
+          },
+          "element_token": {
+            "description": "Opaque per-snapshot element handle from `structuredContent.elements[].element_token`. Returns an explicit stale error naming the current snapshots once a newer read supersedes it.",
+            "pattern": "^s[0-9a-f]{8}:[0-9]+$",
+            "type": "string"
+          },
+          "from_zoom": {
+            "description": "When true, x and y are pixel coordinates in the last `zoom` image for this pid. The driver maps them back to window coords.",
+            "type": "boolean"
+          },
+          "modifier": {
+            "description": "Modifier keys held during the action: cmd, shift, option/alt, ctrl.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "pid": {
+            "description": "Target process ID for window scope. Omit with scope=desktop for screen-absolute coordinates from get_desktop_state.",
+            "type": "integer"
+          },
+          "scope": {
+            "default": "window",
+            "description": "Coordinate frame (default \"window\"). Pass \"desktop\" with x,y and no pid/window_id for a screen-absolute click in get_desktop_state coordinates.",
+            "enum": [
+              "window",
+              "desktop"
+            ],
+            "type": "string"
+          },
+          "session": {
+            "description": "For multi-call work, prefer a short public session label and repeat it on every call that accepts it. Omit it to use the authenticated transport's implicit lifecycle session.",
+            "type": "string"
+          },
+          "target": {
+            "description": "Exact capture/input target selected independently for each action.\n\n`display_id=\"primary\"` is the portable desktop target in this release.\nPlatforms that cannot address another display reject it explicitly rather\nthan silently changing coordinate spaces.",
+            "oneOf": [
+              {
+                "additionalProperties": true,
+                "properties": {
+                  "kind": {
+                    "const": "window",
+                    "type": "string"
+                  },
+                  "pid": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "window_id": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "pid",
+                  "window_id"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": true,
+                "properties": {
+                  "display_id": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "desktop",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "display_id"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "window_id": {
+            "description": "HWND of the target window. Omit when element_token is supplied (the token carries it).",
+            "type": "integer"
+          },
+          "x": {
+            "description": "X in window-local screenshot pixels \u2014 same space as the PNG get_window_state returns. Must be provided together with y.",
+            "type": "number"
+          },
+          "y": {
+            "description": "Y in window-local screenshot pixels. Must be provided together with x.",
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "name": "click"
+    },
+    {
+      "capabilities": [],
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "description": "Number of scroll ticks. Default 3.",
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "by": {
+            "description": "Scroll granularity. Default: line.",
+            "enum": [
+              "line",
+              "page"
+            ],
+            "type": "string"
+          },
+          "delivery_mode": {
+            "description": "Input delivery mode. 'background' (default) never swaps foreground: it routes through UIA Invoke / PostMessage and the window is never raised. For targets whose input stack silently drops posted events (Chromium/Electron content, GTK buttons, VCL/LibreOffice accelerators) the tool returns a structured background_unavailable error rather than fronting. 'foreground' is the explicit escalation: a brief SetForegroundWindow swap + SendInput, restoring the prior foreground afterward. IMPORTANT: 'background' is not a hint to weigh \u2014 it is the mandatory first attempt. Do NOT pass 'foreground' preemptively because a target 'looks like' GTK/Chromium/Electron; the DRIVER decides when background is impossible and tells you so via a background_unavailable error (or a verified no-op). Only THEN re-issue the same action with 'foreground'. The lists above are the driver's detectors, not a checklist for you to front on a guess \u2014 fronting up-front needlessly steals the user's focus and is a bug, not a shortcut. Matches the macOS delivery_mode surface.",
+            "enum": [
+              "background",
+              "foreground"
+            ],
+            "type": "string"
+          },
+          "direction": {
+            "description": "Scroll direction.",
+            "enum": [
+              "up",
+              "down",
+              "left",
+              "right"
+            ],
+            "type": "string"
+          },
+          "element_token": {
+            "description": "Opaque per-snapshot element handle from `structuredContent.elements[].element_token`. Returns an explicit stale error naming the current snapshots once a newer read supersedes it.",
+            "pattern": "^s[0-9a-f]{8}:[0-9]+$",
+            "type": "string"
+          },
+          "pid": {
+            "description": "Target process ID for window scope. Omit with scope=desktop for screen-absolute coordinates from get_desktop_state.",
+            "type": "integer"
+          },
+          "scope": {
+            "default": "window",
+            "description": "Use \"desktop\" with x,y and no pid/window_id for screen-absolute coordinates from get_desktop_state. Default \"window\".",
+            "enum": [
+              "window",
+              "desktop"
+            ],
+            "type": "string"
+          },
+          "session": {
+            "description": "For multi-call work, prefer a short public session label and repeat it on every call that accepts it. Omit it to use the authenticated transport's implicit lifecycle session.",
+            "type": "string"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "description": "Exact capture/input target selected independently for each action.\n\n`display_id=\"primary\"` is the portable desktop target in this release.\nPlatforms that cannot address another display reject it explicitly rather\nthan silently changing coordinate spaces.",
+                "oneOf": [
+                  {
+                    "additionalProperties": true,
+                    "properties": {
+                      "kind": {
+                        "const": "window",
+                        "type": "string"
+                      },
+                      "pid": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "window_id": {
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "pid",
+                      "window_id"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": true,
+                    "properties": {
+                      "display_id": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "const": "desktop",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "display_id"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Preferred per-call target: an exact window (`kind=\"window\"`, `pid`, `window_id`) or the\nprimary desktop (`kind=\"desktop\"`, `display_id=\"primary\"`)."
+          },
+          "window_id": {
+            "description": "HWND of the target window. Omit when element_token is supplied; otherwise auto-resolves the pid's first visible window.",
+            "type": "integer"
+          },
+          "x": {
+            "description": "With pid/window_id: window-local screenshot X used to target a nested scroll surface in foreground mode. Without pid/window_id: screen-absolute X for desktop scope. Must be paired with y.",
+            "type": "number"
+          },
+          "y": {
+            "description": "With pid/window_id: window-local screenshot Y used to target a nested scroll surface in foreground mode. Without pid/window_id: screen-absolute Y for desktop scope. Must be paired with x.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "direction"
+        ],
+        "type": "object"
+      },
+      "name": "scroll"
+    },
+    {
+      "capabilities": [],
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "delivery_mode": {
+            "description": "Input delivery mode. 'background' (default) never swaps foreground: it routes through UIA Invoke / PostMessage and the window is never raised. For targets whose input stack silently drops posted events (Chromium/Electron content, GTK buttons, VCL/LibreOffice accelerators) the tool returns a structured background_unavailable error rather than fronting. 'foreground' is the explicit escalation: a brief SetForegroundWindow swap + SendInput, restoring the prior foreground afterward. IMPORTANT: 'background' is not a hint to weigh \u2014 it is the mandatory first attempt. Do NOT pass 'foreground' preemptively because a target 'looks like' GTK/Chromium/Electron; the DRIVER decides when background is impossible and tells you so via a background_unavailable error (or a verified no-op). Only THEN re-issue the same action with 'foreground'. The lists above are the driver's detectors, not a checklist for you to front on a guess \u2014 fronting up-front needlessly steals the user's focus and is a bug, not a shortcut. Matches the macOS delivery_mode surface.",
+            "enum": [
+              "background",
+              "foreground"
+            ],
+            "type": "string"
+          },
+          "element_token": {
+            "description": "Opaque per-snapshot element handle from `structuredContent.elements[].element_token`. Returns an explicit stale error naming the current snapshots once a newer read supersedes it.",
+            "pattern": "^s[0-9a-f]{8}:[0-9]+$",
+            "type": "string"
+          },
+          "pid": {
+            "description": "Target process ID.",
+            "type": "integer"
+          },
+          "session": {
+            "description": "For multi-call work, prefer a short public session label and repeat it on every call that accepts it. Omit it to use the authenticated transport's implicit lifecycle session.",
+            "type": "string"
+          },
+          "value": {
+            "description": "New value. UIA will coerce to the element's native type.",
+            "type": "string"
+          },
+          "window_id": {
+            "description": "HWND of the window. Omit when element_token is supplied (the token carries it).",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pid",
+          "value"
+        ],
+        "type": "object"
+      },
+      "name": "set_value"
+    },
+    {
+      "capabilities": [],
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "capture_mode": {
+            "description": "DEPRECATED and ignored. get_window_state always returns BOTH the element tree and a screenshot \u2014 ground on both. The modality is chosen at action time by how you address the target: an element ax action (element_token) or an element px action (x,y). Any value (including the old \"som\"/\"screenshot\" aliases) is accepted but has no effect.",
+            "enum": [
+              "ax",
+              "vision"
+            ],
+            "type": "string"
+          },
+          "include_accessibility_tree": {
+            "description": "Default true \u2014 walk the UIA tree and return `elements` + `tree_markdown` alongside the screenshot. Set false to SKIP the UIA walk entirely and return just the screenshot plus window metadata (window_bounds, app_name, window_title) \u2014 the capture-only path for a live window preview / picture-in-picture. Mirrors include_screenshot. Setting BOTH include_accessibility_tree:false AND include_screenshot:false is an error (nothing to return).",
+            "type": "boolean"
+          },
+          "include_screenshot": {
+            "description": "Default true \u2014 returns a grounding screenshot alongside the tree. Set false to skip the grab and return tree only (the cheap path for re-indexing before an element ax action).",
+            "type": "boolean"
+          },
+          "max_depth": {
+            "description": "Cap on the UIA-tree walk depth. Nodes whose rendered indent would exceed this are omitted. Omit for the default (25). Lower for deep menu / Electron trees.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_dimension": {
+            "description": "Legacy optional cap on the returned screenshot's long edge, in pixels (aspect ratio preserved). Applied on top of the configured max_image_dimension ceiling when max_image_dimension is omitted; the tighter wins.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_elements": {
+            "description": "Cap on the total number of UIA nodes walked. Truncates depth-first; markdown and structured elements truncate together. Omit for the default (5 000). Lower for Electron / large web apps that produce 10k+ element trees.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_image_dimension": {
+            "description": "Per-call long-edge limit for the returned screenshot, in pixels (aspect ratio preserved). Explicit values override configured behavior; 0 returns native resolution. Omit to preserve the configured default.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pid": {
+            "description": "Process ID from `list_apps`.",
+            "type": "integer"
+          },
+          "query": {
+            "description": "Optional case-insensitive substring. Projects both tree_markdown and structured elements to matches plus ancestors while preserving original indices. Compare total_element_count with returned_element_count.",
+            "type": "string"
+          },
+          "screenshot_out_file": {
+            "description": "When set, write the PNG to this file path instead of embedding base64 in the response. The structured output will contain `screenshot_file_path` instead.",
+            "type": "string"
+          },
+          "session": {
+            "description": "For multi-call work, prefer a short public session label and repeat it on every call that accepts it. Omit it to use the authenticated transport's implicit lifecycle session.",
+            "type": "string"
+          },
+          "timeout_ms": {
+            "default": 1000,
+            "description": "Wall-clock budget in milliseconds for the accessibility-tree walk (default 1000, min 100, max 120000). Bounds the WHOLE walk. When the budget runs out the tool returns the PARTIAL tree it has, flagged with `truncated: true`, `truncation_reason`, `nodes_visited`, `nodes_pending` and `elements_complete: false`; retry with a larger value (e.g. 5000) or narrow with `query` / `max_depth`.",
+            "maximum": 120000,
+            "minimum": 100,
+            "type": "integer"
+          },
+          "window_id": {
+            "description": "HWND of the target window. Must belong to `pid`. Enumerate via `list_windows` or read from `launch_app`'s `windows` array.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pid",
+          "window_id"
+        ],
+        "type": "object"
+      },
+      "name": "get_window_state"
+    }
+  ]
+}

@@ -1558,9 +1558,7 @@ def _assistant_reasoning_text(agent, assistant_message) -> Optional[str]:
     reasoning_text = agent._extract_reasoning(assistant_message)
     if not reasoning_text:
         content = flatten_message_text(getattr(assistant_message, "content", None))
-        think_blocks = re.findall(r'<think>(.*?)</think>', content, flags=re.DOTALL)
-        if not think_blocks:
-            think_blocks = re.findall(r'<\|channel>thought\s*(.*?)<channel\|>', content, flags=re.DOTALL)
+        think_blocks = [a or b for a, b in re.findall(r'<think>(.*?)</think>|<\|channel>thought\s*(.*?)<channel\|>', content, flags=re.DOTALL)]
         if think_blocks:
             reasoning_text = "\n\n".join(b.strip() for b in think_blocks if b.strip()) or None
     if reasoning_text and agent.verbose_logging:

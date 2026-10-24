@@ -93,8 +93,8 @@ class StreamingThinkScrubber:
             open_idx, open_len = self._find_open_at_boundary(buf, out)
             if pair is not None and (open_idx == -1 or pair[0] <= open_idx):
                 self._emit(out, buf[:pair[0]])
-                # Pair tags are exact ``<name>``/``</name>``: inner text sits between them.
-                hidden.append(buf[buf.index(">", pair[0]) + 1:buf.rindex("<", pair[0], pair[1])])
+                # Inner text sits between the exact open and close tags.
+                hidden.append(buf[pair[0] + pair[2]:pair[1] - pair[3]])
                 buf = buf[pair[1]:]
                 continue
             if open_idx != -1:
@@ -138,14 +138,14 @@ class StreamingThinkScrubber:
         return min(hits) if hits else (-1, 0)
 
     def _find_earliest_closed_pair(self, buf: str):
-        """(start_idx, end_idx) of the earliest ``<tag>...</tag>`` pair (non-greedy, case-insensitive), else None."""
+        """(start, end, open_len, close_len) of the earliest ``<tag>...</tag>`` pair (non-greedy, case-insensitive)."""
         buf_lower = buf.lower()
         pairs = []
         for open_tag, close_tag in zip(self._OPEN_TAGS, self._CLOSE_TAGS):
             open_idx = buf_lower.find(open_tag)
             close_idx = buf_lower.find(close_tag, open_idx + len(open_tag)) if open_idx != -1 else -1
             if close_idx != -1:
-                pairs.append((open_idx, close_idx + len(close_tag)))
+                pairs.append((open_idx, close_idx + len(close_tag), len(open_tag), len(close_tag)))
         return min(pairs) if pairs else None
 
     def _find_open_at_boundary(self, buf: str, already_emitted: list[str]) -> tuple[int, int]:
@@ -184,4 +184,4 @@ class StreamingThinkScrubber:
     @classmethod
     def _strip_orphan_close_tags(cls, text: str) -> str:
         """Remove close tags with no matching open (always noise) plus trailing whitespace."""
-        return cls._ORPHAN_CLOSE_RE.sub("", text) if "</" in text else text
+        return cls._ORPHAN_CLOSE_RE.sub("", text) if "</" in text or "<channel|>" in text else text

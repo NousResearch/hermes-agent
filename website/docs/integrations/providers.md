@@ -1154,6 +1154,8 @@ The model outputs something like `{"name": "web_search", "arguments": {...}}` as
 | **Ollama** | Tool calling is enabled by default — make sure your model supports it (check with `ollama show model-name`) |
 | **LM Studio** | Update to 0.3.6+ and use a model with native tool support |
 
+**Gemma 4 with stripped special tokens.** Some hosts (Featherless through the Hugging Face router, or a self-hosted server without a Gemma 4 tool-call parser) strip Gemma 4's `<|tool_call>` and `<|"|>` tokens, so calls arrive as text like `call:get_weather{city:Paris}`. On the `huggingface` and `custom` providers Hermes recovers these automatically when they form the trailing run of the reply and name one of the session's tools. Calls inside code blocks or quotes, or followed by more prose, are never run. Where you control the server, enabling its Gemma 4 tool-call parser (or keeping special tokens) is still the more reliable fix.
+
 #### Model seems to forget context or give incoherent responses
 
 **Cause:** Context window is too small. When the conversation exceeds the context limit, most servers silently drop older messages. Hermes's system prompt + tool schemas alone can use 4k–8k tokens.

@@ -1831,6 +1831,8 @@ code_execution:
 # The delegate_task tool spawns child agents with isolated context.
 # Supports single tasks and batch mode (default 3 parallel, configurable).
 delegation:
+  # sequential: false                       # true: run children one at a time and wait before the parent resumes.
+                                             # Overrides background/independent completion dispatch for this call.
   # backend: "default"                        # Strategy routing each delegate_task task: "default" = the keys below,
                                               # else the parent's route. model_map / profile_routes come from the
                                               # advanced-delegation plugin; a backend that is missing, disabled or

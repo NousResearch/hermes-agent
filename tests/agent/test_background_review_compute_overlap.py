@@ -1591,7 +1591,7 @@ def test_replay_never_exceeds_the_forks_aggregate_input_budget(
     the same-model fork inherits the parent's system prompt and tools[] byte-identically and
     appends the review prompt — so the replay admitted at spawn must leave room for all of it,
     and the fork must carry its owner tag so a refusal there is greppable."""
-    from agent.conversation_loop import _reserve_review_input_request
+    from agent.turn_review_budget import _reserve_review_input_request
     from agent.model_metadata import _estimate_tools_tokens_rough
 
     _patch_config(monkeypatch, _config())

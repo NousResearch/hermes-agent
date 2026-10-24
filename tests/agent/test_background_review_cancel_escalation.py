@@ -29,7 +29,7 @@ def test_unacknowledged_cancel_escalates_without_failing_open(monkeypatch, caplo
     blocking tool must be unwedged deterministically: after the first bound the waiter logs the
     owner and tears down the fork's clients; after the second it revokes every further provider
     call; and it still returns only once the fork publishes its request exit."""
-    from agent.conversation_loop import (
+    from agent.turn_review_budget import (
         _reserve_review_input_request,
         _review_input_budget_exhausted,
     )

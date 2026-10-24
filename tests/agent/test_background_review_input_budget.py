@@ -396,7 +396,7 @@ def test_side_question_fork_first_request_is_never_refused_by_the_review_budget(
 
 def test_review_input_budget_exhausted_predicate_edge_cases():
     """The gate only arms for a positive int budget and a real token count."""
-    from agent.conversation_loop import _review_input_budget_exhausted
+    from agent.turn_review_budget import _review_input_budget_exhausted
 
     class _Agent:
         pass
@@ -429,7 +429,7 @@ def test_review_input_budget_exhausted_predicate_edge_cases():
 
 
 def test_review_input_budget_counts_cached_provider_input():
-    from agent.conversation_loop import _review_input_budget_exhausted
+    from agent.turn_review_budget import _review_input_budget_exhausted
 
     agent = SimpleNamespace(
         _review_input_token_budget=100,

@@ -65,7 +65,7 @@ def _windowed_fork(monkeypatch, window):
 
 def _walk_three_requests(record) -> list[str]:
     """Drive the loop's own reservation accounting through a read, a write and a close."""
-    from agent.conversation_loop import _reserve_review_input_request
+    from agent.turn_review_budget import _reserve_review_input_request
 
     fork = types.SimpleNamespace(
         _review_input_token_budget=record["attrs"]["_review_input_token_budget"],

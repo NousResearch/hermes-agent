@@ -1,7 +1,7 @@
 """The default automatic replay must leave the review fork a read -> write cycle.
 
 The aggregate input budget is charged the FULL prompt on every provider request — cache reads
-included (``conversation_loop._review_input_tokens_consumed``) — and every request replays the
+included (``turn_review_budget._review_input_tokens_consumed``) — and every request replays the
 snapshot. A replay sized for the first request alone therefore leaves room for exactly one
 request on the default budget once a long session fills the replay ceiling: the fork's reads
 execute, its second request is refused, and no read -> write cycle is possible. The composed
@@ -35,7 +35,7 @@ def test_default_replay_leaves_room_for_a_read_write_cycle(
     """A session past the replay ceiling on a 200k window (150k aggregate) with a gateway-sized
     system prompt and tools[]: the fork must get a read, a write and a closing response (the
     review prompt enforces read-before-write) before the aggregate is exhausted."""
-    from agent.conversation_loop import _reserve_review_input_request
+    from agent.turn_review_budget import _reserve_review_input_request
     from agent.model_metadata import _estimate_tools_tokens_rough
 
     _patch_config(monkeypatch, _config())

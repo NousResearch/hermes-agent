@@ -356,9 +356,8 @@ def begin_iteration(
     """Iteration entry in the original order: apply a pending redirect, reset the checkpoint
     dedup, then the interrupt / review-budget / iteration-budget exits. ``api_call_count`` is
     incremented here (the grace call consumes its flag instead of the budget)."""
-    from agent.conversation_loop import (
-        _apply_active_turn_redirect, _review_input_budget_exhausted
-    )
+    from agent.conversation_loop import _apply_active_turn_redirect
+    from agent.turn_review_budget import _review_input_budget_exhausted
 
     def _verdict(action: str) -> IterationStart:
         return IterationStart(

@@ -1061,11 +1061,9 @@ def _pytest_disk_temp_root(native: Path) -> Path:
     the native home. Entries idle for a day are swept on the way in."""
     from hermes_constants_scratch import prune_idle_entries
 
-    if os.name != "nt" and os.path.isdir("/var/tmp"):  # no-tmp: ok — disk-backed FHS root
-        root = Path("/var/tmp/hermes-pytest")  # no-tmp: ok — /var/tmp is disk-backed by FHS, never tmpfs
-    else:
-        root = native.parent / "hermes-pytest"
-    root.mkdir(parents=True, exist_ok=True)
+    from scripts.run_tests_parallel import _scratch_root_candidates, _select_scratch_root
+
+    root = _select_scratch_root(_scratch_root_candidates(native))
     prune_idle_entries(root, 24, frozenset())
     return root
 

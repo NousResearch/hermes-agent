@@ -13,6 +13,7 @@ import threading
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from hermes_state_pidns import holder_namespace_token
@@ -29,6 +30,13 @@ LEASE_WAIT_SECONDS = 1800.0
 _REFRESH_WRITE_PATIENCE_S = 20.0
 # Headroom before expiry for one BEGIN IMMEDIATE blocked in the writer's 1s busy handler, plus jitter.
 _REFRESH_EXPIRY_MARGIN_S = 2.0
+
+
+class _LeaseOwnershipStatus(Enum):
+    STILL_OWNED = "still_owned"
+    LOST = "lost"
+    UNKNOWN = "unknown"
+    READER_UNAVAILABLE = "reader_unavailable"
 
 
 class DurableTurnLease:
@@ -190,22 +198,54 @@ class DurableTurnLease:
             if agent._execution_thread_id is not None:
                 _set_interrupt(False, agent._execution_thread_id)
 
-    def _stop_on_exhausted_authority(self) -> bool:
-        """State.db stayed locked until no renewal can land before the row expires: stop now."""
-        logger.warning("Session turn lease refresh stayed locked through its lifetime: %s", self._current_session_id())
+    def _stop_on_exhausted_authority(self) -> _LeaseOwnershipStatus:
+        """Stop on proven loss; distinguish an unknown read from an unavailable reader.
+
+        The bounded holder-qualified SELECT treats any expiry (even a past one) as still ours.
+        Timeout/read errors are unknown, never evidence of lease loss. The scheduled refresher
+        remains alive so a later tick can retry its holder-fenced renewal.
+        """
+        session_id = self._current_session_id()
+        reader = getattr(self.db, "session_turn_lease_expires_at_bounded", None)
+        if not callable(reader):
+            logger.warning(
+                "No bounded session turn lease reader is available after refresh authority expired; "
+                "will retry holder-fenced renewal: %s",
+                session_id,
+            )
+            return _LeaseOwnershipStatus.READER_UNAVAILABLE
+        try:
+            expires_at = reader(session_id, self.holder)
+        except Exception:
+            logger.warning(
+                "Could not verify session turn lease ownership after refresh authority expired; "
+                "will retry: %s",
+                session_id,
+                exc_info=True,
+            )
+            return _LeaseOwnershipStatus.UNKNOWN
+        if expires_at is not None:
+            logger.warning(
+                "Session turn lease row is still held by this turn (expires_at=%s); "
+                "will retry renewal: %s",
+                expires_at,
+                session_id,
+            )
+            return _LeaseOwnershipStatus.STILL_OWNED
+        logger.warning("Session turn lease refresh lost row ownership: %s", session_id)
         self._interrupt_turn("Session turn lease could not be refreshed; stopping to protect the transcript.")
-        return False
+        return _LeaseOwnershipStatus.LOST
 
     def refresh_tick(self):
         """One periodic renewal (every ``refresh_interval`` via the shared scheduler). A real
-        miss (rowcount 0) or a non-lock error interrupts the turn. A SQLite lock is a missed
-        tick only while the next attempt still lands before ``_authority_deadline``. Returning
-        False stops the timer.
+        miss (rowcount 0) interrupts the turn. When write contention exhausts the cached authority,
+        a bounded read decides whether ownership is actually lost; an owned or unreadable row keeps
+        this periodic timer alive for another holder-fenced renewal. Returning False stops the timer.
 
         Acquisition reclaims a row once ``expires_at <= now``, even if the old process is
-        alive. Holder-qualified release does not block that path, so a run of lock errors
-        must not keep this turn active up to and past the deadline. A successful renewal
-        is the only thing that moves the deadline.
+        alive. If the row still names this holder, the holder-fenced UPDATE may renew it after the
+        cached deadline; a successor that acquired it first makes that update miss. A successful
+        renewal is the only thing that moves the local deadline.
 
         The holder-qualified UPDATE fences a late refresher from a successor lease. The façade's
         finally sets ``stop`` before releasing, so a holder-fenced miss observed after stop is not
@@ -214,11 +254,22 @@ class DurableTurnLease:
             return False
         started = time.time()
         # The whole renewal must finish before the authority runs out: a renewal still waiting on the
-        # write lock past expiry keeps this turn running while a successor reclaims the row. The
-        # margin covers one BEGIN IMMEDIATE that blocks in SQLite's busy handler past the patience.
+        # write lock is bounded by the remaining authority. Once that deadline is exhausted, the
+        # ownership recheck below permits another bounded, holder-fenced attempt if the row remains ours.
+        # The margin covers one BEGIN IMMEDIATE that blocks in SQLite's busy handler past the patience.
         patience = self._authority_deadline - _REFRESH_EXPIRY_MARGIN_S - started
-        if patience <= 0:
-            return self._stop_on_exhausted_authority()
+        authority_exhausted = patience <= 0
+        if authority_exhausted:
+            ownership = self._stop_on_exhausted_authority()
+            if ownership is _LeaseOwnershipStatus.LOST or self.stop.is_set():
+                return False
+            if ownership is _LeaseOwnershipStatus.UNKNOWN:
+                # The bounded recheck could not establish ownership. Leave the scheduled timer
+                # alive rather than immediately queueing behind the same blocked store lock.
+                return None
+            # The row is still ours, or this store exposes no bounded reader. Do not treat cached
+            # authority as success; retry via the holder-fenced write with bounded patience.
+            patience = _REFRESH_WRITE_PATIENCE_S
         try:
             if self.db.refresh_session_turn_lease(
                 self._current_session_id(), self.holder, ttl_seconds=LEASE_TTL_SECONDS,
@@ -238,10 +289,11 @@ class DurableTurnLease:
             from hermes_state_errors import is_sqlite_lock_error
 
             if is_sqlite_lock_error(exc):
-                # The scheduler will not try again until one interval from now. If that attempt
-                # could not finish before the row expiry, stop before a successor can claim it.
+                # The scheduler will not try again until one interval from now. If the cached
+                # deadline could pass before that retry, recheck actual ownership before stopping.
                 if time.time() + self.refresh_interval + _REFRESH_EXPIRY_MARGIN_S >= self._authority_deadline:
-                    return self._stop_on_exhausted_authority()
+                    ownership = self._stop_on_exhausted_authority()
+                    return False if ownership is _LeaseOwnershipStatus.LOST or self.stop.is_set() else None
                 logger.warning(
                     "Session turn lease refresh hit a SQLite lock; will retry: %s",
                     self._current_session_id(),
@@ -250,6 +302,9 @@ class DurableTurnLease:
             logger.warning(
                 "Failed to refresh session turn lease: %s", self._current_session_id(), exc_info=True,
             )
+            if authority_exhausted or time.time() >= self._authority_deadline:
+                ownership = self._stop_on_exhausted_authority()
+                return False if ownership is _LeaseOwnershipStatus.LOST or self.stop.is_set() else None
             self._interrupt_turn(
                 "Session turn lease could not be refreshed; stopping to protect the transcript."
             )

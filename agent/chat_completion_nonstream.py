@@ -240,17 +240,18 @@ class _NonStreamRequest:
             f"Codex stream produced no SSE events for {int(event_stale_elapsed)}s "
             f"after {arm_point} (threshold: {int(wd.idle_timeout)}s)")
 
-    def _stale_kill(self, elapsed: float) -> None:
-        """No response within the stale timeout: kill and count toward the
-        circuit breaker (#58962, see ``_stale_streak``)."""
+    def _stale_kill(self, elapsed: float, *, progressed: bool = False) -> None:
+        """No response (or, once output began, no new model output) within the stale
+        timeout: kill and count toward the circuit breaker (#58962, see ``_stale_streak``)."""
         agent, wd = self.agent, self.wd
-        silent_hint = h._codex_silent_hang_hint(agent, self.api_kwargs)
+        silent_hint = None if progressed else h._codex_silent_hang_hint(agent, self.api_kwargs)
         h._report_stale_nonstream_kill(agent, self.api_kwargs, elapsed, wd.stale_timeout, hint=silent_hint)
         self._abort_request("stale_call_kill")
         h._bump_stale_streak(agent)
         h._touch_stale_kill_activity(agent, elapsed)
+        what = "with no new model output" if progressed else "with no response"
         self._await_worker_after_kill(
-            f"Non-streaming API call timed out after {int(elapsed)}s with no response (threshold: {int(wd.stale_timeout)}s)"
+            f"Non-streaming API call timed out after {int(elapsed)}s {what} (threshold: {int(wd.stale_timeout)}s)"
             + (f". {silent_hint}" if silent_hint else ""))
 
     def _interrupt(self, elapsed: float) -> None:
@@ -306,8 +307,13 @@ class _NonStreamRequest:
                     and idle_elapsed > wd.idle_timeout):
                 self._idle_kill(idle_elapsed)
                 break
-            if elapsed > wd.stale_timeout:
-                self._stale_kill(elapsed)
+            # Anchor the stale deadline to the latest model progress: a Codex call that keeps
+            # streaming output is healthy however long it runs. Before any progress (and for
+            # non-Codex calls) this stays the wall clock since call start; lifecycle frames
+            # never move the anchor.
+            stale_elapsed = now - (last_progress_ts if last_progress_ts is not None else self.call_start)
+            if stale_elapsed > wd.stale_timeout:
+                self._stale_kill(stale_elapsed, progressed=last_progress_ts is not None)
                 break
             if agent._interrupt_requested:
                 self._interrupt(elapsed)

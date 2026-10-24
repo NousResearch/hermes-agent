@@ -1356,6 +1356,24 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> dict[str, A
         config["_config_version"] = latest_ver
         _persist_migration(config)
 
+    # Inform users when an explicitly saved value may have become stale; never rewrite it.
+    if current_ver < latest_ver and not floor_refused:
+        try:
+            from hermes_cli.config_migrations import collect_default_drift
+            for drift in collect_default_drift(read_raw_config(), current_ver):
+                msg = (
+                    f"  ⚠ {drift['key']} = {drift['value']} (user-set)\n"
+                    f"    Upstream default changed: {drift['change']}.\n"
+                    "    Your value may now behave differently than when you set it."
+                )
+                results["warnings"].append(msg.strip())
+                if not quiet:
+                    print("\n⚠️  Config default changed since your last version:")
+                    print(msg)
+                    print("   Keep it if intentional; see docs for the new default.")
+        except Exception:
+            logger.debug("default-drift check skipped", exc_info=True)
+
     missing_skill_config = get_missing_skill_config_vars()
     if missing_skill_config and interactive and not quiet:
         _offer_skill_config_vars(missing_skill_config, results)

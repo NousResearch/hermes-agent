@@ -219,6 +219,50 @@ class TestWindowsShellDestructiveCommands:
         assert dangerous is True
         assert key != "Windows PowerShell destructive delete"
 
+    def test_powershell_abbreviated_parameters_require_approval(self):
+        # PowerShell accepts any unambiguous parameter prefix: `-r` is -Recurse and
+        # `-fo` is -Force (#144024). These forms delete just like the full names.
+        cases = [
+            # Bare cmdlet with abbreviated flags, no powershell prefix.
+            (r"Remove-Item C:\data -r -fo", "PowerShell destructive delete (Remove-Item)"),
+            (r"Remove-Item C:\data -Recurse", "PowerShell destructive delete (Remove-Item)"),
+            (r"Remove-Item C:\data -recurs", "PowerShell destructive delete (Remove-Item)"),
+            # Aliases and full names after a pipe, inside a positional script whose
+            # first command is not itself a delete verb.
+            (r'powershell -NoProfile "gci C:\data | ri -r -fo"',
+             "PowerShell destructive delete (alias after pipe)"),
+            (r'powershell.exe -NoP "Get-ChildItem C:\data | Remove-Item -r -fo"',
+             "PowerShell destructive delete (Remove-Item)"),
+            # Abbreviated -Force on the other force-flagged cmdlets.
+            (r'powershell -NoProfile "Get-Process explorer | Stop-Process -Fo"',
+             "force kill processes (Stop-Process -Force)"),
+            (r"Stop-Service -fo spooler", "force stop service (Stop-Service -Force)"),
+            (r"Remove-ItemProperty -fo -Name X", "registry value delete (Remove-ItemProperty -Force)"),
+            # WMIC twin of the vssadmin shadow-copy rule.
+            (r"wmic shadowcopy delete", "delete volume shadow copies (wmic)"),
+        ]
+        for command, expected_desc in cases:
+            dangerous, _key, desc = detect_dangerous_command(command)
+            assert dangerous is True, command
+            assert desc == expected_desc, command
+
+    def test_powershell_abbreviated_parameter_lookalikes_stay_safe(self):
+        # Unrelated short flags and read-only cmdlets must not trip the widened rules.
+        benign = [
+            r"remove-item -filter x",        # -fi… is -Filter, never -Force
+            r"powershell -NoProfile Get-Date",
+            r"powershell -NoProfile Get-Content C:\data\log.txt",
+            r"Get-ChildItem C:\data | Select-Object name",
+            r"Stop-Service -Name spooler",
+            r"Stop-Process -Name idleproc",
+            r"wmic os get name",
+            r"wmic shadowcopy list brief",
+            # A prose mention of the cmdlet behind a non-destructive pipe target is not a delete.
+            "cat access.log | grep -i remove-item",
+        ]
+        for command in benign:
+            assert detect_dangerous_command(command) == (False, None, None), command
+
     def test_plain_text_does_not_trigger_windows_delete(self):
         dangerous, key, desc = detect_dangerous_command(
             "echo remember to del old notes"

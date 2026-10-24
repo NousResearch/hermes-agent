@@ -287,28 +287,44 @@ export function composerNonProseRanges(
 }
 
 /**
+ * Whether this surface would paint anything at all: a provider is registered
+ * AND the surface has opted into spell checking.
+ *
+ * Exposed because both passes ask it BEFORE they serialize the draft: the
+ * reconciler runs on every keystroke of every composer, and the seam's promise
+ * there is that an app with no provider (or with spelling off) pays nothing —
+ * not a walk of the tree, not a provider call, not a DOM read.
+ *
+ * The spell-check half reads the effective `spellcheck` ATTRIBUTE, walking
+ * ancestors, because that is exactly what Chromium does: `spellcheck` is
+ * inherited, absent means "inherit", and a nearest `spellcheck="false"` turns
+ * it off for the whole subtree. Reading the attribute (rather than the IDL
+ * property) also keeps the gate honest in a test DOM that doesn't implement the
+ * property for every element.
+ */
+export function composerNonProseEnabled(target: DocumentFragment | HTMLElement): target is HTMLElement {
+  return (
+    target instanceof HTMLElement &&
+    spellCheckEnabled(target) &&
+    registry.getArea(COMPOSER_AREAS.nonProse).length > 0
+  )
+}
+
+/**
  * The ranges this surface paints right now, or `[]`.
  *
- * The gate: only a surface that has opted into spell checking is decorated
- * (`spellcheck` is inherited, so this reads the value the surface effectively
- * has — the same attribute that decides whether Chromium checks it at all),
+ * The gate: only a surface that has opted into spell checking is decorated,
  * and only while at least one provider is registered.
  */
 export function composerNonProseSurfaceRanges(
   target: DocumentFragment | HTMLElement,
   text: string
 ): readonly NormalizedComposerNonProseRange[] {
-  if (!(target instanceof HTMLElement) || !spellCheckEnabled(target)) {
+  if (!composerNonProseEnabled(target)) {
     return EMPTY
   }
 
-  const contributions = registry.getArea(COMPOSER_AREAS.nonProse)
-
-  if (contributions.length === 0) {
-    return EMPTY
-  }
-
-  return composerNonProseRanges(contributions, {
+  return composerNonProseRanges(registry.getArea(COMPOSER_AREAS.nonProse), {
     sessionId: target.closest(`[${COMPOSER_SESSION_ATTR}]`)?.getAttribute(COMPOSER_SESSION_ATTR) ?? '',
     text
   })

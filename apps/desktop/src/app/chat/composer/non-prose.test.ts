@@ -614,6 +614,39 @@ describe('composer.nonProse — the reconciler re-paints', () => {
     expect(wrappers(editor)[0]).toBe(wrapper)
     expect(wrapper.firstChild).toBe(text)
   })
+
+  it('re-paints a multi-line answer without straddling a <br>', () => {
+    let ranges: ComposerNonProseRange[] = []
+
+    addProvider('spellcheck', () => ranges)
+
+    const editor = editorFor('aaaaa\nbbbbb')
+
+    expect(wrappers(editor)).toHaveLength(0)
+
+    // The reconcile pass paints too: both lines, one wrapper each.
+    ranges = [{ end: 11, start: 0 }]
+    normalizeComposerEditorDom(editor)
+
+    expect(texts(editor)).toEqual(['aaaaa', 'bbbbb'])
+    expect(composerPlainText(editor)).toBe('aaaaa\nbbbbb')
+  })
+
+  it('unwraps when the surface turns spell checking off mid-session', () => {
+    addProvider('spellcheck', ({ text: draft }) => [{ end: draft.length, start: 0 }])
+
+    const editor = editorFor('keep me')
+
+    expect(wrappers(editor)).toHaveLength(1)
+
+    // `host.composer.setSpellcheck(false)` — the wrapper no longer earns its
+    // place, and there is nothing left for it to suppress.
+    editor.setAttribute('spellcheck', 'false')
+    normalizeComposerEditorDom(editor)
+
+    expect(wrappers(editor)).toHaveLength(0)
+    expect(editor.innerHTML).toBe('keep me')
+  })
 })
 
 describe('composer.nonProse — a wrapper Chromium block-wrapped', () => {

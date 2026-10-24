@@ -23,6 +23,7 @@ import {
   clipComposerNonProseRanges,
   COMPOSER_NON_PROSE_ATTR,
   composerNonProseElement,
+  composerNonProseEnabled,
   type ComposerNonProseKind,
   composerNonProseSpans,
   composerNonProseSurfaceRanges
@@ -96,6 +97,15 @@ export function markEditorEmptiness(editor: HTMLElement) {
 
 /** Editors with an IME composition in flight — see `beginComposerComposition`. */
 const composingEditors = new WeakSet<HTMLElement>()
+
+/** Editors that currently hold at least one non-prose wrapper core painted.
+ *
+ *  A WeakSet, so an unmounted editor is collected with everything else. It is
+ *  what lets the reconciler answer "is there anything to unwrap here?" without
+ *  serializing the draft: `normalizeComposerEditorDom` runs on every keystroke
+ *  of every composer, and an app that never registered a provider must not pay
+ *  a walk for that. */
+const decoratedEditors = new WeakSet<HTMLElement>()
 
 /** Editors already wired to the composition escape hatches below (so a second
  *  composition on the same editor adds no listeners). */
@@ -330,6 +340,10 @@ export function appendComposerContents(
   const regions = composerNonProseSpans(target, rendered.text, rendered.chips)
 
   if (regions.length > 0) {
+    if (target instanceof HTMLElement) {
+      decoratedEditors.add(target)
+    }
+
     // First wrapper painted on this app: from here on, an unload can leave one
     // behind with no pass to clean it up (see `sweepNonProseOnUnload`).
     sweepNonProseOnUnload()
@@ -1170,6 +1184,15 @@ function reconcileNonProse(editor: HTMLElement) {
     return
   }
 
+  // Nothing to own — the ordinary case, and the reconciler runs on every
+  // keystroke of every composer. With no provider registered and no wrapper on
+  // screen it must cost two lookups and nothing else: no serialization, no
+  // walk. (`decoratedEditors` is what keeps the unload case working for an
+  // editor the sweep could not reach — one that is not in the document yet.)
+  if (!decoratedEditors.has(editor) && !composerNonProseEnabled(editor)) {
+    return
+  }
+
   const probe = probeComposerText(editor)
 
   if (!probe) {
@@ -1192,6 +1215,10 @@ function reconcileNonProse(editor: HTMLElement) {
     })
 
   if (matches) {
+    if (probe.wrappers.length === 0) {
+      decoratedEditors.delete(editor)
+    }
+
     return
   }
 
@@ -1226,6 +1253,14 @@ function reconcileNonProse(editor: HTMLElement) {
   if (painted && caret !== null) {
     placeCaretAtOffset(editor, Math.min(caret, composerPlainText(editor).length))
   }
+
+  // Keep the fast-path flag honest: with nothing left to paint, the next pass
+  // can bail on two lookups instead of a walk.
+  if (desired.length > 0) {
+    decoratedEditors.add(editor)
+  } else {
+    decoratedEditors.delete(editor)
+  }
 }
 
 /** Unwrap every wrapper the moment the last `composer.nonProse` provider goes
@@ -1255,6 +1290,7 @@ function sweepNonProseOnUnload() {
 
       if (editor) {
         unwrapNonProse(editor, wrapper)
+        decoratedEditors.delete(editor)
       }
     })
   })

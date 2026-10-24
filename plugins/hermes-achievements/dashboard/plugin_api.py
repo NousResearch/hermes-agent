@@ -271,6 +271,28 @@ def _count_tool(tool_names: list[str], *needles: str) -> int:
 _PROVIDER_MARKERS = ["openai", "anthropic", "google", "gemini", "mistral", "meta", "qwen", "deepseek", "xai", "nous", "ollama", "groq", "openrouter", "codex"]
 _LOCAL_MARKERS = ["ollama", "llama.cpp", "localhost", "127.0.0.1", "local/", "local:", "gguf", "vllm-local"]
 
+# Curated open-weight model families: weights are published for self-hosting, so a
+# session counts as an "open weights" chat even when served through a cloud
+# provider (OpenRouter et al.) instead of a local endpoint. Prefix-anchored to a
+# name boundary so e.g. "glm" matches "glm-4.6" but not a substring inside an
+# unrelated word, and closed models are deliberately excluded (e.g. grok — only
+# Grok-1 ever shipped weights — and Anthropic/OpenAI/Google frontier models).
+# This is a heuristic; the durable fix is plumbing models.dev ``open_weights``
+# metadata (already parsed in agent/models_dev.py) into per-session stats.
+_OPEN_WEIGHT_FAMILIES = [
+    "aya", "arctic", "baichuan", "chatglm", "codellama", "command-a", "command-r",
+    "deepseek", "devstral", "dolphin", "ernie", "exaone", "falcon", "gemma",
+    "glm", "granite", "gpt-j", "gpt-neo", "gpt-oss", "hermes", "hunyuan", "hy3",
+    "hy4", "inkling", "internlm", "internvl", "jamba", "kimi", "lfm", "llama",
+    "longcat", "minicpm", "ministral", "minitron", "minimax",
+    "mimo", "mistral", "mixtral", "molmo", "nemotron", "olmo", "openchat",
+    "phi", "pixtral", "pythia", "qwen", "qwq", "skywork", "smollm", "solar",
+    "stablelm", "starling", "tulu", "trinity", "vicuna", "virtuoso", "voxtral",
+    "xwin", "yi", "zephyr",
+]
+_OPEN_WEIGHT_RE = re.compile(
+    r"(?:^|[^a-z0-9])(?:" + "|".join(re.escape(f) for f in sorted(_OPEN_WEIGHT_FAMILIES, key=len, reverse=True)) + r")")
+
 
 def model_provider(model_name: str) -> Optional[str]:
     name = (model_name or "").strip().lower()
@@ -285,8 +307,12 @@ def model_provider(model_name: str) -> Optional[str]:
 
 
 def is_local_model_name(model_name: str) -> bool:
+    """Local-serving endpoint (Ollama/llama.cpp/vLLM/localhost/GGUF) OR a known
+    open-weight model family served through any provider (see _OPEN_WEIGHT_FAMILIES)."""
     name = (model_name or "").strip().lower()
-    return bool(name) and name != "none" and any(marker in name for marker in _LOCAL_MARKERS)
+    if not name or name == "none":
+        return False
+    return any(marker in name for marker in _LOCAL_MARKERS) or bool(_OPEN_WEIGHT_RE.search(name))
 
 
 def analyze_messages(session_id: str, title: str, messages: list[dict[str, Any]]) -> dict[str, Any]:

@@ -168,6 +168,25 @@ class AchievementEngineTests(unittest.TestCase):
         self.assertEqual(aggregate_local_chat["local_model_chat_sessions"], 1)
         self.assertEqual(plugin_api.evaluate_definition(definition, aggregate_local_chat)["state"], "unlocked")
 
+    def test_open_weights_pilgrim_counts_cloud_served_open_weight_families(self):
+        # Open-weight families served through a cloud provider must count;
+        # proprietary provider models must not (substring-safety guards).
+        served_open = plugin_api.aggregate_stats([
+            {"model_names": {"openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"}},
+            {"model_names": {"openrouter/qwen/qwen3-coder"}},
+            {"model_names": {"openrouter/openai/gpt-oss-120b"}},
+            {"model_names": {"z-ai/glm-4.6"}},
+            {"model_names": {"ollama/llama3.2"}},
+        ])
+        served_proprietary = plugin_api.aggregate_stats([
+            {"model_names": {"openai/gpt-5.4"}},
+            {"model_names": {"anthropic/claude-sonnet-4.5"}},
+            {"model_names": {"google/gemini-3-pro"}},
+            {"model_names": {"xai/grok-4.6"}},
+        ])
+        self.assertEqual(served_open["local_model_chat_sessions"], 5)
+        self.assertEqual(served_proprietary["local_model_chat_sessions"], 0)
+
     def test_config_surgeon_ignores_generic_config_mentions(self):
         stats = plugin_api.analyze_messages("s1", "Config talk", [{"content": "config config configuration not configured"}])
         self.assertEqual(stats["config_events"], 0)

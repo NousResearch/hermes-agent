@@ -272,8 +272,18 @@ KANBAN_GUIDANCE = (
     "\n"
     "## Lifecycle\n\n"
     "1. **Orient.** Call `kanban_show()` first (no args — it defaults to your task). The response includes title, "
-    "body, parent-task handoffs (summary + metadata), any prior attempts on this task if you're a retry, the full "
-    "comment thread, and a pre-formatted `worker_context` you can treat as ground truth.\n"
+    "body, dependency IDs, current execution budget, recent attempts, comments and events. History is bounded; "
+    "use its cursors to fetch only missing relevant receipts. Prior reports are evidence to verify, not current "
+    "target state. Preserve completed work and the latest user correction.\n"
+    "   **Recover after the first failure.** If the last attempt failed, or a step fails during this run, pause "
+    "that step before repeating it. Inspect the failed action, saved error and fresh target state; distinguish "
+    "observed cause from hypothesis. Compare the current method with a feasible authorized alternative "
+    "(API, web, app or local data), verify its access, and choose one small probe with an observable success "
+    "condition and a share of the remaining budget. Continue only after the probe passes. The same method "
+    "needs evidence of a transient cause or repaired prerequisite; a new worker, higher limit or unchanged "
+    "restart is not a method change. Separate research/selection from final actions when different surfaces "
+    "suit them. Record cause, method, probe result and next unfinished step in one card comment; keep reflection "
+    "internal. Fresh tasks and successful or known dependency handoffs continue normally.\n"
     "2. **Work inside the workspace.** `cd $HERMES_KANBAN_WORKSPACE` before any file operations. The workspace is "
     "yours for this run. Don't modify files outside it unless the task explicitly asks.\n"
     "3. **Heartbeat on long operations.** Call `kanban_heartbeat(note=...)` every few minutes during long subprocesses "
@@ -282,9 +292,11 @@ KANBAN_GUIDANCE = (
     "`kanban.dispatch_stale_timeout_seconds` (default 4 hours) when no heartbeat has arrived in the last hour. A "
     "reclaim re-queues the task as `ready` without penalty (no failure counter tick), but you lose your current run's "
     "progress.\n"
-    "4. **Block on genuine ambiguity.** If you need a human decision you cannot infer (missing credentials, UX choice, "
-    "paywalled source, peer output you need first), call `kanban_block(reason=\"...\")` and stop. Don't guess. The "
-    "user will unblock with context and the dispatcher will respawn you.\n"
+    "4. **Block on a verified missing prerequisite.** An unavailable interface is not itself a task blocker: "
+    "check one relevant authorized alternative within the remaining budget. If a missing decision, access or "
+    "dependency still prevents useful progress, preserve the last completed step and call "
+    "`kanban_block(reason=\"...\")` with the exact evidence and required input. Do not guess or repeat an unchanged "
+    "attempt after unblocking; verify the prerequisite or changed approach first.\n"
     "5. **Finish with the review model encoded by the task graph.** Always include the structured handoff (`summary`, "
     "`metadata`) on the lifecycle transition itself; never put secrets, tokens, or raw PII in these durable fields. If "
     "`kanban_show()` lists child IDs, inspect those cards with `kanban_show(task_id=...)` before choosing the terminal "
@@ -343,6 +355,19 @@ KANBAN_GUIDANCE = (
     "- Do not call `delegate_task` as a board substitute. `delegate_task` is for short reasoning subtasks inside your "
     "own run; board tasks are for cross-agent handoffs that outlive one API loop."
 )
+
+
+def kanban_worker_guidance(available_tools, task_id: Optional[str] = None) -> str:
+    """Return lifecycle guidance only for a dispatched Kanban worker.
+
+    Board-capable chat and cron sessions keep their Kanban tools, but do not
+    own a card unless the dispatcher supplied a non-empty task id.
+    """
+    if "kanban_show" not in available_tools:
+        return ""
+    if task_id is None:
+        task_id = os.environ.get("HERMES_KANBAN_TASK")
+    return KANBAN_GUIDANCE if isinstance(task_id, str) and task_id.strip() else ""
 
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"

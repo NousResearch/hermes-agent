@@ -203,10 +203,10 @@ DEFAULT_CONFIG = {
         # toolset to the lean coding set (+ enabled MCP servers) + demote non-coding skill
         # categories to names-only (explicit opt-in); "on" = force everywhere; "off" = disable.
         "coding_context": "auto",
-        # Standing operator instructions (string or list) appended to the coding brief as an extra
-        # stable system block — project-wide workflow rules, e.g. "Don't run tsc/lint until I
-        # approve." Cache-safe: takes effect next session.
+        # Standing operator instructions (string or list) appended to the coding brief as an extra stable
+        # system block, e.g. "Don't run tsc/lint until I approve." Cache-safe: takes effect next session.
         "coding_instructions": "",
+        "auto_pull": False,  # opt-in: fast-forward a clean default branch before the session snapshot
         # When verify-on-stop finds edits without fresh verification evidence, add guidance for
         # creative UI work (no broad tsc/lint/test before visual approval) and clean-diff
         # expectations. false = keep the evidence nudge terse.

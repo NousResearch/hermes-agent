@@ -3,6 +3,7 @@ import type * as React from 'react'
 import { Codicon } from '@/components/ui/codicon'
 import {
   ContextMenu,
+  ContextMenuCheckboxItem,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuLabel,
@@ -14,6 +15,7 @@ import {
 } from '@/components/ui/context-menu'
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
@@ -36,6 +38,7 @@ import {
 /** A menu flavour (dropdown / context) — the item + separator + submenu parts. */
 export interface MenuKit {
   Item: typeof DropdownMenuItem | typeof ContextMenuItem
+  CheckboxItem: typeof DropdownMenuCheckboxItem | typeof ContextMenuCheckboxItem
   Label: typeof DropdownMenuLabel | typeof ContextMenuLabel
   Separator: typeof DropdownMenuSeparator | typeof ContextMenuSeparator
   Sub: typeof DropdownMenuSub | typeof ContextMenuSub
@@ -47,6 +50,7 @@ export interface MenuKit {
 
 export const DROPDOWN_KIT: MenuKit = {
   Item: DropdownMenuItem,
+  CheckboxItem: DropdownMenuCheckboxItem,
   Label: DropdownMenuLabel,
   Separator: DropdownMenuSeparator,
   Sub: DropdownMenuSub,
@@ -57,6 +61,7 @@ export const DROPDOWN_KIT: MenuKit = {
 
 export const CONTEXT_KIT: MenuKit = {
   Item: ContextMenuItem,
+  CheckboxItem: ContextMenuCheckboxItem,
   Label: ContextMenuLabel,
   Separator: ContextMenuSeparator,
   Sub: ContextMenuSub,

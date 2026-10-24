@@ -43,8 +43,16 @@ export const ruNotices = {
     openBilling: 'Открыть биллинг',
     addCredits: 'Пополнить кредиты',
     dismiss: 'Скрыть'
+  },
+  freeTier: {
+    offer: {
+      heading: 'Продолжайте с Hermes',
+      body: 'Вы пользуетесь бесплатным лимитом. Если продолжите работать с Hermes, скоро начнёте упираться в ограничения. Войдите с бесплатной учётной записью Nous, чтобы получить больший лимит.',
+      signIn: 'Войти',
+      notNow: 'Не сейчас'
+    }
   }
 } satisfies Pick<
   TranslationOverrides,
-  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock' | 'freeTier'
 >

@@ -38,6 +38,18 @@ def test_discovery_policy_change_clears_only_discovered_rows(conn):
 
 
 
+def test_auto_pull_defaults_off_and_updates(conn):
+    pid = pdb.create_project(conn, name="App", folders=["/tmp/app"])
+    proj = pdb.get_project(conn, pid)
+    assert proj.auto_pull is False
+    assert proj.to_dict()["auto_pull"] is False
+
+    assert pdb.update_project(conn, pid, auto_pull=True) is True
+    assert pdb.get_project(conn, pid).auto_pull is True
+    assert pdb.update_project(conn, pid, auto_pull=False) is True
+    assert pdb.get_project(conn, pid).auto_pull is False
+
+
 def test_create_get_list(conn):
     pid = pdb.create_project(conn, name="Hermes Agent", folders=["/tmp/hermes"])
     proj = pdb.get_project(conn, pid)

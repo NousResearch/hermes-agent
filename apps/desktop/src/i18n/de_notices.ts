@@ -43,8 +43,31 @@ export const deNotices = {
     openBilling: 'Billing öffnen',
     addCredits: 'Credits hinzufügen',
     dismiss: 'Schließen'
+  },
+  sendDiagnostics: {
+    title: 'Diagnosedaten an Nous senden',
+    privacyNotice:
+      'Damit laden Sie ein Debug-Paket in den internen Nous-Speicher hoch (kein öffentliches Paste). Es enthält Systeminfos (Betriebssystem, Versionen, Provider, welche API-Keys konfiguriert sind – niemals die Keys selbst) sowie vollständige Agent-, Gateway- und Desktop-Logs (bis zu 512 KB je Datei), die sehr wahrscheinlich Gesprächsinhalte, Tool-Ausgaben und Dateipfade enthalten. Geheimnisse werden vor dem Upload geschwärzt. Das Paket ist nur für Nous-Mitarbeitende und freigeschaltete Discord-Moderatoren einsehbar und wird nach 14 Tagen automatisch gelöscht.',
+    upload: 'Hochladen',
+    uploading: 'Wird hochgeladen…',
+    cancel: 'Abbrechen',
+    close: 'Schließen',
+    copyLink: 'Link kopieren',
+    uploadIdFallback: id => `Kein Link zurückgegeben — zitiere die Upload-ID ${id} im Support`,
+    doneTitle: 'Diagnosedaten gesendet',
+    doneDescription:
+      'Ihr Paket wurde privat hochgeladen. Teilen Sie den Link unten in Ihrem Support-Thread, damit das Team Ihre Logs sehen kann.',
+    failedTitle: 'Hochladen fehlgeschlagen',
+    failedHint:
+      'Sie können auch `hermes debug share --nous` im Terminal ausführen oder `hermes debug share --local`, um den Bericht ohne Hochladen auszugeben.',
+    handoffLead: 'Diskussion hier fortsetzen:',
+    links: {
+      github: 'GitHub Issues',
+      portal: 'Nous-Portal-Support',
+      discord: 'Discord'
+    }
   }
 } satisfies Pick<
   TranslationOverrides,
-  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock' | 'sendDiagnostics'
 >

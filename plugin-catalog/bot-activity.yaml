@@ -19,7 +19,7 @@
 name: bot-activity
 title: Bot Activity
 repo: https://github.com/risyadul/hermes-bot-activity
-sha: ff2a03a67e29162847dfe59e9c3cd1dc27bc606c
+sha: da1c9d10eb228cd6f0a93e255ee92c8c3a6717f2
 version: "0.1.0"
 description: "Live per-Bot activity timeline for Hermes Desktop: turns, tool calls (arguments, result, duration), approvals and Group Chat streams, grouped by Bot or by Group Chat, with one-click tracking for new Bots. Disclosure — local only, no network or telemetry; stores redacted activity in a shared SQLite file under plugin-data/bot-activity; reads each Bot profile's state.db and profile.yaml read-only to attribute Group Chats; runs `hermes plugins install/enable` only when you click Track now."
 maintainer: risyadul
@@ -28,8 +28,8 @@ category: desktop
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/risyadul/hermes-bot-activity
 screenshots:
-  - https://raw.githubusercontent.com/risyadul/hermes-bot-activity/ff2a03a67e29162847dfe59e9c3cd1dc27bc606c/docs/screenshots/by-bot.png
-  - https://raw.githubusercontent.com/risyadul/hermes-bot-activity/ff2a03a67e29162847dfe59e9c3cd1dc27bc606c/docs/screenshots/by-group-chat.png
+  - https://raw.githubusercontent.com/risyadul/hermes-bot-activity/da1c9d10eb228cd6f0a93e255ee92c8c3a6717f2/docs/screenshots/by-bot.png
+  - https://raw.githubusercontent.com/risyadul/hermes-bot-activity/da1c9d10eb228cd6f0a93e255ee92c8c3a6717f2/docs/screenshots/by-group-chat.png
 readme: true
 platforms: []
 known_issues:

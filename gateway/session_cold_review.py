@@ -10,7 +10,9 @@ id the session's next turn would use, so its completion comes back exactly as a 
 import asyncio
 import concurrent.futures
 import contextlib
-import threading
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 async def cold_review_history(runner, source):
@@ -101,8 +103,8 @@ def start_cold_refine(runner, source, session_key, session_id, history, focus):
     this one sends it to the same chat and thread directly. Returns a future that resolves once the review
     is spawned (or raises its start error); the parent's clients are released when the review's request ends,
     on the thread that built it."""
+    from agent.memory_provider import spawn_context_thread
     from gateway.run import _interim_metadata, _non_conversational_metadata
-    from tools.thread_context import propagate_context_to_thread
     loop = asyncio.get_running_loop()
     adapter = runner._delivery_adapter_for(source)
     metadata = _interim_metadata(_non_conversational_metadata(
@@ -124,9 +126,11 @@ def start_cold_refine(runner, source, session_key, session_id, history, focus):
                 run = getattr(parent, "_background_review_run", None)
                 if run is not None:
                     run.request_done.wait()
-        except Exception as exc:
-            if not started.done():
+        except Exception as exc:  # health: allow BLE001 -- the start error becomes the /refine reply (start_failed)
+            if started.done():
+                logger.warning("cold /refine failed after it started", exc_info=True)
+            else:
                 started.set_exception(exc)
 
-    threading.Thread(target=propagate_context_to_thread(body), daemon=True, name="cold-refine").start()
+    spawn_context_thread(body, name="cold-refine").start()
     return asyncio.wrap_future(started)

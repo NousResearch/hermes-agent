@@ -36,7 +36,8 @@ from agent.context_compressor_prune import ProactivePruneMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_retry import retryable_user_text
 from agent.context_compressor_tail import (
-    demote_stale_tail_tools, is_demoted_stub, skill_view_names_by_call_id, with_skill_safety_rule,
+    TAIL_MAX_THRESHOLD_FRACTION, demote_stale_tail_tools, is_demoted_stub, skill_view_names_by_call_id,
+    with_skill_safety_rule,
 )
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -2231,7 +2232,10 @@ class ContextCompressor(
         if self._tail_token_budget is None:
             if getattr(self, "tail_mode", "lean") == "lean":
                 # Lean mode: tail is a small clamped recency window; the summary carries continuity.
-                budget = max(LEAN_TAIL_FLOOR_TOKENS, min(LEAN_TAIL_CAP_TOKENS, int(self.context_length * 0.025)))
+                floor = LEAN_TAIL_FLOOR_TOKENS
+                if self.threshold_tokens > 0:
+                    floor = min(floor, int(self.threshold_tokens * TAIL_MAX_THRESHOLD_FRACTION))
+                budget = max(floor, min(LEAN_TAIL_CAP_TOKENS, int(self.context_length * 0.025)))
             else:
                 budget = int(self.threshold_tokens * self.summary_target_ratio)
             if self.context_length > 0:

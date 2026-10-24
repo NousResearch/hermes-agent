@@ -1,0 +1,22 @@
+name: antigravity
+repo: https://github.com/zeyxx/hermes-antigravity
+sha: c5a5c8204fe0b22bc664474a771592554737054f
+description: "Google Antigravity / Cloud Code Assist inference provider (native direct-API client, v1.5.0). Speaks daily-cloudcode-pa.googleapis.com through its own HTTPS transport - no agy binary, no external process. Credentials via Hermes onboarding only; no writes to Hermes private state, no token copied to the environment, no scanner-evading encoding. Client id/secret are public desktop OAuth literals (disclosed). Multi-account pool with reactive 429 failover, proactive per-model quota check, quota-approach warning, retired/unavailable-model filtering. Rule 9/11 aligned."
+maintainer: zeyxx
+tier: community
+category: models
+requires_hermes: ">=0.20.0"
+docs_url: https://github.com/zeyxx/hermes-antigravity#readme
+version: "1.5.0"
+readme: true
+platforms:
+- linux
+- macos
+- windows
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - ANTIGRAVITY_CLIENT_ID
+  - ANTIGRAVITY_CLIENT_SECRET

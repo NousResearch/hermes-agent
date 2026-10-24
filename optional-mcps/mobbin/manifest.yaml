@@ -1,0 +1,47 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: mobbin
+description: >-
+  Search Mobbin's UI reference library — iOS and web screens, multi-step
+  flows and website sections — with natural language.
+source: https://docs.mobbin.com/mcp/introduction
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). OAuth discovery verified live 2026-10-24: RFC 9728
+# protected-resource metadata at api.mobbin.com/.well-known/oauth-protected-resource/mcp
+# points at a Supabase authorization server whose /oauth/clients/register
+# registration_endpoint makes Dynamic Client Registration work, so no client_id
+# is pinned. Hermes's MCP client + mcp_oauth_manager handle discovery, DCR, PKCE,
+# token exchange and refresh (verified end-to-end: initialize → tools/list → 8 tools).
+transport:
+  type: http
+  url: https://api.mobbin.com/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop "brand pills").
+suggest:
+  keywords:
+    - mobbin
+    - ui references
+    - design references
+  hosts:
+    - mobbin.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Mobbin (or run `hermes mcp login mobbin`). Approve access,
+  then restart the session so tools load.
+
+  Mobbin is a paid product. Until the signed-in account has a
+  paid plan, every tool answers "Mobbin MCP requires a paid plan"
+  (verified with a free account: initialize and tools/list succeed,
+  tools/call is refused).
+
+  Prompt examples:
+    search_screens: "onboarding screens from banking apps"
+    search_flows: "checkout flow for a food delivery app"
+    search_sections: "pricing page hero sections"

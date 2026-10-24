@@ -77,6 +77,20 @@ def storage_source(db, source, session_id, fallback):
     return fallback if label in STORED_AS_LOCAL else label
 
 
+def created_surface_of(db, source):
+    """The creating surface the owner's receipt records for a LOCAL-transport row, or None. The refresh that
+    relabels the row ``local`` passes it on so a ``created_source`` the creator never stamped is not lost."""
+    from gateway.config import Platform
+    if source.platform != Platform.LOCAL:
+        return None
+    from hermes_state_local import local_receipt
+    from gateway.session_policy import created_surface
+    try:
+        return created_surface(local_receipt(db, source.chat_id)['policy']['source'])
+    except RuntimeStoreError:
+        return None
+
+
 async def forward(connection, params):
     authority, actor = connection.authority, connection.actor
     if actor.profile_id != authority.profile_id:

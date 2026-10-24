@@ -51,6 +51,7 @@ hermes skills uninstall <skill-name>
 
 | Skill | Description |
 |-------|-------------|
+| [**caveman**](../user-guide/skills/optional/communication/communication-caveman.md) | Answer in a terse caveman voice that keeps every fact. |
 | [**one-three-one-rule**](../user-guide/skills/optional/communication/communication-one-three-one-rule.md) | 1-3-1 decision briefs: problem, three options, one pick. |
 
 ## creative

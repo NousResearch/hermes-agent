@@ -111,6 +111,109 @@ def legacy_launch_params(row):
     return params, route.get('api_mode')
 
 
+def bot_chat_row(row):
+    """Main's Bot Chat rule for a stored row: the ``follow_profile_config`` marker, or, for a row
+    written before the marker existed, the exact title ``Bot Chat``."""
+    from hermes_state_sessions import _parse_model_config
+    saved = _parse_model_config(row.get('model_config'))
+    return saved.get('follow_profile_config') is True or str(row.get('title') or '').strip() == 'Bot Chat'
+
+
+def composer_pick_holds(row, config):
+    """Whether *row*'s composer pick still holds: the profile (*config*) targets what it diverged from."""
+    from gateway.session_policy import profile_target
+    from hermes_state_sessions import _parse_model_config
+    composer = _parse_model_config(row.get('model_config')).get('composer_override_profile')
+    return isinstance(composer, dict) and (
+        str(composer.get('model') or '').strip(), str(composer.get('provider') or '').strip(),
+    ) == profile_target(config)
+
+
+def legacy_bot_chat_launch(row, params, api_mode, config):
+    """``(params, api_mode)`` for adoption. A Bot Chat (``bot_chat_row``) follows its profile.
+
+    A composer pick is kept only while the profile still targets what the pick diverged from, and
+    is adopted the way a create records one: held until the next profile edit. Otherwise only the
+    workspace and source carry over, so the route last run is not frozen and its wire mode is not
+    either. Any other row is unchanged.
+    """
+    if not bot_chat_row(row):
+        return params, api_mode
+    if not ('model' in params and composer_pick_holds(row, config)):
+        params = {key: params[key] for key in ('cwd', 'source') if key in params}
+        api_mode = None
+    return {**params, 'follow_profile_config': True}, api_mode
+
+
+def follow_bot_chat(authority, session_id, policy, live, picked=()):
+    """*policy* following its profile when the session is a Bot Chat an earlier build committed
+    frozen (its delivery door, a CLI titled create, an adoption), else *policy* itself.
+
+    The caller is a client opening the chat (``session.resume``), which adopts it on the same rule
+    and composer pick as adoption above; *live* is the profile's config the open read. A request
+    that names ``follow_profile_config`` (``false`` included) is the client's own choice, and a
+    bypass launch never reads the profile. The request is not rewritten. A committed ``/model``
+    (*picked*, the session's policy edits) holds like a composer pick, and a committed ``/reasoning``
+    stays the session's level, recorded as its session pin.
+    The caller re-binds the private values without the followed sections, so a frozen key never
+    reaches the profile's route.
+    """
+    from gateway.session_policy import FOLLOW_ADOPTED, SESSION_PINS, present_sections, profile_target
+    if (policy.follows_profile or policy.ignore_user_config
+            or 'follow_profile_config' in json.loads(policy.request_json)):
+        return policy
+    db = authority.db
+    owner = db.get_session(session_id) or {}
+    if not bot_chat_row(owner):
+        # Compression can carry the canonical title to a later segment of the same conversation.
+        titled = db.get_session_by_title('Bot Chat')
+        if titled is None:
+            return policy
+        from hermes_state_local import local_conversation_ids
+        with db._read_ctx() as conn:
+            if titled['id'] not in local_conversation_ids(conn, session_id):
+                return policy
+    live = present_sections(live)
+    config = json.loads(policy.config_json)
+    model = config.get('model') if isinstance(config.get('model'), dict) else {}
+    if composer_pick_holds(owner, live) or ('model' in picked and model.get('selection_profile') is None):
+        # Recorded the way a create records a pick: it holds until the profile's model or provider moves.
+        # A ``/model`` committed while the chat was frozen is such a pick too (its receipt, in *picked*).
+        config.setdefault('model', {})['selection_profile'] = list(profile_target(live))
+    pins = config.get(SESSION_PINS) if isinstance(config.get(SESSION_PINS), dict) else {}
+    if 'reasoning' in picked and not isinstance(pins.get('reasoning'), bool):
+        config[SESSION_PINS] = {**pins, 'reasoning': True}
+    return replace(policy, config_json=json.dumps({**config, FOLLOW_ADOPTED: True}))
+
+
+def _route_is_usage_stamp(row):
+    """True when the row's only route record is the ``billing_provider='custom'`` + ``billing_base_url``
+    usage stamp: no ``gateway_runtime`` and no top-level ``provider``/``base_url`` in ``model_config``.
+    That stamp records which endpoint billed the last turn (the profile's route at the time), not a
+    route the user picked for this session."""
+    from hermes_state_sessions import _parse_model_config
+    saved = _parse_model_config(row.get('model_config'))
+    runtime = saved.get('gateway_runtime')
+    if isinstance(runtime, dict) and runtime.get('provider'):
+        return False
+    if any(isinstance(saved.get(k), str) and saved[k].strip() for k in ('provider', 'base_url')):
+        return False
+    return str(row.get('billing_provider') or '').strip().lower() == 'custom'
+
+
+def _configured_owner(saved, config):
+    """The configured named entry (``providers:``/``custom_providers:``) serving the saved URL, or None."""
+    from gateway.session_route_identity import resolved_route, same_route
+    names = list(config.get('providers') or {}) if isinstance(config.get('providers'), dict) else []
+    legacy = config.get('custom_providers')
+    names += [e.get('name') for e in legacy if isinstance(e, dict)] if isinstance(legacy, list) else []
+    for name in names:
+        owner, url = resolved_route({'provider': str(name or '')}, config)
+        if url and same_route(saved, {'provider': owner, 'base_url': url}, config):
+            return owner
+    return None
+
+
 def _endpoint_owner(saved, config):
     """The provider whose credential may serve the saved endpoint. A named entry that now points
     elsewhere owns a credential for THAT host: rebind to the entry still serving the saved URL, or
@@ -119,13 +222,9 @@ def _endpoint_owner(saved, config):
     identity, entry_url = resolved_route({'provider': saved['provider']}, config)
     if not entry_url or same_route(saved, {'provider': identity, 'base_url': entry_url}, config):
         return saved['provider']
-    names = list(config.get('providers') or {}) if isinstance(config.get('providers'), dict) else []
-    legacy = config.get('custom_providers')
-    names += [e.get('name') for e in legacy if isinstance(e, dict)] if isinstance(legacy, list) else []
-    for name in names:
-        owner, url = resolved_route({'provider': str(name or '')}, config)
-        if url and same_route(saved, {'provider': owner, 'base_url': url}, config):
-            return owner
+    owner = _configured_owner(saved, config)
+    if owner:
+        return owner
     raise RuntimeStoreError('launch_credentials_unavailable', field='provider',
                             detail=f'{identity} no longer serves the saved endpoint; select a model to continue')
 
@@ -151,6 +250,7 @@ def adopt_legacy_session(authority, actor, row):
     params['source'] = LEGACY_CREATION_SOURCES.get(row['source'], row['source'])
     private = {}
     config = _load_gateway_config()
+    params, api_mode = legacy_bot_chat_launch(row, params, api_mode, config)
     model_cfg = config.get('model')
     if isinstance(model_cfg, dict) and ('provider' in params or 'base_url' in params):
         from gateway.session_route_identity import ROUTE_BOUND_KEYS, resolved_route, same_route
@@ -160,6 +260,14 @@ def adopt_legacy_session(authority, actor, row):
                 and same_route(saved, model_cfg, config)):
             # The profile still selects this endpoint: resume on the profile's route, so its own
             # credential (inline key, ${ENV} key, key_env) keeps its normal precedence.
+            params.pop('provider', None)
+            params.pop('base_url', None)
+        elif (_route_is_usage_stamp(row) and saved['base_url']
+                and resolved_route(saved, config)[0] == 'custom' and not _configured_owner(saved, config)):
+            # T21/F1: the only record is the usage stamp of a bare custom endpoint that no configured
+            # entry serves any more (the profile's server moved). Pre-authority resume healed that stamp
+            # to nothing and used the profile route; do the same rather than freeze a dead endpoint into
+            # the policy, where every turn retries it until the cycle gives up.
             params.pop('provider', None)
             params.pop('base_url', None)
         else:
@@ -176,8 +284,18 @@ def adopt_legacy_session(authority, actor, row):
         config = json.loads(policy.config_json)
         config.setdefault('model', {})['api_mode'] = api_mode
         policy = replace(policy, config_json=json.dumps(config))
-    if policy.model is None:
-        policy = replace(policy, model=_resolve_gateway_model(policy.config()))
+    # restore_policy rejects a blank model, and the commit below is what the next open reads.
+    # A following Bot Chat drops the saved name out of the request, so a profile with no
+    # default would store ''. Put a name on the receipt only: the profile's resolved model,
+    # else the row's. The request is unchanged, so a later profile default still wins.
+    named = str(policy.model or '').strip() or (_resolve_gateway_model(policy.config()) or '').strip()
+    if not named:
+        named = str(row.get('model') or '').strip()
+    if not named:
+        raise RuntimeStoreError('invalid_params', field='model',
+                                detail='the profile names no model and the saved session has none')
+    if policy.model != named:
+        policy = replace(policy, model=named)
     policy = bind_launch_key(authority, sid, policy, None, config_secrets=private)
     from gateway.session_local_recovery import local_source
     source = local_source(authority, sid, actor.subject)

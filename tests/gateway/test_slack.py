@@ -547,7 +547,7 @@ class TestSlackConnectCleanup:
             ),
             patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}),
             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)),
-            patch("gateway.status.release_scoped_lock"),
+            patch("gateway.status_scoped_locks.release_scoped_lock"),
             patch("asyncio.create_task", side_effect=_fake_create_task),
         ):
             result = await adapter.connect()
@@ -556,7 +556,7 @@ class TestSlackConnectCleanup:
         first_handler.close_async.assert_awaited_once_with()
         assert adapter._handler is second_handler
 
-        with patch("gateway.status.release_scoped_lock"):
+        with patch("gateway.status_scoped_locks.release_scoped_lock"):
             await adapter.disconnect()
 
     @pytest.mark.asyncio
@@ -594,7 +594,7 @@ class TestSlackConnectCleanup:
         adapter._proxy_url = "http://proxy.example.com:3128"
         adapter._bot_user_id = "U_BOT"
 
-        with patch("gateway.status.release_scoped_lock") as mock_release:
+        with patch("gateway.status_scoped_locks.release_scoped_lock") as mock_release:
             await adapter.disconnect()
 
         handler.close_async.assert_awaited_once_with()
@@ -684,7 +684,7 @@ class TestSlackSocketWatchdog:
             patch.object(_slack_mod, "AsyncSocketModeHandler", fake_factory),
             patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}),
             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)),
-            patch("gateway.status.release_scoped_lock"),
+            patch("gateway.status_scoped_locks.release_scoped_lock"),
         ]
 
 

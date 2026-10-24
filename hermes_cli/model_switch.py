@@ -456,12 +456,19 @@ class ModelSwitchResult:
     request_overrides: Optional[dict] = None
     error_message: str = ""
     warning_message: str = ""
+    # Window plans only: the Large-model warning (display only, never a confirm). Empty for every other
+    # account and model, so their switch output is unchanged.
+    usage_notice: str = ""
     provider_label: str = ""
     resolved_via_alias: str = ""
     capabilities: Optional[ModelCapabilities] = None
     runtime_capabilities: Optional[dict[str, bool]] = None
     model_info: Optional[ModelInfo] = None
     is_global: bool = False
+    # The resolved direct alias's own ``base_url`` (and the credential decided for it) replaced the
+    # provider's route. ``resolved_via_alias`` alone is also set by a built-in shortcut, an endpointless
+    # entry or a process provider's declared id, which name a model like a plain pick.
+    alias_endpoint_applied: bool = False
 
 
 @dataclass(frozen=True)
@@ -1186,6 +1193,7 @@ class _Switch:
     new_model: str = ""
     target_provider: str = ""
     resolved_alias: str = ""
+    alias_endpoint_applied: bool = False
     provider_label: str = ""
     api_key: str = ""
     base_url: str = ""
@@ -1586,6 +1594,7 @@ def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
         da = DIRECT_ALIASES.get(st.resolved_alias)
         if da is not None and da.base_url:
             _apply_direct_alias_endpoint(st, da)
+            st.alias_endpoint_applied = True
 
     # Fills an empty mode (alias cleared it) and overrides a STALE mode carried from previous
     # session state when the host mandates one wire protocol (e.g. gpt-5.x on api.openai.com
@@ -1721,6 +1730,8 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
     model_info = get_model_info(st.target_provider, st.new_model, allow_network=True)
 
     warnings = [w for w in (st.validation.get("message"), _check_hermes_model_warning(st.new_model)) if w]
+    from hermes_cli.model_picker_usage import large_model_notice
+    usage_notice = large_model_notice(st.new_model, st.target_provider, fetch=True) or ""
 
     # Carry the switched provider's request_overrides (custom_providers ``extra_body`` such as
     # chat_template_kwargs) so the gateway applies them like the default-provider path does.
@@ -1735,10 +1746,10 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
         success=True, new_model=st.new_model, target_provider=st.target_provider,
         provider_changed=st.provider_changed, api_key=st.api_key, base_url=st.base_url, api_mode=st.api_mode,
         request_overrides=dict(request_overrides or {}), warning_message=" | ".join(warnings) if warnings else "",
-        provider_label=st.provider_label, resolved_via_alias=st.resolved_alias, capabilities=capabilities,
+        usage_notice=usage_notice, provider_label=st.provider_label, resolved_via_alias=st.resolved_alias, capabilities=capabilities,
         runtime_capabilities={
             k: v for k, v in runtime_capabilities.items() if isinstance(k, str) and isinstance(v, bool)},
-        model_info=model_info, is_global=st.is_global)
+        model_info=model_info, is_global=st.is_global, alias_endpoint_applied=st.alias_endpoint_applied)
 
 
 def switch_model(

@@ -413,7 +413,7 @@ class TestDisabledToolsetsPlatformBundle:
             "is what lets `disabled_toolsets: [browser]` strip it (#64503)"
         )
         # browser still owns its own tools, and web/search still own web_search.
-        assert "browser_navigate" in browser_tools
+        assert "browser_exec" in browser_tools
         assert "web_search" in set(resolve_toolset("web"))
         assert "web_search" in set(resolve_toolset("search"))
 
@@ -527,10 +527,9 @@ class TestBrowserRetrievalHints:
         # Real static schemas + rewriters: the rewritten browser descriptions must not mention absent web tools.
         from model_tools import _apply_dynamic_schemas
         from tools.browser_cdp_tool import BROWSER_CDP_SCHEMA
-        from tools.browser_tool import BROWSER_TOOL_SCHEMAS
+        from tools.browser_use_cli import BROWSER_EXEC_SCHEMA
 
-        navigate = next(s for s in BROWSER_TOOL_SCHEMAS if s["name"] == "browser_navigate")
-        defs = [{"type": "function", "function": navigate}, {"type": "function", "function": BROWSER_CDP_SCHEMA}]
+        defs = [{"type": "function", "function": BROWSER_EXEC_SCHEMA}, {"type": "function", "function": BROWSER_CDP_SCHEMA}]
         rendered = " ".join(d["function"]["description"] for d in _apply_dynamic_schemas(defs + self._defs("terminal")))
         assert "web_search" not in rendered
         assert "web_extract" not in rendered

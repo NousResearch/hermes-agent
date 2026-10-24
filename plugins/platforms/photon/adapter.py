@@ -561,6 +561,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = _MAX_MESSAGE_LENGTH
     SUPPORTS_MESSAGE_EDITING = False  # no edit API: streaming must not leave a stale cursor (▉)
+    serial_receive_loop = True  # the /inbound NDJSON loop awaits each line before reading the next
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("photon"))

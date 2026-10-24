@@ -389,6 +389,9 @@ class RollbackRestoreParams(Params):
     hash: str
     file_path: str | None = None
     profile: str | None = None
+    # A whole-tree restore keeps the user's hand-edits (``CheckpointManager.restore(safe=True)``, as the
+    # gateway text command and the in-process CLI do); ``all`` reverts them too (main's ``--all``).
+    all: bool | None = None
 
 
 class RollbackRestoreResult(_Open):
@@ -533,14 +536,11 @@ class BrowserAction(WireEnum):
     status = "status"
     connect = "connect"
     disconnect = "disconnect"
-    use = "use"
 
 
 class BrowserManageParams(Params):
     action: BrowserAction = BrowserAction.status
     url: str | None = None
-    # ``use`` only: True selects Browser Use mode (browser_exec), False the built-in browser tools.
-    enabled: bool | None = None
     session_id: str | None = None
     profile: str | None = None
 
@@ -549,10 +549,7 @@ class BrowserManageResult(Result):
     connected: bool
     url: str | None = None
     messages: list[str] | None = None
-    # ``status`` / ``use``: whether new agents for this profile get browser_exec.
-    browser_use: bool | None = None
 
 
 method("browser.manage", params=BrowserManageParams, result=BrowserManageResult,
-       doc="Inspect, attach to, or drop the CDP browser the tools use, or switch Browser Use mode "
-           "(``use``, applies to new sessions); ``messages`` narrate a connect.")
+       doc="Inspect, attach to, or drop the CDP browser the tools use; ``messages`` narrate a connect.")

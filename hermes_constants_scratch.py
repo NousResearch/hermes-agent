@@ -21,6 +21,8 @@ import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+import hermes_constants_scratch_stuck as stuck
+
 logger = logging.getLogger(__name__)
 
 # How long a TERMed process gets before KILL; browsers exit well within this.
@@ -106,29 +108,39 @@ def subtree_touch_state(path: Path, cutoff: float) -> str:
     """Tri-state form of :func:`subtree_touched_since`: ``touched`` (recent write seen),
     ``scan-failed`` (unreadable — idle cannot be established, so the entry is kept, but
     a failed scan is not activity and is never reported as such), or ``idle``.
-    Same walk, same stop-at-first-recent shortcut, same symlink rules."""
+    Same walk, same stop-at-first-recent shortcut, same symlink rules. A hardlinked file
+    (``st_nlink > 1``) does not count either: its mtime is the inode's, and
+    ``git clone --local`` hardlinks packs that git freshens from the source repo."""
+    return _scan_subtree(path, cutoff)[0]
+
+
+def _scan_subtree(path: Path, cutoff: float) -> tuple[str, str | None]:
+    """``(state, denied_dir)``: *denied_dir* is the directory below *path* that refused
+    listing with EACCES/EPERM when that is why the scan failed (else None)."""
     try:
         if os.lstat(path).st_mtime >= cutoff:
-            return _TOUCHED
+            return _TOUCHED, None
         if not path.is_dir() or path.is_symlink():
-            return _IDLE
+            return _IDLE, None
     except OSError:
-        return _SCAN_FAILED
+        return _SCAN_FAILED, None
     stack = [str(path)]
     while stack:
+        current = stack.pop()
         try:
-            with os.scandir(stack.pop()) as it:
+            with os.scandir(current) as it:
                 for child in it:
                     try:
-                        if child.stat(follow_symlinks=False).st_mtime >= cutoff:
-                            return _TOUCHED
-                    except OSError:
-                        return _SCAN_FAILED
+                        st = child.stat(follow_symlinks=False)
+                    except OSError as exc:
+                        return _SCAN_FAILED, current if stuck.is_permission_error(exc) else None
+                    if st.st_mtime >= cutoff and not (st.st_nlink > 1 and child.is_file(follow_symlinks=False)):
+                        return _TOUCHED, None
                     if child.is_dir(follow_symlinks=False):
                         stack.append(child.path)
-        except OSError:
-            return _SCAN_FAILED
-    return _IDLE
+        except OSError as exc:
+            return _SCAN_FAILED, current if stuck.is_permission_error(exc) else None
+    return _IDLE, None
 
 
 def subtree_touched_since(path: Path, cutoff: float) -> bool:
@@ -359,11 +371,22 @@ def _prune_idle_entries(
     root: Path, max_idle_hours: float, skip_names: frozenset[str], audit: logging.Logger,
 ) -> int:
     cutoff = time.time() - max_idle_hours * 3600
+    # Entries already known to hold files this user cannot read or delete are skipped before
+    # any walk, until that is fixed (hermes_constants_scratch_stuck).
+    skip_names = skip_names | stuck.load_skips(root) | {stuck.STUCK_STATE_NAME, stuck.STUCK_LOCK_NAME}
     try:
         entries = [e for e in root.iterdir() if e.name not in skip_names]
     except OSError:
         return 0
-    doomed = [e for e in entries if not subtree_touched_since(e, cutoff)]
+    doomed = []
+    for e in entries:
+        state, denied_dir = _scan_subtree(e, cutoff)
+        if state == _IDLE:
+            doomed.append(e)
+        elif denied_dir is not None and stuck.tracking_supported():
+            # A dir this user may not list (root-owned 0700) fails every idle scan: kept
+            # (fail-closed) as before, but reported once and no longer re-scanned hourly.
+            stuck.record(root, e, [denied_dir], audit)
     # Runs even with nothing to delete: orphans whose cwd was removed by an earlier pass
     # (or by hand) are found by the deleted-cwd rule, not by membership in ``doomed``.
     try:
@@ -418,9 +441,10 @@ def _prune_idle_entries(
                     os.fspath(entry),
                 )
             continue
+        denied: list[str] = []
         try:
             if entry.is_dir() and not entry.is_symlink():
-                shutil.rmtree(entry, ignore_errors=True)
+                denied = stuck.rmtree_collecting_permission_errors(entry)
             else:
                 entry.unlink()
         except OSError as exc:
@@ -433,7 +457,10 @@ def _prune_idle_entries(
         # above refuses to invent (P2 on #134173).
         try:
             os.lstat(entry)
-            audit.info("scratch prune: could not fully remove %r", os.fspath(entry))
+            if denied and stuck.tracking_supported():
+                stuck.record(root, entry, denied, audit)
+            else:
+                audit.info("scratch prune: could not fully remove %r", os.fspath(entry))
             continue
         except FileNotFoundError:
             pass

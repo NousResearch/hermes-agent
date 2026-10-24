@@ -1,9 +1,9 @@
 import type { ReloadMcpResult } from '@hermes/shared'
 
-import type { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
-import { $gateway } from '@/store/gateway'
 import { notify } from '@/store/notifications'
+import { ambientRequestFor } from '@/store/session-gone-latch'
+import { requestForOwnedSession } from '@/store/session-states'
 
 /**
  * What `reload.mcp` did for the chat that asked. The gateway decides and commits; Desktop only reads its
@@ -19,14 +19,13 @@ export interface McpReloadOutcome {
   sessionServers: null | string[]
 }
 
-/** The change has not reached the chat yet; the user already has the deferral notice. */
-export class McpReloadDeferred extends Error {}
-
 export async function reloadMcp(
-  gateway: Pick<HermesGateway, 'request'>,
+  gateway: Parameters<typeof ambientRequestFor>[0],
   sessionId: null | string | undefined
 ): Promise<McpReloadOutcome> {
-  const result = await gateway.request<ReloadMcpResult>('reload.mcp', {
+  // The chat's MCP set lives on its owner; the ambient socket refuses (or
+  // reloads the wrong profile for) another profile's session.
+  const result = await requestForOwnedSession<ReloadMcpResult>(sessionId, ambientRequestFor(gateway), 'reload.mcp', {
     confirm: true,
     session_id: sessionId ?? undefined
   })
@@ -54,31 +53,5 @@ export function announceMcpReload(outcome: McpReloadOutcome, skip: readonly stri
       message: translateNow('promptNotices.mcpReloadUnavailable', unavailable.join(', ')),
       title: translateNow('settings.mcp.reloadFailed')
     })
-  }
-}
-
-/** For a flow that claims `server` is live in the chat (connect, reconnect): resolves only once it is;
- *  rejects with {@link McpReloadDeferred} while a turn defers it, or an error when it did not connect. */
-export async function reloadMcpFor(server: string, sessionId: null | string | undefined): Promise<void> {
-  const gateway = $gateway.get()
-
-  if (!gateway) {
-    throw new Error(translateNow('settings.mcp.reloadFailed'))
-  }
-
-  const outcome = await reloadMcp(gateway, sessionId)
-  announceMcpReload(outcome, [server])
-
-  if (outcome.unavailable.includes(server)) {
-    throw new Error(translateNow('promptNotices.mcpReloadUnavailable', server))
-  }
-
-  if (outcome.deferred) {
-    throw new McpReloadDeferred(translateNow('promptNotices.mcpReloadDeferred'))
-  }
-
-  // Connected for the profile is not enabled in this chat (no_mcp, an explicit pick, a platform allowlist).
-  if (outcome.sessionServers && !outcome.sessionServers.includes(server)) {
-    throw new Error(translateNow('promptNotices.mcpReloadNotInChat', server))
   }
 }

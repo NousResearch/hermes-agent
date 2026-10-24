@@ -62,6 +62,8 @@ async def deliver_heartbeat(runner, event):
             except Exception:
                 logger.exception("Watch notification injection error")
                 return False
+            if delivered is False and prepared is not event:
+                event['_refusal_permanent'] = prepared.get('_refusal_permanent')  # the drain requeues the original
             if delivered is not False or not _replaced_tick_claimed(runner, prepared):
                 return delivered
             # The tick it replaced started first and runs with its own output: admit this one alone.
@@ -533,6 +535,40 @@ async def move_route_wakes(runner, session_key, old_session_id):
             ordered=True, after=partial(authority._schedule_admitted, new))
 
 
+def _local_owner(authority, session_key):
+    """The LOCAL FIFO serving ``session_key`` (its owner is the receipt id, which a reset keeps)."""
+    for sid, live in list(authority.sessions.items()):
+        if live.route == session_key and getattr(live.source, 'platform', None) == Platform.LOCAL:
+            return SessionRef(authority.profile_id, sid)
+    return None
+
+
+async def _reset_and_retarget_local(authority, runner, session_key, old_session_id, owner):
+    """A LOCAL route (the Bot Chat ``hermes peer dm`` lands in) keeps its FIFO owner across the
+    reset, so nothing moves between FIFOs. Its queued automation rows (a DM that arrived while the
+    exhausted turn ran) still name the pre-reset transcript and are retargeted at the fresh one,
+    in the same ordered worker step as the rotation; left stale, the drain refuses them
+    (``admission_conflict``) and the Bot Chat's FIFO pauses for good, across restarts."""
+    from gateway.session_runtime_workers import tracked_write
+    from hermes_state_runtime import retarget_local_automation
+    live = authority.sessions[owner.session_id]
+
+    def rotate_and_retarget():
+        old_targets = authority.db.get_compression_lineage(old_session_id) or [old_session_id]
+        entry = runner.session_store.reset_session(session_key)
+        if entry is None or entry.session_id in old_targets:
+            return entry, []
+        return entry, retarget_local_automation(
+            authority.db, epoch=authority.epoch, session_id=owner.session_id,
+            principal_id='automation:' + session_key, old_targets=old_targets, new_target=entry.session_id)
+
+    async with live.mutation_lock:
+        entry, moved = await tracked_write(authority, rotate_and_retarget, ordered=True)
+    if moved:
+        authority._publish_pending(owner)
+    return entry
+
+
 async def reset_and_rehome_messages(runner, session_key, old_session_id):
     """The compression-exhaustion auto-reset: rotate the route to a fresh session and move the old
     owner's still-queued native ``messaging:*`` rows onto it, same order and request ids. Left
@@ -552,6 +588,9 @@ async def reset_and_rehome_messages(runner, session_key, old_session_id):
     authority = active_authority(runner)
     old = SessionRef(authority.profile_id, authority.logical_owner(old_session_id)) if authority else None
     live = authority.sessions.get(old.session_id) if old and old_session_id else None
+    local = _local_owner(authority, session_key) if authority else None
+    if local is not None:
+        return await _reset_and_retarget_local(authority, runner, session_key, old_session_id, local), lambda: None
     if live is None:
         return await runner.async_session_store.reset_session(session_key), lambda: None
     import asyncio

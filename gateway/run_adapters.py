@@ -1363,6 +1363,9 @@ class GatewayAdapterLifecycleMixin:
         if callable(_set_reaction):
             _set_reaction(self._handle_reaction_event)
         adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
+        _set_transfer = getattr(adapter, "set_topic_transfer_fn", None)
+        if callable(_set_transfer):
+            _set_transfer(self._transfer_telegram_root_dm)
         adapter.set_authorization_check(
             authorization_check or self._make_adapter_auth_check(adapter.platform)
         )
@@ -1801,10 +1804,13 @@ class GatewayAdapterLifecycleMixin:
     def _standalone_scoped(self, handler):
         """Standalone twin of the ``_make_default_profile_*`` wrappers: run ``handler`` under
         ``_standalone_launch_scope`` so slash commands and turns keep resolving the launch profile's
-        credentials after a hosted room flipped the process-wide guard (#112878). Decided per event:
-        activation happens after the adapters were wired."""
+        credentials after a hosted room flipped the process-wide guard (#112878). The credential
+        body is marked at entry (``launch_body``): a turn already running when a second profile
+        switches this gateway to multiplexing keeps resolving its launch credentials."""
+        from tui_gateway.launch_profile_policy import launch_body
+
         async def _handler(*args):
-            with self._standalone_launch_scope():
+            with launch_body(), self._standalone_launch_scope():
                 return await handler(*args)
 
         return _handler

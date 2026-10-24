@@ -108,12 +108,12 @@ def _set_platform_unauthorized_dm_behavior(platform_key: str, behavior: str) -> 
     _gw().write_platform_config_field(platform_key, "unauthorized_dm_behavior", behavior, raw=True)
 
 
-def _print_setup_header(title: str) -> None:
+def print_setup_header(title: str) -> None:
     print()
     print(_gw().color(f"  ─── {title} Setup ───", _gw().Colors.CYAN))
 
 
-def _confirm_reconfigure(label: str, *env_vars: str) -> bool:
+def confirm_reconfigure(label: str, *env_vars: str) -> bool:
     """False when ``label`` is already configured (all ``env_vars`` set) and the user declines."""
     if all(_gw().get_env_value(v) for v in env_vars):
         print()
@@ -122,19 +122,19 @@ def _confirm_reconfigure(label: str, *env_vars: str) -> bool:
     return True
 
 
-def _offer_home_channel(home_var: str, user_id: str, what: str) -> None:
+def offer_home_channel(home_var: str, user_id: str, what: str) -> None:
     """Offer to persist ``user_id`` as ``home_var`` (e.g. "your Telegram user ID")."""
     if _gw().prompt_yes_no(f"  Use {what} ({user_id}) as the home channel?", True):
         _gw().save_env_value(home_var, user_id)
         _gw().print_success(f"  Home channel set to {user_id}")
 
 
-def _save_env_values(**values: str) -> None:
+def save_env_values(**values: str) -> None:
     for name, value in values.items():
         _gw().save_env_value(name, value)
 
 
-def _prompt_csv(prompt_text: str, default: str) -> str:
+def prompt_csv(prompt_text: str, default: str) -> str:
     """Comma-separated ID prompt with whitespace stripped."""
     return _gw().prompt(prompt_text, default, password=False).replace(" ", "")
 
@@ -256,14 +256,14 @@ def _setup_standard_platform(platform: dict):
     """Interactive setup for Telegram, Discord, or Slack."""
     from hermes_cli.setup_hidden_env import is_setup_hidden_env as _is_setup_hidden_env
     emoji, label, token_var = platform["emoji"], platform["label"], platform["token_var"]
-    _print_setup_header(f"{emoji} {label}")
+    print_setup_header(f"{emoji} {label}")
 
     instructions = platform.get("setup_instructions")
     if instructions:
         print()
         _gw()._print_info_lines(*(f"  {line}" for line in instructions))
 
-    if not _confirm_reconfigure(label, token_var):
+    if not confirm_reconfigure(label, token_var):
         return
 
     auto_token_saved, auto_owner_user_id = False, None
@@ -311,7 +311,7 @@ def _setup_standard_platform(platform: dict):
     if allowed_val_set and not home_val and label == "Telegram":
         first_id = allowed_val_set.split(",")[0].strip()
         if first_id:
-            _offer_home_channel(home_var, first_id, "your user ID")
+            offer_home_channel(home_var, first_id, "your user ID")
 
     print()
     _gw().print_success(f"{emoji} {label} configured!")
@@ -341,7 +341,7 @@ def _configure_platform(platform: dict) -> None:
         return
 
     label = platform.get("label", platform["key"])
-    _print_setup_header(f"{platform.get('emoji', '🔌')} {label}")
+    print_setup_header(f"{platform.get('emoji', '🔌')} {label}")
     required = entry.required_env if entry else []
     if required:
         _gw().print_info(f"  Set these env vars in ~/.hermes/.env: {', '.join(required)}")

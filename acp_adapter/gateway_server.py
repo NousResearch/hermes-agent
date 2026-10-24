@@ -37,7 +37,10 @@ def _slash_command(text):
         return None
     from hermes_cli.commands import resolve_command
     command = resolve_command(name)
-    return command.name if command is not None else None
+    if command is not None:
+        return command.name
+    from acp_adapter.gateway_commands import ROUTES
+    return name if name in ROUTES else None
 
 
 def _bypass_route():
@@ -96,6 +99,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         self._settling = set()
         # Admissions a terminal receipt already delivered: their late message.complete adds nothing.
         self._receipted = {}
+        # ``gateway_replay_gap``: admission -> the reply segment shown when a gap cut it; own prompts awaiting
+        # their terminal, in admission order; those whose reply the hole lost for good; per session, the gap
+        # re-attaches sent and adopted (a snapshot covers the submits sent before its resume).
+        self._cut, self._inflight, self._lost, self._resumes, self._adopted = {}, {}, {}, {}, {}
         self._pending_cancels = set()
         # (session, tool_call_id) -> (tool name, args, admission) of a call still open on the editor.
         self._tool_args = {}
@@ -108,6 +115,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         self._mutations = PreparedMutations()
         # Session -> title the editor was last shown (``session_info_update`` fires on a change).
         self._titles = {}
+        # Session -> the mode (edit approval policy) the editor was last shown (``current_mode_update``).
+        self._modes = {}
         # Session -> the owner's latest usage dict (``session.usage`` / ``session.stats``).
         self._usage = {}
         self._background = set()
@@ -182,13 +191,27 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 logger.info("ACP session %s not re-attached after reconnect", session_id, exc_info=True)
                 self._snapshots.pop(session_id, None)
                 continue
-            self._snapshots[session_id] = snapshot
+            await self._adopt(session_id, snapshot)
             # Before this session's cards are offered again: until ``_client`` returns, ``self._gateway`` is
             # not this connection, so a card answered while the request is out would lose its answer.
             await self._request_live_reasoning(gateway, session_id)
             for pending in snapshot.get("prompts", []):
                 self._permission(session_id, pending)
             await self._notify_unknown(session_id)
+
+    async def _adopt(self, session_id, snapshot, resumes=None):
+        """Install a fresh ``session.resume`` snapshot as a session's projection: every install (create, load,
+        fork, a control's refresh, reconnect, replay gap) goes through here.
+
+        Events before its watermark are skipped from here on, so the session state they would have carried
+        is projected from the snapshot itself: the editor is never left showing Default while the owner
+        enforces Accept Edits / Don't Ask (#141338 ACP-7)."""
+        async with self._changed:  # its pending rows and controls may settle or block a waiter
+            self._snapshots[session_id] = snapshot
+            if resumes is not None:
+                self._adopted[session_id] = resumes
+            self._changed.notify_all()
+        await self._project_mode(session_id, self._editor_id(session_id), snapshot.get("info") or {})
 
     async def _request_live_reasoning(self, client, session_id):
         """Ask the owner to stream this session's reasoning (``show_reasoning``), as the CLI does.
@@ -232,6 +255,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         self._streamed.clear()
         self._segments.clear()
         self._message_ids.clear()
+        self._cut.clear()
         async with self._changed:
             # Every waiter on the old transport wakes to its ambiguous failure, even one that had
             # not yet observed ``_failure`` before it is cleared here.
@@ -259,7 +283,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             editor={"mcp_servers": [s.model_dump(by_alias=True) for s in mcp_servers or []],
                     "edit_approval_policy": "ask"}, **flags)
         session_id = snapshot["session_id"]
-        self._snapshots[session_id] = snapshot
+        await self._adopt(session_id, snapshot)
         if mcp_servers:
             self._editor_mcp[session_id] = {
                 "mcp_servers": [s.model_dump(by_alias=True) for s in mcp_servers]}
@@ -274,6 +298,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         """Main's new/load/resume/fork reply fields (model picker, modes, provenance ``_meta``); the
         command list and context indicator follow once the reply is queued, as main scheduled them."""
         from acp_adapter.gateway_session_meta import model_state, provenance_meta, session_modes
+        from acp_adapter.modes import MODE_TO_EDIT_APPROVAL_POLICY
         title = info.get("title")
         if isinstance(title, str) and title.strip():
             self._titles[session_id] = title
@@ -283,7 +308,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             task = asyncio.get_running_loop().create_task(self._after_attach(session_id, editor_id))
             self._background.add(task)
             task.add_done_callback(self._background.discard)
-        return {"models": models, "modes": session_modes(), "field_meta": meta}
+        # ``_adopt`` seeded the mode from the snapshot: a change the pump projected since is what the reply shows.
+        modes = session_modes({"edit_approval_policy": MODE_TO_EDIT_APPROVAL_POLICY[self._modes.setdefault(
+            session_id, session_modes(info).current_mode_id)]})
+        return {"models": models, "modes": modes, "field_meta": meta}
 
     async def _after_attach(self, session_id, editor_id):
         from acp_adapter.gateway_session_meta import available_commands_update
@@ -342,12 +370,15 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             # capability, idle only), as the workspace move above, instead of refusing the thread.
             await self._rebind_editor_mcp(client, session_id, resume_params['editor'])
             snapshot = await client.rpc("session.resume", session_id=session_id, **resume_params)
-        self._snapshots[session_id] = snapshot
+        await self._adopt(session_id, snapshot)
         if 'editor' in resume_params:
             self._editor_mcp[session_id] = resume_params['editor']
         from acp_adapter.server import _history_replay_updates
         if self._conn:
-            for update in _history_replay_updates(snapshot["messages"]):
+            # The editor replays the live transcript in stored order, as main's ACP did; archived rows
+            # (summarized away by a compression) are display-only.
+            live = sorted((m for m in snapshot["messages"] if not m.get("archived")), key=lambda m: m.get("row_id") or 0)
+            for update in _history_replay_updates(live):
                 await self._conn.session_update(session_id=held_id, update=update)
         for pending in snapshot.get("prompts", []):
             self._permission(session_id, pending)
@@ -430,7 +461,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         child = result['branched_session_id']
         if self._moved(info, cwd):
             await self._move_workspace(client, child, cwd)
-        self._snapshots[child] = await client.rpc('session.resume', session_id=child)
+        await self._adopt(child, await client.rpc('session.resume', session_id=child))
         if payload or session_id in self._editor_mcp:
             self._editor_mcp[child] = payload or self._editor_mcp[session_id]
         self._mutations.acknowledge(session_id, 'branch', payload)
@@ -452,7 +483,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if result.get('status') == 'cancelled':
             # Declined: nothing was written; the editor's picker must not show the target as active.
             raise GatewayClientError('model_switch_cancelled')
-        self._snapshots[session_id] = await client.rpc('session.resume', session_id=session_id)
+        await self._adopt(session_id, await client.rpc('session.resume', session_id=session_id))
         self._mutations.acknowledge(session_id, 'model', payload)
         if result.get('status') == 'deferred' and self._conn:
             # A pick during a running turn lands for the next one (#139604); say so, as Desktop does.
@@ -491,7 +522,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 await say(model_refusal_text(result, confirmed=True))
                 return
             if session_id in self._snapshots:
-                self._snapshots[session_id] = await client.rpc("session.resume", session_id=session_id)
+                await self._adopt(session_id, await client.rpc("session.resume", session_id=session_id))
             # Confirmed while a turn runs: stored again for the next boundary, said as such.
             await say(deferred_pick_text(result) if result.get("status") == "deferred"
                       else _model_text("Model switched to", result))
@@ -532,24 +563,49 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         return session_id
 
     async def set_session_mode(self, mode_id, session_id, **kwargs):
-        """The advertised mode is the owner's own policy, so selecting it changes nothing; main's
-        Accept Edits / Don't Ask need an editor-policy change the gateway has no verb for."""
+        """Main's Default / Accept Edits / Don't Ask: the session's edit approval policy on the owner."""
         from acp.schema import SetSessionModeResponse
-        from acp_adapter.gateway_session_meta import DEFAULT_MODE
-        self._held_session(session_id)
-        if mode_id != DEFAULT_MODE:
-            raise GatewayClientError("acp_edit_policy_mutation_unavailable")
+        from acp_adapter.modes import MODE_TO_EDIT_APPROVAL_POLICY
+        if mode_id not in MODE_TO_EDIT_APPROVAL_POLICY:
+            raise GatewayClientError("invalid_params")
+        await self._set_edit_policy(self._held_session(session_id), MODE_TO_EDIT_APPROVAL_POLICY[mode_id])
         return SetSessionModeResponse()
 
     async def set_config_option(self, config_id, session_id, value=None, **kwargs):
         """Accepted so editors do not fail on their own config writes, as main did; only the edit
-        approval policy has a meaning here, and only the owner's ``ask`` can be selected."""
+        approval policy has a meaning here, and it is the same owner setting the modes select."""
         from acp.schema import SetSessionConfigOptionResponse
-        from acp_adapter.gateway_session_meta import DEFAULT_EDIT_APPROVAL_POLICY, EDIT_APPROVAL_POLICY_CONFIG_ID
-        self._held_session(session_id)
-        if config_id == EDIT_APPROVAL_POLICY_CONFIG_ID and value != DEFAULT_EDIT_APPROVAL_POLICY:
-            raise GatewayClientError("acp_edit_policy_mutation_unavailable")
+        from acp_adapter.modes import EDIT_APPROVAL_POLICY_CONFIG_ID, EDIT_APPROVAL_POLICY_TO_MODE
+        session_id = self._held_session(session_id)
+        if config_id == EDIT_APPROVAL_POLICY_CONFIG_ID:
+            if value not in EDIT_APPROVAL_POLICY_TO_MODE:
+                raise GatewayClientError("invalid_params")
+            await self._set_edit_policy(session_id, value)
         return SetSessionConfigOptionResponse(config_options=[])
+
+    async def _set_edit_policy(self, session_id, policy):
+        """The owner's ``edit_policy`` mutation (revision-fenced, idle sessions only, like a model pick);
+        every surface attached to the session reads the committed policy from ``session.info``."""
+        from acp_adapter.modes import EDIT_APPROVAL_POLICY_TO_MODE
+        client = await self._client()
+        payload = {"policy": policy}
+        self._unacked.pop(session_id, None)
+        try:
+            await self._mutations.apply(client, session_id, "edit_policy", payload)
+        except GatewayClientError as exc:
+            if str(exc) not in {"session_busy", "unknown_execution"}:
+                raise
+            # Named in the transcript (as a deferred model pick is) and the reply: a running turn ends on its
+            # own, a lost one (unknown_execution) blocks every control until it is resolved or discarded.
+            text = ("Mode changes apply when the session is idle; try again after this turn."
+                    if str(exc) == "session_busy" else "Mode changes wait for the lost turn: "
+                    + self._unknown_recovery(session_id, submitted=False).removeprefix("unknown_execution: "))
+            if self._conn:
+                await self._conn.session_update(session_id=self._editor_id(session_id),
+                                                update=acp.update_agent_message_text(text + "\n"))
+            raise acp.RequestError(-32603, text) from exc
+        self._mutations.acknowledge(session_id, "edit_policy", payload)
+        self._modes[session_id] = EDIT_APPROVAL_POLICY_TO_MODE[policy]
 
     async def list_sessions(self, cursor=None, cwd=None, **kwargs):
         from acp.schema import ListSessionsResponse, SessionInfo
@@ -566,8 +622,15 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         held_id, session_id = session_id, self._aliases.get(session_id, session_id)
         if session_id not in self._snapshots:
             raise GatewayClientError("not_found")
+        if self._has_unknown(session_id) and await self._refresh_unknown_for_prompt(session_id):
+            return PromptResponse(stop_reason='cancelled')
         if self._has_unknown(session_id):
-            raise GatewayClientError(self._unknown_recovery(session_id, submitted=False))
+            # Only a text-only /discard passes a lost turn, recognised BEFORE staging: a refused
+            # prompt must not write its media or retire the editor's retained retry identity.
+            from acp_adapter.content import _content_blocks_to_openai_user_content
+            content = _content_blocks_to_openai_user_content(prompt)
+            if not isinstance(content, str) or _slash_command(content) != 'discard':
+                raise GatewayClientError(self._unknown_recovery(session_id, submitted=False))
         prepared = await self._prepare_submit(session_id, prompt)
         if prepared is None:
             return PromptResponse(stop_reason='cancelled')
@@ -585,7 +648,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         try:
             # Inside the try: a failed reconnect is as ambiguous for a retained identity as a lost ack.
             client = await self._client()
-            link = self._link
+            link, resumes = self._link, self._resumes.get(session_id, 0)
             receipt = await client.rpc("prompt.submit", session_id=session_id, input_id=input_id, **submit)
         except BaseException as exc:
             from hermes_cli.gateway_client import GatewayRPCError
@@ -599,22 +662,18 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             raise
         finally:
             self._submitting.discard(session_id)
-        admission_id = receipt["admission_id"]
-        self._admissions[session_id] = admission_id
-        if receipt.get("status") == "terminal":
-            # A retry of an un-acked submit whose turn already settled: report that turn once.
-            await self._settled_receipt(client, held_id, session_id, receipt)
-        elif receipt.get("status") == "unknown":
-            # A retry of an un-acked submit the owner lost in a restart: never a second turn.
-            self._admissions.pop(session_id, None)
-            raise GatewayClientError(self._unknown_recovery(session_id, admission_id))
+        admission_id = await self._admission_from_receipt(client, held_id, session_id, receipt)
+        if admission_id is None:
+            return PromptResponse(stop_reason='end_turn')
+        self._inflight[(session_id, admission_id)] = None
         try:
+            await self._after_ack(session_id, admission_id, link, resumes)
             if session_id in self._pending_cancels:
                 self._pending_cancels.discard(session_id)
                 await self._cancel_admission(session_id, admission_id)
             async with self._changed:
                 await self._changed.wait_for(lambda: admission_id in self._terminals or self._failure is not None
-                                            or self._link != link
+                                            or self._link != link or admission_id in self._lost
                                             or self._blocked_admission(session_id, admission_id))
                 # A successor's unknown state cannot replace our committed terminal result.
                 if admission_id not in self._terminals:
@@ -624,13 +683,15 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                         raise self._lost_failure
                     if self._failure:
                         raise self._failure
-                    raise GatewayClientError(self._unknown_recovery(session_id, admission_id))
+                    raise self._lost.pop(admission_id, None) or GatewayClientError(
+                        self._unknown_recovery(session_id, admission_id))
                 terminal = self._terminals.pop(admission_id)
         finally:
             # Do not let one prompt tear down a newer mapping if the session has
             # already advanced while this coroutine unwinds.
             if self._admissions.get(session_id) == admission_id:
                 self._admissions.pop(session_id, None)
+            self._inflight.pop((session_id, admission_id), None)
         outcome = terminal.get("outcome")
         if outcome == "unknown":
             # Our own lost turn: the same refusal whether session.info or this completion woke us.
@@ -641,6 +702,28 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         # The turn's last ``session.usage`` precedes its ``message.complete`` on the stream.
         return PromptResponse(stop_reason="cancelled" if outcome == "cancelled" else "end_turn",
                               usage=turn_usage(self._usage.get(session_id)))
+
+    async def _admission_from_receipt(self, client, held_id, session_id, receipt):
+        """The admission a ``prompt.submit`` receipt names, or None when the owner admitted nothing."""
+        if receipt.get("voice_stopped") is True:
+            # TUI-26: a bare stop phrase typed into this LOCAL session's voice chat ended the chat on
+            # the owner and admitted nothing, so no turn will settle: the prompt ends here.
+            self._pending_cancels.discard(session_id)
+            if self._conn:
+                from agent.i18n import t
+                await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(
+                    t('cli.voice.stop_phrase_typed') + '\n'))
+            return None
+        admission_id = receipt["admission_id"]
+        self._admissions[session_id] = admission_id
+        if receipt.get("status") == "terminal":
+            # A retry of an un-acked submit whose turn already settled: report that turn once.
+            await self._settled_receipt(client, held_id, session_id, receipt)
+        elif receipt.get("status") == "unknown":
+            # A retry of an un-acked submit the owner lost in a restart: never a second turn.
+            self._admissions.pop(session_id, None)
+            raise GatewayClientError(self._unknown_recovery(session_id, admission_id))
+        return admission_id
 
     async def _run_slash(self, held_id, session_id, text):
         """Run a slash command's local half: ``(answered, text to submit)``; answered ends the prompt."""
@@ -686,10 +769,51 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             return None
         return retry_key, uuid.uuid4().hex, staged
 
-    async def _settled_receipt(self, client, held_id, session_id, receipt):
+    async def _after_ack(self, session_id, admission_id, link, resumes):
+        """A gap re-attach whose resume left after this submit covers it. The pump owns recovery: it
+        recovers this admission against that snapshot behind the ones it already holds (FIFO, once)."""
+        if self._resumes.get(session_id, 0) == resumes:
+            return
+        async with self._changed:
+            await self._changed.wait_for(lambda: self._adopted.get(session_id, 0) > resumes
+                                         or self._failure is not None or self._link != link)
+        if self._adopted.get(session_id, 0) > resumes:
+            # Held behind a full queue, never dropped: a full queue parks the reader, not the link.
+            from hermes_cli.gateway_client import put_behind
+            put_behind(self._gateway.events, (session_id, admission_id))
+
+    async def _recover(self, session_id, admission_id):
+        """Queued: it lost nothing. Running: cut until its live completion. Unknown: the waiter refuses it.
+        Unlisted: it ended in the hole and its receipt settles it (unreadable: that prompt alone fails).
+        Terminal evidence received, being delivered or already delivered always wins."""
+        from hermes_cli.gateway_replay_gap import pending_status, settled
+        status = pending_status(self._snapshots[session_id].get("pending"), admission_id)
+        if status in ("queued", "unknown") or {admission_id} & (
+                self._terminals.keys() | self._settling | self._receipted.keys()):
+            return
+        self._cut.setdefault(admission_id, self._streamed.pop(admission_id, ""))
+        if status:
+            return
+        try:
+            receipt = await self._gateway.rpc("prompt.receipt", session_id=session_id, admission_id=admission_id,
+                                              include_result=True)
+        except (GatewayClientError, OSError, TimeoutError):
+            receipt = {"status": "terminal"}  # unreadable
+        verdict = settled(receipt)
+        if verdict is not False:  # its one recovery read: a later entry (a post-ack request) joins it
+            self._receipted.setdefault(admission_id, None)
+        if verdict:
+            await self._settled_receipt(self._gateway, self._editor_id(session_id), session_id, receipt, receipt)
+        elif verdict is None and admission_id not in self._terminals and admission_id not in self._settling:
+            async with self._changed:
+                self._lost[admission_id] = GatewayClientError("session_replay_gap")
+                self._changed.notify_all()
+
+    async def _settled_receipt(self, client, held_id, session_id, receipt, saved=None):
+        """``saved``: the receipt already fetched with its result (a replay gap's recovery read)."""
         admission_id = receipt["admission_id"]
-        saved = await client.rpc("prompt.receipt", session_id=session_id, admission_id=admission_id,
-                                 include_result=True)
+        saved = saved or await client.rpc("prompt.receipt", session_id=session_id, admission_id=admission_id,
+                                          include_result=True)
         if admission_id in self._terminals or admission_id in self._settling:
             return  # this connection's pump carried the completion itself
         self._settling.add(admission_id)  # claimed before the first await; the pump yields to it
@@ -698,8 +822,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             self._receipted.pop(next(iter(self._receipted)))
         try:
             outcome = {"interrupted": "cancelled"}.get(receipt.get("outcome"), receipt.get("outcome"))
-            text = (saved.get("result") or {}).get("final_response") or ""
-            await self._finish_reply(session_id, held_id, admission_id, {"text": text, "outcome": outcome})
+            result = saved.get("result") or {}
+            await self._finish_reply(session_id, held_id, admission_id, {
+                "text": result.get("final_response") or "", "outcome": outcome,
+                "response_reused": result.get("response_reused"), "receipt": True})
             async with self._changed:
                 self._terminals[admission_id] = {"outcome": outcome}
                 self._changed.notify_all()
@@ -709,8 +835,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     def _unknown_recovery(self, session_id, admission_id=None, *, submitted=True):
         """The refusal for a FIFO blocked by a lost turn, naming the existing recovery control.
 
-        ACP has no discard affordance; the classic chat's fenced ``/discard`` (``prompt.resolve_unknown``)
-        acknowledges the exact lost admission without replaying it, and the queue then continues."""
+        The editor's own ``/discard <id>`` (``acp_adapter.gateway_commands._discard_unknown``, the
+        same fenced ``prompt.resolve_unknown`` the classic chat uses) acknowledges the exact lost
+        admission without replaying it, and the queue then continues."""
         from hermes_constants import profile_name_for_home
         lost = [row["admission_id"] for row in self._snapshots.get(session_id, {}).get("pending", [])
                 if row.get("status") == "unknown"] or [admission_id]
@@ -718,13 +845,59 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         command = "hermes" + (f" -p {profile}" if profile not in (None, "default") else "")
         state = ("your input is accepted and kept" if submitted else "nothing was submitted")
         return (f"unknown_execution: do not resend accepted input; a turn in this session was lost when the "
-                f"gateway restarted and its outcome is unknown ({state}). Resolve it in a terminal with "
-                f"`{command} chat --cli --resume {session_id}` then "
-                + " and ".join(f"`/discard {lost_id}`" for lost_id in lost) + ", then continue here.")
+                f"gateway restarted and its outcome is unknown ({state}). Send "
+                + " and ".join(f"`/discard {lost_id}`" for lost_id in lost)
+                + f" here (or `{command} sessions discard {session_id}` in a terminal), then continue.")
 
     def _has_unknown(self, session_id):
         return any(row.get("status") == "unknown"
                    for row in self._snapshots[session_id].get("pending", []))
+
+    async def _refresh_unknown_for_prompt(self, session_id):
+        # Stop during the owner's read must cancel the still-unsent editor input.
+        self._submitting.add(session_id)
+        try:
+            await self._refresh_unknown(session_id)
+        except BaseException:
+            self._pending_cancels.discard(session_id)
+            raise
+        finally:
+            self._submitting.discard(session_id)
+        cancelled = session_id in self._pending_cancels
+        self._pending_cancels.discard(session_id)
+        return cancelled
+
+    async def _refresh_unknown(self, session_id):
+        """Ask the owner whether another viewer has acknowledged a cached lost turn."""
+        client = await self._client()  # A reconnect may already supply a fresh snapshot.
+        cached = self._snapshots.get(session_id)
+        if cached is None:
+            raise GatewayClientError("not_found")
+        if not self._has_unknown(session_id):
+            return
+        # Freeze the snapshot's pending watermark before the pump can advance its reply cursor.
+        cached.setdefault("_pending_watermark", (cached.get("replay_epoch"), cached.get("last_sequence", 0)))
+        fresh = await client.rpc("session.resume", session_id=session_id)
+        cached = self._snapshots.get(session_id)
+        if cached is None:
+            raise GatewayClientError("not_found")
+        # Only pending state received while the RPC was in flight can supersede its snapshot.
+        epoch, sequence = cached.get("_pending_watermark",
+                                     (cached.get("replay_epoch"), cached.get("last_sequence", 0)))
+        if "pending" in fresh and (
+            fresh.get("replay_epoch") != epoch or fresh.get("last_sequence", 0) >= sequence
+        ):
+            cached["pending"] = fresh["pending"]
+            # The snapshot supplies only pending state here. Do not consume earlier message,
+            # approval, or tool events that the editor's event pump has not projected yet.
+            cached["_pending_watermark"] = (fresh.get("replay_epoch"), fresh.get("last_sequence", 0))
+
+    def _pending_event_is_new(self, session_id, event):
+        """Keep a pre-refresh pending event from restoring an already-discarded lost turn."""
+        fence = self._snapshots.get(session_id, {}).get("_pending_watermark")
+        sequence = event.get("seq")
+        return (fence is None or sequence is None or event.get("replay_epoch") != fence[0]
+                or sequence > fence[1])
 
     def _blocked_admission(self, session_id, admission_id):
         return self._has_unknown(session_id) and any(
@@ -738,6 +911,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 frame = await gateway.events.get()
                 if isinstance(frame, Exception):
                     raise frame
+                if isinstance(frame, tuple):  # a post-ack recovery (``_after_ack``), behind every frame so far
+                    await self._recover(*frame)
+                    continue
                 event = frame.get("params", {})
                 sid = event.get("session_id")
                 snapshot = self._snapshots.get(sid)
@@ -764,10 +940,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         sid, editor_id = event["session_id"], self._editor_id(event["session_id"])
         aid = event.get("admission_id")
         if kind in {"session.info", "session.updated", "session.usage", "session.tools_changed"}:
-            await self._project_session_state(kind, sid, editor_id, payload)
+            await self._project_session_state(kind, sid, editor_id, payload, event)
             return
-        if kind == "session.replay_gap":
-            raise GatewayClientError("session_replay_gap")
+        if await self._gap_guard(kind, sid, aid):
+            return
         if kind in {"approval.request", "clarify.request"}:
             self._permission(sid, payload)
             return
@@ -815,7 +991,31 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             finally:
                 self._settling.discard(aid)
 
-    async def _project_session_state(self, kind, sid, editor_id, payload):
+    async def _gap_guard(self, kind, sid, aid):
+        """What a replay gap changes in the projection; True when the frame is consumed here."""
+        if kind == "session.replay_gap":
+            # Re-attach that session alone (a refusal still fails the pump: the next call redials).
+            params = {"editor": self._editor_mcp[sid]} if sid in self._editor_mcp else {}
+            self._resumes[sid] = self._resumes.get(sid, 0) + 1
+            snapshot = await self._gateway.rpc("session.resume", session_id=sid, **params)
+            await self._adopt(sid, snapshot, self._resumes[sid])
+            for prompt in snapshot.get("prompts", []):
+                self._permission(sid, prompt)
+            started = [row["admission_id"] for row in snapshot.get("pending", []) if row.get("status") == "started"]
+            for admission_id in dict.fromkeys([*started, *(a for held, a in self._inflight if held == sid)]):
+                await self._recover(sid, admission_id)
+            return True
+        if aid not in self._cut:
+            return False
+        if kind in {"tool.start", "message.interim"}:  # a new segment: what was shown before it is closed
+            if self._cut[aid].strip():
+                self._segments.setdefault(aid, []).append(self._cut[aid])
+            self._cut[aid] = ""
+            self._end_message(sid)
+        # Live deltas stopped at the gap; an interim is whole (it may be the only copy of the reply).
+        return kind == "message.delta"
+
+    async def _project_session_state(self, kind, sid, editor_id, payload, event):
         if kind == "session.usage":
             await self._project_usage(sid, editor_id, payload)
             return
@@ -841,9 +1041,25 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             return
         if kind == "session.info" and sid in self._snapshots and "pending" in payload:
             async with self._changed:
-                self._snapshots[sid]["pending"] = payload["pending"]
-                self._changed.notify_all()
+                if self._pending_event_is_new(sid, event):
+                    self._snapshots[sid]["pending"] = payload["pending"]
+                    self._snapshots[sid]["_pending_watermark"] = (event.get("replay_epoch"), event.get("seq", 0))
+                    self._changed.notify_all()
         await self._project_title(sid, editor_id, payload.get("title"))
+        await self._project_mode(sid, editor_id, payload)
+
+    async def _project_mode(self, sid, editor_id, payload):
+        """Another surface's ``edit_policy`` change (its ``session.info``) as ``current_mode_update``."""
+        from acp_adapter.modes import EDIT_APPROVAL_POLICY_TO_MODE
+        mode = EDIT_APPROVAL_POLICY_TO_MODE.get(payload.get("edit_approval_policy"))
+        # A session's first (its attach's snapshot) seeds silently: the attach's reply shows it.
+        if mode is None or self._modes.setdefault(sid, mode) == mode:
+            return
+        self._modes[sid] = mode
+        if self._conn:
+            from acp.schema import CurrentModeUpdate  # ``acp`` does not re-export ``update_current_mode``
+            await self._conn.session_update(session_id=editor_id, update=CurrentModeUpdate(
+                session_update="current_mode_update", current_mode_id=mode))
 
     async def _project_usage(self, sid, editor_id, stats):
         """The owner's usage dict: kept for the turn's ``PromptResponse.usage``, shown as ``usage_update``."""

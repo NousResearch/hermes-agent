@@ -44,11 +44,12 @@ from gateway.platforms._shared import (
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
     platform_gate_env as _scoped_gate_env, send_error
 )
+from gateway.platforms.base_log_safety import safe_url_for_log
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
-    is_host_excluded_by_no_proxy, resolve_proxy_url, safe_url_for_log, _ssrf_redirect_guard,
+    is_host_excluded_by_no_proxy, resolve_proxy_url, ssrf_redirect_guard,
     cache_document_from_bytes_async, cache_video_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
@@ -3029,7 +3030,7 @@ class SlackAdapter(BasePlatformAdapter):
         file_uploads: list[dict[str, Any]] = []
         initial_comment_parts: list[str] = []
         async with client_factory(
-            timeout=30.0, follow_redirects=True, event_hooks={"response": [_ssrf_redirect_guard]}
+            timeout=30.0, follow_redirects=True, event_hooks={"response": [ssrf_redirect_guard]}
         ) as http_client:
             for image_url, alt_text in chunk:
                 if alt_text:
@@ -5080,11 +5081,15 @@ class SlackAdapter(BasePlatformAdapter):
         provider = next((p for p in providers if p["slug"] == provider_slug), None)
         pname = provider.get("name", provider_slug) if provider else provider_slug
         models = (provider or {}).get("models", [])[:100]
+        from hermes_cli.model_picker_usage import picker_row_suffix
         options = []
         for idx, model_id in enumerate(models):
             short = model_id.split("/")[-1] if "/" in model_id else model_id
+            # Window plans: "Large" / "Free" rides on the option; others unchanged.
+            suffix = picker_row_suffix(provider, model_id)
+            text = f"{short[:75 - len(suffix) - 3]} · {suffix}" if suffix else short[:75]
             options.append({
-                "text": {"type": "plain_text", "text": short[:75], "emoji": True},
+                "text": {"type": "plain_text", "text": text, "emoji": True},
                 "value": str(idx),
             })
         total = (provider or {}).get("total_models", len(models))
@@ -5093,7 +5098,8 @@ class SlackAdapter(BasePlatformAdapter):
             if total > len(models)
             else ""
         )
-        section_text = t("platform.slack.picker.model_header", provider=pname, extra=extra)
+        plan_line = f"⚠️ {provider['plan_line']}\n" if provider and provider.get("plan_line") else ""
+        section_text = plan_line + t("platform.slack.picker.model_header", provider=pname, extra=extra)
         elements = [
             {
                 "type": "static_select",
@@ -6299,7 +6305,7 @@ class SlackAdapter(BasePlatformAdapter):
                 f"{safe_url_for_log(url)}")
         bot_token = self._resolve_download_token(url, team_id)
         async with create_ssrf_safe_async_client(
-            timeout=30.0, follow_redirects=False, event_hooks={"response": [_ssrf_redirect_guard]}
+            timeout=30.0, follow_redirects=False, event_hooks={"response": [ssrf_redirect_guard]}
         ) as client:
             for attempt in range(3):
                 try:

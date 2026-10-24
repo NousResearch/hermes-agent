@@ -188,6 +188,15 @@ jobs:
           rm -rf "$RG_TARBALL" "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
           rg --version
 
+      - name: Install tmux
+        # tests/e2e/core/cli_tmux and the Vertex /bg CLI suite drive real CLIs in tmux. The runner
+        # image ships it today; install it if it ever stops, and require_tmux() fails (not skips)
+        # without it under HERMES_E2E_REQUIRE_TUI=1, so the lane can't go green over zero coverage.
+        run: |
+          set -euo pipefail
+          command -v tmux >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq tmux; }
+          tmux -V
+
       - name: Require a WAL-capable SQLite
         # The state.db suites skip on a WAL-reset-vulnerable SQLite; fail
         # instead of reporting green over zero coverage.

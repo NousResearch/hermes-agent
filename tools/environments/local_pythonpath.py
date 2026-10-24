@@ -125,7 +125,46 @@ def _get_hermes_site_packages(env: dict) -> list[Path]:
         runtime_site_packages = site_packages(runtime_venv)
         if not any(_same_path(runtime_site_packages, existing) for existing in result):
             result.append(runtime_site_packages)
+    result.extend(_committed_generation_site_packages(result))
     return result
+
+
+def _committed_generation_site_packages(known: list[Path]) -> list[Path]:
+    """Site-packages of every dependency environment PM built for this install — the
+    committed selection and every rotated-out generation alike.
+
+    A long-lived process keeps the ``PYTHONPATH`` that ``activate_dependencies`` wrote
+    at boot (``<repo>;<venv at boot>/site-packages``) until it exits, while the committed
+    selection rotates underneath it (facts.json points at a new generation). The boot-time
+    entry no longer matches the current selection's provenance, so the exact-match filter
+    would let it leak into every child, where a foreign-version interpreter loads this
+    runtime's compiled extensions and silently breaks (#74817 follow-up, FIX-2064).
+    Trees under the install's state directory are PM-built, so the whole tree is owned by
+    path provenance — same-version children re-select their own generation at boot, and
+    the pin re-adds the current one where a child IS Hermes.
+    """
+    owned: list[Path] = []
+    try:
+        from pm.environments import install_state_dir, site_packages
+
+        state_dir = install_state_dir(Path(__file__).resolve().parents[2])
+        candidates = [venv for venv in (state_dir / "environments").glob("*/venv")]
+        candidates.extend((state_dir / "pm-runtime" / "generations").glob("*"))
+        for venv in candidates:
+            try:
+                if not venv.is_dir() or not (venv / "pyvenv.cfg").is_file():
+                    continue
+                site = site_packages(venv)
+            except (OSError, ValueError, RuntimeError):
+                continue
+            if not site.is_dir():
+                continue
+            if not any(_same_path(site, existing) for existing in known):
+                known.append(site)
+                owned.append(site)
+    except (ImportError, OSError, ValueError, RuntimeError):
+        pass
+    return owned
 
 
 def _strip_hermes_owned_pythonpath_and_runtime_markers(env: dict) -> None:

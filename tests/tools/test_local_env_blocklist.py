@@ -650,10 +650,46 @@ def test_runtime_provenance_is_independent_of_aliases_and_virtual_env(child_env,
     (user_venv / "pyvenv.cfg").write_text("version = 3.13\n", encoding="utf-8")
     base = {"VIRTUAL_ENV": str(user_venv), "PYTHONPATH": os.pathsep.join(map(str, [site, alias, user_site]))}
     result = local._sanitize_subprocess_env(base)
-    expected = [str(user_site)] if has_facts else [str(site), str(user_site)]
+    # Both ways: with facts the candidate is the committed selection; without facts it is
+    # still owned as a tree under the install's state directory (only PM builds those),
+    # so a rotated-out/boot-time entry never reaches the child (FIX-2064).
+    expected = [str(user_site)]
     assert result["PYTHONPATH"].split(os.pathsep) == expected
     assert "VIRTUAL_ENV" not in result
     assert base["VIRTUAL_ENV"] == str(user_venv)
+
+
+@pytest.mark.parametrize("has_facts", [True, False])
+def test_rotated_out_generation_site_packages_stay_owned(child_env, monkeypatch, has_facts):
+    """A long-lived process keeps its boot-time PYTHONPATH (the generation it booted
+    on) after the committed selection rotates; the stale entry must stay Hermes-owned
+    by path provenance so it cannot leak into foreign-version children (FIX-2064)."""
+    from pm.environments import runtime_facts_path, site_packages
+    state = child_env / "install-state"
+    pydir = ("Lib" if os.name == "nt"
+             else f"lib/python{sys.version_info.major}.{sys.version_info.minor}")
+    version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    current = state / "environments/gen-current/venv"
+    previous = state / "environments/gen-previous/venv"
+    for venv in (current, previous):
+        (venv / pydir / "site-packages").mkdir(parents=True)
+        (venv / "pyvenv.cfg").write_text(f"version = {version}\n", encoding="utf-8")
+    monkeypatch.setattr("pm.environments.install_state_dir", lambda repo: state)
+    if has_facts:
+        facts = runtime_facts_path(Path(__file__).resolve().parents[2])
+        facts.parent.mkdir(parents=True, exist_ok=True)
+        facts.write_text(json.dumps({"packages": {"venv": {"environment": str(current)}}}),
+                         encoding="utf-8")
+    monkeypatch.setattr(local, "_in_venv", False)
+    monkeypatch.setattr(local, "_hermes_site_packages", None)
+    monkeypatch.setattr(local, "_hermes_repo_root_aliases", (child_env / "unrelated",))
+    user_site = child_env / "user-site"
+    user_site.mkdir()
+    # The survivor of a boot-time PYTHONPATH after the repo-root alias was stripped:
+    # the stale previous-generation site-packages plus a user dir that must survive.
+    env = {"PYTHONPATH": os.pathsep.join([str(site_packages(previous)), str(user_site)])}
+    pp._strip_hermes_owned_pythonpath(env)
+    assert env.get("PYTHONPATH") == str(user_site)
 
 
 @pytest.mark.usefixtures("child_env")

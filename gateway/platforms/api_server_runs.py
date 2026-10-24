@@ -529,14 +529,13 @@ class _RunLaunch:
     declared_selected: bool
     user_message: str
     conversation_history: list[dict[str, str]]
-    # #98619: only continuation paths that reload session history may grant wake authority —
-    # a previous_response_id continuation consumes its ResponseStore snapshot instead, and a
-    # caller-supplied conversation_history is authoritative for the turn; neither consumes a
-    # SessionDB delivery row, so both stay default-denied.
+    # #98619: wake authority only for paths that consume the SessionDB delivery row — session
+    # history reloads, or caller history that folds unconsumed rows at run start (below).
     session_history_delivery: bool
     agent_kwargs: dict  # ``_create_agent`` keyword arguments (prompt, model overrides, route, room policy)
     request_profile: Any
     turn_author: Optional[dict[str, Any]] = None  # memory-attribution label only; grants nothing
+    fold_deliveries: bool = False  # caller history + session id: fold unconsumed delivery rows at start
     admission: Any = None
     walked_from: Optional[str] = None  # the swept stored session the chain moved past (``bind_api_steps``)
 
@@ -687,13 +686,16 @@ async def _admit_run_to_authority(
     from gateway.session_api_turn import admit_api_turn_async
     from gateway.session_contract import SessionRef
     from hermes_state_runtime import RuntimeStoreError
+    claimed_ids: list[int] = []
     try:
         with self._profile_scope(launch.request_profile):
+            if launch.fold_deliveries:
+                claimed_ids = await _fold_caller_history_deliveries(self, launch)
             launch.admission = await admit_api_turn_async(self, user_message=launch.user_message,
-                conversation_history=launch.conversation_history, active_run_id=run_id,
+                conversation_history=launch.conversation_history, request_id=run_id,
                 run_owner_scope=self._run_owners[run_id],
                 turn_author=launch.turn_author,
-                history_from_session=session_history_delivery,
+                history_from_session=session_history_delivery and not launch.fold_deliveries,
                 session_history_delivery='1' if session_history_delivery else '',
                 bind_declared_conversation=_declared_selected, walked_from=launch.walked_from,
                 **launch.agent_kwargs)
@@ -704,6 +706,10 @@ async def _admit_run_to_authority(
         if owned is not None:
             launch.admission = (owned[0], SessionRef(owned[0].profile_id, owned[1]['target_session_id']), owned[1])
             return None
+        if claimed_ids:
+            with self._profile_scope(launch.request_profile), suppress(Exception):
+                if (db := await self._ensure_session_db_async()) is not None:
+                    await asyncio.to_thread(db.release_caller_history_deliveries, launch.session_id, claimed_ids)
         # A refused admission owns no run: drop every reservation so an exact
         # retry is refused again instead of replaying a run nobody executes.
         _forget_run(
@@ -792,12 +798,12 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
     # History loads for the session the request actually selected — including one resolved from
     # a declared X-Hermes-Session-Key, whose persisted delivery rows must reach the next
     # same-key run's context (#98619).  previous_response_id continuations keep their
-    # ResponseStore snapshot as history (they cannot consume a SessionDB delivery row and are
-    # accordingly denied wake capability in _run_agent_sync); the fresh run_id fallback has
-    # nothing persisted to load yet.  Wake authority is fixed here, before the load can
-    # overwrite ``conversation_history``: a caller-supplied history is authoritative for this
-    # turn, never consumes the SessionDB delivery row, and is denied on the same contract.
-    session_history_delivery = not previous_response_id and not conversation_history
+    # ResponseStore snapshot (they cannot consume a SessionDB delivery row and stay denied wake
+    # capability); the fresh run_id fallback has nothing persisted to load yet.  A caller-supplied
+    # history with a selected session consumes delivery rows by folding the unconsumed ones in at
+    # run start (_fold_caller_history_deliveries), so it is granted delivery too.
+    fold_deliveries = bool(conversation_history and selected_session_id and not previous_response_id)
+    session_history_delivery = not previous_response_id and (not conversation_history or fold_deliveries)
     if not conversation_history and selected_session_id and not previous_response_id:
         conversation_history = await self._conversation_history_for_session(str(selected_session_id))
     q = self._run_streams[run_id] = _RunStream()
@@ -824,7 +830,8 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
             route=route, room_dispatch=room_dispatch, room_execution_policy=room_execution_policy,
             **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
         request_profile=_api_server._api_request_profile.get(),
-        turn_author=turn_author, walked_from=walked_from if session_id == stored_session_id else None)
+        turn_author=turn_author, fold_deliveries=fold_deliveries,
+        walked_from=walked_from if session_id == stored_session_id else None)
     # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
     # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
     # receipt drives this run's status, so `peer run` keeps its run_id and `peer status` still works.
@@ -908,15 +915,9 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             session_tokens = self._bind_api_server_session(
                 chat_id=session_id or "", session_key=run.approval_session_key, session_id=session_id or "",
                 profile=run.request_profile or "",
-                # #98619 audited opt-in: the /v1/runs session id is wake-capable only when its
-                # own continuation path reloads session history — an explicit body/chained
-                # session id or a declared X-Hermes-Session-Key conversation (both load
-                # SessionDB in _handle_runs), or the run_id fallback the client can post back
-                # as body.session_id.  A previous_response_id continuation consumes its
-                # ResponseStore snapshot instead and can never see a SessionDB delivery row,
-                # so it stays default-denied until a merge contract exists for that chain;
-                # likewise a caller-supplied conversation_history is authoritative for the
-                # turn and never reads the delivery row, so it is denied the same way.
+                # #98619: wake-capable only when the next same-id turn consumes the delivery
+                # row (session-history reload, or caller history folded at run start); a
+                # previous_response_id continuation never sees it and stays default-denied.
                 session_history_delivery="1" if run.session_history_delivery else "")
             if session_tokens:
                 resets.append((session_tokens, clear_session_vars))
@@ -1014,6 +1015,27 @@ async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: dict[
         _retire_live_run(self, run_id)
 
 
+async def _fold_caller_history_deliveries(self, run: _RunLaunch) -> list[int]:
+    """Claim the session's pending delegation rows once and append those the caller lacks; returns claimed ids."""
+    db = await self._ensure_session_db_async()
+    if db is None:
+        return []
+    try:
+        rows = await asyncio.to_thread(db.claim_caller_history_deliveries, run.session_id)
+    except Exception as exc:
+        logger.warning("Failed to claim delegation deliveries for %s: %s", run.session_id, exc, exc_info=True)
+        return []
+    carried = {m.get("content") for m in run.conversation_history if m.get("role") == "user"}
+    folded = [{"role": "user", "content": row["content"]} for row in rows
+              if isinstance(row["content"], str) and row["content"] not in carried]
+    if folded:
+        from agent.agent_runtime_helpers import repair_message_sequence
+        history = [*run.conversation_history, *folded]
+        repair_message_sequence(None, history)
+        run.conversation_history = history
+    return [int(row["id"]) for row in rows]
+
+
 async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
     """Drive one admitted run, publish its terminal event/status, release live state."""
     _redact_api_error_text = _api_server._redact_api_error_text
@@ -1088,6 +1110,10 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 result.get("runtime") if isinstance(result, dict) else None) or {}
         else:
             with self._profile_scope(run.request_profile):
+                # Fold only where the run's own agent reads run.conversation_history: an authority-admitted
+                # turn captured its history at admission, so claiming rows here would drop them.
+                if run.fold_deliveries:
+                    await _fold_caller_history_deliveries(self, run)
                 agent = self._create_agent(
                     stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
                     interim_assistant_callback=_interim_cb, **run.agent_kwargs)

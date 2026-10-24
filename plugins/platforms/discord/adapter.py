@@ -315,6 +315,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from tools.url_safety import is_safe_url
+from plugins.platforms.discord.adapter_document_policy import _discord_attachment_name_requires_path_only
 from gateway.platforms._shared import (
     decode_json_list_literal as _decode_json_list_literal, env_is_connected as _env_is_connected,
     extra_or_secret as _extra_or_secret, platform_gate_env as _scoped_gate_env, send_error,
@@ -5984,12 +5985,11 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             return att.url
 
     async def _collect_attachment_media(self, all_attachments: list) -> tuple:
-        """Cache every attachment and return ``(media_urls, media_types, media_text_inlined,
-        pending_text_injection)``; ``media_text_inlined[i]`` is True only when attachment ``i``'s
-        text was injected."""
+        """Cache attachment URLs, MIME types, inline flags, safe text, and path-only identities."""
         media_urls = []
         media_types = []
         media_text_inlined: list = []
+        path_only_attachment_paths = []
         pending_text_injection: Optional[str] = None
         for att in all_attachments:
             content_type = att.content_type or "unknown"
@@ -6041,7 +6041,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     # types rely on ``gateway/run.py`` emitting a (sandbox-translated) path note.
                     MAX_TEXT_INJECT_BYTES = 100 * 1024
                     _is_text = ext in _TEXT_INJECT_EXTENSIONS or (content_type or "").startswith("text/")
-                    if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                    requires_path_only = _discord_attachment_name_requires_path_only(att.filename)
+                    if requires_path_only:
+                        path_only_attachment_paths.append(cached_path)
+                    if _is_text and not requires_path_only and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                         try:
                             text_content = raw_bytes.decode("utf-8")
                             display_name = att.filename or f"document{ext or '.txt'}"
@@ -6056,7 +6059,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                             pass
                 except Exception as e:
                     logger.warning("[Discord] Failed to cache document %s: %s", att.filename, e, exc_info=True)
-        return media_urls, media_types, media_text_inlined, pending_text_injection
+        return media_urls, media_types, media_text_inlined, pending_text_injection, path_only_attachment_paths
 
     def _attachment_message_type(self, att: Any) -> MessageType:
         """MessageType from the first attachment's MIME. Any non-media (or untyped) attachment
@@ -6244,8 +6247,13 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 or self._derive_auto_thread_name(message.content or "")
             ) if auto_threaded_channel is not None else None,
         )
-        media_urls, media_types, media_text_inlined, pending_text_injection = await self._collect_attachment_media(
-            all_attachments)
+        (
+            media_urls,
+            media_types,
+            media_text_inlined,
+            pending_text_injection,
+            path_only_attachment_paths,
+        ) = await self._collect_attachment_media(all_attachments)
         event_text = normalized_content
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
@@ -6296,6 +6304,11 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text,
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
             channel_context=_channel_context,
+            metadata=(
+                {"discord_path_only_attachment_paths": path_only_attachment_paths}
+                if path_only_attachment_paths
+                else {}
+            ),
         )
         if (
             getattr(getattr(message, "author", None), "bot", False)

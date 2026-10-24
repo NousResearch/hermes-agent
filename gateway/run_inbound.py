@@ -1522,8 +1522,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     @classmethod
     def _prepend_inbound_document_notes(cls, event: MessageEvent, message_text: str) -> str:
         """Prepend a context note per non-media attachment (anything not routed as image/audio/video)."""
+        from gateway.document_context import _build_document_context_note
         from gateway.run import (
-            _build_document_context_note, _event_media_is_audio, _event_media_is_image,
+            _event_media_is_audio, _event_media_is_image,
             _event_media_is_video,
         )
         if not event.media_urls:
@@ -1532,6 +1533,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
 
         _TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
         inline_flags = getattr(event, "media_text_inlined", None) or []
+        path_only_attachment_paths = set(
+            (getattr(event, "metadata", None) or {}).get(
+                "discord_path_only_attachment_paths", []
+            )
+        )
         for i, path in enumerate(event.media_urls):
             # A document mixed into a PHOTO/VOICE message (message-level type != DOCUMENT) still
             # reaches the agent; only genuine non-media files get a note.
@@ -1547,6 +1553,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             inline_flag = inline_flags[i] if i < len(inline_flags) else None
             context_note = _build_document_context_note(
                 display_name, agent_path, mtype, content_inlined=inline_flag is not False,
+                filename_requires_path_only=path in path_only_attachment_paths,
             )
             message_text = f"{context_note}\n\n{message_text}"
         return message_text

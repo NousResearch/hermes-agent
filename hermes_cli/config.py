@@ -3024,7 +3024,7 @@ def _default_value_for_key(dotted_key: str):
 # Top-level keys that accept arbitrary user-supplied child keys (schema declares the dict, the
 # user populates it): any path below is accepted without deep checking.
 _OPEN_DICT_TOP_LEVEL_KEYS = frozenset({
-    "providers", "credential_pool_strategies", "mcp_servers", "hooks", "quick_commands",
+    "providers", "credential_pool_strategies", "mcp_servers", "a2a_agents", "hooks", "quick_commands",
     "personalities", "command_allowlist", "model_catalog", "channel_prompts", "server_actions",
     "secrets", "goals", "loops"})
 

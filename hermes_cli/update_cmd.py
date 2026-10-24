@@ -711,15 +711,24 @@ def _tip_shas(git_cmd, target_ref: str, base: str = "HEAD") -> tuple[str, str]:
     return tuple(_git_run(git_cmd, ["rev-parse", ref]).stdout.strip() for ref in (base, target_ref))
 
 
-def _print_update_check_result(behind: int | None, compare_branch: str) -> None:
+def _update_banner_glyph(platform: str = sys.platform) -> str:
+    """The ``--check`` banner's leading glyph: ``☤ `` where default terminal fonts cover U+2624,
+    ``""`` on win32 — stock conhost/Consolas has no U+2695 coverage, and a cp1252 pipe cannot
+    even encode it, so the banner would render as tofu or crash (#67151)."""
+    return "" if platform == "win32" else "☤ "
+
+
+def _print_update_check_result(behind: int | None, compare_branch: str, glyph: str | None = None) -> None:
     """Report ``--check``'s verdict: up to date, N commits behind, or behind by an unknown count."""
     if behind == 0:
         print("✓ Already up to date.")
         return
+    if glyph is None:
+        glyph = _update_banner_glyph()
     if behind is not None:
-        print(f"☤ Update available: {behind} {'commit' if behind == 1 else 'commits'} behind {compare_branch}.")
+        print(f"{glyph}Update available: {behind} {'commit' if behind == 1 else 'commits'} behind {compare_branch}.")
     else:
-        print(f"☤ Update available (behind {compare_branch}).")
+        print(f"{glyph}Update available (behind {compare_branch}).")
     from hermes_cli.config import recommended_update_command
     print(f"  Run '{recommended_update_command()}' to install.")
 

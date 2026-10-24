@@ -735,13 +735,14 @@ class GatewayAdapterLifecycleMixin:
                 return
 
     def _flag_reconnect_needs_attention(
-        self, platform, info: dict, now: float, *, status_key: Optional[str] = None
+        self, platform, info: dict, now: float, *, status_key: Optional[str] = None,
+        attention_after: Optional[float] = None,
     ) -> None:
         """Flag NEEDS_ATTENTION (once) past the threshold — a signal, NOT a circuit breaker. The threshold
-        is the bound profile's ``agent.reconnect_attention_after``: secondaries call this inside their
-        ``_profile_runtime_scope`` with their ``<profile>:<platform>`` status key."""
+        is the bound profile's ``agent.reconnect_attention_after``; secondaries supply the threshold
+        read off-loop, with their ``<profile>:<platform>`` status key."""
         from gateway.run import _reconnect_needs_attention
-        if info.get("attention_flagged") or not _reconnect_needs_attention(info, now):
+        if info.get("attention_flagged") or not _reconnect_needs_attention(info, now, attention_after):
             return
         info["attention_flagged"] = True
         queued_for = now - info.get("queued_at", now)
@@ -812,10 +813,7 @@ class GatewayAdapterLifecycleMixin:
         logger.info("Reconnecting %s (attempt %d)...", platform.value, attempt)
         adapter = None
         try:
-            from gateway.platform_registry import platform_registry
-            # A re-armed plugin import + register() joins its load deadline: run it off the event loop.
-            await self._run_in_executor_with_context(platform_registry.get, platform.value)
-            adapter = self._create_adapter(platform, platform_config)
+            adapter = await self._create_adapter_off_loop(platform, platform_config)
             if not adapter:
                 if not self._adapter_may_heal(platform, platform_config):
                     # Became builtin/registered-but-None: a config change is needed, so stop retrying.
@@ -1071,8 +1069,9 @@ class GatewayAdapterLifecycleMixin:
         shared-listener mode (``/p/<profile>/...``) by ``_start_one_profile_adapters``."""
         from gateway.run import (
             MultiplexConfigError, _load_gateway_config,
-            _own_policy_open_startup_violation, _profile_runtime_scope,
+            _own_policy_open_startup_violation,
         )
+        from gateway.run_profile_scope import prepare_profile_runtime_scope, bind_profile_runtime_scope
         from gateway.config import load_gateway_config
         from hermes_cli.env_loader import hydrate_profile_secret_sources
         # Hydrate external secret sources off-loop ONCE: sync hydration would stall every heartbeat.
@@ -1080,17 +1079,26 @@ class GatewayAdapterLifecycleMixin:
         # A platform that left core for a catalog plugin is installed before discovery below.
         from gateway.run_startup import recover_left_core_in
         await asyncio.to_thread(recover_left_core_in, profile_home, hydrate_secrets=False)
-        with _profile_runtime_scope(profile_home, hydrate_secrets=False):
-            profile_runtime_cfg = _load_gateway_config()
-            from hermes_cli.plugins import discover_plugins, get_plugin_manager
-            discover_plugins()
-            self._subscribe_plugin_rewire(get_plugin_manager(), profile_name, profile_home)
-            # This profile's `hooks:` block: start() registered before any profile scope existed.
-            self._register_config_hooks(
-                "shell-hook/webhook registration failed for profile '%s'", profile_name, level=logging.WARNING,
-            )
-            profile_cfg = load_gateway_config()
-            violation = _own_policy_open_startup_violation(profile_cfg)
+        prepared = await self._run_in_executor_with_context(
+            functools.partial(prepare_profile_runtime_scope, profile_home, hydrate_secrets=False))
+
+        def load_configs():
+            with bind_profile_runtime_scope(prepared):
+                profile_runtime_cfg = _load_gateway_config()
+                from hermes_cli.plugins import discover_plugins, get_plugin_manager
+                discover_plugins()
+                # This profile's `hooks:` block: start() registered before any profile scope existed.
+                self._register_config_hooks(
+                    "shell-hook/webhook registration failed for profile '%s'", profile_name,
+                    level=logging.WARNING)
+                profile_cfg = load_gateway_config()
+                return (profile_runtime_cfg, profile_cfg, get_plugin_manager(),
+                        _own_policy_open_startup_violation(profile_cfg))
+
+        profile_runtime_cfg, profile_cfg, manager, violation = await self._run_in_executor_with_context(load_configs)
+        # Subscribe on-loop, after discovery: the callback must capture the live gateway loop.
+        with bind_profile_runtime_scope(prepared):
+            self._subscribe_plugin_rewire(manager, profile_name, profile_home)
         self._snapshot_profile_busy_modes(profile_name, profile_runtime_cfg)
         if violation:
             raise MultiplexConfigError(
@@ -1098,7 +1106,7 @@ class GatewayAdapterLifecycleMixin:
                 "Enable GATEWAY_ALLOW_ALL_USERS or the platform allow-all flag "
                 "for that profile, or change dm_policy/group_policy away from 'open'."
             )
-        return profile_cfg
+        return profile_cfg, prepared
 
     @staticmethod
     def _credential_claim_origin(profile_name: str, profile_home, platform: Platform, token: str) -> Optional[str]:
@@ -1253,8 +1261,9 @@ class GatewayAdapterLifecycleMixin:
         self, profile_name: str, profile_home: Path, claimed: dict[tuple, str]
     ) -> int:
         """Create+connect one profile's adapters under its runtime scope."""
-        from gateway.run import _platform_has_bot_credential, _profile_runtime_scope
-        profile_cfg = await self._load_secondary_profile_config(profile_name, profile_home)
+        from gateway.run import _platform_has_bot_credential
+        from gateway.run_profile_scope import bind_profile_runtime_scope
+        profile_cfg, prepared = await self._load_secondary_profile_config(profile_name, profile_home)
         # Keep the served profile's config: host-wide passes (planned-restart notices) must reach
         # every served profile's home channels, and this is the only place it is loaded.
         configs = getattr(self, "_profile_configs", None)
@@ -1273,7 +1282,7 @@ class GatewayAdapterLifecycleMixin:
                     (getattr(self, "_profile_failed_platforms", None) or {}).get(profile_name) or {}):
                 continue
             # No credential in THIS profile's scope: an adapter would fan inbound across every such profile.
-            with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+            with bind_profile_runtime_scope(prepared):
                 has_credential = _platform_has_bot_credential(platform, platform_config)
             if multiplex and not has_credential:
                 if platform is Platform.WHATSAPP:
@@ -1300,8 +1309,8 @@ class GatewayAdapterLifecycleMixin:
                 logging.ERROR, "[MULTIPLEX] Profile '%s': _create_adapter('%s') raised %s", profile_name,
                 platform.value, exc_info=True,
             ):
-                with _profile_runtime_scope(profile_home, hydrate_secrets=False):
-                    adapter = self._create_adapter(platform, platform_config)
+                with bind_profile_runtime_scope(prepared):
+                    adapter = await self._create_adapter_off_loop(platform, platform_config)
                 if not adapter:
                     logger.warning(
                         "[MULTIPLEX] Profile '%s': skipping platform '%s' - adapter creation returned None",
@@ -1325,7 +1334,7 @@ class GatewayAdapterLifecycleMixin:
                 continue
             self._configure_profile_adapter(adapter, profile_name, platform)
             try:
-                with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+                with bind_profile_runtime_scope(prepared):
                     success = await self._connect_initial_adapter_with_timeout(adapter, platform)
                 if not success:
                     logger.warning("✗ %s failed to connect (profile: %s)", platform.value, profile_name)
@@ -1419,20 +1428,30 @@ class GatewayAdapterLifecycleMixin:
                 and _platform_binds_port(platform.value, getattr(getattr(adapter, "config", None), "extra", None)):
             adapter._shared_listener_profile = profile_name
 
-    async def _secondary_reconnect_attempt(self, profile_name: str, platform: Platform, predecessor=None):
+    async def _secondary_reconnect_attempt(
+        self, profile_name: str, platform: Platform, predecessor=None, attention: Optional[dict] = None,
+    ):
         """One scoped attempt to rebuild+connect a secondary adapter → ``(adapter, success)``;
         ``(None, None)`` = give up for good (disabled, credential removed, adapter unavailable). Caller
-        tears down a RETURNED adapter; one whose configure/connect raised is torn down here."""
-        from gateway.run import _platform_has_bot_credential, _profile_runtime_scope
+        tears down a RETURNED adapter; one whose configure/connect raised is torn down here.
+        ``attention["after"]`` receives the profile's scoped threshold as soon as config is read, so
+        backoff keeps it even when create/connect raises later."""
+        from gateway.run import _platform_has_bot_credential, _reconnect_attention_after_secs
+        from gateway.run_profile_scope import prepare_profile_runtime_scope, bind_profile_runtime_scope
         # Lazy + per-attempt: keeps test monkeypatches on these modules live.
         from hermes_cli.profiles import get_profile_dir
-        from hermes_cli.env_loader import hydrate_profile_secret_sources
         from gateway.config import load_gateway_config
         profile_home = get_profile_dir(profile_name)
-        # Hydrate external secret sources off-loop so they cannot starve heartbeats.
-        await asyncio.to_thread(hydrate_profile_secret_sources, profile_home)
-        with _profile_runtime_scope(profile_home, hydrate_secrets=False):
-            profile_config = load_gateway_config().platforms.get(platform)
+        prepared = await self._run_in_executor_with_context(prepare_profile_runtime_scope, profile_home)
+
+        def load_config():
+            with bind_profile_runtime_scope(prepared):
+                return load_gateway_config().platforms.get(platform), _reconnect_attention_after_secs()
+
+        profile_config, attention_after = await self._run_in_executor_with_context(load_config)
+        if attention is not None:
+            attention["after"] = attention_after
+        with bind_profile_runtime_scope(prepared):
             if profile_config is None or not profile_config.enabled:
                 return None, None
             # Startup credential gate mirror: a removed credential must not rebuild.
@@ -1444,7 +1463,7 @@ class GatewayAdapterLifecycleMixin:
                     platform.value, profile_name,
                 )
                 return None, None
-            adapter = self._create_adapter(platform, profile_config)
+            adapter = await self._create_adapter_off_loop(platform, profile_config)
             if adapter is None:
                 logger.warning(
                     "Secondary %s reconnect skipped: adapter unavailable (profile: %s)",
@@ -1466,17 +1485,19 @@ class GatewayAdapterLifecycleMixin:
         self, profile_name: str, platform: Platform, predecessor=None
     ) -> None:
         """Reconnect a retryable secondary adapter under its own profile scope."""
-        from gateway.run import _profile_runtime_scope, _reconnect_backoff
+        from gateway.run import _DEFAULT_CONFIG, _reconnect_backoff
         attempts = 0
         # Same escalation shape as the primary queue entry; ``queued_at`` is this task's start.
         queue_info = {"queued_at": time.monotonic(), "attempts": 0}
+        # Last scoped threshold; the built-in default only until one attempt has read this profile's config.
+        attention = {"after": float(_DEFAULT_CONFIG["agent"]["reconnect_attention_after"])}
         current_task = asyncio.current_task()
         try:
             while self._running:
                 adapter = None
                 try:
                     adapter, success = await self._secondary_reconnect_attempt(
-                        profile_name, platform, predecessor
+                        profile_name, platform, predecessor, attention=attention
                     )
                     if adapter is None:
                         return
@@ -1524,11 +1545,11 @@ class GatewayAdapterLifecycleMixin:
                 attempts += 1
                 queue_info["attempts"] = attempts
                 profile_home = self._routed_profile_home(profile_name)
-                # The attempt above already hydrated this profile's secret sources off-loop.
-                with self._scope_or_null(
-                        functools.partial(_profile_runtime_scope, hydrate_secrets=False), profile_home):
-                    self._flag_reconnect_needs_attention(
-                        platform, queue_info, time.monotonic(), status_key=f"{profile_name}:{platform.value}")
+                if profile_home is UNRESOLVED_PROFILE_HOME:
+                    return  # deleted/renamed profile: never read the launch home's config
+                self._flag_reconnect_needs_attention(
+                    platform, queue_info, time.monotonic(), status_key=f"{profile_name}:{platform.value}",
+                    attention_after=attention["after"])
                 backoff = _reconnect_backoff(attempts)
                 logger.info(
                     "Secondary %s reconnect retry in %ds (profile: %s)", platform.value, backoff, profile_name
@@ -1803,15 +1824,16 @@ class GatewayAdapterLifecycleMixin:
 
     def _standalone_scoped(self, handler):
         """Standalone twin of the ``_make_default_profile_*`` wrappers: run ``handler`` under
-        ``_standalone_launch_scope`` so slash commands and turns keep resolving the launch profile's
-        credentials after a hosted room flipped the process-wide guard (#112878). The credential
-        body is marked at entry (``launch_body``): a turn already running when a second profile
+        the async launch scope (policy prepared off-loop) so slash commands and turns keep resolving the
+        launch profile's credentials after a hosted room flipped the process-wide guard (#112878). The
+        credential body is marked at entry (``launch_body``): a turn already running when a second profile
         switches this gateway to multiplexing keeps resolving its launch credentials."""
         from tui_gateway.launch_profile_policy import launch_body
 
         async def _handler(*args):
-            with launch_body(), self._standalone_launch_scope():
-                return await handler(*args)
+            with launch_body():
+                async with self._async_scope_or_null(None, None):
+                    return await handler(*args)
 
         return _handler
 
@@ -1828,26 +1850,26 @@ class GatewayAdapterLifecycleMixin:
 
     def _make_profile_platform_event_handler(self, profile_name: str):
         """Bind platform-event auth and hook dispatch to one multiplex profile."""
-        from gateway.run import _profile_runtime_scope
+        from gateway.run import _async_profile_runtime_scope
         profile_home = self._routed_profile_home(profile_name)
 
         async def _handler(event, source):
             self._canonicalize(source, transport_profile=profile_name)
-            with self._scope_or_null(_profile_runtime_scope, profile_home):
+            async with self._async_scope_or_null(_async_profile_runtime_scope, profile_home):
                 return await self._handle_gateway_platform_event(event, source)
 
         return _handler
 
     def _make_default_profile_platform_event_handler(self):
         """Scope primary-transport events to their routed multiplex profile."""
-        from gateway.run import _profile_runtime_scope, get_hermes_home
+        from gateway.run import _async_profile_runtime_scope, get_hermes_home
         default_home = Path(get_hermes_home())
 
         async def _handler(event, source):
             profile_home = self._admit_primary_source(source, default_home)
             if profile_home is None:
                 return None  # rejected route: same disposition as the message ingress gate
-            with _profile_runtime_scope(profile_home):
+            async with _async_profile_runtime_scope(profile_home):
                 return await self._handle_gateway_platform_event(event, source)
 
         return _handler

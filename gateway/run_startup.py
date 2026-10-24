@@ -1205,6 +1205,15 @@ class GatewayStartupMixin:
             if stuck:
                 logger.warning("Auto-suspended %d stuck-loop session(s)", stuck)
 
+    async def _create_adapter_off_loop(self, platform: Platform, config: Any):
+        """Resolve a plugin load off-loop; build there only when its factory opts in
+        (``PlatformEntry.factory_off_loop``). Both hops use the gateway's fenced executor."""
+        from gateway.platform_registry import platform_registry
+        entry = await self._run_in_executor_with_context(platform_registry.get, platform.value)
+        if entry is not None and entry.factory_off_loop:
+            return await self._run_in_executor_with_context(self._create_adapter, platform, config)
+        return self._create_adapter(platform, config)
+
     async def _start_prefilter_platforms(self) -> tuple[bool, int, list, list]:
         """Create + wire an adapter per enabled platform (no connects). Returns
         (aborted, enabled_platform_count, multiplex_skipped_platforms, pending_connects)."""
@@ -1234,7 +1243,7 @@ class GatewayStartupMixin:
                 _multiplex_skipped_platforms.append(platform)
                 continue
             enabled_platform_count += 1
-            adapter = self._create_adapter(platform, platform_config)
+            adapter = await self._create_adapter_off_loop(platform, platform_config)
             if not adapter:
                 # Distinguish between missing builtin deps and missing plugin
                 if platform.value in {m.value for m in Platform.__members__.values()}:

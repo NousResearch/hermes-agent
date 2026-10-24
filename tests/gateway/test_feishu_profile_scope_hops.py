@@ -9,7 +9,7 @@ client drives the REAL ``_connect_websocket`` / ``_run_official_feishu_ws_client
 """
 
 import asyncio
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
 import sys
 import types
 from pathlib import Path
@@ -95,8 +95,8 @@ def test_drive_comment_agent_turn_binds_the_unscoped_launch_profile(tmp_path):
     launch_home.mkdir()
     seen = {}
 
-    @contextmanager
-    def _launch_scope():
+    @asynccontextmanager
+    async def _launch_scope():
         home_token = set_hermes_home_override(str(launch_home))
         secret_token = set_secret_scope({"FEISHU_PROBE_TOKEN": "launch-value"})
         try:
@@ -116,7 +116,7 @@ def test_drive_comment_agent_turn_binds_the_unscoped_launch_profile(tmp_path):
     })
     set_multiplex_active(True)
     try:
-        with patch("tui_gateway.launch_profile_policy.launch_profile_scope_if_multiplexed", _launch_scope), \
+        with patch("tui_gateway.launch_profile_policy.async_launch_profile_scope_if_multiplexed", _launch_scope), \
              patch.object(rules, "load_config", return_value=object()), \
              patch.object(rules, "resolve_rule", return_value=rules.ResolvedCommentRule(True, "allowlist", frozenset(), "top")), \
              patch.object(rules, "has_wiki_keys", return_value=False), \

@@ -7386,6 +7386,7 @@ def register(ctx) -> None:
         **DASHBOARD_CARD,
         label="Discord",
         adapter_factory=DiscordAdapter,
+        factory_off_loop=True,
         check_fn=discord_deps_present,
         ensure_deps_fn=check_discord_requirements,
         is_connected=_is_connected,

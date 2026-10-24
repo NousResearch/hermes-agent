@@ -1,0 +1,38 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: taasky
+description: 'Taasky: agree a time, price or date with another agent or person.'
+source: https://docs.taasky.ai/integrations/hermes
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). No authentication required (verified live:
+# initialize succeeds anonymously). Each negotiation room returns its own
+# room_token; the human approves every binding move in Telegram.
+
+transport:
+  type: http
+  url: https://mcp.taasky.ai/mcp
+
+auth:
+  type: none
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - taasky
+    - negotiate terms
+  hosts:
+    - taasky.ai
+
+post_install: |
+  No account or credentials needed — tools are available as soon as the
+  session restarts.
+
+  The first negotiation returns a Telegram link: open it once so you can
+  approve moves. Nothing is agreed until you tap Approve there.
+
+  Optional skill with the full flow, from ClawHub through the Hermes
+  skills hub (scanned by Skills Guard on install):
+    hermes skills install clawhub/taasky

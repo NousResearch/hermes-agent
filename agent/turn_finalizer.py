@@ -684,6 +684,8 @@ def finalize_turn(
     if isinstance(final_response, str):
         final_response = _sanitize_surrogates(final_response)
 
+    from agent.reply_delivery import consume_reply_delivery
+
     result = {
         "final_response": final_response,
         "last_reasoning": _last_turn_reasoning(messages),
@@ -700,6 +702,7 @@ def finalize_turn(
         # The final is byte-for-byte a response this turn already delivered (no footer or
         # explanation appended since): it carries no new text for the client to paint.
         "response_reused": bool(final_response) and final_response == getattr(agent, "_reused_response_text", None),
+        "reply_already_delivered": consume_reply_delivery(agent, turn_id),
         "model": agent.model,
         # requested_model / served_model: proxy-reported deployment or Hermes' own fallback route.
         **result_model_fields(agent),

@@ -140,6 +140,7 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
 
 
 def _memory(agent, args: dict, ctx: InlineToolContext) -> Any:
+    from tools.memory_review_context import source_context
     result = _call_tool(
         "tools.memory_tool", "memory_tool", args,
         (
@@ -147,7 +148,16 @@ def _memory(agent, args: dict, ctx: InlineToolContext) -> Any:
             ("old_text", "old_text"), ("new_text", "new_text"), ("operations", "operations"),
         ),
         store=agent._memory_store,
+        pending_id=args.get('pending_id'), expected_revision=args.get('expected_revision'), query=args.get('query'),
+        remove_entry=args.get('remove_entry', False), explanation=args.get('explanation'),
+        source_context=source_context(agent, getattr(ctx, "tool_call_id", None)),
+        session_db=getattr(agent, '_session_db', None),
     )
+    if args.get('action') == 'suggest':
+        delivered = json.loads(result)
+        if delivered.get('success') is True and delivered.get('delivered') is True:
+            from agent.reply_delivery import mark_reply_delivered
+            mark_reply_delivered(agent)
     # Mirror built-in memory writes to external providers; gating lives in
     # MemoryManager.notify_memory_tool_write.
     if agent._memory_manager:

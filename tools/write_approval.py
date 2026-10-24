@@ -18,7 +18,7 @@ import os
 import re
 import time
 import uuid
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -71,11 +71,28 @@ def _pending_files(subsystem: str) -> list:
     return list(d.glob("*.json")) if d.exists() else []
 
 
-def stage_write(subsystem: str, payload: dict[str, Any], *, summary: str, origin: str) -> dict[str, Any]:
+def _prompt_for_record(subsystem: str, record: dict[str, Any]) -> None:
+    """Attempt immediate delivery without losing a durably staged proposal on failure."""
+    try:
+        if subsystem == SKILLS:
+            from tools.skill_prompt_send import send_prompt
+            send_prompt(record)
+            return
+        from tools.memory_prompt_send import send_prompt
+        send_prompt(subsystem, record)
+    except Exception:
+        logger.debug("%s prompt delivery failed", subsystem, exc_info=True)
+
+
+def stage_write(subsystem: str, payload: dict[str, Any], *, summary: str, origin: str,
+                force: bool = False) -> dict[str, Any]:
     """Persist a pending write and return its record (``id`` + metadata). ``payload`` is the exact
     kwargs to replay the write on approval; ``origin`` is ``foreground`` or ``background_review``.
-    Best-effort: on disk failure it logs and still returns a record — the write is lost, which is
-    the safe failure for an approval gate (nothing silently committed)."""
+    Memory batches return independent records and accurate per-operation staging outcomes.
+    Skills retain atomic payloads, with independently reviewed file previews."""
+    if subsystem == MEMORY:
+        from tools.memory_review_records import stage_memory
+        return stage_memory(payload, summary=summary, origin=origin, force=force)
     pid = uuid.uuid4().hex[:8]
     record = {
         "id": pid, "subsystem": subsystem, "action": payload.get("action", ""),
@@ -84,6 +101,10 @@ def stage_write(subsystem: str, payload: dict[str, Any], *, summary: str, origin
     }
     try:
         atomic_json_write(_pending_path(subsystem, pid), record)
+        if subsystem == SKILLS:
+            from tools.skill_review import inspect
+            inspect(pid)
+            _prompt_for_record(subsystem, record)
     except Exception as e:  # pragma: no cover - disk failure path
         logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
     return record
@@ -100,7 +121,8 @@ def list_pending(subsystem: str) -> list[dict[str, Any]]:
             records.append(record)
         except Exception:
             logger.warning("Skipping unreadable pending record: %s", p)
-    records.sort(key=lambda r: r.get("created_at", 0))
+    records.sort(key=(lambda r: (r.get("created_at", 0), r.get("source_index", 0)))
+                 if subsystem == MEMORY else (lambda r: r.get("created_at", 0)))
     return records
 
 
@@ -119,10 +141,19 @@ def get_pending(subsystem: str, pending_id: str) -> Optional[dict[str, Any]]:
 def discard_pending(subsystem: str, pending_id: str) -> bool:
     """Delete a pending record. Returns True if it existed."""
     try:
-        path = _pending_path(subsystem, pending_id)
-        if path.exists():
-            path.unlink()
-            return True
+        if subsystem == MEMORY:
+            from tools.memory_prompt_send import record_lock
+            lock = record_lock(pending_id)
+        elif subsystem == SKILLS:
+            from tools.skill_review import review_lock
+            lock = review_lock(pending_id)
+        else:
+            lock = nullcontext()
+        with lock:
+            path = _pending_path(subsystem, pending_id)
+            if path.exists():
+                path.unlink()
+                return True
     except Exception as e:  # pragma: no cover
         logger.error("Failed to discard pending %s/%s: %s", subsystem, pending_id, e)
     return False

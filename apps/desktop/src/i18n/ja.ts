@@ -7,6 +7,7 @@ import { jaBoot } from './ja_boot'
 import { jaCatalog, jaSkillDeepLink } from './ja_catalog'
 import { jaClarify } from './ja_clarify'
 import { jaConnectors } from './ja_connectors'
+import { jaErrorCodes } from './ja_error_codes'
 import { jaErrorLayers } from './ja_error_layers'
 import { jaFirstRun } from './ja_first_run'
 import { jaLocalModels } from './ja_local_models'
@@ -3315,6 +3316,7 @@ export const jaOverrides = {
       errorGenericProvider: 'AI サービス',
       ...jaErrorLayers,
       errorCodes: {
+        ...jaErrorCodes,
         provider_policy_blocked: {
           title: 'アカウント設定によりこのモデルはブロックされています',
           body: provider =>
@@ -3365,17 +3367,9 @@ export const jaOverrides = {
           body: provider =>
             `Hermes は ${provider} との安全な接続を検証できませんでした。ネットワークやプロキシの設定を確認するか、プロバイダーを切り替えて再送してください。`
         },
-        cron_session_read_only: {
-          title: 'このチャットはスケジュールされたジョブ用です',
-          body: 'このチャットはそのジョブの実行専用のため、メッセージは実行されませんでした。送信するには新しいチャットを開始してください。'
-        },
         usage_window: {
           title: '含まれる利用量を使い切りました',
           body: 'プランに含まれる利用量はリセットまで使い切りました。続けるには /topup でクレジットを追加してください。'
-        },
-        workspace_unavailable: {
-          title: 'このチャットのフォルダーが見つかりません',
-          body: 'このチャットの作業フォルダーが移動または削除されたため、メッセージは実行されませんでした。フォルダーを作り直すか、「Move to project」で別のフォルダーを割り当ててから、もう一度お試しください。'
         }
       },
       errorRetry: '再試行',

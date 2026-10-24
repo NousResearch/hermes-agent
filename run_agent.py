@@ -777,13 +777,14 @@ class AIAgent(
 
         A review whose runtime is the MANAGED LOCAL llama-server is queued for machine idle (``defer: auto``)
         instead of hitting the user's GPU mid-session; everything else spawns immediately. ``explicit``
-        (/refine) is never deferred but does not touch the ``focus``-keyed delegate/enabled gates.
+        (/refine, with or without focus) is user-initiated: it bypasses the automatic-only delegate,
+        ``enabled`` and idle-defer gates (#87250: ``enabled: false`` stops only automatic forks).
 
         A live turn or a queued follow-up on the SAME session skips the automatic review outright:
         self-improvement must never decode beside a user-facing turn, and the next eligible review
         receives the freshest bounded snapshot. /refine bypasses this like it bypasses ``enabled``.
         """
-        # Gates run at enqueue/spawn time; the idle dispatcher re-checks `enabled` at dispatch time.
+        # Automatic-review gates run at enqueue/spawn time; the idle dispatcher re-checks `enabled` at dispatch time.
         automatic = focus is None and not explicit
         if automatic and getattr(self, "_delegate_depth", 0) > 0:
             return
@@ -1064,7 +1065,7 @@ class AIAgent(
         """
         try:
             # Not cancelled == ran to completion (or was never admitted).
-            if not review_run.cancel_requested.is_set():
+            if not review_run.cancel_requested.is_set() or kwargs.get("focus") is not None or kwargs.get("explicit"):
                 return
             from agent import review_admission
 

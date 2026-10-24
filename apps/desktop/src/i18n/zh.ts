@@ -6,6 +6,7 @@ import { introZh } from './intro-zh'
 import { zhCatalog, zhSkillDeepLink } from './zh_catalog'
 import { zhClarify } from './zh_clarify'
 import { zhConnectorCard } from './zh_connector_card'
+import { zhErrorCodes } from './zh_error_codes'
 import { zhErrorLayers } from './zh_error_layers'
 import { zhFirstRun } from './zh_first_run'
 import { zhLocalModels } from './zh_local_models'
@@ -4301,6 +4302,7 @@ export const zhOverrides = {
       errorGenericProvider: 'AI 服务',
       ...zhErrorLayers,
       errorCodes: {
+        ...zhErrorCodes,
         provider_policy_blocked: {
           title: '账户设置阻止了此模型',
           body: provider => `${provider} 无法按你账户的数据或隐私设置路由此请求。请选择其他模型或切换服务商。`
@@ -4345,17 +4347,9 @@ export const zhOverrides = {
           title: '安全连接失败',
           body: provider => `Hermes 无法验证与 ${provider} 的安全连接。请检查网络或代理设置，或切换服务商后重新发送。`
         },
-        cron_session_read_only: {
-          title: '此聊天属于一个定时任务',
-          body: '它只运行该任务，因此你的消息未被执行。请新建聊天后再发送。'
-        },
         usage_window: {
           title: '包含用量已用完',
           body: '你的方案包含的用量已用完，将在重置后恢复。在 /topup 中添加额度即可继续。'
-        },
-        workspace_unavailable: {
-          title: '此聊天的文件夹已不存在',
-          body: '此聊天使用的文件夹已被移动或删除，因此你的消息未被执行。请重新创建该文件夹，或使用“移动到项目”为聊天指定其他文件夹，然后重试。'
         }
       },
       errorRetry: '重试',

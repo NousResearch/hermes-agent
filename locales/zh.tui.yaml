@@ -1337,6 +1337,7 @@ userMessages.promptTimeout.sudo: "密码提示已关闭：未及时回应，该�
 userMessages.promptTimeout.vaultCode: "验证码提示已关闭：未及时回应，登录已被跳过。拿到验证码后请重新发送你的请求。"
 userMessages.promptTimeout.vaultSaveLogin: "保存登录信息的提示已关闭：未及时回应，因此未保存任何内容。准备好后请重新发送你的请求。"
 userMessages.promptTimeout.vaultUnlockPrompt: "解锁提示已关闭：未及时回应，密码管理器仍保持锁定。准备好解锁时请重新发送你的请求。"
+userMessages.rpc.launchCredentialsChanged: "此聊天无法再使用它开始时的 API 密钥（已被更改或删除），因此未执行该操作。聊天不会自行切换到其他密钥。输入 /new 以当前密钥开始新聊天。"
 userMessages.rpc.notConnected: "Hermes 目前未连接，所以刚才的内容没有发送。它会自动重连；请稍等片刻再试，如果问题持续，请输入 /logs。"
 userMessages.rpc.sessionNotFound: "此聊天已不再连接到后端（长时间空闲或后端已重启）。你的历史记录已保存：输入 /resume 重新打开。"
 userMessages.rpc.shellBackendRefused: "! 命令在网关主机上运行，但此会话的终端后端是 {0}，因此未执行该命令。请改为让代理运行；代理的终端在 {0} 内运行。"

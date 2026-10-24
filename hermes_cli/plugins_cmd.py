@@ -931,7 +931,9 @@ def _get_plugin_toolset_key(name: str) -> Optional[str]:
     def _from_loaded_plugin() -> Optional[str]:
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
         discover_plugins()  # idempotent — ensures plugins are loaded
-        for _key, loaded in get_plugin_manager()._plugins.items():
+        from hermes_cli.plugins_snapshot import snapshot_plugin_items
+
+        for _key, loaded in snapshot_plugin_items(get_plugin_manager()):
             if loaded.manifest.name == name or _key == name:
                 return _first_toolset(loaded.tools_registered)
         return None

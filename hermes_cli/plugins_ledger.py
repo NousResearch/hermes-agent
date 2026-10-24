@@ -195,7 +195,7 @@ class PluginLedgerMixin:
         if hook_source is None:
             return context.register_hook(hook_name, callback)
         owned = any(loaded.enabled and _hook_source_of(loaded.manifest.name, loaded.module) == hook_source
-                    for loaded in self._plugins.values())
+                    for _key, loaded in self.snapshot_plugins())
         handle = context._track("hook", hook_name, lambda: None) if owned else context.register_hook(hook_name, callback)
         self._memory_hook_registrations.setdefault(hook_source, []).append(handle)
         return handle
@@ -230,7 +230,8 @@ class PluginLedgerMixin:
         identity-conditional inverses. Returns ``True`` when anything was found."""
         unload_all = plugin is None
         if unload_all:
-            target_keys = set(self._ownership_ledger) | set(self._plugins)
+            target_keys = set(self._ownership_ledger) | {
+                key for key, _loaded in self.snapshot_plugins()}
             registrations = list(self._registration_order)
         else:
             target_keys = self._unload_target_keys(self._resolve_plugin_key(plugin))
@@ -248,15 +249,17 @@ class PluginLedgerMixin:
         if unload_all:
             self._reset_after_unload_all(registrations)
         else:
-            for key in target_keys:
-                self._plugins.pop(key, None)
+            with self._plugins_lock:
+                for key in target_keys:
+                    self._plugins.pop(key, None)
         return found
 
     def _unload_target_keys(self, requested: str) -> set[str]:
         """Resolve a targeted-unload request to canonical plugin keys (exact key, else by name)."""
-        if requested in self._ownership_ledger or requested in self._plugins:
+        plugins = dict(self.snapshot_plugins())
+        if requested in self._ownership_ledger or requested in plugins:
             return {requested}
-        return {key for key, loaded in self._plugins.items() if loaded.manifest.name == requested}
+        return {key for key, loaded in plugins.items() if loaded.manifest.name == requested}
 
     def _reset_after_unload_all(self, registrations: list[PluginRegistration]) -> None:
         """Sweep pre-ledger global state and clear every manager-local container."""

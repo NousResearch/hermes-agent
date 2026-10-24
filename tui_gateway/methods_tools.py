@@ -267,7 +267,8 @@ _SIMPLE_RPCS = {
     "reload.env": (5015, lambda params: {"updated": int(_tools_mod("hermes_cli.config").reload_env())}),
     "plugins.list": (5032, lambda params: {"plugins": [
         {"name": n, "version": getattr(i, "version", "?"), "enabled": getattr(i, "enabled", True)}
-        for n, i in _tools_mod("hermes_cli.plugins").get_plugin_manager()._plugins.items()]}),
+        for n, i in _tools_mod("hermes_cli.plugins_snapshot").snapshot_plugin_items(
+            _tools_mod("hermes_cli.plugins").get_plugin_manager())]}),
     "tools.list": (5031, lambda params: {"toolsets": _toolset_rows(params, with_tools=True)}),
     "toolsets.list": (5032, lambda params: {"toolsets": _toolset_rows(params, with_tools=False)}),
     "agents.list": (5033, lambda params: {"processes": [

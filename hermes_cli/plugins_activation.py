@@ -17,6 +17,8 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from hermes_cli.plugins_snapshot import snapshot_plugin_items
+
 logger = logging.getLogger(__name__)
 
 _GO_LIVE_LOCK = threading.Lock()
@@ -83,7 +85,7 @@ def plugin_activation_summary(manager: Any, plugin_key: str) -> dict[str, Any]:
 def activation_summaries(manager: Any) -> list[dict[str, Any]]:
     """One summary per loaded (non-deferred-platform, non-errored) plugin — the ``on_plugin_loaded`` payload."""
     out = []
-    for key, loaded in list(manager._plugins.items()):
+    for key, loaded in snapshot_plugin_items(manager):
         if getattr(loaded, "deferred", False) or getattr(loaded, "error", None):
             continue
         out.append(plugin_activation_summary(manager, key))
@@ -98,7 +100,7 @@ def dependency_blocked_summaries(manager: Any) -> list[dict[str, Any]]:
     "restart". Never part of the ``on_plugin_loaded`` payload: nothing of these plugins loaded."""
     from hermes_cli.plugins_loader import missing_python_dependencies
     out = []
-    for key, loaded in list(manager._plugins.items()):
+    for key, loaded in snapshot_plugin_items(manager):
         manifest = getattr(loaded, "manifest", None)
         if getattr(loaded, "error", None) and (missing := missing_python_dependencies(manifest)):
             out.append({"name": getattr(manifest, "name", None) or key, "key": key, "activated_now": {},

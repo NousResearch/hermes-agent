@@ -182,8 +182,10 @@ def _disabled_web_plugin_for(configured: Optional[str] = None, *, capability: Op
     try:
         from hermes_cli.plugins import get_plugin_manager
 
+        from hermes_cli.plugins_snapshot import snapshot_plugin_items
+
         pm = get_plugin_manager()
-        for key, loaded in pm._plugins.items():
+        for key, loaded in snapshot_plugin_items(pm):
             if (
                 isinstance(key, str) and key.startswith("web/") and not loaded.enabled
                 and loaded.error == "disabled via config" and _norm(key.split("/", 1)[1]) == want

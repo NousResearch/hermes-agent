@@ -18,6 +18,8 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+from hermes_cli.plugins_snapshot import snapshot_plugin_items
+
 logger = logging.getLogger(__name__)
 
 
@@ -110,7 +112,7 @@ def reload_plugins_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callabl
             manager = get_plugin_manager()
             # A plugin that failed on a dependency this gateway booted without rides along, so the
             # enabling caller asks for the restart that loads it.
-            names = sorted(manager._plugins)
+            names = sorted(key for key, _loaded in snapshot_plugin_items(manager))
             activations = activation_summaries(manager) + dependency_blocked_summaries(manager)
         try:
             rewired = asyncio.run_coroutine_threadsafe(_count_adapters(runner, profile_name), loop).result(timeout=5.0)

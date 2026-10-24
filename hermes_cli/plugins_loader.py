@@ -26,6 +26,7 @@ from hermes_constants import get_hermes_home, reset_hermes_home_override, set_he
 from registration_lifecycle import replacement_coordinator
 from hermes_cli.plugins_discovery import ENTRY_POINTS_GROUP, _select_entry_point_group
 from hermes_cli.plugins_manifest import PluginManifest, manifest_key, portable_mcp_server_name, validate_config_schema
+from hermes_cli.plugins_snapshot import snapshot_plugin_items
 from hermes_cli.plugins_state import _plugin_settings_entry
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -337,7 +338,8 @@ class PluginLoaderMixin:
         from hermes_cli.plugins import LoadedPlugin
         lookup_key = manifest_key(manifest)
         loaded = LoadedPlugin(manifest=manifest, enabled=True, deferred=True)
-        self._plugins[lookup_key] = loaded
+        with self._plugins_lock:
+            self._plugins[lookup_key] = loaded
         if not self._lease_deferred_platform(manifest, lookup_key):
             # Fall back to eager loading so the platform is never silently lost. Runs outside the
             # replacement transaction: the eager load's register() executes on a deadline worker, whose
@@ -354,7 +356,7 @@ class PluginLoaderMixin:
         from hermes_cli.plugins_discovery import _get_disabled_plugins, _get_enabled_plugins, gate_manifest
         from hermes_cli.plugins_manifest import requires_hermes_error
         with self._discovery_lock, _plugin_home_scope(self.home_path):
-            failed = next((p.manifest for p in self._plugins.values()
+            failed = next((p.manifest for _key, p in self.snapshot_plugins()
                            if p.error and not p.enabled and p.manifest.kind == "platform"
                            and self._platform_name_from_manifest(p.manifest) == platform_name), None)
             # Re-gate: a placeholder (disabled, not enabled, catalog-removed) or a requires_hermes mismatch
@@ -561,7 +563,8 @@ class PluginLoaderMixin:
         if reason:
             loaded.error = reason
             logger.warning("Plugin '%s' skipped: %s", plugin_key, reason)
-            self._plugins[plugin_key] = loaded
+            with self._plugins_lock:
+                self._plugins[plugin_key] = loaded
             return
         registration_start = len(self._registration_order)
         module_name = self._policy_module_name(manifest)
@@ -630,7 +633,8 @@ class PluginLoaderMixin:
         # outlive the load attempt (#78050).
         if not loaded.enabled:
             self._predeclared_tools.pop(plugin_key, None)
-        self._plugins[plugin_key] = loaded
+        with self._plugins_lock:
+            self._plugins[plugin_key] = loaded
 
     @staticmethod
     def _is_manifest_only_language_pack(manifest: PluginManifest) -> bool:
@@ -767,7 +771,8 @@ class PluginLoaderMixin:
         except (Exception, SystemExit) as exc:
             loaded.error = _load_error_text(exc)
             logger.warning("Agent Plugin '%s' disabled: %s", lookup_key, loaded.error)
-        self._plugins[lookup_key] = loaded
+        with self._plugins_lock:
+            self._plugins[lookup_key] = loaded
 
     def _directory_module_name(self, manifest: PluginManifest) -> str:
         """Profile-safe import namespace for a directory plugin: the bare ``hermes_plugins.<slug>`` for the

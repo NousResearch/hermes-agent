@@ -16,6 +16,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from hermes_cli.plugins_snapshot import snapshot_plugin_items
+
 logger = logging.getLogger(__name__)
 
 def connect_plugin_mcp(activation: dict[str, Any], portable: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -97,7 +99,7 @@ def catalog_plugin_skill(written: str) -> Optional[str]:
     if target is None:
         return None
     manager = get_plugin_manager()
-    keys = {key for key, loaded in manager._plugins.items()
+    keys = {key for key, loaded in snapshot_plugin_items(manager)
             if loaded.manifest.path and Path(loaded.manifest.path).resolve() == target.resolve()}
     return next((qualified for qualified, entry in sorted(manager._plugin_skills.items())
                  if entry.get("plugin_key") in keys and entry.get("bare_name") == bare), None)

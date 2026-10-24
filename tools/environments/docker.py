@@ -608,6 +608,34 @@ def _split_volume_spec(spec: str) -> tuple[str, str] | None:
     return match.group("host"), match.group("container")
 
 
+def _precreate_nested_mount_points(sandbox_mounts, volume_args: list[str]) -> None:
+    """Create the host-side mount points of binds NESTED inside a sandbox bind (``/root/.hermes/skills``
+    inside ``home -> /root``) as the current user, before ``docker run``. dockerd auto-creates missing
+    mount points inside the parent bind as ROOT: root-owned dirs the profile owner cannot delete,
+    which is how a Docker-sandboxed profile became un-deletable (rmtree: Permission denied on
+    ``sandboxes/docker/*/home/.hermes/*`` — #141911). The mount SOURCES are already pre-created by
+    their owners; the mount POINTS must be too."""
+    for spec in volume_args:
+        parsed = _split_volume_spec(spec)
+        if parsed is None:
+            continue
+        src, container_path = parsed
+        for host_dir, root_path in sandbox_mounts:
+            root = root_path.rstrip("/")
+            prefix = root + "/"
+            if not container_path.startswith(prefix):
+                continue
+            host_path = Path(host_dir) / container_path[len(prefix):]
+            try:
+                if Path(src).is_file():
+                    host_path.parent.mkdir(parents=True, exist_ok=True)
+                    host_path.touch(exist_ok=True)
+                else:
+                    host_path.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                logger.warning("Docker: could not pre-create mount point %s: %s", host_path, e)
+
+
 def _container_mount_taken(volume_args: list[str], mount: str) -> bool:
     target = mount.rstrip("/") or "/"
     for arg in volume_args:
@@ -773,6 +801,9 @@ class DockerEnvironment(BaseEnvironment):
         self._image_uses_s6_init = image_uses_s6_init
         self._all_run_args = all_run_args
 
+        # Pre-create mount points nested in the sandbox binds as THIS user before dockerd sees the
+        # binds — dockerd auto-creates missing mount points inside a bind as root (#141911).
+        _precreate_nested_mount_points(getattr(self, "_sandbox_mounts", None) or [], volume_args)
         reused = persist_across_processes and self._attach_existing_container(
             task_label, profile_name, egress_label, network)
         if not reused:

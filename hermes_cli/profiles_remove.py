@@ -87,3 +87,20 @@ def _rmtree_with_retry(profile_dir: Path, onexc_handler) -> None:
                 time.sleep(0.3 * (attempt + 1))
     if last_exc is not None:
         raise last_exc
+
+
+def removal_error_message(profile_dir: Path, error: Exception) -> str:
+    """The delete-failure message shown to the user. A PermissionError the retry loop could not
+    absorb is almost always files owned by ANOTHER user — root-owned Docker sandbox mount points
+    created before #141911's fix, the Linux sibling of the macOS immutable-flag case (#43339).
+    Name the one command that recovers instead of a bare Errno 13."""
+    message = f"Could not remove profile directory {profile_dir}: {error}"
+    if isinstance(error, PermissionError):
+        try:
+            uid, gid = os.getuid(), os.getgid()  # windows-footgun: ok — the AttributeError below is the Windows gate
+        except AttributeError:  # not POSIX — the hint's command is POSIX
+            return message
+        message += (
+            f" — some files are owned by another user (root-owned Docker sandbox mount points). "
+            f"Reclaim them, then delete again: sudo chown -R {uid}:{gid} {profile_dir}")
+    return message

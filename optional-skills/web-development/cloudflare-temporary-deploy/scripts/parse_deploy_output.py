@@ -3,7 +3,7 @@
 
 Reads wrangler's stdout/stderr from STDIN and extracts the live workers.dev
 URL, the claim URL, the temporary account name/state, the claim window, and
-whether a deploy actually happened. Stdlib only — no dependencies.
+whether a deploy actually happened. Stdlib only: no dependencies.
 
 Usage:
     npx wrangler@latest deploy --temporary 2>&1 | python3 parse_deploy_output.py

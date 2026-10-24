@@ -260,7 +260,7 @@ def render(cmd: str, result) -> str:
         return "\n".join(f"{k}: {v}" for k, v in result.items())
     if cmd == "thread":
         p = result
-        lines = [f"# {p.get('title')}  — u/{p.get('author')}  score={p.get('score', '?')}  {p.get('url')}", p.get("body", "")[:1500], ""]
+        lines = [f"# {p.get('title')}: u/{p.get('author')}  score={p.get('score', '?')}  {p.get('url')}", p.get("body", "")[:1500], ""]
         for c in p["comments"]:
             indent = "  " * c.get("depth", 0)
             lines.append(f"{indent}- u/{c.get('author')} (score {c.get('score', '?')}): {c.get('body', '')[:600]}")
@@ -271,7 +271,7 @@ def render(cmd: str, result) -> str:
     for p in result:
         score = f" ↑{p['score']}" if p.get("score") is not None else ""
         nc = f" 💬{p['num_comments']}" if p.get("num_comments") is not None else ""
-        lines.append(f"- {p.get('title') or p.get('body', '')[:80]}{score}{nc}  — u/{p.get('author')}\n  {p.get('url')}")
+        lines.append(f"- {p.get('title') or p.get('body', '')[:80]}{score}{nc}: u/{p.get('author')}\n  {p.get('url')}")
         if p.get("body") and p.get("title"):
             lines.append(f"  {p['body'][:300]}")
     return "\n".join(lines) or "(no results)"

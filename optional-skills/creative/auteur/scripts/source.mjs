@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * source.mjs — find and download licence-clean assets you don't have to generate.
+ * source.mjs: find and download licence-clean assets you don't have to generate.
  *
  * Generation is not always the right tool. You cannot generate a glTF mesh, a 16-bit HDRI
- * environment map, or a correctly-hinted variable font — and CC0 versions of all three exist at
+ * environment map, or a correctly-hinted variable font: and CC0 versions of all three exist at
  * production quality. This fetches those, records the licence for every file, and refuses to
  * hand you anything whose terms it can't state.
  *
@@ -18,16 +18,16 @@
  *   --res 1k|2k|4k|8k   resolution for hdri/model/texture (default 2k)
  *   --list         print a shortlist to stdout; download nothing and write no ledger
  *
- * Writes DIR/ASSETS-SOURCED.md — the licence ledger — on every real fetch. Read it before you ship.
+ * Writes DIR/ASSETS-SOURCED.md: the licence ledger: on every real fetch. Read it before you ship.
  *
  * Sources (all no-key, verified live 2026-08):
  *   hdri/model/texture  Poly Haven      CC0        no attribution required
  *   icon                Iconify         per set    licence reported per icon (MIT/Apache/CC-BY/OFL)
  *   font                Google Fonts    OFL/Apache free for commercial use, no attribution in UI
- *   image               Openverse       CC-BY/BY-SA ATTRIBUTION REQUIRED — ledger carries the string
+ *   image               Openverse       CC-BY/BY-SA ATTRIBUTION REQUIRED: ledger carries the string
  *   video               Coverr          free-use    no redistribution; see the taste warning below
  *
- * The video caveat is not legal boilerplate. Stock footage is generic by construction — the same
+ * The video caveat is not legal boilerplate. Stock footage is generic by construction: the same
  * drone shot is on three thousand landing pages. Auteur's entire thesis is committed, specific
  * assets, so sourced video is allowed as an ambient loop, a texture, or a fallback, and is never
  * the peak scene. If the wow moment is stock, there is no wow moment.
@@ -41,17 +41,17 @@ import { tmpdir } from 'os';
 const args = process.argv.slice(2);
 const KINDS = ['hdri', 'model', 'texture', 'icon', 'font', 'image', 'video'];
 if (!args.length || args.includes('--help') || !KINDS.includes(args[0])) {
-  console.log(`source.mjs — licence-clean asset sourcing
+  console.log(`source.mjs: licence-clean asset sourcing
 
   node scripts/source.mjs <kind> "<query>" [--limit 5] [--out assets/sourced] [--res 2k] [--list]
 
   kind: ${KINDS.join(' | ')}
 
-  hdri|model|texture  Poly Haven, CC0            — what generation cannot make
+  hdri|model|texture  Poly Haven, CC0: what generation cannot make
   icon                Iconify, licence per set
   font                Google Fonts, OFL/Apache
-  image               Openverse, CC — attribution REQUIRED, ledger carries it
-  video               Coverr, free-use           — ambient/fallback only, never the peak`);
+  image               Openverse, CC: attribution REQUIRED, ledger carries it
+  video               Coverr, free-use: ambient/fallback only, never the peak`);
   process.exit(args.length && !KINDS.includes(args[0]) ? 1 : 0);
 }
 
@@ -158,14 +158,14 @@ async function icons() {
       out.push({
         id, title: `${c.name || set} / ${name}`,
         licence: c.license?.title || 'unknown',
-        attribution: /CC.?BY/i.test(c.license?.title || '') ? `Icon "${name}" from ${c.name || set} — ${c.license?.title}` : null,
+        attribution: /CC.?BY/i.test(c.license?.title || '') ? `Icon "${name}" from ${c.name || set}: ${c.license?.title}` : null,
         credit: c.author?.name || '', landing: c.license?.url || `https://icon-sets.iconify.design/${set}/`,
         note: `set has ${c.total || '?'} icons`,
         files: [{ url: `https://api.iconify.design/${set}/${name}.svg?height=64`, path: `${set}-${name}.svg` }],
       });
     }
   }
-  if (!out.length) console.error('[source] Iconify found nothing — its index is single-keyword; try one noun ("bottle", not "whisky bottle").');
+  if (!out.length) console.error('[source] Iconify found nothing: its index is single-keyword; try one noun ("bottle", not "whisky bottle").');
   return out;
 }
 
@@ -196,7 +196,7 @@ async function fonts() {
 
   // "Display", "Mono" and "Sans" are Google categories AND parts of real family names, so a query
   // like "Playfair Display" was read as a category and filtered its own family out. If the category
-  // reading finds nothing, the word was part of a name — drop the constraint and search again.
+  // reading finds nothing, the word was part of a name: drop the constraint and search again.
   const inPool = cat => (meta.familyMetadataList || []).filter(f => (!cat || f.category === cat) && (!wantVariable || (f.axes || []).length));
   let pool = inPool(wantCat);
   if (wantCat && !pool.some(f => rest.some(w => f.family.toLowerCase().includes(w)))) {
@@ -207,7 +207,7 @@ async function fonts() {
     .map(f => {
       const name = f.family.toLowerCase();
       // A family must actually match something before it is a candidate. Scoring alone did not
-      // enforce that — the "keep banned families listed but demoted" filter let every family
+      // enforce that: the "keep banned families listed but demoted" filter let every family
       // through, so `font "Bodoni Moda"` downloaded Roboto.
       const hits = rest.reduce((n, w) => n + (name.includes(w) ? 1 : 0), 0);
       const matched = hits > 0 || (wantCat && !rest.length);
@@ -234,7 +234,7 @@ async function fonts() {
       id: f.family, title: `${f.family} (${f.category})`,
       licence: 'OFL / Apache-2.0 (Google Fonts)', attribution: null, credit: '',
       landing: `https://fonts.google.com/specimen/${f.family.replace(/ /g, '+')}`,
-      note: `${banned ? '⛔ ON THE AUTEUR BAN LIST — pick something else. ' : ''}popularity #${f.popularity ?? '?'} · weights ${Object.keys(f.fonts || {}).length}${axes ? ` · variable: ${axes}` : ' · static only'}`,
+      note: `${banned ? '⛔ ON THE AUTEUR BAN LIST: pick something else. ' : ''}popularity #${f.popularity ?? '?'} · weights ${Object.keys(f.fonts || {}).length}${axes ? ` · variable: ${axes}` : ' · static only'}`,
       css: `https://fonts.googleapis.com/css2?family=${spec}&display=swap`,
       files: [],                                            // filled below with the real woff2
       family: f.family,
@@ -292,13 +292,13 @@ async function videos() {
   const out = [...best.entries()].slice(0, limit).map(([slug, { u, res }]) => ({
     id: slug,
     title: slug.replace(/^coverr-/, '').replace(/-\d+$/, '').replace(/-/g, ' '),
-    licence: 'Coverr License — free commercial use, redistribution prohibited',
+    licence: 'Coverr License: free commercial use, redistribution prohibited',
     attribution: null, credit: 'Coverr',
     landing: `https://coverr.co/videos/${slug}`,
-    note: `${res} · ⚠ stock — ambient loop / texture / fallback only, never the peak scene`,
+    note: `${res} · ⚠ stock: ambient loop / texture / fallback only, never the peak scene`,
     files: [{ url: u, path: `${slug}-${res}.mp4` }],
   }));
-  if (!out.length) console.error('[source] no stock video matched — Coverr indexes simple nouns ("snow", "rain", "city", "smoke").');
+  if (!out.length) console.error('[source] no stock video matched: Coverr indexes simple nouns ("snow", "rain", "city", "smoke").');
   return out;
 }
 
@@ -345,33 +345,33 @@ let bytes = 0, files = 0;
         f.written = buf.length; bytes += buf.length; files++;
       } catch (e) { f.error = e.message.split('\n')[0]; }
     }
-    process.stderr.write(`[source] ${it.id} — ${it.files.filter(f => f.written || f.skipped).length}/${it.files.length} files\n`);
+    process.stderr.write(`[source] ${it.id}: ${it.files.filter(f => f.written || f.skipped).length}/${it.files.length} files\n`);
   }
 }
 
 // ---------------------------------------------------------------- ledger
 const ledgerPath = join(outDir, 'ASSETS-SOURCED.md');
-const prev = existsSync(ledgerPath) ? await readFile(ledgerPath, 'utf8') : `# ASSETS-SOURCED — licence ledger
+const prev = existsSync(ledgerPath) ? await readFile(ledgerPath, 'utf8') : `# ASSETS-SOURCED: licence ledger
 
 Every file below came from someone else. This file is the record of what you may do with it.
 **Before shipping:** every entry with an "attribution required" line must have that credit visible
 on the site (a credits block in the footer is fine). CC0 and OFL entries need nothing.
 
-Sourced assets are for production use; the moodboard in \`design/\` is not — do not confuse them.
+Sourced assets are for production use; the moodboard in \`design/\` is not: do not confuse them.
 `;
 const block = [
   '',
-  `## ${kind} — "${query}"  ·  ${new Date().toISOString().slice(0, 10)}${listOnly ? '  (list only, nothing downloaded)' : ''}`,
+  `## ${kind}: "${query}"  ·  ${new Date().toISOString().slice(0, 10)}${listOnly ? '  (list only, nothing downloaded)' : ''}`,
   '',
   ...items.flatMap(it => {
     const l = [`### ${it.title}`];
     l.push(`- licence: **${it.licence}**${it.credit ? ` · by ${it.credit}` : ''}`);
-    if (it.attribution) l.push(`- ⚠ **attribution required** — put this on the page: \`${it.attribution}\``);
+    if (it.attribution) l.push(`- ⚠ **attribution required**: put this on the page: \`${it.attribution}\``);
     l.push(`- source: ${it.landing}`);
     if (it.note) l.push(`- ${it.note}`);
     if (it.selfHost) l.push(`- self-host (no third-party origin): \`${it.selfHost}\``);
-    else if (it.css) l.push(`- css: \`<link rel="stylesheet" href="${it.css}">\`  (woff2 could not be resolved — this links a third-party origin)`);
-    for (const f of it.files) l.push(`- file: \`${kind}/${f.path}\`${f.written ? ` (${Math.round(f.written / 1024)}KB)` : f.skipped ? ' (cached)' : f.error ? ` — FAILED ${f.error}` : ' (not downloaded)'}`);
+    else if (it.css) l.push(`- css: \`<link rel="stylesheet" href="${it.css}">\`  (woff2 could not be resolved: this links a third-party origin)`);
+    for (const f of it.files) l.push(`- file: \`${kind}/${f.path}\`${f.written ? ` (${Math.round(f.written / 1024)}KB)` : f.skipped ? ' (cached)' : f.error ? `: FAILED ${f.error}` : ' (not downloaded)'}`);
     return [...l, ''];
   }),
 ].join('\n');
@@ -382,7 +382,7 @@ console.log(`found   : ${items.length} for "${query}"`);
 const cached = items.reduce((n, it) => n + it.files.filter(f => f.skipped).length, 0);
 if (!listOnly) console.log(`written : ${files} new${cached ? ` + ${cached} already on disk` : ''}, ${(bytes / 1048576).toFixed(1)}MB → ${join(outDir, kind)}`);
 const needsCredit = items.filter(i => i.attribution);
-if (needsCredit.length) console.log(`⚠ credit: ${needsCredit.length} asset(s) REQUIRE visible attribution — see the ledger`);
+if (needsCredit.length) console.log(`⚠ credit: ${needsCredit.length} asset(s) REQUIRE visible attribution: see the ledger`);
 if (kind === 'video') console.log(`⚠ stock video is ambient/fallback material. If your peak scene is stock, you have no peak scene.`);
 console.log(`ledger  : ${ledgerPath}`);
 process.exit(0);

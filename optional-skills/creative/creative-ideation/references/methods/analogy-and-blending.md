@@ -1,9 +1,9 @@
 # Analogy and Blending
 
 Three traditions of "import structure from a remote frame":
-- **Synectics** — William J. J. Gordon, 1961. Practical training in operative analogy.
-- **Bisociation** — Arthur Koestler, *The Act of Creation*, 1964. Creativity as collision of two unrelated frames.
-- **Conceptual Blending** — Fauconnier & Turner, 1998. Formal cognitive theory: meaning emerges from selective integration of multiple input spaces.
+- **Synectics**: William J. J. Gordon, 1961. Practical training in operative analogy.
+- **Bisociation**: Arthur Koestler, *The Act of Creation*, 1964. Creativity as collision of two unrelated frames.
+- **Conceptual Blending**: Fauconnier & Turner, 1998. Formal cognitive theory: meaning emerges from selective integration of multiple input spaces.
 
 ## When to use
 
@@ -39,20 +39,20 @@ Operative move: when stuck, find a remote frame and force the mapping. Hold both
 ## Conceptual blending: four-space architecture
 
 For careful work, F&T's structure:
-1. **Input space 1** — the home problem.
-2. **Input space 2** — the remote domain you're importing from.
-3. **Generic space** — what they share at an abstract level. (If nothing, the blend won't work.)
-4. **Blended space** — selective projection from each input. *Not all* of input 1, *not all* of input 2.
+1. **Input space 1**: the home problem.
+2. **Input space 2**: the remote domain you're importing from.
+3. **Generic space**: what they share at an abstract level. (If nothing, the blend won't work.)
+4. **Blended space**: selective projection from each input. *Not all* of input 1, *not all* of input 2.
 
-The interesting properties live in the **emergent structure** of the blend — properties that aren't in either input.
+The interesting properties live in the **emergent structure** of the blend, properties that aren't in either input.
 
 ## Procedure
 
 1. State the home problem in one sentence.
-2. Pick a remote domain you actually know something about. Effective: biology, geology, theology, medicine, military strategy, dance, agriculture, archaeology, cooking, etymology, monastic life, mountaineering. *Avoid* "AI" and "the brain" — slop magnets.
-3. Find one specific structure in the remote domain. Not the whole domain — one mechanism, relationship, or constraint.
+2. Pick a remote domain you actually know something about. Effective: biology, geology, theology, medicine, military strategy, dance, agriculture, archaeology, cooking, etymology, monastic life, mountaineering. *Avoid* "AI" and "the brain", slop magnets.
+3. Find one specific structure in the remote domain. Not the whole domain, one mechanism, relationship, or constraint.
 4. Force the mapping. Be explicit about which elements project and which don't.
-5. Look for emergent structure — properties of the blend that weren't in either input.
+5. Look for emergent structure, properties of the blend that weren't in either input.
 6. Hold the doubleness for a few minutes. Don't immediately collapse the remote into home-frame terms.
 7. State the resulting idea in home-frame terms only at the end.
 
@@ -68,14 +68,14 @@ The interesting properties live in the **emergent structure** of the blend — p
 - From novitiate: defined trial period, explicit "rule," senior mentor, public moment of full membership.
 - From open source: technical work, contribution flow, maintainer relationship.
 
-**Blended space**: a contributor passes through a defined "novitiate" — a public 3–6 month period with a maintainer mentor, a documented "rule" of project values, and a recognized moment of becoming a "professed" contributor.
+**Blended space**: a contributor passes through a defined "novitiate", a public 3–6 month period with a maintainer mentor, a documented "rule" of project values, and a recognized moment of becoming a "professed" contributor.
 
 **Emergent structure**: monastic novitiate is *not transactional*. Novice doesn't earn membership through volume of work; they earn it through demonstrated commitment to the rule. Very different from open-source default (volume of merged PRs). The blend produces *commitment to values, not work output, as the criterion*. Not in either input alone.
 
 ## Anti-slop notes
 
 - "X is like Y" without specificity = cliché, not analogy. Real analogies have *specific* mapped structure.
-- Avoid analogies to currently-trendy frames ("like AI", "like a network", "like a marketplace") — overused, low transfer.
+- Avoid analogies to currently-trendy frames ("like AI", "like a network", "like a marketplace"), overused, low transfer.
 - Test: can you name three specific things that map and three that don't? If not, the analogy is decorative.
 - Resist mixed-metaphor accumulation. One careful analogy beats five sloppy ones.
 - Don't pick "the brain" or "AI" as remote frame. Pre-cooked.

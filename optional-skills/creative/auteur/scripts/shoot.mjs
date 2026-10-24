@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * shoot.mjs — screenshot journey for scroll-driven websites
+ * shoot.mjs: screenshot journey for scroll-driven websites
  * Usage: node shoot.mjs <url> [--stops 7] [--out shots] [--breakpoints 390,768,1440] [--dpr 1] [--reduced-motion] [--full]
  */
 
@@ -16,7 +16,7 @@ if (!args.length || args[0] === '--help') {
   process.exit(0);
 }
 
-// Multi-screen products need every route shot, not a sample — take all leading non-flag args.
+// Multi-screen products need every route shot, not a sample: take all leading non-flag args.
 const rawTargets = [];
 for (const a of args) { if (a.startsWith('--')) break; rawTargets.push(a); }
 const get = (flag, def) => {
@@ -62,7 +62,7 @@ try {
 }
 
 // --- Heuristic: is this screenshot likely blank? ---
-// Checks byte-entropy of the PNG buffer — a nearly-uniform image compresses to
+// Checks byte-entropy of the PNG buffer: a nearly-uniform image compresses to
 // a much smaller ratio vs a varied one. ponytail: approximate, not pixel-perfect.
 function likelyBlank(buf) {
   if (buf.length === 0) return true;
@@ -201,7 +201,7 @@ console.log(`Files written: ${totalWritten}`);
 for (const s of summary) {
   const where = targets.length > 1 ? `${s.url} ` : '';
   if (s.failed) {
-    console.log(`  ${where}bp${s.width}: FAILED — ${s.error}`);
+    console.log(`  ${where}bp${s.width}: FAILED: ${s.error}`);
   } else {
     console.log(`  ${where}bp${s.width}: scrollHeight=${s.scrollHeight}px  files=${s.files.length}`);
     if (s.errors.length) console.log(`    page errors: ${s.errors.join(' | ')}`);

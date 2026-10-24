@@ -1,4 +1,4 @@
-# Recipes — copy-paste patterns by language
+# Recipes: copy-paste patterns by language
 
 Every pattern in this file has been verified against the canonical syntax. They are starting points; tweak metavariable names and constraints to fit your case.
 
@@ -116,10 +116,10 @@ except $EXC: $$$HANDLER
 # Every async def
 async def $FN($$$PARAMS)
 
-# Type hints — Optional[X]
+# Type hints: Optional[X]
 Optional[$T]
 
-# Type hints — X | None (PEP 604)
+# Type hints: X | None (PEP 604)
 $T | None
 ```
 
@@ -252,7 +252,7 @@ printf($$$ARGS)
 sprintf($$$ARGS)
 fprintf($$$ARGS)
 
-// Every malloc / free pair (find-only — pairing requires data flow)
+// Every malloc / free pair (find-only: pairing requires data flow)
 malloc($SIZE)
 free($PTR)
 
@@ -396,7 +396,7 @@ rule:
 
 ## See also
 
-- `references/patterns.md` — meta-variable rules.
-- `references/yaml-rules.md` — full YAML rule schema (atomic / relational / composite / transform / fix).
-- `references/cli.md` — `sg run`, `sg scan`, `sg test`, `sg new`.
+- `references/patterns.md`: meta-variable rules.
+- `references/yaml-rules.md`: full YAML rule schema (atomic / relational / composite / transform / fix).
+- `references/cli.md`, `sg run`, `sg scan`, `sg test`, `sg new`.
 - Official catalog: <https://ast-grep.github.io/catalog/> (community-maintained, browse by language).

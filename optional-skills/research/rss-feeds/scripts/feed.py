@@ -205,7 +205,7 @@ def render_text(feed: dict) -> str:
     lines = [f"{feed.get('title') or '(untitled feed)'}  [{feed['format']}]  {feed['url']}"]
     for e in feed["entries"]:
         when = (e["published"] or "")[:10]
-        by = f"  — {e['author']}" if e.get("author") else ""
+        by = f": {e['author']}" if e.get("author") else ""
         lines.append(f"- {when}  {e['title'] or '(no title)'}{by}\n  {e['link'] or ''}")
         if e.get("summary"):
             lines.append(f"  {e['summary'][:300]}")

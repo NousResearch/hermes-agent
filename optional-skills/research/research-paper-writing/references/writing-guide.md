@@ -26,7 +26,7 @@ This reference compiles writing advice from prominent ML researchers including N
 
 The narrative rests on three pillars that must be crystal clear by the end of your introduction:
 
-**The "What"**: One to three specific novel claims fitting within a cohesive theme. Vague contributions like "we study X" fail immediately—reviewers need precise, falsifiable claims.
+**The "What"**: One to three specific novel claims fitting within a cohesive theme. Vague contributions like "we study X" fail immediately, reviewers need precise, falsifiable claims.
 
 **The "Why"**: Rigorous empirical evidence that convincingly supports those claims, including strong baselines honestly tuned and experiments that distinguish between competing hypotheses rather than merely showing "decent results."
 
@@ -36,9 +36,9 @@ The narrative rests on three pillars that must be crystal clear by the end of yo
 
 "A paper is not a random collection of experiments you report on. The paper sells a single thing that was not obvious or present before. The entire paper is organized around this core contribution with surgical precision."
 
-This applies whether you're presenting a new architecture, a theoretical result, or improved understanding of existing methods—NeurIPS explicitly notes that "originality does not necessarily require an entirely new method."
+This applies whether you're presenting a new architecture, a theoretical result, or improved understanding of existing methods, NeurIPS explicitly notes that "originality does not necessarily require an entirely new method."
 
-**Practical Implication**: If you cannot state your contribution in one sentence, you don't yet have a paper. Everything else—experiments, related work, discussion—exists only to support that core claim.
+**Practical Implication**: If you cannot state your contribution in one sentence, you don't yet have a paper. Everything else, experiments, related work, discussion, exists only to support that core claim.
 
 ---
 
@@ -52,7 +52,7 @@ Spend approximately **the same amount of time** on each of:
 3. The figures
 4. Everything else combined
 
-This isn't hyperbole—most reviewers form preliminary judgments before reaching your methods section. Readers encounter your paper in a predictable pattern: **title → abstract → introduction → figures → maybe the rest.**
+This isn't hyperbole, most reviewers form preliminary judgments before reaching your methods section. Readers encounter your paper in a predictable pattern: **title → abstract → introduction → figures → maybe the rest.**
 
 ### Reviewer Reading Patterns
 
@@ -181,7 +181,7 @@ Readers naturally emphasize the **last words of a sentence**. Place your most im
 
 **Principle 3: Topic Position (First Things First)**
 
-The beginning of a sentence establishes perspective. Put the "whose story" element first—readers expect the sentence to be about whoever shows up first.
+The beginning of a sentence establishes perspective. Put the "whose story" element first, readers expect the sentence to be about whoever shows up first.
 
 **Weak**: "A novel attention mechanism that computes alignment scores is introduced"
 **Strong**: "To address the alignment problem, we introduce a novel attention mechanism"
@@ -206,7 +206,7 @@ Express the action of each sentence in its verb, not in nominalized nouns.
 
 **Principle 7: Context Before New Information**
 
-Provide context before asking the reader to consider anything new. This applies at all levels—sentence, paragraph, section.
+Provide context before asking the reader to consider anything new. This applies at all levels, sentence, paragraph, section.
 
 **Weak**: "Equation 3 shows that convergence is guaranteed when the learning rate satisfies..."
 **Strong**: "For convergence to be guaranteed, the learning rate must satisfy the condition in Equation 3..."
@@ -439,7 +439,7 @@ plt.style.use(['science', 'nature'])
 | Mistake | Solution |
 |---------|----------|
 | Paper-by-paper Related Work | Organize methodologically |
-| Missing relevant citations | Reviewers authored papers—cite generously |
+| Missing relevant citations | Reviewers authored papers, cite generously|
 | AI-generated citations | Always verify via APIs |
 | Inconsistent citation format | Use BibLaTeX with consistent keys |
 

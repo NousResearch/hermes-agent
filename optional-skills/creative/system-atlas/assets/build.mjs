@@ -1,5 +1,5 @@
 // Builds <outDir>/SYSTEM.md and <outDir>/atlas.html from data.mjs (same folder).
-// Usage: bun <atlasDir>/build.mjs   — outDir = parent of atlasDir by default, or META.outDir
+// Usage: bun <atlasDir>/build.mjs: outDir = parent of atlasDir by default, or META.outDir
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,7 +30,7 @@ NODES.forEach((n) => (n.cond || []).map(Q).forEach((c) => (c.r || c.to ? cnt.res
 // ---------- SYSTEM.md ----------
 function buildSystemMd() {
   const out = [];
-  out.push(`# ${META.title} — System Definition`, '');
+  out.push(`# ${META.title}: System Definition`, '');
   out.push(META.intro, '');
   out.push(`_Question status: **${cnt.open} open · ${cnt.res} resolved**._`, '');
   out.push('## One paragraph', '', META.onePara, '');
@@ -41,7 +41,7 @@ function buildSystemMd() {
   META.costModel.forEach((l) => out.push(l));
   if (META.deepDive) out.push('## Deep dives', '', META.deepDive, '');
   out.push('## Reading order (the atlas chapters)', '');
-  CH.forEach((c, i) => out.push(`${i + 1}. **${c.title}** — ${md(c.lede)}${c.reveal.length ? ` _(adds ${c.reveal.join(', ')})_` : ''}`));
+  CH.forEach((c, i) => out.push(`${i + 1}. **${c.title}**: ${md(c.lede)}${c.reveal.length ? ` _(adds ${c.reveal.join(', ')})_` : ''}`));
   out.push('');
   out.push('## Structures', '');
   const index = [];
@@ -54,7 +54,7 @@ function buildSystemMd() {
       out.push(`**How it's built.** ${md(n.how)}`, '');
       if (n.steps) {
         out.push('**Steps in execution.**', '');
-        n.steps.forEach((s, i) => out.push(`${i + 1}. **${s[0]}** — ${s[1]}`));
+        n.steps.forEach((s, i) => out.push(`${i + 1}. **${s[0]}**: ${s[1]}`));
         out.push('');
       }
       const cs = (n.cond || []).map(Q);
@@ -75,12 +75,12 @@ function buildSystemMd() {
     f.hops.forEach((h, i) => out.push(`| ${i + 1} | ${h[0]} → ${h[1]} | ${h[2]} | \`${JSON.stringify(h[3]).replace(/\|/g, '\\|')}\` |`));
     out.push('');
   }
-  out.push('## Questions — index', '', 'Reference by ID. ✓ resolved (with date) · otherwise open.', '');
+  out.push('## Questions: index', '', 'Reference by ID. ✓ resolved (with date) · otherwise open.', '');
   index.forEach(([id, code, c]) => out.push(c.r ? `- ~~**${id}**~~ (${code}) ✓ ${md(c.r)}` : `- **${id}** (${code}) ${md(c.q)}`));
   out.push('');
   if (META.platformGives || META.weOwn) out.push('## What the platform gives vs what we own', '', `**Platform gives:** ${META.platformGives||''}`, '', `**We own:** ${META.weOwn||''}`, '');
   if (META.filesystem) out.push('## Planned filesystem', '', '```', META.filesystem.trimEnd(), '```', '');
-  out.push('## How this file is maintained', '', `Generated from \`${META.sourcePath||'atlas/data.mjs'}\` by \`${META.buildCmd||'bun atlas/build.mjs'}\`, which also builds the interactive atlas (\`atlas.html\`${META.artifactUrl?`, published at ${META.artifactUrl}`:''}). Edit the data file, rebuild, republish — never edit this file by hand.`, '');
+  out.push('## How this file is maintained', '', `Generated from \`${META.sourcePath||'atlas/data.mjs'}\` by \`${META.buildCmd||'bun atlas/build.mjs'}\`, which also builds the interactive atlas (\`atlas.html\`${META.artifactUrl?`, published at ${META.artifactUrl}`:''}). Edit the data file, rebuild, republish: never edit this file by hand.`, '');
   return out.join('\n');
 }
 

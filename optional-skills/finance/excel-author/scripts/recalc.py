@@ -37,7 +37,7 @@ def recalc(xlsx_path: str, timeout: int = 60) -> dict:
     if lo is None:
         return {
             "status": "error",
-            "error": "libreoffice not found on PATH — install it or recalc in a real Excel session",
+            "error": "libreoffice not found on PATH: install it or recalc in a real Excel session",
         }
 
     with tempfile.TemporaryDirectory() as td:

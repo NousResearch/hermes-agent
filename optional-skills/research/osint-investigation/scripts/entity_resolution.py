@@ -4,9 +4,9 @@
 Given two CSV files with name columns, find candidate matches using three
 tiers of normalization:
 
-  1. exact          — normalized strings equal
-  2. fuzzy          — sorted-token (word-bag) match
-  3. token_overlap  — >=60% Jaccard overlap on >=4-char tokens, >=2 shared
+  1. exact: normalized strings equal
+  2. fuzzy: sorted-token (word-bag) match
+  3. token_overlap: >=60% Jaccard overlap on >=4-char tokens, >=2 shared
 
 Adapted from ShinMegamiBoson/OpenPlanter (MIT) but generalized: no Boston-
 specific record types, no contribution-code filters, no fixed schemas.
@@ -137,7 +137,7 @@ def resolve(
                 _emit(out_rows, seen, "fuzzy", lrow, rrow, left_col, right_col)
 
     if not skip_overlap:
-        # Pass 3: token overlap (O(N*M) — expensive; allow opt-out).
+        # Pass 3: token overlap (O(N*M): expensive; allow opt-out).
         for lrow in left_rows:
             l_raw = lrow.get(left_col, "")
             if not normalize_name(l_raw):

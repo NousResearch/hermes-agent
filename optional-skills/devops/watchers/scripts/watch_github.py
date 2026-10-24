@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Watch GitHub activity — issues, pulls, releases, or commits — with dedup.
+"""Watch GitHub activity: issues, pulls, releases, or commits: with dedup.
 
 Usage (via cron with --no-agent):
 
@@ -36,7 +36,7 @@ VALID_SCOPES = ("issues", "pulls", "releases", "commits")
 
 
 def _flatten_commit(item):
-    """Commit objects nest title/author/date under 'commit' — flatten for rendering."""
+    """Commit objects nest title/author/date under 'commit': flatten for rendering."""
     commit = item.get("commit") or {}
     msg = (commit.get("message") or "").strip().splitlines()
     title = msg[0] if msg else ""

@@ -30,7 +30,7 @@ references:                    # ⚠️ ONLY if files EXIST in references/ direc
 
 | Usage | Description | Generation Action |
 |-------|-------------|-------------------|
-| `direct` | Primary visual reference | Describe the reference (composition, subject, style, palette) in prompt text — `image_generate` does not accept reference-image inputs |
+| `direct` | Primary visual reference | Describe the reference (composition, subject, style, palette) in prompt text, `image_generate` does not accept reference-image inputs|
 | `style` | Style characteristics only | Describe style in prompt text |
 | `palette` | Color palette extraction | Include colors in prompt |
 
@@ -69,12 +69,12 @@ STYLE (from reference):
 
 ## Color Specification Rules
 
-Colors in prompts use hex codes for **rendering guidance only** — they tell the model which colors to use, NOT what text to display.
+Colors in prompts use hex codes for **rendering guidance only**: they tell the model which colors to use, NOT what text to display.
 
 **⚠️ CRITICAL**: Image generation models sometimes render color names and hex values as visible text labels in the image (e.g., painting "Macaron Blue #A8D8EA" as a label). This must be prevented.
 
 **Add to ALL prompts that contain a COLORS section**:
-> Color values (#hex) and color names are rendering guidance only — do NOT display color names, hex codes, or palette labels as visible text in the image.
+> Color values (#hex) and color names are rendering guidance only, do NOT display color names, hex codes, or palette labels as visible text in the image.
 
 ---
 
@@ -196,7 +196,7 @@ ELEMENTS: Rounded rectangles, thick arrows, simple icons per step
 **Flowchart + sketch-notes + macaron palette**:
 ```
 Hand-drawn educational flowchart on warm cream paper. Slight wobble on all lines.
-PALETTE: macaron — soft pastel color blocks
+PALETTE: macaron: soft pastel color blocks
 COLORS: Warm Cream background (#F5F0E8), zone fills in Macaron Blue (#A8D8EA),
         Lavender (#D5C6E0), Mint (#B5E5CF), Coral Red (#E8655A) for emphasis
 ELEMENTS: Rounded cards with dashed/solid borders, wavy hand-drawn arrows with labels,
@@ -208,7 +208,7 @@ STYLE: Color fills don't completely fill outlines, hand-drawn lettering, generou
 ```
 Professional hand-drawn visual-note flowchart on pure white. Black ink line work
 with slight wobble, à la Mike Rohde sketchnoting.
-PALETTE: mono-ink — black ink dominant, sparse semantic accents
+PALETTE: mono-ink: black ink dominant, sparse semantic accents
 COLORS: Pure White background (#FFFFFF), Near Black (#1A1A1A) for all lines,
         text, and figures; Coral Red (#E8655A) only for risk/emphasis,
         Muted Teal (#5FA8A8) only for positive/solution states
@@ -258,7 +258,7 @@ ELEMENTS: Bold icons, black outlines, centered divider line
 ```
 Professional hand-drawn sketchnote comparison on pure white. Black ink line work
 with slight wobble, à la Mike Rohde sketchnoting.
-PALETTE: mono-ink — black ink dominant, sparse semantic accents
+PALETTE: mono-ink: black ink dominant, sparse semantic accents
 COLORS: Pure White background (#FFFFFF), Near Black (#1A1A1A) for all outlines,
         text, figures, arrows; Coral Red (#E8655A) reserved for risks/gaps
         (left/Before side); Muted Teal (#5FA8A8) reserved for positives
@@ -312,7 +312,7 @@ ELEMENTS: Rounded rectangles or circles for nodes, thick connecting lines
 ```
 Professional hand-drawn sketchnote framework on pure white. Black ink line work
 with slight wobble, à la Mike Rohde sketchnoting.
-PALETTE: mono-ink — black ink dominant, sparse semantic accents
+PALETTE: mono-ink: black ink dominant, sparse semantic accents
 COLORS: Pure White background (#FFFFFF), Near Black (#1A1A1A) for all lines,
         text, figures; Dusty Lavender (#9B8AB5) for neutral category tags only;
         Coral Red (#E8655A) for emphasis sparingly. Color accents under 10%.
@@ -400,7 +400,7 @@ palette: macaron
 **Example**: `vector-illustration` + `macaron` palette:
 ```
 Flat vector illustration infographic. Clean black outlines on all elements.
-PALETTE: macaron — soft pastel color blocks
+PALETTE: macaron: soft pastel color blocks
 COLORS: Warm Cream background (#F5F0E8), Macaron Blue (#A8D8EA), Mint (#B5E5CF),
         Lavender (#D5C6E0), Peach (#FFD5C2), Coral Red (#E8655A) for emphasis
 ELEMENTS: Geometric simplified icons, no gradients, playful decorative elements

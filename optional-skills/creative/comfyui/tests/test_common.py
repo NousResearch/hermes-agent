@@ -1,4 +1,4 @@
-"""Unit tests for _common.py — pure logic only, no network."""
+"""Unit tests for _common.py: pure logic only, no network."""
 
 from __future__ import annotations
 
@@ -229,7 +229,7 @@ class TestIterEmbeddingRefs:
                   "inputs": {"ckpt_name": "embedding:foo.safetensors"}},
         }
         refs = list(iter_embedding_refs(wf))
-        # ckpt_name is not a prompt field — ignored
+        # ckpt_name is not a prompt field: ignored
         assert refs == []
 
 

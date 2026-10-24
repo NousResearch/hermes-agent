@@ -487,7 +487,7 @@
   "views": [
     {
       "id": "overview",
-      "title": "Architecture — blast radius",
+      "title": "Architecture: blast radius",
       "lens": "architecture",
       "summary": "Everything this change touches, across all three lanes.",
       "scope": {
@@ -549,7 +549,7 @@
     },
     {
       "id": "send-pipeline-view",
-      "title": "Data flow — sending a broadcast",
+      "title": "Data flow: sending a broadcast",
       "lens": "data-flow",
       "scope": {
         "kind": "selection",

@@ -2,12 +2,12 @@
    auteur · scroll-flight-engine.js
    ----------------------------------------------------------------------------
    Portable scroll-scrubbed camera-flight engine. Photoreal AI-video "fly through
-   the world" — auteur's video-scrub tier, complementary to its real-time WebGL
+   the world": auteur's video-scrub tier, complementary to its real-time WebGL
    recipes. Asset-source-agnostic: feed it ANY .mp4 clips (image→video models,
    Gemini, real footage). See references/scroll-flight.md for the full recipe.
 
    VENDORED from scroll-world (github.com/cth9191/scroll-world), MIT (c) 2026 cyw.
-   Adapted for auteur — three changes from upstream:
+   Adapted for auteur: three changes from upstream:
      1. default --sw-accent shifted off the 250-290 deg AI-purple (auteur taste);
         every real site overrides --sw-accent anyway.
      2. the auteur-allow line below, so slopscan permits the engine's ONE scroll
@@ -20,7 +20,7 @@
    ========================================================================== */
 /* auteur-allow: RAW_SCROLL_LISTENER -- frame-accurate video scrub needs a native rAF-gated passive scroll listener; smoothed-scroll libraries fight currentTime seeking */
 /* ============================================================================
-   scroll-world — portable scroll-scrubbed camera-flight engine
+   scroll-world: portable scroll-scrubbed camera-flight engine
    ----------------------------------------------------------------------------
    Framework-agnostic. Vanilla JS, zero dependencies. It builds its own DOM and
    injects its own (namespaced) CSS into a container you give it, so it drops into
@@ -47,9 +47,9 @@
                           // encode (wire it whenever clipMobile has different framing).
                           // Falls back to `still` when absent; `still` remains the
                           // stills-mode / no-clip artwork.
-           scroll: 1.6,   // optional per-section override of diveScroll — more scroll
+           scroll: 1.6,   // optional per-section override of diveScroll: more scroll
                           // distance = a slower, longer dwell in this scene
-           linger: 0.5,   // optional 0..1 — remaps time so the camera settles mid-scene
+           linger: 0.5,   // optional 0..1: remaps time so the camera settles mid-scene
                           // (exactly where the copy peaks) and moves quicker at the
                           // edges. 0 = linear (default). Keep ≤ 0.6; 1 = full pause.
            eyebrow, title, body, tags:[…],
@@ -62,26 +62,26 @@
    MOBILE (the clipMobile/connectorsMobile variants are the opt-in mobile tiers;
    the rest of the phone handling below is always on)
      Two independent axes, deliberately separate:
-     - CLIP TIER (which file): decided by device class — screen short side ≤600 CSS px
+     - CLIP TIER (which file): decided by device class: screen short side ≤600 CSS px
        = phone → `clipMobile`/`posterMobile`; tablets (iPad Pro included) and desktops
        get the full master. NOT decided by pointer type: iPadOS reports a coarse
        pointer and a Mac UA, but has a desktop-class screen + decoder.
      - BEHAVIOUR hardening (how it acts): on any coarse-pointer / ≤860px viewport the
        engine coalesces seeks (never issues a new currentTime while the decoder is
-       still `seeking` — fast flicks can't pile up and freeze), takes a coarser seek
+       still `seeking`: fast flicks can't pile up and freeze), takes a coarser seek
        step, keeps the poster up until the clip actually paints, primes each video
        (muted play→pause) on first touch (iOS blank-video fix), lengthens the scroll
        run (`scrollMobileFactor`), drops the drifting particles, and ignores
        URL-bar-only resizes (no scroll jump).
      STILLS MODE (automatic fallback, never configured): the page falls back to the
-     stills cross-dissolving as you scroll — no video load or decode — when the user
+     stills cross-dissolving as you scroll: no video load or decode: when the user
      asked for it (`prefers-reduced-motion`, data-saver) or the OS blocks video at
      runtime (iOS Low Power Mode rejects even muted play(); detected on first touch).
      Chromium-only network signals (`navigator.connection.saveData`/`effectiveType`)
-     are used strictly as downgrade signals — saveData → stills mode, 2g/3g → shrink
+     are used strictly as downgrade signals: saveData → stills mode, 2g/3g → shrink
      the clip prefetch window. iOS exposes none of these, so the baseline stays
      conservative (posters first, lazy blob fetch near the viewport) for everyone.
-     Nothing here is required — a config with only `clip`/`connectors` still works on
+     Nothing here is required: a config with only `clip`/`connectors` still works on
      phones; the mobile variants just make it lighter and smoother.
 
    THEME (CSS custom properties; set on the container or :root to override)
@@ -94,7 +94,7 @@
    SEO / STATIC COPY
      The engine builds its DOM client-side, so on its own the page has no crawlable
      copy. Put a plain-markup version of the copy (h1 + per-section h2/p, real links)
-     inside the container in a block marked `data-sw-seo` — the engine hides it on
+     inside the container in a block marked `data-sw-seo`: the engine hides it on
      mount and it never fights the visual layer, but it exists in the served HTML for
      crawlers, link previews, and no-JS visitors (see index-template.html).
 
@@ -117,17 +117,17 @@ function mountScrollWorld(container, config) {
   const smallMQ = window.matchMedia('(max-width: 860px)');
   const isMobile = () => coarse || smallMQ.matches;
   // CLIP TIER keys off device class, NOT input type: an iPad Pro is coarse-pointer but
-  // has a desktop-class screen and decoder — it gets the 1080p master, with the touch
+  // has a desktop-class screen and decoder: it gets the 1080p master, with the touch
   // hardening above still on. screen.* is stable across rotation and window resizes;
   // a phone's short side is ≤ ~500 CSS px, tablets start at 744.
   const phoneClass = Math.min(screen.width, screen.height) <= 600;
-  // Network signals are Chromium-only (iOS/Safari/Firefox expose nothing) — treat them
+  // Network signals are Chromium-only (iOS/Safari/Firefox expose nothing): treat them
   // strictly as a *downgrade* signal on top of a conservative default, never as a gate
   // for the good experience.
   const conn = navigator.connection;
   const dataSaver = !!(conn && conn.saveData);
   const slowNet = !!(conn && /^(slow-2g|2g|3g)$/.test(conn.effectiveType || ''));
-  // Stills mode: the page becomes the stills cross-dissolving as you scroll — no video
+  // Stills mode: the page becomes the stills cross-dissolving as you scroll: no video
   // load, no decode. Entered up-front for prefers-reduced-motion and data-saver, and at
   // runtime when iOS Low Power Mode blocks video (see enterStillsMode/primeVideo).
   let stillsOnly = reduce || dataSaver;
@@ -205,7 +205,7 @@ function mountScrollWorld(container, config) {
     const scene = el('div', 'sw-scene'); scene.style.setProperty('--sw-accent', s.accent || '');
     const img = el('img', 'sw-scene__still'); img.alt = ''; img.decoding = 'async'; img.loading = 'lazy';
     // Prefer the extracted-frame poster (pixel-identical to the clip's first frame,
-    // so the still→video swap can't pop) — matching the encode the device will get.
+    // so the still→video swap can't pop): matching the encode the device will get.
     // In stills mode the clip never loads, so the higher-fidelity source still is the
     // better permanent image.
     const pref = phoneClass ? (s.posterM || s.poster) : s.poster;
@@ -288,7 +288,7 @@ function mountScrollWorld(container, config) {
     if (stillsOnly || s.loading || !s.clip) return;
     s.loading = true;
     // Serve the lighter mobile encode on phone-class devices when one was provided
-    // (tablets and desktops get the full master — see phoneClass above).
+    // (tablets and desktops get the full master: see phoneClass above).
     const url = (phoneClass && s.clipM) ? s.clipM : s.clip;
     fetch(url).then(r => r.ok ? r.blob() : Promise.reject(new Error('404')))
       .then(blob => {
@@ -299,7 +299,7 @@ function mountScrollWorld(container, config) {
         v.src = URL.createObjectURL(blob);
         v.addEventListener('loadedmetadata', () => { s.ready = true; read(); });
         // Reveal the video (hide the still poster) only once a real frame has
-        // painted — on iOS a seeked-but-never-played muted video stays blank, so
+        // painted: on iOS a seeked-but-never-played muted video stays blank, so
         // hiding the still on metadata alone would flash an empty scene.
         v.addEventListener('seeked', () => { s.el.classList.add('has-clip'); }, { once: true });
         v.addEventListener('loadeddata', () => { try { v.pause(); } catch (e) {} if (userReady) primeVideo(v); });
@@ -390,7 +390,7 @@ function mountScrollWorld(container, config) {
   function primeVideo(v) {
     if (!isMobile() || !v) return;
     // A muted, playsinline play() that REJECTS on a user gesture means the OS is
-    // blocking video — in practice iOS Low Power Mode, where currentTime scrubbing
+    // blocking video: in practice iOS Low Power Mode, where currentTime scrubbing
     // doesn't work either. Fall back to stills for the whole page instead of showing
     // frozen/blank scenes.
     try { const p = v.play(); if (p && p.then) p.then(() => { try { v.pause(); } catch (e) {} }).catch(() => { enterStillsMode(); }); }

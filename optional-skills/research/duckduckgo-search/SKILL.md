@@ -83,7 +83,7 @@ ddgs text -q "fastapi tutorial" -m 5 -o json
 
 | Flag | Description | Example |
 |------|-------------|---------|
-| `-q` | Query — **required** | `-q "search terms"` |
+| `-q` | Query, **required**| `-q "search terms"` |
 | `-m` | Max results | `-m 5` |
 | `-r` | Region | `-r us-en` |
 | `-t` | Time limit | `-t w` (week) |
@@ -101,7 +101,7 @@ Avoid saying:
 - "`execute_code` includes `ddgs`"
 - "DuckDuckGo search works by default in `execute_code`"
 
-**Important:** `max_results` must always be passed as a **keyword argument** — positional usage raises an error on all methods.
+**Important:** `max_results` must always be passed as a **keyword argument**: positional usage raises an error on all methods.
 
 ### Text Search
 
@@ -185,7 +185,7 @@ Returns: `title`, `content`, `description`, `duration`, `provider`, `published`,
 
 ## Workflow: Search then Extract
 
-DuckDuckGo returns titles, URLs, and snippets — not full page content. To get full page content, search first and then extract the most relevant URL with `web_extract`, browser tools, or curl.
+DuckDuckGo returns titles, URLs, and snippets, not full page content. To get full page content, search first and then extract the most relevant URL with `web_extract`: browser tools, or curl.
 
 CLI example:
 

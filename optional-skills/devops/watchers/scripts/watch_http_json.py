@@ -105,7 +105,7 @@ def main() -> int:
         )
         return 2
 
-    # Keep only dicts — skip any bare strings / numbers so filter_new doesn't crash.
+    # Keep only dicts: skip any bare strings / numbers so filter_new doesn't crash.
     items = [i for i in items if isinstance(i, dict)]
 
     wm = Watermark.load(args.name)

@@ -17,7 +17,7 @@ When in doubt: warm & friendly → `sketch-notes`. Disciplined & professional �
 
 ## Design Aesthetic
 
-Disciplined hand-drawn visual note. Confident black ink line work with slight wobble, hand-lettered typography, and sparse color accents used only for semantic emphasis. Feels like a skilled visual notetaker's whiteboard presentation — clean, structured, intentionally hand-drawn rather than decorative.
+Disciplined hand-drawn visual note. Confident black ink line work with slight wobble, hand-lettered typography, and sparse color accents used only for semantic emphasis. Feels like a skilled visual notetaker's whiteboard presentation, clean, structured, intentionally hand-drawn rather than decorative.
 
 ## Background
 
@@ -50,7 +50,7 @@ Color accents must remain under 10% of canvas area and only carry semantic meani
 - Vertical or horizontal dividers between comparison zones ("Before" | "After")
 - "Mindset shift" curved arrow bridging two zones
 - Bottom tagline: single-line hand-lettered conclusion that points the takeaway
-- Stars, asterisks, underlines for emphasis — used sparingly
+- Stars, asterisks, underlines for emphasis, used sparingly
 
 ## Style Rules
 
@@ -59,7 +59,7 @@ Color accents must remain under 10% of canvas area and only carry semantic meani
 - Keep background pure white with no texture or tint
 - Let black ink dominate outlines, text, and figures
 - Use accent colors only for semantic highlighting
-- Keep all type hand-lettered — no computer-generated fonts
+- Keep all type hand-lettered, no computer-generated fonts
 - Maintain confident line quality (wobble, not mess)
 - Include a bottom tagline summarizing the main takeaway
 - Structure content into clear zones with visible dividers
@@ -70,7 +70,7 @@ Color accents must remain under 10% of canvas area and only carry semantic meani
 - Use warm off-white or paper-textured backgrounds (that is sketch-notes' territory)
 - Fill large zones with color blocks
 - Use more than 3 accent colors per image
-- Use perfect geometric shapes — preserve hand-drawn wobble
+- Use perfect geometric shapes, preserve hand-drawn wobble
 - Clutter with decorative doodles; every element must carry meaning
 - Use gradients, shadows, or computer-generated fonts
 
@@ -78,12 +78,12 @@ Color accents must remain under 10% of canvas area and only carry semantic meani
 
 | Type | Rating | Notes |
 |------|--------|-------|
-| comparison | ✓✓ | Best fit — Before/After, Traditional vs New, side-by-side contrasts |
+| comparison | ✓✓ | Best fit, Before/After, Traditional vs New, side-by-side contrasts|
 | framework | ✓✓ | OS-style command centers, layered architectures, organizational models |
 | flowchart | ✓✓ | Process explainers with labeled stages, workforce pipelines |
 | infographic | ✓ | Multi-zone technical summaries, manifesto-style posters |
 | timeline | ✓ | Hand-drawn horizontal arrow with era markers and milestones |
-| scene | ✗ | Not recommended — lacks scenic space |
+| scene | ✗ | Not recommended, lacks scenic space|
 
 ## Best For
 

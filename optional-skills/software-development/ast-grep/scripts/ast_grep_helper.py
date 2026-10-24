@@ -742,7 +742,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[list[str]] = None) -> int:
     global _QUIET
     parser = build_parser()
-    # Accept `search PATTERN --lang js .` — plain parse_args greedily
+    # Accept `search PATTERN --lang js .`: plain parse_args greedily
     # finalizes the nargs='*' paths list before the optional, then errors
     # "unrecognized arguments: ." on the trailing path.
     # parse_intermixed_args cannot be used with subparsers, so collect the

@@ -2,7 +2,7 @@
 
 Decision tree for picking a method. Read top to bottom; first match wins.
 
-## Phase signals — what stage is the user in?
+## Phase signals: what stage is the user in?
 
 | Signal | Method |
 |---|---|
@@ -79,7 +79,7 @@ Most invocations: one method. Stack only when:
 1. Defaulting to constraint dispatch when the user has rich domain signals. Read first.
 2. SCAMPER without a base idea. SCAMPER amplifies; doesn't generate from nothing.
 3. TRIZ on artistic or social problems. Its parameters are physical/engineering.
-4. Leverage points on a single-creator project. Overkill — Meadows is for multi-actor systems.
+4. Leverage points on a single-creator project. Overkill, Meadows is for multi-actor systems.
 5. Reaching for the most exotic method to seem sophisticated. Constraint dispatch is right most of the time.
 6. Stacking methods to compensate for not picking well. Bad choice + bad choice ≠ better choice.
 7. Generating finished work when the user asked for direction. Wait until they pick.

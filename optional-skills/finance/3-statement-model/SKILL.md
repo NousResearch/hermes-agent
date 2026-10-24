@@ -13,7 +13,7 @@ metadata:
 
 ## Environment
 
-This skill assumes **headless openpyxl** — you are producing an .xlsx file on disk.
+This skill assumes **headless openpyxl**: you are producing an .xlsx file on disk.
 Follow the `excel-author` skill's conventions for cell coloring, formulas, named ranges, and sensitivity tables.
 Recalculate before delivery: `python /path/to/excel-author/scripts/recalc.py ./out/model.xlsx`.
 
@@ -21,13 +21,13 @@ Recalculate before delivery: `python /path/to/excel-author/scripts/recalc.py ./o
 
 Complete and populate integrated financial model templates with proper linkages between Income Statement, Balance Sheet, and Cash Flow Statement.
 
-## ⚠️ CRITICAL PRINCIPLES — Read Before Populating Any Template
+## ⚠️ CRITICAL PRINCIPLES, Read Before Populating Any Template
 
 **Formulas over hardcodes (non-negotiable):**
-- Every projection cell, roll-forward, linkage, and subtotal MUST be an Excel formula — never a pre-computed value
+- Every projection cell, roll-forward, linkage, and subtotal MUST be an Excel formula, never a pre-computed value
 - When using Python/openpyxl: write formula strings (`ws["D15"] = "=D14*(1+Assumptions!$B$5)"`), NOT computed results (`ws["D15"] = 12500`)
 - The ONLY cells that should contain hardcoded numbers are: (1) historical actuals, (2) assumption drivers in the Assumptions tab
-- If you find yourself computing a value in Python and writing the result to a cell — STOP. Write the formula instead.
+- If you find yourself computing a value in Python and writing the result to a cell, STOP. Write the formula instead.
 - Why: the model must flex when scenarios toggle or assumptions change. Hardcodes break every downstream integrity check silently.
 
 **Verify step-by-step with the user:**
@@ -36,11 +36,11 @@ Complete and populate integrated financial model templates with proper linkages 
 3. **After building IS projections** → run the subtotal checks, show the user the projected IS, confirm before moving to BS
 4. **After building BS** → show the user the balance check (Assets = L+E) for every period, confirm before moving to CF
 5. **After building CF** → show the user the cash tie-out (CF ending cash = BS cash), confirm before finalizing
-6. **Do NOT populate the entire model end-to-end and present it complete** — break at each statement, show the work, catch errors early
+6. **Do NOT populate the entire model end-to-end and present it complete**: break at each statement, show the work, catch errors early
 
-## Formatting — Professional Blue/Grey Palette (Default unless template/user specifies otherwise)
+## Formatting, Professional Blue/Grey Palette (Default unless template/user specifies otherwise)
 
-**Keep colors minimal.** Use only blues and greys for cell fills. Do NOT introduce greens, yellows, oranges, or multiple accent colors — a clean model uses restraint.
+**Keep colors minimal.** Use only blues and greys for cell fills. Do NOT introduce greens, yellows, oranges, or multiple accent colors, a clean model uses restraint.
 
 | Element | Fill | Font |
 |---|---|---|
@@ -416,11 +416,11 @@ When Master Status shows errors:
 5. Return to Checks tab to verify resolution
 
 
-## Data sources — MCP first, web fallback
+## Data sources, MCP first, web fallback
 
 Many passages below say "use the S&P Kensho MCP / Daloopa MCP / FactSet MCP". Those are commercial financial-data MCPs from the original Cowork plugin context. In Hermes:
 
-- **If you have any structured financial-data MCP configured** (Hermes supports MCP — see `native-mcp` skill), prefer it for point-in-time comps, precedent transactions, and filings.
+- **If you have any structured financial-data MCP configured** (Hermes supports MCP, see `native-mcp` skill), prefer it for point-in-time comps, precedent transactions, and filings.
 - **Otherwise**, fall back to:
   - `web_search` / `web_extract` against SEC EDGAR (`https://www.sec.gov/cgi-bin/browse-edgar`) for US filings
   - Company IR pages for press releases, earnings decks

@@ -13,7 +13,7 @@ metadata:
 
 ## Environment
 
-This skill assumes **headless openpyxl** — you are producing an .xlsx file on disk.
+This skill assumes **headless openpyxl**: you are producing an .xlsx file on disk.
 Follow the `excel-author` skill's conventions for cell coloring, formulas, named ranges, and sensitivity tables.
 Recalculate before delivery: `python /path/to/excel-author/scripts/recalc.py ./out/model.xlsx`.
 
@@ -32,7 +32,7 @@ Before starting any LBO model:
 
 ---
 
-## CRITICAL INSTRUCTIONS — READ FIRST
+## CRITICAL INSTRUCTIONS, READ FIRST
 
 Use Python/openpyxl. Write formula strings (`ws["D20"] = "=B5*B6"`), then run the `excel-author` skill's `recalc.py` helper before delivery.
 
@@ -41,7 +41,7 @@ Use Python/openpyxl. Write formula strings (`ws["D20"] = "=B5*B6"`), then run th
 * **Use the template structure** - Follow the organization in `examples/LBO_Model.xlsx` or the user's provided template. Do not invent your own layout.
 * **Use proper cell references** - All formulas should reference the appropriate cells. Never type numbers that should come from other cells.
 * **Maintain sign convention consistency** - Follow whatever sign convention the template uses (some use negative for outflows, some use positive). Be consistent throughout.
-* **Work section by section, verify with user at each step** - Complete one section fully, show the user what was built, run the section's verification checks, and get confirmation BEFORE moving to the next section. Do NOT build the entire model end-to-end and then present it — later sections depend on earlier ones, so catching a mistake in Sources & Uses after the returns are already built means rework everywhere.
+* **Work section by section, verify with user at each step** - Complete one section fully, show the user what was built, run the section's verification checks, and get confirmation BEFORE moving to the next section. Do NOT build the entire model end-to-end and then present it, later sections depend on earlier ones, so catching a mistake in Sources & Uses after the returns are already built means rework everywhere.
 
 ### Formula Color Conventions
 * **Blue (0000FF)**: Hardcoded inputs - typed numbers that don't reference other cells
@@ -49,16 +49,16 @@ Use Python/openpyxl. Write formula strings (`ws["D20"] = "=B5*B6"`), then run th
 * **Purple (800080)**: Links to cells on the **same tab** - direct references with no calculation (`=B9`, `=B45`)
 * **Green (008000)**: Links to cells on **different tabs** - cross-sheet references (`=Assumptions!B5`, `='Operating Model'!C10`)
 
-### Fill Color Palette — Professional Blues & Greys (Default unless user/template specifies otherwise)
-* **Keep it minimal** — only use blues and greys for cell fills. Do NOT introduce greens, yellows, reds, or multiple accents. A professional LBO model uses restraint.
+### Fill Color Palette, Professional Blues & Greys (Default unless user/template specifies otherwise)
+* **Keep it minimal**: only use blues and greys for cell fills. Do NOT introduce greens, yellows, reds, or multiple accents. A professional LBO model uses restraint.
 * **Default fill palette:**
   * **Section headers** (Sources & Uses, Operating Model, etc.): Dark blue `#1F4E79` with white bold text
   * **Column headers** (Year 1, Year 2, etc.): Light blue `#D9E1F2` with black bold text
-  * **Input cells**: Light grey `#F2F2F2` (or just white) — the blue *font* is the signal, fill is secondary
+  * **Input cells**: Light grey `#F2F2F2` (or just white), the blue *font* is the signal, fill is secondary
   * **Formula/calculated cells**: White, no fill
   * **Key outputs** (IRR, MOIC, Exit Equity): Medium blue `#BDD7EE` with black bold text
 * **That's the whole palette.** 3 blues + 1 grey + white. If the template uses its own colors, follow the template instead.
-* Note: The blue/black/purple/green **font** colors above are for distinguishing inputs vs formulas vs links. Those are separate from the **fill** palette here — both work together.
+* Note: The blue/black/purple/green **font** colors above are for distinguishing inputs vs formulas vs links. Those are separate from the **fill** palette here, both work together.
 
 ### Number Formatting Standards
 * **Currency**: `$#,##0;($#,##0);"-"` or `$#,##0.0` depending on template
@@ -150,11 +150,11 @@ The following calculation patterns frequently cause issues across LBO models. Pa
 * MOIC = Total Proceeds / Total Investment
 
 ### Sensitivity Tables
-* **Use ODD dimensions** (5×5 or 7×7) — never 4×4 or 6×6. Odd dimensions guarantee a true center cell.
-* **Center cell = base case.** Build the row and column axis values symmetrically around the model's actual assumptions (e.g., if base entry multiple = 10.0x, axis = `[8.0x, 9.0x, 10.0x, 11.0x, 12.0x]`). The center cell's IRR/MOIC MUST then equal the model's actual IRR/MOIC output — this is the proof the table is wired correctly.
-* **Highlight the center cell** — medium-blue fill (`#BDD7EE`) + bold font so the base case is visually anchored.
-* Excel's DATA TABLE function may not work with openpyxl — instead write explicit formulas that reference row/column headers
-* Each cell should show a DIFFERENT value — if all same, formulas aren't varying correctly
+* **Use ODD dimensions** (5×5 or 7×7), never 4×4 or 6×6. Odd dimensions guarantee a true center cell.
+* **Center cell = base case.** Build the row and column axis values symmetrically around the model's actual assumptions (e.g., if base entry multiple = 10.0x, axis = `[8.0x, 9.0x, 10.0x, 11.0x, 12.0x]`). The center cell's IRR/MOIC MUST then equal the model's actual IRR/MOIC output, this is the proof the table is wired correctly.
+* **Highlight the center cell**: medium-blue fill (`#BDD7EE`) + bold font so the base case is visually anchored.
+* Excel's DATA TABLE function may not work with openpyxl, instead write explicit formulas that reference row/column headers
+* Each cell should show a DIFFERENT value, if all same, formulas aren't varying correctly
 * Use mixed references (e.g., `$A5` for row input, `B$4` for column input)
 
 ---
@@ -213,9 +213,9 @@ Must return success with zero errors.
 - [ ] Results are reasonable for the scenario
 
 ### Sensitivity Tables (if applicable)
-- [ ] Grid dimensions are ODD (5×5 or 7×7) — there is a true center cell
+- [ ] Grid dimensions are ODD (5×5 or 7×7), there is a true center cell
 - [ ] Row and column axis values are symmetric around the base case (`[base-2Δ, base-Δ, base, base+Δ, base+2Δ]`)
-- [ ] Center cell output equals the model's actual IRR/MOIC — confirms the table is wired correctly
+- [ ] Center cell output equals the model's actual IRR/MOIC, confirms the table is wired correctly
 - [ ] Center cell is highlighted (medium-blue fill `#BDD7EE`, bold font)
 - [ ] Row and column headers contain appropriate input values
 - [ ] Each data cell contains a formula (not hardcoded)
@@ -255,7 +255,7 @@ Must return success with zero errors.
 
 ---
 
-## WORKING WITH THE USER — SECTION-BY-SECTION CHECKPOINTS
+## WORKING WITH THE USER, SECTION-BY-SECTION CHECKPOINTS
 
 * **If the template structure is unclear**, ask before proceeding
 * **If the user's requirements conflict with the template**, confirm their preference
@@ -267,18 +267,18 @@ Must return success with zero errors.
   - **After Sensitivity Tables** → show that each cell varies, confirm the base case lands where expected
 * **If errors are found during verification**, fix them before moving to the next section
 * **Show your work** - explain key formulas or assumptions when helpful
-* **Never present a completed model without having checked in at each section** — it's faster to catch a wrong cell reference at the source than to trace it backwards from a broken IRR
+* **Never present a completed model without having checked in at each section**: it's faster to catch a wrong cell reference at the source than to trace it backwards from a broken IRR
 
 ---
 
 **This skill produces investment banking-quality LBO models by filling templates with correct formulas, proper formatting, and validated calculations. The skill adapts to any template structure while ensuring financial accuracy and professional presentation standards.**
 
 
-## Data sources — MCP first, web fallback
+## Data sources, MCP first, web fallback
 
 Many passages below say "use the S&P Kensho MCP / Daloopa MCP / FactSet MCP". Those are commercial financial-data MCPs from the original Cowork plugin context. In Hermes:
 
-- **If you have any structured financial-data MCP configured** (Hermes supports MCP — see `native-mcp` skill), prefer it for point-in-time comps, precedent transactions, and filings.
+- **If you have any structured financial-data MCP configured** (Hermes supports MCP, see `native-mcp` skill), prefer it for point-in-time comps, precedent transactions, and filings.
 - **Otherwise**, fall back to:
   - `web_search` / `web_extract` against SEC EDGAR (`https://www.sec.gov/cgi-bin/browse-edgar`) for US filings
   - Company IR pages for press releases, earnings decks

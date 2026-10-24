@@ -22,7 +22,7 @@ Soft macaron pastel color blocks on warm cream
 
 ## Accent
 
-Coral Red (#E8655A) for key data, warnings, and emphasis highlights. Use sparingly — one or two elements per illustration.
+Coral Red (#E8655A) for key data, warnings, and emphasis highlights. Use sparingly, one or two elements per illustration.
 
 ## Semantic Constraint
 

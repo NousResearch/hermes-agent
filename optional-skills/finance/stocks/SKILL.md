@@ -15,7 +15,7 @@ metadata:
 # Stocks Skill
 
 Read-only market data via Yahoo Finance. Five commands: `quote`, `search`,
-`history`, `compare`, `crypto`. Python stdlib only — no API key, no pip
+`history`, `compare`, `crypto`. Python stdlib only, no API key, no pip
 installs. Yahoo's endpoint is unofficial and may rate-limit or change.
 
 ## When to Use
@@ -41,7 +41,7 @@ SCRIPT=~/.hermes/skills/finance/stocks/scripts/stocks_client.py
 python $SCRIPT quote AAPL
 ```
 
-All output is JSON on stdout — pipe through `jq` if you want to slice it.
+All output is JSON on stdout, pipe through `jq` if you want to slice it.
 
 ## Quick Reference
 
@@ -80,11 +80,11 @@ Crypto prices. Pass `BTC` (the script appends `-USD` automatically).
 ## Pitfalls
 
 - Yahoo Finance's API is unofficial. Endpoints can change or rate-limit
-  without notice — if requests start failing, that's why.
+  without notice, if requests start failing, that's why.
 - `market_cap` and `pe_ratio` may return null on `quote` when Yahoo's
   crumb session isn't established. Set `ALPHA_VANTAGE_KEY` to backfill.
 - Add a small delay between bulk requests to avoid rate-limiting.
-- This is read-only — no order placement, no account integration.
+- This is read-only, no order placement, no account integration.
 
 ## Verification
 

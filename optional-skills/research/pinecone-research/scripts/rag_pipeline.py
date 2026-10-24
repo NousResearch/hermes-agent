@@ -1,4 +1,4 @@
-"""Pinecone RAG pipeline — index documents and query with retrieval-augmented generation.
+"""Pinecone RAG pipeline: index documents and query with retrieval-augmented generation.
 
 Usage:
     export PINECONE_API_KEY="your-key"

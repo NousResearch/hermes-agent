@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * moodboard.mjs — visual reference search → downloaded images → one contact sheet you can actually look at.
+ * moodboard.mjs: visual reference search → downloaded images → one contact sheet you can actually look at.
  *
  * Usage:
  *   node scripts/moodboard.mjs "<query>" ["<query2>" ...] [options]
@@ -16,12 +16,12 @@
  * Exit 0 if any image landed.
  *
  * Source notes (probed live, 2026-08):
- *  · bing      — most reliable. Indexes pinimg / dribbble / behance CDNs and serves
+ *  · bing: most reliable. Indexes pinimg / dribbble / behance CDNs and serves
  *                hotlinkable originals through a browser context. This is the workhorse.
- *  · pinterest — logged-out search renders a partial grid behind a login wall: sometimes
+ *  · pinterest: logged-out search renders a partial grid behind a login wall: sometimes
  *                ~15 pins, sometimes zero. Best-effort, never load-bearing. Thumbnails are
  *                rewritten 236x → 736x (originals/ is 403 for hotlinks).
- *  · arena     — api.are.na public search, no auth. Curated designer taste, lower volume.
+ *  · arena: api.are.na public search, no auth. Curated designer taste, lower volume.
  */
 
 import { mkdir, writeFile } from 'fs/promises';
@@ -29,7 +29,7 @@ import { resolve, join } from 'path';
 
 const args = process.argv.slice(2);
 if (!args.length || args.includes('--help')) {
-  console.log(`moodboard.mjs — image search → contact sheet
+  console.log(`moodboard.mjs: image search → contact sheet
 
   node scripts/moodboard.mjs "<query>" ["<query2>" ...] [--source bing,pinterest,arena]
                              [--limit 24] [--out design/moodboard] [--cols 5] [--min-kb 15]`);
@@ -102,7 +102,7 @@ async function fromPinterest(q, want) {
       await page.evaluate(() => window.scrollBy(0, innerHeight * 1.5));
       await page.waitForTimeout(2000);
     }
-    if (!out.length) console.error('[moodboard] pinterest returned 0 (login wall) — bing covers it.');
+    if (!out.length) console.error('[moodboard] pinterest returned 0 (login wall): bing covers it.');
   } catch (e) { console.error(`[moodboard] pinterest "${q}": ${e.message.split('\n')[0]}`); }
   finally { await page.close(); }
   return out;
@@ -175,7 +175,7 @@ for (const c of ordered) {
 
 // --- contact sheet ------------------------------------------------------------
 // Rendering an HTML grid and screenshotting it needs no extra dependency and copes
-// with mixed aspect ratios — one image the model reads instead of 24 separate ones.
+// with mixed aspect ratios: one image the model reads instead of 24 separate ones.
 const PER_SHEET = 20;
 // A remainder of one or two tiles becoming its own 95%-empty page costs a second look for nothing,
 // and the doctrine promises reading a moodboard costs one look. Balance the sheets instead.
@@ -209,19 +209,19 @@ await browser.close();
 
 // --- index --------------------------------------------------------------------
 const md = [
-  `# MOODBOARD — ${queries.map(q => `"${q}"`).join(' · ')}`,
+  `# MOODBOARD: ${queries.map(q => `"${q}"`).join(' · ')}`,
   '',
   sheets.length
-    ? `**Look at ${sheets.map(s => `\`${s}\``).join(', ')} first** — every tile is numbered; refer to tiles by number below.`
+    ? `**Look at ${sheets.map(s => `\`${s}\``).join(', ')} first**: every tile is numbered; refer to tiles by number below.`
     : '_no contact sheet: nothing downloaded._',
   '',
-  'Reference images are for *direction* — palette, light, composition, texture, type energy.',
+  'Reference images are for *direction*: palette, light, composition, texture, type energy.',
   'They are not assets: never ship a downloaded image, and never reproduce one composition.',
   'Name what you take from each tile you use, then throw the rest away.',
   '',
   '| # | source | kb | origin page |',
   '|---|---|---|---|',
-  ...kept.map(k => `| ${k.n} | ${k.source} | ${k.kb} | ${k.page ? `[link](${k.page})` : '—'} |`),
+  ...kept.map(k => `| ${k.n} | ${k.source} | ${k.kb} | ${k.page ? `[link](${k.page})` : ', '} |`),
   '',
   '## Read (fill in)',
   '- dominant palette across the tiles you like: ',
@@ -235,6 +235,6 @@ await writeFile(join(outDir, 'MOODBOARD.md'), md, 'utf8');
 console.log(`\n=== moodboard ===`);
 console.log(`queries : ${queries.join(' | ')}`);
 console.log(`kept    : ${kept.length} images (${sources.map(s => `${s}:${kept.filter(k => k.source === s).length}`).join(' ')})`);
-console.log(`sheets  : ${sheets.map(s => join(outDir, s)).join('\n          ') || '—'}`);
+console.log(`sheets  : ${sheets.map(s => join(outDir, s)).join('\n          ') || ', '}`);
 console.log(`index   : ${join(outDir, 'MOODBOARD.md')}`);
 process.exit(kept.length ? 0 : 1);

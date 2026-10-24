@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ComfyUI Setup — Install, launch, and verify using the official comfy-cli.
+# ComfyUI Setup: Install, launch, and verify using the official comfy-cli.
 #
 # Improvements over v1:
 #   - Prefers `pipx` / `uvx` over global `pip install` (avoids polluting system Python)
@@ -101,7 +101,7 @@ log "Logging to $LOG_FILE"
 # --- Step 0: Hardware check (skipped if user gave an explicit GPU flag) ---
 if [ -z "$GPU_FLAG" ]; then
     if [ ! -f "$HARDWARE_CHECK" ]; then
-        log "hardware_check.py not found — defaulting to --nvidia"
+        log "hardware_check.py not found: defaulting to --nvidia"
         GPU_FLAG="--nvidia"
     else
         log "Running hardware check…"
@@ -122,7 +122,7 @@ if [ -z "$GPU_FLAG" ]; then
         if [ "$VERDICT" = "cloud" ] && [ "$FORCE_CLOUD_OVERRIDE" -ne 1 ]; then
             log ""
             log "Hardware check: this machine is not suitable for local ComfyUI."
-            log "Recommended: Comfy Cloud — https://platform.comfy.org"
+            log "Recommended: Comfy Cloud: https://platform.comfy.org"
             log ""
             log "To override and force a local install, re-run with --force-cloud-override"
             log "or pass an explicit GPU flag (--nvidia|--amd|--m-series|--cpu)."
@@ -180,7 +180,7 @@ else
             exit 1
         }
     fi
-    # Resolve the actual `comfy` script — pip --user puts it in:
+    # Resolve the actual `comfy` script: pip --user puts it in:
     #   Linux: ~/.local/bin/comfy
     #   macOS: ~/Library/Python/<ver>/bin/comfy  OR  ~/.local/bin/comfy
     COMFY_BIN=""
@@ -235,7 +235,7 @@ fi
 
 # --- Step 4: Detect already-running server ---
 if curl -fsS "http://127.0.0.1:$PORT/system_stats" >/dev/null 2>&1; then
-    log "Server already running on port $PORT — skipping launch."
+    log "Server already running on port $PORT: skipping launch."
     log "Stop with \`$COMFY_BIN stop\` if you want a fresh start."
     curl -fsS "http://127.0.0.1:$PORT/system_stats" | python3 -m json.tool 2>/dev/null || true
     log "Done."

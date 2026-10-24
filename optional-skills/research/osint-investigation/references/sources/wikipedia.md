@@ -7,7 +7,7 @@ and organizations. Wikidata is its structured-data counterpart: ~110M
 items, each with claims, dates, identifiers, and cross-references to
 external authorities (VIAF, ISNI, ORCID, GRID, etc.).
 
-Together they're a high-precision entity-resolution layer — the bar for
+Together they're a high-precision entity-resolution layer, the bar for
 inclusion is real, but anything past that bar is well-cross-referenced.
 
 ## 2. Access Methods
@@ -42,14 +42,14 @@ Key fields emitted by `fetch_wikipedia.py`:
 | `summary` | str | Wikipedia REST extract (~1000 chars) |
 
 The fetch script uses Wikidata's Action API (NOT SPARQL) for structured
-facts — far more lenient on rate limits.
+facts, far more lenient on rate limits.
 
 ## 4. Coverage
 
 - Wikipedia EN: ~7M articles
 - Wikidata: ~110M items, ~1.5B statements
 - Updated continuously; abuse filters and bots run constantly
-- High notability bar — most private individuals are not in Wikipedia
+- High notability bar, most private individuals are not in Wikipedia
 
 ## 5. Cross-Reference Potential
 
@@ -64,11 +64,11 @@ most articles but can be renamed.
 
 ## 6. Data Quality
 
-- Notability filter — only notable entities (criteria vary by topic)
-- Recency lag — current events take days to weeks to be reflected
-- POV / vandalism — moderated, but edits between sweeps can be bad
+- Notability filter, only notable entities (criteria vary by topic)
+- Recency lag, current events take days to weeks to be reflected
+- POV / vandalism, moderated, but edits between sweeps can be bad
 - Living-persons biographies have stricter sourcing requirements
-- Wikidata claims have qualifiers and references — the fetch script
+- Wikidata claims have qualifiers and references, the fetch script
   doesn't currently export them
 
 ## 7. Acquisition Script
@@ -87,7 +87,7 @@ python3 SKILL_DIR/scripts/fetch_wikipedia.py --query "Microsoft" --no-wikidata \
     --limit 5 --out data/wp.csv
 ```
 
-The OpenSearch is fuzzy — `--limit 5` returns the top 5 Wikipedia article
+The OpenSearch is fuzzy, `--limit 5` returns the top 5 Wikipedia article
 matches. Each is enriched with the QID + structured facts unless
 `--no-wikidata` is passed.
 

@@ -1,6 +1,6 @@
 # Pretext Patterns
 
-Copy-pasteable snippets for the most common pretext demo shapes. Each pattern is self-contained — drop into an HTML `<script type="module">` after importing from `https://esm.sh/@chenglou/pretext@0.0.6`.
+Copy-pasteable snippets for the most common pretext demo shapes. Each pattern is self-contained, drop into an HTML `<script type="module">` after importing from `https://esm.sh/@chenglou/pretext@0.0.6`.
 
 ## 1. Flow around an obstacle (variable-width column)
 
@@ -35,7 +35,7 @@ function drawFlow(ctx, obstacle /* {x,y,r} */, COL_X, COL_W, H) {
 }
 ```
 
-**Obstacle variants:** circles (above), rectangles (use `Math.max(0, …)` on the row-segment), multiple obstacles (sort segments and emit the wider remaining lane), animated obstacles (recompute every frame — pretext is fast enough).
+**Obstacle variants:** circles (above), rectangles (use `Math.max(0, …)` on the row-segment), multiple obstacles (sort segments and emit the wider remaining lane), animated obstacles (recompute every frame, pretext is fast enough).
 
 ## 2. Text-as-geometry game (word-bricks with collision)
 
@@ -224,7 +224,7 @@ const { lineCount, maxLineWidth } = measureLineStats(prepared, MAX_W);
 // card width = maxLineWidth + padding; card height = lineCount * LINE_H + padding
 ```
 
-For a demo that *visualizes* this, render the card shrinking from `MAX_W` down to `maxLineWidth` over a second — the line count stays constant but the right edge pulls in.
+For a demo that *visualizes* this, render the card shrinking from `MAX_W` down to `maxLineWidth` over a second, the line count stays constant but the right edge pulls in.
 
 ## 7. Kinetic typography
 

@@ -20,7 +20,7 @@ Always exclude:
 - glossy mockups, 3D depth, cinematic lighting, lens blur, hard shadows;
 - centered template symmetry, card grids, UI panels, stickers, decorative blobs;
 - scrapbook collage, uncontrolled overlap, grunge overload, torn-paper styling;
-- automatic vintage styling — yellowed paper, sepia aging, distressed borders, nostalgic props, retro type — merely because the image uses halftone or limited inks;
+- automatic vintage styling, yellowed paper, sepia aging, distressed borders, nostalgic props, retro type, merely because the image uses halftone or limited inks;
 - long paragraphs, marketing copy, CTA buttons, logos, URLs, QR codes;
 - exact imitation of a supplied poster or a recognizable artist signature.
 

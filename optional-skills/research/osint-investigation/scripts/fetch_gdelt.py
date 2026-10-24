@@ -5,7 +5,7 @@ GDELT monitors world news in 100+ languages and indexes the full text.
 Free, anonymous, ~15-minute update frequency. Covers ~2015→present.
 
 Useful for surfacing news mentions of a person, company, or topic across
-international media — much wider net than Google News.
+international media: much wider net than Google News.
 """
 from __future__ import annotations
 

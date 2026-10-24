@@ -106,7 +106,7 @@ def fetch(
             source_tag = "html-fallback"
     else:
         print(
-            "OPENCORPORATES_API_TOKEN not set — using HTML fallback (limited fields). "
+            "OPENCORPORATES_API_TOKEN not set: using HTML fallback (limited fields). "
             "Get a free token at https://opencorporates.com/api_accounts/new",
             file=sys.stderr,
         )

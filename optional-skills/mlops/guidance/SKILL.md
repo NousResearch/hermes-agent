@@ -58,7 +58,7 @@ print(result["capital"])  # "Paris"
 > **Constraint support requires local logit access.** Regex, `select()`, and
 > grammar-based constrained generation only work with local backends
 > (`Transformers`, `LlamaCpp`). Remote API backends (`OpenAI`, and Azure
-> variants) support unconstrained `gen()` / chat only — they cannot enforce
+> variants) support unconstrained `gen()` / chat only: they cannot enforce
 > token-level constraints. guidance 0.3.x has no `models.Anthropic` class.
 
 ```python
@@ -192,7 +192,7 @@ lm += "The capital of France is " + gen("capital", max_tokens=5)
 ### 4. Grammar-Based Generation
 
 Define complex structures by composing grammar functions. The template-string
-`grammar=` form is not part of current guidance — build grammars from
+`grammar=` form is not part of current guidance: build grammars from
 composable functions, or use `guidance.json()` for JSON.
 
 ```python
@@ -276,7 +276,7 @@ def react_agent(lm, question, tools, max_rounds=5):
 
 ## Backend Configuration
 
-### OpenAI (remote — unconstrained only)
+### OpenAI (remote, unconstrained only)
 
 > Remote API backends cannot do constrained generation (regex/select/grammar);
 > use them only for plain chat/`gen()`. For constraints, use a local backend.

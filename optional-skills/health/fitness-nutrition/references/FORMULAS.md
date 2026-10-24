@@ -20,7 +20,7 @@ Reference: Quetelet, A. (1832). Keys et al., Int J Obes (1972).
 
 ## TDEE (Total Daily Energy Expenditure)
 
-Uses the **Mifflin-St Jeor equation** — the most accurate BMR predictor for
+Uses the **Mifflin-St Jeor equation**: the most accurate BMR predictor for
 the general population according to the ADA (2005).
 
 **BMR formulas:**
@@ -96,5 +96,5 @@ Reference: Hodgdon & Beckett, Naval Health Research Center (1984).
 
 ## APIs
 
-- wger: https://wger.de/api/v2/ — AGPL-3.0, exercise data is CC-BY-SA 3.0
-- USDA FoodData Central: https://api.nal.usda.gov/fdc/v1/ — public domain (CC0 1.0)
+- wger: https://wger.de/api/v2/ (AGPL-3.0, exercise data is CC-BY-SA 3.0)
+- USDA FoodData Central: https://api.nal.usda.gov/fdc/v1/ (public domain, CC0 1.0)

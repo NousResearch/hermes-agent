@@ -119,5 +119,5 @@ mcporter emit-ts <server> --mode types
 ## Notes
 
 - Use `--output json` for structured output that's easier to parse
-- Ad-hoc servers (HTTP URL or `--stdio` command) work without any config — useful for one-off calls
-- OAuth auth may require interactive browser flow — use `terminal(command="mcporter auth <server>", pty=true)` if needed
+- Ad-hoc servers (HTTP URL or `--stdio` command) work without any config, useful for one-off calls
+- OAuth auth may require interactive browser flow, use `terminal(command="mcporter auth <server>", pty=true)` if needed

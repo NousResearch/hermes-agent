@@ -2,7 +2,7 @@
 """Search ICIJ Offshore Leaks via the bulk CSV database.
 
 The old reconcile endpoint (https://offshoreleaks.icij.org/reconcile) returns
-404 — ICIJ has removed it. The remaining stable access path is the public
+404: ICIJ has removed it. The remaining stable access path is the public
 bulk download:
 
     https://offshoreleaks-data.icij.org/offshoreleaks/csv/full-oldb.LATEST.zip

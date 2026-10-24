@@ -24,15 +24,15 @@ symbols, call chains, clusters, and execution flows. Tunneled via Cloudflare for
 
 ## Prerequisites
 
-- **Node.js** (v18+) — required for GitNexus and the proxy
-- **git** — repo must have a `.git` directory
-- **cloudflared** — for tunneling (auto-installed to ~/.local/bin if missing)
+- **Node.js** (v18+), required for GitNexus and the proxy
+- **git**: repo must have a `.git` directory
+- **cloudflared**: for tunneling (auto-installed to ~/.local/bin if missing)
 
 ## Size Warning
 
 The web UI renders all nodes in the browser. Repos under ~5,000 files work well. Large
 repos (30k+ nodes) will be sluggish or crash the browser tab. The CLI/MCP tools work
-at any scale — only the web visualization has this limit.
+at any scale, only the web visualization has this limit.
 
 ## Steps
 
@@ -86,14 +86,14 @@ npx gitnexus analyze --skip-agents-md
 rm -rf .claude/    # remove Claude Code-specific artifacts
 ```
 
-Add `--embeddings` for semantic search (slower — minutes instead of seconds).
+Add `--embeddings` for semantic search (slower, minutes instead of seconds).
 
 The index lives in `.gitnexus/` inside the repo (auto-gitignored).
 
 ### 4. Create the Proxy Script
 
 Write this to a file (e.g., `$GITNEXUS_DIR/proxy.mjs`). It serves the production
-web UI and proxies `/api/*` to the GitNexus backend — same origin, no CORS issues,
+web UI and proxies `/api/*` to the GitNexus backend, same origin, no CORS issues,
 no sudo, no nginx.
 
 ```javascript
@@ -155,7 +155,7 @@ node "$GITNEXUS_DIR/proxy.mjs" "$GITNEXUS_DIR/gitnexus-web/dist" 8888 &
 
 Verify: `curl -s http://localhost:8888/api/repos` should return the indexed repo(s).
 
-### 6. Tunnel with Cloudflare (optional — for remote access)
+### 6. Tunnel with Cloudflare (optional: for remote access)
 
 ```bash
 # Install cloudflared if needed (no sudo)
@@ -172,7 +172,7 @@ cloudflared tunnel --config /dev/null --url http://localhost:8888 --no-autoupdat
 ```
 
 The tunnel URL (e.g., `https://random-words.trycloudflare.com`) is printed to stderr.
-Share it — anyone with the link can explore the graph.
+Share it, anyone with the link can explore the graph.
 
 ### 7. Cleanup
 

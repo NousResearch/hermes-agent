@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-run_batch.py — Run a workflow many times, varying parameters per run.
+run_batch.py: Run a workflow many times, varying parameters per run.
 
 Two modes:
   1. --count N --randomize-seed

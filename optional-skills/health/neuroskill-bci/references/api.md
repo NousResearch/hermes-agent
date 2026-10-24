@@ -8,7 +8,7 @@ NeuroSkill runs a local server (default port **8375**) discoverable via mDNS
 ## Server Discovery
 
 ```bash
-# Auto-discovery (built into the CLI — usually just works)
+# Auto-discovery (built into the CLI: usually just works)
 npx neuroskill status --json
 
 # Manual port discovery
@@ -24,7 +24,7 @@ The CLI auto-discovers the port. Use `--port <N>` to override.
 
 ### Universal Command Tunnel
 ```bash
-# POST / — accepts any command as JSON
+# POST /: accepts any command as JSON
 curl -s -X POST http://127.0.0.1:8375/ \
   -H "Content-Type: application/json" \
   -d '{"command":"status"}'
@@ -283,4 +283,4 @@ npx neuroskill sessions --json | jq '{start: .sessions[0].start_utc, end: .sessi
 - **Local database**: `~/.skill/YYYYMMDD/` (SQLite + HNSW index)
 - **ZUNA embeddings**: 128-D vectors, 5-second epochs
 - **Labels**: Stored in SQLite, indexed with bge-small-en-v1.5 embeddings
-- **All data is local** — nothing is sent to external servers
+- **All data is local**: nothing is sent to external servers

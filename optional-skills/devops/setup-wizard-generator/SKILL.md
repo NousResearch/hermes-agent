@@ -29,7 +29,7 @@ Ported from mattpocock/skills' MIT-licensed `wizard` skill.
 - One-off migrations or cutovers with irreversible human-gated steps
 - Any procedure the user will hand to a teammate to run
 
-Do NOT use for steps the agent can perform itself — do those directly.
+Do NOT use for steps the agent can perform itself, do those directly.
 
 ## Prerequisites
 
@@ -58,9 +58,9 @@ captured value, you know (a) where the human gets it, (b) where it's written
 ### 2. Map each stage's journey
 
 For each stage, write the precise path a human follows: which URL to open,
-what to do there, where the value is shown — e.g. "Dashboard → Developers →
+what to do there, where the value is shown, e.g. "Dashboard → Developers →
 API keys → Reveal test key → copy". Where you don't know the current UI or
-exact command, say so and check the docs or ask — never invent steps that
+exact command, say so and check the docs or ask, never invent steps that
 may not exist.
 
 ### 3. Author the wizard
@@ -72,12 +72,12 @@ order. Set `TOTAL_STAGES` to the number of stages you wrote.
 Library helpers: `stage`, `say`/`step`/`note`/`warn`, `open_url`,
 `ask`/`ask_secret`, `write_env`, `set_secret`/`set_var`, `pause`/`confirm`,
 `banner`, `finish`. The library above the `STAGES` marker is identical in
-every wizard — never hand-edit it; that consistency is the point.
+every wizard, never hand-edit it; that consistency is the point.
 
 Hold the bar the template sets: open the URL before asking for its value,
 `ask_secret` for anything secret, `write_env` every persisted value,
 `set_secret` only what CI actually needs, and `confirm` before anything
-irreversible. Each `stage` clears the screen — keep one focused task per
+irreversible. Each `stage` clears the screen, keep one focused task per
 stage so nothing the human needs scrolls away.
 
 A wizard is ephemeral by default: save it to a scratch or `scripts/` path,

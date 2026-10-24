@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-check_deps.py — Verify a ComfyUI workflow's dependencies (custom nodes, models,
+check_deps.py: Verify a ComfyUI workflow's dependencies (custom nodes, models,
 embeddings) against a running server.
 
 Improvements over v1:
   - Cloud-aware endpoint mapping (handles `/api/experiment/models/{folder}` and
     `/api/object_info` variants verified against live cloud API)
   - Distinguishes 200-empty (genuinely no models in folder) vs 404
-    (folder doesn't exist) vs 403 (auth/tier issue) — no silent passes
+    (folder doesn't exist) vs 403 (auth/tier issue): no silent passes
   - Outputs concrete remediation commands (e.g. `comfy node install <name>`)
     when nodes are missing
   - Detects embedding references inside prompt strings as model deps
@@ -112,7 +112,7 @@ NODE_TO_PACKAGE: dict[str, str] = {
     "WanVideoModelLoader": "ComfyUI-WanVideoWrapper",
 }
 
-# Nodes whose package isn't on the comfy registry — need git-URL install via
+# Nodes whose package isn't on the comfy registry: need git-URL install via
 # ComfyUI-Manager. We surface a helpful hint instead of an unrunnable command.
 NODE_TO_GIT_URL: dict[str, str] = {
     "HunyuanVideoSampler": "https://github.com/kijai/ComfyUI-HunyuanVideoWrapper",
@@ -163,7 +163,7 @@ def _fetch_one_folder(
             body = {"raw": body_text[:200]}
         code = body.get("code") if isinstance(body, dict) else None
         if code == "folder_not_found":
-            # Folder is genuinely empty/missing on server — not the same as
+            # Folder is genuinely empty/missing on server: not the same as
             # "endpoint missing". Return empty set with informational error.
             return set(), {"http_status": 404, "reason": "folder_empty_or_unknown", "body": body}
         return None, {"http_status": 404, "reason": "endpoint not found", "body": body}
@@ -320,7 +320,7 @@ def check_deps(
             )
         installed, err = model_cache[folder]
         if installed is None:
-            # Couldn't enumerate this folder — record once
+            # Couldn't enumerate this folder: record once
             folder_errors.setdefault(folder, err or {})
             # Don't flag as missing (we don't know); the folder_errors block surfaces this
             continue
@@ -341,7 +341,7 @@ def check_deps(
             continue
         seen_emb.add((nid, emb_name))
         if emb_installed is None:
-            # Couldn't enumerate — skip silently here, surface the error in the
+            # Couldn't enumerate: skip silently here, surface the error in the
             # folder_errors block
             continue
         if not model_present(emb_name, emb_installed):

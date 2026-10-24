@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * refscout.mjs — reference scouting: find live award-level sites, then take them apart.
+ * refscout.mjs: reference scouting: find live award-level sites, then take them apart.
  *
  * Usage:
  *   node scripts/refscout.mjs <url> [<url>...]        analyse specific sites
@@ -24,7 +24,7 @@ import { resolve, join } from 'path';
 
 const args = process.argv.slice(2);
 if (!args.length || args.includes('--help')) {
-  console.log(`refscout.mjs — scout live website references and fingerprint their mechanics
+  console.log(`refscout.mjs: scout live website references and fingerprint their mechanics
 
   node scripts/refscout.mjs <url> [<url>...]
   node scripts/refscout.mjs --from awwwards[:<tag>] [--search "<text>"] [--limit 6]
@@ -52,7 +52,7 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 /**
  * Award-level sites are heavy streaming-SSR / WebGL pages: 'load' and 'networkidle'
  * frequently never fire. Commit + a timed settle is the only navigation that survives them.
- * Returns false when DOMContentLoaded never fired — those pages need freeze() before capture.
+ * Returns false when DOMContentLoaded never fired: those pages need freeze() before capture.
  */
 async function open(page, url, settle = 7000, onStatus) {
   const resp = await page.goto(url, { waitUntil: 'commit', timeout: 30_000 });
@@ -65,7 +65,7 @@ async function open(page, url, settle = 7000, onStatus) {
 /**
  * A page whose HTML stream never closes never yields a compositor frame either, so every
  * screenshot on it times out (measured on basement.studio and lusion.co). `window.stop()`
- * ends the stream and capture drops to ~40ms. Call it only AFTER the settle wait — stopping
+ * ends the stream and capture drops to ~40ms. Call it only AFTER the settle wait: stopping
  * early aborts the CSS/JS the fingerprint needs and leaves you reading Times-New-Roman
  * defaults off a half-loaded page.
  */
@@ -177,7 +177,7 @@ async function fingerprint(ctx, url) {
         const hex = toHex(c);
         return hex && !/^(#|rgb)/.test(c) ? `${hex} (${c}) ×${n}` : `${hex || c} ×${n}`;
       });
-      // The display face is the biggest thing actually painted, not the first h1 — a hidden or
+      // The display face is the biggest thing actually painted, not the first h1: a hidden or
       // fallback-styled heading reports whatever the CSS cascade left there and will happily
       // claim an awwwards winner ships Inter. Measure instead: largest visible rendered text.
       let display = null, bestPx = 0;
@@ -233,8 +233,8 @@ async function fingerprint(ctx, url) {
     const f = { url, ...dom, libs, jsBytes, scrollRatio: +(dom.scrollH / Math.max(dom.vh, 1)).toFixed(1) };
     f.mechanics = classifyPeak(f);
     // Some sites (Vercel-edge streamers, bot-walled studios) hand a headless client the SSR
-    // HTML and then never deliver CSS or JS. Everything we'd read off that page — fonts,
-    // palette, libs — is browser default, i.e. a confident lie. Detect it and say so.
+    // HTML and then never deliver CSS or JS. Everything we'd read off that page: fonts,
+    // palette, libs: is browser default, i.e. a confident lie. Detect it and say so.
     // Chrome's unstyled body is Times New Roman with zero web fonts loaded; a real site that
     // merely leaves body at the default still has @font-face rules from its stylesheet.
     const unstyled = /^"?Times New Roman/.test(dom.bodyFont) && !dom.fontFaces.length;
@@ -279,7 +279,7 @@ async function fingerprint(ctx, url) {
 // --- gallery harvesting -------------------------------------------------------
 // awwwards is the one gallery whose listing AND detail pages both render reliably headless
 // and expose the outbound site URL. Other galleries either need JS we can't wait out or bury
-// the real URL behind affiliate redirects — for those, find URLs with web_search and pass them
+// the real URL behind affiliate redirects: for those, find URLs with web_search and pass them
 // positionally.
 async function harvestAwwwards(ctx, tag, text, n) {
   const page = await ctx.newPage();
@@ -322,7 +322,7 @@ let targets = urls.map(u => ({ site: u, name: null, via: 'direct' }));
 if (from) {
   const [gallery, tag] = from.split(':');
   if (gallery === 'awwwards') targets = targets.concat(await harvestAwwwards(ctx, tag, search, limit));
-  else console.error(`[refscout] unknown gallery "${gallery}" — supported: awwwards. Pass URLs directly instead (find them with web_search).`);
+  else console.error(`[refscout] unknown gallery "${gallery}": supported: awwwards. Pass URLs directly instead (find them with web_search).`);
 }
 targets = targets.slice(0, limit);
 
@@ -343,7 +343,7 @@ await browser.close();
 // --- report -------------------------------------------------------------------
 const ok = results.filter(r => !r.error);
 const lines = [];
-lines.push('# REFERENCES — scouted ' + new Date().toISOString().slice(0, 10));
+lines.push('# REFERENCES: scouted ' + new Date().toISOString().slice(0, 10));
 lines.push('');
 lines.push('Mechanics, not skins. For each reference name the ONE idea you are taking and how it');
 lines.push('changes for this brand. Copying a reference wholesale is slop with better taste.');
@@ -351,8 +351,8 @@ lines.push('');
 lines.push('| # | site | stack detected | page shape | mechanics |');
 lines.push('|---|---|---|---|---|');
 ok.forEach((r, i) => {
-  const cell = r.errorPage ? '_error page — not a design_' : r.thin ? '_no capture — see below_' : null;
-  lines.push(`| ${i + 1} | [${r.name || r.url.replace(/^https?:\/\//, '')}](${r.url}) | ${cell ?? (r.libs.slice(0, 4).join(', ') || '—')} | ${cell ?? `${r.scrollRatio}× vh, ${r.sections} sections`} | ${cell ?? (r.mechanics.slice(0, 3).join('; ') || '—')} |`);
+  const cell = r.errorPage ? '_error page: not a design_' : r.thin ? '_no capture: see below_' : null;
+  lines.push(`| ${i + 1} | [${r.name || r.url.replace(/^https?:\/\//, '')}](${r.url}) | ${cell ?? (r.libs.slice(0, 4).join(', ') || ', ')} | ${cell ?? `${r.scrollRatio}× vh, ${r.sections} sections`} | ${cell ?? (r.mechanics.slice(0, 3).join('; ') || ', ')} |`);
 });
 lines.push('');
 
@@ -360,31 +360,31 @@ ok.forEach((r, i) => {
   lines.push(`## ${i + 1}. ${r.name || r.title || r.url}`);
   lines.push(`- url: ${r.url}${r.via && r.via !== 'direct' ? `  ·  via ${r.via}` : ''}`);
   if (r.errorPage) {
-    lines.push(`- ⚠ **NOT A DESIGN** — this URL returned an error page${r.httpStatus >= 400 ? ` (HTTP ${r.httpStatus})` : ''}, title "${r.title}". Nothing here is a reference. Drop it, or find the site's real address.`);
+    lines.push(`- ⚠ **NOT A DESIGN**: this URL returned an error page${r.httpStatus >= 400 ? ` (HTTP ${r.httpStatus})` : ''}, title "${r.title}". Nothing here is a reference. Drop it, or find the site's real address.`);
     lines.push('');
     return;
   }
   if (r.thin) {
-    lines.push(`- ⚠ **NO CAPTURE** — this site served the headless browser bare HTML and never delivered its CSS/JS (${r.sheets} stylesheets, readyState \`${r.readyState}\`). Any font, colour or stack reading here would be the browser's defaults, so none is reported. Open the URL yourself, or describe it from the gallery write-up — and check the page title above, a dead link from the gallery lands here too.`);
+    lines.push(`- ⚠ **NO CAPTURE**: this site served the headless browser bare HTML and never delivered its CSS/JS (${r.sheets} stylesheets, readyState \`${r.readyState}\`). Any font, colour or stack reading here would be the browser's defaults, so none is reported. Open the URL yourself, or describe it from the gallery write-up: and check the page title above, a dead link from the gallery lands here too.`);
     if (r.shots.length) lines.push(`- unstyled shots (evidence that the capture failed, not a look at the design): ${r.shots.map(s => `\`${s}\``).join(' ')}`);
     lines.push('');
     return;
   }
   lines.push(`- stack: ${r.libs.join(', ') || 'nothing detected'}${r.framework !== 'unknown' ? `  ·  built with ${r.framework}` : ''}`);
-  lines.push(`- mechanics: ${r.mechanics.join('; ') || '—'}`);
+  lines.push(`- mechanics: ${r.mechanics.join('; ') || ', '}`);
   lines.push(`- page: ${r.scrollRatio}× viewport tall · ${r.sections} sections · ${r.canvases} canvas${r.webgl ? ' (WebGL live)' : ''} · ${r.videos.length} video`);
   lines.push(`- type: display \`${r.display ? `${r.display.font} ${r.display.px}px/${r.display.weight}` : '?'}\`${r.display ? ` (largest painted text: "${r.display.sample}")` : ''} · body \`${r.bodyFont}\`${r.fontFaces.length ? ` · @font-face: ${r.fontFaces.join(', ')}` : ''}`);
   lines.push(`- palette (most painted): ${r.palette.join(' · ')}`);
   if (r.shots.length) lines.push(`- shots: ${r.shots.map(s => `\`${s}\``).join(' ')}  ← look at the hero; look at the rest only if you take a steal from this one`);
-  if (r.shotErrors?.length) lines.push(`- ⚠ ${r.shotErrors.length} of ${r.shotsWanted} shots failed (${r.shotErrors.join('; ')}) — the fingerprint above still holds.`);
-  lines.push('- **steal:** _<one mechanic, one line — fill this in>_');
+  if (r.shotErrors?.length) lines.push(`- ⚠ ${r.shotErrors.length} of ${r.shotsWanted} shots failed (${r.shotErrors.join('; ')}): the fingerprint above still holds.`);
+  lines.push('- **steal:** _<one mechanic, one line: fill this in>_');
   lines.push('');
 });
 
 const failed = results.filter(r => r.error);
 if (failed.length) {
   lines.push('## Not reached');
-  failed.forEach(r => lines.push(`- ${r.url} — ${r.error}`));
+  failed.forEach(r => lines.push(`- ${r.url}: ${r.error}`));
   lines.push('');
 }
 
@@ -393,10 +393,10 @@ await writeFile(join(outDir, 'refs.json'), JSON.stringify(results, null, 2), 'ut
 
 console.log(`\n=== refscout ===`);
 console.log(`profiled : ${ok.filter(r => !r.thin).length}/${results.length} usable`);
-if (ok.some(r => r.thin)) console.log(`no-css   : ${ok.filter(r => r.thin).length} (site withheld CSS/JS from headless — reported as unknown, not guessed)`);
-if (failed.length) console.log(`failed   : ${failed.length} — ${failed.map(r => r.url).join(', ')}`);
+if (ok.some(r => r.thin)) console.log(`no-css   : ${ok.filter(r => r.thin).length} (site withheld CSS/JS from headless: reported as unknown, not guessed)`);
+if (failed.length) console.log(`failed   : ${failed.length}: ${failed.map(r => r.url).join(', ')}`);
 const lostShots = ok.reduce((n, r) => n + (r.shotErrors?.length || 0), 0);
-if (lostShots) console.log(`shots    : ${lostShots} capture(s) failed — flagged per site in the report`);
+if (lostShots) console.log(`shots    : ${lostShots} capture(s) failed: flagged per site in the report`);
 console.log(`report   : ${join(outDir, 'REFERENCES.md')}`);
 console.log(`shots    : ${ok.reduce((n, r) => n + r.shots.length, 0)} in ${join(outDir, 'shots')}`);
 process.exit(ok.length ? 0 : 1);

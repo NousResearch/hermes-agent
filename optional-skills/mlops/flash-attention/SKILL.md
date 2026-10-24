@@ -232,7 +232,7 @@ print(f"Memory allocated: {torch.cuda.max_memory_allocated()/1e9:.2f}GB")
 
 For maximum performance on Hopper GPUs (H100).
 
-> **Important:** The pip package `flash-attn` (2.8.x) ships **FlashAttention-2 only** — it does
+> **Important:** The pip package `flash-attn` (2.8.x) ships **FlashAttention-2 only**: it does
 > **not** contain FA3 or FP8 H100 kernels, and `flash_attn_func` does **not** auto-use FP8.
 > FlashAttention-3 is a separate **beta** build compiled from source from the repo's `hopper/`
 > directory, exposed via the `flash_attn_interface` module. FA3 supports FP16/BF16 forward+backward

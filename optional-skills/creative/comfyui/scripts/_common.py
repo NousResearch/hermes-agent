@@ -1,5 +1,5 @@
 """
-_common.py — Shared logic for ComfyUI skill scripts.
+_common.py: Shared logic for ComfyUI skill scripts.
 
 Single source of truth for:
 - HTTP transport (with retry/backoff, streaming, timeout handling)
@@ -45,10 +45,10 @@ DEFAULT_CLOUD_HOST = "https://cloud.comfy.org"
 ENV_API_KEY = "COMFY_CLOUD_API_KEY"  # env var NAME (placeholder, not a secret value)
 
 # Connection / retry defaults
-DEFAULT_HTTP_TIMEOUT = 60          # seconds — single-attempt request timeout
+DEFAULT_HTTP_TIMEOUT = 60          # seconds: single-attempt request timeout
 DEFAULT_RETRIES = 3                # total attempts including the first
-RETRY_BASE_DELAY = 1.0             # seconds — exponential backoff base
-RETRY_MAX_DELAY = 30.0             # seconds — cap on backoff
+RETRY_BASE_DELAY = 1.0             # seconds: exponential backoff base
+RETRY_MAX_DELAY = 30.0             # seconds: cap on backoff
 RETRY_STATUS_CODES = {408, 429, 500, 502, 503, 504, 522, 524}
 
 # Streaming download chunk size (bytes)
@@ -64,7 +64,7 @@ SLOW_OUTPUT_NODES = {
 }
 
 # ---------------------------------------------------------------------------
-# Output node catalog (extensible — community packs add their own)
+# Output node catalog (extensible: community packs add their own)
 # ---------------------------------------------------------------------------
 OUTPUT_NODES: set[str] = {
     # Built-in
@@ -85,7 +85,7 @@ OUTPUT_NODES: set[str] = {
 }
 
 # ---------------------------------------------------------------------------
-# Folder aliases — handle ComfyUI's gradual folder renames
+# Folder aliases: handle ComfyUI's gradual folder renames
 # ---------------------------------------------------------------------------
 # When `check_deps.py` queries `/models/<folder>` and gets 404 / empty,
 # it tries each alias in turn. Critical for Comfy Cloud which has fully
@@ -144,7 +144,7 @@ MODEL_LOADERS: dict[str, list[tuple[str, str]]] = {
     "HypernetworkLoader":       [("hypernetwork_name", "hypernetworks")],
     # IPAdapter family (community).
     # Note: IPAdapterUnifiedLoader's `preset` and IPAdapterInsightFaceLoader's
-    # `provider` are enums (not file paths), so they're intentionally omitted —
+    # `provider` are enums (not file paths), so they're intentionally omitted: 
     # check_deps would otherwise treat enum values as missing model files.
     "IPAdapterModelLoader":     [("ipadapter_file", "ipadapter")],
     "InstantIDModelLoader":     [("instantid_file", "instantid")],
@@ -160,7 +160,7 @@ MODEL_LOADERS: dict[str, list[tuple[str, str]]] = {
 
 # ---------------------------------------------------------------------------
 # Param patterns: (class_type, field_name) -> friendly_name
-# Order matters — first match wins for naming. Use _meta.title for disambiguation.
+# Order matters: first match wins for naming. Use _meta.title for disambiguation.
 # ---------------------------------------------------------------------------
 PARAM_PATTERNS: list[tuple[str, str, str]] = [
     # ---- Prompts ----
@@ -209,7 +209,7 @@ PARAM_PATTERNS: list[tuple[str, str, str]] = [
     ("SDTurboScheduler", "denoise", "denoise"),
     ("SamplerCustom", "noise_seed", "seed"),
     ("SamplerCustom", "cfg", "cfg"),
-    # NB: SamplerCustomAdvanced takes a NOISE input (from RandomNoise) — no seed field directly.
+    # NB: SamplerCustomAdvanced takes a NOISE input (from RandomNoise): no seed field directly.
 
     # ---- Dimensions / latent ----
     ("EmptyLatentImage", "width", "width"),
@@ -455,7 +455,7 @@ def http_request(
     headers.setdefault("User-Agent", "hermes-comfyui-skill/5.0")
 
     if files or form is not None:
-        # Multipart upload — needs `requests`. The stdlib fallback lacks
+        # Multipart upload: needs `requests`. The stdlib fallback lacks
         # multipart encoding helpers; raise a clear error.
         if not HAS_REQUESTS:
             raise RuntimeError(
@@ -499,7 +499,7 @@ if HAS_REQUESTS:
         `requests` already strips `Authorization` cross-host (rebuild_auth),
         but it does NOT strip custom headers like `X-API-Key`. We override
         `rebuild_auth` to additionally strip every header in
-        `_SENSITIVE_HEADERS` when the destination is a different host —
+        `_SENSITIVE_HEADERS` when the destination is a different host: 
         critical when ComfyUI Cloud's `/api/view` redirects to a signed S3 URL.
         """
 

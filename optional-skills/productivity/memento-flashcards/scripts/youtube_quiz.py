@@ -2,7 +2,7 @@
 """Fetch YouTube transcripts for Memento quiz generation.
 
 Requires the isolated PM helper environment described in memento-flashcards/SKILL.md.
-The quiz question *generation* is done by the agent's LLM — this script only fetches transcripts.
+The quiz question *generation* is done by the agent's LLM: this script only fetches transcripts.
 """
 
 import argparse

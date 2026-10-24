@@ -182,7 +182,7 @@ print(f"L0 (avg active features): {trainer.metrics['l0']}")
 print(f"CE Loss Recovered: {trainer.metrics['ce_loss_score']}")
 ```
 
-> **v6 migration note:** For other SAE types swap the `sae=` sub-config —
+> **v6 migration note:** For other SAE types swap the `sae=` sub-config,
 > `GatedTrainingSAEConfig`, `TopKTrainingSAEConfig` (set `k` directly), or
 > `JumpReLUTrainingSAEConfig` (uses `l0_coefficient`). Legacy flat options
 > (`architecture`, `expansion_factor`, `hook_layer`, `activation_fn`/`activation_fn_kwargs`,
@@ -415,7 +415,7 @@ For detailed API documentation, tutorials, and advanced usage, see the `referenc
 ```python
 from sae_lens import LanguageModelSAERunnerConfig, TopKTrainingSAEConfig
 
-# TopK SAE (exactly 50 features active) — `k` is set on the SAE sub-config in v6
+# TopK SAE (exactly 50 features active): `k` is set on the SAE sub-config in v6
 cfg = LanguageModelSAERunnerConfig(
     sae=TopKTrainingSAEConfig(d_in=768, d_sae=768*8, k=50),
 )

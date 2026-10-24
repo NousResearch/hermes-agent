@@ -119,7 +119,7 @@ Wide horizontal bar at bottom showing retirement:
 ```xml
 <g class="c-pink">
   <rect x="40" y="670" width="530" height="40" rx="10" stroke-width="0.5"/>
-  <text class="th" x="305" y="694" text-anchor="middle" dominant-baseline="central">Reorder buffer (ROB) — 512 entries, 8-wide retire</text>
+  <text class="th" x="305" y="694" text-anchor="middle" dominant-baseline="central">Reorder buffer (ROB): 512 entries, 8-wide retire</text>
 </g>
 ```
 

@@ -37,7 +37,7 @@ used in OSS forensic investigations.
 | `BRANCH_NAME` | A suspicious branch | `refs/heads/temp-fix-do-not-merge` |
 | `TAG_NAME` | A suspicious git tag | `v1.0.0-security-patch` |
 | `RELEASE_NAME` | A suspicious release | Release with no associated tag or changelog |
-| `OTHER` | Catch-all for unclassified IOCs | — |
+| `OTHER` | Catch-all for unclassified IOCs |: |
 
 ---
 
@@ -52,7 +52,7 @@ used in OSS forensic investigations.
 | `WatchEvent` | Star-farming campaigns (coordinated starring from new accounts) |
 | `ForkEvent` | Unusual fork patterns before malicious commit |
 | `CreateEvent` | Branch/tag creation: signals new release or code injection point |
-| `DeleteEvent` | Branch/tag deletion: critical — often used to hide traces |
+| `DeleteEvent` | Branch/tag deletion: critical, often used to hide traces|
 | `ReleaseEvent` | Unauthorized releases, release artifacts modified post-publish |
 | `MemberEvent` | Collaborator added/removed: maintainer compromise indicator |
 | `PublicEvent` | Repository made public (sometimes to drop malicious code briefly) |

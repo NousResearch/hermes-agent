@@ -240,7 +240,7 @@ docker network prune                   # unused networks
 # Aggressive cleanup (confirm with user first!)
 docker system prune                    # containers + images + networks
 docker system prune -a                 # also unused images
-docker system prune -a --volumes       # EVERYTHING — named volumes too
+docker system prune -a --volumes       # EVERYTHING: named volumes too
 ```
 
 **Warning:** Never run `docker system prune -a --volumes` without confirming with the user. This removes named volumes with potentially important data.
@@ -273,10 +273,10 @@ After any Docker operation, verify the result:
 
 When reviewing or creating a Dockerfile, suggest these improvements:
 
-1. **Multi-stage builds** — separate build environment from runtime to reduce final image size
-2. **Layer ordering** — put dependencies before source code so changes don't invalidate cached layers
-3. **Combine RUN commands** — fewer layers, smaller image
-4. **Use .dockerignore** — exclude `node_modules`, `.git`, `__pycache__`, etc.
-5. **Pin base image versions** — `node:20-alpine` not `node:latest`
-6. **Run as non-root** — add `USER` instruction for security
-7. **Use slim/alpine bases** — `python:3.12-slim` not `python:3.12`
+1. **Multi-stage builds**: separate build environment from runtime to reduce final image size
+2. **Layer ordering**: put dependencies before source code so changes don't invalidate cached layers
+3. **Combine RUN commands**: fewer layers, smaller image
+4. **Use .dockerignore**: exclude `node_modules`, `.git`, `__pycache__`: etc.
+5. **Pin base image versions**: `node:20-alpine` not `node:latest`
+6. **Run as non-root**: add `USER` instruction for security
+7. **Use slim/alpine bases**: `python:3.12-slim` not `python:3.12`

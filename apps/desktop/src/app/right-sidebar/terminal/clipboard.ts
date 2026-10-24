@@ -14,6 +14,67 @@
 
 export type TerminalClipboardIntent = 'copy' | 'paste' | null
 
+interface Osc52Terminal {
+  parser: {
+    registerOscHandler(identifier: number, handler: (data: string) => boolean): { dispose(): void }
+  }
+}
+
+// Anything a program prints can carry OSC 52, so writes are bounded: only while
+// the window is focused, at most one per interval (a burst keeps the first), and
+// no larger than a generous copy. Oversized payloads are refused before decoding.
+export const OSC52_MAX_TEXT_BYTES = 1024 * 1024
+export const OSC52_MIN_INTERVAL_MS = 250
+const OSC52_MAX_PAYLOAD_CHARS = Math.ceil(OSC52_MAX_TEXT_BYTES / 3) * 4
+
+interface Osc52Options {
+  isFocused?: () => boolean
+  now?: () => number
+}
+
+// Support only OSC 52 writes to the system clipboard. Reads would let terminal
+// output retrieve private clipboard contents; empty payloads are clear requests.
+export function installOsc52ClipboardHandler(
+  terminal: Osc52Terminal,
+  writeClipboardText: (text: string) => Promise<unknown>,
+  { isFocused = () => document.hasFocus(), now = () => Date.now() }: Osc52Options = {}
+) {
+  let lastWriteAt = Number.NEGATIVE_INFINITY
+
+  return terminal.parser.registerOscHandler(52, data => {
+    const separator = data.indexOf(';')
+
+    if (separator < 0 || data.slice(0, separator) !== 'c') {
+      return false
+    }
+
+    const payload = data.slice(separator + 1)
+
+    if (!payload || payload === '?' || payload.length > OSC52_MAX_PAYLOAD_CHARS) {
+      return false
+    }
+
+    if (!isFocused() || now() - lastWriteAt < OSC52_MIN_INTERVAL_MS) {
+      return false
+    }
+
+    try {
+      const binary = atob(payload)
+      const bytes = Uint8Array.from(binary, character => character.charCodeAt(0))
+      const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+
+      lastWriteAt = now()
+      void writeClipboardText(text).catch(() => {
+        // Clipboard access may be denied by the platform or user settings.
+      })
+
+      return true
+    } catch {
+      return false
+    }
+  })
+}
+
 export function terminalClipboardIntent(
   event: KeyboardEvent,
   { hasSelection, isMac }: { hasSelection: boolean; isMac: boolean }

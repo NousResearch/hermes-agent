@@ -149,3 +149,33 @@ def test_value_complaint_never_strips_reasoning_content_from_a_must_echo_route()
                  "Extra inputs are not permitted, field: 'messages[1].reasoning_content'"):
         assert record_reasoning_field_rejection(agent, body, sent) == frozenset()
     assert agent._reasoning_rejecting_routes == {}
+
+
+def test_not_supported_rejection_strips_the_bare_key_keeps_the_alias(tmp_path):
+    """A strict custom endpoint phrasing the schema complaint as "reasoning is not supported."
+    (#140312) names the message path in ``param``; the phrase gate must count that wording so
+    the single-retry strip fires — and it drops only ``reasoning``, the alias stays."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="cli", model="ultramarine-1-flash")
+    lane = SimpleNamespace(
+        provider="custom", model="ultramarine-1-flash", base_url="https://api.paperinstruments.com/v1",
+        api_mode="chat_completions", _force_ascii_payload=False, _image_rejecting_models=set(),
+        log_prefix="", _vprint=lambda *a, **k: None, session_id="s1", _session_db=db,
+    )
+    sent = [{"role": "user", "content": "hi"}, _wire("custom", lane.base_url, model=lane.model)[0]]
+    body = str({"error": {"type": "invalid_request_error", "code": "invalid_value",
+                          "message": "reasoning is not supported.", "param": "messages[2].reasoning"}})
+
+    assert _recover(lane, body, sent) is True
+    rejected = lane._reasoning_rejecting_routes[("custom", "api.paperinstruments.com", "ultramarine-1-flash")]
+    assert rejected == {"reasoning"}
+    # The retry keeps the alias that schema accepts (200 with reasoning_content, 400 without).
+    route = reasoning_replay_route("chat_completions", "custom", lane.model, lane.base_url, rejected=rejected)
+    reapply_reasoning_echo(sent, route.pad, route.carriers)
+    assert sent[1]["reasoning_content"] == "thought"
+    assert "reasoning" not in sent[1]
+    # The complaint names the message path, so the wording alone never fires without it.
+    assert _recover(lane, "reasoning is not supported on this model",
+                    [{"role": "assistant", "content": "x"}]) is False

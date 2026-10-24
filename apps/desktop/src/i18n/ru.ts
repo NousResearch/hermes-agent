@@ -16,6 +16,7 @@ import { ruOnboarding } from './ru_onboarding'
 import { ruPluginPreviewAccess } from './ru_plugin_preview_access'
 import { ruPluginSettings, ruPluginsTab } from './ru_plugins'
 import { ruProjects } from './ru_projects'
+import { ruSettingsNav, ruSettingsPage } from './ru_settings_nav'
 import { ruSharedMetrics } from './ru_shared_metrics'
 import { ruThemePicker } from './ru_theme_picker'
 import { ruUpdateChannel } from './ru_update_channel'
@@ -438,24 +439,8 @@ export const ruOverrides = {
     exportFailed: 'Не удалось экспортировать',
     resetFailed: 'Не удалось сбросить',
     pluginPages: ruPluginSettings.pluginPages,
-    nav: {
-      providers: 'Провайдеры',
-      providerAccounts: 'Аккаунты',
-      providerApiKeys: 'API-ключи',
-      providerCustomEndpoints: 'Свои эндпоинты',
-      gateway: 'Шлюзы',
-      apiKeys: 'Инструменты и ключи',
-      keybinds: 'Горячие клавиши',
-      keysTools: 'Инструменты',
-      keysSettings: 'Настройки',
-      mcp: 'MCP',
-      archivedChats: 'Архив чатов',
-      sessions: 'Сеансы',
-      about: 'О программе',
-      billing: 'Оплата',
-      notifications: 'Уведомления',
-      plugins: 'Плагины'
-    },
+    nav: ruSettingsNav,
+    page: ruSettingsPage,
     plugins: ruPluginSettings.plugins,
     notifications: ruNotifications,
     sections: {

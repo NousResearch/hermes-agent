@@ -18,6 +18,7 @@ export const OVERLAY_TOP_CLEARANCE = 'pt-[calc(var(--titlebar-height)/2-0.4375re
 
 interface OverlayViewProps {
   children: ReactNode
+  presentation?: 'overlay' | 'page'
   onClose: () => void
   closeLabel?: string
   contentClassName?: string
@@ -35,6 +36,7 @@ interface OverlayViewProps {
 export function OverlayView({
   children,
   onClose,
+  presentation = 'overlay',
   closeLabel = translateNow('common.close'),
   contentClassName,
   edgeBadge,
@@ -74,13 +76,14 @@ export function OverlayView({
   return (
     <div
       className={cn(
-        'fixed inset-0 z-50 bg-black/22 backdrop-blur-[0.125rem]',
+        'fixed inset-0 z-50',
+        presentation === 'page' ? 'bg-(--ui-bg-chrome) pt-(--titlebar-height)' : 'bg-black/22 backdrop-blur-[0.125rem]',
         // Equidistant inset on every side. The top value is driven by the
         // titlebar height so the card clears the OS traffic-lights vertically;
         // since the card top already sits below them, the left needs no extra
         // inset — keeping all sides equal so the card is ~full-width at any size.
-        'p-[calc(var(--titlebar-height)+0.625rem)]',
-        'sm:p-[calc(var(--titlebar-height)+0.875rem)]'
+        presentation === 'overlay' &&
+          'p-[calc(var(--titlebar-height)+0.625rem)] sm:p-[calc(var(--titlebar-height)+0.875rem)]'
       )}
       // Every OverlayView-based overlay (settings, command-center, agents, cron,
       // profiles, star map, …) covers the chat while the composer stays mounted
@@ -100,12 +103,18 @@ export function OverlayView({
       // below its in-flow title bar), and CSS vars inherit through the DOM —
       // so a fixed overlay mounted inside a zone would read 0 and bleed to
       // the edges. Re-pin the real height at the overlay root.
-      style={{ '--titlebar-height': `${TITLEBAR_HEIGHT}px` } as CSSProperties}
+      style={
+        {
+          '--titlebar-height': `${TITLEBAR_HEIGHT}px`,
+          ...(presentation === 'page' ? { '--overlay-close-space': '45vw' } : {})
+        } as CSSProperties
+      }
     >
       <div className="relative h-full min-h-0">
         <div
           className={cn(
-            'relative flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-surface-background) shadow-md',
+            'relative flex h-full min-h-0 flex-col overflow-hidden bg-(--ui-chat-surface-background)',
+            presentation === 'overlay' && 'rounded-xl border border-(--ui-stroke-secondary) shadow-md',
             rootClassName
           )}
           // Marks the card as a RAISED surface for window glass: while the field
@@ -120,17 +129,32 @@ export function OverlayView({
               </div>
             )}
 
-            <div className="pointer-events-auto absolute right-[var(--titlebar-tools-right,0.75rem)] top-[calc(0.1875rem+var(--titlebar-height)/2)] flex -translate-y-1/2 items-center gap-1.5 [-webkit-app-region:no-drag]">
+            <div
+              className={cn(
+                'pointer-events-auto absolute top-[calc(0.1875rem+var(--titlebar-height)/2)] flex -translate-y-1/2 items-center gap-1.5 [-webkit-app-region:no-drag]',
+                presentation === 'page' ? 'left-3' : 'right-[var(--titlebar-tools-right,0.75rem)]'
+              )}
+            >
               {titlebarActions}
 
               <Button
                 aria-label={closeLabel}
-                className="text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+                className={cn(
+                  'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground',
+                  presentation === 'page' && 'max-w-[45vw] text-foreground'
+                )}
                 onClick={closeOverlay}
-                size="icon-titlebar"
+                size={presentation === 'page' ? 'sm' : 'icon-titlebar'}
                 variant="ghost"
               >
-                <TitlebarIcon name="close" />
+                {presentation === 'page' ? (
+                  <>
+                    <TitlebarIcon name="arrow-left" />
+                    <span className="truncate">{closeLabel}</span>
+                  </>
+                ) : (
+                  <TitlebarIcon name="close" />
+                )}
               </Button>
             </div>
           </div>
@@ -144,7 +168,16 @@ export function OverlayView({
         {/* Sibling of the card, not a child: the card clips its own overflow
             (rounded corners), and the badge deliberately straddles the top
             border — half above, half below. */}
-        {edgeBadge && <div className="absolute left-1/2 top-0 z-20 -translate-x-1/2 -translate-y-1/2">{edgeBadge}</div>}
+        {edgeBadge && (
+          <div
+            className={cn(
+              'absolute left-1/2 z-20 -translate-x-1/2 -translate-y-1/2',
+              presentation === 'page' ? '-top-[calc(var(--titlebar-height)/2)] [-webkit-app-region:no-drag]' : 'top-0'
+            )}
+          >
+            {edgeBadge}
+          </div>
+        )}
       </div>
     </div>
   )

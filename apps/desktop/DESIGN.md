@@ -51,8 +51,9 @@ one-off at the call site.
   remain in shell chrome. Do not hide a distinct product noun inside an
   unrelated page.
 - **Route overlays are short tasks.** Settings, Command Center, Cron, Profiles,
-  Agents, and Starmap render as `OverlayView` cards and return to the previous
-  route on close. Model/session pickers and dialogs layer above the current
+  Agents, and Starmap render through `OverlayView` and return to the previous
+  route on close. Simple Settings fills the workspace; other overlays retain
+  their floating cards. Model/session pickers and dialogs layer above the current
   surface; they are not navigation stacks.
 - **Panes are working context.** Preview, files, review, and terminal remain
   attached to the current task. Their state survives temporary hiding and chat
@@ -275,6 +276,15 @@ blurred backdrop.
 - **Master/detail overlays:** `OverlaySplitLayout` + `OverlaySidebar` /
   `OverlayMain`. Cron, profiles, etc. ride this — don't rebuild a titlebar
   shell.
+- **Settings presentation:** `OverlayView` defaults to its floating overlay.
+  Its `presentation="page"` fills the workspace below native window controls,
+  uses an opaque chrome background, retains overlay keyboard ownership, and
+  gives its close action a visible return label. Narrow navigation reserves
+  space for that label instead of the floating overlay’s icon. Simple Settings
+  uses this presentation; Advanced keeps the floating card. Import, export,
+  and reset actions share a menu in Simple mode, and navigation is grouped under
+  Agent, Connections and App with Capabilities as a page. The underlying chat
+  and its draft stay mounted.
 - **Settings subpages:** `OverlayNav` keeps navigation and disclosure separate:
   labels navigate; the shared `DisclosureCaret` button opens a branch without
   changing the page. Active paths reveal automatically, inactive paths stay
@@ -286,6 +296,8 @@ blurred backdrop.
   counts under breadcrumb-owned chrome; embedded callers keep their headings.
   Narrow windows keep every destination available in the shared navigation dropdown.
   Search and saved field links resolve to the owning child before highlighting.
+- **Navigation dropdowns:** `TabDropdown` constrains its trigger to the available
+  width and truncates its visible label; its menu retains full destination labels.
 - **Rows:** `ListRow` (settings `primitives.tsx`) for label/description/action
   rows. Flat, flush-left; no per-row indentation that fights flush headers.
 - **No dividers between rows** unless the list genuinely needs them; prefer

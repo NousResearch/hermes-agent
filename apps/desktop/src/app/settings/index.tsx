@@ -4,7 +4,6 @@ import { Navigate, useLocation, useNavigate } from 'react-router'
 
 import { codiconIcon } from '@/components/ui/codicon'
 import { KbdCombo } from '@/components/ui/kbd'
-import { Tip } from '@/components/ui/tooltip'
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -13,16 +12,13 @@ import {
   BarChart3,
   Bell,
   Cpu,
-  Download,
   Globe,
   Info,
   Keyboard,
   KeyRound,
-  RefreshCw,
   Search,
   Settings2,
   ShieldLock,
-  Upload,
   Wrench,
   Zap
 } from '@/lib/icons'
@@ -33,13 +29,13 @@ import { $commandPaletteOpen, openCommandPalettePage } from '@/store/command-pal
 import { confirm } from '@/store/confirm'
 import { $activeConnectionId } from '@/store/connections'
 import { recordFeatureUse, settingsArea } from '@/store/desktop-metrics'
+import { $interfaceMode } from '@/store/interface-mode'
 import { bindingsFor } from '@/store/keybinds'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notifyError } from '@/store/notifications'
 import { $settingsScopeProfile } from '@/store/settings-scope'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
-import { OverlayIconButton } from '../overlays/overlay-chrome'
 import { OverlayMain, OverlayNav, type OverlayNavGroup, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
 
@@ -64,6 +60,8 @@ import {
 import { SettingsBreadcrumbContext } from './primitives'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
+import { CapabilitiesSettings, SettingsNavFooter } from './simple-settings'
+import { groupSimpleSettings } from './simple-settings-nav'
 import { SettingsSubpageHeader } from './subpage-navigation'
 import { resolveSettingsSubpage, settingsSubpageIcon, settingsSubpages } from './subpages'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
@@ -72,6 +70,7 @@ import { vaultOwnerKey, VaultSettings } from './vault-settings'
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
   'providers',
+  'capabilities',
   'gateway',
   // Legacy alias: the Connections page merged into Gateways. Kept in the enum
   // so saved `?tab=connections` deep links still resolve (redirected below).
@@ -90,6 +89,7 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
 const SUBPAGE_VIEWS: Partial<Record<SettingsViewId, ComponentType<{ subpage?: string }>>> = {
   'config:appearance': AppearanceSettings,
   about: AboutSettings,
+  capabilities: CapabilitiesSettings,
   // 'connections' renders the unified page too so the frame before the alias
   // redirect lands doesn't flash the fallback view.
   connections: GatewaySettings,
@@ -100,6 +100,7 @@ const SUBPAGE_VIEWS: Partial<Record<SettingsViewId, ComponentType<{ subpage?: st
 
 export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
   const scopeProfile = useStore($settingsScopeProfile)
+  const simple = useStore($interfaceMode) === 'simple'
   const activeConnectionId = useStore($activeConnectionId)
   const { t } = useI18n()
   const navigate = useNavigate()
@@ -245,6 +246,17 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     () =>
       (
         [
+          ...(simple || activeView === 'capabilities'
+            ? [
+                {
+                  active: activeView === 'capabilities',
+                  icon: Wrench,
+                  id: 'capabilities',
+                  label: t.sidebar.nav.capabilities,
+                  onSelect: () => setActiveView('capabilities')
+                }
+              ]
+            : []),
           ...SECTIONS.flatMap(s => {
             const view = `config:${s.id}` as SettingsViewId
 
@@ -436,6 +448,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       activeView,
       billingView,
       canViewPlans,
+      simple,
       keysView,
       plugins,
       providerView,
@@ -449,7 +462,8 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     ]
   )
 
-  const activeGroup = navGroups.find(group => group.active)
+  const groupedNav = simple ? groupSimpleSettings(navGroups, t.settings.page) : navGroups
+  const activeGroup = groupedNav.find(group => group.active)
   const activeChild = activeGroup?.children?.find(child => child.active)
 
   // Type-to-search: printable keystrokes on the Settings surface (outside any
@@ -505,35 +519,24 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   )
 
   const navFooter = (
-    <>
-      <Tip label={t.settings.exportConfig}>
-        <OverlayIconButton onClick={() => void exportConfig()}>
-          <Download />
-        </OverlayIconButton>
-      </Tip>
-      <Tip label={t.settings.importConfig}>
-        <OverlayIconButton
-          onClick={() => {
-            triggerHaptic('open')
-            importInputRef.current?.click()
-          }}
-        >
-          <Upload />
-        </OverlayIconButton>
-      </Tip>
-      <Tip label={t.settings.resetToDefaults}>
-        <OverlayIconButton
-          className="hover:text-destructive"
-          onClick={() => {
-            triggerHaptic('warning')
-            void resetConfig()
-          }}
-        >
-          <RefreshCw />
-        </OverlayIconButton>
-      </Tip>
-    </>
+    <SettingsNavFooter
+      onExport={() => void exportConfig()}
+      onImport={() => {
+        triggerHaptic('open')
+        importInputRef.current?.click()
+      }}
+      onReset={() => {
+        triggerHaptic('warning')
+        void resetConfig()
+      }}
+      simple={simple}
+    />
   )
+
+  // Simple opens Settings as a page with a labeled way back; Advanced keeps the floating card.
+  const chrome = simple
+    ? ({ closeLabel: t.settings.page.back, layoutClass: 'pt-10', presentation: 'page' } as const)
+    : ({ closeLabel: t.settings.closeSettings, layoutClass: undefined, presentation: 'overlay' } as const)
 
   const SubpageView = SUBPAGE_VIEWS[activeView]
 
@@ -575,9 +578,14 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   )
 
   return (
-    <OverlayView closeLabel={t.settings.closeSettings} edgeBadge={searchPill} onClose={onClose}>
-      <OverlaySplitLayout>
-        <OverlayNav footer={navFooter} groups={navGroups} />
+    <OverlayView
+      closeLabel={chrome.closeLabel}
+      edgeBadge={searchPill}
+      onClose={onClose}
+      presentation={chrome.presentation}
+    >
+      <OverlaySplitLayout className={chrome.layoutClass}>
+        <OverlayNav footer={navFooter} groups={groupedNav} />
 
         <OverlayMain className="px-0 pb-0">
           <SettingsBreadcrumbContext.Provider value>

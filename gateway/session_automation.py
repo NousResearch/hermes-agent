@@ -409,7 +409,9 @@ def snapshot_local_automation(authority, adapter, event, identity, entry):
     from gateway.session_local_recovery import restore_local_session
     ref = restore_local_session(authority, event.source.chat_id)
     live = authority.sessions[ref.session_id]
-    if (live.source is not event.source or not adapter.authorize_source(event.source)
+    # Background notifications rebuild their source from the persisted route.  That source names
+    # the same local session but cannot be the live object the local adapter registered at mount.
+    if (not adapter.authorize_source(live.source)
             or authority.runner._adapter_for_source(live.source) is not adapter):
         raise RuntimeStoreError('permission_denied')
     descriptor = {'identity': identity, 'owner': ref.session_id,

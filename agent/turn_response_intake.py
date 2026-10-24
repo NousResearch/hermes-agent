@@ -148,6 +148,24 @@ def normalize_model_response(
     from hermes_cli.observability.shared_metrics_harness import record_reply_content
     record_reply_content(agent, response, assistant_message)
 
+    # Server-side billing collector: capture factual per-call usage + cost from the
+    # live upstream response (OpenRouter returns usage.cost). Gated by
+    # telemetry.billing_collector.enabled / HERMES_BILLING_COLLECTOR; no-op when off.
+    # Never raises; failures are swallowed inside the collector.
+    try:
+        from agent.billing_collector import record_response as _record_billing
+
+        _record_billing(
+            agent, response,
+            api_request_id=api_request_id,
+            task_id=effective_task_id,
+            turn_id=turn_id,
+            api_duration=api_duration,
+            api_start_time=api_start_time,
+        )
+    except Exception:
+        pass
+
     content = assistant_message.content
     if content and not agent.quiet_mode:
         if agent.verbose_logging:

@@ -473,7 +473,7 @@ class SessionDB(
     # See #60609.  `recovered` = placeholders `hermes sessions recover` synthesizes for
     # orphaned messages (no live owner, never stamped ended_at); without it they are immortal.
     _AUTO_PRUNE_STALE_OPEN_SOURCES: tuple[str, ...] = (
-        "cli", "cron", "kanban", "acp", "api_server", "subagent", "tool", "recovered",
+        "cli", "cron", "kanban", "acp", "api_server", "subagent", "tool", "recovered", "oneshot",
     )
 
     # ── Write-contention tuning ──

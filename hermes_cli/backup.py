@@ -705,15 +705,19 @@ def _find_corrupt_members(zf: zipfile.ZipFile, members: list[str]) -> list[str]:
 
 def _import_skipped(rel: str) -> bool:
     """True for a HERMES_HOME-relative member the import deliberately does not restore: runtime
-    state (``_IMPORT_SKIP_NAMES``), PM-local interpreter/dependency roots, or an archived SQLite
-    WAL/SHM/journal. A ``.db`` member is page-restored into the live file, and a sidecar from a
-    different image would replay a foreign WAL on next open (older archives may ship these)."""
+    state (``_IMPORT_SKIP_NAMES``), PM-local roots/disposable cache, or an archived SQLite sidecar.
+    A ``.db`` member is page-restored into the live file, and a sidecar from a different image
+    would replay a foreign WAL on next open (older archives may ship these)."""
     try:
         parts = tuple(normalize_archive_parts(rel))
     except ValueError:
         return False  # A rejected traversal is still reported by the import itself.
+    profile_parts = parts[2:] if len(parts) >= 3 and parts[0] == "profiles" else parts
+    # Cache also holds user artifacts intentionally kept by backup; these must survive a restore.
+    durable_cache = (len(profile_parts) >= 2 and profile_parts[0] == "cache"
+                     and profile_parts[1] in _KEPT_CACHE_SUBDIRS)
     return (parts[-1] in _IMPORT_SKIP_NAMES or
-            profile_root_entry(parts) in PM_RUNTIME_ROOT_DIRS or
+            (profile_root_entry(parts) in PM_RUNTIME_ROOT_DIRS and not durable_cache) or
             rel.endswith(_SQLITE_SIDECAR_SUFFIXES))
 
 
@@ -1008,29 +1012,9 @@ def _import_members_exclusive(
             errors.append(f"  {rel}: path traversal blocked")
             continue
 
-        # Never overwrite volatile gateway/process runtime state. These are
-        # namespaced to the machine/container the backup was taken on;
-        # clobbering them (especially gateway_state.json) breaks the gateway
-        # reconciler on the target and disconnects hosted instances from the
-        # Nous portal. Matched by basename so both the root profile and
-        # named profiles (profiles/<name>/gateway_state.json) are covered.
-        if parts[-1] in _IMPORT_SKIP_NAMES:
-            skipped_runtime.append(rel)
-            continue
-
-        # Older archives may contain PM selections pointing at another machine.
-        # Match their home-root paths; a plugin's own facts.json is user data.
-        if profile_root_entry(parts) in PM_RUNTIME_ROOT_DIRS:
-            skipped_runtime.append(rel)
-            continue
-
-        # A ``.db`` member is page-restored into the live file below; a
-        # WAL/SHM/journal member from the archive describes a different
-        # database image, and installing it beside the restored file (over
-        # a live sidecar, via os.replace) would replay a foreign WAL on
-        # the next open. Current backups never ship these
-        # (_EXCLUDED_SUFFIXES); older or hand-built archives might.
-        if rel.endswith(_SQLITE_SIDECAR_SUFFIXES):
+        # Use the pre-flight policy so every restored file passed the integrity check, while
+        # retaining this machine's gateway/process state, PM runtime and SQLite sidecars.
+        if _import_skipped(rel):
             skipped_runtime.append(rel)
             continue
 

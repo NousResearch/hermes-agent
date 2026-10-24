@@ -7,9 +7,12 @@ cron: ``schedule_template`` fixes the recurrence; only human parts (time, weekda
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "CATALOG",
@@ -586,27 +589,74 @@ def _slot_default(blueprint: AutomationBlueprint, *names: str) -> Any:
 
 # --- Renderers --------------------------------------------------------------------------------
 
-def blueprint_form_schema(blueprint: AutomationBlueprint) -> dict[str, Any]:
-    """Emit the JSON a form renderer (dashboard / GUI) needs for this blueprint."""
+def _content_strings(lang: Optional[str]) -> dict[str, str]:
+    """Translated blueprint content for ``lang`` — the bundled ``locales/<lang>.blueprint.yaml``
+    plus any plugin language pack registered for that surface. Empty when nothing supplies it,
+    which is the normal case: English lives in this module and a locale overrides what it has
+    translated, so a language can ship partially without blocking the rest."""
+    if not lang:
+        return {}
+    try:
+        from agent.i18n import surface_catalog
+
+        return surface_catalog(lang, "blueprint")
+    except Exception:  # pragma: no cover - a broken catalog must not break the dashboard
+        logger.debug("blueprint content catalog unavailable for %r", lang, exc_info=True)
+        return {}
+
+
+def _pick(strings: dict[str, str], *keys: str, fallback: str) -> str:
+    """First non-empty catalog value among ``keys``, else ``fallback`` (the English source)."""
+    for key in keys:
+        value = strings.get(key)
+        if value:
+            return value
+    return fallback
+
+
+def blueprint_form_schema(blueprint: AutomationBlueprint, lang: Optional[str] = None) -> dict[str, Any]:
+    """Emit the JSON a form renderer (dashboard / GUI) needs for this blueprint.
+
+    ``lang`` resolves the user-visible content (title, description, slot label/help) through the
+    ``blueprint`` locale surface; ``None`` keeps the English source strings, which is what the docs
+    generator wants. Slot text falls back per slot name first (``blueprint.slot.time.label``), so a
+    blueprint only overrides the labels that genuinely differ.
+    """
+    return _form_schema(blueprint, _content_strings(lang))
+
+
+def _form_schema(blueprint: AutomationBlueprint, strings: dict[str, str]) -> dict[str, Any]:
+    """``blueprint_form_schema`` with the resolved catalog passed in (one parse per request)."""
+    key = blueprint.key
+    fields = []
+    for slot in blueprint.slots:
+        fields.append({
+            "name": slot.name,
+            "type": slot.type,
+            "label": _pick(
+                strings,
+                f"blueprint.{key}.slot.{slot.name}.label",
+                f"blueprint.slot.{slot.name}.label",
+                fallback=slot.label,
+            ),
+            "default": slot.default,
+            "options": list(slot.options),
+            "optional": slot.optional,
+            "strict": slot.strict,
+            "help": _pick(
+                strings,
+                f"blueprint.{key}.slot.{slot.name}.help",
+                f"blueprint.slot.{slot.name}.help",
+                fallback=slot.help,
+            ),
+        })
     return {
-        "key": blueprint.key,
-        "title": blueprint.title,
-        "description": blueprint.description,
+        "key": key,
+        "title": _pick(strings, f"blueprint.{key}.title", fallback=blueprint.title),
+        "description": _pick(strings, f"blueprint.{key}.description", fallback=blueprint.description),
         "category": blueprint.category,
         "tags": list(blueprint.tags),
-        "fields": [
-            {
-                "name": s.name,
-                "type": s.type,
-                "label": s.label,
-                "default": s.default,
-                "options": list(s.options),
-                "optional": s.optional,
-                "strict": s.strict,
-                "help": s.help,
-            }
-            for s in blueprint.slots
-        ],
+        "fields": fields,
     }
 
 
@@ -642,37 +692,68 @@ def blueprint_deeplink(blueprint: AutomationBlueprint, values: Optional[dict[str
     return f"hermes://blueprint/{quote(blueprint.key)}{qs}"
 
 
-def _humanize_schedule(blueprint: AutomationBlueprint) -> str:
+def _phrase(strings: dict[str, str], key: str, fallback: str, **values: Any) -> str:
+    """``_pick`` a format template and interpolate it (English fallback included)."""
+    return _pick(strings, key, fallback=fallback).format(**values)
+
+
+def _humanize_schedule(blueprint: AutomationBlueprint, lang: Optional[str] = None) -> str:
     """A short human-readable description of when a blueprint runs (defaults)."""
+    return _schedule_text(blueprint, _content_strings(lang))
+
+
+def _schedule_text(blueprint: AutomationBlueprint, strings: dict[str, str]) -> str:
+    """``_humanize_schedule`` with the resolved catalog passed in."""
     sched = blueprint.schedule_template
     if sched.startswith("*/"):
         every = _slot_default(blueprint, "interval_min") or sched.split("/")[1].split()[0]
-        return f"every {every} minutes"
+        return _phrase(strings, "blueprint.schedule.every_minutes", "every {count} minutes", count=every)
     if "{interval_hours}" in sched:
         every = str(_slot_default(blueprint, "interval_hours") or "1")
-        scope = "weekdays, " if "* * 1-5" in sched else ""
-        return f"{scope}every hour" if every == "1" else f"{scope}every {every} hours"
+        prefix = (
+            _pick(strings, "blueprint.schedule.weekdays_prefix", fallback="weekdays, ")
+            if "* * 1-5" in sched else ""
+        )
+        if every == "1":
+            return prefix + _phrase(strings, "blueprint.schedule.every_hour", "every hour")
+        return prefix + _phrase(strings, "blueprint.schedule.every_hours", "every {count} hours", count=every)
     time_slot = _slot(blueprint, type="time")
     when = time_slot.default if time_slot else None
     if "* * 1-5" in sched:
-        return f"weekdays at {when}" if when else "every weekday"
+        if when:
+            return _phrase(strings, "blueprint.schedule.weekdays_at", "weekdays at {time}", time=when)
+        return _pick(strings, "blueprint.schedule.every_weekday", fallback="every weekday")
     if "{dow}" in sched:
         scope = _slot_default(blueprint, "day", "recurrence") or ""
         if scope and when:
-            return f"{scope} at {when}"
-        return f"at {when}" if when else "on a schedule"
-    return f"daily at {when}" if when else "on a schedule"
+            # A `day` slot holds a weekday name; a `recurrence` slot holds a preset
+            # (everyday/weekdays/weekends) — both get their own key namespace.
+            day = _pick(
+                strings,
+                f"blueprint.weekday.{scope}",
+                f"blueprint.schedule.scope.{scope}",
+                fallback=scope,
+            )
+            return _phrase(strings, "blueprint.schedule.day_at", "{day} at {time}", day=day, time=when)
+        if when:
+            return _phrase(strings, "blueprint.schedule.at", "at {time}", time=when)
+        return _pick(strings, "blueprint.schedule.on_schedule", fallback="on a schedule")
+    if when:
+        return _phrase(strings, "blueprint.schedule.daily_at", "daily at {time}", time=when)
+    return _pick(strings, "blueprint.schedule.on_schedule", fallback="on a schedule")
 
 
-def blueprint_catalog_entry(blueprint: AutomationBlueprint) -> dict[str, Any]:
+def blueprint_catalog_entry(blueprint: AutomationBlueprint, lang: Optional[str] = None) -> dict[str, Any]:
     """Unified serializable shape (docs generator + dashboard API): form schema + ready-to-paste
-    slash command + deep-link URL + human-readable schedule."""
+    slash command + deep-link URL + human-readable schedule. ``lang`` localizes the user-visible
+    content; the docs generator omits it and gets the English source."""
+    strings = _content_strings(lang)
     return {
-        **blueprint_form_schema(blueprint),
+        **_form_schema(blueprint, strings),
         "source": "plugin" if blueprint.plugin else "builtin",
         "plugin": blueprint.plugin or None,
         "schedule": blueprint.schedule_template,
-        "scheduleHuman": _humanize_schedule(blueprint),
+        "scheduleHuman": _schedule_text(blueprint, strings),
         "command": blueprint_slash_command(blueprint),
         "appUrl": blueprint_deeplink(blueprint),
     }
@@ -744,12 +825,15 @@ def _resolve_schedule(blueprint: AutomationBlueprint, values: dict[str, Any]) ->
 def fill_blueprint(
     blueprint: AutomationBlueprint, values: dict[str, Any], *,
     origin: Optional[dict[str, Any]] = None,
+    lang: Optional[str] = None,
 ) -> dict[str, Any]:
     """Validate ``values`` and return ``cron.jobs.create_job`` kwargs.
 
     Missing required slots raise BlueprintFillError naming the slot (forms show field errors, the
     agent knows what to ask). Unknown slot names are rejected (a typo'd ``tiem=07:15`` must not
     silently create a job with the default time). Strict enums are checked against their options.
+    ``lang`` only localizes the job's stored name; the prompt stays the English instruction the
+    model runs (its output language is anchored by the cron platform hint).
     """
     known = {s.name for s in blueprint.slots}
     unknown = sorted(set(values) - known)
@@ -781,7 +865,7 @@ def fill_blueprint(
     spec: dict[str, Any] = {
         "prompt": prompt,
         "schedule": schedule,
-        "name": blueprint.title,
+        "name": _pick(_content_strings(lang), f"blueprint.{blueprint.key}.title", fallback=blueprint.title),
         "deliver": resolved.get("deliver", blueprint.deliver_default),
     }
     if blueprint.skills:

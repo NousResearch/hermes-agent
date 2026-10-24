@@ -70,7 +70,7 @@ def test_blueprint_instantiate_create_job_off_loop(monkeypatch, loop_probe):
     monkeypatch.setattr(
         bc,
         "fill_blueprint",
-        lambda bp, vals: {"name": "t", "schedule": "0 9 * * *", "prompt": "hi"},
+        lambda bp, vals, **kwargs: {"name": "t", "schedule": "0 9 * * *", "prompt": "hi"},
     )
 
     client = TestClient(web_server.app)
@@ -112,7 +112,7 @@ def test_blueprint_instantiate_reports_saved_but_unregistered(monkeypatch):
     monkeypatch.setattr(
         bc,
         "fill_blueprint",
-        lambda bp, vals: {"name": "t", "schedule": "0 9 * * *", "prompt": "hi"},
+        lambda bp, vals, **kwargs: {"name": "t", "schedule": "0 9 * * *", "prompt": "hi"},
     )
 
     client = TestClient(web_server.app)

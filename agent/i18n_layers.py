@@ -28,7 +28,10 @@ from typing import Any, Mapping
 logger = logging.getLogger(__name__)
 
 CORE_SURFACE = "core"
-SURFACES: tuple[str, ...] = (CORE_SURFACE, "tui", "desktop")
+# ``blueprint`` carries automation-template content (titles, descriptions, slot labels), which has a
+# different translation lifecycle from UI chrome: English lives in the catalog module and a locale
+# file overrides only the strings it has translated, so a language can ship partially.
+SURFACES: tuple[str, ...] = (CORE_SURFACE, "tui", "desktop", "blueprint")
 
 # ``en``, ``zh-hant``, ``pt-br``, ``sr-latn-rs``: lowercase language subtag + optional region/script parts.
 _LANGUAGE_ID_RE = re.compile(r"^[a-z]{2,3}(-[a-z0-9]{2,8})*$")

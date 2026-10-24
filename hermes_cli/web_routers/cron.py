@@ -860,6 +860,20 @@ async def cron_fire_webhook(request: Request):
     return JSONResponse(gateway_body, status_code=status_code, headers=headers)
 
 
+def _blueprint_language() -> str:
+    """The profile's resolved UI language. Call inside ``_config_profile_scope`` (or in the
+    process's own profile): blueprint content follows the same ``display.language`` as the UI."""
+    from agent.i18n import get_language
+
+    return get_language()
+
+
+def _profile_language(profile: Optional[str]) -> str:
+    """``_blueprint_language`` for an explicit dashboard profile (runs off the event loop)."""
+    with _config_profile_scope(profile):
+        return _blueprint_language()
+
+
 def _blueprint_catalog_sync(profile: Optional[str]) -> list:
     """Built-in + ``profile``'s plugin blueprints, with the ``deliver`` slot's options rewritten
     from that profile's configured gateway platforms. Plugin discovery can import plugin code, so
@@ -868,6 +882,7 @@ def _blueprint_catalog_sync(profile: Optional[str]) -> list:
 
     with _config_profile_scope(profile):  # an unknown ?profile= raises the scope's 404
         catalog = list_blueprints()
+        lang = _blueprint_language()
         deliver_options = None
         try:
             from cron.scheduler_delivery import cron_delivery_targets
@@ -879,7 +894,7 @@ def _blueprint_catalog_sync(profile: Optional[str]) -> list:
 
     entries = []
     for r in catalog:
-        entry = blueprint_catalog_entry(r)
+        entry = blueprint_catalog_entry(r, lang=lang)
         if deliver_options:
             for f in entry.get("fields", []):
                 if f.get("name") == "deliver":
@@ -916,8 +931,11 @@ async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: s
         blueprint = await _run_cron_dashboard_io(_blueprint_for_profile, body.blueprint, profile)
         if blueprint is None:
             raise HTTPException(status_code=404, detail=f"Unknown blueprint: {body.blueprint}")
+        # The created job's name is user-visible in the jobs list, so it follows the profile's UI
+        # language; the prompt itself stays the English instruction (the cron hint anchors output).
+        lang = await _run_cron_dashboard_io(_profile_language, profile)
         try:
-            spec = fill_blueprint(blueprint, body.values)
+            spec = fill_blueprint(blueprint, body.values, lang=lang)
         except BlueprintFillError as exc:  # field-level error — 422 so the form shows it inline
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         # Blueprint jobs deliver to the dashboard's configured target by default;

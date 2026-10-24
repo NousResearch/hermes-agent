@@ -1,0 +1,144 @@
+# Automation blueprint content (titles, descriptions, slot text, schedule phrasing).
+#
+# English lives in cron/blueprint_catalog.py and is the fallback; a locale file only carries what
+# it has translated, so this surface can ship partially. Keys:
+#   blueprint.<blueprint-key>.title / .description
+#   blueprint.<blueprint-key>.slot.<slot>.label / .help   (per-blueprint override)
+#   blueprint.slot.<slot>.label / .help                   (shared default for that slot name)
+#   blueprint.schedule.*                                  (humanized recurrence)
+#   blueprint.weekday.<name>                              (weekday names used by the above)
+blueprint:
+  schedule:
+    every_minutes: "每 {count} 分钟"
+    every_hour: "每小时"
+    every_hours: "每 {count} 小时"
+    weekdays_prefix: "工作日，"
+    weekdays_at: "工作日 {time}"
+    every_weekday: "每个工作日"
+    day_at: "{day} {time}"
+    at: "{time}"
+    daily_at: "每天 {time}"
+    on_schedule: "按计划"
+    scope:
+      everyday: "每天"
+      weekdays: "工作日"
+      weekends: "周末"
+  weekday:
+    sunday: "周日"
+    monday: "周一"
+    tuesday: "周二"
+    wednesday: "周三"
+    thursday: "周四"
+    friday: "周五"
+    saturday: "周六"
+
+  slot:
+    time:
+      label: "几点？"
+      help: "24 小时制本地时间，例如 08:00"
+    deliver:
+      label: "发送到哪里？"
+      help: "origin = 你创建它的这个会话（在仪表盘创建时用你配置的主频道）；local = 只保存不发送；也可以填任一已连接的平台名"
+    interval_min:
+      label: "多久检查一次？"
+      help: "两次检查之间的分钟数"
+    interval_h:
+      label: "多久检查一次？"
+      help: "两次检查之间的小时数 —— 别把对方站点的限流惹毛了"
+    interval_hours:
+      label: "多久提醒一次？"
+      help: "两次提醒之间的小时数"
+    criteria:
+      label: "只在邮件……时才提醒我"
+    day:
+      label: "哪一天？"
+    what:
+      label: "提醒我……"
+    recurrence:
+      label: "重复于"
+    topic:
+      label: "什么主题？"
+    count:
+      label: "几条要点？"
+    item:
+      label: "具体盯什么？"
+      help: "链接或精确描述 —— 规格、日期、卖家"
+    condition:
+      label: "满足什么条件时提醒我？"
+      help: "目标价格（写清币种）、有货，或其他条件"
+    companies:
+      label: "哪几家公司？"
+      help: "常用名与域名；写上别名有助于去重"
+    categories:
+      label: "关注哪些事件？"
+    habit:
+      label: "哪个习惯？"
+    start_hour:
+      label: "开始整点"
+      help: "活跃时段的第一小时（24 小时制）"
+    end_hour:
+      label: "结束整点"
+      help: "活跃时段的最后一小时（24 小时制）"
+    diet:
+      label: "饮食偏好？"
+    meals:
+      label: "每天几餐？"
+    effort:
+      label: "下厨投入？"
+    flavor:
+      label: "哪种类型？"
+
+  morning-brief:
+    title: "晨间简报"
+    description: "每天的简短简报：今天的日程、天气，以及任何等你处理的急事。"
+  important-mail:
+    title: "重要邮件监控"
+    description: "定时查看收件箱，只提醒真正需要你处理的邮件。"
+  weekly-review:
+    title: "每周回顾"
+    description: "一周小结：做了什么、还有什么没完成、接下来要做什么。"
+  workday-start:
+    title: "工作日起步提醒"
+    description: "工作日的开场提示：今天的日程和最重要的几件事。"
+  custom-reminder:
+    title: "自定义提醒"
+    description: "用你自己的话、按你的节奏重复提醒。"
+  evening-winddown:
+    title: "晚间收尾"
+    description: "一天结束前的整理：明天的日程，以及今晚可以提前准备的事。"
+  news-digest:
+    title: "主题资讯摘要"
+    description: "围绕一个主题，定时给你几条值得看的更新。"
+  bill-renewal-watch:
+    title: "账单与续费提醒"
+    description: "在扣款或续费之前提醒你，别被自动续订偷袭。"
+    slot:
+      what:
+        label: "什么到期了？"
+  price-watch:
+    title: "价格与库存监控"
+    description: "盯住某个商品或行程，降价或有货时告诉你。"
+  competitor-watch:
+    title: "竞品动态监控"
+    description: "跟踪几家公司的公开动态：发布、定价、融资、人事。"
+  habit-checkin:
+    title: "习惯打卡"
+    description: "每天一个轻提醒，帮你把想坚持的事坚持下来。"
+  hydration-move:
+    title: "喝水与活动提醒"
+    description: "在设定的时间段里，提醒你喝水、起身活动。"
+  meal-plan:
+    title: "每周菜单"
+    description: "每周一次，把接下来几天的饭安排好。"
+  learn-daily:
+    title: "每日学习"
+    description: "每天一点，按你的主题持续输入。"
+    slot:
+      topic:
+        label: "想学什么？"
+  gratitude-journal:
+    title: "感恩与反思"
+    description: "每天一个提问，帮你记下值得记住的事。"
+  on-this-day:
+    title: "历史上的今天"
+    description: "每天一条「历史上的今天」，或者别的当日冷知识。"

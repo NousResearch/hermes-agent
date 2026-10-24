@@ -142,11 +142,28 @@ const DEFAULT_VALUES: Record<'mac' | 'windows', Record<Appearance, TranslucencyV
 }
 
 /**
- * The untouched values for an appearance on this platform. Linux never reaches
- * here — translucency is unsupported there, so nothing resolves.
+ * What "off" looks like on an OS with no translucency at all.
+ *
+ * `translucencySupportedOn` gates the Settings row, but nothing gated the VALUE:
+ * `DEFAULT_VALUES` only knows mac and windows, so a Linux profile inherited the mac
+ * glass default (29), and `setOpacity` — documented as a no-op on Linux, honoured by
+ * Wayland compositors — faded the whole window with no Settings row anywhere to undo
+ * it. An OS that cannot offer the feature must resolve it to off.
  */
-export function defaultTranslucencyValues(appearance: Appearance, isWindows: boolean): TranslucencyValues {
-  return DEFAULT_VALUES[isWindows ? 'windows' : 'mac'][appearance]
+const NO_TRANSLUCENCY: TranslucencyValues = {
+  intensity: 0,
+  fade: 0,
+  material: DEFAULT_GLASS_MATERIAL,
+  scope: DEFAULT_GLASS_SCOPE
+}
+
+/** The untouched values for an appearance — off entirely where the OS has no translucency. */
+export function defaultTranslucencyValues(
+  appearance: Appearance,
+  isWindows: boolean,
+  supported = true
+): TranslucencyValues {
+  return supported ? DEFAULT_VALUES[isWindows ? 'windows' : 'mac'][appearance] : NO_TRANSLUCENCY
 }
 
 /**
@@ -258,13 +275,13 @@ export function normalizeScope(value: unknown): GlassScope {
 }
 
 /** Parse a persisted translucency.json / IPC payload into a safe state. */
-export function normalizeState(payload: unknown, glassSupported: boolean): TranslucencyState {
+export function normalizeState(payload: unknown, glassSupported: boolean, supported = true): TranslucencyState {
   const record = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
-  const intensity = clampIntensity(record.intensity)
+  const intensity = supported ? clampIntensity(record.intensity) : 0
 
   return {
     intensity,
-    fade: clampIntensity(record.fade),
+    fade: supported ? clampIntensity(record.fade) : 0,
     mode: normalizeMode(record.mode, glassSupported, intensity),
     material: normalizeMaterial(record.material),
     scope: normalizeScope(record.scope)
@@ -284,10 +301,11 @@ export function normalizeState(payload: unknown, glassSupported: boolean): Trans
 export function defaultTranslucencyState(
   appearance: Appearance,
   glassSupported: boolean,
-  isWindows: boolean
+  isWindows: boolean,
+  supported = true
 ): TranslucencyState {
   return {
-    ...defaultTranslucencyValues(appearance, isWindows),
+    ...defaultTranslucencyValues(appearance, isWindows, supported),
     mode: normalizeMode(undefined, glassSupported)
   }
 }
@@ -350,18 +368,24 @@ export function normalizeBook(payload: unknown, glassSupported: boolean): Transl
 export function resolveTranslucency(
   book: TranslucencyBook,
   appearance: Appearance,
-  isWindows: boolean
+  isWindows: boolean,
+  supported = true
 ): TranslucencyState {
-  const fallback = defaultTranslucencyValues(appearance, isWindows)
+  const fallback = defaultTranslucencyValues(appearance, isWindows, supported)
   const slot = book[appearance]
 
-  return {
+  const resolved: TranslucencyState = {
     mode: book.mode,
     intensity: slot.intensity ?? book.base.intensity ?? fallback.intensity,
     fade: slot.fade ?? book.base.fade ?? fallback.fade,
     material: slot.material ?? book.base.material ?? fallback.material,
     scope: slot.scope ?? book.base.scope ?? fallback.scope
   }
+
+  // A book written before this gate existed — or one carried over from a supported
+  // machine — still holds a non-zero intensity, so the fallback alone cannot close this:
+  // an unsupported OS must RESOLVE to off, never hand a fade to the window.
+  return supported ? resolved : { ...resolved, intensity: 0, fade: 0 }
 }
 
 /**

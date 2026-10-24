@@ -99,6 +99,9 @@ def legacy_launch_params(row):
         from hermes_constants import parse_reasoning_effort
         if parse_reasoning_effort(reasoning) is not None:
             params['reasoning'] = reasoning
+    if 'max_iterations' in saved:
+        from hermes_cli.config import resolve_turn_limit
+        params['max_turns'] = resolve_turn_limit(saved['max_iterations'])
     tier = saved.get('service_tier')
     if isinstance(tier, str):
         from agent.fast_mode import parse_exact_service_tier

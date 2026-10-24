@@ -660,7 +660,8 @@ _LOCAL_CARRIERS = frozenset({RC, R})  # llama.cpp/SGLang read reasoning_content,
 _REASONING_CARRIER_ROUTES: tuple = (
     # (carriers, providers (lowered), hosts) — evidence per row in the PR body / FINDINGS.
     (frozenset(), frozenset({"mistral", "groq", "cerebras", "sambanova"}),
-     ("mistral.ai", "groq.com", "cerebras.ai", "sambanova.ai", "hunyuan.cloud.tencent.com")),
+     ("mistral.ai", "groq.com", "cerebras.ai", "sambanova.ai", "hunyuan.cloud.tencent.com",
+      "token.sensenova.cn")),
     # Fireworks' ChatMessage schema is additionalProperties:false with reasoning_content only.
     (frozenset({RC}), frozenset({"fireworks"}), ("fireworks.ai",)),
     # OpenRouter-format gateways read the unified array, the string and the alias.

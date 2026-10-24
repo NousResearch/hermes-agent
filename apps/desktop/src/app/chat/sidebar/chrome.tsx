@@ -8,6 +8,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { RowButton } from '@/components/ui/row-button'
 import { Tip } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $sidebarRowMeta } from '@/store/layout'
 import type { TileDock } from '@/store/session-states'
@@ -28,6 +29,30 @@ import {
 export function SidebarSectionMeta({ children }: { children: React.ReactNode }) {
   return <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-quaternary)">{children}</span>
 }
+
+/** The sidebar's aggregate readout: how many listed chats have new activity
+ *  since they were last read (`$unreadSessionCount`, the same number the
+ *  titlebar badge carries; cron runs are excluded there by design). Per-chat
+ *  counts live on the rows themselves — this is the total. Counts are a
+ *  readout, not an affordance: it stays visible where the section's own
+ *  buttons only appear on hover. */
+export function SidebarUnreadBadge({ count }: { count: number }) {
+  const { t } = useI18n()
+  const label = t.titlebar.unreadSessions(count)
+
+  return (
+    <Tip label={label}>
+      <span
+        aria-label={label}
+        className="shrink-0 rounded-full bg-(--ui-control-active-background) px-1.5 py-px text-[0.625rem] font-medium tabular-nums text-(--ui-success)"
+        data-testid="sidebar-unread-badge"
+      >
+        {count}
+      </span>
+    </Tip>
+  )
+}
+
 
 // Row geometry lives in `row-geometry.ts` — see that file for why each class
 // belongs to the box it belongs to. Re-exported here because this module is

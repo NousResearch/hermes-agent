@@ -9,6 +9,7 @@ import { SidebarProvider } from '@/components/ui/sidebar'
 import { registry } from '@/contrib/registry'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $sidebarMessagingOpenIds, setSidebarAgentsGrouped, setSidebarGrouping } from '@/store/layout'
+import { $sessionSeenCounts } from '@/store/session-unread'
 import { $activeGatewayProfile, $profiles, setShowAllProfiles } from '@/store/profile'
 import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
 import { $projectTree } from '@/store/projects'
@@ -20,6 +21,7 @@ import {
   $sessions,
   $sessionsLoadError,
   $sessionsLoading,
+  $unreadFinishedSessionIds,
   $workspaceCwdOwner
 } from '@/store/session'
 import { $removedSessionIds } from '@/store/session-removal'
@@ -499,5 +501,51 @@ describe('ChatSidebar messaging owners', () => {
     expect(telegramGroups()).toHaveLength(0)
     expect(screen.queryByText('work-1')).toBeNull()
     expect(within(row('default-1')).queryByRole('img', { name: /^Profile:/ })).toBeNull()
+  })
+})
+
+describe('unread badges', () => {
+  it('reads out the unread chats in the section header, and stays out of the way at zero', () => {
+    $sessions.set(sessionRows)
+    $unreadFinishedSessionIds.set([])
+
+    const first = renderSidebar('/', 'chat')
+    expect(screen.queryByTestId('sidebar-unread-badge')).toBeNull()
+    first.unmount()
+
+    // One of the two listed rows is waiting unread; the badge counts it and
+    // names itself for screen readers with the same copy the titlebar uses.
+    $unreadFinishedSessionIds.set(['tile-one'])
+
+    renderSidebar('/', 'chat')
+    const badge = screen.getByTestId('sidebar-unread-badge')
+
+    expect(badge.textContent).toBe('1')
+    expect(badge.getAttribute('aria-label')).toMatch(/unread/i)
+  })
+
+  it('counts new messages per chat, from that chat\'s own read watermark', () => {
+    $sessions.set([makeSessionInfo({ id: 'busy', last_active: 5, message_count: 13, profile: 'default', started_at: 1, title: 'Busy chat' })])
+    $unreadFinishedSessionIds.set([])
+    $sessionSeenCounts.set({ default: { busy: 10 } })
+
+    renderSidebar('/', 'chat')
+
+    const perChat = screen.getByTestId('session-new-count')
+
+    expect(perChat.textContent).toBe('3')
+    expect(perChat.getAttribute('aria-label')).toMatch(/3 messages/i)
+    // The header total counts chats, not messages, so it stays out of this.
+    expect(screen.queryByTestId('sidebar-unread-badge')).toBeNull()
+  })
+
+  it('shows no per-chat count for a chat with no read watermark yet', () => {
+    $sessions.set([makeSessionInfo({ id: 'fresh', last_active: 5, message_count: 13, profile: 'default', started_at: 1, title: 'Fresh chat' })])
+    $unreadFinishedSessionIds.set([])
+    $sessionSeenCounts.set({})
+
+    renderSidebar('/', 'chat')
+
+    expect(screen.queryByTestId('session-new-count')).toBeNull()
   })
 })

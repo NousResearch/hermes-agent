@@ -135,7 +135,7 @@ def _serve_plugin_skill(
         return _fail(f"Failed to read skill '{qualified_name}': {e}")
     parsed_frontmatter = _safe_frontmatter(content=content)
     if _st._is_skill_disabled(qualified_name):
-        return _fail(f"Skill '{qualified_name}' is disabled.")
+        return _fail(_st._disabled_skill_notice(qualified_name))
     if not _st.skill_matches_platform(parsed_frontmatter):
         return _fail(f"Skill '{qualified_name}' is not supported on this platform.",
                      readiness_status=SkillReadinessStatus.UNSUPPORTED.value)

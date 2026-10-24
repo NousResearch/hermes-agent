@@ -658,6 +658,14 @@ override-dependencies = [
 exclude-newer = "3 days"
 exclude-newer-package = { certifi = false }
 
+# python-olm (the [matrix] extra) has no cp314 wheel, so uv builds its sdist,
+# whose vendored libolm declares cmake_minimum_required(VERSION 3.4): CMake 4
+# refuses to configure it (#122733). PM ignores user uv config, so the policy
+# floor has to live here. Remove when python-olm ships cp314 wheels or Matrix
+# E2EE stops depending on it.
+[tool.uv.extra-build-variables]
+python-olm = { CMAKE_POLICY_VERSION_MINIMUM = "3.5" }
+
 [tool.setuptools]
 # Root single-file modules are derived by setup.py at build time from the
 # source tree (see the ``_root_py_modules`` helper there). A static

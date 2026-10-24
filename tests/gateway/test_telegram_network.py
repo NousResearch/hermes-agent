@@ -1,3 +1,4 @@
+import asyncio
 """Tests for plugins.platforms.telegram.telegram_network – fallback transport layer.
 
 Background
@@ -588,3 +589,89 @@ class TestDiscoverFallbackIps:
 
         assert ips == ["149.154.167.220", "149.154.166.110"]
         assert elapsed < 1.4, f"discovery gated on hung system DNS ({elapsed:.2f}s)"
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# A path that dies after the request was written is retired, never resent (#156504)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class _StalledBody(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        raise httpx.ReadTimeout("stale connection after headers")
+        yield b""  # keep this an async iterator
+
+    async def aclose(self):
+        pass
+
+
+def _pool_factory(first_fallback):
+    """Pools in creation order: [0] primary, [1] first fallback (``first_fallback`` decides how it
+    fails), then fresh healthy ones."""
+    pools = []
+
+    class Pool(httpx.AsyncBaseTransport):
+        def __init__(self, index):
+            self.index, self.closed, self.calls = index, False, 0
+
+        async def handle_async_request(self, request):
+            self.calls += 1
+            if self.index == 1:
+                return first_fallback(request)
+            return httpx.Response(200, request=request, content=b'{"ok":true}')
+
+        async def aclose(self):
+            self.closed = True
+
+    def factory(**_kwargs):
+        pools.append(Pool(len(pools)))
+        return pools[-1]
+
+    return factory, pools
+
+
+class TestPostSendFailureRetiresPath:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("fail", ["before_headers", "in_body"])
+    async def test_dead_socket_is_retired_not_resent_and_the_retry_gets_a_fresh_pool(self, monkeypatch, fail):
+        def first_fallback(request):
+            if fail == "before_headers":
+                raise httpx.ReadTimeout("half-closed keep-alive socket")
+            return httpx.Response(200, request=request, stream=_StalledBody())
+
+        factory, pools = _pool_factory(first_fallback)
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
+        transport = tnet.TelegramFallbackTransport(["149.154.166.110", "149.154.167.220"], proxy=None)
+        request = _telegram_request("/botTOKEN/sendMessage")
+
+        first = None
+        with pytest.raises(httpx.ReadTimeout):
+            first = await transport.handle_async_request(request)
+            await first.aread()
+        if first is not None:
+            await first.aclose()  # the caller closing the response returns the generation's lease
+        for _ in range(3):
+            await asyncio.sleep(0)  # the retired generation closes on a spawned task
+        # Never resent on another path: Telegram may already have the message.
+        assert [p.calls for p in pools] == [0, 1]
+        assert pools[1].closed and transport._sticky_ip is tnet._UNSET
+
+        retried = await transport.handle_async_request(request)
+        assert await retried.aread() == b'{"ok":true}'
+        assert pools[1].calls == 1 and pools[2].calls == 1
+        await transport.aclose()
+
+    @pytest.mark.asyncio
+    async def test_pool_timeout_never_sent_so_the_walk_moves_on(self, monkeypatch):
+        def first_fallback(request):
+            raise httpx.PoolTimeout("connection pool is full")
+
+        factory, pools = _pool_factory(first_fallback)
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
+        transport = tnet.TelegramFallbackTransport(["149.154.166.110", "149.154.167.220"], proxy=None)
+
+        resp = await transport.handle_async_request(_telegram_request())
+
+        assert resp.status_code == 200
+        assert pools[1].closed and transport._sticky_ip == "149.154.167.220"
+        await transport.aclose()

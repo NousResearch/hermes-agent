@@ -590,6 +590,16 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
                     and old_row_id in requested_rebind_ids}
                 for dropped_row_id in requested_rebind_ids.intersection(old_active_row_ids):
                     row_id_map.setdefault(str(dropped_row_id), None)
+    agent = session.get("agent")
+    if task_id := getattr(agent, "_current_task_id", None):
+        # The archived tail is absent from the next model request, so repeat-read stubs
+        # cannot safely refer to tool output from the pre-rewind task generation (#139793).
+        from agent.conversation_compression import _reset_read_dedup_caches
+
+        _reset_read_dedup_caches(
+            task_id,
+            session_id=getattr(agent, "session_id", None) or session.get("session_key") or sid,
+        )
     session["history"] = truncated
     session["history_version"] = int(session.get("history_version", 0)) + 1
     return None, fields

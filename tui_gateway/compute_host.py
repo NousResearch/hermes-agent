@@ -416,6 +416,8 @@ class ComputeHost:
         session["transport"] = self._transport
         # The host pipe names no login; the record carries the one the gateway stamped at creation.
         session["auth_user_id"] = frame.get("auth_user_id")
+        if "auth_owner" in frame:  # an older bridge sends none: the row keeps the label
+            session["auth_owner"] = frame["auth_owner"]
         session["profile_home"] = profile_home or session.get("profile_home")
         if frame.get("model_override") is not None:
             session["model_override"] = frame.get("model_override")

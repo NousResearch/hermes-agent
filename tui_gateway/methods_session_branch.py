@@ -45,6 +45,7 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
         if new_sid in _sessions:
             _sessions[new_sid]["active_session_lease"] = None  # claimed lazily on the first turn
             _sessions[new_sid]["auth_user_id"] = parent_user_id
+            _sessions[new_sid]["auth_owner"] = _session_owner_stamp(session)
             # The parent's STORED key: the idempotent-hit reply for a retried
             # session.branch answers the same ``parent`` as the fresh path, and
             # later readers (lineage, retry) get the linkage from the runtime.
@@ -116,7 +117,7 @@ def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = Fals
                             profile_name=profile_name_for_home(home) or _current_profile_name(),
                             model=_session_default_route(session)[0], copy_fields=_BRANCH_COPY_FIELDS,
                             title_source="user" if params.get("name") else "derived",
-                            user_id=_session_auth_user_id(session))
+                            user_id=_session_owner_stamp(session))
         except Exception as e:
             return _err(rid, 5008, f"branch failed: {e}")
     try:

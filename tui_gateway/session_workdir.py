@@ -596,11 +596,11 @@ def _ensure_session_db_row(session: dict) -> bool:
             db.create_session(
                 key, source=_session_source(session), model=row_model, model_config=model_config or None,
                 parent_session_id=session.get("parent_session_id") or None, cwd=_persisted_session_cwd(session),
-                # The login this session was opened under, in the same ``<provider>:<id>`` form the agent is
-                # built with — the row is the only place the identity reaches the store, and the upsert can't
-                # add it later (user_id is set at insert). None (no password provider, legacy token, stdio)
-                # leaves the column empty exactly as before.
-                user_id=_session_auth_user_id(session),
+                # The login this session was opened under (``_session_owner_stamp``: the ``<provider>:<id>``
+                # label the agent is built with, or an issuer-bearing login's full subject) — the row is the
+                # only place the identity reaches the store, and the upsert can't add it later (user_id is set
+                # at insert). None (no password provider, legacy token, stdio) leaves the column empty as before.
+                user_id=_session_owner_stamp(session),
                 # Self-describing rows: aggregators merging several profile DBs can't rely on which file a row came
                 # from; a NULL is only repaired by the one-shot backfill.
                 # Stamp the launch profile explicitly instead of leaving NULL — NULL is exactly what the

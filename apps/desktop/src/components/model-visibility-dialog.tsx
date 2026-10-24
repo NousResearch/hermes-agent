@@ -15,7 +15,8 @@ import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Plus, Search, X } from '@/lib/icons'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { displayModelName, isGatewayCatalog, modelDisplayParts } from '@/lib/model-status-label'
+import { isKnownSupplier, supplierNamer } from '@/lib/model-suppliers'
 import { foldIncludes, normalize } from '@/lib/text'
 import { confirm } from '@/store/confirm'
 import {
@@ -127,7 +128,13 @@ export function ModelVisibilityDialog({
   const q = normalize(search)
 
   const matches = (provider: ModelOptionProvider, model: string) =>
-    !q || foldIncludes(`${model} ${provider.name} ${provider.slug} ${displayModelName(model)}`, q)
+    !q ||
+    foldIncludes(
+      `${model} ${provider.name} ${provider.slug} ${displayModelName(model, {
+        supplier: isGatewayCatalog(provider.models ?? [], isKnownSupplier) ? supplierNamer : null
+      })}`,
+      q
+    )
 
   // Typing an id no provider lists offers to add it — same gesture as the
   // pickers, minus the switch — and the new row lands visible. Only once the
@@ -204,7 +211,14 @@ export function ModelVisibilityDialog({
                   </div>
                   {!collapsed &&
                     models.map(family => {
-                      const { name, tag } = modelDisplayParts(family.id)
+                      // A gateway catalog names its supplier in the row, the
+                      // same way the model menu does.
+                      const gateway = isGatewayCatalog(provider.models ?? [], isKnownSupplier)
+
+                      const { name, tag } = modelDisplayParts(family.id, {
+                        supplier: gateway ? supplierNamer : null
+                      })
+
                       const key = modelVisibilityKey(provider.slug, family.id)
 
                       return (

@@ -10,8 +10,8 @@ from hermes_cli.gateway_host_record import _discard_dead_host_record, _forget_ho
 from hermes_cli.gateway_systemctl import (  # facade re-export: moved verbatim (FILE_LINES ratchet)
     _run_systemctl,
     _service_scope_label,
+    print_systemctl_status,
 )
-from hermes_cli.debug_redaction import redact_debug_support_text
 import json
 import logging
 import os
@@ -3863,10 +3863,7 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
     # launched with a credential argument would leak the live key into shared status output
     # (#143938). Capture and scrub before display instead of passing the stream through.
     status_result = _run_systemctl(status_cmd, system=system, timeout=10, **_CAPTURE_TEXT)
-    if status_result.stdout:
-        print(redact_debug_support_text(status_result.stdout), end="")
-    if status_result.stderr:
-        print(redact_debug_support_text(status_result.stderr), end="", file=sys.stderr)
+    print_systemctl_status(status_result)
     result = _run_systemctl(["is-active", svc], system=system, timeout=10, **_CAPTURE_TEXT)
     if result.stdout.strip() == "active":
         print(f"✓ {scope_label} gateway service is running")

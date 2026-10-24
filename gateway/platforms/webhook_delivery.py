@@ -6,6 +6,13 @@ import json
 from hermes_state_runtime import RuntimeStoreError
 
 
+class InvalidWebhookDestination(RuntimeStoreError):
+    """The configured destination cannot accept a webhook delivery."""
+
+    def __init__(self):
+        super().__init__('invalid_params')
+
+
 def route_digest(adapter, chat_id):
     from gateway.platforms.webhook import _WebhookDeliveryIdentity
     adapter._reload_dynamic_routes()
@@ -27,16 +34,16 @@ def validate_destination(delivery):
             or (delivery.get('profile') is not None and not isinstance(delivery['profile'], str))
             or not isinstance(delivery.get('mirror', False), bool)
             or (delivery.get('route') is not None and not isinstance(delivery['route'], str))):
-        raise RuntimeStoreError('invalid_params')
+        raise InvalidWebhookDestination()
     target, extra = delivery['deliver'], delivery['deliver_extra']
     if not isinstance(target, str) or not isinstance(extra, dict):
-        raise RuntimeStoreError('invalid_params')
+        raise InvalidWebhookDestination()
     if target == 'github_comment':
         repo, number = extra.get('repo'), extra.get('pr_number')
         if not isinstance(repo, str) or not _REPO_RE.fullmatch(repo) or not str(number).isdigit() or int(number) <= 0:
-            raise RuntimeStoreError('invalid_params')
+            raise InvalidWebhookDestination()
     elif target != 'log' and not _is_known_platform(target):
-        raise RuntimeStoreError('invalid_params')
+        raise InvalidWebhookDestination()
     # Configuration extras may contain credentials or whole rendered payloads.
     # Persist only fields the selected sender actually consumes.
     fields = {'log': (), 'github_comment': ('repo', 'pr_number')}.get(

@@ -246,7 +246,8 @@ class MemoryStore:
             # External writers (MCP bridges, hand edits) can exceed the cap; the limit only fires on
             # add/replace, so the oversized block would silently ride in the prompt while every later
             # add is refused with no visible cause (#10877). Warn; never truncate a user's memories.
-            if (count := self._char_count(target)) > (limit := self._char_limit(target)):
+            limit = self._char_limit(target)
+            if limit > 0 and (count := self._char_count(target)) > limit:
                 logger.warning("%s exceeds its char limit on load: %d/%d chars. Entries stay loaded; "
                                "further additions are blocked until it is back under the limit.",
                                path.name, count, limit)
@@ -377,7 +378,9 @@ class MemoryStore:
         def _add(entries, limit):
             if content in entries:
                 return self._success_response(target, "Entry already exists (no duplicate added).")
-            if len(ENTRY_DELIMITER.join(entries + [content])) > limit:
+            # limit == 0 means "unlimited" — skip the budget check rather than
+            # rejecting every add against a zero-size ceiling.
+            if limit > 0 and len(ENTRY_DELIMITER.join(entries + [content])) > limit:
                 new_total = len(ENTRY_DELIMITER.join(entries + [content]))
                 return self._failure_with_entries(target, (
                     f"Memory at {self._char_count(target):,}/{limit:,} chars; adding this entry ({len(content)} chars) "
@@ -429,7 +432,8 @@ class MemoryStore:
                 return _error(message, failure_class)
             patched = entries[:idx] + [after] + entries[idx + 1:]
             new_total = len(ENTRY_DELIMITER.join(patched))
-            if new_total > limit:
+            # limit == 0 means "unlimited" (see add()) — skip the budget check.
+            if limit > 0 and new_total > limit:
                 return self._failure_with_entries(target, (
                     f"Patch would put memory at {new_total:,}/{limit:,} chars. Shorten the new "
                     f"text, or 'remove' other stale or less important entries to make room "
@@ -480,7 +484,8 @@ class MemoryStore:
             if new_content is None:
                 return replaced, "Entry removed.", {"removed_entry": entries[idx]}
             new_total = len(ENTRY_DELIMITER.join(replaced))
-            if new_total > limit:
+            # limit == 0 means "unlimited" (see add()) — skip the budget check.
+            if limit > 0 and new_total > limit:
                 return self._failure_with_entries(target, (
                     f"Replacement {_over_limit(new_total, limit)}. Shorten the new content, or retry as ONE "
                     f"'operations' batch with this replace plus removes/shortenings of other stale entries "
@@ -590,8 +595,11 @@ class MemoryStore:
                     f"previously non-empty store. Keep at least one entry — merge overlapping "
                     f"entries into a shorter one instead of removing the last one. To delete the "
                     f"final entry deliberately, use single remove() calls."), "would_empty")
+            # Budget check against the FINAL state only. limit == 0 means
+            # unlimited (see add()/_edit()) -- skip the check rather than
+            # rejecting every non-empty batch.
             new_total = len(ENTRY_DELIMITER.join(working))  # budget check against the FINAL state only
-            if new_total > limit:
+            if limit > 0 and new_total > limit:
                 return self._batch_failure(target, (
                     f"Applying all {len(operations)} operations {_over_limit(new_total, limit)} more. Add "
                     f"removes or shortening patches of other stale entries to the same batch, then retry."),
@@ -688,8 +696,11 @@ class MemoryStore:
         free-form text appended without delimiters, and replacing that "entry" would discard
         it. Layout differences (blank lines around ``§``, empty entries, padding) are NOT
         drift: parsing only strips whitespace, so the flush loses nothing but whitespace, and
-        refusing there blocked every replace/remove on a hand-formatted file for good (#107270)."""
-        if max(map(len, self._parse_entries(raw)), default=0) <= self._char_limit(target):
+        refusing there blocked every replace/remove on a hand-formatted file for good (#107270).
+        The size signal is skipped when char_limit == 0 (unlimited): without that guard every
+        non-empty entry falsely trips it and all writes are refused as "drift"."""
+        limit = self._char_limit(target)
+        if limit == 0 or max(map(len, self._parse_entries(raw)), default=0) <= limit:
             return None
         path = self._path_for(target)
         bak_path = path.with_suffix(path.suffix + f".bak.{int(time.time())}")

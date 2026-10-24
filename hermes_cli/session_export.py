@@ -88,7 +88,7 @@ def iter_user_prompt_records(sessions: Iterable[dict[str, Any]]) -> Iterator[dic
     """Yield one normalized record for each user-authored prompt."""
     for session in sessions:
         session_id = str(session.get("id") or session.get("session_id") or "")
-        prompts = [m for m in _messages(session) if m.get("role") == "user"]
+        prompts = [m for m in _messages(session) if m.get("role") == "user" and m.get("display_kind") != "hidden"]
         for index, message in enumerate(prompts, start=1):
             record: dict[str, Any] = {
                 "session_id": session_id,

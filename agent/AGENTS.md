@@ -8,7 +8,8 @@ Applies on top of the root `AGENTS.md` (prompt-caching invariant, facade + sibli
 `client_lifecycle.py`, `stream_delivery.py`, `session_persistence.py`, `compression_facade.py`, ...).
 Construction runs `agent/agent_init.py::init_agent`; a turn is
 `agent/conversation_loop.py::run_conversation`, which `AIAgent.run_conversation` forwards to after
-taking the session turn lease (`turn_facade_lease.py`). `AIAgent.__init__` takes ~60 parameters
+registering the foreground turn with review admission (`turn_facade_review.py`) and taking the
+session turn lease (`turn_facade_lease.py`). `AIAgent.__init__` takes ~60 parameters
 (credentials, routing, callbacks, session context, budget, credential pool, ...) — read
 `run_agent.py` for the list; the subset you usually touch: `base_url`, `api_key`, `provider`,
 `api_mode` (`"chat_completions" | "codex_responses" | ...`), `model` (empty → resolved from
@@ -79,6 +80,9 @@ Adding one: register in that table (no `if name == ...` chain); `tools/todo_tool
 Manual `/compress` on every surface (CLI, gateway, TUI, ACP) runs through
 `agent/conversation_compression_manual.py::compress_now` (one parser for `here [N]` / focus /
 `--preview` / `--aggressive`; surfaces only parse their own argv, install `after_messages` and render).
+A rotation (continuation child, adopted live child) moves the agent to the new session through
+`conversation_compression_rotation.py::adopt_rotated_session` (session_id, the thread's session
+context and the active turn's review ownership move together).
 
 Two layers: gateway session hygiene (85% threshold) and the agent `ContextCompressor` (50%,
 configurable; per-model overrides; failure cooldown after provider-proven overflow). The algorithm
@@ -133,6 +137,11 @@ providers intentionally do not run during cron.
   its home from `os.environ` at flush time (`Path(_session_db.db_path).parent` is the ground truth).
   Provider background work starts through `memory_provider.py::spawn_context_thread` (copies the
   contextvars), never a bare `threading.Thread`; `title_generator.py` is the shape.
+- The post-turn self-improvement review (`agent/background_review.py`, deferred via
+  `agent/review_idle_queue.py`) admits, bounds and names every decision ONLY through
+  `agent/review_admission.py` — live-turn registry, follow-up fence, replay ceiling, and the
+  body-free reason slugs + hashed owner tags every review log line carries; a new gate or slug
+  goes there, never inline at a call site.
 - `agent/secret_scope.py::get_secret` fails closed (`UnscopedSecretError`) only after
   `set_multiplex_active(True)`; the gateway, cron, migrate and `serve` set it. A new multi-home host
   must too, or every guard is silently off. Isolation is BETWEEN profiles; children inherit via

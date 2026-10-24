@@ -25,6 +25,7 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
+from gateway.run_turn_review import _GatewayReviewAdmission, begin_gateway_review_admission
 from gateway.response_filters import (
     display_kind_for_event, display_metadata_for_event, is_machinery_display_kind, reply_expected_metadata,
     silence_allowed,
@@ -228,6 +229,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         if resolved is None:
             return
         source, session_entry, session_key = resolved
+        # Live in review admission from here; its completion is parked on the delivery owner.
+        gateway_review_admission = await begin_gateway_review_admission(self, event, source, session_entry, _quick_key)
         prepared, _session_env_tokens = await self._hmwa_prepare_turn(
             event, source, session_entry, session_key, _quick_key, run_generation,
         )
@@ -280,6 +283,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
+                gateway_review_admission=gateway_review_admission,
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -322,6 +326,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 response = self._hmwa_add_failed_turn_notice(response, self._hmwa_failed_turn_notice(agent_result))
             response, session_entry = await self._hmwa_compression_exhaustion_reset(
                 agent_result, response, session_entry, session_key, source,
+                gateway_review_admission=gateway_review_admission,
             )
             await self._hmwa_persist_turn_transcript(
                 event=event, source=source, session_entry=session_entry, session_key=session_key,
@@ -1691,74 +1696,6 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             if callable(_mark_turn):
                 _mark_turn(turn_ctx.session_key, turn_ctx.run_generation)
 
-    async def _run_agent_drain_pending(
-        self, result: Any, adapter: Any, source: SessionSource, session_key: Optional[str]
-    ) -> tuple[Any, Optional[str]]:
-        """Dequeue the adapter's pending / interrupt / leftover-steer follow-up as ``(pending_event, pending)``.
-
-        Keyed by session_key (not source.chat_id) to match the adapter's storage keys."""
-        from gateway.run import _build_media_placeholder, _dequeue_pending_event, _is_control_interrupt_message
-        from gateway.session_ingress import executing_admission
-        pending_event = None
-        pending = None
-        if result and adapter and session_key:
-            pending_event = _dequeue_pending_event(adapter, session_key)
-            if result.get("compression_exhausted") and pending_event is not None:
-                self._defer_past_exhaustion_reset(result, adapter, source, session_key, pending_event)
-                return None, None
-            # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
-            # recursive drain sees it (keeps FIFO order; a mid-chain /queue can't jump the queue).
-            pending_event = self._promote_queued_event(session_key, adapter, pending_event)
-            if result.get("interrupted") and not pending_event and result.get("interrupt_message"):
-                interrupt_message = result.get("interrupt_message")
-                if _is_control_interrupt_message(interrupt_message):
-                    logger.info(
-                        "Ignoring control interrupt message for session %s: %s",
-                        session_key or "?", interrupt_message,
-                    )
-                else:
-                    # FIFO already has this send.
-                    pending = None if executing_admission.get() else interrupt_message
-            elif pending_event:
-                # Transcribe audio BEFORE it becomes the next user turn (real transcript, not a path).
-                _pending_text = pending_event.text or ""
-                if self._pending_event_audio_paths(pending_event):
-                    pending, _ = await self._transcribe_and_echo_pending_voice(
-                        pending_event, adapter, source, _pending_text, log_context="Voice-drain",
-                        metadata={"thread_id": source.thread_id} if source.thread_id else None,
-                    )
-                    pending = pending or _build_media_placeholder(pending_event)
-                else:
-                    pending = _pending_text or _build_media_placeholder(pending_event)
-                if pending:
-                    logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
-
-        # Leftover /steer (arrived after the last tool batch): deliver as the next user turn.
-        pending_event, pending = self._merge_leftover_steer(result, adapter, source, session_key, pending_event, pending)
-
-        # Safety net: a pending slash command is never passed to the agent as user input.
-        if pending and pending.strip().startswith("/"):
-            _pending_cmd_word = pending.strip().split(None, 1)[0][1:].lower()
-            if _pending_cmd_word:
-                with suppress(Exception):
-                    from hermes_cli.commands import resolve_command as _rc_pending
-                    if _rc_pending(_pending_cmd_word):
-                        logger.info(
-                            "Discarding command '/%s' from pending queue — "
-                            "commands must not be passed as agent input", _pending_cmd_word,
-                        )
-                        pending_event = None
-                        pending = None
-
-        if self._draining and (pending_event or pending):
-            logger.info(
-                "Discarding pending follow-up for session %s during gateway %s",
-                session_key or "?", self._status_action_label(),
-            )
-            pending_event = None
-            pending = None
-        return pending_event, pending
-
     async def _run_agent_deliver_first_response(
         self, turn_ctx: TurnContext, adapter: Any, response: Any, result: Any, stream_task: Any,
     ) -> None:
@@ -1839,7 +1776,6 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         response: Any, result: Any, stream_task: Any,
     ) -> Any:
         """Run the queued / interrupting follow-up as the next turn (recursive ``_run_agent``)."""
-        from gateway.platforms.base import merge_pending_message_event
         from gateway.run import _preserve_queued_followup_history_offset
         source, session_id, session_key, run_generation = (
             turn_ctx.source, turn_ctx.session_id, turn_ctx.session_key, turn_ctx.run_generation,
@@ -1863,7 +1799,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             )
             adapter = self._delivery_adapter_for(source)
             if adapter and pending_event:
-                merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
+                # Fenced merge: this re-queue is the next live turn, so it must publish to review
+                # admission like every other slot write (_hm_merge_pending_for_source).
+                self._hm_merge_pending_for_source(source, session_key, pending_event)
             elif adapter and hasattr(adapter, 'queue_message'):
                 adapter.queue_message(session_key, pending)
             return turn_ctx.result_holder[0] or {"final_response": response, "messages": history}
@@ -1974,6 +1912,10 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 persist_user_display_metadata={
                     **display_metadata_for_event(pending_event),
                     **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
+                # Bound to the OUTER admission like the first turn (``bind_agent`` runs per turn, so
+                # a superseded candidate never outlives its follow-up); read like
+                # ``_wire_turn_agent_callbacks``: upstream's turn-context doubles lack the field.
+                gateway_review_admission=getattr(turn_ctx, "gateway_review_admission", None),
             )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(
@@ -2302,6 +2244,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         reply_expected: Optional[bool] = None,
         scheduled_heartbeat: bool = False,
         title_user_message: Optional[str] = None,
+        gateway_review_admission: Optional[_GatewayReviewAdmission] = None,
     ) -> dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
@@ -2346,7 +2289,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
             reply_expected=reply_expected,
-            persist_user_display_metadata=persist_user_display_metadata, scheduled_heartbeat=scheduled_heartbeat,
+            persist_user_display_metadata=persist_user_display_metadata,
+            scheduled_heartbeat=scheduled_heartbeat,
+            gateway_review_admission=gateway_review_admission,
             voice_turn=str(getattr(message_type, "value", message_type) or "").lower() == "voice",
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(

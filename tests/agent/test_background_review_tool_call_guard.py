@@ -14,17 +14,37 @@ say nothing at all.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import os
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 import agent.background_review as bg
+from agent import review_admission
+
+
+@pytest.fixture(autouse=True)
+def clear_review_admission_state():
+    """One failed assertion must not leak a process-global session admission into later tests."""
+    with review_admission._lock:
+        review_admission._live_turns.clear()
+        review_admission._review_runs.clear()
+        review_admission._turn_keys.clear()
+        review_admission._tokens = itertools.count(1)
+    yield
+    with review_admission._lock:
+        review_admission._live_turns.clear()
+        review_admission._review_runs.clear()
+        review_admission._turn_keys.clear()
+        review_admission._tokens = itertools.count(1)
 
 
 def _fake_parent(client, *, runtime=None) -> SimpleNamespace:
@@ -77,6 +97,54 @@ def test_fork_is_skipped_when_the_provider_cannot_emit_tool_calls(caplog):
     assert "auxiliary.background_review" in caplog.text
 
 
+def test_incapable_provider_finishes_prepared_review_ownership():
+    client = MagicMock()
+    client.SUPPORTS_HERMES_TOOL_CALLS = False
+    agent = _fake_parent(client)
+    run = bg.prepare_background_review_run(agent)
+    assert run is not None
+
+    with patch("tools.terminal_tool.set_approval_callback"):
+        bg._run_review_in_thread(
+            agent,
+            [{"role": "user", "content": "hi"}],
+            "review please",
+            review_run=run,
+        )
+
+    assert run.request_done.is_set()
+    assert agent._background_review_run is None
+
+
+def test_runtime_resolution_failure_still_finishes_prepared_review_ownership():
+    """A pre-fork failure (runtime resolution raising on the worker thread) must still publish
+    the prepared run's exit: otherwise the parent slot and the canonical registry entry stay
+    owned by a run nobody will ever finish, and every later live turn on the session blocks in
+    ``wait_for_background_review_cancellation`` forever."""
+    client = MagicMock()
+    client.SUPPORTS_HERMES_TOOL_CALLS = False
+    agent = _fake_parent(client)
+
+    def _boom():
+        raise RuntimeError("runtime unavailable")
+
+    agent._current_main_runtime = _boom
+    run = bg.prepare_background_review_run(agent)
+    assert run is not None
+
+    with patch("tools.terminal_tool.set_approval_callback"):
+        bg._run_review_in_thread(
+            agent,
+            [{"role": "user", "content": "hi"}],
+            "review please",
+            review_run=run,
+        )
+
+    assert run.request_done.is_set()
+    assert agent._background_review_run is None
+    assert review_admission.current_review_run("s1") is None
+
+
 def test_fork_is_spawned_when_the_provider_can_emit_tool_calls():
     client = MagicMock()
     client.SUPPORTS_HERMES_TOOL_CALLS = True
@@ -115,3 +183,54 @@ def test_an_incapable_provider_still_reviews_when_the_review_is_routed_away():
     }
     with patch.object(bg, "_resolve_review_runtime", return_value=routed):
         assert _run(_fake_parent(_IncapableClient())).called
+
+
+def test_incapable_provider_skip_is_owner_tagged_with_a_stable_reason(caplog):
+    """The skip is a review decision like every other: one body-free line with the hashed owner
+    and a stable slug (greppable beside ``live_turn_active`` and friends), the remediation hint
+    on its own line, never the session id."""
+    client = MagicMock()
+    client.SUPPORTS_HERMES_TOOL_CALLS = False
+    with caplog.at_level(logging.WARNING, logger=bg.logger.name):
+        _run(_fake_parent(client))
+
+    decision = [
+        r.getMessage()
+        for r in caplog.records
+        if review_admission.REASON_PROVIDER_INCAPABLE in r.getMessage()
+    ]
+    assert len(decision) == 1, caplog.text
+    assert decision[0].startswith("Background review skipped (owner=")
+    assert review_admission.owner_tag("", "s1") in decision[0]
+    assert "s1" not in decision[0]
+    assert "auxiliary.background_review" in caplog.text
+
+
+@pytest.mark.parametrize("explicit", [True, False], ids=["refine", "automatic"])
+def test_explicit_refine_on_an_incapable_provider_tells_the_user(explicit):
+    """/refine already reported "reviewing in the background": the skip must reach the user on
+    the review's own channel, with the knob that makes it work. An automatic skip stays silent."""
+    client = MagicMock()
+    client.SUPPORTS_HERMES_TOOL_CALLS = False
+    agent = _fake_parent(client)
+    printed: list[str] = []
+    published: list[str] = []
+    agent._safe_print = lambda text, *_a, **_k: printed.append(text)
+    agent.background_review_callback = published.append
+
+    with (
+        patch("hermes_cli.config.load_config", return_value={}),
+        patch("run_agent.AIAgent") as mock_aiagent,
+        patch("tools.terminal_tool.set_approval_callback"),
+    ):
+        bg._run_review_in_thread(
+            agent, [{"role": "user", "content": "hi"}], "review please", explicit=explicit
+        )
+
+    mock_aiagent.assert_not_called()
+    if explicit:
+        assert len(published) == 1 and printed
+        assert "Review skipped" in published[0]
+        assert "auxiliary.background_review" in published[0]
+    else:
+        assert published == [] and printed == []

@@ -577,14 +577,8 @@ def test_live_turn_cancels_review_during_startup_before_provider(monkeypatch):
     assert live_result == {"boundary_reached": True}
 
 
-def test_live_turn_proceeds_when_review_acknowledgement_times_out(monkeypatch):
-    """A broken review abort path must not block the foreground indefinitely.
-    The live turn proceeds after the bounded wait, retaining foreground priority.
-    """
-    import time
-
-    import agent.background_review as background_review_module
-
+def test_live_turn_waits_for_review_acknowledgement_before_provider(monkeypatch):
+    """A slow abort cannot let foreground provider work overlap review work."""
     review_entered = threading.Event()
     interrupt_entered = threading.Event()
     interrupt_returned = threading.Event()
@@ -604,13 +598,6 @@ def test_live_turn_proceeds_when_review_acknowledgement_times_out(monkeypatch):
     monkeypatch.setattr(run_agent_module, "AIAgent", WedgedReviewAgent)
     CapturingThread.targets = []
     monkeypatch.setattr(run_agent_module.threading, "Thread", CapturingThread)
-    monkeypatch.setattr(
-        background_review_module,
-        "_BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS",
-        0.01,
-        raising=False,
-    )
-
     agent = _bare_agent()
     AIAgent._spawn_background_review(
         agent,
@@ -624,13 +611,10 @@ def test_live_turn_proceeds_when_review_acknowledgement_times_out(monkeypatch):
     worker.start()
     assert review_entered.wait(2.0)
 
-    boundary_calls = []
-    _install_live_turn_boundary(
-        monkeypatch, lambda: boundary_calls.append(True)
-    )
+    boundary_reached = threading.Event()
+    _install_live_turn_boundary(monkeypatch, boundary_reached.set)
     relay_calls = _install_relay_recorder(monkeypatch, run)
 
-    started = time.monotonic()
     live_result = {}
     live = _REAL_THREAD(
         target=_run_wrapped_live_turn_to_boundary,
@@ -638,27 +622,23 @@ def test_live_turn_proceeds_when_review_acknowledgement_times_out(monkeypatch):
         daemon=True,
     )
     live.start()
-    live.join(timeout=5.0)
-
-    elapsed = time.monotonic() - started
+    assert interrupt_entered.wait(2.0)
+    assert boundary_reached.is_set() is False
 
     allow_interrupt_return.set()
     allow_review_return.set()
     worker.join(timeout=2.0)
+    live.join(timeout=2.0)
 
-    assert elapsed < 2.0
-    assert interrupt_entered.is_set()
     assert interrupt_returned.wait(2.0)
     assert not worker.is_alive()
     assert not live.is_alive()
-    # Foreground retains priority: Relay/turn-context proceed even though
-    # the review did not acknowledge within the bounded deadline.
-    assert boundary_calls == [True]
+    assert boundary_reached.is_set()
     assert live_result == {"boundary_reached": True}
     assert relay_calls == [
-        ("acquire", False),
-        ("begin", False),
-        ("start_task_run", False),
+        ("acquire", True),
+        ("begin", True),
+        ("start_task_run", True),
     ]
     assert agent.session_id == "test-session"
 
@@ -702,6 +682,63 @@ def test_live_turn_interrupts_legacy_review_but_keeps_foreground_priority(monkey
         ("start_task_run", False),
     ]
     assert agent.session_id == "test-session"
+
+
+def test_review_child_turn_does_not_cancel_its_own_canonical_run(monkeypatch):
+    """The admitted fork reaches the real turn facade without waiting on its own ack."""
+    from agent import background_review
+
+    parent = _bare_agent()
+    review_child = _bare_agent()
+    run = background_review.prepare_background_review_run(parent)
+    assert run is not None
+    assert run.begin_request(review_child) is True
+    run.request_done = ObservedEvent()
+    boundary_reached = threading.Event()
+    _install_live_turn_boundary(monkeypatch, boundary_reached.set)
+    _install_relay_recorder(monkeypatch, run)
+    result = {}
+    child_turn = _REAL_THREAD(
+        target=_run_wrapped_live_turn_to_boundary,
+        args=(review_child, result),
+        daemon=True,
+    )
+
+    child_turn.start()
+    try:
+        assert boundary_reached.wait(2.0), (
+            "the review child waited for request_done that only its caller can publish"
+        )
+        assert run.request_done.wait_started.is_set() is False
+        assert run.cancel_requested.is_set() is False
+    finally:
+        background_review.finish_background_review_run(parent, run)
+        child_turn.join(timeout=2.0)
+
+    assert child_turn.is_alive() is False
+    assert result == {"boundary_reached": True}
+
+
+def test_direct_review_thread_helper_publishes_ownership_before_return(monkeypatch):
+    """No supported fork path may create a provider worker without an ack-capable run."""
+    from agent import background_review
+
+    agent = _bare_agent()
+    target, _prompt = background_review.spawn_background_review_thread(
+        agent,
+        [{"role": "user", "content": "review this"}],
+        review_memory=True,
+    )
+
+    run = agent._background_review_run
+    assert run is not None
+    assert background_review.cancel_background_review_for_live_turn(
+        agent, wait=False
+    ) is run
+    assert run.cancel_requested.is_set()
+
+    target()
+    assert run.request_done.is_set()
 
 
 def test_stale_review_cleanup_cannot_clear_or_signal_newer_review(monkeypatch):

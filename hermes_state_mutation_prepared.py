@@ -2,6 +2,7 @@
 import json
 from hermes_state_local import POLICY_PREFIX
 from hermes_state_local_lineage import validate_local_lineage
+from hermes_state_write_guards import REVIEW_LEASE_IGNORE
 from hermes_state_mutation_guards import require_target_advanceable
 from hermes_state_runtime import RuntimeStoreError
 
@@ -15,7 +16,8 @@ def local_snapshot(db, conn, session_id):
         raise RuntimeStoreError('runtime_coordination_required')
     saved = json.loads(row[0])
     target = validate_local_lineage(conn, saved)
-    require_target_advanceable(db, conn, list({session_id, target}))
+    # A compress/model rotation rebinds a background review's ownership; its snapshot stays valid.
+    require_target_advanceable(db, conn, list({session_id, target}), review_lease_policy=REVIEW_LEASE_IGNORE)
     revision = conn.execute('SELECT runtime_revision FROM sessions WHERE id=?', (target,)).fetchone()[0]
     return {'receipt': saved, 'target': target, 'target_revision': revision}
 
@@ -139,7 +141,8 @@ def commit_refreshed_policy(db, *, epoch, session_id, old, new, generation):
     def write(conn):
         _epoch(conn, epoch)
         snapshot = local_snapshot(db, conn, session_id)
-        require_idle(db, conn, list({session_id, snapshot['target']}))
+        # A policy refresh edits no transcript: like a model pick, it lands beside a background review.
+        require_idle(db, conn, list({session_id, snapshot['target']}), review_lease_policy=REVIEW_LEASE_IGNORE)
         current = conn.execute('SELECT runtime_generation FROM sessions WHERE id=?', (session_id,)).fetchone()
         if snapshot['receipt']['policy'] != old or current is None or current[0] != generation:
             raise RuntimeStoreError('revision_conflict')

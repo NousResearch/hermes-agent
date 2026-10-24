@@ -73,7 +73,9 @@ def test_worker_turn_wait_callbacks_remain_local(tmp_path):
         assert store.acquire_session_turn_lease('s', 'holder', wait_seconds=3,
             poll_interval_seconds=.01, on_wait=notices.append)
         assert notices and len(attempts) == 2
-        assert all(set(row['payload']) == {'holder', 'ttl_seconds'} for row in attempts)
+        # The waiting path is the foreground's: every attempt asks a background-review holder to yield.
+        assert all(set(row['payload']) == {'holder', 'ttl_seconds', 'preempt_background_review'}
+                   for row in attempts)
         assert not store.acquire_session_turn_lease('s', 'holder', should_abort=lambda: True)
     finally:
         store.close()

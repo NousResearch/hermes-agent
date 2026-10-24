@@ -427,6 +427,18 @@ def _lock_vault_managers(session: dict) -> None:
         logging.getLogger(__name__).debug("vault manager lock on session end failed", exc_info=True)
 
 
+def _review_profile_key(session: dict) -> str | None:
+    """The key the session's background review is published under: ``agent/review_admission.py``
+    buckets by ``(profile, session)``, and the teardown/interrupt cancels below run on unscoped
+    reaper, Timer and RPC-pool threads whose ambient home is the launch profile's -- resolved
+    there, a hosted secondary session would fence the launch profile's review on the same
+    session id and leave its own running. ``None`` (unresolvable) keeps the ambient key."""
+    with contextlib.suppress(Exception):
+        from hermes_constants import hermes_home_key
+        return hermes_home_key(session.get("profile_home") or None)
+    return None
+
+
 def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> None:
     """Best-effort finalize hook + memory commit; mirrors the CLI exit path so a force-quit mid-turn (double
     Ctrl-C, terminal close, SIGHUP) loses nothing."""
@@ -530,11 +542,17 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     # reap, shutdown) funnels through here, so cancelling here closes the gap for all of them at
     # once. Without it, a review whose provider degraded into a failed-tool retry loop keeps calling
     # the model forever after the session is gone: nothing ever sets its _interrupt_requested.
+    # wait=False: teardown is not a live turn. The live-turn acknowledgement wait never fails open
+    # (escalation, then unbounded), and this runs on reaper/Timer/atexit threads — a fork parked in
+    # a non-interruptible tool call would stall an idle-reap sweep or the SIGTERM settle budget.
+    # Nothing overlaps the fork here: the next turn on this session performs its own cancel + wait
+    # (facade registry, gateway prework, durable lease).
     if agent is not None:
         with contextlib.suppress(Exception):
             from agent.background_review import cancel_background_review_for_live_turn
             cancel_background_review_for_live_turn(
-                agent, message=f"session ended ({end_reason})", tool_reason="session ended")
+                agent, wait=False, message=f"session ended ({end_reason})",
+                tool_reason="session ended", profile_key=_review_profile_key(session))
     # Close the slash-worker in this single ``_finalized``-guarded chokepoint (a direct caller can't leak it); idempotent.
     with contextlib.suppress(Exception):
         if worker := session.get("slash_worker"):
@@ -834,12 +852,17 @@ def _interrupt_session_turn(
     # on the FOREGROUND turn's session["running"]/_run_thread) — a user hitting Stop while only the
     # post-turn review is still running (the common case: the main turn already finished) would see
     # "stopped" while the review keeps calling the model. Fires unconditionally (both compute-host
-    # and in-process turns) since the review is always local to this process.
+    # and in-process turns) since the review is always local to this process. wait=False: this is
+    # the session.interrupt RPC on a tui-rpc pool worker (also the WS-orphan reaper, the lease
+    # takeover and the SIGTERM exit path), not a live turn — the live-turn acknowledgement wait
+    # never fails open, and a fork parked in a non-interruptible tool call would block the RPC.
+    # The next turn on the chat performs its own cancel + wait (facade registry, durable lease).
     if (agent_for_review := session.get("agent")) is not None:
         with contextlib.suppress(Exception):
             from agent.background_review import cancel_background_review_for_live_turn
             cancel_background_review_for_live_turn(
-                agent_for_review, message="session interrupted", tool_reason="session interrupted")
+                agent_for_review, wait=False, message="session interrupted",
+                tool_reason="session interrupted", profile_key=_review_profile_key(session))
     _clear_pending(sid)
     with contextlib.suppress(Exception):
         # Deny-resolve every pending approval so no agent thread blocks on the queue. The

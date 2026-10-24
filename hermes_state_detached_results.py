@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 from agent.message_metadata import stamp_message_uid
+from hermes_state_write_guards import REVIEW_LEASE_IGNORE
 
 # Rows of a session and of the parents it was compressed from; a detached result's match condition follows.
 _LINEAGE_MATCH_SQL = """WITH RECURSIVE lineage(id) AS (SELECT ? UNION
@@ -41,7 +42,8 @@ class SessionDetachedResultsMixin:
                                 match_sql: str, params: tuple) -> int:
         """Record a result that arrived between turns as a user row once, including replay after rotation: a row
         ``match_sql`` (a condition on ``m``) finds in the compression lineage is returned instead. Check and insert
-        share the writer transaction, so independent gateway processes cannot duplicate it; a live turn refuses it."""
+        share the writer transaction, so independent gateway processes cannot duplicate it; a live foreground turn
+        refuses it, a background review's lease does not."""
         from hermes_state_messages import _INSERT_MESSAGE_SQL  # that module binds this mixin
         msg = {"content": content, "display_kind": display_kind, "display_metadata": metadata}
         stamp_message_uid(msg)  # a fresh occurrence: mint its durable id
@@ -51,7 +53,10 @@ class SessionDetachedResultsMixin:
             existing = conn.execute(_LINEAGE_MATCH_SQL + match_sql + " LIMIT 1", (session_id, *params)).fetchone()
             if existing is not None:
                 return existing[0]
-            self._check_transcript_write_guards(conn, session_id, None, reject_active_turn_lease=True)
+            # An append after the review's snapshot: a live review neither refuses it nor yields to it
+            # (REVIEW_LEASE_IGNORE); a foreground turn lease still refuses it.
+            self._check_transcript_write_guards(conn, session_id, None, reject_active_turn_lease=True,
+                                                review_lease_policy=REVIEW_LEASE_IGNORE)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, row).lastrowid
             self._bump_session_counters(conn, session_id, 1, 0, unit=True)
             return msg_id

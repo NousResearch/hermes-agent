@@ -55,8 +55,11 @@ class TestSpawnForwardsScope:
         captured = {}
 
         def fake_worker(agent, messages_snapshot, prompt, task_cfg=None, review_run=None,
-                        review_memory=False, explicit=False):
+                        review_memory=False, explicit=False, review_session_id=None):
             captured["review_memory"] = review_memory
+            # Worker contract: every exit publishes the prepared run's exit, or the next
+            # spawn on this session is refused as already active.
+            bg.finish_background_review_run(agent, review_run)
 
         agent = SimpleNamespace()
         with patch.object(bg, "_run_review_in_thread", fake_worker):
@@ -80,8 +83,9 @@ class TestExplicitRefineOrigin:
         captured = {}
 
         def fake_worker(agent, messages_snapshot, prompt, task_cfg=None, review_run=None,
-                        review_memory=False, explicit=False):
+                        review_memory=False, explicit=False, review_session_id=None):
             captured["explicit"] = explicit
+            bg.finish_background_review_run(agent, review_run)
 
         with patch.object(bg, "_run_review_in_thread", fake_worker):
             target, _prompt = bg.spawn_background_review_thread(
@@ -95,7 +99,8 @@ class TestExplicitRefineOrigin:
         must NOT change the origin; attendedness rides on the fork as its own flag."""
         forks = []
 
-        def fake_build(agent, task_cfg=None, *, max_iterations, write_origin="background_review"):
+        def fake_build(agent, task_cfg=None, *, max_iterations, write_origin="background_review",
+                       session_id=None, review_prompt=None):
             fork = SimpleNamespace(
                 _memory_enabled=True, _user_profile_enabled=False, _memory_write_origin=write_origin,
                 run_conversation=lambda **kw: None, _session_messages=[])

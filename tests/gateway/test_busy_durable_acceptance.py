@@ -23,7 +23,9 @@ async def test_busy_receive_returns_after_acceptance_but_delivers_once_after_com
 
     authority = SimpleNamespace(admit_native=admit, native_waiters=set(), waiters={}, db=None)
     adapter = SimpleNamespace(_background_tasks=set(), _message_handler=lambda event: admit_message(authority, event),
-                              _release_turn_marker=AsyncMock())
+                              _release_turn_marker=AsyncMock(),
+                              # the accepted follower is published to review admission (base.py's fence)
+                              apply_followup_queue_mutation=lambda key, mutation: mutation())
     delivery = AsyncMock()
     monkeypatch.setattr(ingress, 'deliver_response', delivery)
     # admit_message re-reads the committed row (a drain may already have settled it); still queued.

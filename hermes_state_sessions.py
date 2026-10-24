@@ -1167,172 +1167,13 @@ class SessionSessionsMixin:
         candidate_limit: int | None = None,
         lineage_limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Latency-bounded recent-conversation browse (``session_search()``): preselect a small candidate set
-        from the indexed durable activity timestamp (fallback ``started_at``), resolve only those across
-        compression ancestry/chains, then hydrate activity/previews for that bounded set. Lineage traversal
-        uses ``UNION`` plus a total-row ceiling so a corrupt cycle or a deep/branching lineage cannot defeat
-        the bound; a lineage that hits the ceiling before a terminal root/tip is omitted, not expanded.
-        A cooperative SQLite progress deadline interrupts sustained work past ``timeout_seconds`` and raises
-        ``TimeoutError`` (cheap statements may finish between callbacks). Supports only the agent-tool
-        browse filters; rich callers keep using :meth:`list_sessions_rich`."""
-        limit = max(1, int(limit))
-        timeout_seconds = max(0.0, float(timeout_seconds))
-        if candidate_limit is None:
-            candidate_limit = max(128, limit * 8)
-        candidate_limit = max(limit, min(int(candidate_limit), 2048))
-        if lineage_limit is None:
-            lineage_limit = min(8192, candidate_limit * 8)
-        lineage_limit = max(candidate_limit, min(int(lineage_limit), 8192))
-
-        candidate_clauses = [
-            "s.archived = 0",
-            "s.hidden = 0",
-            f"{_delegate_from_json('s.model_config')} IS NULL",
-        ]
-        candidate_params: list[Any] = []
-        if exclude_sources:
-            placeholders = ",".join("?" for _ in exclude_sources)
-            candidate_clauses.append(f"s.source NOT IN ({placeholders})")
-            candidate_params.extend(exclude_sources)
-        candidate_where = " AND ".join(candidate_clauses)
-
-        # A compression continuation is an implementation edge, unlike /new
-        # reset and /branch children which are independent user-visible
-        # conversations.  The same predicate is used in both directions so a
-        # candidate tip maps to its logical root and the root maps back to the
-        # freshest live tip.
-        compression_parent_edge = f"""
-            parent.end_reason = 'compression'
-            AND child.parent_session_id = parent.id
-            AND json_extract(
-                COALESCE(child.model_config, '{{}}'), '$._branched_from'
-            ) IS NULL
-            AND {_delegate_from_json('child.model_config')} IS NULL
-            AND COALESCE(child.source, '') != 'tool'
-        """
-
-        query = f"""
-            WITH RECURSIVE
-            recent_candidates(id) AS (
-                SELECT s.id
-                FROM sessions s
-                WHERE {candidate_where}
-                ORDER BY COALESCE(s.last_activity_at, s.started_at) DESC,
-                         s.started_at DESC, s.id DESC
-                LIMIT ?
-            ),
-            ancestors(candidate_id, cur_id) AS (
-                SELECT id, id FROM recent_candidates
-                UNION
-                SELECT a.candidate_id, parent.id
-                FROM ancestors a
-                JOIN sessions child ON child.id = a.cur_id
-                JOIN sessions parent ON {compression_parent_edge}
-                LIMIT ?
-            ),
-            candidate_roots(root_id) AS (
-                SELECT DISTINCT a.cur_id
-                FROM ancestors a
-                JOIN sessions child ON child.id = a.cur_id
-                WHERE NOT EXISTS (
-                    SELECT 1
-                    FROM sessions parent
-                    WHERE {compression_parent_edge}
-                )
-            ),
-            chain(root_id, cur_id) AS (
-                SELECT root_id, root_id FROM candidate_roots
-                UNION
-                SELECT c.root_id, child.id
-                FROM chain c
-                JOIN sessions parent ON parent.id = c.cur_id
-                JOIN sessions child ON {compression_parent_edge}
-                LIMIT ?
-            ),
-            chain_rows AS (
-                SELECT
-                    c.root_id,
-                    c.cur_id,
-                    {_sql_session_last_active_by_id('c.cur_id')} AS activity,
-                    CASE WHEN EXISTS (
-                        SELECT 1
-                        FROM sessions parent
-                        JOIN sessions child ON {compression_parent_edge}
-                        WHERE parent.id = c.cur_id
-                    ) THEN 0 ELSE 1 END AS is_tip
-                FROM chain c
-            ),
-            ranked_tips AS (
-                SELECT root_id, cur_id, activity,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY root_id
-                           ORDER BY activity DESC, cur_id DESC
-                       ) AS rank_in_root
-                FROM chain_rows
-                WHERE is_tip = 1
-            )
-            SELECT
-                tip.id,
-                tip.source,
-                tip.model,
-                COALESCE(tip.title, s.title) AS title,
-                s.started_at AS started_at,
-                tip.ended_at,
-                tip.end_reason,
-                tip.message_count,
-                tip.tool_call_count,
-                rt.activity AS last_active,
-                {_sql_preview_raw('tip.id')},
-                CASE WHEN s.id != tip.id THEN s.id ELSE NULL END
-                    AS _lineage_root_id
-            FROM ranked_tips rt
-            JOIN sessions s ON s.id = rt.root_id
-            JOIN sessions tip ON tip.id = rt.cur_id
-            WHERE rt.rank_in_root = 1
-              AND s.archived = 0
-              AND s.hidden = 0
-              AND {_LISTABLE_CHILD_SQL}
-              AND {_delegate_from_json('s.model_config')} IS NULL
-            ORDER BY rt.activity DESC, s.started_at DESC, tip.id DESC
-            LIMIT ?
-        """
-        params = candidate_params + [
-            candidate_limit,
-            lineage_limit,
-            lineage_limit,
-            limit,
-        ]
-        deadline = time.monotonic() + timeout_seconds
-        interrupted_by_deadline = False
-
-        def _deadline_progress_handler() -> int:
-            nonlocal interrupted_by_deadline
-            if time.monotonic() >= deadline:
-                interrupted_by_deadline = True
-                return 1
-            return 0
-
-        try:
-            with self._read_ctx() as conn:
-                conn.set_progress_handler(_deadline_progress_handler, 1000)
-                try:
-                    rows = conn.execute(query, params).fetchall()
-                finally:
-                    conn.set_progress_handler(None, 0)
-        except sqlite3.OperationalError as exc:
-            if interrupted_by_deadline and "interrupt" in str(exc).lower():
-                raise TimeoutError(
-                    f"recent-session browse exceeded {timeout_seconds:g}s deadline"
-                ) from exc
-            raise
-
-        sessions = []
-        for row in rows:
-            session = self._session_row_dict(row)
-            session["preview"] = _shape_preview(session.pop("_preview_raw", ""))
-            session["unread"] = self.session_unread(session)
-            sessions.append(session)
-        return sessions
+        """Latency-bounded recent-conversation browse (``session_search()``): a bounded candidate
+        preselect resolved across compression lineage under a cooperative deadline
+        (``hermes_state_sessions_recent``). Rich callers keep using :meth:`list_sessions_rich`."""
+        from hermes_state_sessions_recent import list_recent_sessions_bounded
+        return list_recent_sessions_bounded(
+            self, limit=limit, exclude_sources=exclude_sources, timeout_seconds=timeout_seconds,
+            candidate_limit=candidate_limit, lineage_limit=lineage_limit)
 
     @classmethod
     def _list_row(cls, row: sqlite3.Row) -> dict[str, Any]:
@@ -1727,7 +1568,8 @@ class SessionSessionsMixin:
         are orphaned. Optional expected ids fence delegate drift; expected display snapshots fence
         transcript drift. Both checks run inside the same write transaction as deletion.
         With ``exclude_active_write_guards``, raises :class:`SessionActiveWriteGuardError` if the row
-        is protected by an active turn lease or compression lock.
+        is protected by an active turn lease or compression lock; a background review's lease is
+        asked to yield instead (the delete removes its replay basis), as a rewind does.
 
         With ``include_compression_chain=True`` the whole compression chain the session belongs to
         is deleted with it (root and every continuation) — the dashboard delete endpoints use this
@@ -1745,6 +1587,7 @@ class SessionSessionsMixin:
             ) > 0
         removed_ids: list[str] = []
         expected_ids = set(expected_delete_ids) if expected_delete_ids is not None else None
+        from hermes_state_write_guards import REVIEW_LEASE_YIELD
         def _do(conn):
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
                 return False
@@ -1756,7 +1599,10 @@ class SessionSessionsMixin:
                 [*scope, *_collect_delegate_child_ids(conn, scope)]
                 if exclude_active_write_guards or expected_ids is not None else None
             )
-            if exclude_active_write_guards and self._guarded_ids(conn, target_ids):
+            # A background review's lease is asked to yield (the delete removes its replay basis);
+            # any other guard refuses, and that rollback lifts the stamp with the refusal.
+            if exclude_active_write_guards and self._guarded_ids(
+                    conn, target_ids, review_lease_policy=REVIEW_LEASE_YIELD):
                 # Delegate children cascade with the root, so a guard on any of them refuses too.
                 raise SessionActiveWriteGuardError(
                     f"session '{session_id}' (or a delegate child) has an active turn lease or compression lock"
@@ -1869,6 +1715,7 @@ class SessionSessionsMixin:
         if not unique_ids:
             return 0
         removed_ids: list[str] = []
+        from hermes_state_write_guards import REVIEW_LEASE_IGNORE, REVIEW_LEASE_YIELD
         def _do(conn):
             existing = [row["id"] for chunk in _id_chunks(unique_ids) for row in conn.execute(
                 f"SELECT id FROM sessions WHERE id IN ({_session_ids_placeholders(chunk)})", chunk,
@@ -1892,20 +1739,24 @@ class SessionSessionsMixin:
                 # expansion is on, a guard on ANY lineage member keeps its selected root: deleting
                 # a torn chain would re-surface it (the root re-projects onto a surviving link).
                 # One batched check first; per-root attribution only when something is guarded.
+                # A background review's lease keeps nothing: attribution sees through it, and the
+                # rows that go ask their reviews to yield below (the delete removes the fork's replay
+                # basis), so a kept root's review is never asked to yield for a delete that did not happen.
+                live = {"review_lease_policy": REVIEW_LEASE_IGNORE}
                 active_ids: set = set()
-                if self._guarded_ids(conn, guard_pool):
+                if self._guarded_ids(conn, guard_pool, **live):
                     if include_compression_chain:
                         for sid in existing:
                             member_lineage = set(self._expand_compression_lineage(conn, [sid]))
                             member_lineage.add(sid)
                             if self._guarded_ids(conn, [*member_lineage,
-                                    *_collect_delegate_child_ids(conn, list(member_lineage))]):
+                                    *_collect_delegate_child_ids(conn, list(member_lineage))], **live):
                                 active_ids.add(sid)
                     else:
                         active_ids = {
                             sid for sid in existing
                             if self._guarded_ids(conn, [*(members := expand([sid])),
-                                                        *_collect_delegate_child_ids(conn, members)])
+                                                        *_collect_delegate_child_ids(conn, members)], **live)
                         }
                 existing = [sid for sid in existing if sid not in active_ids]
                 if skipped_ids is not None:
@@ -1913,6 +1764,8 @@ class SessionSessionsMixin:
                 if not existing:
                     return 0
                 expanded = expand(existing)
+                self._guarded_ids(conn, [*expanded, *_collect_delegate_child_ids(conn, expanded)],
+                                  review_lease_policy=REVIEW_LEASE_YIELD)
             from hermes_state_mutation_retirement import retire_sessions
             retire_sessions(conn, expanded)
             removed_ids.extend(_delete_delegate_children(conn, expanded))

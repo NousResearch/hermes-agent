@@ -426,6 +426,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after
+from gateway.platforms.base_followup_admission import FollowupAdmissionMixin, FollowupAdmissionState
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
@@ -1853,7 +1854,7 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 _strip_media_directives = _strip_media_tag_directives
 
 
-class BasePlatformAdapter(ABC):
+class BasePlatformAdapter(FollowupAdmissionMixin, ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
     # ``format_message`` renders ``` fences as real code blocks (tool-progress then sends a bare
@@ -1944,6 +1945,7 @@ class BasePlatformAdapter(ABC):
         # runner, never process env (#116895).
         self._human_delay_range_ms: Optional[tuple[int, int]] = None
         self._text_debounce: dict[str, TextDebounceState] = {}
+        self._followup_admission: dict[str, FollowupAdmissionState] = {}
         # handle_message() tasks; shutdown cancels them so a replaced gateway stops working.
         self._background_tasks: set[asyncio.Task] = set()
         # Post-delivery one-shots per session_key: bare callback (legacy) or ``(generation,
@@ -3548,22 +3550,60 @@ class BasePlatformAdapter(ABC):
             ttl = 0
         return response.text, int(ttl or 0)
 
-    async def _dispatch_inline_reply(self, event: MessageEvent, *, log_cmd: Optional[str] = None) -> None:
+    async def _dispatch_inline_reply(
+        self, event: MessageEvent, *, log_cmd: Optional[str] = None,
+        session_key: Optional[str] = None,
+    ) -> None:
         """Call the handler and send its reply inline, with retry, threading and
-        ephemeral deletion — no session lifecycle (active-session bypass paths)."""
+        ephemeral deletion — no session lifecycle (active-session bypass paths).
+
+        This IS the delivery owner of an agent turn the handler nests meanwhile (/retry typed
+        while the outgoing reply is on the wire): the nesting handler parks that turn's completion
+        on its own synthetic event and re-homes it onto this command event
+        (``rehome_review_delivery_completion``) — never on the session guard, which the outgoing
+        task's unwind and a drain task may swap between a guard read here and the nested turn's
+        carrier lookup. Only this event is read once the handler returns. The guard is never read
+        for a completion: one that appears there DURING the call is the outgoing turn's own late
+        park (``begin_gateway_review_admission`` runs behind the ingress awaits and the previous
+        review's cancel wait, so a bypass command typed in that window sees it land), which that
+        turn's task takes the moment its handler returns; taking it here would release the live
+        turn's token with this command's send. A nested completion completes with this send's
+        outcome, so the nested turn's token never outlives its delivery. Its candidate goes to the
+        outgoing turn (still the session's delivery owner), which spawns it once its own token is
+        released: a spawn here would be refused against that token.
+        """
         thread_meta = _thread_metadata_for_event(event)
-        response = await self._message_handler(event)
-        text, eph_ttl = self._unwrap_ephemeral(response)
-        if not text:
-            return
-        if log_cmd is not None:
-            logger.info("[%s] Sending command '/%s' response (%d chars) to %s", self.name, log_cmd,
-                        len(text), event.source.chat_id)
-        result = await self._send_with_retry(
-            chat_id=event.source.chat_id, content=text, reply_to=_reply_anchor_for_event(event),
-            metadata=_mark_notify_metadata(thread_meta))
-        if eph_ttl > 0 and result.success and result.message_id:
-            self._schedule_ephemeral_delete(event.source.chat_id, result.message_id, eph_ttl)
+        if session_key is None:
+            session_key = self._event_session_key(event)
+        guard = self._active_sessions.get(session_key)
+        outgoing = getattr(guard, "_gateway_review_delivery_outgoing", None)
+        review_delivery_complete = None
+        delivery_succeeded = False
+        try:
+            try:
+                response = await self._message_handler(event)
+            finally:
+                review_delivery_complete = self._take_review_delivery_callback(event, None)
+            text, eph_ttl = self._unwrap_ephemeral(response)
+            if not text:
+                delivery_succeeded = True  # nothing to deliver: the reply went out on its own
+                return
+            if log_cmd is not None:
+                logger.info("[%s] Sending command '/%s' response (%d chars) to %s", self.name, log_cmd,
+                            len(text), event.source.chat_id)
+            result = await self._send_with_retry(
+                chat_id=event.source.chat_id, content=text, reply_to=_reply_anchor_for_event(event),
+                metadata=_mark_notify_metadata(thread_meta))
+            # Tolerant read: a transport (or a test stub) that returns no SendResult reads as
+            # unconfirmed, exactly like a failed send; the ephemeral path below never touched it.
+            delivery_succeeded = bool(getattr(result, "success", False))
+            if eph_ttl > 0 and result.success and result.message_id:
+                self._schedule_ephemeral_delete(event.source.chat_id, result.message_id, eph_ttl)
+        finally:
+            if callable(review_delivery_complete):
+                await self._complete_review_delivery(
+                    review_delivery_complete, delivery_succeeded=delivery_succeeded,
+                    outer=getattr(outgoing, "__self__", None))
 
     def _media_delivery_scope(self, source: Optional[SessionSource]):
         """Routed home + terminal policy for post-handler text, media and error delivery;
@@ -3757,115 +3797,6 @@ class BasePlatformAdapter(ABC):
             return existing_text
         return f"{existing_text}\n\n{new_text}".strip()
 
-    def _text_debounce_store(self) -> dict[str, TextDebounceState]:
-        return _lazy_attr(self, "_text_debounce", dict)
-
-    def _is_queue_text_debounce_candidate(self, event: MessageEvent) -> bool:
-        """Return True for normal text eligible for queue-mode debounce."""
-        result = (
-            getattr(self, "_busy_text_mode", "interrupt") == "queue"
-            and event.message_type == MessageType.TEXT and not getattr(event, "internal", False)
-            and not event.is_command() and bool((event.text or "").strip()))
-        if result:
-            logger.debug("[%s] Queue-text debounce candidate accepted: session=%s text_len=%d",
-                         self.name, getattr(event, "session_key", "?"), len(event.text or ""))
-        return result
-
-    def _can_merge_text_debounce_events(self, existing: MessageEvent, event: MessageEvent) -> bool:
-        """Return True when two text debounce events came from the same sender."""
-
-        def _identity(candidate: MessageEvent) -> tuple[str, ...] | None:
-            source = getattr(candidate, "source", None)
-            if source is None:
-                return None
-            platform = _platform_name(getattr(source, "platform", None))
-            sender = getattr(source, "user_id_alt", None) or getattr(source, "user_id", None)
-            if sender:
-                return (platform, str(sender))
-            if getattr(source, "chat_type", None) in {"dm", "private"} and getattr(source, "chat_id", None):
-                return (platform, "dm", str(source.chat_id))
-            return None
-        existing_sender = _identity(existing)
-        return existing_sender is not None and existing_sender == _identity(event)
-
-    def _text_debounce_delay(self, session_key: str) -> float:
-        """Return bounded busy-text debounce delay for ``session_key``."""
-        state = self._text_debounce_store().get(session_key)
-        if state is None:
-            return 0.0
-        deadline = min(state.last_ts + self._busy_text_debounce_seconds,
-                       state.first_ts + self._busy_text_hard_cap_seconds)
-        return max(0.0, deadline - time.monotonic())
-
-    async def _queue_text_debounce(self, session_key: str, event: MessageEvent) -> None:
-        """Buffer normal queue-mode busy text and schedule a bounded flush."""
-        store = self._text_debounce_store()
-        state = store.get(session_key)
-        if state is not None and not self._can_merge_text_debounce_events(state.event, event):
-            # Preserve sender attribution: flush the buffer as the next turn, new sender starts
-            # fresh.
-            await self._flush_text_debounce_now(session_key)
-            state = store.get(session_key)
-            if state is not None and not self._can_merge_text_debounce_events(state.event, event):
-                existing_pending = self._pending_messages.get(session_key)
-                if existing_pending is not None and self._can_merge_text_debounce_events(existing_pending, event):
-                    merge_pending_message_event(self._pending_messages, session_key, event, merge_text=True)
-                return
-        now = time.monotonic()
-        if state is None:
-            state = TextDebounceState(event=event, task=None, first_ts=now, last_ts=now)
-            store[session_key] = state
-        else:
-            if event.text:
-                state.event.text = _append_text(state.event.text, event.text)
-            state.event.absorb_reply_expected(event)
-            latest_message_id = getattr(event, "message_id", None)
-            latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
-            if latest_message_id is not None:
-                state.event.message_id = str(latest_message_id)
-            if latest_anchor is not None and hasattr(state.event, "reply_to_message_id"):
-                state.event.reply_to_message_id = str(latest_anchor)
-            state.last_ts = now
-        state.cancel_timer()
-        delay = self._text_debounce_delay(session_key)
-        state.task = asyncio.create_task(self._flush_text_debounce(session_key, delay))
-
-    async def _flush_text_debounce(self, session_key: str, delay: float) -> None:
-        """Timer task that flushes the debounced text buffer."""
-        try:
-            await asyncio.sleep(delay)
-            await self._flush_text_debounce_now(session_key)
-        except asyncio.CancelledError:
-            return
-        finally:
-            current = asyncio.current_task()
-            state = self._text_debounce_store().get(session_key)
-            if state is not None and state.task is current:
-                state.task = None
-
-    async def _flush_text_debounce_now(self, session_key: str) -> bool:
-        """Force-flush one debounced busy-text burst into the pending slot."""
-        store = self._text_debounce_store()
-        state = store.get(session_key)
-        if state is None:
-            return False
-        state.cancel_timer(unless=asyncio.current_task())
-        state.task = None
-        pending = self._pending_messages.get(session_key)
-        if pending is not None and not self._can_merge_text_debounce_events(pending, state.event):
-            return False
-        store.pop(session_key, None)
-        merge_pending_message_event(self._pending_messages, session_key, state.event, merge_text=True)
-        return True
-
-    def _discard_text_debounce(self, session_key: str) -> None:
-        """Cancel and drop pending text debounce state for control commands."""
-        state = self._text_debounce_store().pop(session_key, None)
-        if state is not None:
-            state.cancel_timer()
-        from gateway.session_ingress_burst import discard_busy_burst
-        discard_busy_burst(self, session_key)
-
     # ── Session task + guard ownership helpers: paired with the _session_tasks owner map so
     # reconciliation is deterministic across completion, /stop /new /reset, and stale-lock heal.
 
@@ -3895,6 +3826,7 @@ class BasePlatformAdapter(ABC):
         self._requeue_counts.pop(session_key, None)
         self._session_tasks.pop(session_key, None)
         self._discard_text_debounce(session_key)
+        self._followup_admission_store().pop(session_key, None)
         return True
 
     def _start_session_processing(self, event: MessageEvent, session_key: str, *,
@@ -3974,7 +3906,7 @@ class BasePlatformAdapter(ABC):
         try:
             # Send BEFORE cancelling so cancellation side effects can't drop the "/new"
             # confirmation.
-            await self._dispatch_inline_reply(event, log_cmd=cmd)
+            await self._dispatch_inline_reply(event, log_cmd=cmd, session_key=session_key)
             await self.cancel_session_processing(session_key, release_guard=False, discard_pending=False)
         except Exception:
             # On failure restore the original guard so the session isn't left half-reset.
@@ -3984,6 +3916,9 @@ class BasePlatformAdapter(ABC):
                 else:
                     self._release_session_guard(session_key, guard=command_guard)
             raise
+        finally:
+            # The command guard's lifecycle owns anything still parked on it (see the helper).
+            await self._complete_stranded_review_delivery(command_guard)
         await self._drain_pending_after_session_command(session_key, command_guard)
 
     async def handle_message(self, event: MessageEvent) -> None:
@@ -4079,7 +4014,7 @@ class BasePlatformAdapter(ABC):
                 else:
                     logger.debug("[%s] Command '/%s' bypassing active-session guard for %s",
                                  self.name, cmd, session_key)
-                    await self._dispatch_inline_reply(event)
+                    await self._dispatch_inline_reply(event, session_key=session_key)
             except Exception as e:
                 logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
             return
@@ -4099,7 +4034,7 @@ class BasePlatformAdapter(ABC):
             if _has_text_clarify:
                 logger.debug("[%s] Routing message to clarify text-intercept for %s", self.name, session_key)
                 try:
-                    await self._dispatch_inline_reply(event)
+                    await self._dispatch_inline_reply(event, session_key=session_key)
                 except Exception as e:
                     logger.error("[%s] Clarify text-intercept dispatch failed: %s", self.name, e, exc_info=True)
                 return
@@ -4140,7 +4075,10 @@ class BasePlatformAdapter(ABC):
         # Photo bursts/albums: queue without interrupting; they run after the current task.
         if event.message_type == MessageType.PHOTO:
             logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
-            merge_pending_message_event(self._pending_messages, session_key, event)
+            admission = self.followup_admission_state(session_key)
+            with admission.lock:
+                merge_pending_message_event(self._pending_messages, session_key, event)
+                self._record_and_fence_followup_locked(admission)
             event._gateway_accepted = True
             return
         if self._is_queue_text_debounce_candidate(event):
@@ -4151,8 +4089,13 @@ class BasePlatformAdapter(ABC):
         else:
             logger.debug("[%s] New message while session %s is active — queuing follow-up "
                          "(no interrupt, will cascade after current turn)", self.name, session_key)
-            merge_pending_message_event(self._pending_messages, session_key, event,
-                                        merge_text=event.message_type == MessageType.TEXT)
+            admission = self.followup_admission_state(session_key)
+            with admission.lock:
+                merge_pending_message_event(
+                    self._pending_messages, session_key, event,
+                    merge_text=event.message_type == MessageType.TEXT,
+                )
+                self._record_and_fence_followup_locked(admission)
             event._gateway_accepted = True
 
     def _get_human_delay(self) -> float:
@@ -4531,6 +4474,8 @@ class BasePlatformAdapter(ABC):
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         delivery_attempted = delivery_succeeded = False  # feeds the processing-complete hook
+        processing_ok = pending_handoff = review_ownership_taken = False
+        review_delivery_complete = None
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
@@ -4546,6 +4491,12 @@ class BasePlatformAdapter(ABC):
             await self._run_processing_hook("on_processing_start", event)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
             response = await self._message_handler(event)
+            review_delivery_complete = self._take_review_delivery_callback(event, interrupt_event)
+            review_ownership_taken = True
+            if callable(review_delivery_complete):
+                # Still the session's delivery owner until the send below completes: a turn an
+                # inline dispatch nests meanwhile (/retry) hands its candidate to this one.
+                interrupt_event._gateway_review_delivery_outgoing = review_delivery_complete
             # A muted diagnostic wake ran for the session; its reply is not presented. The
             # policy read binds the routed profile; delivery itself stays in the launch scope.
             with self._media_delivery_scope(event.source):
@@ -4622,6 +4573,7 @@ class BasePlatformAdapter(ABC):
                 if not delay:  # a backed-off event stays queued until the drain task wakes
                     self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
+                pending_handoff = True
                 self._clear_session_guard(session_key)
                 await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
                 self._spawn_drain_task(pending_event, session_key, delay=delay)
@@ -4640,12 +4592,33 @@ class BasePlatformAdapter(ABC):
             if isinstance(e, (SystemExit, KeyboardInterrupt)):
                 raise
         finally:
-            await self._release_turn_marker(event)
-            event._turn_marker_handoff = False  # a later run of this object clears its own marker
-            # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
-            # alive.
-            await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
-            await self._fire_post_delivery_callback(session_key, interrupt_event)
+            if not review_ownership_taken:
+                # The handler raised, so no drain task exists yet and the carriers still hold
+                # only this turn's callback.
+                review_delivery_complete = self._take_review_delivery_callback(event, interrupt_event)
+            try:
+                await self._release_turn_marker(event)
+                event._turn_marker_handoff = False  # a later run of this object clears its own marker
+                # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
+                # alive.
+                await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
+                await self._fire_post_delivery_callback(session_key, interrupt_event)
+            finally:
+                # A /stop, /new or teardown cancel that lands at one of the awaits above raises
+                # there; the completion still runs, or the turn's review token
+                # (agent/review_admission.py) outlives the task and every later automatic review
+                # on the session is refused as live_turn_active. Still behind the marker release
+                # and the post-delivery callback, where the completion always ran.
+                if callable(review_delivery_complete):
+                    from agent.review_admission import REASON_PENDING_HANDOFF
+
+                    with contextlib.suppress(Exception):
+                        delattr(interrupt_event, "_gateway_review_delivery_outgoing")
+                    await self._complete_review_delivery(
+                        review_delivery_complete,
+                        delivery_succeeded=bool(processing_ok and not pending_handoff),
+                        cause=REASON_PENDING_HANDOFF if pending_handoff else None,
+                    )
             # Callback work or a late refresh may have recreated typing — one final bounded stop.
             await self._stop_typing_refresh(
                 event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
@@ -4738,6 +4711,7 @@ class BasePlatformAdapter(ABC):
         self._release_session_guard(session_key, guard=interrupt_event)
         if session_key not in self._active_sessions:
             self._session_tasks.pop(session_key, None)
+            self._followup_admission_store().pop(session_key, None)
             self._requeue_counts.pop(session_key, None)
 
     async def cancel_background_tasks(self) -> None:
@@ -4768,7 +4742,7 @@ class BasePlatformAdapter(ABC):
             state.cancel_timer()
         for bucket in (self._background_tasks, self._expected_cancelled_tasks, self._session_tasks,
                        self._pending_messages, self._active_sessions, self._requeue_counts,
-                       self._text_debounce_store()):
+                       self._text_debounce_store(), self._followup_admission_store()):
             bucket.clear()
 
     def has_pending_interrupt(self, session_key: str) -> bool:

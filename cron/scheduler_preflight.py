@@ -233,6 +233,33 @@ class SharedRouteAdapters:
         return default
 
 
+def _non_delivering_platforms() -> frozenset:
+    """Platforms an adapter map can hold without owning a MESSAGING credential.
+
+    ``LOCAL`` is the desktop/CLI transport: any local session of a served profile (a kanban
+    worker, the desktop app, ``hermes`` in that profile) lazily registers a
+    ``LocalSessionAdapter`` under ``Platform.LOCAL`` in that profile's adapter map
+    (``gateway.session_local_recovery.local_adapter_map``). ``API_SERVER``/``WEBHOOK`` are the
+    profile's own listeners. None of them can carry a cron delivery target, so none of them makes
+    the profile "its own bot".
+    """
+    from gateway.config import Platform
+
+    return frozenset({Platform.LOCAL, Platform.API_SERVER, Platform.WEBHOOK})
+
+
+def delivering_adapters(adapters_map) -> dict:
+    """*adapters_map* minus the transports that can never deliver a cron target.
+
+    A satellite whose map holds ONLY such transports is still credentialless and must still ride
+    the primary bot through its ``profile_routes``. Treating ``{LOCAL: adapter}`` as "this profile
+    has its own transport" made every routed Telegram target fail closed as ``platform 'telegram'
+    not configured/enabled`` for as long as any local session of that profile existed.
+    """
+    skip = _non_delivering_platforms()
+    return {p: a for p, a in (adapters_map or {}).items() if p not in skip}
+
+
 def _preflight_check_delivery(job: dict) -> Optional[str]:
     """Check delivery targets resolve to configured platforms. ``local``/``origin``/``all`` are
     never checked (no gateway-config load). Unknown platform always blocks; known platform blocks

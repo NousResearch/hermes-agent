@@ -16,7 +16,8 @@ CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'provider', 'base_url', 'reasoning', 'max_turns', 'ignore_rules', 'api_key', 'editor',
                            'yolo', 'safe_mode', 'ignore_user_config',
                            'skills', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config',
-                           'service_tier', 'cwd_explicit', 'run_budget', 'verbose', 'row_cwd', 'client_env'})
+                           'service_tier', 'cwd_explicit', 'run_budget', 'verbose', 'row_cwd', 'client_env',
+                           'pin_route'})
 # Sections a ``follow_profile_config`` session re-reads from the owning profile's CURRENT config each
 # turn (main's Bot Chat row), credentials included: a frozen key never crosses a profile route change.
 FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases',
@@ -238,6 +239,17 @@ class LocalSessionPolicy:
         # parse once per (immutable) policy; ``replace()`` builds a fresh instance with its own cache.
         return (json.loads(self.request_json).get('follow_profile_config') is True
                 or json.loads(self.config_json).get(FOLLOW_ADOPTED) is True)
+
+    @property
+    def pins_route(self):
+        """The creator recorded an explicit route choice (``pin_route``: a typed ``hermes chat -m`` / ``-z
+        -m``, a Kanban task's model override): like a pinned cron job or delegate child, the session never
+        borrows the profile's ``fallback_providers`` (``scoped_fallback_chain``). Opt-in rather than read
+        off ``model``, which also carries choices nobody typed for this session: a Desktop composer pick
+        (sticky UI state), a legacy row's last model, a ``/new`` or branch copy, the TUI's inherited
+        ``HERMES_MODEL``. A request without it (every receipt written before the field) keeps the chain.
+        ``build_policy`` refuses it beside ``follow_profile_config`` and on Desktop."""
+        return json.loads(self.request_json).get('pin_route') is True
 
     def read_profile(self, authority):
         """The owning profile's current config for a following session, else None; inside this policy's
@@ -552,6 +564,18 @@ def _with_entry_pick(params, config):
     return {**params, 'provider': identity}
 
 
+def _check_route_pin(params):
+    """``pin_route`` pins the model the request names. A following session takes the profile's route and
+    chain each turn, and Desktop's composer pick is sticky UI state, never a per-launch pin: refused, not
+    silently ignored."""
+    if not params.get('pin_route'):
+        return
+    if 'model' not in params:
+        _refuse('pin_route', 'pins the model the request names; send model too')
+    if params.get('follow_profile_config') or params.get('source') == 'gui':
+        _refuse('pin_route', 'a session following its profile, or a Desktop chat, has no route to pin')
+
+
 def _apply_launch_overrides(params, config):
     """Validate the explicit model/agent launch overrides and fold them into *config*."""
     from urllib.parse import urlsplit
@@ -584,10 +608,11 @@ def _apply_launch_overrides(params, config):
                     _refuse('base_url', 'must be an http(s) URL without credentials, query or fragment')
             config.setdefault('model', {})[key] = value
     bad_flag = next((flag for flag in ('ignore_rules', 'yolo', 'checkpoints', 'accept_hooks', 'pass_session_id',
-                                      'follow_profile_config', 'cwd_explicit', 'verbose')
+                                      'follow_profile_config', 'cwd_explicit', 'verbose', 'pin_route')
                      if flag in params and type(params[flag]) is not bool), None)
     if bad_flag:
         _refuse(bad_flag, 'must be a boolean')
+    _check_route_pin(params)
     if 'service_tier' in params:
         # An explicit speed pick (Desktop Fast / Ultrafast / Normal): normal pins normal over a
         # profile tier; an unknown word is refused, never read as normal.

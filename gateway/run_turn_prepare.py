@@ -42,8 +42,10 @@ logger = logging.getLogger("gateway.run")
 def _resolve_policy_agent_runtime(runner, policy, *, fallback=True) -> tuple[str, dict]:
     """``_resolve_session_agent_runtime`` for a session bound to a launch policy: the route's FROZEN
     config and launch credential, walking its own fallback chain on an AuthError unless
-    ``fallback=False`` (a session control asking which route the session itself runs). Module-level
-    so tests that bind the method onto bare namespaces still reach it."""
+    ``fallback=False`` (a session control asking which route the session itself runs) or the session
+    pinned its model (``pins_route``): a pinned route resolves as requested or fails, as its agent gets
+    no chain and a managed worker's key walk follows ``construct_v1``. Module-level so tests that bind
+    the method onto bare namespaces still reach it."""
     from gateway.run import _runtime_agent_kwargs
     from gateway.session_policy import route_launch_key
     from gateway.session_worker_construct import route_runtime
@@ -53,7 +55,7 @@ def _resolve_policy_agent_runtime(runner, policy, *, fallback=True) -> tuple[str
     frozen, model = policy.effective(authority)
     provider = (frozen.get('model') or {}).get('provider')
     runtime, fallback_entry = route_runtime(policy, frozen, model, route_launch_key(authority, policy, frozen),
-                                            fallback=fallback)
+                                            fallback=fallback and not policy.pins_route)
     if fallback_entry is not None:
         from hermes_cli.fallback_config import pre_agent_fallback_notice
         runner._pre_agent_fallback_notice = pre_agent_fallback_notice(

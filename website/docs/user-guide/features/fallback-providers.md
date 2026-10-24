@@ -198,12 +198,14 @@ fallback_providers:
 
 | Context | Fallback Supported |
 |---------|-------------------|
-| CLI sessions (interactive and `hermes -z` one-shot) | ✔ (at startup when the primary's credentials/quota fail, mid-session, and a chain added or edited while a chat is open applies from its next turn) |
+| CLI sessions (interactive and `hermes -z` one-shot) | ✔ (at startup when the primary's credentials/quota fail, mid-session, and a chain added or edited while a chat is open applies from its next turn; a chat launched with `-m`/`--model` does not use the chain once it is open: when that model fails, the turn fails, though same-provider [credential pool](../configuration.md#credential-pool-strategies) rotation still applies) |
 | Messaging gateway (Telegram, Discord, etc.) | ✔ |
-| Desktop app / TUI chats | ✔ (a chain added or edited while a chat is open applies from its next turn) |
+| Desktop app / TUI chats | ✔ (a chain added or edited while a chat is open applies from its next turn; TUI and Desktop chats keep it whatever model `hermes --tui -m`, `HERMES_MODEL` or the composer picks, and Bot Mode chats follow the profile, chain included) |
 | Subagent delegation | ✔ (`delegation.fallback_providers` when set; otherwise only unpinned children inherit the parent chain; `[]` disables) |
 | Cron jobs | ✔ (unpinned jobs inherit the configured chain; a job with its own provider/model/base_url never falls back to it) |
 | Auxiliary tasks on `provider: auto` | ✔ (try per-task fallback, then the main fallback chain before built-in aux discovery) |
+
+A pinned chat, cron job or delegation child only stops using the chain for its main model. Its auxiliary tasks on `provider: auto` (compression, titles, vision and the rest) still follow the main `fallback_providers` chain as described in [Auxiliary Task Fallback](#auxiliary-task-fallback); pin those tasks too (`auxiliary.<task>.provider`) when no other provider may see the conversation.
 
 :::tip
 There are no environment variables for the primary fallback chain — configure it exclusively through `config.yaml` or `hermes fallback`. This is intentional: fallback configuration is a deliberate choice, not something a stale shell export should override.
@@ -449,7 +451,7 @@ To keep fallback for a job, leave it unpinned and choose its model with `cron.mo
 
 | Feature | Fallback Mechanism | Config Location |
 |---------|-------------------|----------------|
-| Main agent model | `fallback_providers` in config.yaml — per-turn failover on errors (primary restored each turn) | `fallback_providers:` (top-level list) |
+| Main agent model | `fallback_providers` in config.yaml — per-turn failover on errors (primary restored each turn); a CLI chat launched with `-m`, a Kanban task with a model override, a pinned cron job and a pinned delegation child do not use it | `fallback_providers:` (top-level list) |
 | Auxiliary tasks (any) — auto users | Full auto-detection chain (main agent model first, then provider chain) on capacity errors | `auxiliary.<task>.provider: auto` |
 | Auxiliary tasks (any) — explicit provider | `fallback_chain` (if set) → main agent model → warn + raise, on capacity errors; auth errors (401) walk `fallback_chain` only | `auxiliary.<task>.fallback_chain` |
 | Vision | Layered (see above) + internal OpenRouter retry | `auxiliary.vision` |

@@ -60,6 +60,12 @@ def shell_client_env() -> dict:
     return collect_client_env(config=load_user_config_effective(get_config_path()))
 
 
+def route_pin_policy(policy, parameters) -> dict:
+    """``pin_route`` for a create whose command line typed ``-m`` (*policy* holds ``model`` only then), when
+    the gateway takes the field: the session never borrows the profile's ``fallback_providers``."""
+    return {"pin_route": True} if "model" in policy and "pin_route" in parameters else {}
+
+
 def client_env_policy(parameters) -> dict:
     """``client_env`` for a new session (main's process read these from its shell; the shared gateway
     applies them to this session only), or nothing for a gateway that predates the field."""
@@ -208,6 +214,7 @@ async def run_gateway_chat(args, emitter=None):
             if create_if_missing:
                 policy["title"] = title
             policy.update(env_launch_flags())
+            policy.update(route_pin_policy(policy, parameters))
             policy.update(client_env_policy(parameters))
             cwd = await asyncio.to_thread(_caller_cwd, args)
             if "cwd" in parameters:

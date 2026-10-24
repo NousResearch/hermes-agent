@@ -53,6 +53,8 @@ def build_kanban_policy(connection, params, config):
     for name, value in (('model', task.model_override), ('provider', task.provider_override), ('reasoning', task.reasoning_effort)):
         if value:
             params_policy[name] = value
+    if task.model_override:
+        params_policy['pin_route'] = True  # the board chose this model: no profile fallback chain
     private = {}
     policy = build_policy(params_policy, config, private_secrets=private)
     if policy.model is None:

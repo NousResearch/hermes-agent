@@ -91,9 +91,8 @@ def _side_agent(authority, policy, live, task_id, **overrides):
     runner = authority.runner
     model, runtime = _resolve_runtime(authority, policy)
     config = policy.config(authority)
-    from gateway.session_worker_construct import session_routing
+    from gateway.session_worker_construct import session_fallback_chain, session_routing
     pr = session_routing(authority, policy)
-    refresh_fallback = getattr(runner, '_refresh_fallback_model', None)
     kwargs = dict(
         model=model, **{key: runtime.get(key) for key in _RUNTIME_KEYS if key in runtime},
         **_checkpoint_agent_kwargs(config),
@@ -108,7 +107,7 @@ def _side_agent(authority, policy, live, task_id, **overrides):
         provider_data_collection=pr.get('data_collection'),
         # Its own session in the owning profile's store, like the sidecar's ``bg_*`` rows.
         session_id=task_id, platform=policy.platform, session_db=authority.db,
-        fallback_model=refresh_fallback() if callable(refresh_fallback) else None,
+        fallback_model=session_fallback_chain(runner, policy, authority),
         load_soul_identity=not policy.ignore_rules, skip_memory=policy.ignore_rules,
         side_agent=True)
     kwargs.update(overrides)

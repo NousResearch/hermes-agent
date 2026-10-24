@@ -3991,6 +3991,61 @@ class TestCodexAuxiliaryAdapterNullOutputRecovery:
 
         assert response.choices[0].message.content == "aux survived"
 
+    def test_rejects_final_without_output_after_consumer(self):
+        """Regression for #33368 — defense against ``final.output`` being ``None``.
+
+        The event-driven consumer always sets ``final.output`` to a list, so this
+        shape can't come from our own path. But a mocked client / compatibility
+        shim that returns a typed Response with ``output=None`` directly (or a
+        future code path that wraps a different consumer) would crash on
+        ``for item in getattr(final, "output", [])`` because ``getattr`` returns
+        ``None`` (not the default) when the attribute exists but is ``None``.
+        Reject the unusable response with a provider error, not TypeError or success.
+        """
+        # Stream that returns no items but a terminal with output=None.
+        # The consumer assembles an empty list. We then mock the consumer's
+        # return to simulate a third-party path that returns final.output=None.
+        empty_events = [
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(
+                status="completed", id="r", output=None, usage=None,
+            )),
+        ]
+
+        class _Stream:
+            def __iter__(self): return iter(empty_events)
+            def close(self): pass
+
+        # Monkey-patch the consumer to return a final whose .output is None
+        # (mimics third-party shim behavior the defensive guard protects against).
+        from agent import codex_runtime
+        original_consume = codex_runtime._consume_codex_event_stream
+
+        def _consume_returning_none_output(*args, **kwargs):
+            return SimpleNamespace(
+                output=None,  # the defensive guard target
+                output_text="",
+                usage=None,
+                status="completed",
+                id="r",
+                model=kwargs.get("model"),
+                incomplete_details=None,
+                error=None,
+            )
+
+        codex_runtime._consume_codex_event_stream = _consume_returning_none_output
+        try:
+            class FakeResponses:
+                def create(self, **kwargs):
+                    return _Stream()
+
+            fake_client = SimpleNamespace(responses=FakeResponses())
+            adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+            with pytest.raises(RuntimeError, match="Responses API returned no output items"):
+                adapter.create(messages=[{"role": "user", "content": "x"}])
+        finally:
+            codex_runtime._consume_codex_event_stream = original_consume
+
 
 class TestCodexAuxiliaryAdapterCompletedResponse:
     def test_accepts_completed_response_when_stream_was_requested(self):

@@ -61,6 +61,7 @@ class TestHook:
     @pytest.fixture(autouse=True)
     def _auto(self, monkeypatch):
         monkeypatch.setattr(_providers, "_nous_anthropic_wire", lambda: "auto")
+        monkeypatch.setattr(nous_wire, "_native_sdk_available", lambda: True)
         self.switches = []
         monkeypatch.setattr("agent.agent_runtime_helpers.switch_model",
                             lambda agent, m, p, api_key="", base_url="", api_mode="", **k: self.switches.append(api_mode) or setattr(agent, "api_mode", api_mode))
@@ -90,6 +91,14 @@ class TestHook:
         assert nous_wire.maybe_switch_wire_after_first_response(a, _resp(id="msg_01abc"), 1) is False
         assert a.api_mode == "chat_completions" and self.switches == []
 
+    def test_gmi_without_the_anthropic_sdk_stays_on_chat(self, monkeypatch):
+        """No mid-session dependency install: without the SDK the decision is chat, and final."""
+        monkeypatch.setattr(nous_wire, "_native_sdk_available", lambda: False)
+        a = _agent()
+        assert nous_wire.maybe_switch_wire_after_first_response(a, _resp(id="msg_01abc"), 1) is False
+        assert nous_wire.apply_pending_wire_switch(a) is False
+        assert a.api_mode == "chat_completions" and a._nous_wire_decided == "s" and self.switches == []
+
     @pytest.mark.parametrize("mode", ["chat", "native"])
     def test_explicit_modes_never_auto_switch(self, monkeypatch, mode):
         monkeypatch.setattr(_providers, "_nous_anthropic_wire", lambda: mode)
@@ -104,6 +113,31 @@ class TestHook:
         assert nous_wire.maybe_switch_wire_after_first_response(_agent(model="openai/gpt-5.6-sol"), _resp(id="msg_01abc"), 1) is False
         assert self.switches == []
 
+    def test_decision_is_bound_to_its_session_and_route(self, monkeypatch):
+        """Reviewer P1s: stale intent never crosses /new or /model, a fallback is never promoted,
+        a new session re-decides (and can go back to chat), and wire-only promotion keeps the
+        agent's own reasoning policy (switch_model would re-read it from config)."""
+        monkeypatch.setattr(nous_wire, "GMI_NATIVE_WIRE_CLEARED", True)
+        gmi, orr = _resp(id="msg_01abc"), _resp(provider="Anthropic", id="gen-1-x")
+        a = _agent(reasoning_config={"enabled": False})
+        assert nous_wire.maybe_switch_wire_after_first_response(a, gmi, 1) is True
+        a.session_id = "s2"  # /new before the next iteration
+        assert nous_wire.apply_pending_wire_switch(a) is False and self.switches == []
+        assert nous_wire.maybe_switch_wire_after_first_response(a, gmi, 1) is True
+        a.model = "anthropic/claude-sonnet-5.5"  # /model while pending
+        assert nous_wire.apply_pending_wire_switch(a) is False and self.switches == []
+        f = _agent(_fallback_activated=True)
+        assert nous_wire.maybe_switch_wire_after_first_response(f, gmi, 1) is False
+        b = _agent(session_id="s3", reasoning_config={"enabled": False})
+        monkeypatch.setattr("agent.agent_runtime_helpers.switch_model",
+                            lambda agent, m, p, api_mode="", **k: (self.switches.append(api_mode), setattr(agent, "api_mode", api_mode), setattr(agent, "reasoning_config", {"enabled": True, "effort": "high"})))
+        assert nous_wire.maybe_switch_wire_after_first_response(b, gmi, 1) is True
+        assert nous_wire.apply_pending_wire_switch(b) is True
+        assert b.api_mode == "anthropic_messages" and b.reasoning_config == {"enabled": False}
+        b.session_id = "s4"  # next session on the same agent is served by OpenRouter
+        assert nous_wire.maybe_switch_wire_after_first_response(b, orr, 1) is True
+        assert nous_wire.apply_pending_wire_switch(b) is True and b.api_mode == "chat_completions"
+
     def test_switch_failure_is_swallowed_and_decision_is_final(self, monkeypatch):
         monkeypatch.setattr(nous_wire, "GMI_NATIVE_WIRE_CLEARED", True)
 
@@ -113,7 +147,7 @@ class TestHook:
         a = _agent()
         assert nous_wire.maybe_switch_wire_after_first_response(a, _resp(id="msg_01abc"), 1) is True
         assert nous_wire.apply_pending_wire_switch(a) is False
-        assert a.api_mode == "chat_completions" and a._nous_wire_decided is True and a._nous_wire_pending is None
+        assert a.api_mode == "chat_completions" and a._nous_wire_decided == "s" and a._nous_wire_pending is None
 
 
 def test_real_agent_usage_recorder_calls_the_hook_once(tmp_path, monkeypatch):

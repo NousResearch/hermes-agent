@@ -2678,7 +2678,7 @@ DEFAULT_CONFIG = {
         # /v1/chat/completions (default for now); "native" = /v1/messages, the Anthropic
         # Messages wire (signed thinking passthrough, native cache_control scopes); "auto" =
         # start on chat and, per session, switch to native from the first response when the
-        # Portal upstream serving the model is one where native is known clean. Native is the
+        # Portal upstream is GMI (its chat route drops tool-result cache markers). Native is the
         # better wire but on the OpenRouter-served path it re-writes the previous turn's cache on
         # 14-20% of consecutive calls in concurrent tool loops (measured 2026-09-06;
         # NousResearch/api#227), so chat is the default until that is fixed.

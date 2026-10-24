@@ -1,11 +1,14 @@
 """Nous Portal ``anthropic/*`` wire selection when ``nous.anthropic_wire`` is ``auto``.
 
 Portal serves Claude two ways and Hermes cannot tell which from the request: an OpenRouter
-passthrough (today, for every ``anthropic/*`` id) or GMI/Vertex (planned once GMI is back). The
-native Messages wire is the better transport, but on the OpenRouter path it re-writes the previous
-turn's prompt cache on 14-20% of consecutive calls in concurrent tool loops (measured 2026-09-06;
-NousResearch/api#227), so the session must ride chat/completions there. On GMI that is untested,
-and until it is measured ``auto`` never promotes to native.
+passthrough or GMI/Vertex (e.g. ``anthropic/claude-opus-4.8``). On the OpenRouter path the native
+Messages wire re-writes the previous turn's prompt cache on 14-20% of consecutive calls in
+concurrent tool loops (measured 2026-09-06; NousResearch/api#227), so the session rides
+chat/completions there. On GMI it is the other way round: GMI's chat conversion ignores
+``cache_control`` on tool results and tool-calling assistant turns, so a tool loop on chat pins
+cache reads at the last user message and re-bills the whole growing tail every call (5.7% hit),
+while the native wire carries the marker on the ``tool_result`` block (63% hit, -45% cost per
+prompt token; 5 x 6 probe, 2026-10-12). ``auto`` therefore promotes GMI sessions to native.
 
 The upstream IS visible in the first RESPONSE: OpenRouter stamps ``provider`` (chat wire) and
 mints ``gen-<unix>-<rand>`` ids; GMI/Vertex responses carry neither. So ``auto`` starts every
@@ -24,9 +27,10 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# Flip to True only after the 20x6 concurrency probe (evals/postmortem/live_ab) is clean on a
-# GMI-served anthropic/* id on the native wire. Until then ``auto`` is chat everywhere.
-GMI_NATIVE_WIRE_CLEARED = False
+# Measured with evals/postmortem/live_ab/cache_concurrency_probe.py on anthropic/claude-opus-4.8
+# (GMI-served), 5 sessions x 6 tool calls per wire: chat 5.7% hit / $4.78 per M prompt tokens,
+# native 63.1% hit / $2.65. Native is not jitter-free on GMI (17% stuck pairs) but chat is 88% stuck.
+GMI_NATIVE_WIRE_CLEARED = True
 
 _OPENROUTER_ID = re.compile(r"^gen-\d{9,}-[A-Za-z0-9_-]{8,}$")
 
@@ -59,6 +63,11 @@ def wire_for_upstream(upstream: Optional[str]) -> str:
     return "chat_completions"
 
 
+def _native_sdk_available() -> bool:
+    from pm.extras import available
+    return available("anthropic")
+
+
 def maybe_switch_wire_after_first_response(agent: Any, response: Any, api_call_count: int) -> bool:
     """Decide the session's wire from its first response; the switch itself is applied at the
     start of the next iteration (``apply_pending_wire_switch``), never while a response is being
@@ -67,7 +76,12 @@ def maybe_switch_wire_after_first_response(agent: Any, response: Any, api_call_c
     Only for provider=nous, anthropic/* models, ``nous.anthropic_wire: auto``, and only on the
     session's first API call.
     """
-    if api_call_count != 1 or getattr(agent, "_nous_wire_decided", False):
+    # The decision belongs to one session: a reset (/new, /resume, /branch) re-decides from the
+    # new session's first response, so a promoted wire can also go back to chat.
+    if api_call_count != 1 or getattr(agent, "_nous_wire_decided", None) == agent.session_id:
+        return False
+    # A temporary fallback is not this session's route: promoting it would make it the primary.
+    if getattr(agent, "_fallback_activated", False):
         return False
     if (getattr(agent, "provider", "") or "").lower() != "nous":
         return False
@@ -80,14 +94,23 @@ def maybe_switch_wire_after_first_response(agent: Any, response: Any, api_call_c
             return False
     except Exception:
         return False
-    agent._nous_wire_decided = True  # one decision per session, whatever it is
+    agent._nous_wire_decided = agent.session_id  # one decision per session, whatever it is
     upstream = classify_upstream(response)
     want = wire_for_upstream(upstream)
+    if want == "anthropic_messages" and not _native_sdk_available():
+        # Never install a dependency mid-session (a gateway or subagent turn would run a venv sync).
+        logger.info("nous wire auto: upstream=%s wants the native wire but the 'anthropic' extra is not "
+                    "installed; staying on chat (hermes pm install --extra anthropic)", upstream)
+        return False
     if want == getattr(agent, "api_mode", None):
         logger.debug("nous wire auto: upstream=%s, staying on %s", upstream, want)
         return False
-    agent._nous_wire_pending = (want, upstream)
+    agent._nous_wire_pending = (want, upstream, _route(agent))
     return True
+
+
+def _route(agent: Any) -> tuple:
+    return (agent.session_id, agent.model, agent.provider, agent.base_url, agent.api_mode)
 
 
 def apply_pending_wire_switch(agent: Any) -> bool:
@@ -99,7 +122,14 @@ def apply_pending_wire_switch(agent: Any) -> bool:
     if not pending:
         return False
     agent._nous_wire_pending = None
-    want, upstream = pending
+    want, upstream, route = pending
+    if route != _route(agent) or getattr(agent, "_fallback_activated", False):
+        # The session, model or route changed (or a fallback took over) since the evidence.
+        logger.debug("nous wire auto: dropping stale %s decision for %s", want, route)
+        return False
+    # switch_model is the user model-change path and re-resolves reasoning from config; a
+    # wire-only change keeps the policy this agent was built with (e.g. delegation overrides).
+    reasoning_config = getattr(agent, "reasoning_config", None)
     try:
         from agent.agent_runtime_helpers import switch_model
         switch_model(agent, agent.model, "nous", api_key=getattr(agent, "api_key", "") or "",
@@ -107,6 +137,7 @@ def apply_pending_wire_switch(agent: Any) -> bool:
     except Exception as exc:  # never let wire selection break a turn
         logger.warning("nous wire auto: switch to %s failed (%s); staying on %s", want, exc, agent.api_mode)
         return False
+    agent.reasoning_config = reasoning_config
     logger.info("nous wire auto: upstream=%s -> %s for the rest of session %s", upstream, want,
                 getattr(agent, "session_id", "?"))
     return True

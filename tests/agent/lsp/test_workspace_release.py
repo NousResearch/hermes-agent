@@ -154,7 +154,7 @@ def test_workspace_removal_releases_only_its_language_servers(entry, mock_pyrigh
         assert svc.get_diagnostics_sync(str(gone / "x.py"), delta=False)
         assert svc.get_diagnostics_sync(str(kept / "x.py"), delta=False)
         clients = dict(svc._clients)
-        procs = {key: c._proc for key, c in clients.items()}  # asyncio subprocess handles
+        procs = {key: entry.client._proc for key, entry in clients.items()}  # asyncio subprocess handles
 
         remove()
 
@@ -181,7 +181,7 @@ def test_reaper_shuts_down_client_whose_root_was_deleted(mock_pyright, tmp_path)
     try:
         assert svc.get_diagnostics_sync(str(repo / "x.py"), delta=False)
         (key,) = svc._clients
-        proc = svc._clients[key]._proc
+        proc = svc._clients[key].client._proc
 
         svc._loop.run(svc._reap_idle_once(), timeout=10.0)
         assert key in svc._clients, "an existing, recently used root must survive the sweep"

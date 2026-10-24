@@ -8,6 +8,7 @@ closed for them without mutating the process-global environment.
 from __future__ import annotations
 
 import os
+import re
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from typing import Iterator, Mapping, MutableMapping, overload
@@ -23,6 +24,62 @@ KANBAN_ENV_KEYS: tuple[str, ...] = (
     "HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID", "HERMES_KANBAN_CLAIM_LOCK",
     "HERMES_KANBAN_GOAL_MODE", "HERMES_KANBAN_GOAL_MAX_TURNS",
 )
+
+# --- Agent-scope env: what a top-level surface must never inherit. -----------------
+# A worker's terminal subprocesses carry DELEGATED_CHILD_ENV_MARKER by design
+# (``delegated_child_subprocess_env``), plus the worker's session/kanban/cron/RPC identity.
+# When one of them launched Hermes Desktop (a worker's ``hermes update`` reopening the app with
+# ``open``), every chat became a fenced "delegate child".
+# A Desktop, ``serve``/``dashboard`` backend or gateway is never a worker, so each strips this
+# family at launch. Mirrored in apps/desktop/electron/leaked-worker-env.ts (drift-tested).
+#
+# Presence of any marker means the env was inherited from a worker or delegate child. Without
+# a marker nothing is stripped: a board pin or session var set alone is an operator choice.
+AGENT_SCOPE_MARKER_KEYS: tuple[str, ...] = (
+    DELEGATED_CHILD_ENV_MARKER,
+    "HERMES_KANBAN_TASK",
+    "HERMES_KANBAN_WORKSPACE",
+    "HERMES_KANBAN_RUN_ID",
+    "HERMES_KANBAN_CLAIM_LOCK",
+)
+AGENT_SCOPE_EXACT_KEYS: tuple[str, ...] = (
+    DELEGATED_CHILD_ENV_MARKER,
+    "HERMES_SINGLE_QUERY_SESSION",
+    "HERMES_SPAWN",
+    "HERMES_SUPERVISED_CHILD",
+)
+AGENT_SCOPE_PREFIXES: tuple[str, ...] = (
+    "HERMES_KANBAN_",
+    "HERMES_SESSION_",
+    "HERMES_CRON_",
+    "HERMES_PARENT_",
+    "HERMES_RPC_",
+    "HERMES_KERNEL_",
+)
+# Operator tunables sharing those prefixes (HERMES_CRON_TIMEOUT, HERMES_SESSION_STALL_TIMEOUT,
+# HERMES_CRON_MAX_PARALLEL, HERMES_KANBAN_GUARD_HOLD_CAP_SECONDS...) are config, not identity.
+AGENT_SCOPE_TUNABLE_RE = re.compile(r"(_TIMEOUT|_TIMEOUT_S|_POLL_S|_SECONDS|_MAX_PARALLEL)$")
+
+
+def is_agent_scope_env_key(key: str) -> bool:
+    """Whether *key* belongs to a worker/delegate/session identity (not an operator tunable)."""
+    if key in AGENT_SCOPE_EXACT_KEYS:
+        return True
+    return key.startswith(AGENT_SCOPE_PREFIXES) and not AGENT_SCOPE_TUNABLE_RE.search(key)
+
+
+def strip_agent_scope_env(env: MutableMapping[str, str]) -> list[str]:
+    """Remove the agent-scope family from *env* in place when a worker marker is present.
+
+    Returns the removed key names (empty when nothing leaked). The single list every top-level
+    launch path (CLI entry, Desktop relaunch, Electron main) uses.
+    """
+    if not any(env.get(key) for key in AGENT_SCOPE_MARKER_KEYS):
+        return []
+    removed = [key for key in list(env) if is_agent_scope_env_key(key)]
+    for key in removed:
+        env.pop(key, None)
+    return removed
 
 
 @contextmanager

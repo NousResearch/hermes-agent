@@ -5,8 +5,9 @@ clone lookup) and sync markers after commit."""
 from __future__ import annotations
 
 import hashlib
+import logging
 import sqlite3
-from typing import Any, Callable, Dict, List, Mapping
+from typing import Any, Callable, Dict, List, Mapping, Set
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_metadata import (
@@ -14,6 +15,8 @@ from agent.message_metadata import (
 from hermes_state_common import _id_chunks, _placeholders
 from hermes_state_identity import _fill_missing_tool_call_uids, _restore_row_identity
 from hermes_state_messages import _MESSAGE_WRITE_COLUMNS
+
+logger = logging.getLogger("agent.transcript_repair")
 
 
 # Durable payload columns a row-addressed rewrite may change: every INSERT column except row identity,
@@ -107,6 +110,47 @@ def _active_logical_message_row(
     ).fetchone()
 
 
+def _active_uid_dedupe(
+    conn: sqlite3.Connection, session_id: str, messages: List[Dict[str, Any]]
+) -> Set[str]:
+    """ACTIVE durable uids among *messages*' no-snapshot, no-``_row_id`` dicts — the re-insert guard.
+
+    A dict rebuilt from durable rows (crash/failed-turn history restore, session resume, a repaired
+    sequence, any wire-crossing handoff) carries its durable ``message_uid`` — identity is restored on
+    EVERY projection — but neither the persistence marker (underscore-prefixed, stripped before the
+    wire) nor ``_row_id``/``DB_ROW_SNAPSHOT`` (same strip). Dicts that still carry a snapshot are
+    excluded: the CAS path below owns them — it rewrites the active row in place, so their live edits
+    must reach the row, never be skipped here. Runs INSIDE the caller's write transaction (the same
+    guarantee the repair path relies on: the active set cannot change between this read and the
+    INSERT). Fail-open: a probe error logs and returns an empty set — pre-guard append behavior.
+    """
+    candidate_uids = sorted({
+        uid
+        for msg in messages
+        if isinstance(msg, dict)
+        and not isinstance(msg.get("_row_id"), int)
+        and not isinstance(msg.get(DB_ROW_SNAPSHOT), str)
+        and (uid := message_uid_or_none(msg))
+    })
+    durable: Set[str] = set()
+    if not candidate_uids:
+        return durable
+    try:
+        for chunk in _id_chunks(candidate_uids):
+            durable.update(
+                row["message_uid"]
+                for row in conn.execute(
+                    f"SELECT DISTINCT message_uid FROM messages "
+                    f"WHERE session_id = ? AND active = 1 AND message_uid IN ({_placeholders(chunk)})",
+                    (session_id, *chunk),
+                ).fetchall()
+            )
+    except Exception as exc:
+        logger.warning("durable-uid re-insert probe failed (dedupe skipped, append-only behavior): %s", exc)
+        return set()
+    return durable
+
+
 def resolve_and_repair_transcript_batch(
     conn: sqlite3.Connection,
     session_id: str,
@@ -122,9 +166,12 @@ def resolve_and_repair_transcript_batch(
     its physical ``_row_id``, the pair (logical ``message_uid``, stored-row snapshot) recovers the newest
     active generation without matching mutable payload. Watermark-compaction clones are matched by their
     copied payload identity, not timestamp alone. Legacy blank assistant rows retain the narrow interrupted-
-    stream content repair. Returns only rows that need fresh inserts.
+    stream content repair. A snapshot-less restored dict whose uid is already an ACTIVE durable row is the
+    same logical message re-handed to the flush — stamped durable and skipped, never re-INSERTed. Returns
+    only rows that need fresh inserts.
     """
     inserted_rows: list[dict[str, Any]] = []
+    durable_uids = _active_uid_dedupe(conn, session_id, messages)
     for msg in messages:
         existing_row_id = msg.get("_row_id") if isinstance(msg, dict) else None
         role = msg.get("role", "unknown") if isinstance(msg, dict) else "unknown"
@@ -137,6 +184,18 @@ def resolve_and_repair_transcript_batch(
             # has neither proof, even when role/content/timestamp happen to equal an older message exactly.
             target_row = _active_logical_message_row(conn, session_id, role, message_uid_or_none(msg))
         if target_row is None:
+            from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
+            if (
+                isinstance(msg, dict)
+                and message_uid_or_none(msg) in durable_uids
+                and not msg.get(_PERSIST_AFTER_ADMISSION_INTERRUPT)
+            ):
+                # Restored logical message, no row address and no CAS version (the wire strip removes
+                # every underscore-prefixed field): its uid already names an ACTIVE durable row, so
+                # this is the re-insert defect, not a new message. Stamp durable; the row-addressed
+                # repair above keeps snapshot-carrying rewrites live.
+                msg[_DB_PERSISTED_MARKER] = True
+                continue
             inserted_rows.append(msg)
             continue
 

@@ -315,7 +315,9 @@ class TestYamlBridgeSeeding:
         assert seeded["ignored_channels"] == "333"
         assert seeded["allow_from"] == "1001"
         assert seeded["allowed_roles"] == "31"
-        assert seeded["allow_all_users"] == "false"
+        # YAML 1.1 bools (bare off/false) stringify as "off" so word-matching readers stay reachable.
+        assert seeded["allow_all_users"] == "off"
+        assert os.environ["DISCORD_ALLOW_ALL_USERS"] == "off"
         # Legacy env bridge preserved for single-profile deployments.
         assert os.environ["DISCORD_ALLOWED_CHANNELS"] == "111,112"
 

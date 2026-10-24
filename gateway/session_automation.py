@@ -490,6 +490,17 @@ async def admit_automation(authority, adapter, event, identity, replaces=None):
 _ROUTE_WAKE_PRODUCERS = frozenset({'kanban-wake', 'loop-tick'})
 
 
+def route_owner_lock(runner, session_id):
+    """*session_id*'s live owner's ``mutation_lock`` (a no-op without one). Held across a route
+    rotation and ``move_route_wakes``: its drain refuses a wake on the rotated route, so it must not
+    claim one the move has not taken yet."""
+    import contextlib
+    from gateway.session_authorities import active_authority
+    authority = active_authority(runner)
+    live = authority.sessions.get(authority.logical_owner(session_id)) if authority and session_id else None
+    return live.mutation_lock if live is not None else contextlib.nullcontext()
+
+
 async def move_route_wakes(runner, session_key, old_session_id):
     """After the route rotated (/new, /reset, compression-exhaustion reset), carry the old owner's
     still-queued route wakes to the fresh session, as main's #114456 kept a parked internal wake

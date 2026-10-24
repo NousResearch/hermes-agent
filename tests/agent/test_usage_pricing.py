@@ -183,6 +183,56 @@ def test_unknown_model_falls_back_to_endpoint_metadata(monkeypatch):
     assert entry.output_cost_per_million == Decimal(2)
 
 
+@pytest.fixture
+def model_catalog(monkeypatch):
+    from contextlib import nullcontext
+
+    import httpx
+    from agent import model_metadata as mm
+
+    monkeypatch.setattr(mm, "_model_metadata_cache", {})
+    monkeypatch.setattr(mm, "_endpoint_model_metadata_cache", {})
+
+    def serve(pricing):
+        response = httpx.Response(200, request=httpx.Request("GET", "https://pricing.example/models"),
+                                  json={"data": [{"id": "catalog-model", "pricing": pricing}]})
+        monkeypatch.setattr(mm.model_metadata_http, "stream", lambda *_a, **_kw: nullcontext(response))
+
+    return serve
+
+
+@pytest.mark.parametrize("provider", ["custom", "openrouter"])
+@pytest.mark.parametrize("zero", [0, 0.0, "0"])
+def test_catalog_zero_cache_rates_preserve_known_request_cost(model_catalog, provider, zero):
+    """Numeric and string zero both mean free caching, not missing pricing or an alias fallback."""
+    model_catalog({"prompt": "0.000001", "completion": "0.000002", "cache_read": zero,
+                   "cache_write": zero, "cached_prompt": "0.000009", "cache_creation": "0.000009"})
+
+    cost = estimate_usage_cost(
+        "catalog-model", CanonicalUsage(input_tokens=1000, output_tokens=2000,
+                                        cache_read_tokens=3000, cache_write_tokens=4000),
+        provider=provider, base_url="https://pricing.example/v1" if provider == "custom" else None,
+    )
+
+    assert (cost.status, cost.amount_usd) == ("estimated", Decimal("0.005"))
+
+
+@pytest.mark.parametrize("missing", [None, ""])
+def test_catalog_zero_cache_alias_stops_at_first_present_rate(model_catalog, missing):
+    """An absent primary field falls through; a free alias must win over later aliases."""
+    model_catalog({"prompt": "0.000001", "completion": "0.000002", "cache_read": missing,
+                   "cached_prompt": 0, "input_cache_read": "0.000009", "cache_write": missing,
+                   "cache_creation": 0, "input_cache_write": "0.000009"})
+
+    cost = estimate_usage_cost(
+        "catalog-model", CanonicalUsage(input_tokens=1000, output_tokens=2000,
+                                        cache_read_tokens=3000, cache_write_tokens=4000),
+        provider="openrouter",
+    )
+
+    assert (cost.status, cost.amount_usd) == ("estimated", Decimal("0.005"))
+
+
 
 
 def test_deepseek_deprecated_aliases_price_as_flash():

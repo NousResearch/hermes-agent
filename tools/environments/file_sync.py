@@ -200,17 +200,22 @@ class FileSyncManager:
         delete_fn: DeleteFn,
         sync_interval: float = _SYNC_INTERVAL_SECONDS,
         bulk_upload_fn: BulkUploadFn | None = None,
-        bulk_download_fn: BulkDownloadFn | None = None):
+        bulk_download_fn: BulkDownloadFn | None = None,
+        get_remote_time_fn: Callable[[], float] | None = None):
         self._get_files_fn = get_files_fn
         self._upload_fn = upload_fn
         self._bulk_upload_fn = bulk_upload_fn
         self._bulk_download_fn = bulk_download_fn
+        self._get_remote_time_fn = get_remote_time_fn
         self._delete_fn = delete_fn
         self._transaction_lock = threading.Lock()
         self._synced_files: dict[str, tuple[int, int, int, int]] = {}  # remote_path -> file_signature
         self._pushed_hashes: dict[str, str] = {}  # remote_path -> sha256 hex digest
         self._upload_only_host_paths: set[str] = set()
         self._last_sync_time: float = 0.0  # monotonic; 0 ensures first sync runs
+        # Remote epoch sampled before the first successful push; never compare remote mtimes
+        # against the host clock. Without a remote clock callback, stale filtering is disabled.
+        self._first_sync_time: float | None = None
         self._sync_interval = sync_interval
 
     def sync(self, *, force: bool = False) -> None:
@@ -237,11 +242,15 @@ class FileSyncManager:
             # Planning reads files too (content check against the pushed hash): a file removed
             # or unreadable after its stat fails the cycle here like a staging read, so the
             # caller's command still runs and the next cycle retries.
+            first_sync_time = self._first_sync_time
+            if first_sync_time is None and self._get_remote_time_fn is not None:
+                first_sync_time = self._get_remote_time_fn()
             to_upload, new_files, to_delete = self._plan_sync(current_files)
 
             if not to_upload and not to_delete:
                 self._synced_files = new_files  # content-confirmed keys, nothing to push
                 self._last_sync_time = _monotonic()
+                self._first_sync_time = first_sync_time
                 return
 
             # Hash and upload the same bytes: the original may be saved while
@@ -262,6 +271,7 @@ class FileSyncManager:
                 self._pushed_hashes.pop(p, None)
             self._synced_files = new_files
             self._last_sync_time = _monotonic()
+            self._first_sync_time = first_sync_time
         except Exception as exc:
             self._synced_files = prev_files
             self._pushed_hashes = prev_hashes
@@ -313,7 +323,12 @@ class FileSyncManager:
     def sync_back(self, hermes_home: Path | None = None) -> None:
         """Pull remote changes back to the host: download the remote ``.hermes/`` as a tar and
         apply only files whose SHA-256 differs from what was pushed. SIGINT is deferred until
-        complete; concurrent gateway sandboxes are serialized via a file lock."""
+        complete; concurrent gateway sandboxes are serialized via a file lock.
+
+        Unmapped files older than the first push (on the remote clock) are skipped with a
+        warning. A file installed during this session with preserved archive mtimes can also
+        look stale; recover it from the remote before teardown. Files created within the
+        clock's one-second resolution of the first push cannot be distinguished from orphans."""
         with self._transaction_lock:
             self._sync_back_transaction(hermes_home=hermes_home)
 
@@ -462,6 +477,14 @@ class FileSyncManager:
             if host_path is None:
                 logger.debug("sync_back: skipping %s (no host mapping)", remote_path)
                 return 0
+            if pushed_hash is None and self._first_sync_time is not None:
+                age = self._first_sync_time - os.path.getmtime(staged_file)
+                if age > 0:
+                    logger.warning(
+                        "sync_back: skipping stale remote file %s (mtime %.0fs before first push). "
+                        "If created this session with preserved mtimes, recover it from the remote before teardown.",
+                        remote_path, age)
+                    return 0
 
         if self._is_upload_only_host_path(host_path, upload_only_host_paths):
             logger.debug("sync_back: skipping upload-only credential file %s", remote_path)

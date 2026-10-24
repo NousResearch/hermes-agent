@@ -49,6 +49,7 @@ app:
     presence: executable
     location:
       - { kind: uninstall_registry, display_name_prefix: "Vendor App", file: vendor.exe }
+      - { kind: msix_package, package_family_name: "Vendor.App_abc123", file: vendor.exe }
       - "%ProgramFiles%/Vendor/Vendor App */vendor.exe"
     version: { kind: pe_resource }
   darwin:
@@ -68,6 +69,7 @@ app:
 | (a path string) | any | — | that path; a `*` stands for a versioned folder, highest version first |
 | `command` | any | `name` | `PATH` (`executable` only) |
 | `uninstall_registry` | `win32` | `display_name_prefix`, `file` | `InstallLocation` of each matching uninstall entry, joined with `file` |
+| `msix_package` | `win32` | `package_family_name`, `file` | `PackageRootFolder` of every installed copy of that family in the per-user AppModel repository, newest version first, joined with `file` (Store/MSIX packages, which carry no uninstall entry; family names compare case-insensitively) |
 | `app_bundle` | `darwin` | `name` | `/Applications`, then `~/Applications` (`bundle` only) |
 | `flatpak` | `linux` | `app_id` | the system, then the per-user flatpak `exports/bin` |
 | `snap` | `linux` | `name` | `/snap/bin` |

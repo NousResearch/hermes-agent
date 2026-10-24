@@ -4996,8 +4996,8 @@ export const deOverrides = {
           body: 'Der Ordner, in dem dieser Chat arbeitet, wurde verschoben oder gelöscht, daher wurde Ihre Nachricht nicht ausgeführt. Legen Sie den Ordner neu an oder geben Sie dem Chat mit „In Projekt verschieben“ einen anderen, und versuchen Sie es dann erneut.'
         },
         SESSION_NOT_OWNED: {
-          title: 'Dieser Chat ist woanders offen',
-          body: 'Dieser Chat ist gerade in einem anderen Hermes-Fenster oder Terminal geöffnet. Schließen Sie ihn dort und senden Sie Ihre Nachricht erneut, oder starten Sie hier einen neuen Chat.'
+          title: 'Ein anderes Hermes-Fenster hält diesen Chat',
+          body: 'Wenn ein anderes Hermes-Fenster oder ein Terminal diesen Chat geöffnet hat, arbeiten Sie dort weiter, oder schließen Sie den Chat dort und senden Sie Ihre Nachricht erneut hier. Hat ihn keines geöffnet, gibt der Chat sich in wenigen Minuten von selbst frei; senden Sie Ihre Nachricht dann erneut, oder starten Sie hier einen neuen Chat.'
         },
         disk_full: {
           title: 'Festplatte voll',

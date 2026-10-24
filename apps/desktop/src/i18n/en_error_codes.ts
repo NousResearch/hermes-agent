@@ -116,9 +116,12 @@ export const enErrorCodes: ThreadCopy['errorCodes'] = {
     title: 'Your message may already be queued',
     body: 'The gateway did not confirm your message in time. If it was queued, it runs once the earlier turn finishes or is resolved. Check the chat before sending it again.'
   },
+  // The holder may have no window attached: a backend that lost its client keeps the
+  // lease for a few minutes, so the card must not send the reader looking for a window
+  // that is not there. Name both cases, and never assert that one is open.
   SESSION_NOT_OWNED: {
-    title: 'This chat is open somewhere else',
-    body: 'This chat is currently open in another Hermes window or terminal. Close it there and send your message again, or start a new chat here.'
+    title: 'Another Hermes window is holding this chat',
+    body: 'If another Hermes window or terminal has this chat open, use it there, or close the chat there and send your message again here. If none has it open, the chat frees itself within a few minutes; send your message then, or start a new chat here.'
   },
   disk_full: {
     title: 'Disk full',

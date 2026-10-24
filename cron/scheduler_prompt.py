@@ -279,6 +279,13 @@ _CRON_HINT = (
     "context for this run, not as a request to schedule another job.]\n\n"
 )
 
+_CRON_REQUIRED_DELIVERY_HINT = (
+    "[IMPORTANT: You are running as a scheduled cron job. DELIVERY: Your final response will be automatically delivered "
+    "to the user — do NOT use send_message or try to deliver the output yourself. Just produce your report/output as your "
+    "final response and the system handles the rest. Every agent run of this job requires a useful user-facing final response. "
+    "Follow the job's content and source requirements to produce that result.]\n\n"
+)
+
 
 def _build_job_prompt(
     job: dict, prerun_script: Optional[tuple] = None, extra_prompt: Optional[str] = None,
@@ -333,7 +340,13 @@ def _build_job_prompt(
         prompt = f"{notepad_section}{prompt}"
         has_injected_data = True
 
-    prompt = _CRON_HINT + prompt
+    # Prompt guidance and final acceptance share the job's existing contract.
+    hint = (
+        _CRON_REQUIRED_DELIVERY_HINT
+        if _sched._forbidden_final_response(job, _sched.SILENT_MARKER)
+        else _CRON_HINT
+    )
+    prompt = hint + prompt
     skill_names = _job_skill_names(job)
     if not skill_names:
         return _scan_assembled_cron_prompt(

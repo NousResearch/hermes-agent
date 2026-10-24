@@ -11,6 +11,7 @@ from typing import Any, Dict, List
 from agent.memory_context import sanitize_context
 from agent.message_content import flatten_message_text
 from agent.history_commentary import visible_commentary
+from agent.completion_status import CompletionStatusStreamFilter, completion_status_required
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
@@ -77,7 +78,29 @@ class StreamDeliveryMixin:
             deliver(ctx_scrubber.feed(think_tail) if think_tail and ctx_scrubber is not None else think_tail)
         if ctx_scrubber is not None:
             deliver(ctx_scrubber.flush())
+        status_filter = getattr(self, "_completion_status_stream_filter", None)
+        if status_filter is not None:
+            deliver(status_filter.finish(marker_present=False))
+        self._completion_status_stream_filter = (
+            CompletionStatusStreamFilter()
+            if completion_status_required(
+                getattr(self, "_cached_system_prompt", None), base_url=getattr(self, "base_url", None)
+            ) else None
+        )
         self._current_streamed_assistant_text = ""
+
+    def _finish_completion_status_stream(self, *, marker_present: bool) -> None:
+        """Release the held text tail while keeping a confirmed control marker private."""
+        status_filter = getattr(self, "_completion_status_stream_filter", None)
+        self._completion_status_stream_filter = None
+        if status_filter is None:
+            return
+        tail = status_filter.finish(marker_present=marker_present)
+        if not tail:
+            return
+        self._deliver_to_stream_callbacks(tail)
+        self._enqueue_stream_hook("on_stream_delta", delta=tail, kind="text")
+        self._record_streamed_assistant_text(tail)
 
     @property
     def _current_streamed_assistant_text(self) -> str:
@@ -322,6 +345,9 @@ class StreamDeliveryMixin:
             if hidden and not getattr(self, "_native_reasoning_streamed", False):
                 self._fire_reasoning_delta(hidden, inline=True)
             text = scrubber.feed(text) if scrubber is not None else sanitize_context(text)
+            status_filter = getattr(self, "_completion_status_stream_filter", None)
+            if status_filter is not None:
+                text = status_filter.feed(text)
             # Only strip leading newlines on the first delta — mid-stream "\n" is legitimate markdown.
             # Check the parts list, not the joined property (joining per token copies the whole reply).
             if not prepended_break and not getattr(self, "_streamed_assistant_text_parts", None):

@@ -261,7 +261,7 @@ def _inject_session_context_env(env: dict) -> None:
 
 def _filter_secret_env(
     items: Mapping[str, str], out: dict, *, unwrap_force: bool,
-    plugin_strip: frozenset = frozenset()) -> None:
+    plugin_strip: frozenset = frozenset(), client_toolchain: bool = False) -> None:
     """Copy *items* into *out*, dropping Hermes-managed secrets. ``_HERMES_FORCE_<NAME>``
     unwraps to ``NAME`` when ``unwrap_force`` (caller extras / terminal env), else is
     dropped. Blocklisted names survive only via env_passthrough registration or as
@@ -270,7 +270,7 @@ def _filter_secret_env(
     try:
         from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value
     except Exception:
-        is_env_passthrough, resolve_passthrough_value = (lambda _: False), (lambda _n, fb: fb)
+        is_env_passthrough, resolve_passthrough_value = (lambda _: False), (lambda _n, fb, **_kw: fb)
     plugin_strip_folded = frozenset(k.upper() for k in plugin_strip)
     registered = _registered_adapter_secret_env()
     for key, value in items.items():
@@ -288,7 +288,7 @@ def _filter_secret_env(
         if _is_provider_env_blocklisted(key, registered) and not (passthrough or first_party):
             continue
         if passthrough and not first_party:
-            value = resolve_passthrough_value(key, value)
+            value = resolve_passthrough_value(key, value, client_toolchain=client_toolchain)
         if value is not None:
             out[key] = value
 
@@ -305,13 +305,14 @@ def _finalize_child_env(env: dict) -> dict:
     return delegated_child_subprocess_env(env)
 
 
-def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
+def _scrubbed_env(parts, plugin_strip: frozenset, fix_path, *, client_toolchain: bool = False) -> dict:
     """Filter each ``(items, unwrap_force)`` in *parts* into one env, rewrite PATH via
     *fix_path* (always prepending the hermes install dir so bare ``hermes`` resolves
     for children of a systemd/cron-launched gateway), then apply the shared guards."""
     out: dict[str, str] = {}
     for items, unwrap_force in parts:
-        _filter_secret_env(items, out, unwrap_force=unwrap_force, plugin_strip=plugin_strip)
+        _filter_secret_env(items, out, unwrap_force=unwrap_force, plugin_strip=plugin_strip,
+                           client_toolchain=client_toolchain)
     # Declared names the bound profile scope holds but the process env never did (a routed
     # profile's own .env / sources) — the filter above can only see names already present.
     # Unguarded on purpose: a scope/config failure here must be loud, not silently drop the
@@ -327,11 +328,12 @@ def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
     return _finalize_child_env(out)
 
 
-def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
+def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None, *,
+                            client_toolchain: bool = False) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment (background/PTY
     spawn path, search workers, computer-use driver, user-script runners)."""
     return _scrubbed_env([(base_env or {}, False), (extra_env or {}, True)],
-                         _plugin_terminal_env_strip_keys(), lambda p: p)
+                         _plugin_terminal_env_strip_keys(), lambda p: p, client_toolchain=client_toolchain)
 
 
 def _terminal_env(env: dict) -> dict:
@@ -777,6 +779,7 @@ def _make_run_env(env: dict) -> dict:
         [(dict(toolchain_environ(strip_launch_profile_env(os.environ.copy())) | env), True)],
         frozenset(),
         lambda p: _user_tools_first(_append_missing_sane_path_entries(p)),
+        client_toolchain=True,
     )
     # While this profile's Bot Desktop is running, its DISPLAY/XAUTHORITY/DBUS ride along so GUI
     # apps the agent launches from the terminal open on the Bot Screen the user is watching, not

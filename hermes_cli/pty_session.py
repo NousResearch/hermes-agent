@@ -35,10 +35,10 @@ class RingBuffer:
         return bytes(self._buf)
 
 
-async def _close_ws(ws, code: int) -> None:
+async def _close_ws(ws, code: int, reason: str = "") -> None:
     try:
         if ws is not None:
-            await ws.close(code=code)
+            await ws.close(code=code, **({"reason": reason} if reason else {}))
     except Exception:
         pass
 
@@ -87,7 +87,13 @@ class PtySession:
     async def _drain(self) -> None:
         loop = asyncio.get_running_loop()
         while True:
-            chunk = await loop.run_in_executor(None, self.bridge.read, self._read_timeout)
+            try:
+                chunk = await loop.run_in_executor(None, self.bridge.read, self._read_timeout)
+            except (OSError, ValueError):
+                self.alive = False
+                await _close_ws(self._ws, 1011, "PTY output capture failed")
+                await asyncio.to_thread(self.bridge.close)
+                return
             if chunk is None:                       # EOF — the agent process exited
                 self.alive = False
                 await _close_ws(self._ws, WS_CLOSE_PROCESS_EXITED)

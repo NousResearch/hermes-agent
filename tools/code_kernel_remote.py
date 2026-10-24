@@ -101,6 +101,9 @@ if __name__ == "__main__":
 def _sh(env, cmd: str, timeout: int = 15) -> str:
     """Run *cmd* on the remote from ``/`` and return its output text."""
     result = env.execute(cmd, cwd="/", timeout=timeout)
+    from tools.environments.capture import require_complete_output
+    if isinstance(result, dict):
+        require_complete_output(result)
     return (result.get("output", "") if isinstance(result, dict) else "") or ""
 
 
@@ -309,11 +312,15 @@ def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int) -> tuple[str
     _ship_file_to_remote(kernel.env, f"{kernel.kernel_dir}/cells/cell_req_{seq}.json",
                          json.dumps({"id": seq, "code": code}, ensure_ascii=False), atomic=True)
     deadline = time.monotonic() + timeout
+    capture_failure = None
     while time.monotonic() < deadline:
         try:
             body = kernel.sh(f"cat {q_cells}/{q_res} 2>/dev/null", timeout=20).strip()
         except Exception:
-            # One flaky round-trip is not kernel death; liveness decides.
+            from tools.environments.capture import OutputCaptureError
+            capture_failure = OutputCaptureError(
+                "Remote cell result capture is incomplete; execution may have completed. "
+                "Inspect its effects before considering a retry.")
             body = ""
         if body:
             try:
@@ -330,6 +337,8 @@ def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int) -> tuple[str
                 logger.debug("remote kernel: cell result cleanup failed", exc_info=True)
             return status, payload
         time.sleep(_CELL_POLL_INTERVAL)
+    if capture_failure is not None:
+        raise capture_failure
     return "timeout", {}
 
 
@@ -342,8 +351,13 @@ def execute_in_remote_kernel(
     per-call). ``state_lost``/``state_reset``/``reused`` ride in the ``kernel`` sub-dict."""
     from tools.code_kernel import _resolve_owner
     owner = _resolve_owner(task_env_id)
-    kernel, reused, state_reset, state_lost = _acquire_remote_kernel(
-        env, env_type, owner, task_env_id, sandbox_tools, reset=reset, idle_exit=idle_exit)
+    try:
+        kernel, reused, state_reset, state_lost = _acquire_remote_kernel(
+            env, env_type, owner, task_env_id, sandbox_tools, reset=reset, idle_exit=idle_exit)
+    except Exception:
+        # This phase can start the runner, but cannot publish or execute the user cell.
+        logger.warning("remote kernel setup failed before cell publication", exc_info=True)
+        return None
     if kernel is None:
         return None  # fail open to per-call
     key = _kernel_key(owner, env_type, task_env_id, sandbox_tools)
@@ -387,22 +401,40 @@ def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task
     cell_status, cell_payload = "no-result", {}
     try:
         cell_status, cell_payload = _run_remote_cell(kernel, code, timeout)
-    except Exception:
-        # The atomic ship is the only remote call here that can raise (the poll
-        # and result cleanup are best-effort), so the request never reached the runner and the
-        # caller's per-call fallback runs the code exactly once. Kill the
-        # kernel as the timeout path does: leaving it registered would let the
-        # next call reuse a kernel whose state silently missed this cell.
-        _REGISTRY.discard(key, kernel)
-        raise
+    except Exception as exc:
+        logger.debug("remote cell outcome uncertain after publication attempt", exc_info=True)
+        from tools.environments.capture import OutputCaptureError
+        # Publication has been attempted: any failure can follow execution, regardless
+        # of exception type. Never translate this phase back into a setup fallback.
+        try:
+            _REGISTRY.discard(key, kernel)
+        finally:
+            raise OutputCaptureError(
+                "Remote cell execution outcome is uncertain; output capture may be incomplete. "
+                "Inspect its effects before considering a retry.") from exc
     finally:
         stop_event.set()
         rpc_thread.join(timeout=5)
+    try:
+        return _process_cell_response(kernel, key, cell_status, cell_payload, tool_call_counter[0],
+                                      tool_errors_since(tool_call_log), reused, state_reset, state_lost)
+    except Exception:
+        logger.debug("remote cell response processing failed", exc_info=True)
+        from tools.environments.capture import CaptureStatus
+        integrity = CaptureStatus()
+        integrity.capture_failed("remote cell response processing")
+        return {"status": "error", "stdout": cell_payload.get("stdout", ""),
+                "stderr": cell_payload.get("stderr", ""), "tool_calls_made": tool_call_counter[0],
+                "error": integrity.capture_error, **integrity.capture_fields()}
+
+
+def _process_cell_response(kernel, key, cell_status, cell_payload, tool_calls_made,
+                           tool_errors, reused, state_reset, state_lost):
     kernel_info: dict[str, Any] = {"reused": reused, "remote": True}
     result: dict[str, Any] = {
         "status": "error", "stdout": cell_payload.get("stdout", ""), "stderr": cell_payload.get("stderr", ""),
-        "traceback": cell_payload.get("traceback", ""), "tool_calls_made": tool_call_counter[0], "kernel": kernel_info,
-        "tool_errors": tool_errors_since(tool_call_log),
+        "traceback": cell_payload.get("traceback", ""), "tool_calls_made": tool_calls_made, "kernel": kernel_info,
+        "tool_errors": tool_errors,
     }
     if cell_status in ("timeout", "protocol-error", "no-result"):
         # No safe way to interrupt one cell in place (same contract as local): kill, report, respawn.

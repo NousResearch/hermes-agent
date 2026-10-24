@@ -25,6 +25,47 @@ _TAIL_SECONDS = 0.2
 _FINAL_DRAIN_MAX_BYTES = 1 << 20
 
 
+def iter_pty_output(pty):
+    """Drain the direct child's buffered tail without waiting on inherited slaves."""
+    from tools.process_registry import _IS_WINDOWS
+    from tools.environments.fd_wait import open_fd_waiter
+    fd = getattr(pty, "fd", None)
+    waiter = open_fd_waiter(fd) if not _IS_WINDOWS and isinstance(fd, int) else None
+    if not _IS_WINDOWS and isinstance(fd, int) and waiter is None:
+        raise OSError("PTY readiness setup failed")
+    drained = 0
+    try:
+        while True:
+            if waiter is not None:
+                exited = not pty.isalive()
+                if not waiter.wait(0 if exited else _TAIL_SECONDS):
+                    if exited:
+                        return
+                    continue
+                try:
+                    chunk = os.read(fd, 4096)
+                except OSError as exc:
+                    import errno
+                    if exc.errno == errno.EIO:
+                        return  # POSIX PTY slave closure.
+                    raise
+                if exited:
+                    drained += len(chunk)
+            else:
+                chunk = pty.read(4096)
+            if chunk:
+                yield chunk
+            elif not pty.isalive():
+                return
+            if drained >= _FINAL_DRAIN_MAX_BYTES:
+                return
+    except EOFError:
+        return
+    finally:
+        if waiter is not None:
+            waiter.close()
+
+
 def output_dir() -> Path:
     return get_hermes_home() / "logs" / "process-output"
 
@@ -81,10 +122,71 @@ class ProcessOutputLogMixin:
     """The subclass supplies ``_ingest_output``, ``_clean_shell_noise``, ``_finish_reader``,
     ``_finish_exited`` and ``_detached_host_fate``. See ProcessRegistry."""
 
+    def _start_adopted_reader(self, session, collector, finalize_capture):
+        import threading
+        ready = threading.Event()
+
+        def read_after_transfer(owned):
+            ready.wait()
+            self._reader_loop(owned)
+
+        from contextvars import copy_context
+        # Start the reader before closing the collector, but do not expose this session
+        # to ANY completion owner until finalization has transferred capture state.
+        reader = threading.Thread(target=copy_context().run, args=(read_after_transfer, session),
+                                  daemon=True, name=f"proc-reader-{session.id}")
+        session._reader_thread = reader
+        reader.start()  # Failure here leaves foreground ownership and collector intact.
+        try:
+            if finalize_capture is not None:
+                finalize_capture()
+        except Exception:
+            logger.debug("adopted capture finalization failed", exc_info=True)
+            session.capture_failed("handoff finalization")
+        finally:
+            if collector is not None and collector.capture_error:
+                session.capture_error = session.capture_error or collector.capture_error
+            with self._lock:
+                self._running[session.id] = session
+                ready.set()
+        try:
+            self._write_checkpoint()
+        except Exception:
+            # Ownership is committed: never let checkpoint failure resume foreground reads.
+            logger.debug("adopted reader checkpoint failed", exc_info=True)
+
+    @staticmethod
+    def _exit_fields(session) -> dict:
+        return {
+            "exit_code": session.exit_code,
+            "completion_reason": session.completion_reason,
+            "termination_source": session.termination_source,
+            **session.capture_fields(),
+        }
+
+    def _finish_reader(self, session, decoder, append, label, wait, exit_code) -> None:
+        """Flush captured bytes and reap the child without inventing an exit status."""
+        try:
+            tail = decoder.decode(b"", final=True) if decoder is not None else ""
+            if tail:
+                append(tail)
+        except Exception:  # health: allow BLE001 -- decoder failure must not skip child reaping
+            session.capture_failed("background decoder finalization")
+        try:
+            wait()
+        except Exception as e:  # health: allow BLE001 -- third-party PTY wait exceptions must retain known status or leave tracking intact
+            # A PTY child reaped by isalive() already has its exitstatus; only an
+            # unknown status must stay tracked for later reconciliation.
+            if exit_code() is None:
+                logger.warning("%s wait failed; leaving process tracked: %s", label, e)
+                return
+            logger.warning("%s wait failed; recording known exit status: %s", label, e)
+        self._finish_exited(session, exit_code())
+
     def _log_reader_loop(self, session) -> None:
         """Tail ``session.output_log`` until its process ends. The spawner decides the exit from
         its Popen; an adopter (no Popen) from the recorded status, else ``lost`` (-1)."""
-        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        decoder = None
         proc = session.process
         # poll()/wait() reconcile asks this reader to finish instead of reading a pipe itself.
         session._reader_selectable = True
@@ -105,6 +207,7 @@ class ProcessOutputLogMixin:
                 return proc.poll() is None
             return self._detached_host_fate(session.pid, session.host_start_time) == "running"
         try:
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
             with open(session.output_log, "rb") as stream:
                 drained = 0
                 while True:
@@ -120,13 +223,20 @@ class ProcessOutputLogMixin:
                     if not alive:
                         break
                     time.sleep(_TAIL_SECONDS)
-        except OSError as exc:
-            logger.warning("Process output log %s unreadable: %s", session.output_log, exc)
+        except Exception:  # health: allow BLE001 -- log/decoder boundary preserves lifecycle and reports capture loss
+            session.capture_failed("background log read")
+            self._write_checkpoint()
+            # Keep monitoring an adopted child even though its log is unreadable.
+            while proc is None and running():
+                time.sleep(_TAIL_SECONDS)
         if proc is not None:
             self._finish_reader(session, decoder, ingest, "Log", proc.wait, lambda: proc.returncode)
             return
-        if tail := decoder.decode(b"", final=True):
-            ingest(tail)
+        try:
+            if decoder is not None and (tail := decoder.decode(b"", final=True)):
+                ingest(tail)
+        except Exception:  # health: allow BLE001 -- capture finalization cannot skip adopted child status recording
+            session.capture_failed("background decoder finalization")
         code = recorded_exit_code(session.output_log)
         if code is None:
             # SIGKILL / exec past the trap: the spawner is gone and no status was recorded.

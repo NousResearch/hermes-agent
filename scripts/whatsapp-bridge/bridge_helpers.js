@@ -727,6 +727,25 @@ export function createVersionResolver(fetchVersionFn, {
   };
 }
 
+/**
+ * Credential persistence guard. Baileys' saveCreds() returns the write
+ * promise; the creds.update handler used to drop it, so a failed write
+ * (ENOSPC, EROFS, EACCES on the session dir) surfaced as an unhandled
+ * rejection and Node exited the bridge mid-session. Await and log instead;
+ * the next creds.update retries the write.
+ */
+export function createCredsSaver(saveCredsFn, { log = console.error } = {}) {
+  return async function saveCredentials() {
+    try {
+      await saveCredsFn();
+      return true;
+    } catch (err) {
+      log(`⚠️  Credentials write failed (${err?.message || err}); keeping the session in memory until the next update.`);
+      return false;
+    }
+  };
+}
+
 const pad = (value, width = 2) => String(value).padStart(width, '0');
 
 /** `2026-09-28 13:18:46,062` in local time: the asctime shape every file in logs/ uses. */

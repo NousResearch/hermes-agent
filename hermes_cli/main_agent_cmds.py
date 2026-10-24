@@ -104,17 +104,24 @@ def cmd_acp(args):
 
 def cmd_tools(args):
     from hermes_cli.main import _require_tty
+    from hermes_cli.tools_config import tools_disable_enable_command, run_post_setup_command, tools_command
+    from tools.tool_usage import cmd_analytics, cmd_prune
+
     action = getattr(args, "tools_action", None)
-    if action in {"list", "disable", "enable"}:
-        from hermes_cli.tools_config import tools_disable_enable_command
-        tools_disable_enable_command(args)
-    elif action == "post-setup":
-        from hermes_cli.tools_config import run_post_setup_command
-        sys.exit(run_post_setup_command(args))
-    else:
+    handler = {
+        "list": tools_disable_enable_command,
+        "disable": tools_disable_enable_command,
+        "enable": tools_disable_enable_command,
+        "post-setup": run_post_setup_command,
+        "analytics": cmd_analytics,
+        "prune": cmd_prune,
+    }.get(action)
+    if handler is None:
         _require_tty("tools")
-        from hermes_cli.tools_config import tools_command
-        tools_command(args)
+        handler = tools_command
+    result = handler(args)
+    if action == "post-setup":
+        sys.exit(result)
 
 
 def cmd_insights(args):

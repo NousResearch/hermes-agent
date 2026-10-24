@@ -1986,7 +1986,7 @@ DEFAULT_CONFIG = {
     # tool_search / tool_describe / tool_call bridges and surfaces them on demand.
     # Working-set core tools stay eager, while the explicit ``defer`` list below
     # may include cold, event-triggered built-ins as well as plugin/MCP tools.
-    "tools": {
+    "tools": {"analytics": False,
         "tool_search": {
             # Tiered: tier 0 (no deferred tools) = everything eager; tier 1 = bridge + a
             # name+description manifest when it fits the budget (degrades to names-only); tier 2

@@ -409,17 +409,41 @@ def verify_sqlite_integrity(
     path: Path, *, check_header: bool = True, run_pragma: bool = True,
     max_bytes: int = DEFAULT_INTEGRITY_CHECK_MAX_BYTES) -> dict:
     """Verify a SQLite database: existence + minimum size, header magic, then a read-only
-    ``PRAGMA integrity_check`` (or a cheap structural probe above ``max_bytes``)."""
-    def _done(message: str, valid: bool = False, size: Optional[int] = None) -> dict:
-        return {"valid": valid, "message": message, "size": size}
+    ``PRAGMA integrity_check`` (or a cheap structural probe above ``max_bytes``).
+
+    A damaged main header may be recoverable from a hot WAL. With a nonempty WAL,
+    return an indeterminate verdict even if SQLite can read the combined image:
+    the main file is not a verified standalone restore source, and its WAL must
+    not be discarded by automatic repair.
+    """
+    wal_needs_preservation = False
+    def _wal_may_have_pages() -> bool:
+        nonlocal wal_needs_preservation
+        try:
+            wal_needs_preservation = path.with_name(path.name + "-wal").stat().st_size > 0
+        except FileNotFoundError:
+            wal_needs_preservation = False
+        except OSError:
+            # An inaccessible sidecar is not evidence that it is empty.
+            wal_needs_preservation = True
+        return wal_needs_preservation
+
+    def _done(message: str, valid: Optional[bool] = False, size: Optional[int] = None) -> dict:
+        result = {"valid": valid, "message": message, "size": size}
+        if wal_needs_preservation:
+            result["wal_preserve"] = True
+        return result
     try:
         st = path.stat()
     except FileNotFoundError:
         return _done(f"not found: {path}")
     except OSError as exc:
-        return _done(f"cannot stat: {exc}")
+        return _done(f"cannot stat: {exc}", valid=None)
     size = st.st_size
-    if size < 100:  # SQLite minimum viable size (header + 1 page)
+    if size < 100:  # SQLite minimum viable standalone file; a WAL may hold page 1.
+        if _wal_may_have_pages():
+            return _done(f"main file only {size} bytes with WAL present; preserve for manual review",
+                         valid=None, size=size)
         return _done(f"too small ({size} bytes) to be a valid SQLite database", size=size)
     if check_header:
         # Refused when a live connection exists (close() would cancel this process's POSIX locks
@@ -427,9 +451,13 @@ def verify_sqlite_integrity(
         from hermes_cli.sqlite_safe_read import read_header_bytes_preopen
         head = read_header_bytes_preopen(path, length=len(_SQLITE_HEADER))
         if head is None:
-            return _done("cannot read header", size=size)
+            return _done("cannot read header; verification deferred", valid=None, size=size)
         if head != _SQLITE_HEADER:
-            return _done(f"missing SQLite header magic (got {head[:16].hex()!r})", size=size)
+            # A hot WAL can contain the readable database even if the main
+            # header is damaged. The image is not a verified standalone source,
+            # so defer in-place restore regardless of the SQLite probe result.
+            if not _wal_may_have_pages():
+                return _done(f"missing SQLite header magic (got {head[:16].hex()!r})", size=size)
     if max_bytes > 0 and size > max_bytes:
         # O(1) probe: the header check caught the zeroed signature; reading sqlite_master + page
         # geometry catches malformed-schema and truncated-header-page classes without a data walk.
@@ -438,7 +466,14 @@ def verify_sqlite_integrity(
             c.execute("SELECT count(*) FROM sqlite_master").fetchone()))
         if exc is not None:
             kind = "failed" if isinstance(exc, sqlite3.DatabaseError) else "error"
-            return _done(f"schema probe {kind}: {exc}", size=size)
+            return _done(f"schema probe {kind}: {exc}",
+                         valid=None if wal_needs_preservation else False, size=size)
+        if wal_needs_preservation:
+            return _done(
+                f"size {size:,} bytes exceeds max_bytes {max_bytes:,}; "
+                "main header mismatch with WAL present; schema probe passed, "
+                "full integrity check skipped; preserve the WAL for manual review",
+                valid=None, size=size)
         return _done(
             f"size {size:,} bytes exceeds max_bytes {max_bytes:,}; "
             "skipped PRAGMA integrity_check (header + schema probe passed)",
@@ -448,10 +483,19 @@ def verify_sqlite_integrity(
             path, lambda c: [str(r[0]) for r in c.execute("PRAGMA integrity_check")])
         if exc is not None:
             kind = "cannot open database" if isinstance(exc, sqlite3.DatabaseError) else "integrity check error"
-            return _done(f"{kind}: {exc}", size=size)
+            return _done(f"{kind}: {exc}",
+                         valid=None if wal_needs_preservation else False, size=size)
         if rows == ["ok"]:
+            if wal_needs_preservation:
+                return _done(
+                    "SQLite integrity check passed via WAL despite main header mismatch; "
+                    "preserve the WAL for manual review", valid=None, size=size)
             return _done("integrity check passed", valid=True, size=size)
-        return _done(f"integrity check failed: {'; '.join(rows[:5])}", size=size)
+        return _done(f"integrity check failed: {'; '.join(rows[:5])}",
+                     valid=None if wal_needs_preservation else False, size=size)
+    if wal_needs_preservation:
+        return _done("main header mismatch with WAL present; SQLite check skipped",
+                     valid=None, size=size)
     return _done("header check passed", valid=True, size=size)
 
 

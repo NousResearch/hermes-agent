@@ -1912,23 +1912,15 @@ DEFAULT_CONFIG = {
         # profile. A task never ends up with assignee=None.
         "default_assignee": "",
         # Global cap: positive int = the HOST never has more than N tasks 'running' across all
-        # boards and both dispatch lanes. None = ~MemTotal / 512 MiB clamped to [2, 8]; where
-        # MemTotal is unreadable (macOS/Windows) None means no cap.
-        # Global concurrency cap (#33488): when set to a positive int, the HOST never has more than N tasks
-        # in 'running' at once — counted across every active board and across both the ready and review
-        # dispatch lanes (workers are OS processes sharing one machine's memory, so the cap bounds the
-        # machine, not each board; OOF-30). Unset (None) means "derive from system memory" (OOF-30/OOF-77):
-        # the dispatcher caps concurrency at roughly MemTotal / 512 MiB, clamped to [2, 8] — e.g. 2 workers
-        # on a 1 GiB VM. On hosts where total memory can't be read (macOS/Windows), unset falls back to no
-        # cap. Set an explicit value to override the derived default in either direction.
+        # boards and both dispatch lanes (workers are OS processes sharing one machine's memory,
+        # so it bounds the machine, not each board; #33488/OOF-30). None derives the cap from
+        # system memory (OOF-30/OOF-77): roughly MemTotal / 512 MiB clamped to [2, 8], or no cap
+        # where memory is unreadable (macOS/Windows). Set a value to override it either way.
         "max_in_progress": None,
-        # How many of those shared slots the READY lane must leave for the review lane whenever
-        # spawnable review work is waiting. The ready loop runs first and would otherwise spend the
-        # whole budget under a sustained ready backlog, so a finished card sits in 'review' for the
-        # full duration of the ready work ahead of it. The hold is sized to the reviews actually
-        # waiting (never to this number blindly), so one pending review cannot pin the ready lane to
-        # zero. Raise it to keep N reviewers running during a ready rush; 0 disables the reservation
-        # and lets reviews compete for leftover budget only.
+        # How many of those shared slots the READY lane leaves for the review lane while spawnable
+        # review work waits: the ready loop runs first and would otherwise spend the whole budget
+        # under a ready backlog. Sized to the reviews actually waiting, so one pending review cannot
+        # pin the ready lane to zero. 0 disables the reservation.
         "review_reserved_slots": 1,
         # Per-profile cap: positive int = no single profile runs more than N workers even if the
         # global caps allow; blocked tasks defer to the next tick. None = no per-profile cap. Useful

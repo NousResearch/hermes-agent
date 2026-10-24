@@ -41,26 +41,6 @@ DEFAULT_FAILURE_LIMIT = 2
 # before max_runtime_seconds kills it.
 KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS = 30
 
-# A healthy worker is still alive for a while after kanban_complete /
-# kanban_request_review returns (final assistant turn, session persistence), so
-# a run's retained worker is only reaped once ended_at is at least this old
-# (two default dispatch ticks).
-TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
-
-# Every worker runs in a transient ``hermes-worker-kanban-<task>-run-<n>.scope``
-# cgroup (``tools/process_registry``). ``--collect`` only removes that scope once
-# its cgroup is empty, so a worker that ends leaving a background child behind (a
-# ``bun run dev``, a ``python3 -m http.server``, an ``Xvfb``, a
-# ``while pgrep ...; do sleep 15; done`` loop) keeps the scope loaded and holds
-# the child's port for as long as the child lives. Nine such scopes were stopped
-# by hand on 2026-10-01 (ports 5177-5299, one a four-day-old ``bun run dev`` from
-# a card that finished on Sep 27), so the dispatcher reaps its own: every tick it
-# stops the scope of any run that has already ended.
-WORKER_SCOPE_UNIT_PREFIX = "hermes-worker-kanban-"
-WORKER_SCOPE_UNIT_RE = re.compile(
-    rf"^{re.escape(WORKER_SCOPE_UNIT_PREFIX)}(?P<task_id>.+)-run-(?P<run_id>\d+)\.scope$"
-)
-
 # ---------------------------------------------------------------------------
 # Respawn guard constants
 # ---------------------------------------------------------------------------
@@ -572,118 +552,6 @@ def _reap_terminal_worker_row(conn, row, host_prefix: str, signal_fn, reaped: li
             )
     if alive:
         reaped.append(row["task_id"])
-
-
-def _loaded_worker_scope_units() -> list[str]:
-    """Unit names of the worker scopes the user manager still has loaded.
-
-    One ``systemctl --user list-units`` call per tick: the loaded set is the
-    authoritative answer to "which worker cgroups still hold a process", and it
-    reaches a scope whose run row predates this sweep (or whose retained worker
-    evidence a previous tick already cleared), which a per-run SELECT cannot.
-    ``systemctl`` missing, or a user bus that cannot be reached, is a silent
-    no-op: scope reaping must never be the reason a tick fails.
-    """
-    import shutil
-
-    binary = shutil.which("systemctl")
-    if binary is None:
-        return []
-    from tools.process_registry import systemd_user_bus_env
-
-    try:
-        proc = subprocess.run(
-            [binary, "--user", "list-units", "--type=scope", "--all", "--no-pager",
-             "--plain", "--no-legend", f"{WORKER_SCOPE_UNIT_PREFIX}*.scope"],
-            capture_output=True, text=True, timeout=15, check=False,
-            stdin=subprocess.DEVNULL, env=systemd_user_bus_env(),
-        )
-    except (OSError, subprocess.SubprocessError):
-        return []
-    if proc.returncode != 0:
-        return []
-    units: list[str] = []
-    for line in (proc.stdout or "").splitlines():
-        if not line.strip():
-            continue
-        unit = line.split(None, 1)[0]
-        if WORKER_SCOPE_UNIT_RE.match(unit):
-            units.append(unit)
-    return units
-
-
-def _stop_worker_scope_unit(unit_name: str) -> bool:
-    """``systemctl --user stop`` one transient worker scope; True if stopped or
-    already gone. Thin wrapper (the stop itself is shared with every other
-    scope-kill path in ``tools/process_registry``), so the sweep has one seam to
-    fake in tests."""
-    from tools.process_registry import _stop_systemd_unit
-
-    return _stop_systemd_unit(unit_name)
-
-
-def reap_terminal_run_scopes(conn: sqlite3.Connection, *, stop_fn=None) -> list[str]:
-    """Stop the transient worker scope of every run that has ended.
-
-    A worker scope is a cgroup, so stopping it reaps whatever the worker left
-    running inside it: the dev and preview servers, the ``Xvfb``, the
-    ``while pgrep ...; do sleep 15; done`` loop that had nothing left to wait for.
-    All of those outlive the agent process that started them, hold their port, and
-    answer to no signal sent to the worker's own pid, which is exactly why
-    ``reap_terminal_workers`` cannot clear them.
-
-    Only a scope whose own run row is closed is ever stopped, so a live run is
-    untouched; a scope whose run id is not in this board's DB (scopes are named by
-    task id alone) is left to the board that owns it; and a run that ended less
-    than ``TERMINAL_WORKER_REAP_GRACE_SECONDS`` ago is left alone so a worker
-    still finalising after its own transition is not killed. ``stop_fn`` is the
-    test hook. One scope's failure is logged and skips only that scope. Returns
-    the unit names stopped.
-    """
-    units = _loaded_worker_scope_units()
-    if not units:
-        return []
-    stop = stop_fn if stop_fn is not None else _stop_worker_scope_unit
-    cutoff = int(time.time()) - TERMINAL_WORKER_REAP_GRACE_SECONDS
-    stopped: list[str] = []
-    for unit in units:
-        match = WORKER_SCOPE_UNIT_RE.match(unit)
-        if match is None:  # pragma: no cover - the lister applies the same pattern
-            continue
-        task_id, run_id = match.group("task_id"), int(match.group("run_id"))
-        try:
-            row = conn.execute(
-                "SELECT ended_at FROM task_runs WHERE id = ? AND task_id = ?",
-                (run_id, task_id),
-            ).fetchone()
-        except sqlite3.Error:  # pragma: no cover - defensive
-            _kb._log.debug(
-                "kanban dispatch: worker scope reap lookup failed for %s", unit, exc_info=True,
-            )
-            continue
-        if row is None or row["ended_at"] is None or int(row["ended_at"]) > cutoff:
-            continue
-        try:
-            if not stop(unit):
-                continue
-        except Exception:
-            _kb._log.debug(
-                "kanban dispatch: stopping worker scope %s failed for task %s",
-                unit, task_id, exc_info=True,
-            )
-            continue
-        stopped.append(unit)
-        try:
-            with _kb.write_txn(conn):
-                _kb._append_event(
-                    conn, task_id, "terminal_run_scope_reaped",
-                    {"unit": unit, "run_id": run_id}, run_id=run_id,
-                )
-        except Exception:  # pragma: no cover - the stop has already happened
-            _kb._log.debug(
-                "kanban dispatch: scope reap event failed for %s", unit, exc_info=True,
-            )
-    return stopped
 
 
 def _worker_survived_termination(termination: dict) -> bool:
@@ -1208,40 +1076,6 @@ def _classify_dead_worker(
     return dead
 
 
-_SCOPE_OOM_MARKERS = (
-    "Failed with result 'oom-kill'",
-    "The kernel OOM killer killed some processes in this unit",
-)
-
-
-def _worker_scope_oom_killed(task_id: str, *, window: str = "-3h") -> bool:
-    """True when a transient worker scope of ``task_id`` was stopped by the kernel OOM killer.
-
-    A worker scope runs with the default ``OOMPolicy=stop``, so when the kernel
-    kills a process inside it systemd stops the whole scope and the worker is
-    left with no way to report anything: its signal path exits 0, or the scope is
-    already gone before a sweeper polls the pid. ``--collect`` removes the scope
-    the moment it exits, so ``systemctl show`` reports ``LoadState=not-found``
-    with ``Result=success`` afterwards and cannot tell an OOM death from a clean
-    one. The user manager's journal keeps the record, so read it there, bounded to
-    this one task's scopes and a short window (only a death that is about to be
-    booked asks).
-    """
-    try:
-        proc = subprocess.run(
-            [
-                "journalctl", "--user",
-                "-u", f"hermes-worker-kanban-{task_id}-run-*.scope",
-                "--since", window, "-o", "cat", "--no-pager",
-            ],
-            capture_output=True, text=True, timeout=15, check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    output = proc.stdout or ""
-    return any(marker in output for marker in _SCOPE_OOM_MARKERS)
-
-
 def _classify_dead_worker_exit(
     pid: int,
     claimer: Optional[str],
@@ -1266,22 +1100,16 @@ def _classify_dead_worker_exit(
         logged = _worker_log_exit_code(task_id, board=board)
         if logged is not None:
             kind, code = _exit_code_kind(logged)
-    # An OOM death reaches here unreadable: the signal path exits 0 (clean_exit) or
-    # the scope is already gone ("pid not alive"), so the cause is read from the
-    # journal for whichever booking this death gets. Deferred to a call so a
-    # quota-wall requeue or a terminal-provider crash, which need no cause, pay for
-    # no journal read.
+    # Read the cause only for the bookings that record a crash: a quota-wall requeue
+    # or a terminal-provider crash needs none.
     def oom_killed() -> bool:
         return bool(task_id) and _worker_scope_oom_killed(task_id)
 
     if kind == "clean_exit":
         if oom_killed():
-            # The kernel killed a process inside the worker's own cgroup and
-            # systemd stopped the scope, so this rc=0 is the worker's signal
-            # path, not the worker skipping its paperwork. Booking it as a
-            # protocol violation burns the violation streak for a death the
-            # worker did not cause and hides the cause: a lane that needed more
-            # memory than the scope ceiling.
+            # The kernel killed a process in the worker's cgroup and systemd
+            # stopped the scope, so this rc=0 is the worker's signal path, not a
+            # worker skipping its paperwork: book the cause, not a violation.
             return _DeadWorker(
                 kind, code,
                 f"pid {pid} exited rc=0 because the kernel OOM killer stopped its worker "
@@ -1332,11 +1160,9 @@ def _classify_dead_worker_exit(
         error_text = f"pid {pid} not alive"
     event_payload = {"pid": pid, "claimer": claimer}
     if oom_killed():
-        # The bare kinds above say nothing about the cause, and an OOM death
-        # reaches here as "pid not alive" (the scope is gone before the sweeper
-        # polls it) as often as it reaches the clean_exit branch. Name it, or the
-        # board shows a vanished worker and the operator has no reason to look at
-        # the lane's memory.
+        # The bare kinds above name no cause, and an OOM death reaches here as
+        # "pid not alive" (the scope was collected before the sweep) as often as
+        # through the clean_exit branch.
         error_text += (
             " - the kernel OOM killer stopped this run's worker scope: the lane needed "
             "more memory than the scope limit"
@@ -2018,17 +1844,6 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     return _has_spawnable(conn, "review")
 
 
-def review_dispatch_enabled() -> bool:
-    """Whether review tasks dispatch automatically. Default true (Hermes ships
-    ``sdlc-review``); operators disable it for human-only review boards.
-    """
-    try:
-        from hermes_cli.config import load_config
-        return bool((load_config() or {}).get("kanban", {}).get("review_dispatch", True))
-    except Exception:
-        return True
-
-
 # Memory-aware dispatch guard: an uncapped board once OOM'd a 1 GiB host. Two
 # safeguards — a memory-DERIVED default cap when none is configured
 # (``resolve_max_in_progress``) and a live memory-PRESSURE guard inside the
@@ -2082,67 +1897,6 @@ def resolve_max_in_progress(configured: Optional[int]) -> Optional[int]:
     if configured is not None:
         return configured
     return derive_default_max_in_progress()
-
-
-def configured_review_reserved_slots() -> int:
-    """Read ``kanban.review_reserved_slots`` from config, defaulting to 1.
-
-    How many shared-budget slots the ready loop must leave for the review lane
-    when spawnable review work exists. 1 preserves the historic single-slot
-    hold; 0 disables the reservation (reviews then compete for leftover
-    budget only). Never negative.
-    """
-    try:
-        from hermes_cli.config import load_config_readonly
-        raw = (load_config_readonly() or {}).get("kanban", {}).get(
-            "review_reserved_slots"
-        )
-    except Exception:
-        return 1
-    if raw is None:
-        return 1
-    try:
-        ival = int(raw)
-    except (TypeError, ValueError):
-        return 1
-    return ival if ival >= 0 else 1
-
-
-def configured_max_in_progress() -> Optional[int]:
-    """Read ``kanban.max_in_progress`` from config, or None when unset/invalid.
-
-    Shared so every dispatch entry point agrees on "explicitly configured": a
-    positive integer wins, anything else falls through to the derived default.
-    """
-    try:
-        from hermes_cli.config import load_config_readonly
-        raw = (load_config_readonly() or {}).get("kanban", {}).get("max_in_progress")
-    except Exception:
-        return None
-    if raw is None:
-        return None
-    try:
-        ival = int(raw)
-    except (TypeError, ValueError):
-        return None
-    return ival if ival >= 1 else None
-
-
-def count_running_tasks(conn: sqlite3.Connection) -> int:
-    """Number of tasks in ``status='running'``.
-
-    Used by the multi-board sweep to count OTHER boards' workers against the
-    host-level budget — the memory-derived cap bounds the machine, not the
-    board. Fails open to 0 so a broken board doesn't brick dispatch on healthy ones.
-    """
-    try:
-        return int(
-            conn.execute(
-                "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
-            ).fetchone()[0]
-        )
-    except Exception:
-        return 0
 
 
 def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
@@ -2443,12 +2197,9 @@ def _run_reclaim_phase(
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
     reap_worker_zombies()
     result.reaped_terminal_workers = reap_terminal_workers(conn)
-    # The worker's *scope* is the other half of the same leak: killing the worker's
-    # pid does not reach a server it double-forked away from its own signal path,
-    # and the cgroup survives the run. Stop the closed run's scope (see
-    # ``reap_terminal_run_scopes``). Not dry-run gated, exactly like the terminal
-    # worker reaper on the line above: reaping is restorative, and the tick that
-    # leaves the leftover is what the operator asked to stop happening.
+    # The worker's *scope* is the other half of the same leak: killing the worker's pid
+    # does not reach a server it double-forked away from its signal path. Not dry-run
+    # gated, exactly like the reaper above: reaping is restorative.
     result.reaped_run_scopes = reap_terminal_run_scopes(conn)
     result.reclaimed = _kb.release_stale_claims(conn, failure_limit=failure_limit)
     if reconcile_orphans:
@@ -3201,3 +2952,14 @@ def run_daemon(
 from hermes_cli import kanban_db as _kb
 from hermes_cli import kanban_db_connect as _kbc
 from hermes_cli import kanban_db_workspace as _kbw
+from hermes_cli.kanban_db_spawn_budget import (
+    configured_max_in_progress,
+    configured_review_reserved_slots,
+    count_running_tasks,
+    review_dispatch_enabled,
+)
+from hermes_cli.kanban_db_worker_scopes import (
+    TERMINAL_WORKER_REAP_GRACE_SECONDS,
+    _worker_scope_oom_killed,
+    reap_terminal_run_scopes,
+)

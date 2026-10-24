@@ -25,6 +25,7 @@ import shutil as _shutil
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
+from hermes_cli import kanban_db_worker_scopes as scopes
 
 
 @pytest.fixture
@@ -41,7 +42,7 @@ def conn(tmp_path, monkeypatch):
 
 
 def _unit(task_id: str, run_id: int) -> str:
-    return f"{kbd.WORKER_SCOPE_UNIT_PREFIX}{task_id}-run-{run_id}.scope"
+    return f"{scopes.WORKER_SCOPE_UNIT_PREFIX}{task_id}-run-{run_id}.scope"
 
 
 def _claimed_run(conn) -> tuple[str, int]:
@@ -61,7 +62,7 @@ def _closed_run(conn, *, ended_ago: int = 600) -> tuple[str, int]:
 
 
 def _list_units(monkeypatch, units: list[str]) -> None:
-    monkeypatch.setattr(kbd, "_loaded_worker_scope_units", lambda: list(units))
+    monkeypatch.setattr(scopes, "_loaded_worker_scope_units", lambda: list(units))
 
 
 def _recorder(stops: list[str], *, fail_on: set[str] | None = None):
@@ -115,7 +116,7 @@ def test_freshly_closed_scope_waits_for_the_grace_window(conn, monkeypatch):
 
     conn.execute(
         "UPDATE task_runs SET ended_at = ended_at - ? WHERE id = ?",
-        (kbd.TERMINAL_WORKER_REAP_GRACE_SECONDS + 1, run_id),
+        (scopes.TERMINAL_WORKER_REAP_GRACE_SECONDS + 1, run_id),
     )
     assert kbd.reap_terminal_run_scopes(conn, stop_fn=_recorder(stops)) == [unit]
 
@@ -159,7 +160,7 @@ def test_dispatch_tick_reports_the_reaped_scopes(conn, monkeypatch):
     tid, run_id = _closed_run(conn)
     unit = _unit(tid, run_id)
     _list_units(monkeypatch, [unit])
-    monkeypatch.setattr(kbd, "_stop_worker_scope_unit", lambda _u: True)
+    monkeypatch.setattr(scopes, "_stop_worker_scope_unit", lambda _u: True)
 
     result = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 0, dry_run=True, max_spawn=0)
 
@@ -180,20 +181,20 @@ def test_lister_filters_to_launchable_worker_scopes(monkeypatch):
         _shutil, "which", lambda name: "/usr/bin/systemctl" if name == "systemctl" else None,
     )
     monkeypatch.setattr(
-        kbd.subprocess, "run",
+        scopes.subprocess, "run",
         lambda *a, **k: type("P", (), {"returncode": 0, "stdout": lines})(),
     )
     monkeypatch.setattr(
         "tools.process_registry.systemd_user_bus_env", lambda *a, **k: {},
     )
 
-    assert kbd._loaded_worker_scope_units() == ["hermes-worker-kanban-t_abc-run-12.scope"]
+    assert scopes._loaded_worker_scope_units() == ["hermes-worker-kanban-t_abc-run-12.scope"]
 
 
 def test_lister_is_a_noop_without_systemctl(monkeypatch):
     monkeypatch.setattr(_shutil, "which", lambda _name: None)
 
-    assert kbd._loaded_worker_scope_units() == []
+    assert scopes._loaded_worker_scope_units() == []
 
 
 def test_real_unit_name_matches_the_spawn_suffix():
@@ -202,7 +203,7 @@ def test_real_unit_name_matches_the_spawn_suffix():
     did = "t_9f36a783"
     run_id = 723
     unit = f"hermes-worker-kanban-{did}-run-{run_id}.scope"
-    match = kbd.WORKER_SCOPE_UNIT_RE.match(unit)
+    match = scopes.WORKER_SCOPE_UNIT_RE.match(unit)
     assert match is not None
     assert match.group("task_id") == did
     assert int(match.group("run_id")) == run_id

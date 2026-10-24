@@ -716,12 +716,13 @@ security breach). A new access token gets a new device ID with no stale key
 history, so other clients trust it immediately.
 :::
 
-## Proxy Mode (E2EE on macOS)
+## Proxy Mode (Matrix adapter in a separate environment)
 
-The `matrix` extra is gated to Linux. On macOS or Windows, run the Matrix
-adapter and encryption dependencies in a Linux container and forward requests
-to the native agent. The example below uses a macOS host; the same separation
-applies to Windows with the corresponding host address and authentication.
+E2EE works natively on Linux, macOS and Windows (vodozemac wheels), so proxy
+mode is no longer required for encryption. It remains useful when the Matrix
+adapter must run somewhere else than the agent (network isolation, a hardened
+container). The example below uses a macOS host; the same separation applies
+to Windows with the corresponding host address and authentication.
 
 ### How It Works
 

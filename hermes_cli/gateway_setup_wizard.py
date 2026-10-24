@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-import sys
 
 
 def _gw():
@@ -57,16 +56,14 @@ _PLATFORMS = [
 def _all_platforms() -> list[dict]:
     """Built-in ``_PLATFORMS`` plus registry plugin platforms (same dict shape, source in
     ``_registry_entry``). Plugins are discovered here (idempotent) so the setup menu works without a
-    running gateway; user-installed ones still need ``plugins.enabled`` (untrusted code). Matrix is
-    hidden on Windows: python-olm has no wheel or native build (use WSL)."""
+    running gateway; user-installed ones still need ``plugins.enabled`` (untrusted code)."""
     try:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()
     except Exception as e:
         _gw().logger.debug("plugin discovery failed during platform enumeration: %s", e)
 
-    hide_matrix = sys.platform == "win32"
-    platforms = [dict(p) for p in _gw()._PLATFORMS if not (hide_matrix and p.get("key") == "matrix")]
+    platforms = [dict(p) for p in _gw()._PLATFORMS]
     by_key = {p["key"]: p for p in platforms}
 
     try:
@@ -75,7 +72,7 @@ def _all_platforms() -> list[dict]:
         return platforms
 
     for entry in platform_registry.all_entries():
-        if entry.name in by_key or (hide_matrix and entry.name == "matrix"):
+        if entry.name in by_key:
             continue
         platforms.append({
             "key": entry.name, "label": entry.label, "emoji": entry.emoji,

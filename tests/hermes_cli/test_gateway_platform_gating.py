@@ -5,27 +5,22 @@ in one place — ``_all_platforms()`` — so the setup wizard, the curses
 gateway-config menu, and any future picker all see the same filtered
 list.
 
-Currently:
-- Matrix is hidden on Windows. The ``[matrix]`` extra pulls
-  ``mautrix[encryption]`` -> ``python-olm``, which has no Windows wheel
-  and needs ``make`` + libolm to build from sdist. There's no native
-  Windows path that works.
+Matrix used to be hidden on Windows because ``mautrix[encryption]`` pulled
+``python-olm``, which had no Windows wheel and needed ``make`` + libolm to
+build. E2EE now runs on vodozemac, which ships Windows wheels, so Matrix
+must be offered there like everywhere else.
 """
 
 import pytest
 
-class TestMatrixHiddenOnWindows:
+
+class TestMatrixOfferedOnWindows:
 
     @pytest.mark.platforms("windows")
-    def test_matrix_absent_on_windows(self):
-        """The gate itself: matrix must be dropped on a real Windows host.
-
-        A patched ``sys.platform`` proved only that the ``if`` branch runs;
-        on native Windows this also proves the picker the user actually sees
-        omits the platform whose dependency cannot build here.
-        """
+    def test_matrix_present_on_windows(self):
+        """On a real Windows host the picker the user sees must include Matrix."""
         import hermes_cli.gateway as gateway_mod
 
         platforms = gateway_mod._all_platforms()
         keys = {p["key"] for p in platforms}
-        assert "matrix" not in keys, "matrix must be hidden on Windows"
+        assert "matrix" in keys, "matrix must be offered on Windows (vodozemac has Windows wheels)"

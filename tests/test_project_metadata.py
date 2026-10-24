@@ -71,15 +71,12 @@ def test_direct_overrides_preserve_the_declared_exact_version():
 
 
 def test_matrix_extra_not_in_all():
-    """The [matrix] extra pulls `mautrix[encryption]` -> `python-olm`,
-    which has Linux-only wheels and no native build path on Windows or
-    modern macOS (archived libolm, C++ errors with Clang 21+).
+    """The [matrix] extra stays out of [all] like every opt-in backend.
 
-    With matrix in [all], `uv sync --locked` on Windows tried to build
-    python-olm from sdist and failed on `make`. As of 2026-05-12 the
-    [matrix] extra is excluded from [all] entirely and installs on first
-    use (pm.ensure_import("matrix")), where the user is expected to have
-    a toolchain.
+    Historically it pulled `mautrix[encryption]` -> `python-olm`, which had
+    Linux-only wheels, and `uv sync --locked` on Windows failed building it.
+    E2EE now runs on vodozemac wheels, but the lazy-install policy
+    (pm.ensure_import("matrix")) still applies.
     """
     optional_dependencies = _load_optional_dependencies()
 

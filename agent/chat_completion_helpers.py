@@ -2074,7 +2074,7 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
             continue
 
         try:
-            from agent.route_binding import bind_route_entry
+            from agent.route_binding import bind_route_entry, notify_route_change
             bound = bind_route_entry(agent, fb, fb_provider, fb_model)
             if bound is None:
                 logger.warning("Fallback to %s failed: provider not configured", fb_provider)
@@ -2104,7 +2104,7 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
             from agent.native_compaction import resolve_native_compaction_capabilities
             agent.runtime_capabilities = resolve_native_compaction_capabilities(
                 model=agent.model, base_url=agent.base_url, provider=fb_provider, is_codex_backend=fb_provider == "openai-codex")
-            return True
+            return notify_route_change(agent)
         except Exception as e:
             if fb_provider == "nous":
                 unavailable.add(fb_key)

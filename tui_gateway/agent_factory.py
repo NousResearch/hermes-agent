@@ -687,6 +687,8 @@ def _make_agent(
     if fallback_notice:
         # Emitted once on the first successful reply via _emit_pending_fallback_notice -> status_callback.
         agent._pending_fallback_notice = fallback_notice
+    # A mid-turn fallback switch or primary restore refreshes the session's model label now.
+    agent.route_change_callback = lambda: _emit("session.info", sid, _session_info(agent, _sessions.get(sid)))
     return agent
 
 

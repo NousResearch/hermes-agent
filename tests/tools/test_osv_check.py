@@ -89,11 +89,13 @@ class TestCheckPackageForMalware:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         with osv_check._cache_lock:
             osv_check._cache.clear()
+            osv_check._network_failure_until.clear()
             osv_check._disk_cache_loaded = False
         (tmp_path / "cache" / "osv_check.json").unlink(missing_ok=True)
         yield
         with osv_check._cache_lock:
             osv_check._cache.clear()
+            osv_check._network_failure_until.clear()
             osv_check._disk_cache_loaded = False
         (tmp_path / "cache" / "osv_check.json").unlink(missing_ok=True)
     def test_clean_package(self):
@@ -172,8 +174,13 @@ class TestCheckPackageForMalware:
         assert second == first
         assert mock_url.call_count == 1
 
-    def test_network_failure_not_cached(self):
-        """Fail-open results must not be cached — retry once network is back."""
+    def test_network_failure_uses_process_local_cooldown(self):
+        """An unavailable OSV API does not add its timeout to every spawn.
+
+        Regression for #139641: this remains fail-open and does not write a
+        failure result to disk, while a repeat of the same MCP spawn skips OSV
+        during the short in-process cooldown.
+        """
         mock_response = MagicMock()
         mock_response.read.return_value = json.dumps({"vulns": []}).encode()
         mock_response.__enter__ = lambda s: s
@@ -182,12 +189,32 @@ class TestCheckPackageForMalware:
         with patch(
             "tools.osv_check.urllib.request.urlopen",
             side_effect=OSError("network down"),
-        ):
+        ) as mock_url:
             assert check_package_for_malware("uvx", ["mcp-server-time"]) is None
-        # Network is back: the next check must hit OSV, not a cached fail-open.
+        assert mock_url.call_count == 1
+
+        # A retry during the cooldown must not pay another network timeout.
         with patch(
             "tools.osv_check.urllib.request.urlopen", return_value=mock_response
         ) as mock_url:
+            assert check_package_for_malware("uvx", ["mcp-server-time"]) is None
+        assert mock_url.call_count == 0
+
+    def test_network_failure_cooldown_expires(self, monkeypatch):
+        """The cooldown is bounded so a recovered OSV API is retried."""
+        from tools import osv_check
+
+        monkeypatch.setattr(osv_check, "_NETWORK_FAILURE_COOLDOWN_S", 0)
+        with patch(
+            "tools.osv_check.urllib.request.urlopen",
+            side_effect=OSError("network down"),
+        ):
+            assert check_package_for_malware("uvx", ["mcp-server-time"]) is None
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({"vulns": []}).encode()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+        with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response) as mock_url:
             assert check_package_for_malware("uvx", ["mcp-server-time"]) is None
         assert mock_url.call_count == 1
 

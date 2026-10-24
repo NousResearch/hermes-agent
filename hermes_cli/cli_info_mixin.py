@@ -153,10 +153,11 @@ class CLIInfoMixin:
         on_gateway = store is not None  # its tools come from the gateway: never enumerated here
 
         # Auto-compact for narrow terminals — the full banner needs ~80 columns to avoid wrapping.
-        if banner_kw is None:
+        intro = self.show_intro
+        if intro and banner_kw is None:
             self._console_print(_build_compact_banner())
             self._show_status()
-        else:
+        elif intro:
             # Warm-launch fast path: replay last launch's tool panel when the snapshot fingerprint
             # (config.yaml + .env + checkout rev + toolsets) is unchanged, skipping the ~0.5-0.9s
             # cold get_tool_definitions walk. The agent's REAL tool list is still computed fresh at

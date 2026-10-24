@@ -815,7 +815,7 @@ DEFAULT_CONFIG = {
     },
 
     "display": {
-        "compact": False,
+        "compact": False, "banner": True, "composer_hints": True,  # CLI intro and idle footer hints
         "personality": "",
         "resume_display": "full",
         # Recap tuning for /resume and startup resume.

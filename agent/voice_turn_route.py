@@ -30,6 +30,9 @@ _REJECTION_FIELDS = ("_reasoning_disable_rejected", "_reasoning_floor_required",
 _EXTRA_FIELDS = (
     "_fallback_activated", "_fallback_index", "_provider_fallback_active", "_provider_fallback_route",
     "_rate_limit_backoff_count", "_credential_pool", "_credential_pool_entry_id", "_config_context_length",
+    # The route's own fallback_chain (below) replaces the session's for the turn, so both ends
+    # of that swap have to be restored at turn end.
+    "_fallback_chain", "_fallback_model",
     *_REJECTION_FIELDS,
 )
 
@@ -136,6 +139,7 @@ def begin_voice_turn_route(agent: Any, messages: list[dict[str, Any]], system_pr
     if not getattr(agent, "_voice_turn_pending", False):
         return system_prompt
     agent._voice_turn_pending = False
+    from agent.agent_init_fallback import _fallback_entries
     from agent.auxiliary_task_config import _get_auxiliary_task_config
     from hermes_constants import parse_reasoning_effort
     cfg = _get_auxiliary_task_config(TASK)
@@ -163,6 +167,14 @@ def begin_voice_turn_route(agent: Any, messages: list[dict[str, Any]], system_pr
             return agent._cached_system_prompt or system_prompt
         from agent.chat_completion_helpers import rewrite_prompt_model_identity
         rewrite_prompt_model_identity(agent, agent.model, agent.provider)
+        # A route that declares its own fallback_chain walks it instead of the session's: a voice
+        # model the provider refuses (content filter, 4xx, rate limit) falls through to the
+        # providers chosen for this route. ``_reinstall`` puts the session's chain back at turn end.
+        route_chain = _fallback_entries(target.get("fallback_chain"))
+        if route_chain:
+            agent._fallback_chain = route_chain
+            agent._fallback_model = route_chain[0]
+            agent._fallback_index = 0
         for name in _REJECTION_FIELDS:
             setattr(agent, name, False)
         agent._turn_route_task = TASK

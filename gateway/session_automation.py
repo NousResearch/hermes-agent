@@ -326,8 +326,18 @@ def admission_display(payload):
     return card
 
 
+# None of these keys enters ``build_session_key`` or authorizes anyone: ``message_id`` is the
+# platform reply anchor, ``chat_name`` is a mutable thread/channel title, and the auto-thread
+# fields are creation metadata that only the origin message carries. A thread's persisted origin
+# keeps its creation-time title plus auto-thread flags while a later in-thread message carries the
+# current title and no flags (#139135), so refusing a wake over them strands a completed child.
+_NON_IDENTITY_SOURCE_KEYS = frozenset({'message_id', 'chat_name', 'auto_thread_created',
+                                       'auto_thread_initial_name'})
+
+
 def _route_identity(source):
-    return {key: value for key, value in source.to_dict().items() if key != 'message_id'}
+    return {key: value for key, value in source.to_dict().items()
+            if key not in _NON_IDENTITY_SOURCE_KEYS}
 
 
 def committed_route_envelope(authority, entry):
@@ -365,7 +375,9 @@ def snapshot_automation(authority, adapter, event, identity):
     restored = restore_native({'text': event.text, 'native_text_v1': {
         key: value for key, value in envelope.items() if key != 'media'}}, runner)
     # Synthetic wakes clear ``message_id`` (#52694, #123097) while the committed human source keeps
-    # it, so compare the routing/provenance identity, never the platform reply anchor.
+    # it, and a thread's origin can retain a since-renamed title plus creation-only auto-thread
+    # flags (#139135), so compare the routing/provenance identity — never the reply anchor or
+    # mutable display/creation metadata.
     if (_route_identity(restored.source) != _route_identity(event.source)
             or runner._adapter_for_source(restored.source) is not adapter):
         raise RuntimeStoreError('admission_conflict')

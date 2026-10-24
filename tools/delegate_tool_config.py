@@ -351,28 +351,35 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
         provider, api_mode = "anthropic", "anthropic_messages"
     elif "api.kimi.com/coding" in base_lower:
         api_mode = "anthropic_messages"
-    # Explicit delegation.api_mode always wins over the URL heuristic; a provider plugin's
-    # registered dialect counts as explicit.
-    from agent.transports import registered_api_modes
-    if v["api_mode"] in _EXPLICIT_API_MODES or (v["api_mode"] and v["api_mode"] in registered_api_modes()):
-        api_mode = v["api_mode"]
 
     # Preserve the configured provider's request personality on an explicit endpoint.
     request_overrides = None
+    api_key = v["api_key"]
     if v["provider"]:
         try:
             from hermes_cli.runtime_provider import resolve_runtime_provider
             runtime = resolve_runtime_provider(requested=v["provider"], target_model=v["model"])
             request_overrides = dict(runtime.get("request_overrides") or {}) or None
-
+            # Without an explicit delegation.api_key the configured provider owns the credentials and
+            # transport; base_url only moves its endpoint. Falling through to api_key None would hand the
+            # child the PARENT's key against this endpoint, under a URL-guessed provider/api_mode.
+            if not api_key and runtime.get("api_key"):
+                api_key = runtime["api_key"]
+                api_mode = runtime.get("api_mode") or api_mode
+                provider = v["provider"] if runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM else runtime.get("provider")
         except Exception as exc:
             logger.debug(
                 "delegation.base_url: runtime resolution for provider '%s' failed; proceeding without request_overrides: %s",
                 v["provider"], exc,
             )
+    # Explicit delegation.api_mode always wins over the URL heuristic and the provider's mode; a provider
+    # plugin's registered dialect counts as explicit.
+    from agent.transports import registered_api_modes
+    if v["api_mode"] in _EXPLICIT_API_MODES or (v["api_mode"] and v["api_mode"] in registered_api_modes()):
+        api_mode = v["api_mode"]
     # api_key None → inherited from parent in _build_child_agent
     return _credential_bundle(
-        v["model"], provider, v["base_url"], v["api_key"], api_mode,
+        v["model"], provider, v["base_url"], api_key, api_mode,
         _merge_request_overrides(request_overrides, explicit_request_overrides),
     )
 
@@ -424,7 +431,8 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Child credential bundle from the ``delegation`` config section. Three branches: ``base_url`` set → direct
-    endpoint (``api_key`` None means inherit the parent's key, so providers keyed outside OPENAI_API_KEY work);
+    endpoint (a configured ``provider`` supplies the key/api_mode/identity unless ``api_key`` is explicit; ``api_key``
+    still None means inherit the parent's key, so providers keyed outside OPENAI_API_KEY work);
     ``provider`` set → full bundle via the runtime provider system (same path as CLI/gateway startup); neither →
     None values, child inherits everything. ``request_overrides`` is honored on every branch. Raises ValueError
     with a user-facing message."""

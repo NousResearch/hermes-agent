@@ -1,0 +1,63 @@
+name: athena
+repo: https://github.com/athenaforhermes/athena
+sha: "3420cdd9ba68e65b9d3552536de5bfe72aa0ceea"
+title: Athena
+description: >-
+  The local AI-app store for Hermes: browse a constantly growing catalogue of apps,
+  install an app from any git repository, launch it, read its logs and stop it. It
+  needs no API key and no account of its own, because it reuses the credentials
+  Hermes already holds. Apps run on your machine on loopback; the panel and the CLI
+  are two doors into the same engine. Agent control is in active development.
+maintainer: athenaforhermes
+tier: community
+category: platform
+version: "1.0.1"
+requires_hermes: ">=0.21.0,<0.23.0"
+docs_url: https://github.com/athenaforhermes/athena
+# `readme: true` makes the docs site render the plugin's own README from the
+# pinned commit — which is where the licence, the screenshots and the full
+# architecture live. It needs `repo` to be github.com (or gitlab.com), which it is.
+readme: true
+# `screenshots:` is deliberately absent until the repo exists: the validator only
+# accepts https URLs on github.com / raw.githubusercontent.com, so a placeholder
+# here would be an un-fetchable entry the moment it shipped. Three are intended —
+# a real panel, a running app, and a machine's screen — all cut from the pinned
+# commit once it is real. The licence is the repo's `LICENSE` (MIT), landed there
+# with the README.
+platforms: [windows]
+# Declared honestly: the engine, the app launches and the panel are tested on
+# Windows. Linux is expected to work (the engine is Node, the paths are POSIX-aware)
+# but has not been exercised, so the entry does not claim it.
+known_issues:
+  - "Windows-tested only. The panel, the engine and app launches are exercised on Windows; Linux is expected to work but is untested, so the entry declares `platforms: [windows]`."
+  - "Scheduled runs import an undocumented core module (`dashboard/plugin_api.py` imports `cron.jobs`), which the admission validator flags as a warning. Reading and listing cron jobs is the only use; if a Hermes release moves that module, scheduling needs updating. Everything else goes through public plugin surfaces."
+  - "An app whose menu marks no entry as default (FaceFusion, for example) is opened on its first runnable script — the install step on a fresh clone, the start action after. Athena falls back to the app's own menu rather than refusing to run it."
+capabilities:
+  provides_tools:
+    - athena_status
+    - athena_apps
+    - athena_search
+    - athena_install
+    - athena_launch
+    - athena_stop
+    - athena_logs
+    - athena_store_detail
+    - athena_publish
+    - athena_delete
+    - athena_fix
+    - athena_report
+    - athena_app_health
+    - athena_models
+    - athena_settings
+    - athena_files
+    - athena_space
+    - athena_job
+    - athena_capabilities
+    - athena_generate
+    - athena_runs
+    - athena_schedule
+    - athena_build_app
+    - athena_machines
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

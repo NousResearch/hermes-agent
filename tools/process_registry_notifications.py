@@ -4,11 +4,29 @@ watch_match, watch_disabled, watch_overflow_*, async_delegation) into the
 TUI inject into the agent conversation."""
 
 import time
+import uuid
 from dataclasses import dataclass
 from contextlib import suppress
 
 _DONE = ("completed", "success")
 _REASON_STATUS = {"lost": "marked lost because the process backend disappeared", "failed_start": "failed to start"}
+
+
+def watch_event_base(session) -> dict:
+    """Session identity, launch time and routing fields shared by watch events."""
+    from tools.process_registry import _WATCHER_ROUTE_KEYS
+
+    return {
+        "event_id": uuid.uuid4().hex,
+        "started_at": session.started_at,
+        "parent_session_id": session.parent_session_id,
+        "session_id": session.id,
+        "session_key": session.session_key,
+        "task_id": session.task_id,
+        "owner_task_id": session.owner_task_id,
+        "command": session.command,
+        **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +100,24 @@ def _format_age(seconds: float) -> str:
         return f"{m}m" + (f"{s}s" if s else "")
     h, m = divmod(m, 60)
     return f"{h}h" + (f"{m}m" if m else "")
+
+
+def _format_process_supersession_context(evt: dict) -> str:
+    """Precedence boundary for a process result arriving after its launch turn."""
+    started_at = evt.get("started_at")
+    if (
+        isinstance(started_at, (int, float))
+        and not isinstance(started_at, bool)
+        and started_at > 0
+    ):
+        timing = f"this process started {_format_age(time.time() - started_at)} ago and "
+    else:
+        timing = "this process "
+    return (
+        f"Supersession context: {timing}may relate to an earlier turn. "
+        "Reconcile this result with the current conversation before acting; "
+        "newer user instructions take precedence."
+    )
 
 
 def _model_not_found_patterns() -> list[str]:
@@ -466,11 +502,17 @@ def format_process_notification(evt: dict) -> str | None:
     # watch_disabled and overflow events carry their own human-readable `message`;
     # otherwise overflow events would fall through to the completion formatter as a
     # phantom "process exited (exit code ?)".
-    if evt_type in ("watch_disabled", "watch_overflow_tripped", "watch_overflow_released"):
+    if evt_type in ("watch_overflow_tripped", "watch_overflow_released"):
         return f"[IMPORTANT: {evt.get('message', '')}]"
+    if evt_type == "watch_disabled":
+        return (
+            f"[IMPORTANT: {evt.get('message', '')}\n"
+            f"{_format_process_supersession_context(evt)}]"
+        )
     if evt_type == "async_delegation":
         return _format_async_delegation(evt)
     _sid, _cmd = evt.get("session_id", "unknown"), evt.get("command", "unknown")
+    supersession = _format_process_supersession_context(evt)
     _attribution = _delegation_attribution_line(evt)
     if evt.get("handoff_note"):
         _attribution = f"Handed off to you by a subagent before it finished. Purpose: {evt['handoff_note']}"
@@ -485,7 +527,7 @@ def format_process_notification(evt: dict) -> str | None:
         _sup = evt.get("suppressed", 0)
         return (
             f"[IMPORTANT: Background process {_sid} matched watch pattern \"{evt.get('pattern', '?')}\".\n"
-            f"{attribution}Command: {_cmd}\nMatched output:\n{evt.get('output', '')}"
+            f"{supersession}\n{attribution}Command: {_cmd}\nMatched output:\n{evt.get('output', '')}"
             + (f"\n({_sup} earlier matches were suppressed by rate limit)" if _sup else "") + "]")
     _exit = evt.get("exit_code", "?")
     _out = evt.get("output", "")
@@ -503,4 +545,4 @@ def format_process_notification(evt: dict) -> str | None:
                 f"session_id=\"{_sid}\") has the full output)\n{_out}")
     return (
         f"[IMPORTANT: Background process {_sid} {_completion_status(evt)} (exit code {_exit}{_signal}).\n"
-        f"{attribution}Command: {_cmd}\nOutput:\n{_out}]")
+        f"{supersession}\n{attribution}Command: {_cmd}\nOutput:\n{_out}]")

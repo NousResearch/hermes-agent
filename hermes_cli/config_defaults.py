@@ -1851,9 +1851,9 @@ DEFAULT_CONFIG = {
         # untouched. User-written bare platforms address home conversations, unlike `all`
         # broadcast expansions, which do not gain mirror eligibility.
         "mirror_delivery": False,
-        # Max due jobs run in parallel per tick. None/0 = unbounded (thread count only); 1 = serial.
-        # Env override: HERMES_CRON_MAX_PARALLEL.
-        "max_parallel_jobs": None,
+        "max_parallel_jobs": None,  # Per tick; None/0 = unbounded, 1 = serial. Env HERMES_CRON_MAX_PARALLEL.
+        "max_parallel_scripts": None,  # no_agent pool; None = share max_parallel_jobs, 0 = unbounded.
+        "headless_defer_agent_jobs": False,  # `cron tick` leaves agent jobs to a live gateway ticker.
         # save_job_output keeps the N most recent .md files per job; 0 or negative disables pruning
         # (for externally managed cleanup).
         "output_retention": 50,

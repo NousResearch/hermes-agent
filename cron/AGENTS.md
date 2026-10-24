@@ -28,7 +28,9 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   executions ledger's `scheduled_instant` blocks a second fire, `cron.catch_up_missed: false`
   skips past-grace misses with a logged reason. Never drop a slot silently (#107485).
 - Per-home tick lock `<home>/cron/.tick.lock` prevents duplicate ticks across processes for
-  that profile's store; never a `~/.hermes/...` literal.
+  that profile's store; never a `~/.hermes/...` literal. It covers scan + advance + dispatch only:
+  `sync=True` waits for its futures AFTER releasing it (a crontab tick held it for a whole agent
+  run and starved the gateway ticker). Cross-process run exclusivity is the per-job `fire_claim`.
 - **Headless ticks refuse, never spawn.** `hermes cron tick` (system crontab / external scheduler)
   calls `tick(headless=True)`; `cron/scheduler_gateway_gate.py` skips agent jobs when discovery
   says no gateway owns the home (`last_fire_error` stamped, one warning per tick, due instant

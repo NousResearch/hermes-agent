@@ -426,6 +426,8 @@ kanban:
 #   - Gateway/messaging/cron: Uses terminal.cwd here; legacy .env cwd values are deprecated
 cron:
   catch_up_missed: true  # False skips past-grace recurring misses after planned downtime.
+  # max_parallel_scripts: 2  # Own pool for no_agent scripts (unset = share max_parallel_jobs; 0 = unbounded).
+  # headless_defer_agent_jobs: true  # `hermes cron tick` leaves agent jobs to a live gateway ticker.
 
 terminal:
   backend: "local"

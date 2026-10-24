@@ -22,7 +22,7 @@ from gateway.session_events import SessionEvents
 from gateway.session_pending_controls import PendingControls
 from hermes_state_runtime import (
     STEERING, RuntimeStoreError, admit_session_input, begin_runtime_epoch,
-    cancel_session_input, claim_session_input, get_session_admission,
+    cancel_session_input, claim_session_input, find_session_admission, get_session_admission,
     list_session_admissions, recover_session_inputs, resolve_unknown_session_input,
 )
 
@@ -347,9 +347,11 @@ class SessionAuthority:
             active_generation = handle.execution_generation if handle.execution_state == "running" else None
             prompts = live.controls.snapshot(ref.session_id, active_generation)
             epoch, sequence = live.event_stream.watermark()
+            from hermes_state_admission_history import admission_cursor
+            cursor = admission_cursor(self.db, ref.session_id)
             history = self.unless_deleted(ref, lambda: tuple(local_history(self, ref, prepared)))
             snapshot = SubscriptionSnapshot(subscription, handle, epoch, sequence, history,
-                                        tuple(self._pending_receipt(r) for r in pending_rows(self, ref)), prompts)
+                                        tuple(self._pending_receipt(r) for r in pending_rows(self, ref)), prompts, cursor)
         from gateway.session_viewer_close import cancel_persisted_close
         await asyncio.to_thread(cancel_persisted_close, self, ref.session_id)  # the viewer cancels it
         from gateway.session_deferred_pick import reask_on_attach
@@ -403,8 +405,10 @@ class SessionAuthority:
         if text is None:
             text = payload.get('native_text_v1', {}).get('event', {}).get('text', '')
         from gateway.session_queued_controls import queued_controls
+        from gateway.session_automation import admission_display
         return PendingAdmission(**vars(self._receipt(row)), input_id=row['request_id'], text=text,
-                                controls=queued_controls(self, row), steering=row['outcome'] == STEERING)
+                                controls=queued_controls(self, row), steering=row['outcome'] == STEERING,
+                                input=admission_display(payload).get('input'))
 
     def _publish_pending(self, ref):
         live = self.sessions[ref.session_id]
@@ -719,9 +723,13 @@ class SessionAuthority:
             logging.getLogger(__name__).exception(
                 'Releasing refused attachments of request %s failed', request.request_id)
 
-    async def receipt(self, actor, ref, admission_id):
+    async def receipt(self, actor, ref, admission_id=None, *, submission_id=None):
         self.authorize(actor, ref, 'session:submit')
-        row = get_session_admission(self.db, admission_id=admission_id)
+        if submission_id is not None:
+            row = find_session_admission(self.db, principal_id=actor.subject,
+                                         session_id=ref.session_id, request_id=submission_id)
+        else:
+            row = get_session_admission(self.db, admission_id=admission_id)
         if row is None or row['target_session_id'] != ref.session_id:
             raise RuntimeStoreError('not_found')
         if row['principal_id'] != actor.subject and 'session:control' not in actor.capabilities:
@@ -730,7 +738,7 @@ class SessionAuthority:
         with live.event_stream.lock:
             # Read after the row: a terminal row whose completion is not yet published reads as
             # its claim, so a receipt poller never replays events that lack the completion frame.
-            row = live.settling.get(admission_id, row)
+            row = live.settling.get(row['admission_id'], row)
         return self._receipt(row)
 
     async def cancel_queued(self, actor, ref, admission_id):

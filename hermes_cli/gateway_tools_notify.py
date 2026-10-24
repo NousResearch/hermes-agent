@@ -39,6 +39,7 @@ def queue_admitted_turn(cli, store) -> None:
     queue main's ``TimelineNotification`` for it. Frames before it are the between-turn leftovers
     ``run_conversation`` would discard anyway; frames after it stay queued for the pump."""
     from tools.process_registry_notifications import TimelineNotification
+    from hermes_cli.gateway_remote_turns import reattach_idle, recover_history
     connection, session_id = store.connection, getattr(cli, "session_id", None)
     state = connection.state(session_id)
     if _adoption_waiting(cli, state):
@@ -49,14 +50,19 @@ def queue_admitted_turn(cli, store) -> None:
         try:
             frame = events.get_nowait()
         except queue.Empty:
+            if (connection.closed or state.gaps != state.attached_gaps) and not reattach_idle(store, state):
+                return
+            recover_history(store, state)
             recover_queued(cli, store)
             return
         if isinstance(frame, Exception):
             from hermes_cli.gateway_connection import lost_before
             if lost_before(frame, getattr(connection, "epoch", None)):
                 continue  # a connection a reconnect already replaced
-            events.put(frame)  # the disconnect belongs to the next turn
-            return
+            if not reattach_idle(store, state):
+                events.put(frame)
+                return
+            continue
         params = frame.get("params") if isinstance(frame, dict) else None
         if not isinstance(params, dict) or params.get("session_id") != session_id:
             continue
@@ -69,6 +75,9 @@ def queue_admitted_turn(cli, store) -> None:
             continue
         if params.get("type") != "message.start" or not params.get("admission_id"):
             continue
+        if params["admission_id"] in state.painted_admissions:
+            continue
+        remember_remote_input(state, params)
         queued_text = state.queued_inputs.get(params["admission_id"])
         if queued_text is not None:
             # A ``/queue`` prompt this viewer admitted (#134889 N5): the owner runs it now, and main's
@@ -164,8 +173,19 @@ def recover_queued(cli, store) -> None:
 def missed_start(state, params) -> None:
     """A frame dropped outside its turn: a ``/queue`` admission's ``message.start`` is remembered so
     the idle tick paints that turn from its receipt instead of losing it."""
+    remember_remote_input(state, params)
     if params.get("type") == "message.start" and params.get("admission_id") in state.queued_inputs:
         state.missed.add(params["admission_id"])
+
+
+def remember_remote_input(state, params) -> None:
+    from hermes_cli.gateway_remote_turns import remember_input
+    admission = params.get("admission_id")
+    if params.get("type") != "message.start" or not admission or admission in state.painted_admissions:
+        return
+    payload = params.get("payload") or {}
+    public_input = payload.get("input")
+    remember_input(state, admission, public_input)
 
 
 def _put_first(pending, item):
@@ -194,7 +214,6 @@ def take_admitted_turn(agent, text):
     armed, state.armed_admission = getattr(state, "armed_admission", None), None
     adopted = state.adopted.pop(armed, None) if armed else None
     if adopted is not None:
-        state.queued_inputs.pop(armed, None)  # painted now: the admission's turn is this one
         return adopted
     adopted = getattr(state, "admitted_turn", None)
     state.admitted_turn = None

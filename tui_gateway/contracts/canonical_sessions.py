@@ -12,6 +12,7 @@ from .connectors_operation import ConnectionRequestPayload
 from .sessions import TodoState
 from .canonical import AdmissionStatus, CanonicalSessionRef, PromptResponseResult, SessionInventoryFields
 from .registry import canonical_method
+from .events import AdmittedInput
 
 
 class CanonicalSessionParams(ProfileParams):
@@ -85,6 +86,7 @@ class CanonicalSessionHandle(Result):
 
 class CanonicalPendingAdmission(AdmissionStatus):
     input_id: str
+    input: AdmittedInput | None = None
     text: str
     # The queued-row verbs the owner serves for this row: ``steer`` (``prompt.steer_queued``) and
     # ``replace`` (``prompt.replace_queued``). Absent from an owner that predates them.
@@ -145,6 +147,7 @@ class CanonicalSnapshot(Result):
     authority_epoch: int
     replay_epoch: str
     last_sequence: int
+    admission_cursor: int | None = None
     subscription_id: str
     revision: int
     execution_generation: int

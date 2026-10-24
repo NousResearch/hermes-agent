@@ -4855,6 +4855,63 @@
         "title": "ActiveSubagent",
         "type": "object"
       },
+      "AdmissionHistoryEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/AdmissionStatus"
+          },
+          "input": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AdmittedInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "receipt",
+          "input"
+        ],
+        "title": "AdmissionHistoryEntry",
+        "type": "object"
+      },
+      "AdmissionReceiptParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "include_result": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Include Result"
+          },
+          "admission_id": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Admission Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "admission_id"
+        ],
+        "title": "AdmissionReceiptParams",
+        "type": "object"
+      },
       "AdmissionStatus": {
         "additionalProperties": false,
         "description": "``gateway/session_contract.py::AdmissionReceipt`` as ``dataclasses.asdict`` sends it.",
@@ -4917,6 +4974,21 @@
           "execution_generation"
         ],
         "title": "AdmissionStatus",
+        "type": "object"
+      },
+      "AdmittedInput": {
+        "additionalProperties": false,
+        "description": "Public text of an ordinary input already admitted by the session authority.",
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "AdmittedInput",
         "type": "object"
       },
       "AgentPluginRow": {
@@ -8879,6 +8951,17 @@
             "title": "Input Id",
             "type": "string"
           },
+          "input": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AdmittedInput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "text": {
             "title": "Text",
             "type": "string"
@@ -10335,6 +10418,18 @@
           "last_sequence": {
             "title": "Last Sequence",
             "type": "integer"
+          },
+          "admission_cursor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Admission Cursor"
           },
           "subscription_id": {
             "title": "Subscription Id",
@@ -23607,7 +23702,7 @@
       },
       "MessageStartPayload": {
         "additionalProperties": false,
-        "description": "``message.start``. Empty from the TUI gateway's emitters and for an ordinary admission;\n``gateway/session_authority._stamp_claim`` adds an automation admission's async-result card\n(``session_automation.admission_display``: a background-process completion) and its model\ntext, so a viewer that did not submit the turn paints the same header the submitter would.",
+        "description": "The authority projects ordinary visible input or an automation's async-result card.\nStandalone TUI emitters may still send an empty payload.",
         "properties": {
           "display_kind": {
             "anyOf": [
@@ -23656,6 +23751,17 @@
             ],
             "default": null,
             "title": "Text"
+          },
+          "input": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AdmittedInput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "title": "MessageStartPayload",
@@ -31644,36 +31750,71 @@
         "title": "PromptCancelParams",
         "type": "object"
       },
-      "PromptReceiptParams": {
+      "PromptHistoryParams": {
         "additionalProperties": false,
         "properties": {
           "session_id": {
             "title": "Session Id",
             "type": "string"
           },
-          "admission_id": {
-            "title": "Admission Id",
-            "type": "string"
+          "after_sequence": {
+            "minimum": 0,
+            "title": "After Sequence",
+            "type": "integer"
           },
-          "include_result": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Include Result"
+          "limit": {
+            "default": 64,
+            "maximum": 64,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
           }
         },
         "required": [
           "session_id",
-          "admission_id"
+          "after_sequence"
         ],
-        "title": "PromptReceiptParams",
+        "title": "PromptHistoryParams",
         "type": "object"
+      },
+      "PromptHistoryResult": {
+        "additionalProperties": false,
+        "properties": {
+          "admissions": {
+            "items": {
+              "$ref": "#/components/schemas/AdmissionHistoryEntry"
+            },
+            "title": "Admissions",
+            "type": "array"
+          },
+          "last_sequence": {
+            "title": "Last Sequence",
+            "type": "integer"
+          },
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "admissions",
+          "last_sequence",
+          "has_more"
+        ],
+        "title": "PromptHistoryResult",
+        "type": "object"
+      },
+      "PromptReceiptParams": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/AdmissionReceiptParams"
+          },
+          {
+            "$ref": "#/components/schemas/SubmissionReceiptParams"
+          }
+        ],
+        "description": "Exactly one durable identity; generated clients carry the same exclusive union.",
+        "title": "PromptReceiptParams"
       },
       "PromptReceiptResult": {
         "additionalProperties": false,
@@ -42402,6 +42543,39 @@
         "title": "SubagentTailResult",
         "type": "object"
       },
+      "SubmissionReceiptParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "include_result": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Include Result"
+          },
+          "submission_id": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Submission Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "submission_id"
+        ],
+        "title": "SubmissionReceiptParams",
+        "type": "object"
+      },
       "SubscriptionChangeEffect": {
         "enum": [
           "charge_now",
@@ -47749,8 +47923,26 @@
       }
     },
     {
+      "name": "prompt.history",
+      "summary": "Read admission history after a durable sequence, in FIFO order. Public ordinary input only; hidden and automation input is omitted. Does not replay or admit work.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/PromptHistoryParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/PromptHistoryResult"
+        }
+      }
+    },
+    {
       "name": "prompt.receipt",
-      "summary": "Current receipt of one admission the caller submitted (or controls).",
+      "summary": "Read a durable receipt by admission_id, or by the calling principal's exact session_id and submission_id after a lost submit reply. Never admits input. Exactly one selector is required; not_found is not proof that input never ran.",
       "params": [
         {
           "name": "params",
@@ -48756,7 +48948,7 @@
     },
     {
       "name": "message.start",
-      "summary": "A turn began streaming; an automation turn carries its async-result card.",
+      "summary": "A turn began streaming; ordinary input or an automation card lets observers render it.",
       "params": [
         {
           "name": "payload",

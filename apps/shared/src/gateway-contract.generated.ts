@@ -4541,10 +4541,17 @@ export interface CanonicalShellExecParams {
   command: string
   profile?: string | null
 }
-export interface PromptReceiptParams {
+/** Exactly one durable identity; generated clients carry the same exclusive union. */
+export type PromptReceiptParams = AdmissionReceiptParams | SubmissionReceiptParams
+export interface AdmissionReceiptParams {
   session_id: string
-  admission_id: string
   include_result?: boolean | null
+  admission_id: string
+}
+export interface SubmissionReceiptParams {
+  session_id: string
+  include_result?: boolean | null
+  submission_id: string
 }
 /** ``result`` / ``usage``: the structured turn result committed at settlement, only with ``include_result`` on a terminal admission that saved one. */
 export interface PromptReceiptResult {
@@ -4562,9 +4569,19 @@ export interface CanonicalSessionRef {
   profile_id: string
   session_id: string
 }
-export interface PromptCancelParams {
+export interface PromptHistoryParams {
   session_id: string
-  admission_id: string
+  after_sequence: number
+  limit?: number
+}
+export interface PromptHistoryResult {
+  admissions: AdmissionHistoryEntry[]
+  last_sequence: number
+  has_more: boolean
+}
+export interface AdmissionHistoryEntry {
+  receipt: AdmissionStatus
+  input: AdmittedInput | null
 }
 /** ``gateway/session_contract.py::AdmissionReceipt`` as ``dataclasses.asdict`` sends it. */
 export interface AdmissionStatus {
@@ -4575,6 +4592,14 @@ export interface AdmissionStatus {
   outcome: string | null
   authority_epoch: number
   execution_generation: number | null
+}
+/** Public text of an ordinary input already admitted by the session authority. */
+export interface AdmittedInput {
+  text: string
+}
+export interface PromptCancelParams {
+  session_id: string
+  admission_id: string
 }
 export interface PromptResolveUnknownParams {
   session_id: string
@@ -4971,6 +4996,7 @@ export interface CanonicalSnapshot {
   authority_epoch: number
   replay_epoch: string
   last_sequence: number
+  admission_cursor?: number | null
   subscription_id: string
   revision: number
   execution_generation: number
@@ -4989,6 +5015,7 @@ export interface CanonicalPendingAdmission {
   authority_epoch: number
   execution_generation: number | null
   input_id: string
+  input?: AdmittedInput | null
   text: string
   controls?: ('steer' | 'replace')[] | null
   steering?: boolean | null
@@ -5604,12 +5631,13 @@ export interface ErrorPayload {
 export interface NoticePayload {
   message: string
 }
-/** ``message.start``. Empty from the TUI gateway's emitters and for an ordinary admission; ``gateway/session_authority._stamp_claim`` adds an automation admission's async-result card (``session_automation.admission_display``: a background-process completion) and its model text, so a viewer that did not submit the turn paints the same header the submitter would. */
+/** The authority projects ordinary visible input or an automation's async-result card. Standalone TUI emitters may still send an empty payload. */
 export interface MessageStartPayload {
   display_kind?: string | null
   display_text?: string | null
   notification_category?: string | null
   text?: string | null
+  input?: AdmittedInput | null
 }
 /** ``message.delta``. A session-authority local-viewer turn also publishes ``text: null``: the reply segment boundary (the agent's ``stream_delta_callback(None)``, before tool lines) that closes the classic CLI's reply box. Every other viewer ignores an empty chunk. */
 export interface MessageDeltaPayload {
@@ -6808,7 +6836,9 @@ export interface CanonicalRpcMethods {
   'profiles.list': { params: CanonicalProfilesParams; result: CanonicalProfilesResult }
   /** Retire a still-queued admission; a started one is unaffected. */
   'prompt.cancel': { params: PromptCancelParams; result: AdmissionStatus }
-  /** Current receipt of one admission the caller submitted (or controls). */
+  /** Read admission history after a durable sequence, in FIFO order. Public ordinary input only; hidden and automation input is omitted. Does not replay or admit work. */
+  'prompt.history': { params: PromptHistoryParams; result: PromptHistoryResult }
+  /** Read a durable receipt by admission_id, or by the calling principal's exact session_id and submission_id after a lost submit reply. Never admits input. Exactly one selector is required; not_found is not proof that input never ran. */
   'prompt.receipt': { params: PromptReceiptParams; result: PromptReceiptResult }
   /** Cancel a still-queued admission and admit the edited prompt as a new admission at the back of the FIFO, in one write bound to the replaced admission. Refusals: admission_started, admission_conflict (the submission_id replaced another admission), queue_full, unsupported_control, not_found. */
   'prompt.replace_queued': { params: CanonicalReplaceQueuedParams; result: AdmissionStatus }
@@ -6876,6 +6906,7 @@ export const CANONICAL_RPC_METHODS = [
   'kanban.run',
   'profiles.list',
   'prompt.cancel',
+  'prompt.history',
   'prompt.receipt',
   'prompt.replace_queued',
   'prompt.resolve_unknown',
@@ -7004,7 +7035,7 @@ export interface BackendGatewayEventMap {
   'message.interim': MessageInterimPayload
   /** The agent reacted to a message; paint it live. */
   'message.reaction': MessageReactionPayload
-  /** A turn began streaming; an automation turn carries its async-result card. */
+  /** A turn began streaming; ordinary input or an automation card lets observers render it. */
   'message.start': MessageStartPayload
   /** The MoA aggregator started. */
   'moa.aggregating': MoaAggregatingPayload

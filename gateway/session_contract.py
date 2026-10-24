@@ -1,12 +1,22 @@
 """Public session authority contract; live execution state never crosses this boundary."""
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Literal, Mapping, Protocol
 
 JsonObject = Mapping[str, object]
 
 # Authenticated local WebSocket family, separate from the legacy Desktop API contract.
 CANONICAL_GATEWAY_PROTOCOL = 'hermes-gateway-v1'
+
+
+class InputRecoveryCapability(StrEnum):
+    SUBMISSION_RECEIPT = 'submission-receipt-v1'
+    ADMISSION_HISTORY = 'admission-history-v1'
+    ORDINARY_INPUT_EVENTS = 'ordinary-input-events-v1'
+
+
+INPUT_RECOVERY_CAPABILITIES = tuple(InputRecoveryCapability)
 
 
 @dataclass(frozen=True)
@@ -69,6 +79,7 @@ class PendingAdmission(AdmissionReceipt):
     # A queued admission in transfer to the running turn (``prompt.steer_queued``): it reads ``started``
     # but goes back to its queue place if its text never reached that turn.
     steering: bool = False
+    input: JsonObject | None = None
 
 
 @dataclass(frozen=True)
@@ -80,6 +91,7 @@ class SubscriptionSnapshot:
     history: tuple[JsonObject, ...]
     pending: tuple[PendingAdmission, ...]
     prompts: tuple[JsonObject, ...]
+    admission_cursor: int = 0
 
 
 class SessionAuthority(Protocol):
@@ -88,7 +100,8 @@ class SessionAuthority(Protocol):
     async def attach(self, actor: Principal, ref: SessionRef) -> SubscriptionSnapshot: ...
     async def detach(self, actor: Principal, subscription_id: str, *, end_reason: str | None = None) -> None: ...
     async def submit(self, actor: Principal, request: Submission) -> AdmissionReceipt: ...
-    async def receipt(self, actor: Principal, ref: SessionRef, admission_id: str) -> AdmissionReceipt: ...
+    async def receipt(self, actor: Principal, ref: SessionRef, admission_id: str | None = None,
+                      *, submission_id: str | None = None) -> AdmissionReceipt: ...
     async def cancel_queued(self, actor: Principal, ref: SessionRef, admission_id: str) -> AdmissionReceipt: ...
     async def interrupt(self, actor: Principal, ref: SessionRef, generation: int) -> SessionHandle: ...
     async def respond(self, actor: Principal, ref: SessionRef, generation: int,

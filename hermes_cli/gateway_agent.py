@@ -795,6 +795,8 @@ class GatewayAgent:
             if self._owns(turn):
                 self._generation_done()
         if isinstance(outcome, Exception) and self._owns(turn):
+            from hermes_cli.gateway_remote_turns import finish_viewed_turn
+            finish_viewed_turn(self._state(), turn.admission, None)
             return self._failed(history, user_message, str(outcome) or DISCONNECTED,
                                 failure_reason="gateway_connection")
         result = self._result(history, user_message, outcome, turn) if self._owns(turn) else None
@@ -802,6 +804,8 @@ class GatewayAgent:
             return self._failed(history, user_message, "A later turn took over this terminal.")
         if turn.gapped:
             self._paint_owed(turn, result, outcome, stream_callback)
+        from hermes_cli.gateway_remote_turns import finish_viewed_turn
+        finish_viewed_turn(self._state(), turn.admission, result)
         return result
 
     def _drain_stale(self):

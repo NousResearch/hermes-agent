@@ -312,10 +312,14 @@ _AUTOMATION_METADATA = frozenset({'gateway_session_key', 'gateway_session_id', '
 
 
 def admission_display(payload):
-    """An automation admission's async-result card (plus its model text) for the claim's
-    ``message.start``: a viewer that did not submit the turn (the classic CLI, idle while a
-    background process it started finishes in the gateway) paints the same header the submitting
-    surface would. ``{}`` for every other input."""
+    """Public ordinary input or a trusted automation card for viewers of an admitted turn.
+    Hidden prompts and private native envelopes are never ordinary input projections."""
+    if not payload.get('local_automation_v1') and not payload.get('native_text_v1'):
+        from gateway.session_display import HIDDEN
+        if payload.get('display_v1', {}).get('kind') == HIDDEN:
+            return {}
+        text = payload.get('text')
+        return {'input': {'text': text}} if isinstance(text, str) and text else {}
     descriptor = payload.get('local_automation_v1') or (payload.get('native_text_v1') or {}).get('automation') or {}
     kind, text = descriptor.get('display_kind'), descriptor.get('display_text')
     if not kind or not isinstance(text, str) or not text.strip():

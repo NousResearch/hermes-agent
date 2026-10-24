@@ -615,6 +615,7 @@ CREATE INDEX IF NOT EXISTS session_admissions_pending
 -- The WHERE is built from CRON_PRINCIPAL_ID, the literal the run queries inline, so they cannot drift.
 CREATE INDEX IF NOT EXISTS idx_session_admissions_cron_request
     ON session_admissions(principal_id, request_id, target_session_id) WHERE principal_id = '""" + CRON_PRINCIPAL_ID + """';
+CREATE INDEX IF NOT EXISTS idx_session_admissions_history ON session_admissions(target_session_id, seq);
 CREATE TABLE IF NOT EXISTS worker_executions (
     execution_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE RESTRICT,

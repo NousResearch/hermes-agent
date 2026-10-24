@@ -212,6 +212,8 @@ class AuthorityConnection:
         from gateway.session_images import attach_bytes
         from functools import partial
         handlers['image.attach_bytes'] = partial(attach_bytes, self)
+        from gateway.session_receipts import history
+        handlers['prompt.history'] = partial(history, self)
         from gateway.session_complete_path import complete_path
         handlers['complete.path'] = partial(complete_path, self)
         from gateway.session_prune import prune
@@ -496,9 +498,11 @@ class AuthorityConnection:
         await self.ping(ref, params)
         from gateway.session_policy import CREATE_FIELDS, SURFACES
         from gateway.session_skin import resolved_skin
+        from gateway.session_contract import INPUT_RECOVERY_CAPABILITIES
         return {'instance_id': self.authority.instance_id, 'profile_id': self.authority.profile_id,
                 'authority_epoch': self.authority.epoch,
-                'capabilities': ['durable-admission-v1', 'event-replay-v1', 'local-cli-create-v1', 'acp-editor-policy-v1', 'acp-session-mcp-v1'],
+                'capabilities': ['durable-admission-v1', 'event-replay-v1', 'local-cli-create-v1',
+                                 'acp-editor-policy-v1', 'acp-session-mcp-v1', *INPUT_RECOVERY_CAPABILITIES],
                 'session_create': {'sources': sorted(SURFACES),
                                    'parameters': sorted(CREATE_FIELDS | {'title'})},
                 # Main's ``gateway.ready.skin``: the canonical client's own ready carries it.
@@ -638,6 +642,7 @@ class AuthorityConnection:
                 'running': snapshot.handle.execution_state == 'running',
                 'authority_epoch': snapshot.handle.authority_epoch,
                 'replay_epoch': snapshot.replay_epoch, 'last_sequence': snapshot.last_sequence,
+                'admission_cursor': snapshot.admission_cursor,
                 'subscription_id': snapshot.subscription_id, 'revision': snapshot.handle.revision,
                 'execution_generation': snapshot.handle.execution_generation,
                 'pending': [asdict(r) for r in snapshot.pending],
@@ -793,7 +798,16 @@ class AuthorityConnection:
         return result
 
     async def receipt(self, ref, params):
-        receipt = await self.authority.receipt(self.actor, ref, params.get('admission_id'))
+        from pydantic import ValidationError
+        from tui_gateway.contracts.canonical import PromptReceiptParams, SubmissionReceiptParams
+        try:
+            query = PromptReceiptParams.model_validate(params).root
+        except ValidationError as exc:
+            raise RuntimeStoreError('invalid_params') from exc
+        if isinstance(query, SubmissionReceiptParams):
+            receipt = await self.authority.receipt(self.actor, ref, submission_id=query.submission_id)
+        else:
+            receipt = await self.authority.receipt(self.actor, ref, query.admission_id)
         out = asdict(receipt)
         if params.get('include_result') is True and receipt.status == 'terminal':
             # The exact structured result the turn committed with settlement (`finish_result`):

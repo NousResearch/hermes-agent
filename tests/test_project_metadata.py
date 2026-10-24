@@ -96,6 +96,23 @@ def test_matrix_extra_not_in_all():
     )
 
 
+def test_python_olm_sdist_configures_under_cmake_4():
+    """CMake 4 rejects python-olm's vendored libolm without a 3.5 policy floor (#122733)."""
+    import pytest
+    from packaging.requirements import Requirement
+
+    root = Path(__file__).resolve().parents[1]
+    metadata = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8-sig"))
+    matrix = [Requirement(spec) for spec in metadata["project"]["optional-dependencies"]["matrix"]]
+    if not any(req.name == "mautrix" and "encryption" in req.extras for req in matrix):
+        pytest.skip("[matrix] no longer pulls mautrix[encryption] -> python-olm")
+    variables = metadata["tool"]["uv"].get("extra-build-variables", {}).get("python-olm", {})
+    floor = variables.get("CMAKE_POLICY_VERSION_MINIMUM", "0")
+    assert tuple(map(int, floor.split("."))) >= (3, 5), (
+        "python-olm's vendored libolm needs CMAKE_POLICY_VERSION_MINIMUM >= 3.5 under CMake 4"
+    )
+
+
 def test_lazy_installable_extras_excluded_from_all():
     """Policy (2026-05-12): opt-in backends stay out of [all].
 

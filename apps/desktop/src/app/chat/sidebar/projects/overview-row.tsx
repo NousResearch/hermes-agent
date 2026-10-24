@@ -9,7 +9,7 @@ import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $sidebarShowAllSessions } from '@/store/layout'
-import { fetchProjectSessions, projectProfile } from '@/store/projects'
+import { fetchProjectSessions } from '@/store/projects'
 
 import {
   SIDEBAR_LEAD_ICON_SIZE,
@@ -158,14 +158,6 @@ export function ProjectOverviewRow({
       : project.path
 
   const showAll = () => {
-    // All-profiles view has no single backend to ask for one project's lanes;
-    // drilling in is the reach there.
-    if (!projectProfile()) {
-      onEnter?.(project.id)
-
-      return
-    }
-
     setExpanding(true)
     fetchProjectSessions(project.id, { supersedable: false })
       .then(tree => void (tree && setExpanded(tree)))
@@ -306,6 +298,11 @@ export function ProjectOverviewRow({
           )}
           {expanded && page.more > 0 && (
             <WorkspaceShowMoreRow label={s.showMoreIn(page.more, project.label)} onClick={page.showMore} />
+          )}
+          {/* Drops the hydrated lanes and returns to the preview window. Not offered under the global
+              "Show all sessions" preference: that one keeps every row open, so collapsing here would do nothing. */}
+          {expanded && !showAllSessions && (
+            <WorkspaceShowMoreRow label={s.projects.showLess} onClick={() => setExpanded(null)} />
           )}
         </SidebarRowNest>
       )}

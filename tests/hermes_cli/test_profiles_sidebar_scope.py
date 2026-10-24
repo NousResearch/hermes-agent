@@ -163,6 +163,35 @@ class TestCrossProfileProjectTree:
         assert [project["path"] for project in declared] == [str(shared)]
         assert declared[0]["sessionCount"] == 2
 
+    def test_project_sessions_hydrates_lanes_from_every_profile(self, client, profiles_on_disk, tmp_path):
+        # The tree only previews a few rows per project; the hydrated endpoint is what
+        # "Show all N sessions" reads while viewing all profiles, so it must return every
+        # profile's sessions for that one project, under the id the tree handed out.
+        shared = tmp_path / "repos" / "shared"
+        shared.mkdir(parents=True)
+
+        for name, home in profiles_on_disk.items():
+            for index in range(3):
+                _seed_session(home, f"{name}-chat-{index}", source="cli", cwd=shared)
+            _seed_project(home, "Shared", shared)
+
+        tree = client.get("/api/profiles/projects/tree", params={"preview_limit": 1}).json()
+        node = next(p for p in tree["projects"] if not p["isNoProject"])
+        assert len(node["previewSessions"]) == 1
+
+        payload = client.get("/api/profiles/projects/sessions", params={"project_id": node["id"]}).json()
+
+        assert payload["errors"] == []
+        project = payload["project"]
+        rows = [s for r in project["repos"] for g in r["groups"] for s in g["sessions"]]
+        assert len(rows) == node["sessionCount"] == 6
+        assert {row["profile"] for row in rows} == {"default", "worker"}
+
+    def test_project_sessions_unknown_project_is_null(self, client, profiles_on_disk):
+        payload = client.get("/api/profiles/projects/sessions", params={"project_id": "nope"}).json()
+
+        assert payload["project"] is None
+
     def test_group_totals_add_up_the_sessions_the_group_counts(self, client, profiles_on_disk, tmp_path):
         # A header total is only meaningful if it covers exactly what the header
         # says it counts — a project's totals span every profile working it, the

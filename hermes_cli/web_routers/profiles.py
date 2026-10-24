@@ -749,6 +749,37 @@ def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000
             "errors": errors}
 
 
+@sessions_router.get("/api/profiles/projects/sessions")
+@_sidebar_singleflight_cache
+def get_profiles_project_sessions(project_id: str, session_limit: int = 5000):
+    """Fully hydrated lanes for ONE project across every profile, for the all-profiles sidebar.
+
+    ``projects.project_sessions`` over JSON-RPC answers for the backend's own profile only, so
+    it cannot serve a view that spans profiles. This is the hydrated counterpart of
+    ``/api/profiles/projects/tree``: same per-profile builder and same folder-keyed merge, so
+    the ``project_id`` the tree handed out resolves to the same node here and the lanes add up
+    to the tree's ``sessionCount``.
+
+    Every profile's whole tree is built and all but one project is dropped: the builder has
+    no single-project mode, and the JSON-RPC variant does the same.
+    """
+    from tui_gateway import server as gateway_server
+    merged: dict[str, dict[str, Any]] = {}
+    errors: list[dict[str, str]] = []
+
+    for name, home in _profile_targets("GET /api/profiles/projects/sessions"):
+        def _read(db, name=name, home=home):
+            with _hermes_home_scope(home):
+                tree, _active_id = gateway_server._build_project_tree(
+                    db, preview_limit=0, hydrate=True,
+                    session_limit=session_limit, include_discovered=False)
+                _merge_profile_tree(merged, tree["projects"], name, 0)
+        _read_profile_db(name, home, errors, _read)
+
+    project = next((p for p in merged.values() if p["id"] == project_id), None)
+    return {"project": project, "errors": errors}
+
+
 # `gh pr create` prints the PR url and nothing else, so a tool result whose whole output IS a
 # PR url means this session opened that PR; a url inside prose is a session TALKING about one.
 _PR_URL_RE = re.compile(r"^https://github\.com/[\w.-]+/[\w.-]+/pull/(\d+)/?$")

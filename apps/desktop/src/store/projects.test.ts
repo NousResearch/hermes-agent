@@ -197,7 +197,7 @@ describe('projects RPC profile forwarding', () => {
     expect($projectTree.get()[1].sessionIds).toEqual(['s2'])
   })
 
-  it('skips project reads in the all-profiles view rather than forwarding its sentinel', async () => {
+  it('skips project RPC reads in the all-profiles view rather than forwarding its sentinel', async () => {
     const request = vi.fn()
     const gateway = { connectionState: 'open', request }
     activeGateway.mockReturnValue(gateway as never)
@@ -207,9 +207,27 @@ describe('projects RPC profile forwarding', () => {
 
     await refreshProjects()
     await refreshProjectTree()
-    await fetchProjectSessions('p_123')
 
     expect(request).not.toHaveBeenCalled()
+    setShowAllProfiles(false)
+  })
+
+  it('reads one project\'s hydrated lanes through the REST fan-out in the all-profiles view', async () => {
+    const project = { id: 'p_123', label: 'P', path: null, repos: [], sessionCount: 0 } as SidebarProjectTree
+    const request = vi.fn()
+    const gateway = { connectionState: 'open', request }
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
+    $profiles.set([{ is_default: true, name: 'default' } as never, { is_default: false, name: 'work' } as never])
+    setShowAllProfiles(true)
+    vi.mocked(hermes.hermesApi).mockResolvedValue({ project })
+
+    await expect(fetchProjectSessions('p_123')).resolves.toBe(project)
+
+    expect(request).not.toHaveBeenCalled()
+    expect(hermes.hermesApi).toHaveBeenCalledWith(
+      expect.objectContaining({ path: '/api/profiles/projects/sessions?project_id=p_123' })
+    )
     setShowAllProfiles(false)
   })
 

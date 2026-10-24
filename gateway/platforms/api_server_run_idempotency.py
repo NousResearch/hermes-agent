@@ -106,6 +106,10 @@ class RunIdempotencyStore:
                 add_column_if_missing(self._conn, "run_idempotency", column, f"{column} {ddl}")
         self._conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS run_idempotency_run_id ON run_idempotency(run_id)")
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS run_cancellations (
+                scope TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+                expires_at REAL NOT NULL, PRIMARY KEY (scope, idempotency_key))""")
         self._conn.commit()
         self._lock = threading.Lock()
         self._tighten_permissions()
@@ -138,6 +142,10 @@ class RunIdempotencyStore:
         encoded = _encode_status(status)
         with self._immediate_txn():
             self._prune_stale_terminal_locked(now)
+            cancelled = self._cancelled_key_locked(scope, key, now)
+            if cancelled is not None:
+                self._conn.commit()
+                return "cancelled", cancelled
             row = self._conn.execute(_SELECT_BY_KEY, (scope, key)).fetchone()
             if row is not None:
                 if retention_until:
@@ -155,16 +163,51 @@ class RunIdempotencyStore:
             return "created", _record(run_id, encoded, owner_pid, owner_started, now) | {"status": status}
 
     def lookup(self, scope: str, key: str, fingerprint: str, *, retention_until: float = 0):
-        """Return ``missing``, ``reused`` or ``conflict`` without reserving."""
+        """Return ``missing``, ``reused``, ``conflict`` or ``cancelled`` without reserving."""
         now = time.time()
         retention_until = max(0.0, float(retention_until or 0))
         with self._immediate_txn():
             if retention_until:
                 self._conn.execute(_EXTEND_RETENTION_BY_KEY, (retention_until, scope, key, fingerprint))
             self._prune_stale_terminal_locked(now)
+            cancelled = self._cancelled_key_locked(scope, key, now)
+            if cancelled is not None:
+                self._conn.commit()
+                return "cancelled", cancelled
             row = self._conn.execute(_SELECT_BY_KEY, (scope, key)).fetchone()
             self._conn.commit()
         return ("missing", None) if row is None else _outcome(row, fingerprint)
+
+    def _cancelled_key_locked(self, scope: str, key: str, now: float):
+        self._conn.execute("DELETE FROM run_cancellations WHERE expires_at <= ?", (now,))
+        row = self._conn.execute(
+            "SELECT expires_at FROM run_cancellations WHERE scope=? AND idempotency_key=?",
+            (scope, key)).fetchone()
+        return None if row is None else {"expires_at": row[0]}
+
+    def is_cancelled(self, run_id: str) -> bool:
+        """Check the admission fence again after asynchronous routing finishes."""
+        with self._lock:
+            return self._conn.execute(
+                "SELECT 1 FROM run_idempotency r JOIN run_cancellations c "
+                "ON c.scope=r.scope AND c.idempotency_key=r.idempotency_key "
+                "WHERE r.run_id=? AND c.expires_at>?", (run_id, time.time())).fetchone() is not None
+
+    def cancel_key(self, scope: str, key: str, *, retention_until: float = 0):
+        """Fence an unadmitted key or return the original run without creating work."""
+        now = time.time()
+        expires_at = max(now + self.RETENTION_SECONDS, retention_until)
+        with self._immediate_txn():
+            self._prune_stale_terminal_locked(now)
+            row = self._conn.execute(_SELECT_BY_KEY, (scope, key)).fetchone()
+            self._conn.execute(
+                "INSERT INTO run_cancellations(scope,idempotency_key,expires_at) VALUES(?,?,?) "
+                "ON CONFLICT(scope,idempotency_key) DO UPDATE "
+                "SET expires_at=MAX(expires_at,excluded.expires_at)",
+                (scope, key, expires_at))
+            cancelled = self._cancelled_key_locked(scope, key, now)
+            self._conn.commit()
+            return ("admitted", _record(*row[1:])) if row is not None else ("prevented", cancelled)
 
     def _prune_stale_terminal_locked(self, now: float) -> None:
         """Prune aged replay records only once their stored run is terminal (caller holds the

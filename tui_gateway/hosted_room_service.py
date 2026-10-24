@@ -37,6 +37,16 @@ _STOPPABLE_STATUSES = ("queued", "running", "indeterminate", "deferred", "stoppi
 _RETRYABLE_STATUSES = ("indeterminate", "deferred")
 
 
+def task_member_id(task: Mapping[str, Any]) -> str:
+    return str(task["payload"].get("target_member_id") or task["payload"]["target_profile"])
+
+
+def attempt_action(kind: str, task: Mapping[str, Any]) -> dict[str, Any]:
+    """A pending action naming the exact attempt ``groups.retry``/``discard`` fence on."""
+    return {"kind": kind, "member_id": task_member_id(task), "task_id": task["identity"].task_id,
+            "execution_generation": task["execution_generation"]}
+
+
 def _hosted_room_turn_timeout_seconds() -> float:
     try:
         agent_timeout = float(os.getenv("HERMES_AGENT_TIMEOUT", "1800"))
@@ -524,13 +534,18 @@ class HostedRoomService:
         self.runtime.wakeup()
         return len(tasks)
 
-    def retry_room_task(self, room_id: str, *, task_id: str) -> dict[str, Any]:
+    def retry_room_task(
+        self, room_id: str, *, task_id: str, member_id: str | None = None,
+        execution_generation: int | None = None) -> dict[str, Any]:
         """Retry one uncertain or deferred task only after explicit user action."""
         candidates = self._list_tasks(room_id, _RETRYABLE_STATUSES)
-        task = next((c for c in candidates if c["identity"].task_id == task_id), None)
+        task = next((c for c in candidates if c["identity"].task_id == task_id
+                     and member_id in (None, task_member_id(c))
+                     and execution_generation in (None, c["execution_generation"])), None)
         if task is None:
             raise driver.InvalidTaskTransitionError("no retryable room task matches task_id")
-        return self.runtime.retry_indeterminate(task["identity"])
+        return self.runtime.retry_indeterminate(
+            task["identity"], execution_generation=task["execution_generation"])
 
     def approve_room_task(
         self, room_id: str, *, member_id: str, task_id: str, execution_generation: int,
@@ -579,16 +594,14 @@ class HostedRoomService:
         tasks = driver.list_tasks(self.db_path, room_id=room_id)
         counts = Counter(str(task["status"]) for task in tasks)
         pending_actions = [
-            {"kind": "retry", "task_id": task["identity"].task_id}
-            for task in tasks if task["status"] in _RETRYABLE_STATUSES]
+            attempt_action("retry", task) for task in tasks if task["status"] in _RETRYABLE_STATUSES]
         with self._policy_lock:
             pending_actions.extend(
                 dict(action) for (action_room_id, _member_id), action
                 in self._pending_actions.items() if action_room_id == room_id)
         # Who is answering right now: clients render per-member working indicators from it.
         member_activity = [
-            {"member_id": str(task["payload"].get("target_member_id") or task["payload"]["target_profile"]),
-             "status": str(task["status"])}
+            {"member_id": task_member_id(task), "status": str(task["status"])}
             for task in tasks if task["status"] in _LIVE_STATUSES]
         return {
             "running": runtime["running"], "working": bool(member_activity),

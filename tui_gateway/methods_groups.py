@@ -449,7 +449,8 @@ def _(rid, params: dict, service) -> dict:
 def _(rid, params: dict, service) -> dict:
     """Retry one indeterminate room task after explicit user confirmation."""
     task = service.retry_room_task(
-        str(params.get("room_id") or ""), task_id=str(params.get("task_id") or ""))
+        str(params.get("room_id") or ""), task_id=str(params.get("task_id") or ""),
+        member_id=params.get("member_id"), execution_generation=params.get("execution_generation"))
     if not isinstance(task, dict):
         task = {}
     identity = task.get("identity")

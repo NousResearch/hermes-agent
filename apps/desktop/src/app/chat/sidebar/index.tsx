@@ -130,7 +130,7 @@ import {
 import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
 import { $focusedSessionIsTile, $focusedStoredSessionId } from '@/store/session-focus'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
-import { $removedSessionIds } from '@/store/session-removal'
+import { $removedSessionIds, sessionIsRemoved } from '@/store/session-removal'
 import { $workingSessionIds } from '@/store/session-states'
 import { ackAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'
@@ -1226,7 +1226,7 @@ export function ChatSidebar({
   // that exclusion hides also corrects the backend's `sessionCount` in the
   // "Show all N" label (a pin is always loaded — it renders in Pinned).
   const overviewHidden = useMemo(() => {
-    const isHidden = (session: SessionInfo) => isHiddenFromProjects(session) || removedSessionIds.has(session.id)
+    const isHidden = (session: SessionInfo) => isHiddenFromProjects(session) || sessionIsRemoved(removedSessionIds, session)
     const counts: Record<string, number> = {}
 
     for (const session of sessions) {

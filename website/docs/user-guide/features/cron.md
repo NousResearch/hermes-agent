@@ -517,7 +517,13 @@ only the ping is held back).
 cron:
   failure_repeat_alert_hours: 6   # still broken after this long → one reminder ping,
                                   # then silent again; 0 = alert on every failing run
+  failure_repeat_alert_backoff: 1 # multiply the cooldown per reminder already sent
 ```
+
+Set `failure_repeat_alert_backoff` above 1 to space reminders out the longer an
+incident stays broken: with `3` and a 6 hour base, reminders go out 6, 18 and
+54 hours after the previous one, never sparser than once a week. The default `1`
+keeps the flat cooldown. A green run or a new error starts the count over.
 
 Anything that changes the picture alerts immediately: a *different* error mints
 its own incident and pings at once, and a successful run re-arms the signature

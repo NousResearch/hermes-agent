@@ -1872,12 +1872,11 @@ DEFAULT_CONFIG = {
         # cron jobs as a direct external subprocess (warns once; no cgroup isolation), true
         # fails closed with the enable-linger remedy. Kanban always requires a scope.
         "require_restart_safe_scope": False,
-        # A job failing with the SAME error alerts once, then stays silent for this many hours
-        # before one reminder ping (the run is still recorded; `hermes cron incidents` shows it).
-        # A green run or a different error alerts again immediately; `hermes cron incidents ack`
-        # silences a signature for good. 0 = re-alert on every failing run. Keep in sync with
-        # cron.scheduler.DEFAULT_FAILURE_REPEAT_ALERT_HOURS.
+        # A job failing with the SAME error alerts once, then stays silent this many hours before one
+        # reminder (the run is still recorded). A green run or new error alerts at once; `hermes cron
+        # incidents ack` silences a signature. 0 = every failing run. = scheduler DEFAULT_FAILURE_REPEAT_ALERT_HOURS.
         "failure_repeat_alert_hours": 6,
+        "failure_repeat_alert_backoff": 1,  # cooldown x this per reminder sent (3: 6h,18h,54h; cap 1 week)
     },
     # Kanban multi-agent coordination. The dispatcher ticks every N seconds, reclaims stale claims,
     # promotes dependency-satisfied todos to ready, and fires `hermes -p <assignee> chat -q ...` per

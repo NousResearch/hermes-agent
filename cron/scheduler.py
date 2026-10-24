@@ -334,22 +334,14 @@ def _failure_repeat_alert_hours() -> float:
 
 
 def _repeat_alert_withheld(incident: dict) -> bool:
-    """An ``alerted`` incident withholds the per-run ping until the reminder cooldown has elapsed
-    since its last ping. A missing/unparseable ``alerted_at`` (ledger written before the column
-    existed) delivers rather than swallowing an alert."""
+    """An ``alerted`` incident withholds the per-run ping until the reminder cooldown (escalated by
+    ``cron.failure_repeat_alert_backoff``) has elapsed since its last ping."""
     hours = _failure_repeat_alert_hours()
     if hours <= 0:
         return False
-    alerted_at = incident.get("alerted_at")
-    if not alerted_at:
-        return False
-    try:
-        from cron.jobs import _elapsed_seconds, _ensure_aware
+    from cron.incidents import alerted_within, reminder_cooldown_hours
 
-        last = _ensure_aware(datetime.fromisoformat(str(alerted_at)))
-    except (TypeError, ValueError):
-        return False
-    return _elapsed_seconds(_hermes_now(), last) < hours * 3600
+    return alerted_within(incident, reminder_cooldown_hours(incident, hours))
 
 
 def _upsert_incident_for_failure(

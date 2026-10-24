@@ -1,9 +1,9 @@
 name: s2docs
 title: s2docs
 repo: https://github.com/c-pompa/s2docs
-sha: 531a24c7b698b97434048d9f37928f9419a272af
+sha: 71e3a45474de73e0b50740ee1851307aa5cc448e
 subdir: plugin
-version: "0.1.1"
+version: "0.1.2"
 description: >-
   Source 2 documentation and mod tooling for CS2 and Deadlock from a local index of Valve's own game
   data: convars, Hammer entities with their inputs and outputs, schema classes and enums, game events,

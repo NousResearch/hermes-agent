@@ -139,11 +139,30 @@ def _compression_lock_holder_process_is_dead(holder: str) -> bool:
     Reclaim on kernel proof only: unstructured/same-process holders (another
     thread's live lease) and any probe doubt keep the lease until TTL expiry
     (PID reuse must never steal a live lease; a wrongly-kept one self-heals).
-    Foreign/unstamped PID namespaces defer to TTL: see ``hermes_state_pidns``."""
+    Foreign/unstamped PID namespaces defer to TTL: see ``hermes_state_pidns``.
+
+    Own-pid holders get one extra question the kernel cannot answer: "is the TURN still
+    running?". A lease held by THIS process whose turn is gone was orphaned by a turn
+    that died without running its ``finally`` — and such a lease is renewed forever by
+    the still-running refresher, so TTL expiry never frees it. The process-local
+    registry in ``agent.turn_lease_liveness`` answers that question; it speaks only for
+    our own pid, so the PID-reuse caution above is untouched for every other holder.
+    """
     match = re.search(r"(?:^|:)pid=(\d+)(?::|$)", holder or "")
     pid = int(match.group(1)) if match else 0
-    if pid <= 0 or pid == os.getpid():
+    if pid <= 0:
         return False
+    if pid == os.getpid():
+        # Our own pid. The kernel says the process is alive; the registry says whether
+        # the TURN behind the holder is. Only a provable "no" (registered-and-gone, or
+        # never registered for this holder) frees the row.
+        try:
+            from agent.turn_lease_liveness import is_holder_live
+
+            live = is_holder_live(holder)
+        except Exception:
+            return False
+        return live is False
     if not holder_pid_checkable(holder):
         return False  # foreign / unknown namespace: defer to TTL
     if psutil is not None:

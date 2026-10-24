@@ -885,6 +885,23 @@ def _codex_pool_dicts(entries: Optional[list[Any]]) -> Iterator[dict[str, Any]]:
             yield entry
 
 
+def _codex_pool_entry_is_terminal(entry: dict[str, Any]) -> bool:
+    """True when the pool row can never serve a credential again.
+
+    A revoked or invalidated grant is what the pool marks ``dead`` — excluded from rotation
+    unconditionally — and rows written before that status existed still carry the terminal OAuth
+    reason. Read-only resolution cannot refresh either, so handing one back pins the caller to a
+    token the provider rejects: the Codex catalog probe then answers empty and every picker
+    (Desktop, Discord) falls back to the curated list while valid rows sit behind it (#140838).
+    """
+    from agent.credential_pool import STATUS_DEAD, _TERMINAL_AUTH_REASONS
+
+    if str(entry.get("last_status") or "").strip().lower() == STATUS_DEAD:
+        return True
+    reason = str(entry.get("last_error_reason") or "").strip().lower()
+    return reason in _TERMINAL_AUTH_REASONS
+
+
 def _codex_pool_rate_limit_status() -> Optional[dict[str, Any]]:
     """Return metadata for a pool-only Codex credential in quota cooldown.
 
@@ -920,8 +937,8 @@ def _pool_entries(auth_store: dict[str, Any], provider_id: str) -> Optional[list
 
 def _pool_codex_credential() -> tuple[str, str]:
     """``(access_token, row base_url)`` of the first pool entry with a non-empty access_token that is
-    not in an exhaustion cooldown window, so the caller routes the token to the host that row belongs
-    to; ``("", "")`` when none is usable.
+    neither in an exhaustion cooldown window nor terminal, so the caller routes the token to the host
+    that row belongs to; ``("", "")`` when none is usable.
 
     Fallback for ``resolve_codex_runtime_credentials`` when the singleton has no creds; reads
     through ``read_credential_pool`` so a profile inherits the global-root pool (#34143)."""
@@ -930,6 +947,8 @@ def _pool_codex_credential() -> tuple[str, str]:
     try:
         for entry in _codex_pool_dicts(read_credential_pool("openai-codex")):
             token = entry.get("access_token")
+            if _codex_pool_entry_is_terminal(entry):
+                continue
             # Same normaliser as ``_codex_pool_rate_limit_status``: a millisecond epoch compared
             # raw reads as far-future here and as elapsed there, hiding a usable entry (#103349).
             reset_at = _parse_absolute_timestamp(entry.get("last_error_reset_at"))

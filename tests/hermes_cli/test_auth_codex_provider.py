@@ -464,3 +464,59 @@ def test_pool_only_force_refresh_rotates_the_pool_entry(tmp_path, monkeypatch):
     assert resolved["api_key"] == "pool-fresh"
     assert resolved["source"] == "credential_pool"
     assert hints == ["pool-revoked"]
+
+
+def _write_codex_pool(hermes_home: Path, rows: list) -> None:
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {}, "credential_pool": {"openai-codex": rows},
+    }))
+
+
+def test_pool_only_read_only_resolution_skips_a_dead_row(tmp_path, monkeypatch):
+    """A terminal pool row must not be handed to a read-only caller.
+
+    Pickers resolve with ``read_only=True``: they cannot refresh the row and cannot retire it, so
+    returning the revoked token pinned the Codex catalog probe to a credential the provider
+    rejects. The probe answered empty and Desktop/Discord fell back to the curated model list
+    while two valid rows sat behind it (#140838).
+    """
+    hermes_home = tmp_path / "hermes"
+    _write_codex_pool(hermes_home, [
+        {"source": "device_code", "access_token": "pool-revoked", "refresh_token": "r1",
+         "last_status": "dead", "last_error_reason": "token_revoked", "auth_type": "oauth"},
+        {"source": "device_code", "access_token": "pool-live", "refresh_token": "r2",
+         "last_status": "ok", "auth_type": "oauth"},
+    ])
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    resolved = resolve_codex_runtime_credentials(read_only=True)
+    assert resolved["api_key"] == "pool-live"
+    assert resolved["source"] == "credential_pool"
+
+
+def test_pool_only_read_only_resolution_skips_a_legacy_terminal_reason(tmp_path, monkeypatch):
+    """Rows written without ``last_status`` still carry the terminal OAuth reason."""
+    hermes_home = tmp_path / "hermes"
+    _write_codex_pool(hermes_home, [
+        {"source": "manual", "access_token": "pool-invalid", "refresh_token": "r1",
+         "last_error_reason": "invalid_grant"},
+        {"source": "manual", "access_token": "pool-live", "refresh_token": "r2"},
+    ])
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    resolved = resolve_codex_runtime_credentials(read_only=True)
+    assert resolved["api_key"] == "pool-live"
+
+
+def test_pool_only_read_only_resolution_keeps_a_transient_failure_in_rotation(tmp_path, monkeypatch):
+    """A 429/exhaustion row is transient: read-only resolution still reports it, not nothing."""
+    hermes_home = tmp_path / "hermes"
+    _write_codex_pool(hermes_home, [
+        {"source": "manual", "access_token": "pool-throttled", "refresh_token": "r1",
+         "last_status": "ok", "last_error_reason": "rate_limit_exceeded"},
+    ])
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    resolved = resolve_codex_runtime_credentials(read_only=True)
+    assert resolved["api_key"] == "pool-throttled"

@@ -1116,13 +1116,17 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
                     meta[key] = value
         return meta
 
+    def fronted_platforms(self) -> tuple[str, ...]:
+        """Logical names advertised by this transport, including plugins."""
+        identities = getattr(self._transport, "_identities", None) or ()
+        return tuple(dict.fromkeys(str(p) for p, _ in identities))
+
     def fronts_platform(self, platform: Any) -> bool:
         """Whether the authenticated relay transport advertises ``platform`` — a
         restart-safe ownership signal from the identity set sent at handshake, not
         from an inbound chat cache."""
         platform_value = getattr(platform, "value", platform)
-        ids = getattr(self._transport, "_identities", None) or ()
-        return bool(platform_value) and any(p == str(platform_value) for p, _ in ids)
+        return bool(platform_value) and str(platform_value) in self.fronted_platforms()
 
     def supports_inchannel_continuable_for_platform(self, platform: Any) -> bool:
         """Whether ONE fronted platform can host the flat continuable cron surface (D6

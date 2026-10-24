@@ -538,8 +538,19 @@ class WebSocketRelayTransport:
         per-gateway secret was revoked. Terminal: no reconnect."""
         return self._auth_revoked
 
+    @property
+    def delivery_ready(self) -> bool:
+        """A live, authenticated generation may wake a refunded delivery claim."""
+        return (
+            not self._closing
+            and not self._dormant
+            and not self._auth_revoked
+            and self._ws is not None
+            and self._descriptor is not None
+        )
+
     def set_reconnect_handler(self, handler: Callable[[], None]) -> None:
-        """Notify the adapter after an authenticated re-handshake, off the reader."""
+        """Register the adapter's scheduler for authenticated re-handshakes."""
         self._reconnect_handler = handler
 
     def set_inbound_handler(self, handler: InboundHandler) -> None:

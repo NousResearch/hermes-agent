@@ -1,7 +1,37 @@
 """Delivery stays active until the adapter and durable ledger have finished."""
 
 import asyncio
+import logging
 from contextlib import contextmanager
+
+
+def _publish_work_count(runner):
+    if not getattr(runner, "_running", False):
+        return
+    persist = getattr(runner, "_persist_active_agents", None)
+    if callable(persist):
+        try:
+            persist()
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "delivery status refresh failed", exc_info=True
+            )
+
+
+def track_session_task(adapter, session_key, task):
+    """Track cleanup and publish the owner's completion, including handoffs."""
+    adapter._session_tasks[session_key] = task
+    try:
+        adapter._background_tasks.add(task)
+    except TypeError:
+        return False
+    if hasattr(task, "add_done_callback"):
+        task.add_done_callback(adapter._background_tasks.discard)
+        task.add_done_callback(adapter._expected_cancelled_tasks.discard)
+        task.add_done_callback(
+            lambda _: _publish_work_count(getattr(adapter, "gateway_runner", None))
+        )
+    return True
 
 
 def total_work_count(runner):
@@ -51,9 +81,12 @@ def delivery_work(runner):
     if work is None:
         work = runner._delivery_work = {}
     work[task] = work.get(task, 0) + 1
+    if work[task] == 1:
+        _publish_work_count(runner)
     try:
         yield
     finally:
         work[task] -= 1
         if not work[task]:
             del work[task]
+            _publish_work_count(runner)

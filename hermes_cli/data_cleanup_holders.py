@@ -149,7 +149,7 @@ def quiescent_home(home: Path):
     _refuse_multiplexer(home)
     _drain_manual_gateway(home)
     with ExitStack() as stack:
-        stack.enter_context(store_lock(home / "checkpoints"))
+        stack.enter_context(store_lock(home / "checkpoints", repair_refs=False))
         gateway_lock = stack.enter_context((home / "gateway.lock").open("a+", encoding="utf-8"))
         if not _try_acquire_file_lock(gateway_lock):
             raise RuntimeError(f"gateway is still active for {home}")

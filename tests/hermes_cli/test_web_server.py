@@ -2674,6 +2674,47 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert _is_anthropic_frontier_tier("") is False
         assert _is_anthropic_frontier_tier(None) is False
 
+    def test_get_default_model_for_provider_skips_anthropic_frontier_tier(self):
+        """Regression test: a provider absent from _SILENT_DEFAULT_PROVIDERS (e.g. "anthropic")
+        must still skip its own catalog's frontier-tier models when falling back to a silent
+        default, not just the ones with special-cased handling (nous/openrouter).
+
+        Before this fix, get_default_model_for_provider("anthropic") returned models[0] verbatim
+        -- Anthropic's static catalog lists its priciest tier (claude-fable-5.1) first -- so any
+        caller that resolves an empty model.default for provider="anthropic" (e.g. a non-interactive
+        run with HERMES_IGNORE_USER_CONFIG=1 / --ignore-user-config, which empties model.default/
+        model.provider entirely) silently landed on the frontier tier instead of a cost-safe
+        default. See the live repro: config.yaml correctly set model.default: claude-sonnet-5,
+        model.provider: anthropic, yet every "hermes chat -q ... --ignore-user-config" invocation
+        (used by the inter-agent relay) billed claude-fable-5-1 until this fix.
+        """
+        from hermes_cli.models import get_default_model_for_provider, _is_anthropic_frontier_tier
+        from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+
+        default = get_default_model_for_provider("anthropic")
+        assert default == "claude-sonnet-5"
+        assert _is_anthropic_frontier_tier(default) is False
+        # The raw catalog still lists the frontier tier first -- the guard, not the catalog order,
+        # is what must change here.
+        assert _is_anthropic_frontier_tier(_PROVIDER_MODELS["anthropic"][0]) is True
+
+    def test_get_default_model_for_provider_unaffected_for_most_providers(self):
+        """The frontier-tier guard added to the static-catalog fallback must be a no-op for every
+        provider whose first catalog entry was already non-frontier (the overwhelming majority) --
+        this is a targeted fix for providers like "anthropic" whose own catalog leads with its
+        priciest tier, not a reshuffle of every provider's default."""
+        from hermes_cli.models import get_default_model_for_provider
+        from hermes_cli.models_catalog_static import _PROVIDER_MODELS, _SILENT_DEFAULT_PROVIDERS
+
+        # nous/openrouter were already routed through the "preferred" shortcut before this fix
+        # (unrelated to this change); anthropic/nvidia/kilocode are the ones this fix touches.
+        unaffected_exclusions = set(_SILENT_DEFAULT_PROVIDERS) | {"anthropic", "nvidia", "kilocode"}
+        for provider, models in _PROVIDER_MODELS.items():
+            if provider in unaffected_exclusions or not models:
+                continue
+            assert get_default_model_for_provider(provider) == models[0], (
+                f"unexpected silent-default change for provider {provider!r}")
+
 
 
 # ---------------------------------------------------------------------------

@@ -962,6 +962,95 @@ class TestRpcTokenAuthorization(unittest.TestCase):
         self.assertIn("Unauthorized", resp[0].get("error", ""))
 
 
+class TestRpcClientTimeout(unittest.TestCase):
+    def test_timed_out_tool_call_is_not_sent_again(self):
+        """A client-side timeout means the server holds the request and may still be running
+        it: the stub raises instead of resending it, which ran the tool a second time. The
+        client's 300s timeout is shortened; the kernel, RPC server and dispatch are real."""
+        import tools.code_execution_tool as cet
+        calls = []
+
+        def slow_tool(name, args, task_id=None, **_kwargs):
+            calls.append(name)
+            time.sleep(3)
+            return json.dumps({"output": "done", "exit_code": 0})
+
+        header = cet._UDS_TRANSPORT_HEADER.replace("_sock.settimeout(300)", "_sock.settimeout(2)")
+        self.assertNotEqual(header, cet._UDS_TRANSPORT_HEADER)
+        code = ("from hermes_tools import terminal\n"
+                "try:\n    terminal('true')\nexcept OSError as exc:\n    print('raised', type(exc).__name__)\n")
+        with patch.object(cet, "_UDS_TRANSPORT_HEADER", header), \
+             patch.object(cet, "_load_config", return_value={"mode": "strict", "timeout": 30}), \
+             patch("model_tools.handle_function_call", side_effect=slow_tool):
+            result = json.loads(execute_code(code, task_id="rpc-timeout", enabled_tools=["terminal"]))
+        self.assertIn("raised", result["output"], result)
+        self.assertEqual(calls, ["terminal"])
+
+    def test_sent_request_is_never_resent_but_an_idle_drop_reconnects(self):
+        """A request the server took is never sent again, whatever the failure after the send;
+        a connection the server dropped while idle still reconnects. Over loopback TCP (the
+        Windows transport) a write to a dropped connection succeeds and only the read fails,
+        so both cases look alike from the reply side. The generated stub runs as written."""
+        import tools.code_execution_tool as cet
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(4)
+        listener.settimeout(10)
+        received = []  # (connection index, tool) per request line the server read
+        dropped = threading.Event()
+
+        def read_line(conn):
+            buf = b""
+            while not buf.endswith(b"\n"):
+                chunk = conn.recv(65536)
+                if not chunk:
+                    return None
+                buf += chunk
+            return json.loads(buf)["tool"]
+
+        def serve():
+            # conn 0: answer once, then close as the idle timeout does.
+            conn, _ = listener.accept()
+            received.append((0, read_line(conn)))
+            conn.sendall(b'{"ok": 1}\n')
+            conn.close()
+            dropped.set()
+            # conn 1: answer once, then take the next request and close before replying.
+            conn, _ = listener.accept()
+            received.append((1, read_line(conn)))
+            conn.sendall(b'{"ok": 2}\n')
+            received.append((1, read_line(conn)))
+            conn.close()
+            # A resend would arrive on a third connection.
+            listener.settimeout(2)
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            received.append((2, read_line(conn)))
+            conn.sendall(b'{"ok": 3}\n')
+            conn.close()
+
+        server = threading.Thread(target=serve, daemon=True)
+        server.start()
+        ns = {}
+        env = {"HERMES_RPC_SOCKET": f"tcp://127.0.0.1:{listener.getsockname()[1]}",
+               "HERMES_RPC_PERSISTENT": "1"}
+        try:
+            with patch.dict(os.environ, env):
+                exec(cet._UDS_TRANSPORT_HEADER, ns)
+                self.assertEqual(ns["_call"]("first", {}), {"ok": 1})
+                self.assertTrue(dropped.wait(10))
+                time.sleep(0.2)  # let the FIN reach the client socket
+                self.assertEqual(ns["_call"]("second", {}), {"ok": 2})
+                with self.assertRaises((OSError, RuntimeError)):
+                    ns["_call"]("third", {})
+            server.join(10)
+        finally:
+            listener.close()
+        self.assertEqual(received, [(0, "first"), (1, "second"), (1, "third")])
+
+
 
 
 if __name__ == "__main__":

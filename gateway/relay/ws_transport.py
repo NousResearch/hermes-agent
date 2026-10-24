@@ -50,6 +50,10 @@ _DISCONNECT_DRAIN_GRACE_S = 5.0
 # WS upgrade auth. Received AFTER a successful handshake it means the per-gateway
 # secret was revoked (opt-out / deprovision) — terminal, no reconnect.
 _RELAY_UNAUTHORIZED_CLOSE_CODE = 4401
+# Sent on every hello: one per gateway PROCESS, so it survives re-dials and the reconnect
+# watcher's transport rebuilds, and changes on restart. Lets the connector tell a restart
+# (the old process's open prompts can no longer be answered) from a reconnect.
+_PROCESS_INSTANCE_ID = uuid.uuid4().hex
 
 
 def _disconnect_drain_grace_s(budget_s: Optional[float] = None) -> float:
@@ -446,7 +450,9 @@ class WebSocketRelayTransport:
         # One hello PER fronted identity; the connector accumulates them (first
         # sets the session default). The FIRST descriptor resolves handshake().
         for platform, bot_id in self._identities:
-            hello: dict[str, Any] = {"type": "hello", "platform": platform, "botId": bot_id}
+            hello: dict[str, Any] = {
+                "type": "hello", "platform": platform, "botId": bot_id, "instance_id": _PROCESS_INSTANCE_ID,
+            }
             # Declare the slash-command set on the Discord hello so the connector
             # (which holds the bot token) reconciles Discord's registration.
             # Enrichment only — never blocks the handshake; a connector predating the

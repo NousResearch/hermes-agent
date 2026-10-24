@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Commercial Simulation",
+  "type": "object",
+  "required": [
+    "buyer_map",
+    "pricing_model",
+    "cost_scenarios",
+    "revenue_scenarios",
+    "distribution",
+    "risks"
+  ],
+  "properties": {
+    "buyer_map": {},
+    "pricing_model": {},
+    "cost_scenarios": {},
+    "revenue_scenarios": {},
+    "distribution": {},
+    "risks": {}
+  },
+  "additionalProperties": true
+}

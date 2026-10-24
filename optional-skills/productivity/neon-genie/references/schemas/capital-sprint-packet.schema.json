@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Capital Sprint Packet",
+  "type": "object",
+  "required": [
+    "org_identity",
+    "deadline",
+    "targets",
+    "revenue_mix",
+    "donation_rails",
+    "impact_object",
+    "sprint_design",
+    "warm_network",
+    "completion_proof",
+    "promotion_state",
+    "authority"
+  ],
+  "properties": {
+    "org_identity": {
+      "description": "Legal name, EIN, tax status, geography — operator workspace only",
+      "type": "object"
+    },
+    "deadline": {
+      "description": "Hard end date for the sprint",
+      "type": "string"
+    },
+    "targets": {
+      "description": "Floor and stretch dollar goals",
+      "type": "object"
+    },
+    "revenue_mix": {
+      "description": "Directional split: membership, program, gifts, grants",
+      "type": "object"
+    },
+    "donation_rails": {
+      "description": "Existing processors and live campaign URLs",
+      "type": "array"
+    },
+    "impact_object": {
+      "description": "Machine-readable campaign card",
+      "type": "object"
+    },
+    "sprint_design": {
+      "description": "7/14/30 day horizons with mechanisms",
+      "type": "object"
+    },
+    "warm_network": {
+      "description": "Classified contacts — operator-supplied only",
+      "type": "object"
+    },
+    "message_frames": {
+      "description": "Separate frames; dues not equal to donations",
+      "type": "object"
+    },
+    "p2p_host_kit": {
+      "description": "Story, milestones, ask script for P2P hosts",
+      "type": "object"
+    },
+    "completion_proof": {
+      "description": "Funds received + receipt + CRM/donor record",
+      "type": "string"
+    },
+    "scoreboard": {
+      "type": "object"
+    },
+    "governance": {
+      "type": "object"
+    },
+    "scorecard": {
+      "type": "object"
+    },
+    "promotion_state": {
+      "type": "string"
+    },
+    "authority": {
+      "description": "advisory_only unless human authorizes spend/publish",
+      "type": "string"
+    },
+    "claim_labels": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,13 @@
+{
+  "input": {
+    "skills": ["writing"],
+    "access": [],
+    "invented_resources": ["million follower list", "seed round"],
+    "constraints": ["no capital", "no fictional resources"]
+  },
+  "expected": {
+    "status": "GATE_FAIL",
+    "gate": "G",
+    "reason": "Fictional resources declared under zero-fiction constraints"
+  }
+}

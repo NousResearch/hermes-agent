@@ -1,0 +1,14 @@
+{
+  "input": {
+    "gap": "competitor_public_pricing",
+    "sensitivity": "public",
+    "host_tools_available": true,
+    "research_attempted": false,
+    "claim_label_emitted": "OBSERVED"
+  },
+  "expected": {
+    "status": "GATE_FAIL",
+    "gate": "P",
+    "reason": "Public gap requires research attempt before OBSERVED or NOT_COMPUTABLE"
+  }
+}

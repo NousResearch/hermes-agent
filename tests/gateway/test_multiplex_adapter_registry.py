@@ -350,10 +350,12 @@ class TestSecondaryProfileFatalRecovery:
         assert synced == [adapter]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("recovery_result", [0, None])
     async def test_retryable_secondary_fatal_reconnects_with_its_profile_scope(
-        self, monkeypatch
+        self, monkeypatch, recovery_result
     ):
         runner = _secondary_recovery_runner()
+        runner._schedule_resume_pending_sessions = MagicMock()
         stale = _SecondaryRecoveryAdapter()
         replacement = _SecondaryRecoveryAdapter()
         runner._profile_adapters["reviewer"] = {Platform.DISCORD: stale}
@@ -376,7 +378,7 @@ class TestSecondaryProfileFatalRecovery:
             from hermes_constants import get_hermes_home
 
             redelivery_homes.append(Path(get_hermes_home()))
-            return 0
+            return recovery_result
 
         runner._redeliver_failed_obligations_for_platform.side_effect = redeliver
         await runner._handle_profile_adapter_fatal_error(
@@ -396,6 +398,10 @@ class TestSecondaryProfileFatalRecovery:
         assert all(path == Path("/profiles/reviewer") for path in scoped_homes)
         assert redelivery_homes
         assert all(path != Path("/profiles/reviewer") for path in redelivery_homes)
+        if recovery_result is None:
+            runner._schedule_resume_pending_sessions.assert_not_called()
+        else:
+            runner._schedule_resume_pending_sessions.assert_called_once_with(platform=Platform.DISCORD)
 
 
     @pytest.mark.asyncio

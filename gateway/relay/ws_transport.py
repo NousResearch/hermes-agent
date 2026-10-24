@@ -686,11 +686,12 @@ class WebSocketRelayTransport:
             # above never sent anything (definite non-delivery) and stay unmarked.
             return {"success": False, "error": "relay outbound timed out", "ambiguous": True}
         except Exception as exc:
-            # The socket can die between the liveness guard and the write, so _send
-            # may raise into callers whose contract is a result dict. A raise from
-            # the WRITE = frame never sent (no flag); a failure surfaced by the
-            # FUTURE (disconnect failing pending mid-flight) = frame sent, outcome
-            # unknown -> ambiguous. CancelledError still propagates (BaseException).
+            # _send can raise before writing OR after writing while awaiting flow
+            # control. frame_sent only records that the await returned, not proof
+            # of non-delivery when False. Keep the generic error instead of
+            # classifying socket-close text as a definite pre-send rejection.
+            # A completed send with a lost result is explicitly ambiguous below.
+            # CancelledError still propagates (BaseException).
             logger.debug("relay outbound send failed", exc_info=True)
             result: dict[str, Any] = {"success": False, "error": f"relay send failed: {exc}"}
             if frame_sent:

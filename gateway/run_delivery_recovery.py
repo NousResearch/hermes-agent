@@ -74,6 +74,85 @@ def relay_recovery_pending(runner):
     return False
 
 
+def claim_reconnected_replies(platform, profile, targets):
+    """Adopt offline-at-boot replies before claiming this process's failed sends."""
+    from gateway.delivery_ledger import (
+        release_runtime_claim,
+        sweep_failed_for_runtime,
+        sweep_recoverable,
+    )
+
+    owner = profile or "default"
+    eligible = {
+        (name, bot)
+        for name, bot in targets
+        if name == platform.value
+        and (bot == owner or (bot is None and owner == "default"))
+    }
+    inherited = sweep_recoverable(deliverable_targets=eligible)
+    try:
+        return inherited + sweep_failed_for_runtime(platform.value, profile=profile)
+    except Exception:
+        # A later read failing must not strand the earlier claims as attempting.
+        for row in inherited:
+            if not row.get("adopted"):
+                release_runtime_claim(
+                    row["obligation_id"], row.get("last_error") or "send_path_degraded"
+                )
+        raise
+
+
+async def redeliver_after_reconnect(runner, platform, profile=None):
+    """Sent count, or None when recovery is incomplete and auto-resume must be deferred."""
+    with delivery_work(runner):
+        if platform == Platform.RELAY:
+            delivered = 0
+            for logical in relay_platforms(runner, profile):
+                count = await runner._redeliver_failed_obligations_for_platform(
+                    logical, profile=profile
+                )
+                if count is None:
+                    return None
+                delivered += count
+            return delivered
+        try:
+            from gateway.delivery_ledger import ledger_enabled
+
+            if not await asyncio.to_thread(ledger_enabled):
+                return 0
+            targets = deliverable_targets(runner)
+            claimed = await asyncio.to_thread(
+                claim_reconnected_replies, platform, profile, targets
+            )
+        except Exception:
+            logger.warning(
+                "delivery recovery failed after %s reconnect",
+                platform.value,
+                exc_info=True,
+            )
+            return None
+        if not claimed:
+            return 0
+        sendable = await runner._clear_resume_pending_for_claimed_obligations(
+            claimed, require_success=True
+        )
+        sendable_ids = {row["obligation_id"] for row in sendable}
+        for row in claimed:
+            if row["obligation_id"] not in sendable_ids:
+                await runner._release_runtime_claim_quiet(
+                    row["obligation_id"],
+                    "failed to release reconnect delivery claim %s",
+                    error=row.get("last_error") or "send_path_degraded",
+                )
+        delivered = await runner._redeliver_claimed_obligations(sendable)
+        if len(sendable_ids) != len({row["obligation_id"] for row in claimed}):
+            logger.warning(
+                "Reply recovery could not clear resume flags; deferring auto-resume"
+            )
+            return None
+        return delivered
+
+
 async def obligation_transport(runner, row):
     try:
         platform = Platform(row["platform"])

@@ -21,6 +21,9 @@ from tests.gateway.relay.test_relay_adapter import make_desc
 def setup_runner(tmp_path, monkeypatch):
     monkeypatch.setattr(ledger, "_db_path", lambda: tmp_path / "ledger.db")
     monkeypatch.setattr(ledger, "_owner_stamp", lambda: (424242, 1234.5))
+    monkeypatch.setattr(
+        ledger, "_owner_alive", lambda pid, started: (pid, started) == (424242, 1234.5)
+    )
     connector = StubConnector(make_desc(platform="slack"))
     connector._identities = [("slack", "bot-slack"), ("discord", "bot-discord")]
     adapter = RelayAdapter(

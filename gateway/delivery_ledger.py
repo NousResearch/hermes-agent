@@ -28,6 +28,7 @@ from hermes_constants import get_process_hermes_home
 
 logger = logging.getLogger(__name__)
 _DB_LOCK = threading.Lock()
+_owner_identity_warning_logged = False
 
 # Redelivery policy knobs (deliberately not config — the ledger is gated by
 # ``gateway.delivery_ledger`` and these only matter in the rare recovery path).
@@ -522,11 +523,18 @@ def pending_reconnects(now: Optional[float] = None) -> set[tuple[str, str]]:
     is observational: do not claim, re-stamp, or spend attempts during idle checks.
     Unknown ownership is not proof of idle; the suspend caller must fail awake.
     """
+    global _owner_identity_warning_logged
     path = _db_path()
     if not path.exists():
         return set()
     now, (pid, started) = now if now is not None else time.time(), _owner_stamp()
     if started is None:
+        if not _owner_identity_warning_logged:
+            logger.warning(
+                "Cannot verify this process's delivery recovery ownership; "
+                "scale-to-zero will stay awake while process identity is unavailable"
+            )
+            _owner_identity_warning_logged = True
         raise RuntimeError("cannot establish delivery recovery ownership")
     # This probe runs on the gateway loop. Never wait behind a writer or invoke
     # the normal opener's schema migrations and 10-second busy timeout.

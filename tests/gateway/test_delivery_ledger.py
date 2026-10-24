@@ -613,7 +613,7 @@ class TestGatewayRedeliverySweep:
 
         n = await runner._redeliver_failed_obligations_for_platform(Platform.SLACK)
 
-        assert n == 0
+        assert n is None  # reconnect callers must defer auto-resume after a failed clear
         adapter.send.assert_not_awaited()
         assert _row("ob-1")["state"] == "failed"
         assert _row("ob-1")["attempts"] == 0

@@ -20,7 +20,7 @@ from pathlib import Path
 from agent.i18n import t
 from gateway.config import Platform
 from gateway.delivery import looks_like_telegram_private_chat_id
-from gateway.run_delivery_recovery import deliverable_targets, redeliver_claimed, relay_platforms
+from gateway.run_delivery_recovery import deliverable_targets, redeliver_after_reconnect, redeliver_claimed
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
@@ -449,37 +449,9 @@ class GatewayStartupMixin:
 
     async def _redeliver_failed_obligations_for_platform(
         self, platform: Platform, *, profile: Optional[str] = None,
-    ) -> int:
-        """Replay one adapter identity's transient failures after reconnect: the startup sweep cannot
-        claim live-owner rows, so ``send_path_degraded`` responses would otherwise stay failed until
-        the next restart. Best-effort; reuses the startup redelivery contract."""
-        if platform == Platform.RELAY:
-            delivered = 0
-            for logical_platform in relay_platforms(self, profile):
-                delivered += await self._redeliver_failed_obligations_for_platform(logical_platform, profile=profile)
-            return delivered
-        try:
-            from gateway.delivery_ledger import ledger_enabled, sweep_failed_for_runtime
-            if not await asyncio.to_thread(ledger_enabled):
-                return 0
-            claimed = await asyncio.to_thread(sweep_failed_for_runtime, str(platform.value), profile=profile)
-        except Exception:
-            logger.debug(
-                "runtime delivery ledger sweep failed after %s reconnect", platform.value, exc_info=True,
-            )
-            return 0
-        if not claimed:
-            return 0
-        # Clear before any send so the reconnect path cannot both redeliver AND resume the same turn.
-        sendable = await self._clear_resume_pending_for_claimed_obligations(claimed, require_success=True)
-        sendable_ids = {row["obligation_id"] for row in sendable}
-        for row in claimed:
-            if row["obligation_id"] not in sendable_ids:
-                await self._release_runtime_claim_quiet(
-                    row["obligation_id"], "failed to release runtime delivery claim %s",
-                    error=row.get("last_error") or "send_path_degraded",
-                )
-        return await self._redeliver_claimed_obligations(sendable)
+    ) -> Optional[int]:
+        """Recover replies for one bot; None means its auto-resume must remain deferred."""
+        return await redeliver_after_reconnect(self, platform, profile)
 
     def _resume_pending_candidates(self, platform=None) -> Optional[list]:
         """Snapshot resume-pending entries (optionally scoped to ``platform``); None when

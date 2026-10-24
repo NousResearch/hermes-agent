@@ -924,17 +924,21 @@ class GatewayAdapterLifecycleMixin:
         else:
             logger.info("✓ %s reconnected successfully", platform.value)
         self._schedule_planned_restart_replay()
-        # Responses rejected while down are owned by this live process (startup recovery cannot claim them).
+        # Recover old and current owners before resuming any interrupted model work.
+        recovered = None
         with _log_suppressed(
             logging.DEBUG, "failed-obligation redelivery after %s reconnect failed",
             platform.value, exc_info=True,
         ):
-            await self._redeliver_failed_obligations_for_platform(platform)
+            recovered = await self._redeliver_failed_obligations_for_platform(platform)
         # Rebuild channel directory with the new adapter
         with suppress(Exception):
             from gateway.channel_directory import build_channel_directory
             await build_channel_directory(self.adapters)
         # A platform offline at startup skipped its restart-interrupted sessions; resume them now.
+        if recovered is None:
+            logger.warning("Deferring %s auto-resume until reply recovery succeeds", platform.value)
+            return
         try:
             self._schedule_resume_pending_sessions(platform=platform)
         except Exception:
@@ -1487,12 +1491,16 @@ class GatewayAdapterLifecycleMixin:
                             hand_over_held_inbound(predecessor, adapter)
                             self._sync_voice_mode_state_to_adapter(adapter)
                             logger.info("✓ %s reconnected (profile: %s)", platform.value, profile_name)
-                            await self._redeliver_failed_obligations_for_platform(
+                            recovered = await self._redeliver_failed_obligations_for_platform(
                                 platform, profile=profile_name
                             )
                             # What a primary reconnect replays too: the owed notice spans served profiles' home
                             # channels, and sessions boot skipped for this offline adapter wait for this call.
                             self._schedule_planned_restart_replay()
+                            if recovered is None:
+                                logger.warning("Deferring %s auto-resume for profile %s until reply recovery succeeds",
+                                               platform.value, profile_name)
+                                return
                             try:
                                 self._schedule_resume_pending_sessions(platform=platform)
                             except Exception:

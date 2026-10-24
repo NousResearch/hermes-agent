@@ -194,7 +194,6 @@ import {
   reconcileRegistryDrift,
   registryDialConnectionId,
   rememberSshEnumeration,
-  removeConnection,
   type ResolvedConnectionDescriptor,
   resolvedConnectionId,
   resolveRegistryLocalRoute,
@@ -211,6 +210,7 @@ import {
 } from './connection-registry'
 import type { RegistryConnection } from './connection-registry'
 import type { RosterProfileMetadata } from './connection-registry'
+import { removeSavedConnection } from './connection-registry-remove'
 import { liveWindowState, overlayWindowState } from './connection-window-state'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
@@ -14733,17 +14733,17 @@ ipcMain.handle('hermes:connections:save', async (_event, payload) => {
 ipcMain.handle('hermes:connections:remove', async (_event, id) => {
   const key = String(id || '')
   managedConnectionUpdateGate.assertCanMutate(key)
-  const registry = removeConnection(readDesktopConnectionsRegistry(), key)
-  writeDesktopConnectionsRegistry(registry)
-  // Tear down anything the removed connection still had running: pooled
-  // backends under its composite keys and any ssh tunnel scopes it owned.
+
+  const registry = await removeSavedConnection(key, readDesktopConnectionsRegistry(), readDesktopConnectionConfig(), {
+    writeConfig: writeDesktopConnectionConfig,
+    writeRegistry: writeDesktopConnectionsRegistry
+  })
+
+  // Tear down owned backends/tunnels and evict per-id metadata: label slugs
+  // are recycled, so cached profiles must not follow a re-added connection.
   await stopRegistryConnectionBackends(key)
-  // …and everything cached ABOUT it. Ids are recycled label slugs, so re-adding "Mac mini"
-  // gets `mac-mini` back — with the removed machine's profile list still cached under it.
   evictConnectionCaches(key)
-  // And the renderer side: without this push, secondaries scoped to the
-  // removed connection keep their WebSocket open (remote/cloud have no local
-  // process to kill) and stream ghost events until page reload.
+  // Secondary windows must close remote/cloud sockets with no process to stop.
   broadcastConnectionsChanged({ connectionId: key, reason: 'removed' })
   desktopProfilePreferences.connectionRemoved(key)
 

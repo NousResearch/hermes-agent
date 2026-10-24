@@ -1,7 +1,7 @@
 name: adaptive-reasoning-router
 title: Adaptive Reasoning Router
 repo: https://github.com/linyubin/adaptive-reasoning-router
-sha: 3d9feb42153cf7ebd3f0e923bc33dc06c389eb95
+sha: 47d75aa5b78514b66f878ab24cf7b562cb80741d
 description: >-
   Per-turn reasoning-effort routing: classifies each user turn's difficulty with
   zero-latency heuristics (Chinese + English patterns) and rewrites the outbound

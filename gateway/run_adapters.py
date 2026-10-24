@@ -199,7 +199,11 @@ class GatewayAdapterLifecycleMixin:
         return ok
 
     async def _connect_adapter_bounded(self, adapter, platform, *, is_reconnect: bool, initial: bool) -> bool:
-        timeout = self._platform_connect_timeout_secs(platform, initial=initial)
+        # The budget follows the adapter's transport family, not its platform id: a plugin that
+        # subclasses TelegramAdapter under a custom id runs Telegram's multi-attempt connect ladder.
+        family = getattr(adapter, "connect_timeout_family", None)
+        timeout = self._platform_connect_timeout_secs(
+            family if isinstance(family, Platform) else platform, initial=initial)
         if timeout <= 0:
             return await adapter.connect(is_reconnect=is_reconnect)
         task = asyncio.ensure_future(adapter.connect(is_reconnect=is_reconnect))

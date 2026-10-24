@@ -73,7 +73,7 @@ import { adoptPreparedSubmission, preparedSubmissionKey } from './prepared-submi
 import { queueKickoffIfSessionBusy } from './queue-if-busy'
 import { resolveTargetSessionId } from './resolve-target-session'
 import { desktopReadCommandHandlers } from './slash-desktop-commands'
-import { sessionCommandHandlers } from './slash-session-commands'
+import { sessionCommandHandlers, truncateRewoundMessages } from './slash-session-commands'
 import { captureSubmissionDestination } from './submission-destination'
 import {
   type GatewayRequest,
@@ -441,6 +441,31 @@ export function useSlashCommand(deps: SlashCommandDeps) {
                 applyGoalStatusText(sessionId, dispatch.notice.trim())
               }
             }
+          }
+
+          // The legacy /undo (a remote gateway, no owner rewind) has already soft-deleted the turns
+          // server-side; drop them from the rendered transcript too, before the notice lands after
+          // them. The directive carries no row ids, so cut at the Nth newest user bubble. The backend
+          // clamps N to the turns it has, so an N past the rendered bubbles undid every one of them.
+          if (dispatch.type === 'prefill') {
+            const turnsBack = Math.max(Number.parseInt(arg, 10) || 1, 1)
+
+            updateSessionState(
+              sessionId,
+              state => {
+                const shown = state.messages.filter(message => message.role === 'user' && !message.hidden).length
+
+                return {
+                  ...state,
+                  messages: truncateRewoundMessages(
+                    state.messages,
+                    Number.POSITIVE_INFINITY,
+                    Math.min(turnsBack, shown)
+                  )
+                }
+              },
+              storedSessionId
+            )
           }
 
           renderDispatchNotice()

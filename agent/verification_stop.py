@@ -5,6 +5,7 @@ when the model tries to finish right after editing code without fresh evidence."
 from __future__ import annotations
 
 import os
+from hermes_constants import _termux_safe_tempdir
 import tempfile
 from pathlib import Path
 from typing import Any, Iterable
@@ -206,7 +207,7 @@ def build_verify_on_stop_nudge(
             "Read any failure, repair the code, and summarize what passed."
         )
     else:
-        temp_dir = os.path.realpath(tempfile.gettempdir())
+        temp_dir = os.path.realpath(_termux_safe_tempdir())
         command_instruction = (
             "No canonical test/lint/build command was detected. Create a focused "
             f"temporary verification script under `{temp_dir}` using an OS-safe "

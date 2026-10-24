@@ -20,6 +20,7 @@ import hashlib
 import json
 import logging
 import os
+from hermes_constants import _termux_safe_tempdir
 import re
 import shlex
 import stat
@@ -348,7 +349,7 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
 def _dm_dir() -> Path:
     uid_getter = getattr(os, "getuid", None)
     uid = uid_getter() if callable(uid_getter) else None
-    path = Path(tempfile.gettempdir()) / (f"{_DM_DIR_NAME}-{uid}" if uid is not None else _DM_DIR_NAME)
+    path = Path(_termux_safe_tempdir()) / (f"{_DM_DIR_NAME}-{uid}" if uid is not None else _DM_DIR_NAME)
     path.mkdir(mode=0o700, exist_ok=True)
     # Shared POSIX temp roots need a per-user directory. Fail closed if an
     # attacker pre-created the expected path or replaced it with a symlink.
@@ -367,7 +368,7 @@ def cleanup_bot_dm_cache(max_age_hours: float = _DM_STALE_SECONDS / 3600, *, now
     Same contract as the other ``cleanup_*_cache`` helpers (hourly gateway housekeeping);
     legacy temp-root locations from versions predating the dedicated directory are swept too."""
     cutoff = (time.time() if now is None else now) - max_age_hours * 3600
-    temp_root = Path(tempfile.gettempdir())
+    temp_root = Path(_termux_safe_tempdir())
     locations = [(temp_root, "hermes-dm-*.txt"), (temp_root, "hermes-relay-dm-*.txt")]
     with contextlib.suppress(OSError):
         dm_dir = _dm_dir()

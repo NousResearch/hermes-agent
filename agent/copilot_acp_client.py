@@ -119,9 +119,16 @@ def _resolve_home_dir() -> str:
     try:
         import pwd
 
-        return pwd.getpwuid(os.getuid()).pw_dir.strip() or tempfile.gettempdir()  # windows-footgun: ok — POSIX fallback inside try/except (pwd import fails on Windows)
+        home_dir = pwd.getpwuid(os.getuid()).pw_dir.strip()
+        if home_dir:
+            return home_dir
     except Exception:
-        return tempfile.gettempdir()
+        pass
+    for key in ("TERMINAL_TEMP_DIR", "TMPDIR", "TMP", "TEMP"):
+        candidate = os.environ.get(key)
+        if candidate and candidate.startswith("/"):
+            return candidate.rstrip("/") or "/"
+    return tempfile.gettempdir()
 
 
 def _build_subprocess_env() -> dict[str, str]:

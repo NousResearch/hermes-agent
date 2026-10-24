@@ -22,6 +22,7 @@ import glob
 import json
 import logging
 import os
+from hermes_constants import _termux_safe_tempdir
 import queue
 import secrets
 import shutil
@@ -78,7 +79,7 @@ KERNEL_RUNNER_SOURCE = f'''\
 import contextlib
 import io
 import json
-import os
+from hermes_constants import _termux_safe_tempdir
 import sys
 import threading
 import traceback
@@ -713,7 +714,7 @@ def _sweep_stale_staging_dirs(now: Optional[float] = None) -> int:
     follows symlinks, so a planted link is rejected rather than chased."""
     now = time.time() if now is None else now
     removed = 0
-    for path in glob.glob(os.path.join(tempfile.gettempdir(), "hermes_kernel_*")):
+    for path in glob.glob(os.path.join(_termux_safe_tempdir(), "hermes_kernel_*")):
         try:
             if now - os.path.getmtime(path) > _STALE_STAGING_DIR_AGE:
                 # No ignore_errors: a rejected symlink (or a half-removed dir) must not

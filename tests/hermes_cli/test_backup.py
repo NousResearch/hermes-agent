@@ -2951,3 +2951,13 @@ class TestBackupExcludeDirs:
         self._write_config(root, ["notes.txt"])
         selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip")}
         assert str(Path("notes.txt")) in selected
+
+    def test_yaml_helper_quotes_entries(self, tmp_path):
+        """A literal ``-`` entry must round-trip as the name ``-``, not YAML null: pins the
+        helper's quoting so ``\"\"`` genuinely exercises the root-reduce branch."""
+        from hermes_cli.backup import _configured_backup_exclude_prefixes
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        self._write_config(root, ["-"])
+        assert _configured_backup_exclude_prefixes(root) == [("-",)]

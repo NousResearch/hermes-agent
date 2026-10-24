@@ -337,7 +337,11 @@ from agent.i18n import t as _t
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
-load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
+load_hermes_dotenv(
+    hermes_home=_hermes_home,
+    project_env=_project_env,
+    cwd_env=True,
+)
 
 
 CLI_CONFIG = load_cli_config()

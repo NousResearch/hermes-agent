@@ -116,7 +116,8 @@ def _plan_goal_compression_recovery(
 def _admit_prompt_turn(
     sid: str, session: dict, text: Any, image_paths: list[str] | None,
     queued_prompt_generation: int | None, display_kind: str | None,
-    display_metadata: dict | None, *, report_ownership_refusal: bool = True) -> tuple[list[str], Any] | None:
+    display_metadata: dict | None, user_timestamp: float | None = None, *,
+    report_ownership_refusal: bool = True) -> tuple[list[str], Any] | None:
     """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
     bypass that once let a second backend run a duplicate turn."""
@@ -153,7 +154,8 @@ def _admit_prompt_turn(
         # by the time a new turn starts — replace it, never append onto it.
         if not isinstance(inflight, dict) or inflight.get("status") == "error":
             _start_inflight_turn(
-                session, text, display_kind=display_kind, display_metadata=display_metadata)
+                session, text, display_kind=display_kind, display_metadata=display_metadata,
+                user_timestamp=user_timestamp)
         agent = session["agent"]
         if agent is None:
             session["running"] = False
@@ -740,7 +742,8 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
 def _invoke_agent(
     sid: str, session: dict, st: _TurnRun, prompt: Any, run_message: Any, streamer,
     images: list[str], display_kind: str | None, display_metadata: dict | None,
-    turn_author: dict | None = None, text: Any = None) -> None:
+    turn_author: dict | None = None, text: Any = None,
+    user_timestamp: float | None = None) -> None:
     """Wire the streaming callbacks and run the conversation into ``st.result``.
     ``text`` is the turn's raw submit, matched against the row staged by prompt.submit."""
     agent = st.agent
@@ -796,6 +799,8 @@ def _invoke_agent(
         run_kwargs["persist_user_display_metadata"] = display_metadata
     if turn_author and "turn_author" in run_params:
         run_kwargs["turn_author"] = turn_author
+    if user_timestamp is not None and "persist_user_timestamp" in run_params:
+        run_kwargs["persist_user_timestamp"] = user_timestamp
     if "prelude" in run_params:
         from agent.onboarding_session import onboarding_prelude
         prelude = onboarding_prelude(agent, st.history)
@@ -1095,7 +1100,8 @@ def _run_prompt_submit(
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    turn_author: dict | None = None, report_ownership_refusal: bool = True) -> bool:
+    turn_author: dict | None = None, user_timestamp: float | None = None,
+    report_ownership_refusal: bool = True) -> bool:
     # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
     # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
     # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
@@ -1106,7 +1112,7 @@ def _run_prompt_submit(
             session.get("session_key") or sid)
     admitted = _admit_prompt_turn(
         sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata,
-        report_ownership_refusal=report_ownership_refusal)
+        user_timestamp, report_ownership_refusal=report_ownership_refusal)
     if admitted is None:
         return False
     images, agent = admitted
@@ -1157,7 +1163,7 @@ def _run_prompt_submit(
             prompt, run_message, cols, streamer = prepared
             _invoke_agent(
                 sid, session, st, prompt, run_message, streamer, images, display_kind,
-                display_metadata, turn_author, text)
+                display_metadata, turn_author, text, user_timestamp)
             status_note = _absorb_turn_result(
                 sid, session, st, text, display_kind, display_metadata)
             payload, raw, status = _complete_turn_payload(session, st, status_note, cols)

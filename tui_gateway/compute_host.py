@@ -31,6 +31,13 @@ def now_ns() -> int:
     return time.perf_counter_ns()
 
 
+
+def _frame_user_timestamp(frame: dict[str, Any]) -> float | None:
+    """The client send time a routed turn frame carries, or None when absent/malformed."""
+    value = frame.get("user_timestamp")
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
 class _HostTransport:
     def __init__(self, emit: Callable[[dict[str, Any]], None]) -> None:
         self._emit = emit
@@ -252,7 +259,7 @@ class ComputeHost:
                     self._reply("turn.error", sid, request_id, message="session busy")
                     return
                 session.update(running=True, _turn_cancel_requested=False, last_active=time.time())
-                server._start_inflight_turn(session, inflight)
+                server._start_inflight_turn(session, inflight, user_timestamp=_frame_user_timestamp(frame))
                 turn_started_at = time.time()
             self._reply("turn.started", sid, request_id, started_ns=now_ns())
             with contextlib.suppress(Exception):
@@ -272,7 +279,8 @@ class ComputeHost:
             server._run_prompt_submit(
                 request_id, sid, session, text, display_kind=frame.get("display_kind") or None,
                 display_metadata=(frame.get("display_metadata")
-                                  if isinstance(frame.get("display_metadata"), dict) else None))
+                                  if isinstance(frame.get("display_metadata"), dict) else None),
+                user_timestamp=_frame_user_timestamp(frame))
             run_thread = session.get("_run_thread")
             if run_thread is not None and hasattr(run_thread, "join"):
                 while run_thread.is_alive():

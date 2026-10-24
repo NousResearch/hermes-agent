@@ -2740,6 +2740,7 @@ export interface PromptSubmitParams {
   voice_context?: string | null
   voice_turn?: boolean | null
   title_preview?: string | null
+  submitted_at?: unknown | null
   truncate_before_user_ordinal?: number | null
   truncate_before_row_id?: number | null
   truncate_before_message_id?: string | null
@@ -2753,6 +2754,7 @@ export interface PromptSubmitResult {
   status?: PromptSubmitStatus | null
   voice_stopped?: boolean | null
   user_row_id?: number | null
+  user_timestamp?: number | null
   survivor_user_row_ids?: (number | null)[] | null
   survivor_row_id_map?: Record<string, number | null> | null
   turn_isolation?: boolean | null
@@ -3178,6 +3180,7 @@ export interface InflightTurn {
   user?: string
   display_kind?: string | null
   display_metadata?: Record<string, unknown> | null
+  user_timestamp?: number | null
   corrections?: string[] | null
   correction_offsets?: number[] | null
   error?: string | null
@@ -3187,6 +3190,7 @@ export interface InflightTurn {
 }
 export interface QueuedPrompt {
   user: string
+  user_timestamp?: number | null
 }
 /** One unanswered server→client request (``server_requests.Request.snapshot``); the reconnecting client re-delivers it to its request handlers. */
 export interface OpenRequestEntry {

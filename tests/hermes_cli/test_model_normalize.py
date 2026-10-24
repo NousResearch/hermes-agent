@@ -166,6 +166,37 @@ class TestIssue78796NvidiaPrefixRepair:
         )
 
 
+class TestVertexPublisherNamespace:
+    """Vertex's OpenAI-compatible endpoint requires the publisher-namespace id form
+    (``google/gemini-4-argon``) and answers a bare Gemini id with HTTP 400
+    "Malformed publisher model". The bare id stays correct for AI Studio, whose
+    catalogue is a different one -- so the two providers must diverge."""
+
+    def test_bare_gemini_id_gets_publisher_prefix_for_vertex(self):
+        """A bare Gemini id must reach Vertex in the publisher form it accepts."""
+        assert normalize_model_for_provider("gemini-4-argon", "vertex") == "google/gemini-4-argon"
+
+    def test_publisher_form_is_stable_for_vertex(self):
+        """An already-namespaced id is not re-namespaced, and the rewrite is idempotent:
+        normalizing the result again yields the same id."""
+        already = "google/gemini-4-argon"
+        assert normalize_model_for_provider(already, "vertex") == already
+        once = normalize_model_for_provider("gemini-4-argon", "vertex")
+        assert normalize_model_for_provider(once, "vertex") == once
+
+    def test_vertex_auxiliary_resolution_uses_the_publisher_form(self):
+        """The Vertex client seam normalizes the id it is about to send
+        (``agent/auxiliary_client.py::_build_vertex_client`` -> ``_normalize_resolved_model``),
+        so a bare id cannot reach Vertex's wire."""
+        from agent.auxiliary_client import _normalize_resolved_model
+
+        assert _normalize_resolved_model("gemini-4-argon", "vertex") == "google/gemini-4-argon"
+
+    def test_bare_gemini_id_unchanged_for_ai_studio(self):
+        """AI Studio keeps accepting the bare id -- the other provider's behaviour is untouched."""
+        assert normalize_model_for_provider("gemini-4-argon", "gemini") == "gemini-4-argon"
+
+
 class TestColonProviderPrefixIsStrippedLikeSlash:
     """Issue #64787: ``-m openai-codex:gpt-5.6-sol`` (Hermes's own ``provider:model`` switch syntax)
     reached the Codex wire with the prefix attached and got HTTP 400. A matching ``provider:`` prefix

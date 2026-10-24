@@ -301,9 +301,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # (see hermes_cli/model_setup_flows.py); validated live against a GCP project (global region).
     "vertex": [
         "google/gemini-3.8-flash", "google/gemini-4-argon", "google/gemini-3.7-flash",  # [0] = silent default
-        "google/gemini-3.1-pro-preview", "google/gemini-3-pro-preview", "google/gemini-3.6-flash",
+        "google/gemini-3.1-pro-preview", "google/gemini-3.6-flash",
         "google/gemini-3.5-flash", "google/gemini-3.5-flash-lite", "google/gemini-3-flash-preview",
-        "google/gemini-3.1-flash-lite-preview", "google/gemini-3.1-flash-lite",
+        "google/gemini-3.1-flash-lite", "google/gemini-2.5-pro", "google/gemini-2.5-flash",
+        "google/gemini-2.5-flash-lite",
     ],
     "novita": [
         "moonshotai/kimi-k2.5", "minimax/minimax-m2.7", "zai-org/glm-5", "deepseek/deepseek-v3-0324",
@@ -565,6 +566,18 @@ _PROVIDER_RETIRED_ALIASES: dict[str, tuple[str, ...]] = {
 
 
 _AGGREGATOR_PROVIDERS = frozenset({"nous", "openrouter", "ai-gateway", "copilot", "kilocode"})
+
+
+# Providers whose catalog ids live in a PUBLISHER namespace (``google/…``, ``nvidia/…``,
+# ``moonshotai/…``) rather than a vendor-internal one. That slug form is also what every
+# aggregator (nous / openrouter / ai-gateway / kilocode) publishes, so a prefix match against
+# these catalogs would silently switch an aggregator user onto the provider's own billing
+# account (GCP project for vertex). Prefix-based INFERENCE to these providers is therefore
+# suppressed; they stay reachable by provider name, in their own picker, and via an explicit
+# model choice for that provider.
+_VENDOR_NAMESPACE_CATALOG_PROVIDERS = frozenset({
+    "vertex", "nvidia", "gmi", "huggingface", "novita",
+})
 
 
 # Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models; tried only as a last

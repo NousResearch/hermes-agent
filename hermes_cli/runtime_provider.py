@@ -971,9 +971,10 @@ def _resolve_vertex_runtime(requested_provider: str) -> dict[str, Any]:
     else:
         token, base_url = get_vertex_config()
     if not token or not base_url:
-        raise AuthError("Vertex AI credentials could not be resolved. Vertex uses OAuth2 (not a static API key): provide a "
-                        "service-account JSON via GOOGLE_APPLICATION_CREDENTIALS (or VERTEX_CREDENTIALS_PATH) in ~/.hermes/.env, "
-                        "or run 'gcloud auth application-default login' for ADC. Set the GCP project/region under vertex: in "
+        raise AuthError("Vertex AI credentials could not be resolved. Vertex uses OAuth2 (not a static API key): point "
+                        "GOOGLE_APPLICATION_CREDENTIALS (or VERTEX_CREDENTIALS_PATH) in ~/.hermes/.env at a credential "
+                        "file - a service-account JSON, or the gcloud 'authorized_user' ADC file - or run 'gcloud auth "
+                        "application-default login' for ADC. Set the GCP project/region under vertex: in "
                         "config.yaml if they aren't embedded in the credentials. Run `hermes setup` to install Vertex support.")
     return _runtime("vertex", "chat_completions", base_url.rstrip("/"), token, source="vertex-oauth", requested_provider=requested_provider)
 

@@ -473,8 +473,10 @@ Gemini models on Google Cloud Vertex AI via Vertex's OpenAI-compatible endpoint.
 ```bash
 # Service account JSON (recommended for servers / gateways)
 echo "VERTEX_CREDENTIALS_PATH=/path/to/service-account.json" >> ~/.hermes/.env
-# or Application Default Credentials
+# or gcloud Application Default Credentials (an "authorized_user" JSON file —
+# accepted by VERTEX_CREDENTIALS_PATH just like a service-account key)
 gcloud auth application-default login
+echo "VERTEX_CREDENTIALS_PATH=$HOME/.config/gcloud/application_default_credentials.json" >> ~/.hermes/.env
 
 hermes model   # → "Google Vertex AI" → project → region → model
 ```

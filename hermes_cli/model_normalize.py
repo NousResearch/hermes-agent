@@ -81,6 +81,16 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
 _CATALOGUE_PREFIX_REPAIR_PROVIDERS: frozenset[str] = frozenset({
     "nvidia"})
 
+# Providers whose OpenAI-compatible endpoint serves models under a publisher namespace
+# ("google/gemini-4-argon"), mapped to that publisher and to the bare-id families it serves.
+# Vertex returns HTTP 400 "Malformed publisher model" for a bare Gemini id, while the same
+# bare id is the correct form on AI Studio (``gemini``) -- the two catalogues are not
+# interchangeable, so the publisher form is added only for the provider that demands it.
+# Only the listed families are rewritten: a partner model or a tuned model keeps its shape,
+# because its publisher namespace is not guessable.
+_PUBLISHER_NAMESPACE_PROVIDERS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "vertex": ("google", ("gemini",))}
+
 # Providers whose APIs require lowercase model IDs (Xiaomi rejects ``MiMo-V2.5-Pro`` copied from
 # marketing docs; only ``mimo-v2.5-pro`` works). Applied after matching-prefix stripping.
 _LOWERCASE_MODEL_PROVIDERS: frozenset[str] = frozenset({
@@ -159,6 +169,13 @@ def detect_vendor(model_name: str) -> Optional[str]:
     return next((vendor for prefix, vendor in _VENDOR_PREFIXES.items() if name_lower.startswith(prefix)), None)
 
 
+def _bare_model_family(model_name: str) -> str:
+    """First hyphen-delimited token of a bare id, lowercased (``gemini-4-argon`` → ``gemini``).
+    The family of a bare id, not its vendor slug: ``gemini`` is served by the ``google``
+    publisher, but the family is what names the catalogue the id belongs to."""
+    return model_name.strip().lower().split("-", 1)[0]
+
+
 def _prepend_vendor(model_name: str) -> str:
     """Prepend the detected ``vendor/`` for aggregators; names with ``/`` or no detectable vendor
     pass through (the aggregator may still accept them)."""
@@ -206,6 +223,15 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     if not name:
         return name
     provider = _normalize_provider_alias(target_provider)
+
+    # A publisher-namespace provider (Vertex) serves its models as ``google/<model>`` and
+    # answers a bare id with HTTP 400 "Malformed publisher model". The bare id is the correct
+    # form on AI Studio, so the publisher form is added only here -- never for ``gemini``.
+    publisher = _PUBLISHER_NAMESPACE_PROVIDERS.get(provider)
+    if publisher:
+        namespace, families = publisher
+        if "/" not in name and _bare_model_family(name) in families:
+            return f"{namespace}/{name}"
 
     if provider in _AGGREGATOR_PROVIDERS:
         return _prepend_vendor(name)

@@ -122,6 +122,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self.adapter = adapter
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
+        # RPC transports (A2A) declare ``REQUIRES_ATOMIC_FINAL``: ONE complete turn-final send,
+        # never previews, chunks or finalized tool/commentary segments. Payload size is theirs.
+        self._atomic_final = getattr(adapter, "REQUIRES_ATOMIC_FINAL", False) is True
         self.metadata = metadata
         # Hooks (exceptions swallowed): on_new_message per fresh content bubble (next
         # tool-progress bubble goes BELOW it); on_before_finalize once (pause typing).
@@ -633,6 +636,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     async def _start_transports(self) -> None:
         """Resolve native/draft transport; native wins (adapters declaring it can't edit).
         The empty seed frame shows "typing" before the first token; on failure → edit path."""
+        if self._atomic_final:
+            return
         self._use_native_streaming = self._resolve_native_streaming()
         if self._use_native_streaming:
             logger.debug("Stream consumer using native-stream transport (chat=%s)", self.chat_id)
@@ -731,6 +736,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     def _should_edit(self, tick: _Tick) -> bool:
         """Decide whether this tick flushes an edit/frame."""
+        if self._atomic_final:
+            return tick.got_done
         if not tick.is_interim:
             return True
         if self.cfg.buffer_only:
@@ -803,7 +810,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         return self._len_fn(self._accumulated) > self._safe_limit
 
     def _first_send_overflows(self) -> bool:
-        return self._message_id is None and self._overflows()
+        return not self._atomic_final and self._message_id is None and self._overflows()
 
     async def _seal_overflow_heads(self) -> None:
         """Existing message overflowing: seal it with the head, start a new message for the rest."""
@@ -914,6 +921,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     async def _deliver_commentary(self, commentary_text: str) -> None:
         """Post commentary as its own message.  Cumulative transports keep the stream going —
         resetting _accumulated would break the append-only invariant / lose text."""
+        if self._atomic_final:
+            self._reset_segment_state()
+            return
         cumulative = self._cumulative_transport()
         if not cumulative:
             self._reset_segment_state()
@@ -929,6 +939,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         "__no_edit__" (platform never returned a real id — Signal, github_comment webhook)
         must keep its sentinel or every tool boundary posts a new message; the
         continuation goes out once via _send_fallback_final."""
+        if self._atomic_final:
+            # A tool/flush boundary is not RPC completion. Discard its preamble
+            # without sending it or letting it become a prefix of the final reply.
+            self._reset_segment_state()
+            return
         if self._cumulative_transport():
             return
         # If the segment-break edit or send didn't land (flood control / fallback mode, or a

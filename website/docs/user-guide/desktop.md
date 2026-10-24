@@ -384,6 +384,12 @@ After any backend update, the app also re-checks its own version and warns with 
 
 The [manual update process](https://hermes-agent.nousresearch.com/docs/getting-started/updating) also works with the GUI.
 
+## Checking disk usage
+
+Open **Settings → Storage** to see how much disk space Hermes uses. The page scans your Hermes home folder (`HERMES_HOME`) and lists each top-level folder and file by size, largest first, with a total. It is read-only: it never deletes anything and does not follow symlinks or junctions out of the folder. On very large folders the scan stops early and says so, in which case the sizes are lower bounds. Use **Rescan** to refresh.
+
+The page measures the Hermes home on this machine, not a remote gateway's.
+
 ## Uninstalling
 
 For installations managed by the app, open **Settings → About → Danger zone** and pick how much to remove:

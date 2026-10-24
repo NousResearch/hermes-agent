@@ -13,6 +13,7 @@ import {
   BarChart3,
   Bell,
   Cpu,
+  Database,
   Download,
   Globe,
   Info,
@@ -61,9 +62,10 @@ import {
   PluginSettingsPane,
   usePluginSettingsRoute
 } from './plugin-settings'
-import { SettingsBreadcrumbContext } from './primitives'
+import { SettingsBreadcrumbContext, SettingsContent } from './primitives'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
+import { StorageSection } from './storage-section'
 import { SettingsSubpageHeader } from './subpage-navigation'
 import { resolveSettingsSubpage, settingsSubpageIcon, settingsSubpages } from './subpages'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
@@ -82,6 +84,7 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'notifications',
   'billing',
   'sessions',
+  'storage',
   'plugins',
   'about'
 ]
@@ -398,6 +401,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
             onSelect: () => setActiveView('sessions')
           },
           {
+            active: activeView === 'storage',
+            icon: Database,
+            id: 'storage',
+            label: t.settings.nav.storage,
+            onSelect: () => setActiveView('storage')
+          },
+          {
             active: activeView === 'plugins',
             children: pluginSettingsNavChildren(plugins.entries, plugins.target, plugins.open),
             gapBefore: true,
@@ -570,6 +580,10 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     />
   ) : activeView === 'vault' ? (
     <VaultSettings key={vaultOwnerKey(activeConnectionId, scopeProfile)} subpage={subpage} />
+  ) : activeView === 'storage' ? (
+    <SettingsContent>
+      <StorageSection />
+    </SettingsContent>
   ) : (
     <SessionsSettings subpage={subpage} />
   )

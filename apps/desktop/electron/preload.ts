@@ -677,6 +677,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     run: mode => ipcRenderer.invoke('hermes:uninstall:run', { mode }),
     openAppsSettings: () => ipcRenderer.invoke('hermes:uninstall:openAppsSettings')
   },
+  storage: {
+    summary: trail => ipcRenderer.invoke('hermes:storage:summary', { trail }),
+    reveal: (trail, name) => ipcRenderer.invoke('hermes:storage:reveal', { trail, name })
+  },
   updates: {
     check: opts => ipcRenderer.invoke('hermes:updates:check', opts),
     apply: opts => ipcRenderer.invoke('hermes:updates:apply', opts),

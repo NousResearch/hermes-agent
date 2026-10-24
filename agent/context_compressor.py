@@ -4115,8 +4115,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Auth/permission/quota failures are not retryable: flag so compress() preserves the
         # session. A distinct summary_model still gets the one-shot main-model fallback.
         if access_error:
-            # Field name kept for caller compatibility; now covers the whole access/quota class.
-            self._last_summary_auth_failure = True
+            self._last_summary_auth_failure = True  # name kept for callers; covers access/quota class
+            self._clear_fallback_latch_after_access_error()  # #138469
         if kind.json_decode and not kind.model_not_found and not kind.timeout:
             logger.error(
                 "Context compression failed: auxiliary LLM returned a non-JSON response. provider=%s "

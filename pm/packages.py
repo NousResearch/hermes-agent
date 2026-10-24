@@ -790,6 +790,50 @@ class Gh(BinaryPackage):
         return github_release_tags("cli/cli", strip_prefix="v")
 
 
+def _kernel32_missing_exports(names: tuple[str, ...]) -> list[str]:
+    """Names in ``names`` that this host's KERNEL32 does not export (Windows only)."""
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32")
+    get_proc = kernel32.GetProcAddress
+    get_proc.restype = ctypes.c_void_p
+    get_proc.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    return [name for name in names if not get_proc(ctypes.c_void_p(kernel32._handle), name.encode())]
+
+
+def _win_ffmpeg_host_gap() -> Optional[str]:
+    """Why the pinned BtbN Windows ffmpeg cannot run on this host, if it cannot (#130064).
+
+    BtbN autobuilds import ``SetThreadDescription`` statically from KERNEL32. Windows
+    Server 2016 (build 14393) only exposes it through KernelBase, so the loader kills
+    every ffmpeg invocation with STATUS_ENTRYPOINT_NOT_FOUND (0xC0000139) before main —
+    the install's ``-version`` smoke probe fails and so does every ``hermes update``.
+    Reporting a host gap keeps ffmpeg out of the required-tool closure there instead of
+    failing the whole sync; the reason clears itself as soon as the Windows pin is not
+    a BtbN build, so a pin change can bring ffmpeg back.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        from pm.lock import Lockfile
+        from pm.paths import lockfile_path
+
+        urls = [artifact.get("url", "") for artifact in
+                Lockfile(lockfile_path()).artifacts("ffmpeg", current_target())]
+    except (OSError, ValueError):  # unreadable lock: no evidence of a gap, keep ffmpeg required
+        return None
+    if not any("BtbN/FFmpeg-Builds" in url for url in urls):
+        return None
+    try:
+        missing = _kernel32_missing_exports(("SetThreadDescription",))
+    except OSError:
+        return None
+    if not missing:
+        return None
+    return (f"this Windows host's KERNEL32 does not export {', '.join(missing)} "
+            "(Windows Server 2016 / build 14393); the pinned BtbN build cannot start here")
+
+
 @register
 class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
     """FFmpeg builds for supported targets; BtbN Linux archives require glibc.
@@ -809,6 +853,12 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
     deb_package = "ffmpeg"
     optional = False
     gaps = {target: "BtbN Linux builds link glibc dynamically" for target in MUSL_TARGETS}
+
+    def missing_reason(self, target: str) -> Optional[str]:
+        reason = super().missing_reason(target)
+        if reason is None and target.startswith("win32-") and target == current_target():
+            reason = _win_ffmpeg_host_gap()
+        return reason
 
     def main_rel(self, target: str) -> str:
         return "bin/ffmpeg"

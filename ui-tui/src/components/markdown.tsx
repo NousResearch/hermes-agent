@@ -1,4 +1,4 @@
-import { Box, Link, stringWidth, Text } from '@hermes/ink'
+import { Box, Link, stringWidth, Text, unbreakableUnits, wrapAnsi } from '@hermes/ink'
 import { Fragment, memo, type ReactNode, useMemo } from 'react'
 
 import { ensureEmojiPresentation } from '../lib/emoji.js'
@@ -209,16 +209,19 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
 
   const cellDisplayWidth = (raw: string) => stringWidth(stripInlineMarkup(raw))
 
-  // Minimum width: longest word in a cell (to avoid breaking words)
+  // Minimum width: the longest piece the wrapper may not split — a Latin
+  // word, or one ideograph plus the closing punctuation it drags along. CJK
+  // cells used to count their whole text as one "word", which made every CJK
+  // column demand its full width and pushed narrow terminals into the
+  // vertical fallback layout.
   const minCellWidth = (raw: string) => {
-    const text = stripInlineMarkup(raw)
-    const words = text.split(/\s+/).filter(w => w.length > 0)
+    const units = unbreakableUnits(stripInlineMarkup(raw))
 
-    if (words.length === 0) {
+    if (units.length === 0) {
       return MIN_COL_WIDTH
     }
 
-    return Math.max(...words.map(w => stringWidth(w)), MIN_COL_WIDTH)
+    return Math.max(...units.map(unit => stringWidth(unit)), MIN_COL_WIDTH)
   }
 
   const numCols = rows[0]!.length
@@ -309,69 +312,20 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
     }
   }
 
-  // Grapheme-safe hard-break: prefer Intl.Segmenter, fall back to code-point split
-  const segmenter =
-    typeof Intl !== 'undefined' && 'Segmenter' in Intl
-      ? new (Intl as any).Segmenter(undefined, { granularity: 'grapheme' })
-      : null
-
-  const graphemes = (s: string): string[] =>
-    segmenter ? [...segmenter.segment(s)].map((seg: { segment: string }) => seg.segment) : [...s]
-
-  // Word-wrap plain text to fit within `width` display columns.
-  // Operates on stripped text for correct width measurement.
+  // Wrap plain text to fit within `width` display columns. Delegates to
+  // @hermes/ink's wrapAnsi so a CJK cell breaks between ideographs instead of
+  // treating the whole clause as one word (which overflowed or clipped the
+  // column and left the rest of the row blank).
   const wrapCell = (raw: string, width: number, hard: boolean): string[] => {
     const text = stripInlineMarkup(raw)
 
-    if (width <= 0) {
+    if (width <= 0 || stringWidth(text) <= width) {
       return [text]
     }
 
-    if (stringWidth(text) <= width) {
-      return [text]
-    }
+    const wrapped = wrapAnsi(text, width, { hard, trim: true }).split('\n')
 
-    const words = text.split(/\s+/).filter(w => w.length > 0)
-    const lines: string[] = []
-    let current = ''
-    let currentWidth = 0
-
-    for (const word of words) {
-      const w = stringWidth(word)
-
-      if (currentWidth === 0) {
-        if (hard && w > width) {
-          for (const ch of graphemes(word)) {
-            const cw = stringWidth(ch)
-
-            if (currentWidth + cw > width && current) {
-              lines.push(current)
-              current = ''
-              currentWidth = 0
-            }
-
-            current += ch
-            currentWidth += cw
-          }
-        } else {
-          current = word
-          currentWidth = w
-        }
-      } else if (currentWidth + 1 + w <= width) {
-        current += ' ' + word
-        currentWidth += 1 + w
-      } else {
-        lines.push(current)
-        current = word
-        currentWidth = w
-      }
-    }
-
-    if (current) {
-      lines.push(current)
-    }
-
-    return lines.length > 0 ? lines : ['']
+    return wrapped.length > 0 ? wrapped : ['']
   }
 
   const isHard = totalMin > availableWidth // tier 3 needs hard word breaks

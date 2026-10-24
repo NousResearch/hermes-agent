@@ -26,6 +26,12 @@ from tools.threat_patterns import scan_for_threats
 
 logger = logging.getLogger(__name__)
 
+
+def _is_tool_result_role(role: Any) -> bool:
+    """Whether a transcript row carries a modern or legacy tool result."""
+    return isinstance(role, str) and role in {"tool", "function"}
+
+
 # Interactive / user-facing tools never run concurrently: any of these in a batch is a barrier.
 _NEVER_PARALLEL_TOOLS = frozenset({"clarify", "manage_connections", "manage_catalog", "setup_beat", "set_theme"})
 

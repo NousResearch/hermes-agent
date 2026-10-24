@@ -422,7 +422,24 @@ def _cmd_list(args: argparse.Namespace) -> int:
         assignee = _profile_author()
     with kbc.connect_closing() as conn:
         # Cheap mini-dispatch so list reflects dependencies cleared since the last tick.
-        kb.recompute_ready(conn)
+        # `recompute_ready` opens a write txn, which a delegated-child (fenced) context
+        # rejects — but the worker contract allows reading a board, only mutations are
+        # denied. Skip the bookkeeping refresh there so the read degrades instead of
+        # failing with a mutation refusal (#123733).
+        from agent.delegation_context import kanban_path_is_fenced
+
+        # Match the mutation guard at ``_is_delegated_child_cli_mutation``: the
+        # connection fences on ``kanban_db_path()`` (what ``connect``/``write_txn``
+        # open), so a grandchild that moved ``HERMES_KANBAN_HOME`` off the fenced
+        # root but still inherits the dispatcher-pinned ``HERMES_KANBAN_DB`` leaves
+        # ``kanban_home()`` unfenced while the board it reads is read-only. Checking
+        # only ``kanban_home()`` here would run ``recompute_ready`` into a refused
+        # write txn — the #123733 failure this guard exists to prevent.
+        if not (
+            kanban_path_is_fenced(kb.kanban_home())
+            or kanban_path_is_fenced(kb.kanban_db_path())
+        ):
+            kb.recompute_ready(conn)
         tasks = kb.list_tasks(
             conn, assignee=assignee, status=args.status, tenant=args.tenant, session_id=args.session,
             include_archived=args.archived, order_by=getattr(args, "sort", None),

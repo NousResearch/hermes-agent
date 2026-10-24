@@ -82,7 +82,26 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
         effective_key = credential or (resolve_anthropic_token(model=getattr(agent, "model", None)) if is_anthropic else None) or ""
         agent.api_key = agent._anthropic_api_key = effective_key
         agent._anthropic_base_url = fb_base_url
-        agent._anthropic_client = build_anthropic_client(effective_key, fb_base_url, timeout=timeout)
+        # Vertex Claude uses AnthropicVertex (ADC); a direct Anthropic client
+        # would POST to .../publishers/anthropic/v1/messages and 404.
+        if fb_provider == "vertex":
+            from agent.anthropic_vertex_adapter import (
+                build_anthropic_vertex_client,
+                get_anthropic_vertex_config,
+            )
+            try:
+                _project_id, _vx_region = get_anthropic_vertex_config()
+            except Exception:  # noqa: BLE001
+                _project_id, _vx_region = None, None
+            _project_id = _project_id or getattr(agent, "_vertex_project_id", None)
+            _vx_region = _vx_region or getattr(agent, "_vertex_region", None) or "global"
+            agent._vertex_project_id = _project_id
+            agent._vertex_region = _vx_region
+            agent._anthropic_client = build_anthropic_vertex_client(
+                _project_id, _vx_region, timeout=timeout,
+            )
+        else:
+            agent._anthropic_client = build_anthropic_client(effective_key, fb_base_url, timeout=timeout)
         agent._is_anthropic_oauth = anthropic_route_is_oauth(fb_base_url, effective_key, provider=fb_provider)
         agent.client, agent._client_kwargs = None, {}
         return
@@ -484,9 +503,27 @@ class ClientLifecycleMixin:
         self._abort_request_slot_client(_OPENAI_SLOT, client, reason=reason)
 
     def _request_anthropic_client_key(self) -> tuple:
-        """Cache key over everything forcing a fresh client: credential, base URL/region, timeout, 1M-beta flag."""
-        if getattr(self, "provider", None) == "bedrock":
+        """Cache key over everything forcing a fresh client: credential, base URL/region, timeout, 1M-beta flag.
+
+        ``key[0]`` is the provider discriminator that ``_build_anthropic_client_for_key``
+        dispatches on, so every provider needing a non-default SDK MUST have a branch here
+        as well as there. A provider missing from this function silently keys as ``"direct"``
+        and gets a direct-Anthropic client pointed at a non-Anthropic base_url.
+        """
+        _provider = getattr(self, "provider", None)
+        if _provider == "bedrock":
             return ("bedrock", getattr(self, "_bedrock_region", "us-east-1") or "us-east-1")
+        if _provider == "vertex":
+            # Claude-on-Vertex. The timeout belongs in the key because
+            # ``build_anthropic_vertex_client`` bakes it into the client (a
+            # ``/model`` switch changes it); project and region because they
+            # decide the publisher route. No API key — ADC, not a bearer.
+            return (
+                "vertex",
+                getattr(self, "_vertex_project_id", None),
+                getattr(self, "_vertex_region", None) or "global",
+                get_provider_request_timeout(self.provider, self.model),
+            )
         return (
             "direct", self._anthropic_api_key, getattr(self, "_anthropic_base_url", None),
             get_provider_request_timeout(self.provider, self.model), bool(getattr(self, "_oauth_1m_beta_disabled", False)),
@@ -503,9 +540,28 @@ class ClientLifecycleMixin:
         return anthropic_route_is_oauth(getattr(self, "_anthropic_base_url", None), token, provider=self.provider)
 
     def _build_anthropic_client_for_key(self, key: tuple) -> Any:
+        """Construct the SDK client for a ``_request_anthropic_client_key()`` tuple.
+
+        Dispatch MUST stay in sync with ``_request_anthropic_client_key``: this client
+        carries every in-flight request and is also what ``_rebuild_anthropic_client``
+        swaps in, so a provider special-cased in the key function but not here (or the
+        reverse) silently regresses to a direct-Anthropic client on a non-Anthropic URL.
+        """
         from agent.anthropic_adapter import build_anthropic_bedrock_client, build_anthropic_client
         if key[0] == "bedrock":
             return build_anthropic_bedrock_client(key[1])
+        if key[0] == "vertex":
+            # Claude-on-Vertex. Only reachable when api_mode resolved to
+            # anthropic_messages (Gemini on Vertex uses chat_completions and never
+            # builds an Anthropic client). Project + region were stashed on the agent
+            # during init from the runtime dict and travel in the cache key.
+            #
+            # Without this branch the fallthrough below builds a direct Anthropic
+            # client whose base_url is the display-only Vertex publisher URL, so the
+            # SDK POSTs to ``…/publishers/anthropic/v1/messages`` instead of
+            # ``…/publishers/anthropic/models/<model>:rawPredict`` and every call 404s.
+            from agent.anthropic_vertex_adapter import build_anthropic_vertex_client
+            return build_anthropic_vertex_client(key[1], key[2], timeout=key[3])
         return build_anthropic_client(key[1], key[2], timeout=key[3], drop_context_1m_beta=key[4])
 
     def _create_request_anthropic_client(self, *, reason: str) -> Any:
@@ -1042,5 +1098,10 @@ class ClientLifecycleMixin:
         )
 
     def _rebuild_anthropic_client(self) -> None:
-        """Rebuild the Anthropic client after an interrupt/stale call (Bedrock SDK for bedrock; honors 1M-beta flag)."""
+        """Rebuild the Anthropic client after an interrupt/stale call.
+
+        Per-provider SDK selection (Bedrock, Claude-on-Vertex, direct + 1M-beta flag) lives
+        entirely in ``_request_anthropic_client_key`` / ``_build_anthropic_client_for_key``,
+        so this path and the request-local client can never drift apart.
+        """
         self._anthropic_client = self._build_anthropic_client_for_key(self._request_anthropic_client_key())

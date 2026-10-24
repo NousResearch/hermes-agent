@@ -75,7 +75,8 @@ class TestResolveProviderClientMainAlias:
         })
         with (
             patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
-                "api_key": "ghu_test_token",
+                # This resolver returns the bearer after attempting token exchange.
+                "api_key": "tid=synthetic-alias-test;sku=copilot_individual",
                 "base_url": "https://api.githubcopilot.com",
             }),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
@@ -88,6 +89,26 @@ class TestResolveProviderClientMainAlias:
         assert client is not None
         assert model == "gpt-5.4"
         assert mock_openai.called
+
+    def test_main_copilot_alias_rejects_unexchanged_user_token(self, tmp_path):
+        """A failed exchange must not hand a raw GitHub App token to an API client."""
+        _write_config(tmp_path, {
+            "model": {"default": "gpt-5.4", "provider": "github-copilot"},
+        })
+        with (
+            patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
+                "api_key": "ghu_test_token",
+                "base_url": "https://api.githubcopilot.com",
+            }),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client("main", "gpt-5.4")
+
+        assert client is None
+        assert model is None
+        mock_openai.assert_not_called()
 
 
 class TestResolveProviderClientNamedCustom:

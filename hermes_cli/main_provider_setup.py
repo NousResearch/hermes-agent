@@ -547,18 +547,30 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
 
 
 def _remove_custom_provider(config):
-    """Let the user remove a saved custom provider from config.yaml."""
-    from hermes_cli.config import load_config, save_config
+    """Let the user remove a saved custom provider from config.yaml.
+
+    Covers BOTH storage schemas the picker merges for display: v12+ ``providers:<key>`` map
+    entries and legacy ``custom_providers:`` list rows (an entry can live in both — the merged
+    view dedupes them, so removal pops every match, never leaving an orphan that would make the
+    provider reappear). Mirrors the Desktop panel's DELETE route (web_routers/config_env.py):
+    detach the main-model mirror when it names the removed provider, and scrub the managed
+    ``HERMES_CUSTOM_*`` env slot. Mutates the RAW config (unexpanded) so ``${ENV}`` templates in
+    sibling entries never get materialized into config.yaml on save.
+    """
+    from hermes_cli.config import (
+        coerce_provider_id, custom_endpoint_key_env, find_provider_entry,
+        load_config, read_raw_config, remove_env_value, save_config,
+    )
+
     cfg = load_config()
-    providers = cfg.get("custom_providers") or []
-    if not isinstance(providers, list) or not providers:
+    provider_map = _named_custom_provider_map(cfg)
+    if not provider_map:
         print("No custom providers configured.")
         return
 
+    keys = list(provider_map)
     print("Remove a custom provider:\n")
-    choices = [
-        f"{entry.get('name', 'unnamed')} ({_short_url(entry.get('base_url', ''))})" if isinstance(entry, dict) else str(entry)
-        for entry in providers]
+    choices = [f"{p['name']} ({_short_url(p['base_url'])})" for p in (provider_map[k] for k in keys)]
     choices.append("Cancel")
 
     idx = _radiolist("Select provider to remove:", list(choices))
@@ -576,15 +588,84 @@ def _remove_custom_provider(config):
         except (ValueError, KeyboardInterrupt, EOFError):
             idx = None
 
-    if idx is None or idx >= len(providers):
+    if idx is None or idx >= len(keys):
         print("No change.")
         return
 
-    removed = providers.pop(idx)
-    cfg["custom_providers"] = providers
-    save_config(cfg)
-    removed_name = removed.get("name", "unnamed") if isinstance(removed, dict) else str(removed)
-    print(f'✅ Removed "{removed_name}" from custom providers.')
+    sel = provider_map[keys[idx]]
+    sel_name = str(sel.get("name") or "").strip().lower()
+    sel_url = str(sel.get("base_url") or "").strip().rstrip("/").lower()
+    sel_key = str(sel.get("provider_key") or "").strip()
+
+    def _matches(entry: dict) -> bool:
+        e_url = str(entry.get("base_url") or entry.get("url") or entry.get("api") or "").strip().rstrip("/").lower()
+        e_name = str(entry.get("name") or "").strip().lower()
+        return bool((e_url and e_url == sel_url) or (e_name and e_name == sel_name))
+
+    raw = read_raw_config()
+    popped_map = False
+    removed_map_key = None
+    providers = raw.get("providers")
+    if isinstance(providers, dict):
+        stored_key, entry = (None, None)
+        if sel_key:
+            stored_key, entry = find_provider_entry(providers, sel_key)
+        if entry is None:
+            for candidate_key, candidate in providers.items():
+                if isinstance(candidate, dict) and _matches(candidate):
+                    stored_key, entry = candidate_key, candidate
+                    break
+        if entry is not None:
+            providers.pop(stored_key)
+            popped_map = True
+            removed_map_key = str(stored_key)
+
+    removed_legacy = 0
+    legacy = raw.get("custom_providers")
+    if isinstance(legacy, list):
+        kept = []
+        for entry in legacy:
+            if isinstance(entry, dict) and _matches(entry):
+                removed_legacy += 1
+                ke = str(entry.get("key_env") or "").strip()
+                if ke.startswith("HERMES_CUSTOM_"):
+                    remove_env_value(ke)
+                continue
+            kept.append(entry)
+        if kept:
+            raw["custom_providers"] = kept
+        else:
+            # An empty legacy list would resurrect the row-gating key with nothing in it.
+            raw.pop("custom_providers", None)
+
+    if not popped_map and removed_legacy == 0:
+        print("No change — the selected provider was not found in config.yaml.")
+        return
+
+    # Main-slot mirror: switch_model spells the active provider as the stored key or as
+    # ``custom:<lowercased name>`` (#62269); leaving it set would authenticate to a deleted host.
+    names = {n for n in (coerce_provider_id(sel_key).lower(), coerce_provider_id(sel_name).lower(),
+                         coerce_provider_id(removed_map_key).lower()) if n}
+    model_cfg = raw.get("model")
+    if isinstance(model_cfg, dict):
+        current = str(model_cfg.get("provider") or "").strip().lower()
+        if current.removeprefix("custom:") in names:
+            for field in ("provider", "base_url", "api_key", "key_env"):
+                model_cfg.pop(field, None)
+
+    # The Desktop DELETE owns the managed env slot keyed by the stored provider id.
+    if popped_map and removed_map_key is not None:
+        remove_env_value(custom_endpoint_key_env(removed_map_key))
+
+    save_config(raw)
+    label = sel.get("name") or sel.get("base_url") or "provider"
+    where = []
+    if popped_map:
+        where.append("providers:")
+    if removed_legacy:
+        where.append("custom_providers:")
+    detail = f" (removed from {' and '.join(where)})" if where else ""
+    print(f'✅ Removed "{label}" ({_short_url(sel.get("base_url", ""))}){detail}.')
 
 
 def _prompt_reasoning_effort_selection(efforts, current_effort="", *, default_label=""):
@@ -971,7 +1052,11 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
         _add("llamacpp", "Local models (run open models on this machine — no account or API key)", [],
              active == "llamacpp")
     ordered.append(("custom", "Custom endpoint (enter URL manually)", []))
-    if isinstance(config.get("custom_providers"), list) and config.get("custom_providers"):
+    # Show removal whenever the picker actually lists saved custom providers — the map merges
+    # legacy ``custom_providers:`` rows and v12+ ``providers:`` entries, which is exactly what
+    # _remove_custom_provider() can delete. (A raw-legacy-only gate hid this row for every
+    # config migrated past schema v11.)
+    if custom_provider_map:
         ordered.append(("remove-custom", "Remove a saved custom provider", []))
     ordered.append(("reasoning", "Reasoning effort for the current model...", []))
     ordered.append(("aux-config", "Configure auxiliary models...", []))

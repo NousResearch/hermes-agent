@@ -159,7 +159,7 @@ def _hardlink_backup(path: str, backup: str) -> bool:
     killed swap never leaves a short backup the restore would put back."""
     try:
         os.link(path, backup)
-    except OSError:
+    except (AttributeError, OSError):
         return False
     return True
 
@@ -414,7 +414,7 @@ def _link_or_copy_artifact(source: str, destination: str) -> None:
     where copy2 raises); byte copy otherwise."""
     try:
         os.link(source, destination)
-    except OSError:
+    except (AttributeError, OSError):
         shutil.copy2(source, destination)
 
 

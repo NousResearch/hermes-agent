@@ -401,6 +401,20 @@ def test_delete_model(client):
     assert client.delete("/api/local-models/models/Doomed").status_code == 404
 
 
+def test_sideload_falls_back_when_hardlinks_are_unavailable(client, tmp_path, monkeypatch):
+    """Regression for #140080: Termux can omit ``os.link`` from its os module."""
+    source = tmp_path / "outside" / "Sideload.gguf"
+    _write_fake_gguf(source)
+    monkeypatch.delattr(os, "link")
+
+    response = client.post("/api/local-models/sideload", json={"path": str(source)})
+
+    assert response.status_code == 200
+    assert response.json()["model_id"] == "Sideload"
+    from hermes_cli.local_runtime.bootstrap import models_dir
+    assert (models_dir() / source.name).read_bytes() == source.read_bytes()
+
+
 # ── runtime install ──────────────────────────────────────────
 
 

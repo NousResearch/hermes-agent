@@ -126,6 +126,240 @@ def test_do_list_platform_env_is_ignored(three_source_env, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# --enabled-only conditional activation filtering (#64391)
+# ---------------------------------------------------------------------------
+
+_EMPTY_CONDITIONS = {
+    "fallback_for_toolsets": [], "requires_toolsets": [],
+    "fallback_for_tools": [], "requires_tools": [],
+}
+
+
+def _conditional_skill(name, **overrides):
+    conditions = dict(_EMPTY_CONDITIONS)
+    conditions.update(overrides)
+    return {"name": name, "load_name": name, "category": "x", "description": name,
+            "tier": "builtin", "conditions": conditions}
+
+
+_CONDITIONAL_SKILLS = [
+    {"name": "plain-skill", "load_name": "plain-skill", "category": "x", "description": "no conditions",
+     "tier": "builtin"},
+    _conditional_skill("needs-term-ts", requires_toolsets=["terminal"]),
+    _conditional_skill("fb-web-ts", fallback_for_toolsets=["web"]),
+    _conditional_skill("needs-ws-tool", requires_tools=["web_search"]),
+    _conditional_skill("fb-ws-tool", fallback_for_tools=["web_search"]),
+]
+
+
+@pytest.fixture()
+def conditional_env(monkeypatch, hub_env):
+    """Skills carrying each of the four conditional activation fields."""
+    import tools.skills_hub as hub
+    from tools import skills_sync
+    from tools import skills_tool
+    from agent import skill_utils
+
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([]))
+    monkeypatch.setattr(
+        skills_tool, "_skill_catalog",
+        lambda **_kwargs: [dict(s) for s in _CONDITIONAL_SKILLS],
+    )
+    monkeypatch.setattr(skills_sync, "_read_manifest", dict)
+    monkeypatch.setattr(
+        skill_utils, "get_disabled_skill_names", lambda platform=None: set()
+    )
+    return hub_env
+
+
+def _capture_enabled_only(monkeypatch, tools, toolsets) -> str:
+    """Run do_list --enabled-only with pinned session capabilities."""
+    import hermes_cli.skills_hub as cli_hub
+
+    monkeypatch.setattr(
+        cli_hub, "_resolve_session_capabilities", lambda: (tools, toolsets)
+    )
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None, width=200)
+    do_list(enabled_only=True, console=console)
+    return sink.getvalue()
+
+
+def test_enabled_only_requires_toolset_hidden_when_missing(conditional_env, monkeypatch):
+    output = _capture_enabled_only(monkeypatch, set(), set())
+    assert "needs-term-ts" not in output
+    assert "plain-skill" in output
+
+
+def test_enabled_only_requires_toolset_shown_when_available(conditional_env, monkeypatch):
+    output = _capture_enabled_only(monkeypatch, set(), {"terminal"})
+    assert "needs-term-ts" in output
+
+
+def test_enabled_only_fallback_toolset_hidden_when_primary_available(conditional_env, monkeypatch):
+    output = _capture_enabled_only(monkeypatch, set(), {"web"})
+    assert "fb-web-ts" not in output
+
+
+def test_enabled_only_fallback_toolset_shown_when_primary_missing(conditional_env, monkeypatch):
+    output = _capture_enabled_only(monkeypatch, set(), set())
+    assert "fb-web-ts" in output
+
+
+def test_enabled_only_requires_tool_hidden_when_missing(conditional_env, monkeypatch):
+    """Regression: requires_tools must be judged against the session's real
+    tool names — a None/empty tool set silently excluded every such skill."""
+    output = _capture_enabled_only(monkeypatch, set(), set())
+    assert "needs-ws-tool" not in output
+
+
+def test_enabled_only_requires_tool_shown_when_available(conditional_env, monkeypatch):
+    output = _capture_enabled_only(monkeypatch, {"web_search"}, set())
+    assert "needs-ws-tool" in output
+
+
+def test_enabled_only_fallback_tool_hidden_when_tool_available(conditional_env, monkeypatch):
+    """Regression: fallback_for_tools must hide the skill when the primary
+    tool IS in the session — a None/empty tool set never excluded these."""
+    output = _capture_enabled_only(monkeypatch, {"web_search"}, set())
+    assert "fb-ws-tool" not in output
+
+
+def test_enabled_only_fallback_tool_shown_when_tool_missing(conditional_env, monkeypatch):
+    output = _capture_enabled_only(monkeypatch, set(), set())
+    assert "fb-ws-tool" in output
+
+
+def test_enabled_only_shows_everything_when_resolution_fails(conditional_env, monkeypatch):
+    """(None, None) capabilities mean 'unknown' — never filter on them."""
+    output = _capture_enabled_only(monkeypatch, None, None)
+    for skill in _CONDITIONAL_SKILLS:
+        assert skill["name"] in output
+
+
+def test_enabled_only_keeps_platform_gated_skill_visible(hub_env, monkeypatch):
+    """`skills list` has no gateway channel, so platform gates fail open here.
+
+    _skill_should_show() only rejects on session_platforms when a platform is
+    actually supplied; the CLI never supplies one. Pinning this keeps the
+    listing honest about what it can and cannot know — the runtime prompt
+    builder applies the same predicate with the real channel and drops it.
+    """
+    import tools.skills_hub as hub
+    from tools import skills_sync
+    from tools import skills_tool
+    from agent import skill_utils
+
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([]))
+    monkeypatch.setattr(
+        skills_tool, "_skill_catalog",
+        lambda **_kwargs: [_conditional_skill("telegram-only", session_platforms=["telegram"])],
+    )
+    monkeypatch.setattr(skills_sync, "_read_manifest", dict)
+    monkeypatch.setattr(skill_utils, "get_disabled_skill_names", lambda platform=None: set())
+
+    output = _capture_enabled_only(monkeypatch, set(), set())
+    assert "telegram-only" in output
+
+    from agent.prompt_builder import _skill_should_show
+
+    conditions = {"session_platforms": ["telegram"]}
+    assert _skill_should_show(conditions, set(), set(), session_platform="discord") is False
+    assert _skill_should_show(conditions, set(), set()) is True
+
+
+@pytest.mark.parametrize(
+    "tools_set,toolsets_set",
+    [
+        ({"web_search"}, {"terminal"}),
+        (set(), {"web"}),
+    ],
+)
+def test_enabled_only_listing_matches_prompt_eligibility(
+    conditional_env, monkeypatch, tools_set, toolsets_set
+):
+    """For every conditional field, --enabled-only must agree with the
+    system-prompt builder's predicate given the same capabilities."""
+    from agent.prompt_builder import _skill_should_show
+
+    output = _capture_enabled_only(monkeypatch, tools_set, toolsets_set)
+
+    for skill in _CONDITIONAL_SKILLS:
+        expected = _skill_should_show(
+            skill.get("conditions") or {}, tools_set, toolsets_set
+        )
+        assert (skill["name"] in output) is expected, skill["name"]
+
+
+@pytest.mark.parametrize(
+    "tools_set,toolsets_set",
+    [
+        ({"web_search"}, {"terminal"}),
+        (set(), {"web"}),
+    ],
+)
+def test_enabled_only_listing_matches_prompt_index_end_to_end(
+    monkeypatch, tmp_path, hub_env, tools_set, toolsets_set
+):
+    """End-to-end parity: real SKILL.md files with conditional frontmatter are
+    listed under --enabled-only iff the <available_skills> prompt index built
+    for the same tools/toolsets includes them. Exercises both frontmatter
+    parsing paths (listing scan vs prompt scan), not just the shared
+    predicate."""
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_hub as hub
+    from tools import skills_sync
+    from tools import skills_tool
+    from agent import skill_utils
+    from agent.prompt_builder import (
+        build_skills_system_prompt,
+        clear_skills_system_prompt_cache,
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    skills_dir = tmp_path / "skills"
+    names = ["cond-req-ts", "cond-fb-ts", "cond-req-tool", "cond-fb-tool"]
+    for name, cond_line in zip(names, [
+        "requires_toolsets: [terminal]",
+        "fallback_for_toolsets: [web]",
+        "requires_tools: [web_search]",
+        "fallback_for_tools: [web_search]",
+    ]):
+        d = skills_dir / "test" / name
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {name}\n"
+            f"metadata:\n  hermes:\n    {cond_line}\n---\n"
+        )
+
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([]))
+    monkeypatch.setattr(skills_sync, "_read_manifest", dict)
+    monkeypatch.setattr(
+        skill_utils, "get_disabled_skill_names", lambda platform=None: set()
+    )
+    monkeypatch.setattr(
+        cli_hub, "_resolve_session_capabilities",
+        lambda: (tools_set, toolsets_set),
+    )
+
+    clear_skills_system_prompt_cache(clear_snapshot=True)
+    try:
+        prompt = build_skills_system_prompt(
+            available_tools=tools_set, available_toolsets=toolsets_set
+        )
+    finally:
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None, width=200)
+    do_list(enabled_only=True, console=console)
+    output = sink.getvalue()
+
+    for name in names:
+        assert (name in output) == (name in prompt), name
+
+
 # Cross-registry hijack regression tests
 #
 # An update must never change a skill's source registry. Skill names are not

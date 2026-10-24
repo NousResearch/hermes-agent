@@ -950,8 +950,8 @@ def _capture_gateway_argv(pid: int) -> list[str] | None:
         return None
     # Never respawn an unrelated process the scan happened to report.
     try:
-        from gateway.status import looks_like_gateway_command_line
-        if not looks_like_gateway_command_line(" ".join(argv)):
+        from gateway.status import _argv_to_command_line, looks_like_gateway_command_line
+        if not looks_like_gateway_command_line(_argv_to_command_line(argv)):
             return None
     except Exception:
         pass

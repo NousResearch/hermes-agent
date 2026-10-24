@@ -1070,6 +1070,15 @@ The value is the **first rung** of an escalating ladder, not a fixed interval: c
 
 `proactive_prune_tokens` enables a deterministic, no-LLM prune of old tool-result payloads that runs independently of `threshold`. On large-window models the `threshold` compaction (≈50% of the window) rarely fires, so bulky tool outputs (terminal dumps, file reads, web extracts) ride along in history and get re-sent on every subsequent turn. When re-sent history exceeds `proactive_prune_tokens` (default `0` = off; try `48000` to enable), the prune dedupes identical results and summarizes older oversized tool results, protecting the most recent `protect_last_n` messages and never calling the model. Tool-call arguments are execution records and are never rewritten by pruning; the summary model has a separate bounded serializer for copies included in its prompt. The pressure pass likewise demotes tool-result bodies only. During full semantic compaction the carried head/tail rows keep those tool-result demotions (so an oversized tail can still compress), while tool-call arguments stay byte-exact. The opt-in proactive prune still commits eligible tool-result-body demotions, so `proactive_prune_min_reclaim_tokens` (default `4096`) keeps those cache-breaking commits episodic; `proactive_prune_min_result_chars` (default `8000`, clamped to ≥ 200) sets the size below which a tool result is left untouched. This runs only under the built-in `compressor` engine; other context engines inherit a no-op.
 
+The proactive cost-only prune also retains successful native `read_file` results for
+`AGENTS.override.md`, `AGENTS.md`, `agents.md`, `CLAUDE.md`, `claude.md`, and `.cursorrules`.
+For an absolute path and the same requested range, a later complete read can supersede an
+earlier complete read; failed reads and repeat-read stubs cannot. Partial reads and relative
+paths are kept conservatively because their coverage or working directory may differ.
+Retained content still counts toward the reclaim gate. This does not pin files during full
+compression or microcompaction, automatically reload them, or preserve instruction hints
+embedded in unrelated tool results. Ordinary tool results remain eligible for pruning.
+
 :::tip Gateway hot-reload of compression and context length
 As of recent releases, editing `model.context_length` or any `compression.*` key in `config.yaml` on a running gateway takes effect on the next message — no gateway restart, no `/reset`, no session rotation required. The cached-agent signature includes these keys, so the gateway transparently rebuilds the agent when it sees a change. API keys and tool/skill config still require the usual reload paths.
 :::

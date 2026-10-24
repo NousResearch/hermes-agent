@@ -176,3 +176,109 @@ def test_relay_stream_path_shows_relay_the_full_conversation(monkeypatch):
     assert relay_saw[0]["messages"] == body["messages"]
     assert seen[0]["messages"] == []
     assert seen[0]["extra_body"]["messages"] == body["messages"]
+
+
+# --- host-scoped escape hatch ------------------------------------------------
+#
+# ``HERMES_CODEX_SDK_TRANSFORM=skip_hosts:<host>`` keeps the typed path for the named
+# gateway only, so the #93650 walk stays skipped everywhere else. These pin the
+# parsing, the exact-host matching, and that the untouched rails still behave.
+
+
+def _sdk_client(base_url: str):
+    """A real openai.OpenAI client (no transport needed: nothing is sent)."""
+    return openai.OpenAI(api_key="k", base_url=base_url)
+
+
+def test_skip_hosts_returns_kwargs_for_the_named_host(monkeypatch):
+    monkeypatch.setenv(ESCAPE_HATCH_ENV, "skip_hosts:gw.example.internal")
+    kwargs = _wire_body()
+    client = _sdk_client("https://gw.example.internal/v1")
+
+    assert bypass_chat_sdk_request_transform(kwargs, client) is kwargs
+
+
+def test_skip_hosts_leaves_other_hosts_on_the_bypass(monkeypatch):
+    """Naming one gateway must not disable the optimisation for every other provider."""
+    monkeypatch.setenv(ESCAPE_HATCH_ENV, "skip_hosts:gw.example.internal")
+    kwargs = _wire_body()
+    client = _sdk_client("https://api.other-vendor.example/v1")
+
+    moved = bypass_chat_sdk_request_transform(kwargs, client)
+
+    assert moved is not kwargs
+    assert moved["messages"] == [] and moved["extra_body"]["messages"] == kwargs["messages"]
+
+
+def test_skip_hosts_accepts_a_list_and_ignores_case_and_trailing_dot(monkeypatch):
+    monkeypatch.setenv(ESCAPE_HATCH_ENV, "skip_hosts:First.Example,second.example")
+    kwargs = _wire_body()
+
+    assert bypass_chat_sdk_request_transform(kwargs, _sdk_client("https://first.example/v1")) is kwargs
+    # Trailing dot on the configured host must not defeat the match.
+    monkeypatch.setenv(ESCAPE_HATCH_ENV, "skip_hosts:second.example.")
+    assert bypass_chat_sdk_request_transform(kwargs, _sdk_client("https://second.example/v1")) is kwargs
+
+
+def test_skip_hosts_does_not_expand_to_subdomains(monkeypatch):
+    """Exact host only: naming ``example.com`` must not silently cover ``api.example.com``."""
+    monkeypatch.setenv(ESCAPE_HATCH_ENV, "skip_hosts:example.com")
+    kwargs = _wire_body()
+    client = _sdk_client("https://api.example.com/v1")
+
+    moved = bypass_chat_sdk_request_transform(kwargs, client)
+
+    assert moved is not kwargs
+    assert moved["messages"] == []
+
+
+def test_skip_hosts_does_not_match_a_lookalike_host(monkeypatch):
+    """``evilexample.com`` / ``example.com.evil`` must not read as ``example.com``."""
+    monkeypatch.setenv(ESCAPE_HATCH_ENV, "skip_hosts:example.com")
+    kwargs = _wire_body()
+
+    for url in ("https://evilexample.com/v1", "https://example.com.evil/v1"):
+        moved = bypass_chat_sdk_request_transform(kwargs, _sdk_client(url))
+        assert moved is not kwargs, url
+
+
+def test_truthy_hatch_still_disables_everything(monkeypatch):
+    """The original global form keeps its meaning alongside ``skip_hosts:``."""
+    kwargs = _wire_body()
+    for value in ("1", "true", "yes", "on", " TRUE "):
+        monkeypatch.setenv(ESCAPE_HATCH_ENV, value)
+        assert bypass_chat_sdk_request_transform(kwargs, _sdk_client("https://any.example/v1")) is kwargs, value
+
+
+def test_unset_or_unparsable_hatch_keeps_the_bypass(monkeypatch):
+    monkeypatch.delenv(ESCAPE_HATCH_ENV, raising=False)
+    kwargs = _wire_body()
+    client = _sdk_client("https://any.example/v1")
+    assert bypass_chat_sdk_request_transform(kwargs, client) is not kwargs
+
+    for value in ("", "   ", "skip_hosts:", "not-a-directive"):
+        monkeypatch.setenv(ESCAPE_HATCH_ENV, value)
+        assert bypass_chat_sdk_request_transform(kwargs, client) is not kwargs, value
+
+
+def test_skip_hosts_reaches_the_auxiliary_path(monkeypatch):
+    """Aux tasks (compression, summaries) call the bypass with only a client — the
+    host hatch has to work there too, or a large conversation still pays the walk."""
+    from agent import auxiliary_client
+
+    seen = _capture_sdk_create(monkeypatch)
+    client = _sdk_client("https://gw.example.internal/v1")
+    body = {"model": "m", "messages": [{"role": "user", "content": "x" * 4096}], "max_tokens": 8}
+
+    # Default: no hatch → the bulk conversation rides in extra_body (typed walk skipped).
+    auxiliary_client._relay_sync_completion(client, dict(body))
+    assert seen[-1]["messages"] == []
+    assert seen[-1]["extra_body"]["messages"] == body["messages"]
+
+    # Named host → typed path, so a strict deserializer downstream sees only the
+    # shape it accepts.
+    monkeypatch.setenv(ESCAPE_HATCH_ENV, "skip_hosts:gw.example.internal")
+    auxiliary_client._relay_sync_completion(client, dict(body))
+    assert seen[-1]["messages"] == body["messages"]
+    assert "messages" not in (seen[-1].get("extra_body") or {})
+

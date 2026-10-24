@@ -2352,12 +2352,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             request.query.get("include_unconfigured"), default=True)
         try:
             from hermes_cli.inventory import build_model_options_payload, load_picker_context
-
-            def _build_payload() -> dict[str, Any]:
-                return build_model_options_payload(
-                    load_picker_context(), include_unconfigured=include_unconfigured, refresh=refresh)
-            # Enrichment can fetch pricing/provider catalogs: keep it off the event loop.
-            payload = await asyncio.to_thread(_build_payload)
+            # Stay on this request. A worker thread does not inherit the profile
+            # home, so a created profile reports the default login instead of its own.
+            payload = build_model_options_payload(
+                load_picker_context(), include_unconfigured=include_unconfigured, refresh=refresh)
             return web.json_response(payload)
         except Exception:
             logger.exception("[%s] GET /api/model/options failed", self.name)

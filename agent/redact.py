@@ -471,7 +471,10 @@ _PYTHON_REPR_ENV_SUFFIXES = (
 # Casefolded credential suffixes for mixed/camel-case key names
 # (``UserPassword``, ``sessionToken``, ``clientApiKey``). Suffix-only so
 # ``token_count`` / ``password_policy`` metadata keys never match. Widened per
-# OpenHands/software-agent-sdk#4508.
+# OpenHands/software-agent-sdk#4508. Credential-qualified ``key`` words
+# (``secret_key``, ``privateKey``, ``hmac_key``) follow the same rule; bare
+# ``key`` stays out so ``sort_key`` / ``cache_key`` / ``idempotency_key``
+# remain readable (#143974).
 _PYTHON_REPR_CREDENTIAL_SUFFIXES = (
     "apikey",
     "api_key",
@@ -481,6 +484,20 @@ _PYTHON_REPR_CREDENTIAL_SUFFIXES = (
     "passwd",
     "credential",
     "credentials",
+    "secretkey",
+    "secret_key",
+    "secretaccesskey",
+    "secret_access_key",
+    "privatekey",
+    "private_key",
+    "signingkey",
+    "signing_key",
+    "encryptionkey",
+    "encryption_key",
+    "masterkey",
+    "master_key",
+    "hmackey",
+    "hmac_key",
 )
 _PYTHON_REPR_FIELD_RE = re.compile(
     r"'(?P<key>[A-Za-z_][A-Za-z0-9_]*)'(?P<sep>\s*:\s*)"

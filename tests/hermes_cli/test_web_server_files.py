@@ -154,6 +154,26 @@ def test_download_authenticates_via_query_token(forced_files_client):
     ).status_code == 401
 
 
+def test_managed_file_reads_translate_docker_container_paths(local_files_client, monkeypatch, tmp_path):
+    """Regression for #137381: remote MEDIA paths name the Docker path, not its host mount."""
+    client, _home = local_files_client
+    host_mount = tmp_path / "docker-workspace"
+    host_mount.mkdir()
+    artifact = host_mount / "report.mp4"
+    artifact.write_bytes(b"container artifact")
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", json.dumps([f"{host_mount}:/workspace"]))
+
+    container_path = "/workspace/report.mp4"
+    download = client.get("/api/files/download", params={"path": container_path})
+    stream = client.get("/api/files/stream", params={"path": container_path})
+    read = client.get("/api/files/read", params={"path": container_path})
+
+    assert download.status_code == stream.status_code == read.status_code == 200
+    assert download.content == stream.content == artifact.read_bytes()
+    assert base64.b64decode(read.json()["data_url"].split(",", 1)[1]) == artifact.read_bytes()
+
+
 def test_download_resolves_paths_in_the_originating_profile_session(local_files_client, monkeypatch):
     from pathlib import Path
     from hermes_state import SessionDB

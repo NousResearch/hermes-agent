@@ -103,6 +103,7 @@ def start_cold_refine(runner, source, session_key, session_id, history, focus):
     this one sends it to the same chat and thread directly. Returns a future that resolves once the review
     is spawned (or raises its start error); the parent's clients are released when the review's request ends,
     on the thread that built it."""
+    from agent.async_utils import safe_schedule_threadsafe
     from agent.memory_provider import spawn_context_thread
     from gateway.run import _interim_metadata, _non_conversational_metadata
     loop = asyncio.get_running_loop()
@@ -113,7 +114,9 @@ def start_cold_refine(runner, source, session_key, session_id, history, focus):
 
     def deliver(message):
         if adapter is not None:
-            asyncio.run_coroutine_threadsafe(adapter.send(source.chat_id, str(message), metadata=metadata), loop)
+            safe_schedule_threadsafe(adapter.send(source.chat_id, str(message), metadata=metadata), loop,
+                                     logger=logger, log_message="cold /refine summary delivery scheduling failed",
+                                     log_level=logging.WARNING)
 
     def body():
         try:

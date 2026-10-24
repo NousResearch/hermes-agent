@@ -543,6 +543,79 @@ describe('preview requests act for the session that asked (#73890)', () => {
   })
 })
 
+describe('a focused tile is the foreground conversation (#133421)', () => {
+  beforeEach(() => {
+    hasLivePreviewSurface.mockReturnValue(true)
+    closeRightRail()
+    setActiveSessionId('rt-a')
+    setSelectedStoredSessionId('stored-a')
+    $sessionTiles.set([{ dir: 'right', runtimeId: 'rt-b', storedSessionId: 'stored-b' } as never])
+  })
+
+  afterEach(() => {
+    noteActiveTreeGroup(null)
+    $layoutTree.set(null)
+    $sessionTiles.set([])
+    setActiveSessionId(null)
+    setSelectedStoredSessionId(null)
+    closeRightRail()
+    hasLivePreviewSurface.mockReturnValue(false)
+  })
+
+  // Focus sits on the tile while the primary chat keeps the pane's selection —
+  // the exact split a user gets by clicking into a hosted tile.
+  const focusTileB = () => {
+    $layoutTree.set(group(['session-tile:stored-b'], { active: 'session-tile:stored-b', id: 'grp-b' }))
+    noteActiveTreeGroup('grp-b')
+  }
+
+  it("lets the focused tile's action drive its own preview page", async () => {
+    openPreview({ kind: 'url', label: 'b', source: 'https://b.example', url: 'https://b.example' }, 'stored-b')
+    const back = vi.fn()
+    const unbind = registerPreviewNav($previewTabs.get()[0]!.id, { back, forward: () => {}, reload: () => {} })
+
+    focusTileB()
+
+    try {
+      // The stream passes the PRIMARY's id, exactly as useMessageStream does —
+      // the focused tile must still pass the foreground gate (#133421).
+      const { respond } = deliver('preview.act', { action: 'back', session_id: 'rt-b' }, 'rt-a')
+
+      await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
+      expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ acted: 'back', success: true })
+      expect(back).toHaveBeenCalledTimes(1)
+    } finally {
+      unbind()
+    }
+  })
+
+  it('still refuses an unfocused hosted tile — that turn is background', async () => {
+    // The primary keeps focus; B is only hosted. The refusal must reach the
+    // tool (not stall it) exactly as before.
+    const { respond } = deliver('preview.act', { action: 'back', session_id: 'rt-b' }, 'rt-a')
+
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
+    expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({
+      error: 'The in-app browser only takes actions in the session the user is looking at.',
+      success: false
+    })
+  })
+
+  it('runs a focused tile tour instead of refusing it', async () => {
+    focusTileB()
+    vi.mocked(runTour).mockClear()
+
+    const { respond } = deliver('tour', { action: 'discover', session_id: 'rt-b', surface: 'preview' }, 'rt-a')
+
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
+    expect(runTour).toHaveBeenCalledWith(expect.anything(), 'preview', {
+      profile: 'default',
+      runtimeId: 'rt-b',
+      sessionId: 'stored-b'
+    })
+  })
+})
+
 describe('tour request routing', () => {
   afterEach(() => {
     $toursEnabled.set(true)

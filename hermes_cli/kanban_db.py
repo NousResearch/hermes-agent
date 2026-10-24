@@ -233,7 +233,7 @@ def notify_task_updated(
 # DispatchResult counters whose non-zero value means the tick did something.
 _TICK_ACTIVITY_FIELDS = (
     "spawned", "reclaimed", "promoted", "reconciled_orphans", "reaped_terminal_workers", "crashed", "stale",
-    "timed_out", "auto_blocked", "rate_limited", "auto_assigned_default",
+    "timed_out", "auto_blocked", "rate_limited", "receipt_unknown", "auto_assigned_default",
     "respawn_guarded", "skipped_per_profile_capped", "skipped_unassigned",
     "skipped_nonspawnable",
 )
@@ -312,6 +312,13 @@ KANBAN_RATE_LIMIT_EXIT_CODE = 75
 # (404), TLS chain broken — a retry cannot fix it, so the dispatcher parks the card blocked on
 # the FIRST occurrence instead of spending ``failure_limit`` identical spawns. 78 == BSD EX_CONFIG.
 KANBAN_TERMINAL_PROVIDER_EXIT_CODE = 78
+
+# Worker exit "receipt lost": the submitter's ``prompt.receipt`` went ``unknown`` (an owner
+# restart fences the admission) AND the board holds no ``worker_result`` for that attempt. The
+# card itself never failed — only the submitter lost its witness — so the dead-worker sweep
+# requeues it WITHOUT counting a failure, like the quota wall. 79: first free code past the
+# BSD sysexits block already in use here (75 EX_TEMPFAIL, 78 EX_CONFIG).
+KANBAN_RECEIPT_UNKNOWN_EXIT_CODE = 79
 
 
 def _resolve_crash_grace_seconds() -> int:
@@ -926,7 +933,8 @@ CREATE TABLE IF NOT EXISTS task_runs (
     ended_at            INTEGER,
     outcome             TEXT,
     -- outcome: completed | blocked | crashed | timed_out | spawn_failed |
-    --          gave_up | reclaimed | (null while still running)
+    --          gave_up | reclaimed | rate_limited | receipt_unknown |
+    --          (null while still running)
     summary             TEXT,
     metadata            TEXT,
     error               TEXT
@@ -2022,7 +2030,7 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
         "WHERE task_id = ? AND kind IN ("
         "'blocked', 'block_loop_detected', 'dependency_wait', 'gave_up', "
         "'unblocked', 'changes_requested', 'review_reopened', 'status', 'reclaimed', "
-        "'stale', 'timed_out', 'crashed', 'spawn_failed', 'rate_limited'"
+        "'stale', 'timed_out', 'crashed', 'spawn_failed', 'rate_limited', 'receipt_unknown'"
         ") ORDER BY id DESC LIMIT 1", (task_id,),
     ).fetchone()
     payload = _json_dict(_row_get(row, "payload"))

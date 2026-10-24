@@ -23,7 +23,8 @@ from agent.model_metadata import CHARS_PER_TOKEN
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS, SKILL_SUPPORT_DIRS,
-    TIER_LOCAL, extract_skill_conditions, extract_skill_description, get_disabled_skill_names, get_skill_search_roots,
+    TIER_LOCAL, clip_skill_description, extract_skill_conditions, extract_skill_description,
+    get_disabled_skill_names, get_skill_search_roots,
     iter_skill_index_files, parse_frontmatter, skill_matches_apps, skill_matches_environment,
     skill_matches_platform, skill_matches_platform_list,
 )
@@ -1089,8 +1090,8 @@ _SKILLS_PROMPT_CACHE_MAX = 32
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
 # v2 added org provenance fields (org_id/org_author); v4 adds ``rel`` (SKILL.md path relative to its root) for
-# duplicate-name resolution. Older snapshots are rebuilt.
-_SKILLS_SNAPSHOT_VERSION = 4
+# duplicate-name resolution; v5 stores descriptions clipped at a word boundary. Older snapshots are rebuilt.
+_SKILLS_SNAPSHOT_VERSION = 5
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1222,7 +1223,7 @@ def _plugin_skill_prompt_rows(
             if not _skill_should_show(extract_skill_conditions(frontmatter), available_tools,
                                       available_toolsets, session_platform):
                 continue
-            desc = str(meta.get("description") or "").strip() or extract_skill_description(frontmatter)
+            desc = clip_skill_description(str(meta.get("description") or "").strip()) or extract_skill_description(frontmatter)
             rows.append((name, desc))
     except Exception:
         logger.debug("Plugin skill prompt rows unavailable", exc_info=True)
@@ -1331,12 +1332,15 @@ def _render_skills_index(
         if category in demoted:
             index_lines.append(f"  {category} [names only]: {', '.join(sorted({n for n, _ in entries}))}")
             continue
-        index_lines.append(f"  {category}:")
-        seen = set()
+        rows: dict[str, str] = {}
         for name, desc in sorted(entries, key=lambda x: x[0]):  # stable: first entry per name wins
-            if name not in seen:
-                seen.add(name)
-                index_lines.append(f"    - {name}: {desc}" if desc else f"    - {name}")
+            rows.setdefault(name, desc)
+        # A one-skill category is a single top-level row: its header would only repeat what the row
+        # says (a skill at the top of the tree is its own category, so the name printed twice).
+        indent = "  " if len(rows) == 1 else "    "
+        if len(rows) > 1:
+            index_lines.append(f"  {category}:")
+        index_lines.extend(f"{indent}- {name}: {desc}" if desc else f"{indent}- {name}" for name, desc in rows.items())
     from agent.oneshot_footprint import ONESHOT_SKILLS_LOAD_GUIDANCE, is_single_query_session
     if is_single_query_session():
         return (

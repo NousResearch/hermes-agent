@@ -265,16 +265,24 @@ class TestCreateSkill:
         assert empty_result["success"] is True
         assert (empty / "SKILL.md").exists()
 
-    def test_edit_long_desc_still_allowed_with_preview(self, tmp_path):
-        """Edit/patch paths stay permissive so existing over-limit skills
-        remain maintainable — they warn via system_prompt_preview instead."""
+    def test_written_long_desc_rejected_but_legacy_one_stays_editable(self, tmp_path):
+        """A description an edit/patch WRITES must fit the index width; a legacy over-limit
+        description the call leaves alone never blocks a body change (preview instead)."""
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
-            result = _edit_skill("my-skill", LONG_DESC_CONTENT)
-        assert result["success"] is True
-        assert "system_prompt_preview" in result
+            edit = _edit_skill("my-skill", LONG_DESC_CONTENT)
+            patched = _patch_skill("my-skill", "A test skill for unit testing.",
+                                   "Use when deploying multi-region clusters with custom CNI plugins.")
+            legacy = tmp_path / "legacy"
+            legacy.mkdir()
+            (legacy / "SKILL.md").write_text(LONG_DESC_CONTENT.replace("long-desc", "legacy"))
+            body = _edit_skill("legacy", LONG_DESC_CONTENT.replace("long-desc", "legacy") + "\nMore.\n")
+        assert edit["success"] is False and "60" in edit["error"]
+        assert patched["success"] is False and "60" in patched["error"]
+        assert "A test skill for unit testing." in (tmp_path / "my-skill" / "SKILL.md").read_text()
+        assert body["success"] is True
         fm, _ = parse_frontmatter(LONG_DESC_CONTENT)
-        assert extract_skill_description(fm) in result["system_prompt_preview"]
+        assert extract_skill_description(fm) in body["system_prompt_preview"]
 
 
 class TestEditSkill:

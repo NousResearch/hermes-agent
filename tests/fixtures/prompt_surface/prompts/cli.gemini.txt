@@ -49,13 +49,13 @@ If a skill has issues, fix it with skill_manage(action='patch').
 After difficult/iterative tasks, offer to save as a skill. If a skill you loaded was missing steps, had wrong commands, or needed pitfalls you discovered, update it before finishing.
 
 <available_skills>
-  autonomous-ai-agents: Skills for spawning and orchestrating autonomous AI coding agents and multi-agent workflows — running independent agent processes, delegating tasks, and coordinating parallel workstreams.
+  autonomous-ai-agents:
     - claude-code: Delegate coding to Claude Code CLI (features, PRs).
     - codex: Delegate coding to OpenAI Codex CLI (features, PRs).
     - computer-use: Drive the desktop background-first; escalate on signal.
     - hermes-agent: Use, configure, theme, extend, and orchestrate Hermes Agent.
     - opencode: Delegate coding to OpenCode CLI (features, PR review).
-  creative: Creative content generation — ASCII art, hand-drawn style diagrams, and visual design tools.
+  creative:
     - architecture-diagram: Dark-themed SVG architecture/cloud/infra diagrams as HTML.
     - ascii-video: ASCII video: convert video/audio to colored ASCII MP4/GIF.
     - baoyu-infographic: Infographics: 21 layouts x 21 styles (信息图, 可视化).
@@ -66,16 +66,15 @@ After difficult/iterative tasks, offer to save as a skill. If a skill you loaded
     - p5js: p5.js sketches: gen art, shaders, interactive, 3D.
     - popular-web-designs: 54 real design systems (Stripe, Linear, Vercel) as HTML/CSS.
     - songwriting-and-ai-music: Songwriting craft and Suno AI music prompts.
-  email: Skills for sending, receiving, searching, and managing email from the terminal.
+  email:
     - email-inbox-triage: Triage an inbox: prioritize threads, draft replies safely.
     - himalaya: Himalaya CLI: IMAP/SMTP email from terminal.
-  media: Skills for working with media content — YouTube transcripts, GIF search, music generation, and audio visualization.
+  media:
     - gif-search: Search/download GIFs from Tenor via curl + jq.
     - songsee: Audio spectrograms/features (mel, chroma, MFCC) via CLI.
     - youtube-content: YouTube transcripts to summaries, threads, blogs.
-  note-taking: Note taking skills, to save information, assist with research, and collab on multi-session planning and information sharing.
-    - obsidian: Read, search, create, and edit notes in the Obsidian vault.
-  productivity: Skills for document creation, presentations, spreadsheets, and other productivity workflows.
+  - obsidian: Read, search, create, and edit notes in the Obsidian vault.
+  productivity:
     - airtable: Airtable REST API via curl. Records CRUD, filters, upserts.
     - box: Box manages cloud files, sharing, search, and metadata.
     - document-to-action-items: Extract cited obligations, deadlines, tasks from documents.
@@ -90,13 +89,12 @@ After difficult/iterative tasks, offer to save as a skill. If a skill you loaded
     - teams-meeting-pipeline: Teams meeting summaries, job replay, Graph subscriptions.
     - weekly-review-planning: Weekly reset: commitments, stalled work, next-week plan.
     - xlsx: Create, read, edit Excel .xlsx workbooks and CSVs.
-  research: Skills for academic research, paper discovery, literature review, domain reconnaissance, market data, content monitoring, and scientific knowledge retrieval.
+  research:
     - arxiv: Search arXiv papers by keyword, author, category, or ID.
     - competitor-news-monitor: Watch named companies for material news; cited digests.
     - grounded-citations: Ground answers and documents in cited, verifiable sources.
     - llm-wiki: Karpathy's LLM Wiki: build/query interlinked markdown KB.
-  social-media: Skills for interacting with social platforms and social-media workflows — posting, reading, monitoring, and account operations.
-    - xurl: X/Twitter via xurl CLI: raw post search, posting, DM, media.
+  - xurl: X/Twitter via xurl CLI: raw post search, posting, DM, media.
   software-development:
     - codebase-inspection: Inspect codebases w/ pygount: LOC, languages, ratios.
     - dogfood: Exploratory QA of web apps: find bugs, evidence, reports.
@@ -110,8 +108,7 @@ After difficult/iterative tasks, offer to save as a skill. If a skill you loaded
     - spike: Throwaway experiments to validate an idea before build.
     - systematic-debugging: 4-phase root cause debugging: understand bugs before fixing.
     - test-driven-development: TDD: enforce RED-GREEN-REFACTOR, tests before code.
-  web: Skills for reaching web content when direct access fails — blocked, paywalled, rate-limited, or bot-walled pages.
-    - blocked-page-recovery: Use when a fetch fails: 403/429, paywall, WAF, bot wall.
+  - blocked-page-recovery: Use when a fetch fails: 403/429, paywall, WAF, bot wall.
 </available_skills>
 
 Only proceed without loading a skill if genuinely none are relevant to the task.

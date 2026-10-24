@@ -89,9 +89,9 @@ metadata:
 ### `description` rules (HARDLINE — the validator's 1024 is NOT the standard)
 
 - **≤ 60 characters.** One sentence. Ends with a period.
-- State the capability, not the implementation, and don't repeat the skill name.
+- State the capability, not the implementation, and don't repeat the skill name or its category name (the index prints the category above the skill).
 - No marketing words ("powerful", "comprehensive", "seamless", "advanced").
-- The system prompt skill index truncates at 57 chars + "..." — the trigger/capability must be self-contained in that window.
+- 60 is the width the system prompt skill index shows; `skill_manage` rejects a new or changed description over it, and the index clips a longer legacy one at a word boundary.
 - If the description contains a `:`, wrap it in double quotes or YAML parses it as a mapping and the docs generator crashes. Quotes don't count toward the 60.
 
 Good: `Track named companies for material news with cited digests.`

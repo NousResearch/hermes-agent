@@ -175,6 +175,12 @@ class PlatformEntry:
     # Env names whose presence drives that enable, cited by the explicit-disable WARNING and used by
     # ``hermes_cli.profile_channels`` as the platform's credential set; () = none declared.
     env_enable_credentials: tuple = ()
+    # --- tools ---
+    # Toolsets kept out of tool search (sent to the model directly) in THIS platform's sessions: its
+    # own surface, e.g. the tools that drive the device the user is talking through. Other sessions
+    # keep deferring them, unlike ``toolsets.TOOLSET_SESSION_PLATFORMS``, which removes a toolset
+    # from every other platform (``tools/tool_search.py::session_direct_toolsets``).
+    direct_toolsets: tuple = ()
 
 
 def core_ships_platform(name: str) -> bool:

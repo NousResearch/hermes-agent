@@ -85,6 +85,28 @@ interface ModeOptionCopy {
 }
 
 export interface Translations extends NoticeTranslations {
+  quickCapture: {
+    append: string
+    allowResend: string
+    handoffUnconfirmed: string
+    handoffRejected: string
+
+    save: string
+    saved: string
+    saving: string
+    browse: string
+    back: string
+    empty: string
+    open: string
+    placeholder: string
+    send: string
+    current: string
+    newSession: string
+    offline: string
+    loadFailed: string
+    saveFailed: string
+    local: string
+  },
   /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
   sharedMetrics: SharedMetricsTranslations
   appTour: AppTourTranslations

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 
+import { activeGatewayConnectionId, activeGatewayProfileKey } from '@/store/gateway'
 import {
   initQuickEntryBridge,
   QUICK_TARGET_CURRENT,
@@ -97,7 +98,7 @@ export function useQuickEntryBridge({ submitText, submitTextToNewSession }: Quic
       return
     }
 
-    setQuickEntrySubmitHandler(async ({ correlationId, target, text }) => {
+    setQuickEntrySubmitHandler(async ({ correlationId, target, text, thoughtOwner }) => {
       let acknowledged = false
 
       const ack = (result: QuickEntrySubmitResult) => {
@@ -107,6 +108,17 @@ export function useQuickEntryBridge({ submitText, submitTextToNewSession }: Quic
 
         acknowledged = true
         window.hermesDesktop?.quickEntry.ackSubmit(correlationId, result)
+      }
+
+      const stillOwned = () =>
+        !thoughtOwner ||
+        (activeGatewayConnectionId() === thoughtOwner.connectionId &&
+          (activeGatewayProfileKey() || 'default') === thoughtOwner.profile)
+
+      if (!stillOwned()) {
+        ack({ code: 'owner-changed', message: 'The active profile changed.', ok: false, retryable: false })
+
+        return
       }
 
       if (target === QUICK_TARGET_NEW) {
@@ -137,6 +149,13 @@ export function useQuickEntryBridge({ submitText, submitTextToNewSession }: Quic
 
           try {
             const runtimeId = await delegate.resumeTile(target)
+
+            if (!stillOwned()) {
+              ack({ code: 'owner-changed', message: 'The active profile changed.', ok: false, retryable: false })
+
+              return
+            }
+
             promptDispatched = true
             const accepted = await delegate.submitToSession(runtimeId, text)
 

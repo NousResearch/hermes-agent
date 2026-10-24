@@ -150,6 +150,22 @@ describe('reconcileUnifiedDesktopHalves', () => {
     expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
   })
 
+  it('compares bytes when the source mtime is the epoch, so an update is not skipped as 0 >= 0', async () => {
+    const home = makeHome()
+    const appRoot = path.join(home, 'desktop-plugins')
+    const source = path.join(home, 'plugins', 'media', 'desktop', 'plugin.js')
+    const epoch = new Date(0)
+    write(source, 'v1')
+    fs.utimesSync(source, epoch, epoch)
+    await reconcileUnifiedDesktopHalves(home, appRoot)
+    expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
+
+    write(source, 'v2')
+    fs.utimesSync(source, epoch, epoch)
+    expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([path.join(appRoot, 'media')])
+    expect(fs.readFileSync(path.join(appRoot, 'media', 'plugin.js'), 'utf8')).toBe('v2')
+  })
+
   it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
     'skips a package the app cannot read and still materializes its siblings',
     async () => {

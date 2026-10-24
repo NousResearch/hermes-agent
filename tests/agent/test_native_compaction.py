@@ -13,10 +13,14 @@ import pytest
 from agent.native_compaction import (
     DEFAULT_COMPACT_THRESHOLD,
     is_direct_openai_route,
+    is_direct_xai_route,
     is_native_compaction_model,
     is_native_compaction_rejection,
+    is_xai_native_compaction_model,
     native_compaction_context_management,
+    native_compaction_eligible,
     resolve_compact_threshold,
+    resolve_native_compaction_capabilities,
 )
 
 
@@ -163,6 +167,67 @@ class TestRequestGate:
             _agent(threshold=None, compressor=compressor), is_codex_backend=False
         )
         assert payload == [{"type": "compaction", "compact_threshold": 756_808}]
+
+
+def _xai_agent(**overrides):
+    fields = dict(
+        model="grok-4.7",
+        provider="xai",
+        base_url="https://api.x.ai/v1",
+        codex_responses_native_compaction=True,
+        compression_enabled=True,
+        compression_checkpoint_required=False,
+        api_mode="codex_responses",
+    )
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+class TestXaiNativeCompaction:
+    """grok-4.7 on direct api.x.ai compacts via POST /v1/responses/compact.
+
+    ``context_management`` stays unset (xAI returns 400). OAuth, grok-4.6, proxies,
+    and the US regional host are not eligible.
+    """
+
+    def test_model_and_route_gates(self):
+        assert is_xai_native_compaction_model("grok-4.7")
+        assert is_xai_native_compaction_model("x-ai/grok-4.7-latest")
+        assert is_xai_native_compaction_model("grok_4.7")
+        assert not is_xai_native_compaction_model("grok-4.6")
+        assert not is_xai_native_compaction_model("grok-4")
+        assert is_direct_xai_route("https://api.x.ai/v1", provider="xai")
+        assert is_direct_xai_route("", provider="xai")
+        assert not is_direct_xai_route("https://api.x.ai/v1", provider="xai-oauth")
+        assert not is_direct_xai_route("https://us.api.x.ai/v1", provider="xai")
+        assert not is_direct_xai_route("https://grok-relay.example/v1", provider="xai")
+
+    def test_capability_and_eligibility(self):
+        agent = _xai_agent()
+        assert resolve_native_compaction_capabilities(
+            model="grok-4.7", base_url="https://api.x.ai/v1", provider="xai",
+        ) == {"native_compaction": True}
+        assert resolve_native_compaction_capabilities(
+            model="grok-4.6", base_url="https://api.x.ai/v1", provider="xai",
+        ) == {"native_compaction": False}
+        assert resolve_native_compaction_capabilities(
+            model="grok-4.7", base_url="https://api.x.ai/v1", provider="xai-oauth",
+        ) == {"native_compaction": False}
+        assert resolve_native_compaction_capabilities(
+            model="grok-4.7", base_url="https://us.api.x.ai/v1", provider="xai",
+        ) == {"native_compaction": False}
+        assert native_compaction_eligible(agent, is_codex_backend=False, is_xai_responses=True) is True
+        assert native_compaction_context_management(
+            agent, is_codex_backend=False, is_xai_responses=True,
+        ) is None
+
+    def test_flag_off_is_ineligible(self):
+        agent = _xai_agent(codex_responses_native_compaction=False)
+        assert native_compaction_eligible(agent, is_codex_backend=False, is_xai_responses=True) is False
+
+    def test_resolved_false_capability_blocks_replay(self):
+        agent = _xai_agent(runtime_capabilities={"native_compaction": False})
+        assert native_compaction_eligible(agent, is_codex_backend=False, is_xai_responses=True) is False
 
 
 class TestThresholdClamp:

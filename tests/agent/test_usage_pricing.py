@@ -40,7 +40,11 @@ def test_astra_whole_request_price_tier_includes_cache_writes():
 
 _MODELS_DEV_REGISTRY = {
     "openai": {"models": {"gpt-5-nano": {"cost": {"input": 0.05, "output": 0.4, "cache_read": 0.005}}}},
-    "xai": {"models": {"grok-4.3": {"cost": {"input": 1.25, "output": 2.5, "cache_read": 0.2}}}},
+    "xai": {"models": {
+        "grok-4.3": {"cost": {"input": 1.25, "output": 2.5, "cache_read": 0.2}},
+        # Published grok-4.7 card (USD / 1M, prompt under 200k). Missing ticks fall through to it.
+        "grok-4.7": {"cost": {"input": 2, "output": 6, "cache_read": 0.5}},
+    }},
 }
 _USAGE = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=1_000_000)
 
@@ -70,6 +74,38 @@ def test_direct_first_party_route_prices_models_missing_from_snapshot(models_dev
     cost = estimate_usage_cost(model, _USAGE, provider=provider, base_url=base_url)
 
     assert (cost.status, cost.amount_usd) == expected
+
+
+def _xai_usage(**extra):
+    from openai.types.responses import ResponseUsage
+
+    usage = ResponseUsage.model_validate({
+        "input_tokens": 1_000_000, "output_tokens": 1_000_000, "total_tokens": 2_000_000,
+        "input_tokens_details": {"cached_tokens": 0}, "output_tokens_details": {"reasoning_tokens": 0}, **extra,
+    })
+    return normalize_usage(usage, provider="xai", api_mode="codex_responses")
+
+
+def test_xai_direct_route_reports_billed_ticks(models_dev_registry):
+    """api.x.ai's usage.cost_in_usd_ticks is the invoice (1 USD = 10^10 ticks)."""
+    for base_url in ("https://api.x.ai/v1", "https://us.api.x.ai/v1", ""):
+        cost = estimate_usage_cost("grok-4.7", _xai_usage(cost_in_usd_ticks=37756000), provider="xai", base_url=base_url)
+        assert (cost.status, cost.source, cost.amount_usd) == ("actual", "provider_cost_api", Decimal("0.0037756"))
+        assert not cost.label.startswith("~")
+    for extra in ({}, {"cost_in_usd_ticks": True}, {"cost_in_usd_ticks": -1}):
+        cost = estimate_usage_cost("grok-4.7", _xai_usage(**extra), provider="xai", base_url="https://api.x.ai/v1")
+        assert cost.status == "estimated"
+
+
+@pytest.mark.parametrize(("provider", "base_url"), [
+    ("xai", "https://grok-relay.example.com/v1"),
+    ("xai", "http://api.x.ai/v1"),
+    ("xai-oauth", "https://api.x.ai/v1"),
+    ("custom", "https://api.x.ai/v1"),
+])
+def test_xai_ticks_untrusted_off_direct_origin(models_dev_registry, provider, base_url):
+    cost = estimate_usage_cost("grok-4.7", _xai_usage(cost_in_usd_ticks=37756000), provider=provider, base_url=base_url)
+    assert (cost.status, cost.amount_usd) == ("unknown", None)
 
 
 def test_normalize_usage_reads_deepseek_native_cache_hit_tokens():

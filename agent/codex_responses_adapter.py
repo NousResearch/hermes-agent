@@ -469,10 +469,12 @@ def _replay_reasoning_items(
     current_issuer_model: Optional[str] = None, native_compaction_eligible: bool,
 ) -> list[dict[str, Any]]:
     """Replay persisted encrypted reasoning/compaction items for one assistant turn. Skips duplicate
-    ids, ``compaction`` checkpoints unless THIS request carries ``context_management`` (else a persisted
-    checkpoint erases pre-checkpoint history on a model that cannot decrypt it), and items stamped by
-    another issuer or model (HTTP 400). Items without a model stamp (legacy or unstamped) replay on a
-    matching issuer. ``id`` (store=False lookups 404) and the Hermes provenance fields are stripped."""
+    ids, ``compaction`` checkpoints unless THIS request is native-compaction eligible (OpenAI
+    ``context_management``, or direct xAI grok-4.7's ``/v1/responses/compact`` checkpoint — else a
+    persisted checkpoint erases pre-checkpoint history on a model that cannot decrypt it), and items
+    stamped by another issuer or model (HTTP 400). Items without a model stamp (legacy or unstamped)
+    replay on a matching issuer. ``id`` (store=False lookups 404) and the Hermes provenance fields
+    are stripped."""
     global _CROSS_ISSUER_WARN_EMITTED
     replayed: list[dict[str, Any]] = []
     for ri in _as_list(msg.get("codex_reasoning_items")):
@@ -621,10 +623,12 @@ def _chat_messages_to_responses_input(
     ``is_github_responses``: drops ``id`` from replayed message items (Copilot 401s on stale ids).
     ``current_issuer_kind`` / ``current_issuer_model``: provenance guard; items stamped by another issuer or
     model drop. Legacy items carrying only an endpoint stamp replay on a matching issuer.
-    ``native_compaction_eligible``: THIS request carries ``context_management``; gates both replaying ``compaction``
-    checkpoints and ``prune_pre_checkpoint_items``. Checkpoints persist across model swaps / compression flips / resume,
-    so without the gate one checkpoint would erase pre-checkpoint history on a model that cannot decrypt it (lossless:
-    local history is never truncated).
+    ``native_compaction_eligible``: THIS request may replay a native compaction checkpoint. OpenAI sets
+    it when the request carries ``context_management``. Direct xAI grok-4.7 sets it for
+    ``POST /v1/responses/compact`` and never sends ``context_management`` (that field is HTTP 400 there).
+    It gates both replaying ``compaction`` checkpoints and ``prune_pre_checkpoint_items``. Checkpoints
+    persist across model swaps / compression flips / resume, so without the gate one checkpoint would
+    erase pre-checkpoint history on a model that cannot decrypt it (lossless: local history is never truncated).
 
     Earlier (PR #26644, May 2026) we believed xAI's OAuth/SuperGrok ``/v1/responses`` surface rejected
     replayed ``encrypted_content`` reasoning items minted by prior turns, and we stripped them. That
@@ -637,18 +641,19 @@ def _chat_messages_to_responses_input(
     invalidate it — and rejects a stale id with HTTP 401 "input item ID does not belong to this connection"
     even for short ids (see #32716). ``phase``/ ``status``/``content`` are still replayed; only ``id`` is
     unsafe to reuse across a Copilot connection.
-    ``native_compaction_eligible`` mirrors, for THIS request, the decision made by
-    ``native_compaction.native_compaction_context_management`` — it is True only when that gate returned a
-    payload, i.e. when the request actually carries ``context_management``. It controls two things that must
-    never outlive the gate: replaying ``type: "compaction"`` checkpoint items, and restructuring the wire
-    around them (``prune_pre_checkpoint_items``). Checkpoints are persisted in the ``codex_reasoning_items``
-    sidecar and survive a mid-session model swap, a ``compression.enabled: false`` flip, the rejection kill
+    ``native_compaction_eligible`` mirrors, for THIS request,
+    ``native_compaction.native_compaction_eligible``. On OpenAI that is true only when the request
+    carries ``context_management``. On direct xAI grok-4.7 it is true when ``POST /v1/responses/compact``
+    is allowed, and ``context_management`` stays unset. It controls two things that must never outlive
+    the gate: replaying ``type: "compaction"`` checkpoint items, and restructuring the wire around them
+    (``prune_pre_checkpoint_items``). Checkpoints are persisted in the ``codex_reasoning_items`` sidecar
+    and survive a mid-session model swap, a ``compression.enabled: false`` flip, the rejection kill
     switch and a resumed session; without this flag a single captured checkpoint would keep deleting every
     pre-checkpoint item from every later request, on a model that cannot decrypt the blob (#85914). Default
-    False = pre-feature wire, which is also correct for every caller that never sends ``context_management``
-    (auxiliary/compression client, ad-hoc ``convert_messages``). Dropping the checkpoint costs nothing:
-    Hermes' local history is never truncated by native compaction, so the full conversation is still on the
-    wire.
+    False = pre-feature wire, which is also correct for every caller that is not on an eligible
+    native-compaction route (auxiliary/compression client, ad-hoc ``convert_messages``). Dropping the
+    checkpoint costs nothing: Hermes' local history is never truncated by native compaction, so the full
+    conversation is still on the wire.
     """
     items: list[dict[str, Any]] = []
     # Parallel to ``items``: source chat message per item. Pruning reads a summary
@@ -714,8 +719,8 @@ def _chat_messages_to_responses_input(
     # first, retain pre-checkpoint USER and SUMMARY messages within a token budget, leave the tail.
     # Native server-side compaction: when a replayed checkpoint is present, restructure the wire around it.
     # Gated on the CURRENT request's native eligibility, not merely on the presence of a checkpoint: a
-    # persisted checkpoint outlives the gate, and pruning for a request that carries no
-    # ``context_management`` deletes history the server never compacted. ``item_sources`` (parallel to
+    # persisted checkpoint outlives the gate, and pruning for a request that is not
+    # native-compaction-eligible deletes history the server never compacted. ``item_sources`` (parallel to
     # ``items``) carries the raw chat message each converted item came from. A canonical summary carrier's
     # content can be lost or gone stale by the time it becomes a Responses item — a merge-into-tail
     # tool-result carrier becomes a typed ``function_call_output`` (no ``content``/``role`` at all), and a
@@ -766,9 +771,9 @@ def _native_responses_replay_items(
     if getattr(agent, "api_mode", None) != "codex_responses" or not isinstance(messages, list):
         return None
     route = classify_responses_route(agent)._asdict()
-    from agent.native_compaction import native_compaction_context_management
+    from agent.native_compaction import native_compaction_eligible
     from agent.fast_mode import effective_request_overrides
-    if not native_compaction_context_management(agent, **route):
+    if not native_compaction_eligible(agent, **route):
         return None
     # The wire model may be rewritten per request (fast mode); provenance must match what the transport stamps.
     effective_model = effective_request_overrides(agent).get("model", getattr(agent, "model", None))

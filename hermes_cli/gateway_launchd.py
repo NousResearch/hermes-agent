@@ -10,11 +10,13 @@ from pathlib import Path
 import contextlib
 import json
 import os
+import plistlib
 import shlex
 import subprocess
 import sys
 import time
 from xml.sax.saxutils import escape
+from xml.parsers.expat import ExpatError
 from datetime import UTC
 
 from hermes_cli import gateway_service_owner
@@ -466,13 +468,51 @@ def generate_launchd_plist() -> str:
 
 
 def launchd_plist_is_current() -> bool:
-    """Check if the installed launchd plist matches the currently generated one."""
+    """Check if the installed launchd plist matches the currently generated one.
+
+    ``plutil``, Xcode, and macOS tooling can rewrite an installed plist into
+    Apple's binary format (``bplist00``). Reading that as text raises
+    ``UnicodeDecodeError`` and takes down every caller of this check --
+    ``gateway status``, ``gateway install``, and the auto-refresh staleness
+    path -- which is precisely the set of commands a user reaches for when
+    something has already gone wrong. ``plistlib`` parses binary and XML
+    transparently, so both shapes are read the same way.
+
+    The comparison is structural (parsed plist objects) rather than textual. A
+    ``plistlib`` round-trip re-serializes with different indentation, key
+    order, and XML declaration, so comparing re-serialized text would classify
+    every valid install as stale and rewrite it on every invocation.
+    """
     plist_path = _gw().get_launchd_plist_path()
     if not plist_path.exists():
         return False
-    installed = plist_path.read_text(encoding="utf-8-sig")
-    norm = _gw()._normalize_launchd_plist_for_comparison
-    return norm(installed) == norm(_gw().generate_launchd_plist())
+    try:
+        with plist_path.open("rb") as handle:
+            installed_data = plistlib.load(handle)
+        generated_data = plistlib.loads(_gw().generate_launchd_plist().encode("utf-8"))
+    except (
+        OSError,
+        ValueError,
+        TypeError,
+        plistlib.InvalidFileException,
+        ExpatError,
+    ):
+        # Unreadable or malformed -- report stale so the caller reinstalls a
+        # known-good definition rather than propagating the parse failure.
+        return False
+
+    # PATH is captured from the invoking shell and legitimately varies, so it
+    # is excluded from the comparison; every other environment var must match.
+    # A structurally empty plist parses to None rather than {}, so normalize it
+    # to {} before the dict operations below.
+    if not isinstance(installed_data, dict):
+        installed_data = {}
+    installed_env = installed_data.get("EnvironmentVariables")
+    if isinstance(installed_env, dict):
+        installed_env = {k: v for k, v in installed_env.items() if k != "PATH"}
+        installed_data = {**installed_data, "EnvironmentVariables": installed_env}
+
+    return installed_data == generated_data
 
 
 def _spawn_deferred_launchd_reload(

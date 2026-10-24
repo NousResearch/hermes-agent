@@ -12,16 +12,17 @@ LEGACY_PREFIX = 'gateway.local_legacy.v1:'
 # ``cli`` and keeping their label, so human pickers still hide them (INTERNAL_LISTING_SOURCES).
 # ``desktop`` is the label main's Desktop stored; it is adopted as the ``gui`` creation source.
 # ``acp`` is main's in-process editor server (Zed, VS Code, JetBrains): adopted under its own source.
-LEGACY_LOCAL_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'oneshot', 'tool', 'acp'})
+LEGACY_LOCAL_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'oneshot', 'tool', 'acp', 'webui'})
 # Legacy labels that are not creation sources of their own (session_policy.SURFACES).
-LEGACY_CREATION_SOURCES = {'desktop': 'gui'}
+LEGACY_CREATION_SOURCES = {'desktop': 'gui', 'webui': 'gui'}
 
 
 def legacy_account_label(row):
-    # main's Desktop stamped the signed-in Nous account on its chats. That is a label, not a route or
-    # an authenticated owner, so it does not block adoption of an otherwise unrouted Desktop row.
+    # main's Desktop and the Hermes relay APK stamped the signed-in Nous account on their chats.
+    # That is a label, not a route or an authenticated owner, so it does not block adoption of an
+    # otherwise unrouted row. WebUI labels come from the relay APK's authenticated Nous identity.
     user_id = row.get('user_id')
-    return row['source'] == 'desktop' and isinstance(user_id, str) and user_id.startswith('nous:')
+    return row['source'] in ('desktop', 'webui') and isinstance(user_id, str) and user_id.startswith('nous:')
 
 
 def login_owned_by(row, subject):

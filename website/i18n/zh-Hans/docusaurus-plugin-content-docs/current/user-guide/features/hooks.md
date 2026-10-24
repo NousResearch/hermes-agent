@@ -378,9 +378,9 @@ def register(ctx):
 
 | Hook | 类别 | 精确时机与返回行为 | 显式 payload 字段 | 隐私/敏感性 |
 |---|---|---|---|---|
-| `pre_tool_call` | 指令/控制 | 执行前一次；第一个有效 `block` 或 `approve` 指令生效。 | `tool_name`, `args`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `middleware_trace` | 原始参数可能含用户内容、路径、命令或 secret。 |
-| `post_tool_call` | 观察者 | 阻断、错误或成功结果产生后；忽略返回值。 | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message`, `middleware_trace` | 结果/错误文本可能含任意工具或用户内容及 secret。 |
-| `transform_tool_result` | Transform | `post_tool_call` 后、写入会话前；第一个字符串替换结果。 | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message` | 暴露完整的 model-bound 结果和参数。 |
+| `pre_tool_call` | 指令/控制 | 执行前一次；第一个有效 `block` 或 `approve` 指令生效。 | `tool_name`, `args`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `platform`, `middleware_trace` | 原始参数可能含用户内容、路径、命令或 secret。 |
+| `post_tool_call` | 观察者 | 阻断、错误或成功结果产生后；忽略返回值。 | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `platform`, `duration_ms`, `status`, `error_type`, `error_message`, `middleware_trace` | 结果/错误文本可能含任意工具或用户内容及 secret。 |
+| `transform_tool_result` | Transform | `post_tool_call` 后、写入会话前；第一个字符串替换结果。 | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `platform`, `duration_ms`, `status`, `error_type`, `error_message` | 暴露完整的 model-bound 结果和参数。 |
 | `transform_terminal_output` | Transform | 前台进程输出完成有界捕获后、最终 output limit 前；第一个字符串替换输出。 | `command`, `output`, `returncode`, `task_id`, `env_type` | 命令/输出可能含凭据。 |
 | `pre_llm_call` | 指令/控制 | 每轮 loop 前一次；所有有效字符串或 `{"context": ...}` 会拼接并注入用户消息。 | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | 完整用户消息和会话历史。 |
 | `post_llm_call` | 观察者 | 成功且未中断的轮次 finalize 时；忽略返回值。 | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | 完整 prompt、response 和 history。 |
@@ -421,6 +421,7 @@ def my_callback(tool_name: str, args: dict, task_id: str, **kwargs):
 | `tool_name` | `str` | 即将执行的工具名称（如 `"terminal"`、`"web_search"`、`"read_file"`） |
 | `args` | `dict` | 模型传递给工具的参数 |
 | `task_id` | `str` | 会话/任务标识符。未设置时为空字符串。 |
+| `platform` | `str` | 本轮所属通道——与 `pre_llm_call` 收到的值相同（`"cli"`、`"desktop"`、`"telegram"`、`"cron"`、`"subagent"`、`"curator"` 等）。不在平台轮次内时为空字符串。 |
 
 **触发位置：** `model_tools.py` 中的 `handle_function_call()` 内，工具处理器运行前。每次工具调用触发一次——若模型并行调用 3 个工具，则触发 3 次。
 

@@ -76,6 +76,7 @@ export function ModelMenuPanel({ onFollowDefaultModel, ...props }: ModelMenuPane
 
   return (
     <ModelCatalogMenu
+      collapseInactiveProviders
       controller={controller}
       footer={
         <>

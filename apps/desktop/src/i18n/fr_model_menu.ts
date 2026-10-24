@@ -5,6 +5,7 @@ export const frModelMenu = {
   editModels: 'Modifier les modèles…',
   followDefault: 'Utiliser le modèle par défaut des Réglages',
   refreshModels: 'Actualiser les modèles',
+  portalCta: 'Accédez à des centaines de modèles supplémentaires via Nous Portal',
   favorites: 'Favoris',
   addFavorite: 'Ajouter aux favoris',
   removeFavorite: 'Retirer des favoris',

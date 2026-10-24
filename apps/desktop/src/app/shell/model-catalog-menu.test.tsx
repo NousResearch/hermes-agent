@@ -43,6 +43,7 @@ beforeAll(() => {
 
 const getGlobalModelOptions = vi.fn()
 const closeMenu = vi.fn()
+const startManualProviderOAuth = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getGlobalModelOptions: (...args: unknown[]) => getGlobalModelOptions(...args),
@@ -61,6 +62,10 @@ vi.mock('@/hermes', () => ({
   }),
   getLocalModelsStatus: vi.fn().mockResolvedValue({ loading: {} }),
   setApiRequestProfile: vi.fn()
+}))
+
+vi.mock('@/store/onboarding', () => ({
+  startManualProviderOAuth: (...args: unknown[]) => startManualProviderOAuth(...args)
 }))
 
 beforeEach((): void => {
@@ -823,5 +828,92 @@ describe('the catalog renders per-model pricing', () => {
     await screen.findByText('Sonnet 5')
     expect(screen.queryByText(/\/Mtok/)).toBeNull()
     expect(screen.queryByText('free')).toBeNull()
+  })
+})
+
+// Portal is Hermes' own inference product and the path onboarding already
+// steers new users down (`PROVIDER_DISPLAY` gives it order 0, and it renders
+// through `FeaturedProviderRow`). This menu was the one model surface that
+// ignored that and sorted it wherever the alphabet put it. Deliberate product
+// placement rather than a neutral ranking, so it is pinned by a test.
+describe('Nous Portal sorts above the other providers', () => {
+  const headings = () =>
+    screen
+      .getAllByRole('menuitem')
+      .map(row => row.textContent ?? '')
+      .filter(text => /^(Anthropic|Google|Nous Portal|Zebra Labs)/.test(text))
+
+  it('puts Portal first even when its name sorts last', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        { models: ['claude-sonnet-5'], name: 'Anthropic', slug: 'anthropic' },
+        { models: ['portal-model'], name: 'Nous Portal', slug: 'nous' }
+      ]
+    })
+
+    renderMenu()
+    await screen.findByText(/Portal Model/i)
+
+    expect(headings()[0]).toMatch(/^Nous Portal/)
+  })
+
+  // Everything below Portal keeps the previous stable alphabetical order, so
+  // no other provider's position moves relative to its peers.
+  it('leaves the remaining providers alphabetical', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        { models: ['zebra-1'], name: 'Zebra Labs', slug: 'zebra' },
+        { models: ['gemini-3.1-pro'], name: 'Google', slug: 'google' },
+        { models: ['portal-model'], name: 'Nous Portal', slug: 'nous' },
+        { models: ['claude-sonnet-5'], name: 'Anthropic', slug: 'anthropic' }
+      ]
+    })
+
+    renderMenu()
+    await screen.findByText(/Portal Model/i)
+
+    expect(headings().map(h => h.replace(/\s.*/, ''))).toEqual(['Nous', 'Anthropic', 'Google', 'Zebra'])
+  })
+})
+
+// An unconfigured provider produces NO row at all (the payload is
+// `explicit_only`), so a user who has never connected Portal would otherwise
+// see every other provider they can reach and no mention of Hermes' own.
+describe('the Portal sign-in offer', () => {
+  it('appears when Portal is absent from the catalog', async () => {
+    renderMenu()
+
+    expect(await screen.findByText('Access hundreds more models through Nous Portal')).toBeTruthy()
+  })
+
+  it('starts the Portal OAuth flow when chosen', async () => {
+    renderMenu()
+
+    fireEvent.click(await screen.findByText('Access hundreds more models through Nous Portal'))
+
+    expect(startManualProviderOAuth).toHaveBeenCalledWith('nous', 'default')
+  })
+
+  it('stays hidden once Portal is connected', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [{ models: ['portal-model'], name: 'Nous Portal', slug: 'nous' }]
+    })
+
+    renderMenu()
+    await screen.findByText(/Portal Model/i)
+
+    expect(screen.queryByText('Access hundreds more models through Nous Portal')).toBeNull()
+  })
+
+  // A query means "find me a model", not "sell me one".
+  it('gets out of the way while searching', async () => {
+    renderMenu()
+    await screen.findByText('Access hundreds more models through Nous Portal')
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'gemini' } })
+
+    await vi.waitFor(() => {
+      expect(screen.queryByText('Access hundreds more models through Nous Portal')).toBeNull()
+    })
   })
 })

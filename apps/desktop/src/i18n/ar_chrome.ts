@@ -355,6 +355,7 @@ export const arChrome = {
       editModels: 'تحرير النماذج',
       followDefault: 'استخدام الافتراضي من الإعدادات',
       refreshModels: 'تحديث النماذج',
+      portalCta: 'يمكنك الوصول إلى مئات النماذج الإضافية عبر Nous Portal',
       favorites: 'المفضلة',
       addFavorite: 'إضافة إلى المفضلة',
       removeFavorite: 'إزالة من المفضلة',

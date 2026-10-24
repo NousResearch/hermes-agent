@@ -71,6 +71,7 @@ import {
   seedKnownModels,
   setModelVisibilityOpen
 } from '@/store/model-visibility'
+import { startManualProviderOAuth } from '@/store/onboarding'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import { $defaultReasoningEffort } from '@/store/session'
 import type { LocalModelLoadProgress, LocalRuntimeJob } from '@/types/hermes'
@@ -192,6 +193,8 @@ interface ModelCatalogMenuProps {
    * across sources, so this participates in the React Query cache key. */
   ownerConnectionId?: string
   profile?: string
+  /** Composer defaults: expand the active provider, collapse the others. */
+  collapseInactiveProviders?: boolean
   /** Session whose catalog to fetch. A live session's catalog can differ from
    *  the profile-global one, and the app invalidates the SESSION-scoped query
    *  key on model changes — a surface bound to a session must pass it or its
@@ -202,6 +205,30 @@ interface ModelCatalogMenuProps {
 interface ProviderGroup {
   families: ModelFamily[]
   provider: ModelOptionProvider
+}
+
+/** The Nous Portal provider slug. Portal is Hermes' own inference product and
+ *  the path the app already steers new users down: onboarding gives it
+ *  `order: 0` in `PROVIDER_DISPLAY` and renders it through
+ *  `FeaturedProviderRow`. This menu was the one model surface that ignored
+ *  that and sorted it under whatever fell earlier in the alphabet. */
+const PORTAL_SLUG = 'nous'
+
+/** Provider order: Portal first, then alphabetical by name.
+ *
+ *  Deliberate product placement, not a neutral ranking — worth naming plainly
+ *  rather than burying. Everything below Portal keeps the stable alphabetical
+ *  order the previous sort established, so no other provider's position moves
+ *  relative to its peers and the list still cannot reshuffle on a switch. */
+function compareProviderGroups(a: ProviderGroup, b: ProviderGroup): number {
+  const aPortal = a.provider.slug.toLowerCase() === PORTAL_SLUG
+  const bPortal = b.provider.slug.toLowerCase() === PORTAL_SLUG
+
+  if (aPortal !== bPortal) {
+    return aPortal ? -1 : 1
+  }
+
+  return a.provider.name.localeCompare(b.provider.name)
 }
 
 function queryErrorMessage(error: unknown): null | string {
@@ -249,6 +276,7 @@ export function ModelCatalogMenu({
   includeMoa = false,
   ownerConnectionId,
   profile = 'default',
+  collapseInactiveProviders = false,
   request,
   sessionId = null
 }: ModelCatalogMenuProps): ReactElement {
@@ -262,7 +290,13 @@ export function ModelCatalogMenu({
   // type. Typing a slug without this works too; the row just makes it findable.
   const [slugEntry, setSlugEntry] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
-  const collapsedProviders = useStoreCollapsed()
+  const storedCollapsedProviders = useStoreCollapsed()
+
+  const [collapseOverride, setCollapseOverride] = useState<{ scope: string; values: Record<string, boolean> }>({
+    scope: '',
+    values: {}
+  })
+
   const defaultEffort = useDefaultEffort()
   // Which models the user curated in Edit Models. Read HERE rather than taken
   // as a prop: it's one global preference, so every surface that shows a
@@ -340,6 +374,44 @@ export function ModelCatalogMenu({
 
   const current = controller.current
 
+  // Presence is the compatibility signal for older catalogs without auth hints;
+  // explicit unauthenticated and automatic free-tier rows are not a Portal login.
+  const portalConnected =
+    providers?.some(p => p.slug === 'nous' && p.authenticated !== false && !p.free_tier_row) ?? false
+
+  const portalLayout = collapseInactiveProviders && portalConnected
+  const collapseScope = JSON.stringify([ownerConnectionId, profile, sessionId, current.provider])
+
+  const collapsedProviders = useMemo(
+    () =>
+      portalLayout
+        ? pickerProviders
+            .filter(
+              provider =>
+                (collapseOverride.scope === collapseScope ? collapseOverride.values[provider.slug] : undefined) ??
+                !catalogProviderMatches(provider, current.provider)
+            )
+            .map(provider => provider.slug)
+        : storedCollapsedProviders,
+    [portalLayout, pickerProviders, collapseOverride, collapseScope, current.provider, storedCollapsedProviders]
+  )
+
+  const toggleProvider = (slug: string) => {
+    if (!portalLayout) {
+      toggleCollapsedProvider(slug)
+
+      return
+    }
+
+    setCollapseOverride({
+      scope: collapseScope,
+      values: {
+        ...(collapseOverride.scope === collapseScope ? collapseOverride.values : {}),
+        [slug]: !collapsedProviders.includes(slug)
+      }
+    })
+  }
+
   const q = normalize(search)
 
   // In-flight downloads render inside the Local provider group when it
@@ -354,8 +426,13 @@ export function ModelCatalogMenu({
   useEffect(() => seedKnownModels(pickerProviders), [pickerProviders])
 
   const shownKeys = useMemo(
-    () => effectiveVisibleKeys(visibleModels, pickerProviders),
-    [visibleModels, pickerProviders]
+    () => {
+      const keys = effectiveVisibleKeys(visibleModels, pickerProviders)
+
+      // A star still overrides the shortlist when favorites live in provider groups.
+      return portalLayout ? new Set([...keys, ...favoriteKeys]) : keys
+    },
+    [visibleModels, pickerProviders, portalLayout, favoriteKeys]
   )
 
   // Favorites paint their own section ABOVE the provider groups — the whole
@@ -366,8 +443,9 @@ export function ModelCatalogMenu({
   // explicit "always show me this one". A search turns the section off — a
   // query means "show me every match", listed in their provider's place.
   const favoriteRows = useMemo(
-    () => (q ? [] : resolveFavoriteRows(pickerProviders, favoriteKeys)),
-    [pickerProviders, favoriteKeys, q]
+    // Keep favorites inside their provider when Portal owns the group order.
+    () => (q || portalLayout ? [] : resolveFavoriteRows(pickerProviders, favoriteKeys)),
+    [pickerProviders, favoriteKeys, q, portalLayout]
   )
 
   // The same rows are dropped from the provider groups, so no model is ever
@@ -386,9 +464,9 @@ export function ModelCatalogMenu({
         search,
         { model: current.model, provider: current.provider },
         shownKeys,
-        q ? null : favoriteSet
+        q || portalLayout ? null : favoriteSet
       ),
-    [pickerProviders, search, current.model, current.provider, shownKeys, q, favoriteSet]
+    [pickerProviders, search, current.model, current.provider, shownKeys, q, favoriteSet, portalLayout]
   )
 
   // Presets are searchable rows like everything else — an unfiltered preset
@@ -806,7 +884,7 @@ export function ModelCatalogMenu({
                   )}
                   onSelect={event => {
                     event.preventDefault()
-                    toggleCollapsedProvider(slug)
+                    toggleProvider(slug)
                   }}
                   textValue=""
                 >
@@ -920,6 +998,17 @@ export function ModelCatalogMenu({
           contributes rows (the composer's Refresh Models) keeps the single
           trailing block it has always rendered. */}
       <DropdownMenuSeparator className="mx-0" />
+      {!portalConnected && !loading && !error && !q ? (
+        <DropdownMenuItem
+          className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
+          onSelect={() =>
+            startManualProviderOAuth(PORTAL_SLUG, ownerConnectionId ? { connectionId: ownerConnectionId, profile } : profile)
+          }
+        >
+          <Codicon name="link-external" size="0.75rem" />
+          <span className="whitespace-normal">{copy.portalCta}</span>
+        </DropdownMenuItem>
+      ) : null}
       {footer}
       <DropdownMenuItem
         className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)', slugEntry && 'text-foreground')}
@@ -1418,9 +1507,9 @@ function groupModels(
     }
   }
 
-  // Stable, logical group order: alphabetical by provider name. (The backend
-  // floats the current provider first, which would reshuffle on every switch.)
-  groups.sort((a, b) => a.provider.name.localeCompare(b.provider.name))
+  // Portal first, then alphabetical by provider name. (The backend floats the
+  // current provider first, which would reshuffle on every switch.)
+  groups.sort(compareProviderGroups)
 
   return groups
 }

@@ -78,7 +78,7 @@ def _host_header_hostname(host_header: str) -> str:
 
 def _is_accepted_host(
     host_header: str,
-    bound_host: str,
+    bound_host: "str | frozenset[str] | list[str]",
     trusted_public_hosts: frozenset[str] = frozenset(),
 ) -> bool:
     """True if the Host header targets the interface we bound to.
@@ -93,14 +93,23 @@ def _is_accepted_host(
     host_only = _host_header_hostname(host_header)
     if not host_only:
         return False
-    # All-interfaces bind: no Host-layer defence is possible; rely on operator
-    # network controls.
-    if host_only in trusted_public_hosts or bound_host in {"0.0.0.0", "::"}:
+    # Normalize single bound host into a set so multi-host (dual-stack) binds
+    # and legacy single-string callers share one code path.
+    bound_lowered = (
+        {bound_host.strip().lower()}
+        if isinstance(bound_host, str)
+        else {h.strip().lower() for h in bound_host if h and h.strip()}
+    )
+    # All-interfaces bind on ANY member: no Host-layer defence is possible;
+    # rely on operator network controls.
+    if bound_lowered & {"0.0.0.0", "::"}:
         return True
-    bound_lc = bound_host.lower()
-    if bound_lc in _LOOPBACK_HOST_VALUES:
+    if host_only in trusted_public_hosts:
+        return True
+    # Loopback aliases apply whenever any bound member is loopback.
+    if bound_lowered & _LOOPBACK_HOST_VALUES:
         return host_only in _LOOPBACK_HOST_VALUES
-    return host_only == bound_lc
+    return host_only in bound_lowered
 
 
 def should_require_auth(host: str, allow_public: bool = False) -> bool:
@@ -178,15 +187,22 @@ def ws_client_reason(ws, state) -> Optional[str]:
     """
     if getattr(state, "auth_required", False):
         return None
-    bound_host = (getattr(state, "bound_host", "") or "").strip().lower()
-    if bound_host and bound_host not in _LOOPBACK_HOSTS:
+    # Multi-host fallback: prefer frozenset bound_hosts, fall back to singular bound_host.
+    _bound = getattr(state, "bound_hosts", None) or getattr(state, "bound_host", "")
+    if isinstance(_bound, str):
+        _bset = {_bound.strip().lower()} if _bound.strip() else set()
+    else:
+        _bset = {h.strip().lower() for h in _bound if h and h.strip()}
+    # Any non-loopback member is an explicit non-loopback opt-in.
+    if _bset and not _bset.issubset(_LOOPBACK_HOSTS):
         return None
+    _shown = ",".join(sorted(_bset)) or "?"
     client_host = ws.client.host if ws.client else ""
     if not client_host:
-        return f"missing_or_empty_peer bound={bound_host or '?'}"
+        return f"missing_or_empty_peer bound={_shown}"
     if client_host in _LOOPBACK_HOSTS:
         return None
-    return f"peer_not_loopback peer={client_host} bound={bound_host or '?'}"
+    return f"peer_not_loopback peer={client_host} bound={_shown}"
 
 
 def ws_host_origin_reason(ws, state) -> Optional[str]:
@@ -197,13 +213,14 @@ def ws_host_origin_reason(ws, state) -> Optional[str]:
     bound host.  Non-web origins (packaged Electron: file://, null, app://) are
     trusted — the credential check is the real auth boundary there.
     """
-    bound_host = getattr(state, "bound_host", None)
-    if not bound_host:
+    # Multi-host fallback: prefer frozenset bound_hosts, fall back to singular bound_host.
+    bound = getattr(state, "bound_hosts", None) or getattr(state, "bound_host", None)
+    if not bound:
         return None
     trusted_public_hosts = getattr(state, "trusted_public_hosts", frozenset())
     host_header = ws.headers.get("host", "")
-    if not _is_accepted_host(host_header, bound_host, trusted_public_hosts):
-        return f"host_mismatch host={host_header or '?'} bound={bound_host}"
+    if not _is_accepted_host(host_header, bound, trusted_public_hosts):
+        return f"host_mismatch host={host_header or '?'} bound={bound}"
     origin = ws.headers.get("origin", "")
     if not origin:
         return None
@@ -213,6 +230,6 @@ def ws_host_origin_reason(ws, state) -> Optional[str]:
         parsed = None
     if parsed is not None and parsed.scheme not in {"http", "https"}:
         return None
-    if parsed is None or not parsed.netloc or not _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts):
-        return f"origin_mismatch origin={origin} bound={bound_host}"
+    if parsed is None or not parsed.netloc or not _is_accepted_host(parsed.netloc, bound, trusted_public_hosts):
+        return f"origin_mismatch origin={origin} bound={bound}"
     return None

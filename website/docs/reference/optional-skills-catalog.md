@@ -72,6 +72,7 @@ hermes skills uninstall <skill-name>
 | [**creative-ideation**](../user-guide/skills/optional/creative/creative-creative-ideation.md) | Generate ideas via named methods from creative practice. |
 | [**draw-your-font**](../user-guide/skills/optional/creative/creative-draw-your-font.md) | Turn a handwriting photo into an installable TTF font. |
 | [**dream-loop**](../user-guide/skills/optional/creative/creative-dream-loop.md) | Build stunning 3D scenes via a concept-art fidelity loop. |
+| [**earshot**](../user-guide/skills/optional/creative/creative-earshot.md) | Hear and score audio files locally on CPU. |
 | [**excalidraw**](../user-guide/skills/optional/creative/creative-excalidraw.md) | Hand-drawn Excalidraw JSON diagrams (arch, flow, seq). |
 | [**heartmula**](../user-guide/skills/optional/creative/creative-heartmula.md) | HeartMuLa: Suno-like song generation from lyrics + tags. |
 | [**hyperframes**](../user-guide/skills/optional/creative/creative-hyperframes.md) | Render MP4/WebM videos from HTML compositions. |

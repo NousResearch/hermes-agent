@@ -1420,3 +1420,24 @@ class TestOpencodeRelayVisionMarker:
         with patch("agent.models_dev.fetch_models_dev", return_value=registry):
             caps = get_model_capabilities("opencode-go", "deepseek-v4-flash-vision-exp")
         assert caps.supports_vision is False and caps.context_window == 500000
+
+
+class TestGrokBuiltinVision:
+    @pytest.mark.parametrize("provider", ["xai", "xai-oauth"])
+    @pytest.mark.parametrize("model", ["grok-4.6", "grok-4.7"])
+    def test_images_route_natively_without_models_dev(self, provider, model):
+        from agent.image_routing import decide_image_input_mode
+
+        with patch("agent.models_dev.fetch_models_dev", return_value={}), \
+             patch("agent.models_dev._load_model_overrides", dict):
+            assert decide_image_input_mode(provider, model, {"model": {"provider": provider, "default": model}}) == "native"
+            assert decide_image_input_mode("openrouter", f"x-ai/{model}", {"model": {"provider": "openrouter"}}) == "text"
+
+    def test_catalog_row_wins_over_the_builtin(self):
+        registry = {"xai": {"id": "xai", "models": {"grok-4.7": {
+            "id": "grok-4.7", "limit": {"context": 2_000_000}, "tool_call": True,
+            "modalities": {"input": ["text"], "output": ["text"]}}}}}
+        with patch("agent.models_dev.fetch_models_dev", return_value=registry), \
+             patch("agent.models_dev._load_model_overrides", dict):
+            caps = get_model_capabilities("xai", "grok-4.7")
+        assert caps.supports_vision is False and caps.context_window == 2_000_000

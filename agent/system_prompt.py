@@ -757,6 +757,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # in the rendered index (pure string check — inherits the index's stability).
     if "skill_view" in (agent.valid_tool_names or set()) and "- hermes-agent:" in skills_prompt:
         stable_parts[_help_guidance_slot] = HERMES_AGENT_HELP_GUIDANCE
+    # Custom-deployment override (documented surface:
+    # website/docs/reference/environment-variables.md): when set, the help
+    # section is this text verbatim, replacing the variant selection — a
+    # deployment whose behaviour diverges from upstream docs (or ships its
+    # own identity framing) owns the whole block. Read once per prompt build;
+    # the env is fixed for the process lifetime, so the stable tier stays
+    # cache-safe. Blank/unset leaves the selected variant untouched.
+    _help_override = os.getenv("HERMES_AGENT_HELP_GUIDANCE", "").strip()
+    if _help_override:
+        stable_parts[_help_guidance_slot] = _help_override
     stable_parts.extend(_alibaba_identity_part(agent))
     # Pinned skills are per-agent constants (resolved once), so they live in the stable prefix.
     stable_parts.extend(_auto_load_parts(agent))

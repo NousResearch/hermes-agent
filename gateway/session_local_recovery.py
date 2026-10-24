@@ -9,7 +9,7 @@ from gateway.session import SessionEntry, SessionSource
 from gateway.session_contract import SessionRef
 from hermes_state_keys import local_identity
 from hermes_state_local import POLICY_PREFIX, local_receipt
-from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+from hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch, list_session_admissions
 
 
 def local_adapter_map(authority):
@@ -344,7 +344,18 @@ def reset_local_session(store, old_entry, session_id, now, display_name):
         is_fresh_reset=True)
     db = store._db_for_key(old_entry.session_key)
     epochs = getattr(store, '_local_authority_epochs', None) or {}
-    epoch = epochs.get(Path(db.db_path).resolve(), store._local_authority_epoch) if db is not None else store._local_authority_epoch
+    # dict.get() evaluates its default eagerly, so the launch epoch is read lazily:
+    # stores built outside initialize_session_authority never carry the attribute.
+    epoch = epochs.get(Path(db.db_path).resolve()) if db is not None else None
+    if epoch is None:
+        epoch = getattr(store, '_local_authority_epoch', None)
+    if epoch is None and db is not None:
+        # An unbound store (tests, embedders, a plugin running its own SessionStore)
+        # fences on the DB's current epoch, beginning one only when no authority ever
+        # has — the dashboard's offline mutation path uses the same fallback.
+        with db._read_ctx() as conn:
+            row = conn.execute('SELECT epoch FROM runtime_epoch WHERE singleton=1').fetchone()
+        epoch = row[0] if row else begin_runtime_epoch(db, instance_id='session-store-reset')
     reset_local_target(db, epoch=epoch,
                        parent_session_id=old_entry.session_id, entry=entry.to_dict())
     store._entries[old_entry.session_key] = entry

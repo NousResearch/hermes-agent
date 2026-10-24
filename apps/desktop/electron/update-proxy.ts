@@ -56,16 +56,9 @@ export function readMacSystemProxyEnv(platform = process.platform): ProxyEnv {
 
 /** Add system proxy settings only when the desktop app did not inherit them. */
 export function buildUpdateCheckEnv(baseEnv: NodeJS.ProcessEnv, platform = process.platform): ProxyEnv {
-  const systemProxy = readMacSystemProxyEnv(platform)
-  const env: ProxyEnv = { ...systemProxy }
+  const systemProxy = hasProxyEnv(baseEnv) ? {} : readMacSystemProxyEnv(platform)
 
-  for (const key of Object.keys(systemProxy)) {
-    if (baseEnv[key]) {
-      env[key] = baseEnv[key] as string
-    }
-  }
-
-  return { ...baseEnv, ...env, GIT_TERMINAL_PROMPT: '0' }
+  return { ...systemProxy, ...baseEnv, GIT_TERMINAL_PROMPT: '0' }
 }
 
 export function withoutProxyEnv(baseEnv: NodeJS.ProcessEnv): ProxyEnv {

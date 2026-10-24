@@ -44,27 +44,6 @@ class DiscordLiveGatesMixin:
         self._allowed_role_ids = self._get_allowed_roles()  # ANY listed role grants access
         self._mark_live_gate_baseline()
 
-    def _get_allowed_users(self) -> set:
-        """This adapter's DISCORD_ALLOWED_USERS entries (per-profile, cleaned); a username this adapter
-        resolved at connect reads as its ID, so a refresh keeps it working and its removal revokes it."""
-        from plugins.platforms.discord.adapter import _clean_discord_id
-        raw = self._gate_raw("allow_from", "DISCORD_ALLOWED_USERS")
-        if raw is None:
-            extra = getattr(getattr(self, "config", None), "extra", None)
-            if isinstance(extra, dict):
-                raw = extra.get("allowed_users")
-        resolved = getattr(self, "_username_to_id", None) or {}
-        entries = {_clean_discord_id(str(entry)) for entry in self._gate_csv_set(raw)}
-        return {resolved.get(entry.lower(), entry) for entry in entries if entry}
-
-    def _get_allowed_roles(self) -> set:
-        """This adapter's DISCORD_ALLOWED_ROLES role IDs (per-profile)."""
-        raw = self._gate_raw("allowed_roles", "DISCORD_ALLOWED_ROLES")
-        return {
-            int(str(entry).strip()) for entry in self._gate_csv_set(raw)
-            if str(entry).strip().isdigit()
-        }
-
     def _refresh_live_gates(self) -> None:
         """Re-derive the gate when the owning profile's config.yaml changed (a stat otherwise)."""
         refresh_live_gate_extra(self, _LIVE_GATE_EXTRA_KEYS, on_reload=self._rederive_live_gates)

@@ -125,6 +125,11 @@ export const SETTINGS_MANIFEST = {
       'hideThreadTimeline'
     ),
     reactions: appearanceSetting('chat-display', ['emoji', 'tapback', 'react', 'reactions'], 'reactions'),
+    inlinePreviewWide: appearanceSetting(
+      'chat-display',
+      ['html', 'preview', 'panel', 'artifact', 'width', 'wide', 'full width', 'canvas', 'column'],
+      'inlinePreviewWide'
+    ),
     vibeHearts: appearanceSetting('chat-display', ['hearts', 'vibe', 'celebrate', 'confetti', 'fun'], 'vibeHearts'),
     toolView: appearanceSetting('chat-display', ['tool display', 'technical'], 'toolView'),
     hideCodeDiffs: appearanceSetting(

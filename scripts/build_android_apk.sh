@@ -1,249 +1,136 @@
 #!/usr/bin/env bash
-# Build script for Hermes Agent Android APK
-# This script builds a standalone APK that can be downloaded and installed on Android devices
-
+# Build the experimental Hermes Android APK. Requires a desktop JDK + Android SDK.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
-# Configuration
 ANDROID_DIR="$REPO_ROOT/android"
 BUILD_TOOLS_VERSION="34.0.0"
 ANDROID_SDK_VERSION="34"
-JDK_VERSION="17"
+JDK_VERSION=17
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-
-log() {
-    echo -e "${GREEN}[+]${NC} $1"
-}
-
-warn() {
-    echo -e "${YELLOW}[!]${NC} $1"
-}
-
-error() {
-    echo -e "${RED}[-]${NC} $1"
-}
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+log() { printf '%b\n' "${GREEN}[+] ${1}${NC}"; }
+warn() { printf '%b\n' "${YELLOW}[!] ${1}${NC}"; }
+error() { printf '%b\n' "${RED}[-] ${1}${NC}" >&2; }
 
 usage() {
-    cat <<EOF
-Usage: $0 [OPTIONS]
-
-Build Hermes Agent Android APK
-
-Options:
-  --version VERSION    Set APK version (default: auto from git or timestamp)
+    cat <<'EOF'
+Usage: scripts/build_android_apk.sh [OPTIONS]
+  --version VERSION   APK versionName (default: git tag or timestamp)
   --debug             Build debug APK (default)
-  --release           Build release APK (requires signing)
-  --clean             Clean build before starting
-  --help              Show this help message
-
-Examples:
-  $0 --version 1.0.0 --debug
-  $0 --release --clean
+  --release           Build release APK (requires a configured private keystore)
+  --clean             Clean before building
+  --help              Show this help
 EOF
 }
 
-# Parse arguments
 VERSION=""
-BUILD_TYPE="debug"
+BUILD_TYPE=debug
 CLEAN=false
-
-while [[ $# -gt 0 ]]; do
+while (($#)); do
     case "$1" in
         --version)
-            VERSION="$2"
-            shift 2
-            ;;
-        --debug)
-            BUILD_TYPE="debug"
-            shift
-            ;;
-        --release)
-            BUILD_TYPE="release"
-            shift
-            ;;
-        --clean)
-            CLEAN=true
-            shift
-            ;;
-        --help|-h)
-            usage
-            exit 0
-            ;;
-        *)
-            error "Unknown option: $1"
-            usage
-            exit 1
-            ;;
+            if (($# < 2)) || [[ -z "$2" ]]; then error "--version requires a value"; exit 2; fi
+            VERSION="$2"; shift 2 ;;
+        --debug) BUILD_TYPE=debug; shift ;;
+        --release) BUILD_TYPE=release; shift ;;
+        --clean) CLEAN=true; shift ;;
+        --help|-h) usage; exit 0 ;;
+        *) error "Unknown option: $1"; usage; exit 2 ;;
     esac
 done
 
-# Check if we're in the right directory
-if [ ! -d "$ANDROID_DIR" ]; then
-    error "Android directory not found at $ANDROID_DIR"
-    error "Please run this script from the repository root"
-    exit 1
-fi
+[[ -d "$ANDROID_DIR" ]] || { error "Android project not found: $ANDROID_DIR"; exit 1; }
+[[ -f "$ANDROID_DIR/gradlew" ]] || { error "Gradle wrapper not found"; exit 1; }
 
-# Set version if not provided
-if [ -z "$VERSION" ]; then
-    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        # Try to get version from latest tag
-        LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-        if [ -n "$LATEST_TAG" ]; then
-            VERSION="${LATEST_TAG#v}"
-        else
-            # Use timestamp
-            VERSION="1.0.0-$(date +%Y%m%d%H%M)"
-        fi
-    else
-        VERSION="1.0.0-$(date +%Y%m%d%H%M)"
+if [[ -z "$VERSION" ]]; then
+    if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        VERSION="$(git -C "$REPO_ROOT" describe --tags --abbrev=0 2>/dev/null || true)"
+        VERSION="${VERSION#v}"
     fi
+    [[ -n "$VERSION" ]] || VERSION="1.0.0-$(date +%Y%m%d%H%M)"
+fi
+[[ "$VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z.+_-]*$ ]] || {
+    error "Invalid version string: $VERSION"; exit 2;
+}
+
+log "Building Hermes Android APK version $VERSION ($BUILD_TYPE)"
+
+command -v java >/dev/null 2>&1 || { error "Install JDK $JDK_VERSION or later"; exit 1; }
+JAVA_OUTPUT="$(java -version 2>&1 | head -n 1)"
+if [[ "$JAVA_OUTPUT" =~ version[[:space:]]+\"?([0-9]+) ]] ; then
+    JAVA_VERSION="${BASH_REMATCH[1]}"
+elif [[ "$JAVA_OUTPUT" =~ openjdk[[:space:]]+([0-9]+) ]]; then
+    JAVA_VERSION="${BASH_REMATCH[1]}"
+else
+    error "Cannot determine Java version from: $JAVA_OUTPUT"; exit 1
+fi
+if (( JAVA_VERSION < JDK_VERSION )); then
+    error "Java $JAVA_VERSION found; JDK $JDK_VERSION or later is required"; exit 1
 fi
 
-log "Building Hermes Agent Android APK version: $VERSION"
-log "Build type: $BUILD_TYPE"
+ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}}"
+export ANDROID_HOME ANDROID_SDK_ROOT="$ANDROID_HOME"
+[[ -d "$ANDROID_HOME" ]] || {
+    error "Android SDK not found at $ANDROID_HOME. Install Android SDK platform 34 and build-tools 34.0.0."; exit 1;
+}
 
-# Check for Java
-log "Checking Java..."
-if ! command -v java &>/dev/null; then
-    error "Java is not installed. Please install JDK $JDK_VERSION or later."
-    exit 1
+SDKMANAGER=""
+for candidate in "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "$ANDROID_HOME/tools/bin/sdkmanager"; do
+    if [[ -x "$candidate" ]]; then SDKMANAGER="$candidate"; break; fi
+done
+if [[ -z "$SDKMANAGER" ]] && command -v sdkmanager >/dev/null 2>&1; then SDKMANAGER="$(command -v sdkmanager)"; fi
+
+if [[ ! -d "$ANDROID_HOME/platform-tools" || ! -d "$ANDROID_HOME/platforms/android-$ANDROID_SDK_VERSION" || ! -d "$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION" ]]; then
+    [[ -n "$SDKMANAGER" ]] || {
+        error "Required Android SDK components are missing and sdkmanager was not found. Install Android SDK Command-line Tools."; exit 1;
+    }
+    log "Installing required SDK components with sdkmanager..."
+    set +o pipefail
+    yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
+        "platform-tools" "platforms;android-$ANDROID_SDK_VERSION" "build-tools;$BUILD_TOOLS_VERSION"
+    SDK_STATUS=$?
+    set -o pipefail
+    (( SDK_STATUS == 0 )) || { error "sdkmanager failed to install required components"; exit 1; }
 fi
 
-JAVA_VERSION=$(java -version 2>&1 | grep -E '^[openjdk|java] version' | awk '{print $3}' | tr -d '"' | cut -d'.' -f1)
-if [ "$JAVA_VERSION" -lt "$JDK_VERSION" ]; then
-    warn "Java version $JAVA_VERSION found. JDK $JDK_VERSION or later recommended."
+if [[ "$BUILD_TYPE" == release ]]; then
+    [[ -f "$ANDROID_DIR/app/keystore/hermes-release.keystore" ]] || {
+        error "Release keystore missing at android/app/keystore/hermes-release.keystore"; exit 1;
+    }
+    [[ -n "${ANDROID_STORE_PASSWORD:-}" && -n "${ANDROID_KEY_PASSWORD:-}" ]] || {
+        error "Set ANDROID_STORE_PASSWORD and ANDROID_KEY_PASSWORD for a release build"; exit 1;
+    }
 fi
 
-# Check for Android SDK
-log "Checking Android SDK..."
-if [ -z "$ANDROID_HOME" ]; then
-    warn "ANDROID_HOME not set. Using default location."
-    ANDROID_HOME="$HOME/Android/Sdk"
-fi
+VERSION_CODE="$(git -C "$REPO_ROOT" rev-list --count HEAD 2>/dev/null || date +%s)"
+[[ "$VERSION_CODE" =~ ^[0-9]+$ ]] || VERSION_CODE=1
+(( VERSION_CODE > 0 && VERSION_CODE < 2147483647 )) || VERSION_CODE=1
 
-if [ ! -d "$ANDROID_HOME" ]; then
-    error "Android SDK not found at $ANDROID_HOME"
-    error "Please install Android SDK with Android Studio or via command line"
-    exit 1
-fi
-
-# Check for required Android SDK components
-log "Checking Android SDK components..."
-
-# Platform tools
-if [ ! -d "$ANDROID_HOME/platform-tools" ]; then
-    error "Android platform-tools not found"
-    exit 1
-fi
-
-# Build tools
-if [ ! -d "$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION" ]; then
-    warn "Android build-tools $BUILD_TOOLS_VERSION not found"
-    warn "Attempting to install..."
-    if ! yes | android update sdk --no-ui --all --filter "build-tools;$BUILD_TOOLS_VERSION"; then
-        error "Failed to install build-tools"
-        exit 1
-    fi
-fi
-
-# Platform
-if [ ! -d "$ANDROID_HOME/platforms/android-$ANDROID_SDK_VERSION" ]; then
-    warn "Android platform $ANDROID_SDK_VERSION not found"
-    warn "Attempting to install..."
-    if ! yes | android update sdk --no-ui --all --filter "platforms;android-$ANDROID_SDK_VERSION"; then
-        error "Failed to install platform"
-        exit 1
-    fi
-fi
-
-# Clean if requested
-if [ "$CLEAN" = true ]; then
-    log "Cleaning previous build..."
-    cd "$ANDROID_DIR"
-    ./gradlew clean --no-daemon
-    rm -rf app/build
-    rm -rf app/.cxx
-fi
-
-# Update version in build.gradle
-log "Updating version to $VERSION..."
-sed -i "s/versionCode [0-9]*/versionCode ${VERSION//./}/" "$ANDROID_DIR/app/build.gradle"
-sed -i "s/versionName \"[^\"]*\"/versionName \"$VERSION\"/" "$ANDROID_DIR/app/build.gradle"
-
-# Create keystore directory
-log "Setting up keystore..."
-mkdir -p "$ANDROID_DIR/app/keystore"
-
-# Create debug keystore if it doesn't exist
-if [ ! -f "$ANDROID_DIR/app/keystore/debug.keystore" ]; then
-    log "Creating debug keystore..."
-    keytool -genkey -v -keystore "$ANDROID_DIR/app/keystore/debug.keystore" \
-        -storepass android -alias androiddebugkey -keypass android \
-        -keyalg RSA -keysize 2048 -validity 10000 \
-        -dname "CN=Android Debug,O=Android,C=US"
-fi
-
-# Build the APK
-log "Building APK..."
 cd "$ANDROID_DIR"
+chmod +x ./gradlew
 
-# Make gradle wrapper executable
-chmod +x gradle/wrapper/gradle-wrapper.jar
+if [[ "$CLEAN" == true ]]; then
+    log "Cleaning previous build..."
+    ./gradlew clean --no-daemon
+fi
 
-# Build based on type
-if [ "$BUILD_TYPE" = "debug" ]; then
+GRADLE_ARGS=(-PandroidVersionName="$VERSION" -PandroidVersionCode="$VERSION_CODE" --stacktrace --no-daemon)
+if [[ "$BUILD_TYPE" == debug ]]; then
     log "Building debug APK..."
-    if ! ./gradlew assembleDebug --stacktrace --no-daemon; then
-        error "Failed to build debug APK"
-        exit 1
-    fi
+    ./gradlew "${GRADLE_ARGS[@]}" assembleDebug
     APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
     APK_NAME="Hermes-Agent-${VERSION}-debug.apk"
-elif [ "$BUILD_TYPE" = "release" ]; then
+else
     log "Building release APK..."
-    if [ ! -f "$ANDROID_DIR/app/keystore/release.keystore" ]; then
-        error "Release keystore not found at $ANDROID_DIR/app/keystore/release.keystore"
-        error "Please provide a valid release keystore for signing"
-        exit 1
-    fi
-    if ! ./gradlew assembleRelease --stacktrace --no-daemon; then
-        error "Failed to build release APK"
-        exit 1
-    fi
+    ./gradlew "${GRADLE_ARGS[@]}" assembleRelease
     APK_PATH="app/build/outputs/apk/release/app-release.apk"
     APK_NAME="Hermes-Agent-${VERSION}-release.apk"
 fi
 
-# Copy and rename APK
-log "Copying APK to output directory..."
-cp "$APK_PATH" "$REPO_ROOT/${APK_NAME}"
-
-log "APK built successfully!"
-echo ""
-echo "APK location: $REPO_ROOT/${APK_NAME}"
-echo "APK size: $(du -h "$REPO_ROOT/${APK_NAME}" | cut -f1)"
-echo ""
-echo "To install on Android device:"
-echo "  1. Download the APK to your device"
-echo "  2. Enable 'Install from unknown sources' in Settings"
-echo "  3. Open the APK file and install"
-echo ""
-echo "Or use adb:"
-echo "  adb install $REPO_ROOT/${APK_NAME}"
-
-# Verify APK
-if command -v aapt &>/dev/null; then
-    log "Verifying APK..."
-    aapt dump badging "$REPO_ROOT/${APK_NAME}"
-fi
-
-exit 0
+[[ -s "$APK_PATH" ]] || { error "Gradle reported success but APK was not found at $APK_PATH"; exit 1; }
+cp "$APK_PATH" "$REPO_ROOT/$APK_NAME"
+log "APK built: $REPO_ROOT/$APK_NAME"
+du -h "$REPO_ROOT/$APK_NAME"
+if command -v aapt >/dev/null 2>&1; then aapt dump badging "$REPO_ROOT/$APK_NAME"; fi

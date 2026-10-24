@@ -1,21 +1,12 @@
 package com.nousresearch.hermes;
 
-import android.Manifest;
 import android.app.AlertDialog;
 import android.content.Context;
-import android.content.DialogInterface;
 import android.content.Intent;
-import android.content.pm.PackageManager;
-import android.net.ConnectivityManager;
-import android.net.NetworkInfo;
 import android.os.AsyncTask;
-import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
-import android.provider.Settings;
-import android.text.Html;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
@@ -25,8 +16,6 @@ import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.core.app.ActivityCompat;
-import androidx.core.content.ContextCompat;
 
 import com.chaquo.python.Python;
 import com.chaquo.python.android.AndroidPlatform;
@@ -40,21 +29,16 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.util.ArrayList;
-import java.util.List;
 
 public class MainActivity extends AppCompatActivity {
     private static final String TAG = "MainActivity";
-    private static final int REQUEST_CODE_PERMISSIONS = 1001;
-    private static final int REQUEST_CODE_DOWNLOAD = 1002;
     
     private ProgressBar progressBar;
     private TextView statusText;
     private Button startButton;
     
-    private String hermesVersion = "latest";
+    private String initializationError = "Failed to initialize Hermes Agent. Check the Android logs for details.";
     private File hermesDir;
-    private File pythonDir;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -66,7 +50,6 @@ public class MainActivity extends AppCompatActivity {
         startButton = findViewById(R.id.startButton);
         
         hermesDir = new File(getFilesDir(), "hermes");
-        pythonDir = new File(hermesDir, "python");
         
         // Check and request permissions
         checkAndRequestPermissions();
@@ -75,58 +58,10 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void checkAndRequestPermissions() {
-        List<String> permissionsNeeded = new ArrayList<>();
-        
-        // Check storage permissions
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) 
-                    != PackageManager.PERMISSION_GRANTED) {
-                permissionsNeeded.add(Manifest.permission.READ_EXTERNAL_STORAGE);
-            }
-        } else {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) 
-                    != PackageManager.PERMISSION_GRANTED) {
-                permissionsNeeded.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
-            }
-        }
-        
-        // Check network permission (usually normal)
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.INTERNET) 
-                != PackageManager.PERMISSION_GRANTED) {
-            permissionsNeeded.add(Manifest.permission.INTERNET);
-        }
-        
-        if (!permissionsNeeded.isEmpty()) {
-            ActivityCompat.requestPermissions(
-                    this,
-                    permissionsNeeded.toArray(new String[0]),
-                    REQUEST_CODE_PERMISSIONS
-            );
-        } else {
-            initializeHermes();
-        }
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int requestCode, 
-            @NonNull String[] permissions, @NonNull int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        
-        if (requestCode == REQUEST_CODE_PERMISSIONS) {
-            boolean allGranted = true;
-            for (int result : grantResults) {
-                if (result != PackageManager.PERMISSION_GRANTED) {
-                    allGranted = false;
-                    break;
-                }
-            }
-            
-            if (allGranted) {
-                initializeHermes();
-            } else {
-                showErrorAndExit("Permissions are required to run Hermes Agent");
-            }
-        }
+        // The app stores files in its private internal directory. It does not
+        // need legacy external-storage permissions to initialize. INTERNET is
+        // a normal install-time permission and must not be requested at runtime.
+        initializeHermes();
     }
 
     private void initializeHermes() {
@@ -148,15 +83,17 @@ public class MainActivity extends AppCompatActivity {
                     
                     // Check if Hermes is already installed
                     if (!isHermesInstalled()) {
-                        publishProgress("Downloading Hermes...");
-                        return downloadAndInstallHermes();
+                        initializationError = "Hermes Python modules are not bundled in this APK yet. The Android package needs an Android-compatible Hermes dependency build before the agent can start.";
+                        publishProgress("Hermes modules are missing from this APK.");
+                        return false;
                     }
                     
                     publishProgress("Hermes is ready!");
                     return true;
                     
                 } catch (Exception e) {
-                    Log.e(TAG, "Initialization failed: " + e.getMessage(), e);
+                    initializationError = "Initialization failed: " + e.getMessage();
+                    Log.e(TAG, initializationError, e);
                     return false;
                 }
             }
@@ -174,7 +111,7 @@ public class MainActivity extends AppCompatActivity {
                     startButton.setVisibility(View.VISIBLE);
                     startButton.setEnabled(true);
                 } else {
-                    showErrorAndExit("Failed to initialize Hermes Agent");
+                    showErrorAndExit(initializationError);
                 }
             }
         }.execute();
@@ -190,13 +127,6 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception e) {
             return false;
         }
-    }
-
-    private boolean downloadAndInstallHermes() {
-        // With Chaquopy, hermes-agent is installed via pip during build
-        // No need to download at runtime - it's already bundled in the APK
-        Log.i(TAG, "Hermes is pre-installed via Chaquopy pip configuration");
-        return true;
     }
 
     private void startHermes() {

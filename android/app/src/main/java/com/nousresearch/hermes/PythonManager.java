@@ -75,15 +75,10 @@ public class PythonManager {
     }
 
     public static void shutdown() {
-        try {
-            if (pythonInstance != null) {
-                // Clean up Python resources
-                pythonInstance.close();
-            }
-            isInitialized = false;
-            Log.i(TAG, "Python runtime shutdown");
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to shutdown Python: " + e.getMessage(), e);
-        }
+        // Chaquopy's Python interpreter is process-wide and the Python class
+        // has no close() method. Closing it from Activity.onDestroy() would
+        // also break a running Service, so keep the interpreter alive until
+        // Android terminates the app process.
+        Log.i(TAG, "Keeping the process-wide Python runtime alive");
     }
 }

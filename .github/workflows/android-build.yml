@@ -52,7 +52,10 @@ jobs:
 
       - name: Install Android SDK packages
         run: |
-          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" "emulator" "tools"
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKMANAGER" || { echo "sdkmanager not found at $SDKMANAGER"; exit 1; }
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-34" "build-tools;34.0.0" "emulator"
 
       - name: Cache Gradle dependencies
         uses: actions/cache@v3
@@ -79,37 +82,16 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Building version: $VERSION"
 
-      - name: Create keystore directory
-        run: mkdir -p android/app/keystore
-
-      - name: Create debug keystore
-        run: |
-          # Create a debug keystore for unsigned builds
-          keytool -genkey -v -keystore android/app/keystore/debug.keystore \
-            -storepass android -alias androiddebugkey -keypass android \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=Android Debug,O=Android,C=US"
-
-      - name: Update version in build.gradle
-        run: |
-          # Update versionCode and versionName in build.gradle
-          VERSION=${{ steps.version.outputs.version }}
-          VERSION_CODE=$(echo "$VERSION" | tr -d '.')
-          sed -i "s/versionCode 1/versionCode $VERSION_CODE/" android/app/build.gradle
-          sed -i "s/versionName \"1.0.0\"/versionName \"$VERSION\"/" android/app/build.gradle
-
       - name: Build debug APK
-        run: |
-          cd android
-          chmod +x gradle/wrapper/gradle-wrapper.jar
-          ./gradlew clean assembleDebug --stacktrace --no-daemon
+        env:
+          APK_VERSION: ${{ steps.version.outputs.version }}
+        run: bash scripts/build_android_apk.sh --version "$APK_VERSION" --debug
 
-      - name: Rename APK
-        run: |
-          VERSION=${{ steps.version.outputs.version }}
-          APK_NAME="Hermes-Agent-${VERSION}-debug.apk"
-          cp android/app/build/outputs/apk/debug/app-debug.apk "$APK_NAME"
-          echo "apk_name=$APK_NAME" >> $GITHUB_OUTPUT
+      - name: Set APK artifact name
+        id: apk
+        env:
+          APK_VERSION: ${{ steps.version.outputs.version }}
+        run: echo "apk_name=Hermes-Agent-${APK_VERSION}-debug.apk" >> "$GITHUB_OUTPUT"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4

@@ -1,7 +1,8 @@
 plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
-    id 'com.chaquo.python' version '12.0.1'
+    // Hermes' current runtime dependencies target Python 3.14.
+    id 'com.chaquo.python' version '17.1.0'
 }
 
 android {
@@ -12,13 +13,18 @@ android {
         applicationId "com.nousresearch.hermes"
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName "1.0.0"
+        versionCode (project.findProperty('androidVersionCode')?.toString()?.toInteger() ?: 1)
+        versionName (project.findProperty('androidVersionName')?.toString() ?: "1.0.0")
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
-
-        // Enable multidex for large apps
         multiDexEnabled true
+
+        // This only selects the embedded interpreter. It does not package the
+        // full Hermes agent; setup.py rejects PyPI wheel builds and Android
+        // wheels for the complete dependency set have not been verified.
+        python {
+            version "3.14"
+        }
     }
 
     buildTypes {
@@ -26,7 +32,6 @@ android {
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            signingConfig signingConfigs.release
         }
         debug {
             minifyEnabled false
@@ -60,34 +65,25 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.11.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
-    
-    // Chaquopy will be applied via plugin, no need for explicit dependency
+
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test.ext:junit:1.1.5'
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'
 }
 
-// Configuration for Chaquopy (Python for Android)
-android {
-    defaultConfig {
-        python {
-            version "3.10"
-            pip {
-                // Install hermes-agent from PyPI
-                install "hermes-agent"
-            }
-        }
-    }
-}
+// Release signing is intentionally conditional. Debug builds work without a
+// private keystore; release builds must opt in with real credentials.
+def releaseKeystore = file('keystore/hermes-release.keystore')
+def releaseStorePassword = System.getenv('ANDROID_STORE_PASSWORD')
+def releaseKeyPassword = System.getenv('ANDROID_KEY_PASSWORD')
+def releaseKeyAlias = System.getenv('ANDROID_KEY_ALIAS') ?: 'hermes'
 
-// Signing configuration for release builds
-android {
-    signingConfigs {
-        release {
-            storeFile file('keystore/hermes-release.keystore')
-            storePassword System.getenv('ANDROID_STORE_PASSWORD') ?: 'android'
-            keyAlias System.getenv('ANDROID_KEY_ALIAS') ?: 'hermes'
-            keyPassword System.getenv('ANDROID_KEY_PASSWORD') ?: 'android'
-        }
+if (releaseKeystore.exists() && releaseStorePassword && releaseKeyPassword) {
+    android.signingConfigs.create('hermesRelease') {
+        storeFile releaseKeystore
+        storePassword releaseStorePassword
+        keyAlias releaseKeyAlias
+        keyPassword releaseKeyPassword
     }
+    android.buildTypes.release.signingConfig android.signingConfigs.hermesRelease
 }

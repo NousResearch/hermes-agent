@@ -135,6 +135,8 @@ def idp(monkeypatch, tmp_path):
 
     monkeypatch.setattr(pkce.webbrowser, "open", browser)
     monkeypatch.setattr("hermes_cli.auth_device_flow._can_open_graphical_browser", lambda: True)
+    # A local session unless a test says otherwise: run over SSH, these tests would take the paste path.
+    monkeypatch.setattr("hermes_cli.auth_device_flow._is_remote_session", lambda: False)
     yield server
     server.stop()
 
@@ -569,3 +571,30 @@ def test_sign_in_is_refused_where_nobody_can_answer_the_browser(idp, monkeypatch
     with pytest.raises(SystemExit, match="your own terminal"):
         _auth("add")
     assert idp.token_requests == [] and idp.opened == []
+
+
+def test_sign_in_from_a_remote_host_by_pasting_the_redirect_address(idp, monkeypatch, capsys):
+    """Hermes on a server, the browser on a laptop: the redirect cannot reach the loopback, so the user pastes
+    the address the browser ended on."""
+    _plugin(oauth=[_entry(idp)])
+    monkeypatch.setattr("hermes_cli.auth_device_flow._is_remote_session", lambda: True)
+    monkeypatch.setattr("hermes_cli.auth_device_flow._can_open_graphical_browser", lambda: False)
+    landed, printed = [], []
+
+    def user_pastes(prompt: str = "") -> str:
+        printed.append(capsys.readouterr())
+        authorize_url = next(line.strip() for line in printed[-1].out.splitlines()
+                             if line.strip().startswith(f"{idp.base}/authorize?"))
+        landed.append(idp.landing_address(authorize_url))
+        return landed[0]
+
+    monkeypatch.setattr("builtins.input", user_pastes)
+    assert _auth("add") is True
+
+    exchange = idp.token_requests[-1]
+    assert (exchange["client_id"], exchange["client_secret"]) == (CLIENT_ID, SECRET)
+    assert exchange["redirect_uri"] == landed[0].split("?", 1)[0] and idp.opened == []
+    assert _grant()["refresh_token"] in idp.refresh_tokens
+    printed.append(capsys.readouterr())
+    everything = "".join(part.out + part.err for part in printed)
+    assert exchange["code"] not in everything and SECRET not in everything

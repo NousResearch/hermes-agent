@@ -83,3 +83,24 @@ def pin_hermes_tree_on_pythonpath(worker_env: dict, repo_root: Path) -> dict:
     pinned = [root, *([str(dependency)] if dependency is not None else [])]
     worker_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys([*pinned, *existing]))
     return worker_env
+
+
+def build_external_worker_env(profile_home: Path, multiplex_active: bool, repo_root: Path) -> dict:
+    """Build the unattended worker's scoped environment without leaking launch-profile state."""
+    from cron.scheduler import _fire_secret_scope
+    from cron.worker_bootstrap import WORKER_MARKER
+    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
+    from tools.process_registry import systemd_user_bus_env
+
+    # The worker re-runs dotenv/managed env hydration at boot; preserve managed keys.
+    with _fire_secret_scope():
+        worker_env = strip_launch_profile_env(build_subprocess_env(
+            scrub_secrets=multiplex_active, inherit_profile_home=True,
+            extra={"HERMES_HOME": str(profile_home)},
+        ))
+    worker_env = systemd_user_bus_env(worker_env)
+    for presence_var in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK"):
+        worker_env.pop(presence_var, None)
+    worker_env = pin_hermes_tree_on_pythonpath(worker_env, repo_root)
+    worker_env[WORKER_MARKER] = "1"
+    return worker_env

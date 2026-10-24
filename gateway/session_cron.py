@@ -224,9 +224,11 @@ def _run_identified(run_job, job, execution_id, **kwargs):
     the caller entered (so the row and the profile name are this profile's)."""
     from cron.execution_identity import enter_cron_execution, exit_cron_execution
     from cron.executions import get_execution
+    from cron.approval_relay_scope import presentation_scope
     token = enter_cron_execution(job, execution_id, get_execution(execution_id) or {})
     try:
-        return run_job(job, execution_id=execution_id, **kwargs)
+        with presentation_scope(kwargs.get('cancel_event')):
+            return run_job(job, execution_id=execution_id, **kwargs)
     finally:
         exit_cron_execution(token)
 

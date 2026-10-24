@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.nousresearch.com/schemas/skill-contract.schema.json",
+  "title": "Hermes Skill Contract",
+  "description": "A versioned, falsifiable contract for a Hermes skill. Ports the Skill-V (phi, p, rho, nu) shape (arXiv:2610.11781) over SkillOps' executable-artifact discipline (arXiv:2605.13716), with Hermes-specific additions: difficulty-bucketed outcome evidence and a human-review decision-aid gate. See skill-contract-schema.md for field-by-field rationale and worked examples.",
+  "type": "object",
+  "required": [
+    "skill_id",
+    "version",
+    "preconditions",
+    "applicability",
+    "outcome_criteria",
+    "lineage"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "skill_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9]$",
+      "description": "Stable identifier matching the skill's directory name (e.g. 'pdf', 'github-code-review'). Never changes across versions; a renamed skill is a new skill_id with a migration note in lineage.deprecates."
+    },
+
+    "version": {
+      "type": "object",
+      "required": ["skill_version", "rubric_version"],
+      "additionalProperties": false,
+      "properties": {
+        "skill_version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$",
+          "description": "SemVer MAJOR.MINOR.PATCH of the skill's procedure/scope (the p_i and phi_i parts). See 'Version bump policy' in the prose doc."
+        },
+        "rubric_version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$",
+          "description": "SemVer of outcome_criteria alone. Increments independently of skill_version — a skill can get several rubric revisions (tightened thresholds, new assertions) before its procedure changes at all, matching Skill-V Table 8's 'Skill v1->v2; Rubric v2->v3' pattern."
+        }
+      }
+    },
+
+    "preconditions": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Machine-checkable facts that MUST hold before the skill is invoked. Each is a boolean check, not prose, so a router/orchestrator can evaluate the whole list without invoking the skill.",
+      "items": {
+        "type": "object",
+        "required": ["id", "description", "check"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "description": "Stable short key, e.g. 'tool_available_pdf_cli'." },
+          "description": { "type": "string", "description": "Human-readable statement of the condition." },
+          "check": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "tool_available",
+                  "env_var_set",
+                  "file_exists",
+                  "credential_present",
+                  "input_schema_match",
+                  "command_exits_zero",
+                  "capability_flag"
+                ],
+                "description": "The class of mechanical check a worker/orchestrator runs to evaluate this precondition."
+              },
+              "target": { "type": "string", "description": "What the check operates on: a tool name, env var name, file glob, credential key, JSON Schema $id, or shell command." },
+              "args": { "type": "object", "description": "Optional kind-specific parameters (e.g. timeout, expected exit code, schema inline)." }
+            },
+            "additionalProperties": true
+          },
+          "hard": {
+            "type": "boolean",
+            "default": true,
+            "description": "If true, failing this precondition means the skill MUST NOT be invoked (router hard-fails). If false, it's an advisory/soft precondition the invoker may override with justification logged in the trajectory."
+          }
+        }
+      }
+    },
+
+    "applicability": {
+      "type": "object",
+      "required": ["scope", "protected_constraints"],
+      "additionalProperties": false,
+      "description": "Where this skill is valid to apply — the phi_i of Skill-V. Distinct from preconditions: preconditions are 'can I invoke right now' (environment state); applicability is 'is this skill even the right tool for this kind of task' (task/context scope). Both are evaluated before invocation, but applicability is what gates which evidence trajectories are allowed into this skill's replay buffer for outcome scoring (see outcome_criteria.evidence_scope).",
+      "properties": {
+        "scope": {
+          "type": "object",
+          "required": ["task_types", "excluded_contexts"],
+          "properties": {
+            "task_types": {
+              "type": "array",
+              "items": { "type": "string" },
+              "minItems": 1,
+              "description": "Closed or open tag vocabulary describing the kinds of task this skill applies to, e.g. ['pdf.fill-form', 'pdf.extract-text']. An orchestrator matches a task's declared type(s) against this list; no match => skill is not a candidate."
+            },
+            "input_schema_ref": {
+              "type": "string",
+              "description": "Optional pointer (file path or $id) to a JSON Schema the task's input must validate against for this skill to be considered applicable. Objectively checkable via schema validation, not judgment."
+            },
+            "excluded_contexts": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Explicit negative scope — contexts where this skill looks applicable by task_types but is known NOT to apply (e.g. ['encrypted-pdf-without-password', 'scanned-image-only-pdf']). Required field (can be empty array) so authors are forced to think about known-bad territory rather than leaving it implicit."
+            }
+          }
+        },
+        "protected_constraints": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Semantic invariants that NO revision (of any version) may alter without a MAJOR skill_version bump — e.g. 'never writes outside the task workspace', 'never executes model-generated code'. Ported directly from Skill-V's phi_i protected semantic constraints (App. B.2). These are the diff the Evidence Gate checks for exact preservation on MINOR/PATCH bumps (see outcome_criteria.non_regression)."
+        }
+      }
+    },
+
+    "outcome_criteria": {
+      "type": "object",
+      "required": ["hard_constraints", "weighted_criteria", "pass_threshold", "non_regression"],
+      "additionalProperties": false,
+      "description": "The executable rubric rho_i. Every criterion names an evidence_matcher — a fixed, deterministic grading function — so 'did this skill succeed' is answered by re-running a check, not by re-reading prose. This is what makes the contract falsifiable instead of aspirational.",
+      "properties": {
+        "hard_constraints": {
+          "type": "array",
+          "description": "Binary gates. ANY failure here means the invocation is scored FAIL regardless of weighted score (mirrors Skill-V's H(tau)=0 gate term in ŷ_rub = 1[q(tau)>=eta AND H(tau)=0]).",
+          "items": { "$ref": "#/$defs/criterion" }
+        },
+        "weighted_criteria": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Soft, weighted criteria whose weighted sum is compared to pass_threshold. Mirrors Skill-V's C_i = {c_ij}.",
+          "items": { "$ref": "#/$defs/criterion" }
+        },
+        "pass_threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Minimum weighted-criteria score (weights normalized to sum to 1) required to pass, given all hard_constraints already passed. Skill-V's eta=0.7 is the literature default; Hermes authors set this per skill."
+        },
+        "evidence_scope": {
+          "type": "object",
+          "properties": {
+            "difficulty_bucket": {
+              "type": "string",
+              "enum": ["trivial", "standard", "hard", "adversarial"],
+              "description": "Hermes addition not present in either source paper (synthesis note section b flags that neither paper normalizes for task difficulty). Each recorded trajectory used as evidence MUST be tagged with a difficulty bucket; pass/fail rates and the non_regression check below are computed per-bucket, not pooled, so a skill cannot look healthy by being scored only on trivial tasks or look broken by being scored only on hard ones."
+            },
+            "min_sample_per_bucket": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 5,
+              "description": "Minimum number of evidence trajectories required in a difficulty bucket before that bucket's pass rate is trusted for maintenance decisions (retirement, promotion, revision gating). Explicitly fills the gap flagged in the synthesis note (section d): SkillOps gives no minimum-sample guard at all."
+            }
+          }
+        },
+        "non_regression": {
+          "type": "object",
+          "required": ["metrics", "replay_buffer_size"],
+          "description": "The Evidence Gate (Skill-V Eq. 7, synthesis note section c). A candidate revision to outcome_criteria is only accepted if, replayed over the SAME stored evidence trajectories, it does not regress on any of these metrics, and protected_constraints are preserved exactly.",
+          "properties": {
+            "metrics": {
+              "type": "array",
+              "items": { "type": "string", "enum": ["disc_rate", "false_negative_rate", "balanced_accuracy"] },
+              "minItems": 1,
+              "description": "disc_rate must not increase, false_negative_rate must not increase, balanced_accuracy must not decrease, relative to the prior rubric_version, on the stored replay buffer."
+            },
+            "replay_buffer_size": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Number of stored (trajectory, rubric_judgment, actual_outcome) tuples retained for replay. Must be >= evidence_scope.min_sample_per_bucket * number of buckets in use."
+            }
+          }
+        }
+      }
+    },
+
+    "lineage": {
+      "type": "object",
+      "required": ["previous_version", "update_reason", "evidence_case_ids"],
+      "additionalProperties": false,
+      "description": "Audit trail, ported from Skill-V's nu_i (Table 7/8): skill version, rubric version, traceability, update reason, evidence case identifiers.",
+      "properties": {
+        "previous_version": {
+          "type": ["string", "null"],
+          "pattern": "^\\d+\\.\\d+\\.\\d+$",
+          "description": "The skill_version this record supersedes, or null for the first version of a skill."
+        },
+        "update_reason": {
+          "type": "string",
+          "description": "Free-text but mandatory: why this version exists (e.g. 'tightened hard_constraints after false-positive on encrypted PDFs, evidence case ec-0042')."
+        },
+        "evidence_case_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Identifiers of specific trajectories/incidents that motivated this change. Empty array only permitted for the very first version of a skill (no history yet)."
+        },
+        "reviewed_by": {
+          "type": "string",
+          "description": "Optional: identity (human or 'automated-gate-only') of whoever approved the change. See 'Human review' note in the prose doc for why this is not purely automated by default in Hermes, unlike both source papers."
+        },
+        "deprecates": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "skill_id values this version supersedes/renames, if any (migration marker)."
+        }
+      }
+    },
+
+    "retirement_state": {
+      "type": "object",
+      "description": "Hermes addition, not in either source paper as a working mechanism (SkillOps hard-deletes with an unverifiable threshold; Skill-V has none at all — synthesis note section d). Archive-first, never hard-delete from this schema's perspective: a retired skill's record persists with status='archived'.",
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["active", "candidate_for_retirement", "archived"],
+          "default": "active"
+        },
+        "candidate_reason": { "type": "string", "description": "Why this skill was flagged (e.g. 'utility < 0.1 over last 30 evidence cases AND a red/duplicate skill exists')." },
+        "min_sample_met": { "type": "boolean", "description": "Whether evidence_scope.min_sample_per_bucket was satisfied before this status was set — a retirement decision made without this true is invalid." },
+        "archived_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+
+  "$defs": {
+    "criterion": {
+      "type": "object",
+      "required": ["id", "description", "evidence_matcher"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "description": { "type": "string" },
+        "weight": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Required for weighted_criteria entries (ignored/omitted for hard_constraints, which are implicitly all-or-nothing)."
+        },
+        "evidence_matcher": {
+          "type": "object",
+          "required": ["kind"],
+          "description": "The objective, re-runnable check that decides whether this criterion held for a given trajectory. Every 'kind' maps to a deterministic procedure — including llm_judge_rubric, which is pinned to a fixed model/prompt/threshold so the same trajectory always yields the same verdict, not open-ended judgment.",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "exit_code_zero",
+                "exact_match",
+                "regex_match",
+                "schema_validates",
+                "file_hash_equals",
+                "golden_trace_replay",
+                "external_command_assert",
+                "llm_judge_rubric"
+              ]
+            },
+            "target": { "type": "string", "description": "What is being checked (file path, output field, command)." },
+            "expected": { "description": "Expected value/pattern/schema reference, shape depends on kind." },
+            "params": { "type": "object", "description": "kind-specific parameters, e.g. {model, prompt_ref, threshold} for llm_judge_rubric or {command, timeout_s} for external_command_assert." }
+          },
+          "additionalProperties": true
+        }
+      }
+    }
+  }
+}

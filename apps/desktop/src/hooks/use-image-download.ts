@@ -14,15 +14,21 @@ const MIME_EXTENSIONS: Record<string, string> = {
 
 const KNOWN_IMAGE_EXTENSION_RE = /\.(?:apng|avif|bmp|gif|ico|jpe?g|png|svg|tiff?|webp)$/i
 
-export function imageFilename(src?: string): string {
-  if (!src) {
+function lastPathSegment(value: string): string {
+  return value.split(/[?#]/, 1)[0]?.split(/[\\/]/).filter(Boolean).pop() || ''
+}
+
+export function imageFilename(src?: string, preferredFilename?: string): string {
+  const candidate = preferredFilename || src
+
+  if (!candidate || candidate.startsWith('data:')) {
     return 'image'
   }
 
   try {
-    return new URL(src, window.location.href).pathname.split('/').filter(Boolean).pop() || 'image'
+    return new URL(candidate, window.location.href).pathname.split('/').filter(Boolean).pop() || 'image'
   } catch {
-    return src.split(/[\\/]/).filter(Boolean).pop() || 'image'
+    return lastPathSegment(candidate) || 'image'
   }
 }
 
@@ -30,8 +36,8 @@ export function imageFilename(src?: string): string {
  *  etc.) often end in an extensionless content hash — without an extension the
  *  OS save dialog shows "All Files" and the saved file won't open by
  *  double-click, so append one derived from the blob's MIME type. */
-export function downloadFilename(src: string, mimeType?: string): string {
-  const base = imageFilename(src)
+export function downloadFilename(src: string, mimeType?: string, preferredFilename?: string): string {
+  const base = imageFilename(src, preferredFilename)
 
   if (KNOWN_IMAGE_EXTENSION_RE.test(base)) {
     return base
@@ -51,7 +57,7 @@ function isMissingIpcHandler(error: unknown): boolean {
   return message.includes("No handler registered for 'hermes:saveImageFromUrl'")
 }
 
-async function startBrowserDownload(src: string) {
+async function startBrowserDownload(src: string, preferredFilename?: string) {
   const response = await fetch(src)
 
   if (!response.ok) {
@@ -62,7 +68,7 @@ async function startBrowserDownload(src: string) {
   const blobUrl = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = blobUrl
-  link.download = downloadFilename(src, blob.type)
+  link.download = downloadFilename(src, blob.type, preferredFilename)
   link.rel = 'noopener noreferrer'
   document.body.appendChild(link)
   link.click()
@@ -72,7 +78,7 @@ async function startBrowserDownload(src: string) {
 
 /** Save an image to disk via the desktop IPC bridge, falling back to a browser
  *  download when the handler is unavailable (older shell / web preview). */
-export function useImageDownload(src?: string) {
+export function useImageDownload(src?: string, preferredFilename?: string) {
   const { t } = useI18n()
   const copy = t.desktop
   const [saving, setSaving] = useState(false)
@@ -86,18 +92,23 @@ export function useImageDownload(src?: string) {
 
     try {
       if (window.hermesDesktop?.saveImageFromUrl) {
-        if (await window.hermesDesktop.saveImageFromUrl(src)) {
-          notify({ kind: 'success', title: copy.imageSaved, message: imageFilename(src) })
+        if (
+          await window.hermesDesktop.saveImageFromUrl({
+            url: src,
+            suggestedName: imageFilename(src, preferredFilename)
+          })
+        ) {
+          notify({ kind: 'success', title: copy.imageSaved, message: imageFilename(src, preferredFilename) })
         }
 
         return
       }
 
-      await startBrowserDownload(src)
+      await startBrowserDownload(src, preferredFilename)
     } catch (error) {
       if (isMissingIpcHandler(error)) {
         try {
-          await startBrowserDownload(src)
+          await startBrowserDownload(src, preferredFilename)
           notify({ kind: 'info', title: copy.downloadStarted, message: copy.restartToUseSaveImage })
         } catch (fallbackError) {
           notifyError(fallbackError, copy.restartToSaveImages)
@@ -110,7 +121,7 @@ export function useImageDownload(src?: string) {
     } finally {
       setSaving(false)
     }
-  }, [copy, saving, src])
+  }, [copy, preferredFilename, saving, src])
 
   return { download, saving }
 }

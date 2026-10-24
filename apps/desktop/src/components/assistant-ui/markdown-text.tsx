@@ -461,6 +461,7 @@ function MarkdownImageContent({
               ? 'absolute left-0 top-0 block h-full w-fit'
               : 'block w-fit max-w-[min(100%,var(--image-preview-max-width))]'
           }
+          downloadName={name}
           onError={event => {
             image.onError()
             onError?.(event)

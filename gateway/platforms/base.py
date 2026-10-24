@@ -436,8 +436,9 @@ from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
-from hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_default_hermes_root, get_hermes_dir, get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 from agent.provider_media import GENERATED_SUBDIR, MEDIA_CACHE_MAX_AGE_HOURS
+from gateway.platforms.base_delivery_roots import deliverables_root, profile_delivery_roots
 
 if TYPE_CHECKING:
     from agent.display import ToolPreview
@@ -759,6 +760,9 @@ MEDIA_DELIVERY_SAFE_ROOTS = (
     IMAGE_CACHE_DIR, AUDIO_CACHE_DIR, VIDEO_CACHE_DIR, DOCUMENT_CACHE_DIR, SCREENSHOT_CACHE_DIR,
     *(_HERMES_HOME / d for d in (
         "image_cache", "audio_cache", "video_cache", "document_cache", "browser_screenshots")),
+    # Durable user-facing output (#126419): nothing prunes it, so a deliverable
+    # written there is still there when the user comes back for it.
+    deliverables_root(_HERMES_HOME),
     # Canonical cache layout, alongside the legacy *_cache dirs (installs may have both).
     *(_HERMES_HOME / "cache" / d for d in _MEDIA_DELIVERY_CACHE_SUBDIRS))
 
@@ -796,16 +800,6 @@ _ROOT_CREDENTIAL_PATHS = (
     "sessions", "browser-profile", *_sqlite_files("state.db"), *_sqlite_files("kanban.db"))
 
 
-def _profile_cache_roots() -> list[Path]:
-    """Per-profile cache roots ``<root>/profiles/<name>/cache/{images,...}`` and every home's connector
-    downloads dir (the static safe roots cover only the launch HERMES_HOME). Enumerated at check
-    time so profiles created after startup count, and allowlisted BEFORE the ``/root`` denylist,
-    which otherwise wins when HERMES_HOME is symlinked under a denied prefix (#31733).
-    """
-    return [*(p / "cache" / subdir for p in _profile_dirs() for subdir in _MEDIA_DELIVERY_CACHE_SUBDIRS),
-            *(p / CONNECTOR_DOWNLOADS_SUBDIR for p in (get_hermes_home(), *_profile_dirs()))]
-
-
 def _profile_dirs() -> list[Path]:
     """Every ``<root>/profiles/<name>`` directory, read at check time."""
     try:
@@ -817,7 +811,7 @@ def _profile_dirs() -> list[Path]:
 def _credential_home_roots() -> list[Path]:
     """Every Hermes home whose credential stores the denylist must cover: the ACTIVE home
     (the per-turn HERMES_HOME override under ``gateway.multiplex_profiles``), the shared root
-    and every ``<root>/profiles/*``. Enumerated at check time like ``_profile_cache_roots`` on
+    and every ``<root>/profiles/*``. Enumerated at check time like the delivery roots on
     the allow side — a denylist frozen at import covers only the launch profile, so a
     ``MEDIA:<root>/profiles/<other>/.env`` emitted in any profile's turn would upload it."""
     return list(dict.fromkeys((get_hermes_home(), _HERMES_ROOT, *_profile_dirs())))
@@ -855,7 +849,7 @@ def _media_delivery_allowed_roots() -> list[Path]:
         root for chunk in media_delivery_allow_dirs().split(os.pathsep)
         for raw_root in chunk.split(",")
         if (root := Path(os.path.expanduser(raw_root.strip()))).is_absolute())
-    return [*map(Path, MEDIA_DELIVERY_SAFE_ROOTS), *_profile_cache_roots(),
+    return [*map(Path, MEDIA_DELIVERY_SAFE_ROOTS), *profile_delivery_roots(),
             *_kanban_attachment_roots(), *operator_roots]
 
 

@@ -28,7 +28,7 @@ Three pieces fit together:
    `text_to_speech` for audio, and so on.
 
 2. **The gateway scans agent responses for file paths.** Any absolute path
-   (`~/.hermes/cache/scratch/...`) or home-relative path (`~/...`) ending in a supported
+   (`~/.hermes/deliverables/...`) or home-relative path (`~/...`) ending in a supported
    extension gets extracted. Paths inside code blocks and inline code are
    ignored so code samples are never mutilated.
 
@@ -71,10 +71,16 @@ persona in `~/.hermes/SOUL.md`, or as a named preset under
 via `/personality`).
 
 The mechanic the agent has to use is simple: render the file to an
-absolute path (e.g. `~/.hermes/cache/scratch/q3-revenue.png`) and mention that path as
+absolute path (e.g. `~/.hermes/deliverables/q3-revenue.png`) and mention that path as
 plain text in the reply. The gateway does the rest. Paths inside
 fenced code blocks or backticks are ignored so code samples are never
 mutilated.
+
+`~/.hermes/deliverables/` is the durable home for these files: Hermes
+creates it on first use and nothing prunes it, so the file is still
+there when you come back for it. The scratch directory is the
+opposite — it is swept once it goes idle, so a deliverable parked
+there disappears 24 hours after its last write.
 
 ## Kanban: artifacts ride completion notifications
 

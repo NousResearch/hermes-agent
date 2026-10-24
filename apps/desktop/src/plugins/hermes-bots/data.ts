@@ -1012,6 +1012,8 @@ export function mergeMultiSourceRoster(
     }
   }
 
+  const activeSource = union?.sources?.find(source => source.connectionId === activeId)
+
   const activeByName = new Map<string, RosterRow>()
 
   // Treat the rich list as one row per active-source profile. Clone every
@@ -1032,7 +1034,15 @@ export function mergeMultiSourceRoster(
     if (!activeByName.has(name)) {
       activeByName.set(name, {
         ...profile,
-        name
+        name,
+        ...(activeId && activeId !== 'local'
+          ? {
+              connectionId: activeId,
+              connectionKind: activeSource?.kind || profile.connectionKind,
+              connectionLabel: activeSource?.label || activeId,
+              sourceScoped: true
+            }
+          : {})
       })
     }
   }

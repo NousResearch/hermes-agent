@@ -157,9 +157,12 @@ async def test_missing_adapter_degrades_only_the_unserved_enabled_platform(monke
             # A registered plugin whose adapter creation fails on missing creds needs a config change:
             # flagged once, never queued (else it re-warns forever at the backoff cap on fleet nodes, #5196).
             Platform.BLUEBUBBLES: PlatformConfig(enabled=True),
+            # Relay enabled without a relay URL: startup never registers it, so no retry can heal it.
+            Platform.RELAY: PlatformConfig(enabled=True),
         },
         lambda platform, platform_config: _HealthyAdapter() if platform is Platform.TELEGRAM else None,
     )
+    monkeypatch.delenv("GATEWAY_RELAY_URL", raising=False)
     try:
         assert await runner.start() is True
         state = read_runtime_status()
@@ -172,6 +175,8 @@ async def test_missing_adapter_degrades_only_the_unserved_enabled_platform(monke
         assert (bluebubbles["state"], bluebubbles["error_code"]) == ("fatal", "adapter_unavailable")
         assert bluebubbles["needs_attention"] is True
         assert "Retrying" not in bluebubbles["error_message"]
+        relay = state["platforms"]["relay"]
+        assert (relay["state"], relay["error_code"]) == ("fatal", "adapter_unavailable")
         assert list(runner._failed_platforms) == [Platform.DISCORD]  # the reconnect watcher owns it
     finally:
         await runner.stop()

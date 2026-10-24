@@ -92,6 +92,33 @@ class TestSearchErrorGuard:
         assert res.error is None
         assert res.total_count >= 4
 
+    def test_context_line_ending_in_os_error_survives(self, method, tmp_path):
+        # A file whose CONTEXT line legitimately ends in "(os error N)". rg
+        # emits it as "<path>-1-context (os error 13)"; a suffix heuristic
+        # that ignores the exit code silently drops it from a *successful*
+        # search.
+        (tmp_path / "a.txt").write_text("context (os error 13)\nneedle\n")
+        res = _search(_ops(tmp_path), method, "needle", tmp_path, context=1)
+        assert res.error is None
+        contents = [m.content for m in res.matches]
+        assert "context (os error 13)" in contents, (
+            f"context line was dropped as a diagnostic: {contents!r}"
+        )
+        assert "needle" in contents
+
+    def test_files_only_path_ending_in_os_error_survives(self, method, tmp_path):
+        # A successful files-only result whose PATH ends in "(os error N)".
+        # It has no line number to exempt it from a blanket suffix rule.
+        sub = tmp_path / "dir-2"
+        sub.mkdir()
+        (sub / "good (os error 13)").write_text("needle\n")
+        res = _search(_ops(tmp_path), method, "needle", tmp_path,
+                      output_mode="files_only")
+        assert res.error is None
+        assert any("good (os error 13)" in f for f in res.files), (
+            f"files-only payload was dropped as a diagnostic: {res.files!r}"
+        )
+
 
 class TestSearchContentNewlineWarning:
     def test_odd_backslash_n_is_detected_as_regex_newline(self):
@@ -116,14 +143,102 @@ class TestSplitToolDiagnostics:
 
     def test_pure_error_has_empty_payload(self):
         out = "rg: regex parse error:\n    (?:[)\n       ^\nerror: unclosed character class\n"
-        diagnostics, payload = _split_tool_diagnostics(out)
+        diagnostics, payload = _split_tool_diagnostics(out, exit_code=2)
         assert payload.strip() == ""
         assert "regex parse error" in diagnostics
 
 
     def test_context_lines_and_separator_are_payload(self):
         out = "a.py:5:hit\na.py-6-after\n--\nb.py:9:hit\n"
-        diagnostics, payload = _split_tool_diagnostics(out)
+        diagnostics, payload = _split_tool_diagnostics(out, exit_code=0)
         assert diagnostics == ""
         assert "--" in payload
         assert "a.py-6-after" in payload
+
+
+    @pytest.mark.parametrize("line", [
+        # Older ripgrep (0.10) omits the "rg: " prefix on per-file I/O errors.
+        # The path contains "-<digit>", which the generic shape regex reads as
+        # a context line -- so without the os-error heuristic this diagnostic
+        # is mis-classified as a match.
+        "/tmp/pytest-686/locked.txt: Permission denied (os error 13)",
+        "/var/db-2/x: Operation not permitted (os error 1)",
+    ])
+    def test_unprefixed_old_ripgrep_os_error_is_a_diagnostic(self, line):
+        diagnostics, payload = _split_tool_diagnostics(line + "\n", exit_code=2)
+        assert payload.strip() == "", (
+            f"old-ripgrep diagnostic leaked into the payload: {payload!r}"
+        )
+        assert line in diagnostics
+
+
+    @pytest.mark.parametrize("line", [
+        # A REAL match whose matched content happens to end in "(os error N)".
+        # A blanket "endswith (os error N) => diagnostic" rule silently drops
+        # these; the guard must only fire on non-line-numbered lines.
+        "a.py:1:needle (os error 13)",
+        "src/io-3/mod.rs:42:    warn!(\"open failed (os error 2)\");",
+        "C:/proj/app.py:7:raise OSError(\"boom (os error 5)\")",
+        # ...including one whose content itself contains a ": " separator,
+        # which is the only structural tell the unprefixed diagnostic has.
+        "a.py:1:open: failed (os error 13)",
+    ])
+    def test_real_match_ending_in_os_error_is_kept(self, line):
+        for exit_code in (0, 2):
+            diagnostics, payload = _split_tool_diagnostics(
+                line + "\n", exit_code=exit_code
+            )
+            assert line in payload, (
+                f"legitimate match was discarded as a diagnostic "
+                f"(exit {exit_code}): {diagnostics!r}"
+            )
+            assert diagnostics.strip() == ""
+
+
+    @pytest.mark.parametrize("line", [
+        # A real `path-line-context` line whose CONTENT ends in the suffix.
+        # rg/grep emit context as "<path>-<line>-<content>"; scoping the
+        # suffix heuristic by exit code alone still has to keep these.
+        "a.txt-1-context (os error 13)",
+        "/tmp/pytest-686/a.txt-1-context (os error 13)",
+        # ...including content carrying its own ": " separator.
+        "a.txt-1-open: failed (os error 13)",
+    ])
+    def test_context_line_ending_in_os_error_is_kept(self, line):
+        for exit_code in (0, 2):
+            diagnostics, payload = _split_tool_diagnostics(
+                line + "\n", exit_code=exit_code
+            )
+            assert line in payload, (
+                f"legitimate context line was discarded as a diagnostic "
+                f"(exit {exit_code}): {diagnostics!r}"
+            )
+            assert diagnostics.strip() == ""
+
+
+    @pytest.mark.parametrize("line", [
+        # A successful files-only result whose PATH ends in the suffix. There
+        # is no line number to exempt it, so a blanket suffix rule eats it.
+        "dir-2/good (os error 13)",
+        "/tmp/pytest-686/dir-2/good (os error 13)",
+    ])
+    def test_files_only_path_ending_in_os_error_is_kept(self, line):
+        for exit_code in (0, 2):
+            diagnostics, payload = _split_tool_diagnostics(
+                line + "\n", exit_code=exit_code
+            )
+            assert line in payload, (
+                f"legitimate files-only path was discarded as a diagnostic "
+                f"(exit {exit_code}): {diagnostics!r}"
+            )
+            assert diagnostics.strip() == ""
+
+
+    def test_os_error_heuristic_does_not_run_on_a_successful_exit(self):
+        # rg/grep only emit per-file I/O diagnostics on an error exit (2), so
+        # on a successful search the heuristic can only produce false
+        # positives. Keep it scoped to the exit codes that can carry one.
+        line = "/tmp/pytest-686/locked.txt: Permission denied (os error 13)"
+        diagnostics, payload = _split_tool_diagnostics(line + "\n", exit_code=0)
+        assert line in payload
+        assert diagnostics.strip() == ""

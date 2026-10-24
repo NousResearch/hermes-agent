@@ -68,6 +68,10 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
         "IANA timezone (e.g. America/New_York). Blank uses the system timezone.",
         *_timezone_options(), searchable=True, clearable=True,
     ),
+    "file_tools.hosted_ocr": {
+        "description": "Hosted document OCR (uploads scanned pages to Firecrawl). Blank: on only "
+                       "with FIRECRAWL_API_KEY. false: off, even with a key.",
+    },
     "memory.provider": _select("Memory provider plugin", *_memory_provider_options()),
     "model": {
         "type": "string",
@@ -206,6 +210,7 @@ _CATEGORY_MERGE: dict[str, str] = {
     "human_delay": "display",
     "dashboard": "display",
     "code_execution": "agent",
+    "file_tools": "agent",
     "prompt_caching": "agent",
     "bot_mode": "agent",
     "goals": "agent",

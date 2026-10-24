@@ -2382,3 +2382,9 @@ updates:
 #   # This runs ONCE per process at startup, so it cannot replace a credential
 #   # that expires mid-session. For a single provider whose token needs
 #   # re-minting during a session, use `providers.<name>.key_cmd` instead.
+
+# Hosted OCR sends scanned document pages to Firecrawl's Parse endpoint for text extraction.
+# file_tools:
+#   hosted_ocr: null    # Default: on only when the profile has FIRECRAWL_API_KEY.
+#   # hosted_ocr: false # Off, even with a key. `true` adds nothing over null:
+#   #                   # the key stays the only way to turn it on.

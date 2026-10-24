@@ -1,0 +1,20 @@
+name: zoth
+repo: https://github.com/1nc0gn30/hermes-zoth
+sha: e11cb768a60adb71519bbb2ed275d877c8cab009
+description: Zoth Studio tool catalog and ZOTHOS local-service tools (search/open Studio tools, probe Zoth services on 127.0.0.1, pull published tools)
+maintainer: 1nc0gn30
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/1nc0gn30/hermes-zoth#readme
+version: "1.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+  - zoth_studio_search
+  - zoth_studio_tool
+  - zoth_status
+  - zoth_pull_tool
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

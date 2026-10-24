@@ -15,10 +15,18 @@ from utils import base_url_host_matches
 logger = logging.getLogger(__name__)
 
 
-def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: str) -> Optional[tuple[str, str]]:
+class RouteAuthUnavailable(RuntimeError):
+    """The resolved route has no credential that can authenticate a request."""
+
+
+def bind_route_entry(
+    agent: Any, entry: dict[str, Any], provider: str, model: str, *, require_auth: bool = False,
+) -> Optional[tuple[str, str]]:
     """Swap ``agent`` onto ``entry`` (a fallback-chain-shaped dict). Returns ``(old_model,
     old_provider)``, or None when the provider has no usable client. Sets ``_fallback_activated``
-    so the next turn's ``restore_primary_runtime`` reverts it; raises on a failed swap."""
+    so the next turn's ``restore_primary_runtime`` reverts it; raises on a failed swap.
+    ``require_auth`` raises ``RouteAuthUnavailable`` before anything is bound when a remote route
+    could not authenticate its next request (the fallback chain would otherwise loop on 401)."""
     from agent.auxiliary_client import resolve_provider_client
     from agent.chat_completion_helpers import (
         _fallback_api_mode_hint, _fallback_api_mode_resolved, _rebind_fallback_credential_pool,
@@ -58,6 +66,12 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
             api_mode = "chat_completions"
         elif not api_mode_explicit and api_mode == "chat_completions":
             api_mode = _fallback_api_mode_resolved(agent, provider, model, base_url)
+
+    if require_auth:
+        from agent.chat_completion_helpers import _fallback_destination_auth_failure
+        auth_failure = _fallback_destination_auth_failure(provider, base_url, client, api_key_hint)
+        if auth_failure:
+            raise RouteAuthUnavailable(f"{provider}/{model} {auth_failure}")
 
     old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
     # Clear the per-config context_length override so the new model's own context window is

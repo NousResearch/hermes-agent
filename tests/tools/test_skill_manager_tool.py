@@ -466,6 +466,26 @@ word word
         assert "escapes" in result["error"].lower()
         assert outside_file.read_text() == "old text here"
 
+    def test_patch_skill_md_breaking_frontmatter_rejected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _patch_skill("my-skill", "name: test-skill\n", "")
+            content = (tmp_path / "my-skill" / "SKILL.md").read_text(encoding="utf-8")
+
+        assert result["success"] is False
+        assert "Patch would break SKILL.md structure" in result["error"]
+        assert content == VALID_SKILL_CONTENT
+
+    def test_patch_supporting_file_named_skill_md_allowed_without_frontmatter(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            _write_file("my-skill", "references/SKILL.md", "old notes text")
+            result = _patch_skill("my-skill", "old notes", "new notes", file_path="references/SKILL.md")
+            content = (tmp_path / "my-skill" / "references" / "SKILL.md").read_text(encoding="utf-8")
+
+        assert result["success"] is True
+        assert content == "new notes text"
+
 
 class TestSkillMutationLock:
     def test_concurrent_patches_keep_both_updates(self, tmp_path):
@@ -581,8 +601,68 @@ class TestWriteFile:
         assert "escapes" in result["error"].lower()
         assert not (outside_dir / "owned.md").exists()
 
+    def test_write_file_to_skill_md_empty_content_rejected(self, tmp_path):
+        """#142069: write_file targeting SKILL.md must validate frontmatter and reject empty content."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file("my-skill", "SKILL.md", "")
+            content = (tmp_path / "my-skill" / "SKILL.md").read_text(encoding="utf-8")
+
+        assert result["success"] is False
+        assert "Content cannot be empty" in result["error"]
+        assert content == VALID_SKILL_CONTENT
+
+    def test_write_file_to_skill_md_invalid_frontmatter_rejected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file("my-skill", "SKILL.md", "no frontmatter content")
+            content = (tmp_path / "my-skill" / "SKILL.md").read_text(encoding="utf-8")
+
+        assert result["success"] is False
+        assert "frontmatter" in result["error"].lower()
+        assert content == VALID_SKILL_CONTENT
+
+    def test_write_file_to_skill_md_valid_succeeds(self, tmp_path):
+        valid_update = VALID_SKILL_CONTENT.replace("A valid test skill.", "Updated description.")
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file("my-skill", "SKILL.md", valid_update)
+            content = (tmp_path / "my-skill" / "SKILL.md").read_text(encoding="utf-8")
+
+        assert result["success"] is True
+        assert content == valid_update
+
+    def test_write_file_to_supporting_file_named_skill_md_allowed_without_frontmatter(self, tmp_path):
+        """Supporting files named SKILL.md under subdirectories are not root manifests and do not require frontmatter."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file("my-skill", "references/SKILL.md", "plain supporting notes")
+            content = (tmp_path / "my-skill" / "references" / "SKILL.md").read_text(encoding="utf-8")
+
+        assert result["success"] is True
+        assert content == "plain supporting notes"
+
 
 class TestRemoveFile:
+    def test_remove_skill_md_rejected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _remove_file("my-skill", "SKILL.md")
+
+        assert result["success"] is False
+        assert "Cannot remove SKILL.md" in result["error"]
+        assert (tmp_path / "my-skill" / "SKILL.md").exists()
+
+    def test_remove_supporting_file_named_skill_md_allowed(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            _write_file("my-skill", "templates/SKILL.md", "template content")
+            result = _remove_file("my-skill", "templates/SKILL.md")
+
+        assert result["success"] is True
+        assert not (tmp_path / "my-skill" / "templates" / "SKILL.md").exists()
+        assert (tmp_path / "my-skill" / "SKILL.md").exists()
+
     def test_remove_existing_file(self, tmp_path):
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)

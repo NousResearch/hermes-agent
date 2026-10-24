@@ -1,0 +1,40 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: tripo
+description: Generate, texture, rig, animate, and convert 3D models with Tripo.
+source: https://developers.tripo3d.ai
+
+# Tripo-hosted remote MCP (Streamable HTTP) with native OAuth 2.1 + Dynamic
+# Client Registration + PKCE. Nothing to install locally; no API key.
+transport:
+  type: http
+  url: https://openapi-mcp.tripo3d.ai/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - tripo
+    - tripo3d
+  hosts:
+    - tripo3d.ai
+    - tripo3d.com
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to Tripo
+  (or run `hermes mcp login tripo`). Approve access, then restart the
+  session so the tools load.
+
+  Generation and processing tools spend credits from your Tripo account.
+  The server asks the agent to show a plan of every billed step and wait
+  for your confirmation; balance, usage and task status are free.
+
+  China mainland accounts (tripo3d.com): change mcp_servers.tripo.url to
+  https://developers.tripo3d.com/mcp in config.yaml, then run
+  `hermes mcp login tripo` again.
+
+  You can review or turn off tools any time with:
+    hermes mcp configure tripo

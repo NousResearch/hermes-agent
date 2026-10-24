@@ -299,18 +299,57 @@ def _finish_debug(call_name: str, debug_call_data: dict, error_msg: Optional[str
     return None if error_msg is None else tool_error(error_msg)
 
 
-def web_search_tool(query: str, limit: int = 5) -> str:
+def _resolve_depth(requested: Any) -> tuple[str, Optional[str]]:
+    """``(depth, note)`` for a ``web_search`` call: *requested* (None = "standard") capped at
+    ``web.max_depth`` (default "standard"). *note* is one line for the result when the call was
+    lowered or *requested* is unknown, else None."""
+    from agent.web_search_provider import SEARCH_DEPTHS
+    cap = str(_load_web_config().get("max_depth") or "standard").strip().lower()
+    if cap not in SEARCH_DEPTHS:
+        logger.warning("Ignoring web.max_depth=%r: expected one of %s", cap, ", ".join(SEARCH_DEPTHS))
+        cap = "standard"
+    depth = str(requested).strip().lower() if requested is not None else "standard"
+    note = None
+    if depth not in SEARCH_DEPTHS:
+        depth, note = "standard", f"unknown depth {requested!r}; ran a standard search"
+    if SEARCH_DEPTHS.index(depth) > SEARCH_DEPTHS.index(cap):
+        depth, note = cap, f"depth lowered from {depth} to {cap} by web.max_depth"
+    return depth, note
+
+
+def _provider_depth(provider, depth: str) -> tuple[str, Optional[str]]:
+    """``(applied, note)``: the depth *provider* is asked for (*depth* when it maps it to a native
+    option, else "standard", its unchanged request) and the one-line note when that drops *depth*."""
+    if depth == "standard" or _probe(provider, "supports_search_depth"):
+        return depth, None
+    route = " ".join(filter(None, (provider.name, provider.search_route_label())))
+    return "standard", f"{route} search has no depth setting; ran its standard search"
+
+
+def _depth_dropped_by_fallback(data: dict) -> Optional[str]:
+    """Note for a depth request that a one-shot rescue or managed fallback served without depth."""
+    for key, route in (("rescued_from", "keyless rescue"), ("fallback_from", "managed fallback")):
+        if key in data:
+            return f"{route} has no depth setting; ran its standard search"
+    return None
+
+
+def web_search_tool(query: str, limit: int = 5, depth: Optional[str] = None) -> str:
     """Search the web via the configured backend.
 
+    ``depth`` ("quick" | "standard" | "deep", default standard, capped by ``web.max_depth``) maps to
+    the provider's own speed/depth option; a provider without one runs its standard search.
     Returns a JSON string ``{"success": bool, "data": {"web": [{"title", "url", "description", "position"},
     ...]}}`` (metadata only — use web_extract_tool for page content) or ``{"success": false, "error": ...}``.
+    A lowered or ignored depth adds one line under ``data.depth_note``.
     """
     try:
         limit = min(max(int(limit), 1), 100)
     except (TypeError, ValueError):
         limit = 5
+    depth, depth_note = _resolve_depth(depth)
     debug_call_data = {
-        "parameters": {"query": query, "limit": limit}, "error": None, "results_count": 0,
+        "parameters": {"query": query, "limit": limit, "depth": depth}, "error": None, "results_count": 0,
         "original_response_size": 0, "final_response_size": 0,
     }
 
@@ -335,8 +374,16 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             fallback = "No web search provider configured. Run `hermes tools` to set one up."
             response_data = {"success": False, "error": _no_provider_error("search", fallback)}
         else:
-            logger.info("Web search via %s: '%s' (limit: %d)", provider.name, query, limit)
-            response_data = _memoized_search(provider, query, limit)
+            applied, dropped = _provider_depth(provider, depth)
+            logger.info("Web search via %s: '%s' (limit: %d, depth: %s)", provider.name, query, limit, applied)
+            response_data = _memoized_search(provider, query, limit, applied)
+            data = response_data.get("data")
+            if isinstance(data, dict):
+                if applied != "standard":
+                    dropped = _depth_dropped_by_fallback(data)
+                note = "; ".join(filter(None, (depth_note, dropped)))
+                if note:
+                    data["depth_note"] = note
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
@@ -347,17 +394,18 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         return _finish_debug("web_search_tool", debug_call_data, f"Error searching web: {e!s}")
 
 
-def _memoized_search(provider, query: str, limit: int) -> dict:
+def _memoized_search(provider, query: str, limit: int, depth: str = "standard") -> dict:
     """TTL memo + single-flight around the paid vendor call (tools/web_result_cache.py); sits after every
     safety/config check. The provider is asked for the BUCKETED count so near-identical limits share an entry;
     the caller's count is sliced out. Only successful, non-rescued responses are cached — caching a rescue
-    would make the one-shot ring fallback sticky for a whole TTL."""
+    would make the one-shot ring fallback sticky for a whole TTL. *depth* is the depth the provider applies
+    (see ``_provider_depth``); "standard" calls ``search(query, limit)`` exactly as before."""
     from tools.web_result_cache import bucket_limit, search_memo, slice_search_response
 
     def _paid_search() -> tuple[dict, bool]:
         fetch_limit = bucket_limit(limit)
         try:
-            resp = provider.search(query, fetch_limit)
+            resp = provider.search(query, fetch_limit, **({} if depth == "standard" else {"depth": depth}))
         except Exception as exc:
             served = _served_after_failure(str(exc), fetch_limit)
             if served is None:
@@ -377,15 +425,15 @@ def _memoized_search(provider, query: str, limit: int) -> dict:
             return fallback
         return _rescue_search(provider.name, error, query, fetch_limit) if _rescue_eligible(provider) else None
 
-    response_data = search_memo.lookup(provider.name, query, limit)
+    response_data = search_memo.lookup(provider.name, query, limit, depth)
     if response_data is None:
-        with search_memo.flight_lock(provider.name, query, limit):
+        with search_memo.flight_lock(provider.name, query, limit, depth):
             # Re-check inside the lock: a concurrent identical call may have stored.
-            response_data = search_memo.lookup(provider.name, query, limit)
+            response_data = search_memo.lookup(provider.name, query, limit, depth)
             if response_data is None:
                 response_data, was_rescued = _paid_search()
                 if not was_rescued:
-                    search_memo.store(provider.name, query, limit, response_data)
+                    search_memo.store(provider.name, query, limit, response_data, depth)
     return slice_search_response(response_data, limit)
 
 
@@ -528,6 +576,12 @@ WEB_SEARCH_SCHEMA = {
                 "minimum": 1,
                 "maximum": 100,
                 "default": 5
+            },
+            "depth": {
+                "type": "string",
+                "enum": ["quick", "standard", "deep"],
+                "description": "How hard the search works. 'quick': a simple fact check; fastest and cheapest. 'standard' (default): normal searches. 'deep': hard research that needs many sources; slower and more expensive. A backend without a depth setting runs its standard search.",
+                "default": "standard"
             }
         },
         "required": ["query"]
@@ -558,7 +612,7 @@ WEB_EXTRACT_SCHEMA = {
 
 registry.register(
     name="web_search", toolset="web", schema=WEB_SEARCH_SCHEMA,
-    handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit", 5)),
+    handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit", 5), depth=args.get("depth")),
     check_fn=check_web_api_key, requires_env=_web_requires_env(), emoji="🔍",
     max_result_size_chars=100_000,
 )

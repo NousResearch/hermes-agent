@@ -1460,6 +1460,13 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
 
         from agent.auxiliary_client import scoped_runtime_main
 
+        # The durable user row must not carry the enrichment prose below: it is a model instruction,
+        # not authored text, and the desktop renders its attachment thumbnail from ``@image:<path>``
+        # directive lines (#142500). Buffer the caption + paths for the persist seam (consumed at
+        # _hmwa_apply_message_timestamp, cleared on the next inbound prepare like native_image_paths).
+        self._session_state(session_key).persistent.enriched_image_persist = (
+            message_text, list(image_paths))
+
         with scoped_runtime_main(vision_runtime):
             return await self._enrich_message_with_vision(message_text, image_paths)
 
@@ -1665,6 +1672,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         session_key = session_key or self._session_key_for_source(source)
         # Reset only this session's per-call buffer; other sessions may be concurrently preparing.
         self._consume_pending_native_image_paths(session_key)
+        self._consume_pending_enriched_image_persist(session_key)
 
         message_text = self._prefix_inbound_sender_context(event, source, message_text)
         image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(event, _pending_stt_prepared)
@@ -1707,6 +1715,29 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         if paths:
             state.persistent.native_image_paths = []
         return paths
+
+    def _consume_pending_enriched_image_persist(self, session_key: str) -> Optional[tuple[str, list[str]]]:
+        """One-shot (caption, image_paths) for a text-mode image turn's durable user row (#142500)."""
+        state = self._peek_session_state(session_key)
+        payload = state.persistent.enriched_image_persist if state is not None else None
+        if state is not None and payload is not None:
+            state.persistent.enriched_image_persist = None
+        return payload
+
+    def _durable_turn_persist_text(self, event, message_text: str, session_key: Optional[str]) -> str:
+        """Durable user-row text for an already-prepared turn (queued follow-ups).
+
+        The Discord triggering note never persists (a model instruction, #71304), and a text-mode
+        image turn persists its caption plus ``@image:<path>`` directives instead of the
+        vision-enrichment prose — the enrichment is a model instruction too, and the desktop
+        renders its attachment thumbnail from the directive lines (#142500)."""
+        persist_text = strip_discord_triggering_note(event, message_text)
+        payload = self._consume_pending_enriched_image_persist(session_key) if session_key else None
+        if payload is not None:
+            from tui_gateway.session_history import _build_persist_message_with_image_refs
+            persist_text = _build_persist_message_with_image_refs(
+                strip_discord_triggering_note(event, payload[0]), payload[1])
+        return persist_text
 
     async def _mark_durable_active_turn(self, event: MessageEvent, session_key: str) -> bool:
         """Persist the exact resolved routing key for this running turn."""

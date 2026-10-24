@@ -66,6 +66,26 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     r"|(?:\b(?:p?kill|taskkill|stop-process)\b[^\n]*\bgateway\b[^\n]*\bhermes)"
 )
 
+# A quoted key separator (JSON-style "key":"value" / "key": "value"): the join between two VALUES
+# of one mapping. A gap may cross commas and brackets - an argv list is how a real kill is
+# laundered through subprocess.run - but not this join: the words on either side are data fields.
+_STRING_VALUE_KEY_JOIN_RE = re.compile(r"""[\"']\s*:\s*[\"']""")
+
+
+def _gateway_lifecycle_regex_hit(text: str) -> bool:
+    """Pattern search that refuses a span splicing two string VALUES of one mapping (#141164).
+
+    Raw text cannot tell a command from the same words as data. Words that live in separate values
+    of one dict ({"purpose": "KILL/wait", "component": "Hermes", "layer": "gateway"}) are data: the
+    span crosses a quoted key separator, so it never counts. Everything else stays exactly as the
+    pattern says - a lifecycle command inside ONE value, and a kill built as an argv list
+    (subprocess.run(["pkill", "-f", "hermes.*gateway"])), still match.
+    """
+    return any(
+        not _STRING_VALUE_KEY_JOIN_RE.search(match.group(0))
+        for match in _GATEWAY_LIFECYCLE_PATTERN.finditer(text)
+    )
+
 # Branch E: process killers whose TARGET is the interpreter image hosting the gateway. A supervised
 # gateway is literally `python.exe` / `python3.12` (`python -m hermes_cli.main gateway run`), so
 # `taskkill /F /IM python.exe`, `pkill -9 python3` or `killall python` carry no hermes/gateway token
@@ -422,7 +442,7 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
 
     text = strip_inert_heredoc_bodies(text)
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
-    if _GATEWAY_LIFECYCLE_PATTERN.search(normalized):
+    if _gateway_lifecycle_regex_hit(normalized):
         return True
     # Profile-flag form: blocked only when the named profile IS the one running the guard.
     # Profile-flag form (#78028): `hermes -p <profile> gateway restart|stop` bypasses Branch A because the
@@ -443,10 +463,10 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     # passes apply independently.
     for segment in _iter_command_segments(normalized):
         joined = " ".join(segment)
-        if joined and _GATEWAY_LIFECYCLE_PATTERN.search(joined):
+        if joined and _gateway_lifecycle_regex_hit(joined):
             return True
         stripped = _ARGV_LIST_PUNCTUATION.sub(" ", joined)
-        if stripped != joined and _GATEWAY_LIFECYCLE_PATTERN.search(stripped):
+        if stripped != joined and _gateway_lifecycle_regex_hit(stripped):
             return True
     # The label may be built in an earlier `;`-segment, so no pass above sees verb + label together.
     # Order-independent launchctl pass (#77083): a shell loop can build the gateway label from a variable

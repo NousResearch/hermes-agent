@@ -79,7 +79,7 @@ def _assert_same_prompt_inputs(typed: Any, other: Any) -> None:
     for event in (typed, other, typed):
         context = build_session_context(event.source, config)
         channel_prompt, _ = runner._pinned_channel_inputs(
-            "k", event.channel_prompt, event.source, internal=False)
+            "k", event.channel_prompt, event.source, preserve_pin=False)
         pinned.append((runner._pinned_session_context_prompt(context, False, "k"), channel_prompt))
     assert typed.channel_prompt == "Answer in haiku."
     assert len(set(pinned)) == 1, (pinned[0][0], pinned[1][0])

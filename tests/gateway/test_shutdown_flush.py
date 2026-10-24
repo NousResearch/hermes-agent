@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from gateway.shutdown_flush import (
+    _order_flush_files,
     flush_overflow_to_file,
     flush_pending_to_file,
     recover_pending_to_db,
@@ -309,6 +310,56 @@ def test_flushed_overflow_is_replayed_by_recover_pending_to_db(tmp_path, monkeyp
 def test_flush_overflow_noop_on_empty():
     assert flush_overflow_to_file({}) == 0
     assert flush_overflow_to_file({"k": []}) == 0
+
+
+def test_overflow_tail_replays_after_same_second_pending_head(tmp_path, monkeypatch):
+    """Invariant: all spool owners share ONE order domain (#126167 review F3).
+
+    The adapter slot head and its FIFO overflow tail are written in the same
+    shutdown pass, so they share a one-second ``ts``. Both must draw ``seq``
+    from the same per-process counter: the tail must replay AFTER the head,
+    never before it (which an overflow-local ``enumerate`` starting at zero
+    caused once any earlier spool write had bumped the process counter).
+    """
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+
+    # An earlier spool write in this process bumped the counter past zero.
+    flush_pending_to_file({"agent:main:telegram:dm:1": "earlier write"}, reason="shutdown")
+    # The queue head, then its overflow tail, written in the same second.
+    flush_pending_to_file({"agent:main:telegram:dm:2": "queue head A"}, reason="shutdown")
+    flush_overflow_to_file(
+        {"agent:main:telegram:dm:2": [_overflow_event("follow-up B", session_id="20260901_120000_fifo")]},
+        reason="shutdown",
+    )
+
+    ordered = _order_flush_files(flush_dir.glob("*.json"))
+    texts = [json.loads(f.read_text(encoding="utf-8"))["data"]["text"] for f in ordered]
+    head_idx, tail_idx = texts.index("queue head A"), texts.index("follow-up B")
+    assert head_idx < tail_idx, f"overflow tail replayed before its pending head: {texts}"
+
+
+def test_overflow_arrival_order_within_one_session_is_seq_order(tmp_path, monkeypatch):
+    """Invariant: a session's overflow events replay in arrival order regardless
+    of the process counter's absolute value — seq is strictly increasing per
+    write, so (ts, seq) alone orders the tail."""
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+
+    flush_pending_to_file({"agent:main:telegram:dm:9": "earlier write"}, reason="shutdown")
+    flush_overflow_to_file(
+        {
+            "agent:main:telegram:dm:9": [
+                _overflow_event("first follow-up", session_id="20260901_120000_fifo"),
+                _overflow_event("second follow-up", session_id="20260901_120000_fifo"),
+            ]
+        },
+        reason="shutdown",
+    )
+
+    ordered = _order_flush_files(flush_dir.glob("*.json"))
+    texts = [json.loads(f.read_text(encoding="utf-8"))["data"]["text"] for f in ordered]
+    assert texts == ["earlier write", "first follow-up", "second follow-up"]
 
 
 def test_drain_transcript_spool_skips_parseable_non_dict_payload(tmp_path, monkeypatch):

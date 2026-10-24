@@ -119,6 +119,8 @@ class GatewayBusySessionMixin:
         pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
         if pending_slot is None:
             return
+        from gateway.shutdown_flush import mark_pending_admission
+        mark_pending_admission(queued_event)
         if session_key in pending_slot:
             self._session_state(session_key).conversation.queued_events.append(queued_event)
         else:
@@ -155,63 +157,45 @@ class GatewayBusySessionMixin:
         """
         leftover_steer = (result.get("pending_steer") or "").strip()
         if leftover_steer:
-            steer_prompt, steer_source = self._pinned_channel_inputs(session_key, None, source, internal=True)
+            # The deferred steer keeps the conversation's pinned channel/context: resolve it through
+            # the branch's preservation predicate (preserve_pin=True reuses the session's pins
+            # without marking the user as internal).
+            steer_prompt, steer_source = self._pinned_channel_inputs(session_key, None, source, preserve_pin=True)
             self._session_state(session_key).conversation.queued_events.insert(0, pending_event)
             pending_event = MessageEvent(text=leftover_steer, source=steer_source, channel_prompt=steer_prompt)
         adapter._pending_messages[session_key] = pending_event
         logger.info("Deferring queued follow-up for session %s until after its compression-exhausted reset", session_key)
 
-    def _merge_leftover_steer(
-        self, result: Any, adapter: Any, source: SessionSource, session_key: Optional[str],
-        pending_event: Optional[MessageEvent], pending: Optional[str],
-    ) -> tuple[Optional[MessageEvent], Optional[str]]:
-        """Fold a leftover /steer (arrived after the last tool batch) into the post-turn drain:
-        the next user turn when nothing else is pending, otherwise ahead of / behind it in the FIFO."""
-        leftover_steer = (result.get("pending_steer") or "").strip() if result else None
-        if leftover_steer:
-            if not pending and not pending_event:
-                pending = leftover_steer
-                logger.debug("Delivering leftover /steer as next turn: '%s...'", pending[:40])
-            elif pending_event and adapter and session_key:
-                # User steered during the turn, but a background event or queued message arrived.
-                # Deliver the user's steer first and restore the pending event to the head of the queue.
-                overflow = self._overflow_queue(session_key)
-                if hasattr(adapter, "_pending_messages") and isinstance(adapter._pending_messages, dict):
-                    promoted = adapter._pending_messages.get(session_key)
-                    if promoted is not None:
-                        if overflow is not None:
-                            overflow.insert(0, promoted)
-                        else:
-                            self._session_state(session_key).conversation.queued_events.insert(0, promoted)
-                    adapter._pending_messages[session_key] = pending_event
+    def _restage_accepted_front(
+        self, session_key: str, adapter: Any, event: Optional[MessageEvent], *, run_generation: Optional[int] = None,
+    ) -> None:
+        """Return locally-owned ACCEPTED work to the FRONT of a session's queue.
+
+        ``event`` is already accepted and OLDER than the current slot occupant (a successor the
+        promotion staged for the next recursion), so it takes the slot and the occupant moves to
+        the overflow HEAD: the next drains then resume in admission order (A, B, C). An
+        ``_enqueue_fifo`` append would run A after newer overflow items; a merge would destroy
+        the occupant (#126167). Across an await, supply ``run_generation`` so an invalidated
+        owner cannot restore work into the successor's queue (``/new``, ``/stop``).
+        """
+        if event is None:
+            return
+        if run_generation is not None and not self._is_session_run_current(session_key, run_generation):
+            return
+        pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
+        overflow = self._overflow_queue(session_key)
+        if isinstance(pending_slot, dict):
+            occupant = pending_slot.get(session_key)
+            if occupant is not None and occupant is not event:
+                if overflow is not None:
+                    overflow.insert(0, occupant)
                 else:
-                    if overflow is not None:
-                        overflow.insert(0, pending_event)
-                    else:
-                        self._session_state(session_key).conversation.queued_events.insert(0, pending_event)
-                pending_event = None
-                pending = leftover_steer
-                logger.debug(
-                    "Delivering leftover /steer before queued event for session %s: '%s...'",
-                    session_key, pending[:40],
-                )
-            elif pending and not pending_event:
-                from gateway.platforms.base import MessageEvent
-                # A deferred steer continues the active channel context, just like an
-                # eventless follow-up. Reuse its pins without marking the user as internal.
-                steer_prompt, steer_source = self._pinned_channel_inputs(
-                    session_key, None, source, internal=True,
-                )
-                steer_event = MessageEvent(
-                    text=leftover_steer, source=steer_source, channel_prompt=steer_prompt,
-                )
-                if session_key:
-                    self._enqueue_fifo(session_key, steer_event, adapter)
-                logger.debug(
-                    "Enqueued leftover /steer behind pending message for session %s: '%s...'",
-                    session_key or "?", leftover_steer[:40],
-                )
-        return pending_event, pending
+                    self._session_state(session_key).conversation.queued_events.insert(0, occupant)
+            pending_slot[session_key] = event
+        elif overflow is not None:
+            overflow.insert(0, event)
+        else:
+            self._session_state(session_key).conversation.queued_events.insert(0, event)
 
     def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
         """Total pending /queue items for a session — slot + overflow."""
@@ -454,11 +438,19 @@ class GatewayBusySessionMixin:
         "notification_category",
     )
 
-    def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
-        from gateway.platforms.base import merge_pending_message_event
+    def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> bool:
+        """Admit *event* for a later turn: merge it into an occupied head slot, or append it to the
+        bounded FIFO. Returns True when the event is ACCEPTED (it owns a queued slot), False when
+        admission refused it (no delivery adapter, or the queue is at cap).
+
+        The bool is the receipt the merge-boundary guard needs: a refused merge must be able to
+        learn that nothing claimed the turn without trusting ``_gateway_accepted``, which may be
+        left over from an earlier merge onto a different event.
+        """
+        from gateway.platforms.base import merge_pending_message_event, prompt_identity_conflict
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:
-            return
+            return False
         # FIFO so each follow-up gets its own turn in arrival order (the single pending slot used to
         # be silently OVERWRITTEN). Photo bursts still merge into the head slot (album semantics).
         pending_slot = getattr(adapter, "_pending_messages", None)
@@ -490,22 +482,27 @@ class GatewayBusySessionMixin:
             same_security_context
             and MessageType.PHOTO in merge_types
             and merge_types <= {MessageType.TEXT, MessageType.PHOTO}
+            # A preserving synthetic head must not absorb a human turn here either:
+            # same_security_context compares ``internal``, which is False on BOTH sides for
+            # a non-internal synthetic continuation, so it cannot discriminate identity.
+            and not prompt_identity_conflict(existing, event)
         ):
             merge_pending_message_event(
                 adapter._pending_messages, session_key, event,
                 merge_text=event.message_type == MessageType.TEXT,
             )
             event._gateway_accepted = True
-            return
+            return True
 
         if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
             logger.warning(
                 "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).",
                 session_key, self._BUSY_QUEUE_MAX_PENDING,
             )
-            return
+            return False
 
         self._enqueue_fifo(session_key, event, adapter)
+        return True
 
     async def _prepare_busy_steer_text(self, event: MessageEvent) -> str:
         """Steerable text for a busy follow-up, transcribing voice-message media first.

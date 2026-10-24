@@ -232,6 +232,8 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
                               if getattr(event, name) is not None})
     if event.inherit_channel_pin is True:  # synthetic goal/resume turn reuses the session's pins (#126109)
         envelope['event']['inherit_channel_pin'] = True
+    if getattr(event, "preserve_prompt_pins", False):  # the branch's marker for the same class (#126167)
+        envelope['event']['preserve_prompt_pins'] = True
     if metadata := _native_metadata(event):
         envelope['event']['metadata'] = metadata
     # COMMAND that passed admission is path text (``/Users/x is broken``): replay it as text.

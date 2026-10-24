@@ -421,7 +421,8 @@ class SessionTranscriptMixin:
             with self._transcript_retry_lock:
                 known_failing = bool(self._transcript_append_failures.get(session_id))
             _replayed, remaining = drain_transcript_spool(
-                session_id, replay, db_known_failing=known_failing)
+                session_id, replay, db_known_failing=known_failing,
+                session_resolver=self.resolve_session_id_for_key)
             if not remaining:
                 with self._transcript_retry_lock:
                     spooled_sessions.discard(session_id)
@@ -430,7 +431,7 @@ class SessionTranscriptMixin:
                 f"older spooled transcript rows for {session_id} still pending")
         except Exception as exc:
             logger.warning("Failed to drain transcript spool for %s: %s", session_id, exc)
-            return None
+            return exc
 
     def mark_spooled_drop_sessions(self, session_ids) -> None:
         """Have each session's next transcript write drain the on-disk spool first. Boot recovery marks

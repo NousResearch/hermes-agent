@@ -20,6 +20,9 @@ def _runner() -> GatewayRunner:
     runner.adapters = {}
     runner._model = "test-model"
     runner._base_url = ""
+    # The queued follow-up's generation fence reads the tracked run generation; claim one
+    # exactly as the real admission path (_handle_message → _begin_session_run_generation) does.
+    runner._begin_session_run_generation("agent:main:discord:dm:dm1")
     return runner
 
 

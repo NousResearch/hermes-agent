@@ -110,7 +110,7 @@ to bypass the ownership check.
 
 Secure by default; every widening step is explicit:
 
-- **No token ⇒ localhost only.** The server binds `127.0.0.1`. Remote exposure requires a bearer token **and** an explicit `A2A_HOST`.
+- **No token ⇒ localhost only.** The server binds `127.0.0.1`. Remote exposure requires a bearer token **and** an explicit `A2A_HOST`. Without a token, requests that arrive through a reverse proxy (`X-Forwarded-For`, `Forwarded`, `X-Real-IP`) are refused.
 - **Per-peer tokens** — `A2A_PEER_TOKENS="alice:tok1,bob:tok2"` gives each peer its own credential; the authenticated name drives rate limiting, trust, and audit.
 - **Prompt-injection filtering** — inbound text is filtered and framed as untrusted peer input. Remote peers cannot invoke operator slash commands.
 - **Outbound redaction** — credential-shaped strings (API keys, JWTs, tokens) are scrubbed from replies.
@@ -135,7 +135,7 @@ Secure by default; every widening step is explicit:
 | `A2A_PUSH_SECRET` | bearer token | HMAC secret for push-notification signing |
 | `A2A_ADVERTISED_TOOLSETS` | all registered | Restrict which skills appear on the Agent Card |
 
-Behind a reverse proxy or Kubernetes Service, set `A2A_PUBLIC_URL` (or rely on `X-Forwarded-Host`/`X-Forwarded-Proto`) so the Agent Card advertises a URL peers can actually call back.
+Behind a reverse proxy or Kubernetes Service, set `A2A_PUBLIC_URL` (or rely on `X-Forwarded-Host`/`X-Forwarded-Proto`/`X-Forwarded-Prefix`) so the Agent Card advertises a URL peers can actually call back. Prefer `A2A_PEER_TOKENS` there: with a shared `A2A_BEARER_TOKEN` the identity is the caller's IP, which behind a proxy is the proxy's for every peer.
 
 ## Quick test
 

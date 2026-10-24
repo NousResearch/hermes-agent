@@ -89,11 +89,14 @@ class A2ASecurityContext:
             return "127.0.0.1"
         return self.requested_host
 
-    def authenticate(self, auth_header: Optional[str], client_ip: str = "") -> Optional[str]:
+    def authenticate(self, auth_header: Optional[str], client_ip: str = "", forwarded: bool = False) -> Optional[str]:
         """Peer identity or None (401). Localhost-only: ``ip:<addr>``; per-peer token: that
-        peer's name; shared token: ``ip:<addr>``. Constant-time comparisons."""
+        peer's name; shared token: ``ip:<addr>``. Constant-time comparisons.
+
+        ``forwarded`` (the request carries reverse-proxy headers) voids localhost-only trust: a
+        proxy on the same host makes every remote caller look local."""
         if self.localhost_only():
-            return f"ip:{client_ip or 'local'}"
+            return None if forwarded else f"ip:{client_ip or 'local'}"
         parts = (auth_header or "").split(None, 1)
         if len(parts) != 2 or parts[0].lower() != "bearer":
             return None

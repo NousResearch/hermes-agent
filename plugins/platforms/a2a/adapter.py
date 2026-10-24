@@ -39,6 +39,8 @@ _MIN_ORPHAN_TIMEOUT, _MAX_ORPHAN_TIMEOUT, _WATCHDOG_INTERVAL = 300, 86400, 60
 _MAX_BODY = 1_048_576  # 1MB max request body — prevents DoS via memory exhaustion
 _SSE_KEEPALIVE = 5  # seconds between SSE keepalive comments
 _DEFAULT_DESCRIPTION = "Hermes Agent — a general-purpose agent reachable over A2A."
+# Any of these means a reverse proxy relayed the request (A2ASecurityContext.authenticate).
+_PROXY_HEADERS = ("X-Forwarded-For", "Forwarded", "X-Real-IP")
 
 _ok = protocol.jsonrpc_result
 _err = protocol.jsonrpc_error
@@ -176,8 +178,14 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         ip = self.client_address[0] if self.client_address else ""
         return ip.removeprefix("::ffff:") if ip.startswith("::ffff:") and "." in ip else ip
 
+    def _authenticate(self) -> Optional[str]:
+        forwarded = any(self.headers.get(h) for h in _PROXY_HEADERS)
+        return self.adapter._security_context.authenticate(
+            self.headers.get("Authorization"), self._client_ip(), forwarded=forwarded)
+
     def _request_public_url(self) -> str:
-        """A2A_PUBLIC_URL > X-Forwarded-Host / Host (scheme from X-Forwarded-Proto) > "" (bind host).
+        """A2A_PUBLIC_URL > X-Forwarded-Host / Host (scheme from X-Forwarded-Proto, path from
+        X-Forwarded-Prefix) > "" (bind host).
 
         Empty means "caller has no info, fall back to bind host". See #41711.
 
@@ -191,7 +199,8 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
             return explicit
         host = (self.headers.get("X-Forwarded-Host", "") or self.headers.get("Host", "")).split(",")[0].strip()
         scheme = (self.headers.get("X-Forwarded-Proto", "") or "http").split(",")[0].strip()
-        return f"{scheme}://{host}/" if host else ""
+        prefix = self.headers.get("X-Forwarded-Prefix", "").split(",")[0].strip().strip("/")
+        return f"{scheme}://{host}/{prefix + '/' if prefix else ''}" if host else ""
 
     def do_GET(self):
         adapter = self.adapter
@@ -207,15 +216,14 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
             return self._json(404, {"error": "not found"})
         payload = {"status": "ok", "agent": agent.get("name") or adapter.agent_name}
         # Agent Cards are public; profile/tenant topology is not leaked on remote unauthenticated GETs.
-        sec = adapter._security_context
-        if sec.localhost_only() or sec.authenticate(self.headers.get("Authorization"), self._client_ip()) is not None:
+        if self._authenticate() is not None:
             payload["served_agents"] = adapter._served_agent_summary(public_url=public_url)
         self._json(200, payload)
 
     def do_POST(self):
         adapter = self.adapter
         # Identity comes from the credential (or the socket in localhost-only mode) — never the body.
-        identity = adapter._security_context.authenticate(self.headers.get("Authorization"), self._client_ip())
+        identity = self._authenticate()
         if identity is None:
             return self._error(401, None, protocol.ERR_UNAUTHORIZED, "unauthorized")
         try:

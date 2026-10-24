@@ -83,6 +83,10 @@ def _schema_aware_split(args_body: str, param_names: list[str]) -> dict[str, str
         prefix = f"{key}:"
         if args_body.startswith(prefix):
             return {key: args_body[len(prefix) :]}
+        if ":" in args_body:
+            before_colon = args_body.split(":", 1)[0].strip()
+            if re.fullmatch(r"\w+", before_colon):
+                return {}
         return {key: args_body}
 
     result: dict[str, str] = {}
@@ -180,6 +184,8 @@ def extract_gemma4_tool_calls(
         param_names = _get_tool_param_names(agent_tools, name)
         if param_names is not None:
             parsed_args = _schema_aware_split(args_body, param_names)
+            if not parsed_args and args_body.strip():
+                parsed_args = _naive_split(args_body)
         else:
             parsed_args = _naive_split(args_body)
 

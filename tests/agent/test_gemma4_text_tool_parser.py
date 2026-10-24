@@ -6,8 +6,6 @@ import json
 import sys
 import os
 
-import pytest
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from agent.gemma4_text_tool_parser import (
@@ -196,6 +194,27 @@ class TestExtractGemma4ToolCalls:
         tcs, _ = extract_gemma4_tool_calls("call:fn{x:1}")
         assert tcs[0].id.startswith("gemma4_")
         assert len(tcs[0].id) == len("gemma4_") + 8
+
+    def test_schema_miss_falls_back_to_naive(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                    },
+                },
+            }
+        ]
+        tcs, _ = extract_gemma4_tool_calls(
+            "call:get_weather{location:Paris}",
+            agent_tools=tools,
+        )
+        assert len(tcs) == 1
+        args = json.loads(tcs[0].arguments)
+        assert args["location"] == "Paris"
 
     def test_single_param_code_execution(self):
         tools = [

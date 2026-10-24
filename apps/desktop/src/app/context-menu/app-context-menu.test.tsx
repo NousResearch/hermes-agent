@@ -205,6 +205,41 @@ describe('AppContextMenu', () => {
     expect(screen.getByText('the')).toBeTruthy()
   })
 
+  it('gives every spellcheck row a unique key, even when a suggestion is "add"', async () => {
+    // Chromium can suggest the word "add" itself (the user typed "adde"). A
+    // suggestion row keyed by its LABEL then collides with the "Add to
+    // dictionary" row's key, and React warns and reuses the first element's
+    // state for the second -- two rows, one identity. In a menu that means the
+    // wrong row keeps the focus and the highlight.
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    try {
+      installBridge()
+      mountMenu()
+      const host = attach('<textarea></textarea>')
+
+      fireEvent.contextMenu(host.querySelector('textarea')!)
+
+      await screen.findByText('Select all')
+
+      // The main-process forward lands after the menu opened.
+      augmentSpellcheck({ misspelledWord: 'adde', suggestions: ['add', 'added', 'ade'] })
+
+      expect(await screen.findByText('Add to dictionary')).toBeTruthy()
+      expect(screen.getByText('added')).toBeTruthy()
+      expect(screen.getByText('ade')).toBeTruthy()
+
+      // React reports a duplicate key as a console error. There must be none.
+      const duplicateKeyWarnings = consoleError.mock.calls.filter(call =>
+        String(call[0] ?? '').includes('same key')
+      )
+
+      expect(duplicateKeyWarnings).toEqual([])
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
   it('runs edit verbs after the menu closed, with focus back on the editable', async () => {
     const contextMenuEdit = vi.fn().mockResolvedValue(undefined)
 

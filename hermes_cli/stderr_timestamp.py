@@ -12,7 +12,7 @@ import threading
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
-from typing import BinaryIO, Sequence, TextIO
+from typing import BinaryIO, Protocol, Sequence, TextIO
 
 EXTERNAL_SUPERVISOR_FLAG = "--external-supervisor"
 _LAUNCHD_LABEL_ENV = "HERMES_LAUNCHD_LABEL"
@@ -38,20 +38,93 @@ def stamp_line(line: str) -> str:
     return f"{prefix}{rendered}\n"
 
 
-def _write_timestamped_line(log_file: TextIO, line: str) -> None:
+class _LineWriter(Protocol):
+    def write(self, text: str) -> None: ...
+    def flush(self) -> None: ...
+
+
+def _write_timestamped_line(log_file: _LineWriter, line: str) -> None:
     log_file.write(stamp_line(line))
     log_file.flush()
 
 
-def _open_log(log_path: Path) -> TextIO:
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    return log_path.open("a", encoding="utf-8", buffering=1)
+_DEFAULT_MAX_SIZE_MB = 5
+_DEFAULT_BACKUP_COUNT = 3
+
+
+def _rotation_config() -> tuple[int, int]:
+    """Read effective logging rotation settings, falling back to shared defaults."""
+    max_mb, backups = _DEFAULT_MAX_SIZE_MB, _DEFAULT_BACKUP_COUNT
+    try:
+        from hermes_logging import read_logging_config
+        _, configured_mb, configured_backups = read_logging_config()
+        if configured_mb is not None:
+            max_mb = int(configured_mb)
+        if configured_backups is not None:
+            backups = int(configured_backups)
+    except (ImportError, OSError, TypeError, ValueError) as exc:  # pragma: no cover - source-slice fallback
+        print(f"stderr_timestamp: using default rotation sizes ({exc})", file=sys.stderr)
+    return max(max_mb, 1), max(backups, 0)
+
+
+class _RotatingWriter:
+    """Append timestamped stderr lines and retain a bounded set of backups.
+
+    Oversize lines may exceed the cap by their own length; diagnostics are never truncated.
+    """
+    def __init__(self, log_path: Path) -> None:
+        self._path = log_path
+        self._io: BinaryIO | None = None
+        self._max_bytes = 0
+        self._backup_count = 0
+
+    def _open(self) -> BinaryIO:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        max_mb, self._backup_count = _rotation_config()
+        self._max_bytes = max_mb * 1024 * 1024
+        self._io = self._path.open("ab", buffering=0)
+        return self._io
+
+    def _rotate(self) -> None:
+        self.close()
+        for index in range(self._backup_count, 0, -1):
+            source = self._path if index == 1 else self._path.with_name(f"{self._path.name}.{index - 1}")
+            target = self._path.with_name(f"{self._path.name}.{index}")
+            if source.exists():
+                target.unlink(missing_ok=True)
+                try:
+                    source.rename(target)
+                except OSError:
+                    pass  # another process may have rotated concurrently
+        self._open()
+
+    def write(self, text: str) -> None:
+        if self._io is None:
+            self._open()
+        assert self._io is not None
+        data = text.encode("utf-8", errors="replace")
+        if self._io.tell() and self._io.tell() + len(data) > self._max_bytes:
+            self._rotate()
+        assert self._io is not None
+        self._io.write(data)
+
+    def flush(self) -> None:
+        """Writes are unbuffered."""
+
+    def close(self) -> None:
+        """Close the active file; retained backups are not deleted."""
+        if self._io is not None:
+            self._io.close()
+            self._io = None
 
 
 def _copy_stderr_with_timestamps(stderr: BinaryIO, log_path: Path) -> None:
-    with _open_log(log_path) as log_file:
+    writer = _RotatingWriter(log_path)
+    try:
         for raw_line in iter(stderr.readline, b""):
-            _write_timestamped_line(log_file, raw_line.decode("utf-8", errors="replace"))
+            _write_timestamped_line(writer, raw_line.decode("utf-8", errors="replace"))
+    finally:
+        writer.close()
 
 
 def _copy_stdout_with_timestamps(stdout: BinaryIO) -> None:
@@ -180,8 +253,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             env={**os.environ, **_child_launchd_label_env()},
         )
     except OSError as exc:
-        with _open_log(log_path) as log_file:
-            _write_timestamped_line(log_file, f"failed to start stderr-timestamped command: {exc}")
+        writer = _RotatingWriter(log_path)
+        try:
+            _write_timestamped_line(writer, f"failed to start stderr-timestamped command: {exc}")
+        finally:
+            writer.close()
         return 127
 
     assert proc.stdout is not None and proc.stderr is not None

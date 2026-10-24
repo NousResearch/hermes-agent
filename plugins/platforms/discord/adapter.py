@@ -91,6 +91,11 @@ _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 # Discord caps global slash commands at 100/app; exceeding it fails the ENTIRE sync (error 30032).
 _DISCORD_MAX_APP_COMMANDS = 100
+# These commands can create agent work from an otherwise empty channel session.  Keep
+# control-only slash commands (for example /status and /stop) in their existing lane.
+_DISCORD_AUTO_THREAD_SLASH_COMMANDS = frozenset({
+    "bg", "btw", "goal", "heartbeat", "loop", "plan", "queue", "refine", "review", "steer",
+})
 # Native slash commands (registered before COMMAND_REGISTRY/plugins so they survive the 100 cap):
 #   (discord name, description, [(arg, type, default-or-_REQUIRED, arg description,
 #   [(choice label, value), ...] or None)], command-text template, follow-up message)
@@ -4494,6 +4499,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 
     async def _run_simple_slash(
         self, interaction: discord.Interaction, command_text: str, followup_msg: str | None = None,
+        *, auto_thread: bool = False,
     ) -> None:
         """Defer, dispatch the command string, then replace/delete the "thinking..." indicator."""
         # Log the invoker so ghost-command reports can be triaged post-mortem.
@@ -4515,7 +4521,15 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             "[Discord] slash %s: interaction expired before defer. "
             "Executing command anyway, skipping interaction followup.", command_text,
         )
-        event = self._build_slash_event(interaction, command_text)
+        thread = None
+        if auto_thread:
+            thread, thread_required = await self._maybe_auto_thread_for_slash(interaction, command_text)
+            if thread_required and thread is None:
+                if deferred_response:
+                    await interaction.edit_original_response(
+                        content=t("platform.discord.thread.auto_create_failed_generic"))
+                return
+        event = self._build_slash_event(interaction, command_text, channel=thread)
         await self.handle_message(event)
         if not deferred_response:
             return
@@ -4535,7 +4549,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         async def _handler(interaction: discord.Interaction, **kwargs):
             text = template.format(**kwargs)
             call_args = (text.strip() if strip else text,) + (() if followup is None else (followup,))
-            await self._run_simple_slash(interaction, *call_args)
+            if name in _DISCORD_AUTO_THREAD_SLASH_COMMANDS:
+                await self._run_simple_slash(interaction, *call_args, auto_thread=True)
+            else:
+                await self._run_simple_slash(interaction, *call_args)
         _handler.__name__ = prefix + {"bg": "background"}.get(name, name).replace("-", "_")
         params = [inspect.Parameter("interaction", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=discord.Interaction)]
         for arg_name, arg_type, default, _desc, _choices in args:
@@ -4736,7 +4753,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                         t("platform.discord.command.skill.unknown", name=name), ephemeral=True)
                     return
                 _desc, cmd_key = entry
-                await self._run_simple_slash(interaction, f"{cmd_key} {args}".strip())
+                await self._run_simple_slash(
+                    interaction, f"{cmd_key} {args}".strip(), auto_thread=True,
+                )
             cmd = discord.app_commands.Command(
                 name="skill", description=_t_discord("platform.discord.command.skill.description", _DISCORD_APP_COMMAND_TEXT_LIMIT),
                 callback=_skill_handler,
@@ -4795,16 +4814,19 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             guild_id = getattr(guild, "id", None)
         return str(guild_id) if guild_id else None
 
-    def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
+    def _build_slash_event(
+        self, interaction: discord.Interaction, text: str, *, channel: Any | None = None,
+    ) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""
-        is_dm = isinstance(interaction.channel, discord.DMChannel)
-        is_thread = isinstance(interaction.channel, discord.Thread)
+        channel = channel or interaction.channel
+        is_dm = isinstance(channel, discord.DMChannel)
+        is_thread = isinstance(channel, discord.Thread)
         thread_id = None
         if is_dm:
             chat_type = "dm"
         elif is_thread:
             chat_type = "thread"
-            thread_id = str(interaction.channel_id)
+            thread_id = str(channel.id)
         else:
             chat_type = "group"
         # Named as a message here is: the pinned session-context prompt renders and keys on it.
@@ -4812,34 +4834,65 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         if is_dm:
             chat_name = interaction.user.name
         elif is_thread:
-            chat_name = self._format_thread_chat_name(interaction.channel)
-        elif hasattr(interaction.channel, "name"):
-            chat_name = interaction.channel.name
-            if hasattr(interaction.channel, "guild") and interaction.channel.guild:
-                chat_name = f"{interaction.channel.guild.name} / #{chat_name}"
+            chat_name = self._format_thread_chat_name(channel)
+        elif hasattr(channel, "name"):
+            chat_name = channel.name
+            if hasattr(channel, "guild") and channel.guild:
+                chat_name = f"{channel.guild.name} / #{chat_name}"
         # Forum threads inherit the parent forum's topic.
-        chat_topic = self._get_effective_topic(interaction.channel, is_thread=is_thread)
+        chat_topic = self._get_effective_topic(channel, is_thread=is_thread)
         # guild_id/parent_chat_id feed profile_routes matching, as on_message does.
         # guild_id/parent_chat_id feed profile_routes matching in build_source, exactly as on_message passes
         # them — without them a guild- or channel-routed profile never matches a native slash command
         # (#69178).
-        parent_id = (self._get_parent_channel_id(interaction.channel) if is_thread else None) or ""
+        parent_id = (self._get_parent_channel_id(channel) if is_thread else None) or ""
         # Without the role grant the gateway refuses a role-only member the slash gate admitted.
         source = self.build_source(
-            chat_id=str(interaction.channel_id), chat_name=chat_name, chat_type=chat_type,
+            chat_id=str(channel.id), chat_name=chat_name, chat_type=chat_type,
             user_id=str(interaction.user.id), user_name=interaction.user.display_name,
             thread_id=thread_id, chat_topic=chat_topic,
             guild_id=self._interaction_guild_id(interaction), parent_chat_id=parent_id or None,
             role_authorized=self._slash_role_grant(interaction),
         )
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
-        channel_id = str(interaction.channel_id)
+        channel_id = str(channel.id)
         return MessageEvent(
             text=text, message_type=msg_type, source=source, raw_message=interaction,
             channel_prompt=self._resolve_channel_prompt(channel_id, parent_id or None),
             # Bound skills load only when a session starts, and "/skill x" or "/queue" can start one.
             auto_skill=self._resolve_channel_skills(channel_id, parent_id or None),
         )
+
+    async def _maybe_auto_thread_for_slash(
+        self, interaction: discord.Interaction, command_text: str,
+    ) -> tuple[Any | None, bool]:
+        """Create an auto-thread for a session-starting slash command when its channel opts in.
+
+        The boolean says that the existing auto-thread policy required a thread.  Callers must not
+        fall back to the shared channel if its creation fails.
+        """
+        channel = await self._resolve_interaction_channel(interaction)
+        if channel is None or isinstance(channel, (discord.DMChannel, discord.Thread)):
+            return None, False
+        channel_keys = self._discord_channel_keys_from_channel(channel)
+        free_channels = self._discord_free_response_channels()
+        is_free_channel = "*" in free_channels or bool(channel_keys & free_channels)
+        is_voice_linked_channel = str(channel.id) in {str(ch_id) for ch_id in self._voice_text_channels.values()}
+        skip_thread = bool(channel_keys & self._get_no_thread_channels()) or (
+            is_free_channel and not self._discord_free_response_auto_thread()
+        )
+        auto_thread = self._extra_or_env_flag("auto_thread", "DISCORD_AUTO_THREAD", "true", truthy=True)
+        if not auto_thread or skip_thread or is_voice_linked_channel:
+            return None, False
+        result = await self._create_thread(
+            interaction, name=self._derive_auto_thread_name(command_text),
+        )
+        if not result.get("success"):
+            logger.warning("[%s] Auto-thread creation for slash command failed: %s", self.name, result.get("error"))
+            return None, True
+        thread = self._stamp_auto_thread_name(result["thread"], self._derive_auto_thread_name(command_text))
+        await self._threads.mark_async(str(thread.id))
+        return thread, True
 
     # --- Thread creation helpers ---
 

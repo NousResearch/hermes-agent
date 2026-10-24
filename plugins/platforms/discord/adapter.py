@@ -161,7 +161,7 @@ _NATIVE_SLASH_COMMAND_SPECS: tuple = (
     ("thread", "platform.discord.command.thread.description", (), None, None),
     ("queue", "platform.discord.command.queue.description",
      (("prompt", str, _REQUIRED, "platform.discord.command.queue.arg_prompt", None),),
-     "/queue {prompt}", "platform.discord.command.queue.followup"),
+     "/queue {prompt}", None),
     ("bg", "slash.bg.description",
      (("prompt", str, _REQUIRED, "platform.discord.command.bg.arg_prompt", None),),
      "/bg {prompt}", "platform.discord.command.bg.followup"),

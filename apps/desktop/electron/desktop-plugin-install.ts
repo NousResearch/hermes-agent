@@ -10,7 +10,12 @@ import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
-import { PACKAGE_MARKER, publishDesktopTree, withDesktopPluginsRoot, writeDesktopHalfMarker } from './desktop-plugins-root'
+import {
+  PACKAGE_MARKER,
+  publishDesktopTree,
+  withDesktopPluginsRoot,
+  writeDesktopHalfMarker
+} from './desktop-plugins-root'
 import { execGit, hiddenGitSpawnSpec } from './no-console-git'
 
 const GITHUB_BROWSER_SEGMENTS = new Set(['tree', 'blob', 'commit'])

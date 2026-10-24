@@ -1165,8 +1165,8 @@ widget as saved.
 
 A unified package (agent tools + a desktop half) can decide how Desktop shows
 the media **its own tools** produce. When an assistant reply delivers a file
-with a `MEDIA:` line, Desktop looks for the tool call in that turn whose result
-produced the path. If the plugin that owns that tool registered a renderer for
+with a `MEDIA:` line, Desktop looks for the tool call whose result first named
+the path, earlier in the transcript. If the plugin that owns that tool registered a renderer for
 the tool's name, your component replaces the built-in player:
 
 ```javascript
@@ -1213,11 +1213,11 @@ function SoundCard({ file, args, result, sessionId, fallback }) {
 
 | Prop | What it is |
 |------|------------|
-| `file` | `{ path, name, kind, mime, resolveUrl() }`. `path` is the path on the **backend's** machine exactly as the `MEDIA:` line wrote it; never open it yourself. `resolveUrl()` returns a URL this window can load with a local or a remote backend: a range-streaming route for audio and video, a data URL for anything else (capped by the host's file reader). A large file (a 3D model) is better served by your own `plugin_api.py` route, called with `ctx.rest` and the `path`. |
+| `file` | `{ path, name, kind, mime, resolveUrl() }`. `path` is the path on the **backend's** machine exactly as the `MEDIA:` line wrote it; never open it yourself. `resolveUrl()` returns a URL this window can load with a local or a remote backend: a range-streaming route for audio and video, a data URL for anything else (capped by the host's file reader), read from the backend that owns the chat. A large file (a 3D model) is better served by your own `plugin_api.py` route, called with `ctx.rest` and the `path`. |
 | `toolName`, `toolCallId` | The producing call. |
-| `args`, `result` | The call's arguments and result payload (the result as the tool returned it: an object, or a string). |
+| `args`, `result` | The call's arguments and result payload (the result as the tool returned it: an object, or a string). A reopened chat rebuilds them from history, so read fields defensively: `args` can carry display keys (`context`, labels) and `result` can arrive parsed where it was a JSON string live. |
 | `sessionId` | The chat whose transcript shows the file (same meaning as a directive's `sessionId`), or `null`. |
-| `fallback` | The built-in player for this file. Return it for anything you don't draw. |
+| `fallback` | The built-in player for this file. Return it (or `null`) for anything you don't draw. |
 
 What the host guarantees:
 
@@ -1231,12 +1231,22 @@ What the host guarantees:
   (`text_to_speech`), another plugin's tool, or from a standalone desktop
   plugin with no agent half is refused with a console warning.
 - **Everything else keeps the built-in player:** core voice replies, files
-  from other tools, user uploads, and any path no tool in that turn produced.
-  The earliest call whose result names the path is the producer, so a later
-  `ls` that merely prints it does not count.
-- **Fail-safe:** a renderer that throws, a plugin that is disabled, a backend
-  too old to report ownership, or a tool whose agent half is not loaded all
-  fall back to the built-in player.
+  from other tools, user uploads, and any path no tool produced. The earliest
+  successful call whose result names the whole path is the producer, so a
+  later `ls`, a read, or a plugin tool that takes the file as input does not
+  count, and rewriting a file in place does not move it to another tool. A
+  path the user named first (an upload, or an output path typed in the
+  prompt) has no producer. A failed call (live, or a stored result carrying
+  `error` / `success: false`) never produces anything.
+- **Fail-safe:** a renderer that throws or returns `null`, a plugin that is
+  disabled, a backend too old to report ownership, or a tool whose agent half
+  is not loaded all fall back to the built-in player. An MCP server that has
+  not connected yet owns nothing; Desktop re-reads ownership on a bounded
+  backoff while a claimed tool has no owner, and after `reload.mcp` or a
+  plugin-list change, so the card appears once the server is up.
+- **Only this app pairs a desktop half with a package.** The
+  `.hermes-package.json` marker is written by the installer and the reconcile
+  pass; one shipped inside a desktop-only repository is dropped on install.
 - **Other surfaces are unchanged.** Tools keep emitting plain `MEDIA:` lines;
   the CLI, the TUI and messaging platforms deliver the file as before.
 

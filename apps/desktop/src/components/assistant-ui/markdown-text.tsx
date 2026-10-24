@@ -620,7 +620,7 @@ function MarkdownParagraph({
 
   if (blockMedia) {
     return (
-      <div className={paragraphClass} data-tool-media-paragraph="">
+      <div className={paragraphClass} data-tool-media-paragraph="" {...(props as ComponentProps<'div'>)}>
         {children}
       </div>
     )
@@ -633,11 +633,21 @@ function MarkdownParagraph({
   )
 }
 
+// Every link `MarkdownLink` may hand to a `ToolMediaSlot` (a `MEDIA:` href or a
+// bare file path), at any depth (`**[model](/out/a.glb)**`).
 function holdsMediaLink(children: ReactNode): boolean {
-  return Children.toArray(children).some(
-    child =>
-      isValidElement<{ href?: unknown }>(child) && mediaPathFromMarkdownHref(String(child.props.href ?? '')) !== null
-  )
+  return Children.toArray(children).some(child => {
+    if (!isValidElement<{ children?: ReactNode; href?: unknown }>(child)) {
+      return false
+    }
+
+    const href = typeof child.props.href === 'string' ? child.props.href : ''
+
+    return (
+      (href !== '' && (mediaPathFromMarkdownHref(href) !== null || (!href.startsWith('#') && isFileMediaPath(href)))) ||
+      holdsMediaLink(child.props.children)
+    )
+  })
 }
 
 function MarkdownTextSurface({

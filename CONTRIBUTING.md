@@ -118,7 +118,7 @@ The rules that most often send a submission back: the plugin must extend Hermes 
 |-------------|-------|
 | **Git** | With the `git-lfs` extension installed |
 | **Python 3.14** | The project requires `>=3.14,<3.15`; PM provides the pinned interpreter |
-| **Node.js** | Use the PM pin, or a version accepted by root `package.json`: `^22.22.0`, `^24.11.0`, or `>=26.0.0` |
+| **Node.js** | Use the PM pin, or a version accepted by root `package.json`: `>=26` |
 
 ### PM developer environment
 

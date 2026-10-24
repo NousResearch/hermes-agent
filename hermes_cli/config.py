@@ -1527,13 +1527,28 @@ def _env_ref_lookup(name: str) -> Optional[str]:
     through ``agent.secret_scope.get_secret`` so the ref resolves against *that* profile's ``.env``: under
     multiplexing a miss is a miss, never another profile's ``os.environ`` value (#84079 — every profile
     "had" the default profile's ``${MATRIX_ACCESS_TOKEN}`` and fanned out). Same policy as
-    ``gateway.config._getenv`` and ``get_env_value``.
+    ``gateway.config._getenv`` and ``get_env_value``. A HERMES_HOME override without a scope takes
+    the value that home's scope holds (``build_profile_secret_scope``: managed ``.env`` last, no
+    globals) and falls back to ``os.environ`` for the rest, as before.
     """
     try:
         from agent.secret_scope import current_secret_scope, get_secret as _get_secret
     except Exception:
         return os.environ.get(name)
     if current_secret_scope() is None:
+        from hermes_constants import get_hermes_home_override
+        override = get_hermes_home_override()
+        if override is None:
+            return os.environ.get(name)
+        # A home override without a scope — the log listener formatting a routed record under
+        # that profile's home, a scheduler reading a served profile's settings — takes the value
+        # that profile's scope holds (its .env and sources, managed .env last). Globals, and names
+        # the profile does not hold (refs of the launch config's layers), still come from environ.
+        from agent.secret_scope import _is_global_env, build_profile_secret_scope
+        if not _is_global_env(name):
+            value = build_profile_secret_scope(Path(override)).get(name)
+            if value is not None:
+                return value
         return os.environ.get(name)
     return _get_secret(name)
 

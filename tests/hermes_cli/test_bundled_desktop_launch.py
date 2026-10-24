@@ -249,6 +249,7 @@ class TestCmdGuiOnABundle:
         monkeypatch.setattr(main_desktop, "_desktop_linux_sandbox_fixup", lambda *a, **k: launcher_ok)
         monkeypatch.setattr(main_desktop, "_desktop_linux_needs_no_sandbox", lambda: not launcher_ok)
         monkeypatch.setattr(main_desktop, "_desktop_linux_sandbox_helper_is_regular_file", lambda *a, **k: True)
+        monkeypatch.setattr(main_desktop, "_desktop_sticky_no_sandbox", lambda: False)
         monkeypatch.setattr(main_desktop, "_detect_linux_password_store", lambda: None)
 
         with patch("hermes_cli.bundled_app.subprocess.Popen", side_effect=record_popen), \

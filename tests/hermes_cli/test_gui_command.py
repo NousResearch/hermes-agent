@@ -60,6 +60,18 @@ def _stable_keychain_detection(monkeypatch):
     monkeypatch.setenv("GNOME_KEYRING_CONTROL", "/run/user/1000/keyring")
 
 
+@pytest.fixture(autouse=True)
+def _no_sticky_sandbox_fallback(monkeypatch):
+    """Pin the host's real Electron marker.
+
+    ``cmd_gui`` honors the app's sticky ``windows-sandbox-fallback.json`` so the flag
+    reaches the zygote in argv. A developer machine that recorded ``state=fallback``
+    would add ``--no-sandbox`` to every argv assertion below; pin the decision and let
+    its own tests cover it.
+    """
+    monkeypatch.setattr(main_desktop, "_desktop_sticky_no_sandbox", lambda: False)
+
+
 def _ns(**kw):
     defaults = dict(
         skip_build=False,

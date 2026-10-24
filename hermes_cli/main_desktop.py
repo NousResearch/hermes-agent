@@ -1154,6 +1154,29 @@ def _desktop_linux_needs_no_sandbox() -> bool:
         return False
 
 
+# Electron records this marker beside its userData when it boots without the Chromium
+# sandbox (apps/desktop/electron/windows-sandbox-fallback.ts). It applies the switch with
+# ``app.commandLine.appendSwitch``, which lands after the zygote has already spawned: on a
+# host where the sandboxed zygote breaks shared memory the renderer dies pre-load with
+# ``platform_shared_memory_region_posix.cc`` FATAL (exit 132) before the UI exists. Only
+# argv reaches the zygote, so the launcher honors the sticky marker the app already wrote.
+_DESKTOP_SANDBOX_FALLBACK_MARKER = "windows-sandbox-fallback.json"
+
+
+def _desktop_sticky_no_sandbox() -> bool:
+    """True when the app's own marker says this host needs ``--no-sandbox`` in argv."""
+    if sys.platform != "linux":
+        return False
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+    try:
+        marker = json.loads(
+            (config_home / "Hermes" / _DESKTOP_SANDBOX_FALLBACK_MARKER).read_text(encoding="utf-8-sig")
+        )
+    except (OSError, ValueError):
+        return False
+    return isinstance(marker, dict) and marker.get("state") == "fallback"
+
+
 def _desktop_linux_userns_sandbox_available() -> bool:
     """True when the unprivileged userns sandbox works (probed with ``unshare``, fails closed) — then
     the setuid ``chrome-sandbox`` helper is never consulted and no sudo prompt is needed."""
@@ -1590,6 +1613,9 @@ def _packaged_desktop_launch_command(packaged_executable: Path) -> list[str]:
             sys.exit(1)
     elif _desktop_linux_needs_disable_setuid_sandbox(packaged_executable):
         launch_command.append("--disable-setuid-sandbox")
+    if "--no-sandbox" not in launch_command and _desktop_sticky_no_sandbox():
+        print("⚠ Using the app's recorded --no-sandbox fallback (the in-app switch lands after the zygote spawns).")
+        launch_command.append("--no-sandbox")
     return launch_command
 
 
@@ -1925,6 +1951,9 @@ def _launch_bundled_desktop(
         else:
             sys.exit(1)
 
+    if "--no-sandbox" not in launch_command and _desktop_sticky_no_sandbox():
+        print("⚠ Using the app's recorded --no-sandbox fallback (the in-app switch lands after the zygote spawns).")
+        launch_command.append("--no-sandbox")
     launch_command.extend(electron_flags)
     launch_command.extend(_explicit_profile_args())
     pid = launch_detached(launch_command, env=env, cwd=layout.app_root)

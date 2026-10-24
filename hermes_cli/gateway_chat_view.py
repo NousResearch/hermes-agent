@@ -253,8 +253,11 @@ class GatewayChatView:
             return  # cut: live text stopped at the replay gap; the settlement shows the reply once
         if self.emitter is not None:
             self.emitter.on_text_delta(text)
-        elif not self.quiet:
-            self.streams[admission] = self.streams.get(admission, "") + text
+            return
+        # Buffer even when quiet: the final frame may carry "" (the platform already
+        # streamed the reply), and a quiet one-shot paints no deltas of its own.
+        self.streams[admission] = self.streams.get(admission, "") + text
+        if not self.quiet:
             # No flush: under the live composer, patch_stdout line-buffers this so a redraw
             # (a resize mid-stream) never interleaves with a half-written line. Complete lines
             # still appear as they stream; the last one lands with `_complete`.
@@ -264,6 +267,13 @@ class GatewayChatView:
         text = payload.get("text") or payload.get("content") or ""
         streamed, cut = self.streams.pop(admission, ""), self.cut.pop(admission, None)
         self.mine.pop(admission, None)
+        if cut is None and not text and streamed:
+            # "" means "the reply you already streamed" (the client is expected to keep it).
+            # A quiet run never painted those deltas, so the buffer is the only copy left.
+            # Drop the agent's segment break (blank lines after a tool call) the settled
+            # text trims too, so `-z` prints the reply and not a run of empty lines.
+            text = streamed.lstrip("\n")
+            payload = {**payload, "text": text}
         if cut is not None:
             from hermes_cli.gateway_replay_gap import owed_reply
             payload = {**payload, "replay_gap": True}
@@ -538,6 +548,10 @@ class GatewayChatView:
                 from hermes_cli.turn_exit import turn_exit_code
                 recovered = terminal.get("_receipt")
                 result = dict(recovered.get("result") or {}) if recovered else await self._settled_result(admission)
+                if not text and not result.get("interrupted"):
+                    # Last resort when no deltas reached this client: the committed turn
+                    # result still carries the reply.
+                    text = str(result.get("final_response") or "")
                 result.update(failed=bool(result.get("failed")) or outcome not in ("completed", "cancelled"),
                               interrupted=bool(result.get("interrupted")) or outcome == "cancelled")
                 exit_code = (_oneshot_exit_code(text, result) if self.unattended

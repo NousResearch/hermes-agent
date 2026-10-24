@@ -90,6 +90,37 @@ def _fire_pre_api_request_hook(
         pass
 
 
+def _ensure_user_turn_for_strict_local_provider(
+    agent: Any, api_messages: Any, original_user_message: Any,
+) -> Any:
+    """Guarantee a ``user`` row before sending to a strict local OpenAI-compat server.
+
+    Ollama's ``/v1/chat/completions`` rejects any message array without a user role
+    (HTTP 500 ``no user query found in messages``), and its own chat template cannot be
+    relaxed. Compression boundaries, empty-response recovery and restart-resumed turns can
+    all legitimately produce an assistant/tool-only tail, so a missing user row is repaired
+    here instead of burning five retries and then failing over. Scoped to local providers:
+    cloud routes accept an assistant-only continuation and their behaviour must not change.
+    """
+    if not isinstance(api_messages, list) or not api_messages:
+        return api_messages
+    if any(isinstance(m, dict) and m.get("role") == "user" for m in api_messages):
+        return api_messages
+    provider = str(getattr(agent, "provider", "") or "")
+    base_url = str(getattr(agent, "base_url", "") or "")
+    if provider != "ollama" and "127.0.0.1" not in base_url and "localhost" not in base_url:
+        return api_messages
+    roles = [m.get("role") for m in api_messages if isinstance(m, dict)]
+    logger.warning(
+        "Outbound request carried no user turn (roles=%s, provider=%s) — injecting one "
+        "to satisfy the local OpenAI-compat server", roles, provider,
+    )
+    content = original_user_message if isinstance(original_user_message, str) and original_user_message.strip() else "Continue."
+    insert_at = 1 if isinstance(api_messages[0], dict) and api_messages[0].get("role") == "system" else 0
+    api_messages.insert(insert_at, {"role": "user", "content": content})
+    return api_messages
+
+
 def build_api_request(
     agent: Any, *, api_messages: Any, _moa_prepared_request: Any, tools_for_api: Any,
     system_message: Any, messages: Any, original_user_message: Any, approx_tokens: Any,
@@ -118,6 +149,11 @@ def build_api_request(
     # A model that rejected image content gets text only; history keeps the images.
     strip_images_for_rejecting_model(agent, api_messages)
     observe_request_tools(agent, tools_for_api)
+    # Strict local servers (Ollama /v1) 500 on a message array with no user turn — repair
+    # before the payload is frozen, so retries/fallbacks never see the impossible shape.
+    api_messages = _ensure_user_turn_for_strict_local_provider(
+        agent, api_messages, original_user_message
+    )
     if tools_for_api == agent.tools:
         api_kwargs = agent._build_api_kwargs(api_messages)
     else:

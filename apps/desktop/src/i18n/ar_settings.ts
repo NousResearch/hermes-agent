@@ -802,10 +802,6 @@ export const arSettings = {
           label: 'الضغط',
           hint: 'ضغط السياق'
         },
-        skills_hub: {
-          label: 'مركز المهارات',
-          hint: 'بحث المهارات'
-        },
         approval: {
           label: 'الموافقة',
           hint: 'موافقة تلقائية ذكية'

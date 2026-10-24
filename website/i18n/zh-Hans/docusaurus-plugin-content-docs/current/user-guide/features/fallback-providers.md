@@ -187,7 +187,6 @@ Hermes 为附属任务使用独立的轻量级模型。每个任务都有自己�
 |------|-------------|-----------|
 | 视觉 | 图像分析、浏览器截图 | `auxiliary.vision` |
 | 压缩 | 上下文压缩摘要 | `auxiliary.compression` |
-| Skills Hub | 技能搜索与发现 | `auxiliary.skills_hub` |
 | MCP | MCP 辅助操作 | `auxiliary.mcp` |
 | 审批 | 智能命令审批分类 | `auxiliary.approval` |
 | 标题生成 | 会话标题摘要 | `auxiliary.title_generation` |
@@ -227,10 +226,6 @@ auxiliary:
     api_key: ""                   # base_url 的 API 密钥
 
   compression:
-    provider: "auto"
-    model: ""
-
-  skills_hub:
     provider: "auto"
     model: ""
 
@@ -400,7 +395,6 @@ cronjob(
 | 辅助任务（任意）— 显式提供商 | `fallback_chain`（若已设置）→ 主 Agent 模型 → 警告 + 抛出，仅在容量错误时触发 | `auxiliary.<task>.fallback_chain` |
 | 视觉 | 分层（见上文）+ 内部 OpenRouter 重试 | `auxiliary.vision` |
 | 上下文压缩 | 分层（见上文）；所有层不可用时降级为无摘要 | `auxiliary.compression` |
-| Skills Hub | 分层（见上文） | `auxiliary.skills_hub` |
 | MCP 辅助 | 分层（见上文） | `auxiliary.mcp` |
 | 审批分类 | 分层（见上文） | `auxiliary.approval` |
 | 标题生成 | 分层（见上文） | `auxiliary.title_generation` |

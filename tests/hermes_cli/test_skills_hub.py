@@ -163,6 +163,30 @@ def test_do_list_unknown_group(three_source_env, monkeypatch):
     assert "hub-skill" not in out
 
 
+def test_slash_skills_list_malformed_group_flag():
+    """Malformed --group forms in slash command must display usage error and not list."""
+    from io import StringIO
+    from rich.console import Console
+    import hermes_cli.skills_hub as hub
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    # 1. Trailing flag without value
+    hub.handle_skills_slash("/skills list --group", console=console)
+    out = sink.getvalue()
+    assert "Usage:" in out and "--group <group>" in out
+
+    # 2. Flag followed by another option
+    sink.seek(0)
+    sink.truncate(0)
+    hub.handle_skills_slash("/skills list --group --source hub", console=console)
+    out = sink.getvalue()
+    assert "Usage:" in out and "--group <group>" in out
+
+
+
+
 # ---------------------------------------------------------------------------
 # Cross-registry hijack regression tests
 #

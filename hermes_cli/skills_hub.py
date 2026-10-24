@@ -1948,14 +1948,19 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         group_filter = ""
         if "--source" in args:
             idx = args.index("--source")
-            if idx + 1 < len(args):
-                source_filter = args[idx + 1]
+            if idx + 1 >= len(args) or args[idx + 1].startswith("-"):
+                c.print("[bold red]Usage:[/] /skills list [--source <source>] [--group <group>] [--enabled-only]\n")
+                return
+            source_filter = args[idx + 1]
         if "--group" in args:
             idx = args.index("--group")
-            if idx + 1 < len(args):
-                group_filter = args[idx + 1]
+            if idx + 1 >= len(args) or args[idx + 1].startswith("-"):
+                c.print("[bold red]Usage:[/] /skills list [--source <source>] [--group <group>] [--enabled-only]\n")
+                return
+            group_filter = args[idx + 1]
         do_list(source_filter=source_filter, enabled_only=enabled_only,
                 group_filter=group_filter, console=c)
+
 
     elif action == "check":
         name = args[0] if args else None

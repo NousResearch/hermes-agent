@@ -618,6 +618,22 @@ describe('the defaults a fresh profile lands on', () => {
     expect(defaultTranslucencyState('dark', false, false).mode).toBe('clear')
   })
 
+  it('does not fade the window when the glass tint default lands on clear', () => {
+    // Linux and Windows 10 have no glass, so the mode collapses to clear and
+    // the tint default would otherwise become a whole-window opacity.
+    const empty = { mode: 'clear' as const, base: {}, light: {}, dark: {} }
+
+    for (const appearance of ['light', 'dark'] as const) {
+      for (const isWindows of [false, true]) {
+        expect(windowOpacityFor(defaultTranslucencyState(appearance, false, isWindows))).toBe(1)
+        expect(windowOpacityFor(resolveTranslucency(empty, appearance, isWindows))).toBe(1)
+      }
+    }
+
+    // A clear lever the user actually set still fades.
+    expect(resolveTranslucency({ ...empty, base: { intensity: 29 } }, 'dark', false).intensity).toBe(29)
+  })
+
   it('keeps the content column opaque at the native level', () => {
     for (const values of [mac('light'), mac('dark'), win('light'), win('dark')]) {
       expect(windowOpacityFor({ ...values, mode: 'glass' })).toBe(1)

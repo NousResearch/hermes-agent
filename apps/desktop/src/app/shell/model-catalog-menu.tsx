@@ -1,12 +1,5 @@
 import type { ModelOptionProvider, ModelOptionsResult, ModelPricing } from '@hermes/shared'
-import {
-  DEFAULT_REASONING_EFFORT,
-  planBlocks,
-  sectionAt,
-  splitRecommended,
-  usageLevel,
-  usageTag
-} from '@hermes/shared'
+import { DEFAULT_REASONING_EFFORT, planBlocks, sectionAt, splitRecommended, usageLevel, usageTag } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -204,6 +197,8 @@ interface ProviderGroup {
   provider: ModelOptionProvider
 }
 
+const NO_MODEL_PREFERENCES: NonNullable<ModelOptionsResult['preferred_models']> = []
+
 function queryErrorMessage(error: unknown): null | string {
   return error ? (error instanceof Error ? error.message : String(error)) : null
 }
@@ -316,10 +311,7 @@ export function ModelCatalogMenu({
 
   const providers = modelOptions.data?.providers
 
-  const preferredModels = useMemo(
-    () => modelOptions.data?.preferred_models ?? [],
-    [modelOptions.data?.preferred_models]
-  )
+  const preferredModels = modelOptions.data?.preferred_models ?? NO_MODEL_PREFERENCES
 
   // The catalog carries MoA presets as a virtual `moa` provider row. Keep it
   // out of the main groups so presets never show up twice.
@@ -1460,6 +1452,7 @@ function groupModels(
       family =>
         (shown.has(family.id) || family.id === activeId) && !favorites?.has(favoriteModelKey(provider.slug, family.id))
     )
+
     const providerId = normalize(provider.slug)
 
     families.sort((a, b) => {
@@ -1536,7 +1529,10 @@ function nousPricingPoll(data: ModelOptionsResult | undefined, updates: number):
 // current-model pin above, so a pinned custom model lands under "Other models" instead of taking the
 // first pick's "Recommended" heading.
 function recommendedFirst(provider: ModelOptionProvider, families: ModelFamily[]): ModelFamily[] {
-  const split = splitRecommended(provider, families.map(family => family.id))
+  const split = splitRecommended(
+    provider,
+    families.map(family => family.id)
+  )
 
   if (!split) {
     return families

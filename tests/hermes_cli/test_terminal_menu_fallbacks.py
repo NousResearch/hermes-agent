@@ -178,6 +178,49 @@ def test_prompt_model_selection_orders_models_from_primary_fallback_chain(
     ]
 
 
+@pytest.mark.parametrize("window_plan", [False, True])
+def test_configured_order_preserves_current_cursor_and_recommended_sections(
+    tmp_path, monkeypatch, window_plan,
+):
+    from hermes_cli.auth import _prompt_model_selection
+    from hermes_cli.model_picker_usage import (
+        SECTION_OTHER, SECTION_RECOMMENDED, picker_usage_from_account,
+    )
+    from tests.usage_window_fixtures import usage_window
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "model:\n  provider: nous\n  default: current\n"
+        "fallback_providers:\n"
+        "- provider: nous\n  model: second\n"
+        "- provider: nous\n  model: first\n",
+        encoding="utf-8",
+    )
+    captured = {}
+
+    def capture(_title, choices, **kwargs):
+        captured.update(choices=choices, **kwargs)
+        return -1
+
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", capture)
+    usage = picker_usage_from_account(SimpleNamespace(
+        logged_in=True, subscription=SimpleNamespace(plan="Window Plan"),
+        usage_window=usage_window(
+            featured_model_ids=["featured-b", "featured-a"],
+        ),
+    )) if window_plan else None
+    assert _prompt_model_selection(
+        ["first", "featured-a", "second", "current", "featured-b"],
+        "current", confirm_provider="nous", usage=usage,
+    ) is None
+
+    expected = (["featured-b", "featured-a", "current", "second", "first"]
+                if window_plan else ["current", "second", "first", "featured-a", "featured-b"])
+    assert [row[0][0].strip() for row in captured["choices"][:5]] == expected
+    assert captured["selected"] == expected.index("current")
+    assert captured["headings"] == ({0: SECTION_RECOMMENDED, 2: SECTION_OTHER} if window_plan else None)
+
+
 def test_remove_custom_provider_falls_back_on_menu_runtime_error(tmp_path, monkeypatch):
     from hermes_cli.main_provider_setup import _remove_custom_provider
 

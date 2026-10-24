@@ -124,6 +124,20 @@ environment before third-party imports. Processes retain their existing imports
 until they restart. Garbage collection preserves selected generations and
 lease-managed generations with live readers.
 
+Restart-capable gateway services and the Docker-supervised dashboard notice a
+committed generation change, including lazy extras, plugin changes, repairs and
+updates. The gateway refuses new turns and lets existing work and final delivery
+finish before returning to its supervisor. The dashboard retires only after its
+admission fence proves there is no active work or pending human input. Neither
+path releases a live reader's lease or adds a deadline to model work. Manual
+foreground processes still require a user-requested restart.
+
+Dependency sync and container refresh attempt collection before preparing a new
+environment. Running supervised services also collect periodically, so eligible
+old generations can be reclaimed after their last reader exits without another
+manual GC. Maintenance skips a busy install lock; selected, leased, legacy and
+day-young generations retain their existing protection.
+
 Downloads share a lock per partial URL. A failed or paused transfer cannot
 publish a partial destination, and garbage collection cannot delete a live
 transfer's files. Resume reuses ranges only when their recorded length,

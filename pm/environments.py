@@ -444,10 +444,11 @@ def _require_own_dependencies(project_root: Path) -> None:
     """
     import sys
 
-    if sys.prefix != sys.base_prefix:
-        return  # a venv interpreter (developer .venv, test env) carries its own packages
-    if Path(sys.base_prefix).resolve().is_relative_to(store_root(project_root).resolve()):
+    if sys.prefix == sys.base_prefix and Path(sys.base_prefix).resolve().is_relative_to(store_root(project_root).resolve()):
         raise NoCommittedEnvironment("no dependency environment is committed for this install")
+    from pm.generation_lifecycle import remember_activation
+
+    remember_activation(project_root, None)
 
 
 def activate_dependencies(project_root: Path) -> None:
@@ -490,6 +491,9 @@ def activate_dependencies(project_root: Path) -> None:
             return  # External/Nix interpreter owns its original sys.path.
     if not selected.is_dir():
         raise RuntimeError(f"dependency environment has no site-packages: {selected}")
+    from pm.generation_lifecycle import remember_activation
+
+    remember_activation(project_root, environment)
     import site
 
     sys.path[:] = [entry for entry in sys.path

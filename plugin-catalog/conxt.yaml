@@ -1,8 +1,8 @@
 name: conxt
 title: Conxt
 repo: https://github.com/conxtdevelopmentteam/hermes-conxt
-sha: 5d0d927664f6644c209f7c5abae86528532c9757
-version: "0.1.0"
+sha: ec00e8a0e1f59df55828109f9ffe7136b65f544a
+version: "0.1.1"
 description: Conxt governed memory provider — recall before each turn (personal, plus a team's approved
   memories), conversation capture in batches, and tools to search, remember, and propose team memories
   that a person approves in Conxt before anyone recalls them. Disclosure — Each turn's message (first 500

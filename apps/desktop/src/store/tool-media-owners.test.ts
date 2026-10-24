@@ -36,6 +36,7 @@ vi.mock('@/store/session-states', () => ({
 }))
 
 vi.mock('@/store/session-request-router', () => ({
+  isSessionOwnerRoute: (owner: SessionOwnerScope) => Boolean(owner && typeof owner === 'object'),
   requestForSessionProfile: vi.fn(
     (owner: SessionOwnerScope, _ambient: unknown, method: string, params: Record<string, unknown>) =>
       new Promise((resolve, reject) => {
@@ -257,7 +258,9 @@ describe('retry backoff', () => {
     await failNext()
     await vi.advanceTimersByTimeAsync(4_000)
     owners.ensureToolMediaOwners('s1')
-    pending().at(-1)?.resolve(listWith('pkg', ['draw']))
+    pending()
+      .at(-1)
+      ?.resolve(listWith('pkg', ['draw']))
     await flush()
     expect(ownedTools('s1', 'pkg')).toEqual(['draw'])
 
@@ -297,5 +300,133 @@ describe('retry backoff', () => {
 
     expect(pending()).toHaveLength(0)
     expect(entryFor('s1')).toBeUndefined()
+  })
+})
+
+describe('re-reads keep the previous answer drawing', () => {
+  const loadReady = async (sessionId: string, tools: string[]) => {
+    owners.ensureToolMediaOwners(sessionId)
+    pending().at(-1)?.resolve(listWith('meshy', tools))
+    await flush()
+  }
+
+  it('a plugin-list change keeps the loaded owners until the re-read lands, then takes the new answer', async () => {
+    await loadReady('s1', ['mcp__meshy__download'])
+    const before = entryFor('s1')
+
+    invalidatePlugins()
+    expect(entryFor('s1')).toMatchObject({ refresh: 'due', status: 'ready' })
+    expect(ownedTools('s1', 'meshy')).toEqual(['mcp__meshy__download'])
+
+    owners.ensureToolMediaOwners('s1')
+    owners.ensureToolMediaOwners('s1')
+    expect(pending()).toHaveLength(2) // one re-read, however many attachments ask
+    expect(entryFor('s1')).toMatchObject({ refresh: 'pending', status: 'ready' })
+
+    pending()[1].resolve(listWith('meshy', []))
+    await flush()
+    expect(ownedTools('s1', 'meshy')).toBeUndefined()
+    expect(entryFor('s1')?.request).not.toBe(before?.request)
+  })
+
+  it('an unchanged re-read keeps the same owners object (nothing re-resolves)', async () => {
+    await loadReady('s1', ['t'])
+    const before = entryFor('s1')
+
+    owners.refreshToolMediaOwners()
+    owners.ensureToolMediaOwners('s1')
+    pending()[1].resolve(listWith('meshy', ['t']))
+    await flush()
+
+    const after = entryFor('s1')
+
+    expect(after?.status === 'ready' && before?.status === 'ready' && after.owners === before.owners).toBe(true)
+  })
+
+  it('a re-read that fails drops to the built-in player and backs off', async () => {
+    await loadReady('s1', ['t'])
+    owners.refreshToolMediaOwners()
+    owners.ensureToolMediaOwners('s1')
+    pending()[1].reject(new Error('down'))
+    await flush()
+
+    expect(entryFor('s1')?.status).toBe('error')
+  })
+})
+
+describe('a claimed tool nobody owns yet re-reads ownership', () => {
+  it('re-reads after 1s, then 5s doubling, and picks up a server that connected meanwhile', async () => {
+    owners.ensureToolMediaOwners('s1')
+    pending()[0].resolve(listWith('meshy', []))
+    await flush()
+
+    const delays = [1_000, 5_000, 10_000]
+
+    for (const [index, delay] of delays.entries()) {
+      owners.revalidateToolMediaOwners('s1')
+      owners.revalidateToolMediaOwners('s1') // one timer at a time
+      vi.advanceTimersByTime(delay - 1)
+      expect(entryFor('s1')).not.toHaveProperty('refresh')
+      vi.advanceTimersByTime(1)
+      expect(entryFor('s1')).toMatchObject({ refresh: 'due' })
+
+      owners.ensureToolMediaOwners('s1')
+      const last = index === delays.length - 1
+      pending()
+        .at(-1)
+        ?.resolve(listWith('meshy', last ? ['mcp__meshy__download'] : []))
+      await flush()
+    }
+
+    expect(ownedTools('s1', 'meshy')).toEqual(['mcp__meshy__download'])
+  })
+
+  it('stops after a bounded number of re-reads', async () => {
+    owners.ensureToolMediaOwners('s1')
+    pending()[0].resolve(listWith('meshy', []))
+    await flush()
+
+    for (let i = 0; i < owners.MAX_OWNERSHIP_REVALIDATIONS + 2; i += 1) {
+      owners.revalidateToolMediaOwners('s1')
+      vi.advanceTimersByTime(60_000)
+      owners.ensureToolMediaOwners('s1')
+      pending().at(-1)?.resolve(listWith('meshy', []))
+      await flush()
+    }
+
+    expect(pending()).toHaveLength(1 + owners.MAX_OWNERSHIP_REVALIDATIONS)
+  })
+
+  it('MCP reconnecting (reload.mcp) marks every loaded answer due at once', async () => {
+    owners.ensureToolMediaOwners('s1')
+    pending()[0].resolve(listWith('meshy', []))
+    await flush()
+
+    owners.refreshToolMediaOwners()
+    expect(entryFor('s1')).toMatchObject({ refresh: 'due' })
+  })
+})
+
+describe('cache hygiene', () => {
+  it('drops answers for an earlier activation of the active route', async () => {
+    owners.ensureToolMediaOwners(null)
+    pending()[0].resolve(listWith('meshy', ['t']))
+    await flush()
+    const oldKey = owners.toolMediaOwnerKey(null)
+
+    env.epoch = 2
+    owners.ensureToolMediaOwners(null)
+
+    expect(owners.$toolMediaOwners.get()).not.toHaveProperty(oldKey)
+  })
+
+  it('a routed owner fetches over its own connection with no active gateway', () => {
+    env.gateway = null
+    env.owners.set('s1', { connectionId: 'remote-1', profile: 'coder' })
+    owners.ensureToolMediaOwners('s1')
+    owners.ensureToolMediaOwners(null)
+
+    expect(pending()).toHaveLength(1)
+    expect(pending()[0].owner).toEqual({ connectionId: 'remote-1', profile: 'coder' })
   })
 })

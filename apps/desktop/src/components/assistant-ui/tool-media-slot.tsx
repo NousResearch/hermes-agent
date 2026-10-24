@@ -2,12 +2,14 @@ import { useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useEffect, useMemo } from 'react'
 
+import { useComposerScope } from '@/app/chat/composer/scope'
 import { useSessionView } from '@/app/chat/session-view'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { type Contribution, useContributions } from '@/contrib'
 import { $pluginRecords } from '@/contrib/plugins-store'
-import { mediaKind, mediaMime, mediaName, resolveMediaPlaybackSrc } from '@/lib/media'
+import { mediaKind, mediaMime, mediaName, resolveMediaDisplaySrc, resolveMediaPlaybackSrc } from '@/lib/media'
 import {
+  claimPatternMatches,
   effectiveToolCall,
   findProducingToolCall,
   refusedClaimPatterns,
@@ -18,10 +20,13 @@ import {
   type ToolMediaRendererContribution,
   type ToolMediaRendererProps
 } from '@/lib/tool-media-renderers'
+import { $gateway } from '@/store/gateway'
+import { $connection } from '@/store/session'
 import {
   $toolMediaOwners,
   ensureToolMediaOwners,
   packageOfContributionSource,
+  revalidateToolMediaOwners,
   toolMediaOwnerKey
 } from '@/store/tool-media-owners'
 
@@ -49,9 +54,9 @@ function warnRefused(claim: Pick<Contribution, 'id' | 'source'>, tool: string) {
   )
 }
 
-// The turn's producer, read straight from the thread store so the selector
-// returns the store's own part object (a stable reference across deltas).
-// Outside a message (a Bot group room, a preview) there is no turn: no producer.
+// The producer, read straight from the thread store so the selector returns
+// the store's own part object (a stable reference across deltas). Outside a
+// message (a Bot group room, a preview) there is no transcript: no producer.
 function useProducingToolCall(path: string): ToolCallLike | null {
   return useAuiState(state => {
     try {
@@ -88,6 +93,8 @@ const ClaimedToolMediaSlot: FC<{ children: ReactNode; claims: readonly Contribut
   const runtimeId = useStore(view.$runtimeId)
   const sessionId = storedId || runtimeId || null
   const entries = useStore($toolMediaOwners)
+  // A transcript painted before the socket is up fetches once it is.
+  const gateway = useStore($gateway)
   const entry = entries[toolMediaOwnerKey(sessionId)]
   // Re-resolve when a plugin record (enable state, package) changes.
   useStore($pluginRecords)
@@ -96,7 +103,7 @@ const ClaimedToolMediaSlot: FC<{ children: ReactNode; claims: readonly Contribut
     if (producer) {
       ensureToolMediaOwners(sessionId)
     }
-  }, [producer, sessionId, entry])
+  }, [producer, sessionId, entry, gateway])
 
   const ready = entry?.status === 'ready' ? entry.owners : null
 
@@ -119,6 +126,16 @@ const ClaimedToolMediaSlot: FC<{ children: ReactNode; claims: readonly Contribut
         })
       : null
 
+  // A claimed tool nobody owns yet may belong to an MCP server that has not
+  // connected: re-read ownership on a bounded backoff, keeping this answer.
+  const unowned = Boolean(ready && producer?.toolName && !claim && claimsTool(claims, producer.toolName))
+
+  useEffect(() => {
+    if (unowned) {
+      revalidateToolMediaOwners(sessionId)
+    }
+  }, [unowned, sessionId, entry])
+
   if (!claim || !producer?.toolName) {
     return <>{children}</>
   }
@@ -138,6 +155,7 @@ const ToolMediaLeaf: FC<{
   sessionId: null | string
 }> = ({ contribution, fallback, path, producer, sessionId }) => {
   const render = (contribution.data as ToolMediaRendererContribution).render
+  const owner = useMediaOwner()
 
   const file = useMemo<ToolMediaFile>(
     () => ({
@@ -145,9 +163,14 @@ const ToolMediaLeaf: FC<{
       mime: mediaMime(path),
       name: mediaName(path),
       path,
-      resolveUrl: () => resolveMediaPlaybackSrc(path)
+      // Read from the backend that owns this chat, like the built-in image:
+      // a split-view tile can belong to another connection than the foreground.
+      resolveUrl: () =>
+        ['audio', 'video'].includes(mediaKind(path))
+          ? resolveMediaPlaybackSrc(path)
+          : resolveMediaDisplaySrc(path, owner)
     }),
-    [path]
+    [owner, path]
   )
 
   const args = useMemo(
@@ -156,10 +179,11 @@ const ToolMediaLeaf: FC<{
   )
 
   // Stable component identity per renderer, so a re-render never remounts the widget.
+  // Nothing drawn (null/undefined) keeps the built-in player.
   const Leaf = useMemo(
     () =>
       function ToolMediaRendererHost(props: ToolMediaRendererProps) {
-        return <>{render(props)}</>
+        return <>{render(props) ?? props.fallback}</>
       },
     [render]
   )
@@ -174,5 +198,29 @@ const ToolMediaLeaf: FC<{
       toolCallId={producer.toolCallId ?? ''}
       toolName={producer.toolName ?? ''}
     />
+  )
+}
+
+function claimsTool(claims: readonly Contribution[], toolName: string): boolean {
+  return claims.some(claim => {
+    const tools = (claim.data as Partial<ToolMediaRendererContribution> | undefined)?.tools
+
+    return (
+      Array.isArray(tools) &&
+      tools.some(pattern => typeof pattern === 'string' && claimPatternMatches(pattern, toolName))
+    )
+  })
+}
+
+/** The chat's owning connection/profile, as the built-in image reads it. */
+function useMediaOwner() {
+  const connection = useStore($connection)
+  const scope = useComposerScope()
+  const connectionId = scope.connectionId || connection?.connectionId
+  const profile = scope.profile ?? connection?.profile
+
+  return useMemo(
+    () => (scope.connectionId || scope.profile ? { connectionId, profile } : undefined),
+    [scope.connectionId, scope.profile, connectionId, profile]
   )
 }

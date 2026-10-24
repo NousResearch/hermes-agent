@@ -190,6 +190,13 @@ describe('tool media renderers', () => {
     await waitFor(() => expect(container.querySelectorAll('audio[controls]')).toHaveLength(3))
   })
 
+  it('keeps the built-in player when the plugin renderer draws nothing (null)', async () => {
+    disposers.push(claim('sfx', ['sfx_make'], () => null))
+    const { container } = renderTurn()
+
+    await waitFor(() => expect(container.querySelectorAll('audio[controls]')).toHaveLength(3))
+  })
+
   it('keeps the built-in player once the plugin is disabled (its contributions are gone)', async () => {
     const dispose = claim('sfx', ['sfx_make'])
     const { container } = renderTurn()

@@ -166,15 +166,17 @@ export function ensureToolMediaOwners(sessionId: null | string): void {
   const previous = existing?.status === 'ready' ? existing.owners : null
 
   // A re-read keeps drawing with the previous answer until the new one lands.
-  setEntry(key, previous ? { owners: previous, refresh: 'pending', request, status: 'ready' } : { request, status: 'loading' })
+  setEntry(
+    key,
+    previous ? { owners: previous, refresh: 'pending', request, status: 'ready' } : { request, status: 'loading' }
+  )
   // Only the newest request for a key may write it: an invalidation (plugin
   // toggle) mid-flight re-stamps the entry, and the older answer is dropped.
   const stillCurrent = () => $toolMediaOwners.get()[key]?.request === request
 
   requestForSessionProfile<{ plugins?: OwnershipRow[] }>(
     owner,
-    (method, params) =>
-      gateway ? gateway.request(method, params) : Promise.reject(new Error('No active gateway')),
+    (method, params) => (gateway ? gateway.request(method, params) : Promise.reject(new Error('No active gateway'))),
     'plugins.manage',
     profile ? { action: 'list', profile } : { action: 'list' }
   )

@@ -430,7 +430,8 @@ def noninteractive_git_env(base: Mapping[str, str] | None = None) -> dict[str, s
     """Environment for *internal* git invocations that must never prompt.
 
     Copy of ``base`` (default ``os.environ``) with ``GIT_TERMINAL_PROMPT=0`` (fail instead of
-    prompting), ``GCM_INTERACTIVE=Never`` (no Git Credential Manager dialog), and isolated git
+    prompting), ``GIT_OPTIONAL_LOCKS=0`` (a read-only probe killed at its timeout cannot orphan
+    ``index.lock``), ``GCM_INTERACTIVE=Never`` (no Git Credential Manager dialog), and isolated git
     config: inherited ``GIT_CONFIG_*`` injection, global/system config, pagers, editors, fsmonitor,
     external diff and hooks are all disabled so a user's repo/global config cannot hang or mutate
     Hermes's plumbing calls. ``core.sshCommand`` is pinned to ``ssh -o BatchMode=yes`` so the ssh
@@ -456,6 +457,7 @@ def noninteractive_git_env(base: Mapping[str, str] | None = None) -> dict[str, s
     # reading after that point would resolve the user's config to an empty file.
     safe_directories = _user_safe_directories(base if base is not None else os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_OPTIONAL_LOCKS"] = "0"
     env["GCM_INTERACTIVE"] = "Never"
     # Drop caller-supplied config injection; the GIT_CONFIG_COUNT block is rebuilt below so
     # ambient -c values cannot re-enable pagers, hooks, fsmonitor, editors or credential prompts.

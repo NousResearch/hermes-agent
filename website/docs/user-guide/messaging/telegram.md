@@ -835,6 +835,20 @@ Topics with a `skill` field automatically load that skill when a new session sta
 
 For example, a topic with `skill: arxiv` will have the arxiv skill pre-loaded whenever its session resets (after an explicit `/new` or `/reset`).
 
+### Chat-wide skill binding
+
+Use `channel_skill_bindings` to auto-load one or more skills in every session for a Telegram DM. The binding applies to the root DM and all of its topics, including topics created by the user with `/topic`. It applies to DMs only; group forum topics use [Group Forum Topic Skill Binding](#group-forum-topic-skill-binding):
+
+```yaml
+telegram:
+  channel_skill_bindings:
+    - id: "123456789"       # Your Telegram user/chat ID
+      skills:
+        - arxiv
+```
+
+If a configured topic also has a `skill`, the chat-wide skills load first and the topic skill is added afterward. Duplicate skill names are loaded only once. Restart the gateway after changing `channel_skill_bindings`; the updated binding then takes effect when a new session starts or after `/new`, `/reset`, or an automatic reset.
+
 :::tip
 Topics created outside of the config (e.g., by manually calling the Telegram API) are discovered automatically when a `forum_topic_created` service message arrives. You can also add topics to the config while the gateway is running — they'll be picked up on the next cache miss.
 :::

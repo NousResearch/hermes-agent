@@ -117,6 +117,17 @@ class TestNormalizeWorkdir:
             _normalize_workdir(str(f))
 
 
+class TestResolveJobWorkdir:
+
+    @pytest.mark.platforms("linux")
+    def test_tilde_expands_at_run_time(self, tmp_path, monkeypatch):
+        """A store not written by create/edit (a profile distribution) can carry ``~``."""
+        from cron.scheduler import _resolve_job_workdir
+        (tmp_path / "project").mkdir()
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert _resolve_job_workdir({"workdir": "~/project"}, "j") == str(tmp_path / "project")
+
+
 # ---------------------------------------------------------------------------
 # jobs.create_job and update_job
 # ---------------------------------------------------------------------------

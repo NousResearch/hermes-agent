@@ -499,12 +499,29 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> dict[str, Any]:
     # script must not inherit; single-profile runs keep the process env byte-for-byte as before.
     from agent.secret_scope import is_multiplex_active
     from tools.environments.local import build_subprocess_env
+    hook_env = build_subprocess_env(scrub_secrets=is_multiplex_active())
+    # The general delegate_task/terminal Kanban-env scrub (delegation_context.py)
+    # exists to stop a CHILD PROCESS a worker directly commands from forging
+    # dispatcher identity into a subprocess it controls. It fires unconditionally
+    # here too, because THIS process (the dispatcher-owned worker) always has
+    # HERMES_KANBAN_TASK set — but the hook subprocess is not a tool the worker
+    # commands, it's a policy-decision helper the harness spawns on every tool
+    # call, and board_grants.find_board_grant() needs the real task/run identity
+    # to convert an already-approved `/kanban unblock` into an ALLOW (t_29e74f5a).
+    # Restore the two identity vars from the REAL process os.environ only —
+    # never from a caller-supplied base/extra — so a scrubbed env cannot be used
+    # to smuggle in a forged value; this can only ever re-add the SAME identity
+    # this process already legitimately carries.
+    for _kanban_key in ("HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID"):
+        _kanban_val = os.environ.get(_kanban_key)
+        if _kanban_val is not None:
+            hook_env[_kanban_key] = _kanban_val
     try:
         if IS_WINDOWS:
             argv = _windows_script_argv(argv)
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, encoding='utf-8', errors='replace', shell=False,
-                                env=build_subprocess_env(scrub_secrets=is_multiplex_active()), **popen_kwargs)
+                                env=hook_env, **popen_kwargs)
     except Exception as exc:
         for cls, msg in _POPEN_ERRORS:
             if isinstance(exc, cls):

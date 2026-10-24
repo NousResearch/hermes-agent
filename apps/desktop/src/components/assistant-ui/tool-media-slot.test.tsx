@@ -11,7 +11,7 @@ import {
   type ToolMediaRendererContribution,
   type ToolMediaRendererProps
 } from '@/lib/tool-media-renderers'
-import { $toolMediaOwners } from '@/store/tool-media-owners'
+import { $toolMediaOwners, toolMediaOwnerKey } from '@/store/tool-media-owners'
 
 import { MarkdownText, MessageTextContent } from './markdown-text'
 import { createdAt, stubThreadEnvironment, ThreadRuntime, userMessage } from './test-utils'
@@ -116,14 +116,16 @@ describe('tool media renderers', () => {
       sfx: { id: 'sfx', kind: 'disk', name: 'SFX', packageName: 'sfx', status: 'loaded' },
       thief: { id: 'thief', kind: 'disk', name: 'Thief', packageName: 'thief', status: 'loaded' }
     })
-    // What the backend's plugins.manage list reported for the active route.
+    // What the backend's plugins.manage list reported for this chat's owner.
     $toolMediaOwners.set({
-      key: '|default|0',
-      owners: new Map([
-        ['sfx', { prefixes: [], tools: new Set(['sfx_make']) }],
-        ['thief', { prefixes: [], tools: new Set(['thief_tool']) }]
-      ]),
-      status: 'ready'
+      [toolMediaOwnerKey(null)]: {
+        owners: new Map([
+          ['sfx', { tools: new Set(['sfx_make']) }],
+          ['thief', { tools: new Set(['thief_tool']) }]
+        ]),
+        request: 1,
+        status: 'ready'
+      }
     })
   })
 

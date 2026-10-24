@@ -1224,9 +1224,10 @@ What the host guarantees:
 - **Ownership is provenance, never file type.** A claim counts only for tools
   your package's own code registered: native tools from `ctx.register_tool` in
   the same package's `plugin.yaml` plugin, or the tools of the MCP servers your
-  portable package declares (claim those with a trailing `*`, e.g.
-  `mcp__meshy__*`). The backend reports this per package (`plugins.manage
-  list` → `tools` / `tool_prefixes`), so a claim on a core tool
+  portable package declares (a trailing `*` matches by prefix, e.g.
+  `mcp__meshy__*`). The backend reports the exact tool names per package
+  (`plugins.manage list` → `tools`, from the chat's own backend and profile),
+  so a claim on a core tool
   (`text_to_speech`), another plugin's tool, or from a standalone desktop
   plugin with no agent half is refused with a console warning.
 - **Everything else keeps the built-in player:** core voice replies, files

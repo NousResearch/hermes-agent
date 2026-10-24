@@ -14,7 +14,7 @@ import type { MediaKind } from '@/lib/media'
  *
  * Ownership is provenance, never file type or name: the backend reports which
  * tools each installed package's own code registered (`plugins.manage list` →
- * `tools` / `tool_prefixes`), and a claim on any other tool is refused.
+ * `tools`), and a claim on any other tool is refused.
  */
 
 export const TOOL_MEDIA_RENDERER_AREA = 'transcript.toolMedia'
@@ -50,19 +50,19 @@ export interface ToolMediaRendererProps {
 
 /** Payload of a `transcript.toolMedia` contribution's `data`. */
 export interface ToolMediaRendererContribution {
-  /** Tool names this renderer draws. A trailing `*` matches a namespace the
-   *  package owns (`mcp__meshy__*` for its MCP server). Claims on tools the
-   *  package did not register are refused with a console warning. */
+  /** Tool names this renderer draws. A trailing `*` matches by prefix
+   *  (`mcp__meshy__*` for an MCP server's tools); either way only tools this
+   *  plugin's package registered are served, and other claims are refused with
+   *  a console warning. */
   tools: readonly string[]
   /** Mounted inside an error boundary whose fallback is the built-in player. */
   render: (props: ToolMediaRendererProps) => ReactNode
 }
 
-/** What one package's own code registered. */
+/** The exact tool names one package's own code registered (native tools and
+ *  its MCP servers' live tools), as the backend reports them. */
 export interface ToolOwnership {
   tools: ReadonlySet<string>
-  /** MCP server namespaces (`mcp__<server>__`). */
-  prefixes: readonly string[]
 }
 
 /** The tool-call fields a producer lookup reads (an assistant-ui part). */
@@ -97,7 +97,9 @@ function pathNeedles(path: string): string[] {
   const bare = path.startsWith('file:') ? decodeURIComponentSafe(path.replace(/^file:\/\//, '')) : path
 
   // JSON-escaped forms too: a Windows path sits in a JSON result as `C:\\Users\\…`.
-  return [...new Set([path, bare, JSON.stringify(path).slice(1, -1), JSON.stringify(bare).slice(1, -1)])]
+  return [...new Set([path, bare, JSON.stringify(path).slice(1, -1), JSON.stringify(bare).slice(1, -1)])].filter(
+    Boolean
+  )
 }
 
 function decodeURIComponentSafe(value: string): string {
@@ -106,6 +108,15 @@ function decodeURIComponentSafe(value: string): string {
   } catch {
     return value
   }
+}
+
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/** Whether `text` names `needle` as a WHOLE path: `/out/a.glb` matches in
+ *  `{"path":"/out/a.glb"}`, `saved to /out/a.glb.` and `MEDIA:/out/a.glb`, but
+ *  never inside `/out/a.glb.bak` or `/x/out/a.glb`. */
+export function namesWholePath(text: string, needle: string): boolean {
+  return new RegExp(`(?<=^|[\\s"'\`(=\\[{,:])${escapeRegExp(needle)}(?=$|[\\s"'\`),;\\]}>]|\\.(?:$|\\s))`).test(text)
 }
 
 function toolCallsOf(message: MessageLike): ToolCallLike[] {
@@ -149,7 +160,7 @@ export function findProducingToolCall(
 
       const text = payloadText(call.result)
 
-      if (needles.some(needle => needle && text.includes(needle))) {
+      if (needles.some(needle => namesWholePath(text, needle))) {
         return call
       }
     }
@@ -180,50 +191,26 @@ export function effectiveToolCall(part: ToolCallLike): ToolCallLike {
     : part
 }
 
-/** The package that owns `toolName`: an exact registration first, else the
- *  longest MCP namespace that covers it (so `mcp__a__` never takes a server
- *  named `a__b`'s tools). */
+/** The package that owns `toolName`: the one package whose registered tools
+ *  include it (the backend already drops a name two packages list). */
 export function ownerOfTool(toolName: string, owners: ReadonlyMap<string, ToolOwnership>): null | string {
-  let best: null | string = null
-  let bestLength = 0
-
   for (const [pkg, owned] of owners) {
     if (owned.tools.has(toolName)) {
       return pkg
     }
-
-    for (const prefix of owned.prefixes) {
-      if (toolName.startsWith(prefix) && toolName.length > prefix.length && prefix.length > bestLength) {
-        best = pkg
-        bestLength = prefix.length
-      }
-    }
   }
 
-  return best
+  return null
 }
 
 export function claimPatternMatches(pattern: string, toolName: string): boolean {
   return pattern.endsWith('*') ? pattern.length > 1 && toolName.startsWith(pattern.slice(0, -1)) : toolName === pattern
 }
 
-/** Whether `pattern` names only tools `owned` registered (a wildcard must sit
- *  inside one of the package's MCP namespaces). */
+/** Whether `pattern` names a tool `owned` registered (a wildcard must match at
+ *  least one). Only what the claim's own package registered is ever served. */
 export function claimPatternOwned(pattern: string, owned: ToolOwnership | undefined): boolean {
-  if (!owned) {
-    return false
-  }
-
-  if (pattern.endsWith('*')) {
-    const stem = pattern.slice(0, -1)
-
-    return owned.prefixes.some(prefix => stem.startsWith(prefix))
-  }
-
-  return (
-    owned.tools.has(pattern) ||
-    owned.prefixes.some(prefix => pattern.startsWith(prefix) && pattern.length > prefix.length)
-  )
+  return owned ? [...owned.tools].some(tool => claimPatternMatches(pattern, tool)) : false
 }
 
 export interface ToolMediaClaim {

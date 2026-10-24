@@ -5083,13 +5083,6 @@
             },
             "title": "Tools",
             "type": "array"
-          },
-          "tool_prefixes": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Tool Prefixes",
-            "type": "array"
           }
         },
         "required": [

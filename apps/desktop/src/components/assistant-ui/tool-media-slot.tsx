@@ -18,7 +18,12 @@ import {
   type ToolMediaRendererContribution,
   type ToolMediaRendererProps
 } from '@/lib/tool-media-renderers'
-import { $toolMediaOwners, ensureToolMediaOwners, packageOfContributionSource } from '@/store/tool-media-owners'
+import {
+  $toolMediaOwners,
+  ensureToolMediaOwners,
+  packageOfContributionSource,
+  toolMediaOwnerKey
+} from '@/store/tool-media-owners'
 
 /**
  * Where a `MEDIA:` attachment meets the tool media renderer area. With no
@@ -78,17 +83,22 @@ const ClaimedToolMediaSlot: FC<{ children: ReactNode; claims: readonly Contribut
 }) => {
   const part = useProducingToolCall(path)
   const producer = useMemo(() => (part ? effectiveToolCall(part) : null), [part])
-  const owners = useStore($toolMediaOwners)
+  const view = useSessionView()
+  const storedId = useStore(view.$storedId)
+  const runtimeId = useStore(view.$runtimeId)
+  const sessionId = storedId || runtimeId || null
+  const entries = useStore($toolMediaOwners)
+  const entry = entries[toolMediaOwnerKey(sessionId)]
   // Re-resolve when a plugin record (enable state, package) changes.
   useStore($pluginRecords)
 
   useEffect(() => {
     if (producer) {
-      ensureToolMediaOwners()
+      ensureToolMediaOwners(sessionId)
     }
-  }, [producer, owners])
+  }, [producer, sessionId, entry])
 
-  const ready = owners.status === 'ready' ? owners.owners : null
+  const ready = entry?.status === 'ready' ? entry.owners : null
 
   useEffect(() => {
     if (!ready) {
@@ -115,7 +125,7 @@ const ClaimedToolMediaSlot: FC<{ children: ReactNode; claims: readonly Contribut
 
   return (
     <ErrorBoundary fallback={() => children} label={`contrib:${claim.id}`}>
-      <ToolMediaLeaf contribution={claim} fallback={children} path={path} producer={producer} />
+      <ToolMediaLeaf contribution={claim} fallback={children} path={path} producer={producer} sessionId={sessionId} />
     </ErrorBoundary>
   )
 }
@@ -125,11 +135,9 @@ const ToolMediaLeaf: FC<{
   fallback: ReactNode
   path: string
   producer: ToolCallLike
-}> = ({ contribution, fallback, path, producer }) => {
+  sessionId: null | string
+}> = ({ contribution, fallback, path, producer, sessionId }) => {
   const render = (contribution.data as ToolMediaRendererContribution).render
-  const view = useSessionView()
-  const storedId = useStore(view.$storedId)
-  const runtimeId = useStore(view.$runtimeId)
 
   const file = useMemo<ToolMediaFile>(
     () => ({
@@ -162,7 +170,7 @@ const ToolMediaLeaf: FC<{
       fallback={fallback}
       file={file}
       result={producer.result}
-      sessionId={storedId || runtimeId || null}
+      sessionId={sessionId}
       toolCallId={producer.toolCallId ?? ''}
       toolName={producer.toolName ?? ''}
     />

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from hermes_cli.config import load_config, save_config
@@ -57,7 +58,16 @@ def test_list_reports_only_tools_the_package_itself_registered():
                       "entries": {"sfx": {"allow_tool_override": True}}}
     save_config(cfg)
 
-    with patch("hermes_cli.plugins_cmd_catalog.catalog_rows_maps", return_value=({}, {}, {})):
+    # The package's MCP server as the MCP client records it once connected (no real server here),
+    # plus a config server with a look-alike name that must not count for the package.
+    from tools.mcp_tool_common import _core
+    from tools.mcp_tool_scope import _resolve_server_key
+    connected = {
+        _resolve_server_key("meshy-3d"): SimpleNamespace(_registered_tool_names=["mcp__meshy_3d__download"]),
+        _resolve_server_key("meshy_3d_x"): SimpleNamespace(_registered_tool_names=["mcp__meshy_3d_x__steal"]),
+    }
+    with patch.dict(_core._servers, connected), \
+         patch("hermes_cli.plugins_cmd_catalog.catalog_rows_maps", return_value=({}, {}, {})):
         resp = server.handle_request({"id": "1", "method": "plugins.manage", "params": {"action": "list"}})
 
     rows = {row["name"]: row for row in resp["result"]["plugins"]}
@@ -67,7 +77,5 @@ def test_list_reports_only_tools_the_package_itself_registered():
     # is never listed on this row.
     assert rows["sfx"]["tools"] == ["sfx_make"]
     assert rows["other"]["tools"] == ["other_tool"]
-    assert rows["sfx"]["tool_prefixes"] == [] and rows["other"]["tool_prefixes"] == []
-    # A portable package owns its MCP server's tool namespace (the wire name sanitizes '-').
-    assert rows["meshy-ish"]["tools"] == []
-    assert rows["meshy-ish"]["tool_prefixes"] == ["mcp__meshy_3d__"]
+    # A portable package owns exactly the tools its own MCP server registered.
+    assert rows["meshy-ish"]["tools"] == ["mcp__meshy_3d__download"]

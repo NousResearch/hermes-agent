@@ -54,10 +54,18 @@ function harness({
     local: { getHistoryItems: () => [], getLastUserMsg: () => '', maybeWarn: vi.fn() },
     session: { guardBusySessionSwitch: vi.fn(() => busy), newSession: vi.fn(), resumeById: vi.fn() },
     slashFlightRef: { current: 0 },
-    transcript: { page: vi.fn(), panel: vi.fn(), send: vi.fn(), setHistoryItems: vi.fn(), sys, trimLastExchange: (x: unknown[]) => x }
+    transcript: {
+      page: vi.fn(),
+      panel: vi.fn(),
+      send: vi.fn(),
+      setHistoryItems: vi.fn(),
+      sys,
+      trimLastExchange: (x: unknown[]) => x
+    }
   } as any)
 
-  const observed = () => request.mock.calls.filter(([method]) => method === 'command.observe').map(([, params]) => params)
+  const observed = () =>
+    request.mock.calls.filter(([method]) => method === 'command.observe').map(([, params]) => params)
 
   return { gw, observed, request, slash, sys }
 }

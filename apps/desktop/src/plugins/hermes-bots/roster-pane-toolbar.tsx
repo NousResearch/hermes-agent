@@ -32,7 +32,10 @@ function NewGroupChatItem({ label, onSelect, roster }: NewGroupChatItemProps) {
   const { connectionId, mode, seatable } = useGroupCapability(true)
 
   return (
-    <DropdownMenuItem disabled={seatableGroupBots(roster, { connectionId, mode, seatable }).length < 2} onSelect={onSelect}>
+    <DropdownMenuItem
+      disabled={seatableGroupBots(roster, { connectionId, mode, seatable }).length < 2}
+      onSelect={onSelect}
+    >
       <Codicon className="mr-1.5" name="organization" />
       {label}
     </DropdownMenuItem>

@@ -372,7 +372,12 @@ export function useComposerSubmit({
       return false
     }
 
-    notify({ id: 'onboarding-slash-off', kind: 'info', message: t.firstRun.slashOffBody, title: t.firstRun.slashOffTitle })
+    notify({
+      id: 'onboarding-slash-off',
+      kind: 'info',
+      message: t.firstRun.slashOffBody,
+      title: t.firstRun.slashOffTitle
+    })
     focusInput()
 
     return true

@@ -2238,6 +2238,39 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
         logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
 
 
+def _end_suppressed_cron_session(db, job: dict, job_id: str, job_name: str, cron_session_id: str) -> None:
+    """End the session row a gateway-owned admission committed when an early gate skips the agent.
+
+    Gateway-owned cron fires commit their ``local-*`` session row at admission, BEFORE
+    ``run_job``'s gates run. When an early return then skips the agent (monitor no-change
+    suppression, wakeAgent=false, blocked/empty payload, config refusal, or a failed store
+    acquisition), the finally block never had a store of its own to finalize and the row
+    stayed started with zero messages forever — a monitor job on a short interval
+    accumulated hundreds of never-active rows per day. Write through the OWNER's existing
+    handle (never acquire a second borrow, never close or release the lent store) under the
+    bounded proxy, title the row, and end it as ``cron_suppressed`` so session prune can
+    reclaim it. Best-effort: cleanup must never change the run's result nor hold the
+    dispatch guard (same bound/quiet contract as ``_finalize_cron_session``)."""
+    if db is None:
+        return
+    _session_db = _BoundedCronSessionDB(db, job_id)
+    try:
+        _title_base = " ".join(job_name.split())[:60].strip() or f"cron {job_id}"
+        _set_cron_session_title(_session_db, cron_session_id,
+                                f"{_title_base} · {safe_strftime(_hermes_now(), '%b %d %H:%M')}")
+    except (Exception, KeyboardInterrupt) as e:
+        logger.debug("Job '%s': failed to title suppressed cron session: %s", job_id, e, exc_info=True)
+    with contextlib.suppress(Exception, KeyboardInterrupt):
+        _workdir = _resolve_job_workdir(job, job_id)
+        if _workdir:
+            with contextlib.suppress(Exception, KeyboardInterrupt):
+                _session_db.update_session_cwd(cron_session_id, _workdir)
+    try:
+        _session_db.end_session(cron_session_id, "cron_suppressed")
+    except (Exception, KeyboardInterrupt) as e:
+        logger.debug("Job '%s': failed to end suppressed cron session: %s", job_id, e, exc_info=True)
+
+
 def _normalize_newlines(text: str) -> str:
     """CRLF/CR -> LF, matching what text-mode reads of the archive return."""
     return text.replace("\r\n", "\n").replace("\r", "\n")
@@ -2598,6 +2631,12 @@ def run_job(
 
     early, prompt = _prepare_job_prompt(job, job_id, job_name, extra_prompt, cancel_event)
     if early is not None:
+        # A gate skipped the agent. On a gateway-owned fire the admission already committed
+        # this run's session row and the finally below never saw a store — end the row here
+        # or every suppressed tick (monitor no-change, wake gate, blocked payload) lingers
+        # never-active forever.
+        if owner_execution is not None:
+            _end_suppressed_cron_session(owner_execution[0].db, job, job_id, job_name, owner_execution[1])
         return early
     from run_agent import AIAgent
 
@@ -2694,6 +2733,11 @@ def run_job(
         if _session_db and not _worker_teardown_deferred:
             _finalize_cron_session(_session_db, agent, job_id, job_name, _cron_session_id,
                                    workdir=scope.workdir)
+        elif _session_db is None and owner_execution is not None and not _worker_teardown_deferred:
+            # Raised/blocked before the store opened (or store acquisition failed): the
+            # admission row exists and nothing else will end it. Write through the owner's
+            # lent handle — never re-acquire a borrow here.
+            _end_suppressed_cron_session(owner_execution[0].db, job, job_id, job_name, _cron_session_id)
         # Tear down the ephemeral agent or the gateway leaks fds per tick (EMFILE). With deferred
         # teardown, hand the live agent back: delivery needs a live async client.
         # Release subprocesses, terminal sandboxes, browser daemons, and the main OpenAI/httpx client held

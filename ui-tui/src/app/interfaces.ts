@@ -121,7 +121,7 @@ export interface GatewayProviderProps {
 // the SAME RPCs as the old slash flows (billing.charge / charge_status /
 // auto_reload / step_up).  Backend is unchanged & shared with the CLI.
 
-export type BillingScreen = 'autoreload' | 'buy' | 'confirm' | 'limit' | 'overview' | 'stepup'
+export type BillingScreen = 'autoreload' | 'buy' | 'confirm' | 'hermes' | 'limit' | 'overview' | 'stepup'
 
 /** Outcome of a charge attempt — lets the overlay route without tearing down. */
 export type BillingChargeOutcome =
@@ -139,6 +139,8 @@ export type BillingChargeOutcome =
 export interface BillingOverlayCtx {
   /** Run `billing.auto_reload` (enabled/threshold/top_up) → resolve ok/false. */
   applyAutoReload: (enabled: boolean, threshold?: number, topUp?: number) => Promise<boolean>
+  /** Run `billing.keep_going_on_credits` (window plans) → resolve ok/false. */
+  applyKeepGoingOnCredits: (enabled: boolean) => Promise<boolean>
   /**
    * Submit `billing.charge` for `amount` and poll to settlement. Resolves a
    * discriminated outcome so the overlay can route to the resumable step-up on

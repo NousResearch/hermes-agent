@@ -13,6 +13,7 @@ import {
 import { $queuedPromptsBySession, clearQueuedPrompts, getQueuedPrompts } from '@/store/composer-queue'
 import { $connectionRequests, type ConnectionRequest } from '@/store/connection-request'
 import { $gateway } from '@/store/gateway'
+import { $notifications } from '@/store/notifications'
 import { $onboardingPhase } from '@/store/onboarding-phase'
 import { $onboardingSession } from '@/store/onboarding-session'
 import {
@@ -1023,5 +1024,51 @@ describe('useComposerSubmit with a setup card waiting in the onboarding chat', (
     expect(queueCurrentDraft).not.toHaveBeenCalled()
     expect(onSteer).not.toHaveBeenCalled()
     expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('runs no slash command while setup is in progress: the words stay and a note says why', () => {
+    $onboardingPhase.set('shown')
+    $onboardingSession.set({ connectionId: null, runId: 'run-1', runtimeId: 'runtime-session', storedId: 'stored-session' })
+    $notifications.set([])
+    const respond = parkCard('name')
+
+    for (const busy of [false, true]) {
+      const { clearDraft, hook, onSubmit, queueCurrentDraft } = renderSubmitHook({ busy, text: '/help' })
+
+      act(() => hook.result.current.submitDraft())
+
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(queueCurrentDraft).not.toHaveBeenCalled()
+      expect(clearDraft).not.toHaveBeenCalled()
+      cleanup()
+    }
+
+    expect(respond).not.toHaveBeenCalled()
+    // One note, however often Enter is pressed.
+    expect($notifications.get().map(note => note.kind)).toEqual(['info'])
+  })
+
+  it('queues no slash command while setup is in progress (Cmd/Ctrl+Enter)', () => {
+    $onboardingPhase.set('shown')
+    $onboardingSession.set({ connectionId: null, runId: 'run-1', runtimeId: 'runtime-session', storedId: 'stored-session' })
+
+    const { clearDraft, hook, onSubmit, queueCurrentDraft } = renderSubmitHook({ busy: true, text: '/help' })
+
+    act(() => hook.result.current.queueDraft())
+
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(clearDraft).not.toHaveBeenCalled()
+  })
+
+  it('runs slash commands as usual in the same chat once setup has ended', () => {
+    $onboardingPhase.set('done')
+    $onboardingSession.set({ connectionId: null, runId: 'run-1', runtimeId: 'runtime-session', storedId: 'stored-session' })
+
+    const { hook, onSubmit } = renderSubmitHook({ text: '/help' })
+
+    act(() => hook.result.current.submitDraft())
+
+    expect(onSubmit).toHaveBeenCalledWith('/help', expect.anything())
   })
 })

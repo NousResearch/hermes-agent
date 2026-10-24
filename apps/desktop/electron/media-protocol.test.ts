@@ -8,6 +8,7 @@ import {
   createMediaProtocolHandler,
   isStreamableMediaPath,
   type MediaProtocolDependencies,
+  mediaProtocolDownloadName,
   mediaRequestHeaders,
   remoteMediaEndpoint
 } from './media-protocol'
@@ -60,6 +61,16 @@ describe('media protocol helpers', () => {
 
     expect(endpoint.pathname).toBe('/hermes/api/files/stream')
     expect(endpoint.searchParams.get('path')).toBe('/tmp/a b.mp4')
+  })
+
+  it('names a native media save after the file, not the flattened path', () => {
+    const local = `hermes-media://stream/${encodeURIComponent('C:\\Users\\me\\Videos\\clip (cut).mp4')}`
+    const remote = `hermes-media://remote/${encodeURIComponent('/home/me/out/render.webm')}?profile=work`
+
+    expect(mediaProtocolDownloadName(local)).toBe('clip (cut).mp4')
+    expect(mediaProtocolDownloadName(remote)).toBe('render.webm')
+    expect(mediaProtocolDownloadName('https://example.test/a/clip.mp4')).toBeNull()
+    expect(mediaProtocolDownloadName('blob:https://x/123')).toBeNull()
   })
 })
 

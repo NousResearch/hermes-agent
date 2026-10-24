@@ -39,6 +39,12 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False, ve
     python = str(project_python(root)) if running_from_selected_environment(root) else sys.executable
     env = {**os.environ, **(base_env or {}), "CI": "1", "HERMES_PYTHON": python,
            "PYTHON": python}
+    # Electron's installer unpacks its binary with a native module that imports
+    # VCRUNTIME140.dll, which a fresh Windows lacks. Our Python ships one, and
+    # scripts/build/electron-runtime.mjs copies it beside that module.
+    vc_runtime = Path(sys.base_prefix) / "vcruntime140.dll"
+    if vc_runtime.is_file():
+        env["HERMES_VC_RUNTIME"] = str(vc_runtime)
     env.pop("ESBUILD_BINARY_PATH", None)
     npmrc = get_hermes_home() / "npmrc"
     if npmrc.is_file():

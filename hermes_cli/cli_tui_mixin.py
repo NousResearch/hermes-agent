@@ -12,6 +12,7 @@ import queue
 import shutil
 import string
 import sys
+import tempfile
 import threading
 import time
 
@@ -1657,8 +1658,17 @@ class CLITuiMixin:
         self._tui_paste_counter += 1
         paste_dir = _hermes_home / "pastes"
         paste_dir.mkdir(parents=True, exist_ok=True)
-        paste_file = paste_dir / f"paste_{self._tui_paste_counter}_{datetime.now().strftime('%H%M%S')}.txt"
-        paste_file.write_text(text, encoding="utf-8")
+        # The counter is per process (reset on start) and the pastes directory is shared
+        # by every Hermes process on the host, so counter + clock second is not unique:
+        # two processes collapsing in the same second picked the same path, the last
+        # write won, and both then read the same file. mkstemp gives the name a random
+        # suffix and creates the file exclusively (no reuse, no truncation); pid stays
+        # in the name so a later incident can still tell which process wrote it.
+        paste_prefix = f"paste_{self._tui_paste_counter}_{datetime.now().strftime('%H%M%S')}_{os.getpid()}_"
+        fd, paste_name = tempfile.mkstemp(dir=paste_dir, prefix=paste_prefix, suffix=".txt")
+        paste_file = Path(paste_name)
+        with os.fdopen(fd, "w", encoding="utf-8") as paste_handle:
+            paste_handle.write(text)
         logger.info(
             "Collapsed paste #%d: %d lines, %d chars -> %s" + (" (fallback)" if fallback else ""),
             self._tui_paste_counter, line_count + 1, len(text), paste_file)

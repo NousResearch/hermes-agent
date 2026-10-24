@@ -16,7 +16,6 @@ import importlib.util
 import logging
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from typing import List, Optional, Tuple, TYPE_CHECKING
 
 from hermes_cli.config import cfg_get
@@ -394,53 +393,22 @@ def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True)
     return _instantiate_subclass(mod)
 
 
-class _ProviderCollector:
-    """Plugin context for memory providers: captures ``register_memory_provider``
-    (the one call the activation path owns) and delegates other ``register_*``
-    calls to a real ``PluginContext`` so providers have the full plugin surface."""
+class _ProviderCollector(_loader.ForwardingPluginContext):
+    """Plugin context for memory providers: captures ``register_memory_provider`` (the one call
+    the activation path owns); hooks and other ``register_*`` calls are forwarded by the base."""
+
+    label = "Memory provider"
 
     def __init__(self, name: str, *, register_skills: bool = True):
-        self.name = name
+        super().__init__(name)
         self.provider = None
         self._register_skills = register_skills
-        self._context = None
-        self._hook_source = None
-
-    def collect(self, register, *, source=None):
-        """Run ``register`` with this collector; hooks it registers form the fallback group that
-        general discovery of the same source replaces (see ``PluginLedgerMixin``)."""
-        from hermes_cli.plugins_ledger import _hook_source_of
-
-        module = sys.modules.get(getattr(register, "__module__", ""))
-        self._hook_source = _hook_source_of(self.name, SimpleNamespace(__file__=source) if source else module)
-        manager = self._plugin_context()._manager
-        with manager._discovery_lock:
-            manager._drop_fallback_hooks(self._hook_source)
-            register(self)
 
     def collect_in_host(self, host, provider_dir: Path, module_name: str):
-        """``collect`` for a provider whose code runs in the plugin host: the host captures the
-        provider and forwards every other registration here. The discovery lock is NOT held across
-        the host call — its registrations arrive on another thread and take the lock themselves."""
-        from hermes_cli.plugins_ledger import _hook_source_of
-
-        self._hook_source = _hook_source_of(self.name, SimpleNamespace(__file__=str(provider_dir / "__init__.py")))
-        manager = self._plugin_context()._manager
-
-        def drop_hooks() -> None:  # also before a reload into a restarted host: no stale hook proxies
-            with manager._discovery_lock:
-                manager._drop_fallback_hooks(self._hook_source)
-
-        drop_hooks()
-        self.provider = host.load_instance(
-            provider_dir, module_name=module_name, capture="register_memory_provider",
-            base_ref="agent.memory_provider:MemoryProvider", ctx=self, before_reload=drop_hooks)
+        self.provider = super().collect_in_host(
+            host, provider_dir, module_name, capture="register_memory_provider",
+            base_ref="agent.memory_provider:MemoryProvider")
         return self.provider
-
-    def register_hook(self, hook_name, callback):
-        context = self._plugin_context()
-        with context._manager._discovery_lock:
-            return context._manager._register_fallback_hook(context, self._hook_source, hook_name, callback)
 
     def register_memory_provider(self, provider):
         self.provider = provider
@@ -462,36 +430,6 @@ class _ProviderCollector:
                 _registered_skills_for_active_home()[qualified_name] = registered_path
         except Exception as exc:
             logger.debug("Memory provider '%s' failed to register skill: %s", self.name, exc)
-
-    def register_cli_command(self, *args, **kwargs):
-        pass  # CLI registration happens via discover_plugin_cli_commands()
-
-    def __getattr__(self, attr: str):
-        """Delegate any other ``register_*`` call to a real ``PluginContext`` (a
-        hand-maintained stub drifted: unknown calls raised and cost the provider).
-        Non-``register_*`` attributes raise normally so a typo still fails loudly."""
-        if not attr.startswith("register_"):
-            raise AttributeError(attr)
-
-        def _forward(*args, **kwargs):
-            try:
-                return self._plugin_context().__getattribute__(attr)(*args, **kwargs)
-            except Exception as exc:
-                # A secondary registration must not cost the provider itself.
-                logger.warning("Memory provider '%s' failed to %s: %s", self.name, attr, exc)
-                return None
-
-        return _forward
-
-    def _plugin_context(self):
-        """A real ``PluginContext``, built once on demand: the common provider that only
-        calls ``register_memory_provider`` must not pay for importing the plugin manager."""
-        if self._context is None:
-            from hermes_cli.plugins import PluginContext, PluginManifest, get_plugin_manager
-
-            manifest = PluginManifest(name=self.name, key=self.name)
-            self._context = PluginContext(manifest, get_plugin_manager())
-        return self._context
 
 
 def _get_active_memory_provider() -> Optional[str]:

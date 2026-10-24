@@ -236,13 +236,107 @@ class NoopPluginContext:
 
     register_tool = register_hook = register_cli_command = register_memory_provider = _noop
 
+    def collect(self, register: Callable[[Any], Any], *, source: Optional[str] = None) -> None:
+        register(self)
+
+
+class ForwardingPluginContext:
+    """Plugin context for a category loader (memory provider, context engine): a subclass captures
+    the one ``register_*`` call its activation path owns and every other ``register_*`` call reaches
+    a real ``PluginContext``, so these plugins have the full plugin surface. With ``forward=False``
+    (listing/inspection) the other calls are no-ops and nothing touches the plugin manager."""
+
+    label = "Plugin"
+
+    def __init__(self, name: str, *, forward: bool = True):
+        self.name = name
+        self._forward = forward
+        self._context = None
+        self._hook_source = None
+
+    def collect(self, register: Callable[[Any], Any], *, source: Optional[str] = None) -> None:
+        """Run ``register`` with this collector; hooks it registers form the fallback group that
+        general discovery of the same source replaces (see ``PluginLedgerMixin``)."""
+        if not self._forward:
+            register(self)
+            return
+        from types import SimpleNamespace
+        from hermes_cli.plugins_ledger import _hook_source_of
+
+        module = sys.modules.get(getattr(register, "__module__", ""))
+        self._hook_source = _hook_source_of(self.name, SimpleNamespace(__file__=source) if source else module)
+        manager = self._plugin_context()._manager
+        with manager._discovery_lock:
+            manager._drop_fallback_hooks(self._hook_source)
+            register(self)
+
+    def collect_in_host(self, host: Any, plugin_dir: Path, module_name: str, *, capture: str,
+                        base_ref: str) -> Any:
+        """``collect`` for a plugin whose code runs in the plugin host: the host captures the
+        instance and forwards every other registration here. The discovery lock is NOT held across
+        the host call — its registrations arrive on another thread and take the lock themselves."""
+        from types import SimpleNamespace
+        from hermes_cli.plugins_ledger import _hook_source_of
+
+        self._hook_source = _hook_source_of(self.name, SimpleNamespace(__file__=str(plugin_dir / "__init__.py")))
+        manager = self._plugin_context()._manager
+
+        def drop_hooks() -> None:  # also before a reload into a restarted host: no stale hook proxies
+            with manager._discovery_lock:
+                manager._drop_fallback_hooks(self._hook_source)
+
+        drop_hooks()
+        return host.load_instance(plugin_dir, module_name=module_name, capture=capture, base_ref=base_ref,
+                                  ctx=self, before_reload=drop_hooks)
+
+    def register_hook(self, hook_name, callback):
+        if not self._forward:
+            return None
+        context = self._plugin_context()
+        with context._manager._discovery_lock:
+            return context._manager._register_fallback_hook(context, self._hook_source, hook_name, callback)
+
+    def register_cli_command(self, *args, **kwargs):
+        pass  # CLI registration happens via each category's own CLI discovery
+
+    def __getattr__(self, attr: str):
+        """Delegate any other ``register_*`` call to a real ``PluginContext`` (a
+        hand-maintained stub drifted: unknown calls raised and cost the plugin).
+        Non-``register_*`` attributes raise normally so a typo still fails loudly."""
+        if not attr.startswith("register_"):
+            raise AttributeError(attr)
+
+        def _forward(*args, **kwargs):
+            if not self._forward:
+                return None
+            try:
+                return self._plugin_context().__getattribute__(attr)(*args, **kwargs)
+            except Exception as exc:  # health: allow BLE001 -- moved from plugins/memory; a plugin bug, logged by name
+                # A secondary registration must not cost the plugin itself.
+                logging.getLogger(type(self).__module__).warning(
+                    "%s '%s' failed to %s: %s", self.label, self.name, attr, exc)
+                return None
+
+        return _forward
+
+    def _plugin_context(self):
+        """A real ``PluginContext``, built once on demand: the common plugin that only calls its
+        capture method must not pay for importing the plugin manager."""
+        if self._context is None:
+            from hermes_cli.plugins import PluginContext, PluginManifest, get_plugin_manager
+
+            manifest = PluginManifest(name=self.name, key=self.name)
+            self._context = PluginContext(manifest, get_plugin_manager())
+        return self._context
+
 
 def instance_from_module(mod: Any, *, collector: Any, collected_attr: str, base_cls: type, name: str,
-                         logger: logging.Logger) -> Optional[Any]:
-    """Extract the provider instance: ``register(ctx)`` first, then any ``base_cls`` subclass."""
+                         logger: logging.Logger, source: Optional[str] = None) -> Optional[Any]:
+    """Extract the provider instance: ``register(ctx)`` first, then any ``base_cls`` subclass.
+    ``source`` keys the collector's hook group (default: the module's ``__file__``)."""
     if hasattr(mod, "register"):
         try:
-            mod.register(collector)
+            collector.collect(mod.register, source=source or getattr(mod, "__file__", None))
             instance = getattr(collector, collected_attr)
             if instance:
                 return instance

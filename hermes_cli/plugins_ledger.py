@@ -25,6 +25,15 @@ def _hook_source_of(name: str, module: Any) -> Optional[tuple]:
     return (name, str(Path(source).resolve())) if source else None
 
 
+def _loaded_hook_source(loaded: Any) -> Optional[tuple]:
+    """``_hook_source_of`` for a plugin general discovery loaded. A directory plugin running in the plugin
+    host has no module here, so its ``__init__.py`` stands in, as in the category loaders' ``collect_in_host``."""
+    manifest = loaded.manifest
+    if loaded.module is None and manifest.path and manifest.source in {"user", "project", "bundled"}:
+        return (manifest.name, str((Path(manifest.path) / "__init__.py").resolve()))
+    return _hook_source_of(manifest.name, loaded.module)
+
+
 @dataclass
 class PluginRegistration:
     """One host-owned registration plus its inverse, so force reload unwinds registries in reverse order
@@ -194,7 +203,7 @@ class PluginLedgerMixin:
         which case return an inert handle so the provider keeps its disposable-handle contract."""
         if hook_source is None:
             return context.register_hook(hook_name, callback)
-        owned = any(loaded.enabled and _hook_source_of(loaded.manifest.name, loaded.module) == hook_source
+        owned = any(loaded.enabled and _loaded_hook_source(loaded) == hook_source
                     for loaded in self._plugins.values())
         handle = context._track("hook", hook_name, lambda: None) if owned else context.register_hook(hook_name, callback)
         self._memory_hook_registrations.setdefault(hook_source, []).append(handle)

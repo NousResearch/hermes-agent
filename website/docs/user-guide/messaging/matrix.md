@@ -370,25 +370,18 @@ Hermes supports Matrix end-to-end encryption, so you can chat with your bot in e
 
 ### Requirements
 
-E2EE requires the `mautrix` library with encryption extras and the `libolm` C library:
+E2EE runs on [vodozemac](https://github.com/matrix-org/vodozemac), the Matrix.org Foundation's audited Rust implementation of Olm/Megolm, through its pre-built Python wheels. No C compiler, CMake or system `libolm` is needed:
 
 ```bash
 # Request the declared Matrix dependencies
 python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
 ```
 
-You also need `libolm` installed on your system:
+If an environment still has the legacy python-olm/libolm package but not vodozemac (it has not been re-synced since this change), Hermes falls back to libolm and logs a deprecation warning.
 
-```bash
-# Debian/Ubuntu
-sudo apt install libolm-dev
-
-# macOS
-brew install libolm
-
-# Fedora
-sudo dnf install libolm-devel
-```
+:::info Upgrading an existing E2EE bot from libolm
+The first start on vodozemac migrates `crypto.db` in place: the Olm account (same identity keys and device), Olm sessions and every inbound Megolm session are kept, so existing rooms keep decrypting. Outbound Megolm sessions written by libolm cannot be imported and are rotated: the bot simply shares a fresh room key on its next encrypted message. Before migrating, Hermes copies the store to `crypto.db.libolm-backup-<timestamp>`. The migration is one-way; to roll back, stop the gateway, downgrade Hermes and restore that copy as `crypto.db`.
+:::
 
 ### Enable E2EE
 
@@ -500,7 +493,7 @@ Other Matrix clients (Element, matrix-commander) may cache the old device keys. 
 :::
 
 :::info
-If `mautrix[encryption]` is not installed or `libolm` is missing, the bot falls back to a plain (unencrypted) client automatically. You'll see a warning in the logs.
+If the Matrix E2EE dependencies (`mautrix`, `vodozemac`, `asyncpg`, `aiosqlite`) are not installed and `MATRIX_E2EE_MODE=optional`, the bot falls back to a plain (unencrypted) client automatically. You'll see a warning in the logs. With `MATRIX_E2EE_MODE=required` it refuses to connect instead.
 :::
 
 ## Home Room
@@ -631,10 +624,10 @@ cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['matrix'], expl
 
 ### Encryption errors / "could not decrypt event"
 
-**Cause**: Missing encryption keys, `libolm` not installed, or the bot's device isn't trusted.
+**Cause**: Missing encryption keys, the E2EE dependencies are not installed, or the bot's device isn't trusted.
 
 **Fix**:
-1. Verify `libolm` is installed on your system (see the E2EE section above).
+1. Verify the Matrix dependencies are installed (see the E2EE section above); the gateway log names the active backend.
 2. Make sure `MATRIX_ENCRYPTION=true` is set in your `.env`.
 3. In your Matrix client (Element), go to the bot's profile -> Sessions -> verify/trust the bot's device.
 4. If the bot just joined an encrypted room, it can only decrypt messages sent *after* it joined. Older messages are inaccessible.

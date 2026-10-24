@@ -92,7 +92,7 @@ dependencies = [
   # back to plain text, so cron/agent deliveries render raw `##`/`**`/tables
   # in clients like Element (see #32486). Pure-Python py3-none-any wheel
   # (~108KB, no compiled extensions, no platform constraints), so unlike the
-  # matrix extra's `mautrix`/`python-olm` it's safe to ship everywhere — keeps
+  # matrix extra's native crypto dependency it's safe to ship everywhere — keeps
   # it out of the lazy-install path that exists only for the heavy matrix deps.
   "Markdown==3.11.2; python_version >= '3.14'",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
@@ -278,15 +278,21 @@ messaging = [
 ] # aiohttp 3.14.5: prior CVEs + GHSA-9xw5-w5jj-pvcg/GHSA-2g87-pp6c-29x5/GHSA-5wr8-gcqf-gqf3 family
 cron = [] # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.30.0", "slack-sdk==3.45.0", "aiohttp==3.14.5"]
-# Matrix gateway deps. `mautrix[encryption]` pulls `python-olm`, whose
-# vendored libolm (archived 2023) cannot build on Windows or modern macOS:
-# no wheels for those targets AND the sdist fails to compile on current
-# clang/MSVC (olm/list.hh const-iterator error) and on CMake >= 4. It is
-# linux-only — gate the whole extra so `uv sync --all-extras` (the bundle
-# build) doesn't try to build python-olm on the win/darwin lanes. The
-# matrix adapter degrades gracefully without mautrix (import stubs).
+# Matrix gateway deps. E2EE runs on vodozemac (Rust, audited; pre-built
+# wheels for linux glibc/musl, macOS and Windows, CPython 3.10-3.14) through
+# plugins/platforms/matrix/olm_vodozemac.py, a python-olm-compatible layer that
+# mautrix.crypto runs on unchanged. This replaces `mautrix[encryption]` ->
+# `python-olm` -> libolm, which the Matrix.org Foundation deprecated in July
+# 2024 and whose source build broke on CMake >= 4, clang 21+, MSVC and
+# Python >= 3.13. The other entries are the rest of mautrix's `encryption`
+# extra. (Still linux-gated here; lifting the gate is a separate change.)
+# The matrix adapter degrades gracefully without mautrix (import stubs).
 matrix = [
-  "mautrix[encryption]==0.21.1; sys_platform == 'linux'",
+  "mautrix==0.21.1; sys_platform == 'linux'",
+  "vodozemac==0.10.0; sys_platform == 'linux'",
+  "unpaddedbase64==2.1.0; sys_platform == 'linux'",
+  "pycryptodome==3.24.1; sys_platform == 'linux'",
+  "base58==2.1.1; sys_platform == 'linux'",
   "aiosqlite==0.22.1; sys_platform == 'linux'",
   "asyncpg==0.32.0; sys_platform == 'linux'",
   "aiohttp-socks==0.12.0; sys_platform == 'linux'",
@@ -544,12 +550,11 @@ all = [
   #   matrix, slack, honcho, voice (faster-whisper),
   #   dingtalk, feishu, bedrock, tts-premium (elevenlabs)
   #
-  # Why: the matrix extra in particular pulls `mautrix[encryption]`
-  # which depends on `python-olm`. python-olm has Linux-only wheels and
-  # no native build path on Windows or modern macOS. With matrix in
-  # [all], `uv sync --locked` on Windows tried to build it from sdist
-  # and failed on `make`. Lazy-install routes that build to first use,
-  # where the user is expected to have a toolchain available.
+  # Why: the matrix extra used to pull `mautrix[encryption]` ->
+  # `python-olm`, which had Linux-only wheels and no native build path on
+  # Windows or modern macOS; with matrix in [all], `uv sync --locked` on
+  # Windows tried to build it from sdist and failed on `make`. It now uses
+  # vodozemac wheels, but stays lazy-installed like every opt-in backend.
   "hermes-agent[cron]",
   "hermes-agent[pty]",
   "hermes-agent[mcp]",
@@ -625,7 +630,8 @@ update-startup-files = [
 # single-authority for WHICH extra is supported WHERE.
 
 [tool.hermes.extras-platforms]
-# mautrix[encryption] → python-olm: linux-only wheels, no win/darwin build.
+# Historically python-olm (linux-only wheels). vodozemac has win/darwin wheels;
+# lifting this gate is a separate, CI-verified change.
 matrix = "sys_platform == 'linux'"
 # grpcio (via google-cloud-pubsub) has no win_arm64 wheel.
 google-chat = "platform_machine != 'ARM64' or sys_platform != 'win32'"

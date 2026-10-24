@@ -1,5 +1,5 @@
 # health: allow FILE_LINES -- platform-tables refactor: core's PLATFORM_HINTS/_PLATFORM_DEFAULTS rows for this platform moved onto its register() call (hint text lives in adapter_hint.py); the growth is only those kwargs
-"""Matrix gateway adapter (any homeserver, via mautrix; optional E2EE with ``mautrix[encryption]``).
+"""Matrix gateway adapter (any homeserver, via mautrix; optional E2EE on vodozemac, see crypto_backend).
 
 Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN (preferred) | MATRIX_USER_ID + MATRIX_PASSWORD;
@@ -82,8 +82,14 @@ from plugins.platforms.matrix.media_download import MatrixMediaTooLarge, downloa
 from plugins.platforms.matrix.adapter_html import _latex_to_tokens, _pre_sanitize_matrix_markdown, _sanitize_matrix_html
 from plugins.platforms.matrix.session_proxy import matrix_redaction_proxy
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
+from plugins.platforms.matrix import crypto_backend as _crypto_backend
 
 logger = logging.getLogger(__name__)
+
+# mautrix.crypto binds ``import olm`` when it is first imported, so the Olm/Megolm backend
+# (vodozemac) must be registered before anything imports it. _check_e2ee_deps() re-runs the
+# selection after a lazy install of the [matrix] extra.
+_crypto_backend.select_backend()
 
 _MATRIX_VOICE_WAVEFORM_BINS = 30
 
@@ -353,7 +359,9 @@ _STARTUP_GRACE_SECONDS = 5  # ignore messages older than this many seconds befor
 
 _OUTBOUND_MENTION_RE = re.compile(r"(?<![\w/])(@[0-9A-Za-z._=/-]+:[0-9A-Za-z.-]+(?::\d+)?)")
 
-_E2EE_INSTALL_HINT = "Install with: pip install 'mautrix[encryption]' asyncpg aiosqlite  (requires libolm C library)"
+_E2EE_INSTALL_HINT = (
+    "Install with: pip install mautrix vodozemac unpaddedbase64 pycryptodome base58 asyncpg aiosqlite"
+    "  (pre-built wheels; no C compiler or libolm needed)")
 
 _MATRIX_IMAGE_FILENAME_EXTS = frozenset({
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".heic", ".heif", ".avif"})
@@ -426,15 +434,18 @@ def _create_matrix_session(proxy_url: str | None):
 
 
 def _check_e2ee_deps() -> bool:
-    """True if all four E2EE deps import: olm, PgCryptoStore (also drives sqlite), asyncpg, aiosqlite.
-    Without all four, encrypted rooms fail at connect with ``No module named 'asyncpg'``.
+    """True if all four E2EE deps import: an Olm backend, PgCryptoStore (also drives sqlite), asyncpg,
+    aiosqlite. Without all four, encrypted rooms fail at connect with ``No module named 'asyncpg'``.
 
-    Verifies python-olm (via mautrix.crypto.OlmMachine), the SQLite crypto store backend
+    Selects the Olm/Megolm backend first (vodozemac, or deprecated python-olm as a fallback; see
+    ``crypto_backend``), then verifies it via mautrix.crypto.OlmMachine, the SQLite crypto store backend
     (mautrix.crypto.store.asyncpg.PgCryptoStore — yes, the PgCryptoStore class also drives the sqlite
     backend in mautrix 0.21), and the database drivers actually used at connect time (``asyncpg`` for the
     underlying upgrade_table machinery, ``aiosqlite`` for the ``sqlite:///`` URL we pass to
     ``Database.create``). See #31116.
     """
+    if _crypto_backend.select_backend() == _crypto_backend.NONE:
+        return False
     try:
         from mautrix.crypto import OlmMachine
         from mautrix.crypto.store.asyncpg import PgCryptoStore
@@ -917,6 +928,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 try:
                     session = session_cls.from_pickle(pickled, legacy_key)
                 except Exception as exc:
+                    if (table == "crypto_megolm_outbound_session"
+                            and _crypto_backend.selected_backend() == _crypto_backend.VODOZEMAC):
+                        continue  # libolm outbound pickle: rotated by crypto_migration, not lost
                     # Readable under neither key: leave it inert rather than delete crypto material.
                     logger.warning(
                         "Matrix: %s row %s cannot be unpickled with the current or legacy key; leaving "
@@ -1063,14 +1077,18 @@ class MatrixAdapter(BasePlatformAdapter):
             if (self._store_dir / "crypto_store.pickle").exists():  # pre-SQLite era
                 logger.info("Matrix: removing legacy crypto_store.pickle (migrated to SQLite)")
                 (self._store_dir / "crypto_store.pickle").unlink()
-            crypto_db = Database.create(
-                f"sqlite:///{self._crypto_db_path}", upgrade_table=PgCryptoStore.upgrade_table)
-            await crypto_db.start()
-            self._crypto_db = crypto_db
             _acct_id = self._user_id or "hermes"
             # Key on the RESOLVED client.device_id (token's real device), not the configured
             # one, or the Olm account is stored under a key that can never be looked up.
             _pickle_key = f"{_acct_id}:{client.device_id or self._device_id or 'default'}"
+            _on_vodozemac = _crypto_backend.selected_backend() == _crypto_backend.VODOZEMAC
+            if _on_vodozemac:  # one-way libolm -> vodozemac migration below: keep a rollback copy
+                from plugins.platforms.matrix.crypto_migration import backup_if_libolm_store
+                backup_if_libolm_store(self._crypto_db_path, (_pickle_key, f"{_acct_id}:default", _acct_id))
+            crypto_db = Database.create(
+                f"sqlite:///{self._crypto_db_path}", upgrade_table=PgCryptoStore.upgrade_table)
+            await crypto_db.start()
+            self._crypto_db = crypto_db
             crypto_store = PgCryptoStore(account_id=_acct_id, pickle_key=_pickle_key, db=crypto_db)
             await crypto_store.open()
             _store_was_reset = False
@@ -1081,6 +1099,14 @@ class MatrixAdapter(BasePlatformAdapter):
             if not _store_was_reset and not await self._migrate_legacy_crypto_pickle(
                     crypto_store, crypto_db, _acct_id, _pickle_key):
                 logger.warning("Matrix: crypto pickle migration failed — E2EE may not work correctly")
+            if _on_vodozemac and not _store_was_reset:
+                from plugins.platforms.matrix.crypto_migration import migrate_store_to_vodozemac
+                try:
+                    await migrate_store_to_vodozemac(crypto_db, _acct_id, _pickle_key)
+                except Exception as exc:  # libolm rows stay readable on demand; retried next start
+                    logger.warning("Matrix: libolm -> vodozemac crypto store migration did not "
+                                   "complete (%s); it will be retried on the next start", exc,
+                                   exc_info=True)
             from plugins.platforms.matrix.adapter_crypto import _CryptoStateStore
             crypto_state = _CryptoStateStore(state_store, self._joined_rooms, client)
             olm = OlmMachine(client, crypto_store, crypto_state)

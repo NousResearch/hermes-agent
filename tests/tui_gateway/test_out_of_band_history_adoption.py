@@ -12,6 +12,7 @@ import threading
 
 from hermes_state import SessionDB
 from tui_gateway import server
+from tests.fakes.immediate_thread import ImmediateThread
 
 
 def _bind_db(monkeypatch, db):
@@ -104,14 +105,7 @@ def _gateway_appends(db, turns: int = 10) -> None:
 
 
 def _immediate_thread(monkeypatch) -> None:
-    class _ImmediateThread:
-        def __init__(self, target=None, daemon=None, **_kwargs):
-            self._target = target
-
-        def start(self):
-            self._target()
-
-    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server.threading, "Thread", ImmediateThread)
 
 
 def _desktop_prompt(db, session, monkeypatch, text: str = "continue on desktop") -> list:

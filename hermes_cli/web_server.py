@@ -546,6 +546,11 @@ async def _dashboard_health_middleware(request: Request, call_next):
     return response
 
 
+from hermes_cli.web_server_gzip import DashboardGZipMiddleware
+
+# Level 1: a 500-message page compresses in about half the time of level 5, for ~8% more bytes.
+app.add_middleware(DashboardGZipMiddleware, minimum_size=4096, compresslevel=1)
+
 # CORS: restrict to localhost origins only.  The web UI is intended to run
 # locally; binding to 0.0.0.0 with allow_origins=["*"] would let any website
 # read/modify config and secrets.

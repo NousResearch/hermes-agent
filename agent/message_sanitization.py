@@ -305,7 +305,12 @@ def close_interrupted_tool_sequence(messages: list, final_response: Any = None) 
     from agent.message_metadata import append_message
 
     stripped = text.strip()
-    if not stripped or stripped == _INTERRUPTED_PLACEHOLDER:
+    try:
+        from agent.interrupt_control import is_bare_interrupt_text
+        bare = is_bare_interrupt_text(stripped)
+    except Exception:
+        bare = not stripped or stripped == _INTERRUPTED_PLACEHOLDER
+    if bare or stripped == _INTERRUPTED_PLACEHOLDER:
         append_message(messages, hidden_interrupt_placeholder_row())
     else:
         append_message(messages, {"role": "assistant", "content": stripped})

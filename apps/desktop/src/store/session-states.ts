@@ -84,7 +84,7 @@ import {
 } from './session'
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
 import { $focusedStoredSessionId, TILE_PANE_PREFIX } from './session-focus'
-import { turnHasReply, withNoReplyNotice } from './session-no-reply'
+import { turnHasReply, withInterruptedEmptyNotice, withNoReplyNotice } from './session-no-reply'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
 import {
   isSessionOwnerRoute,
@@ -486,13 +486,20 @@ function settleEndedLiveTurn(runtimeId: string) {
 }
 
 /** Stamp the retry card on an ended turn that has no reply, never an intentional
- *  interruption. A newer turn is either live (skipped) or has its own reply. */
+ *  interruption as a *retryable connection* failure. Interrupted empty turns still
+ *  get a non-retryable stop notice so the chat is never blank. */
 function markTurnWithoutReply(runtimeId: string) {
-  writeSessionState(runtimeId, state =>
-    state.interrupted || isLiveTurnAwaitingEvents(state) || turnHasReply(state.messages)
-      ? state
-      : { ...state, messages: withNoReplyNotice(state.messages) }
-  )
+  writeSessionState(runtimeId, state => {
+    if (isLiveTurnAwaitingEvents(state) || turnHasReply(state.messages)) {
+      return state
+    }
+
+    if (state.interrupted) {
+      return { ...state, messages: withInterruptedEmptyNotice(state.messages) }
+    }
+
+    return { ...state, messages: withNoReplyNotice(state.messages) }
+  })
 }
 
 async function recoverEndedLiveTurn(runtimeId: string) {

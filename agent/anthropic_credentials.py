@@ -697,6 +697,25 @@ def _available_anthropic_token(token: Optional[str], model: Optional[str]) -> Op
     return token
 
 
+def resolve_anthropic_oauth_token(*, model: Optional[str] = None) -> Optional[str]:
+    """Resolve only subscription OAuth credentials, never an API key from the mixed Anthropic chain."""
+    for name in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_TOKEN"):
+        token = _first_env(name)
+        if token and _is_oauth_token(token):
+            token = _available_anthropic_token(token, model)
+            if token:
+                return token
+    token = _resolve_anthropic_pool_token(skip_borrowed=False)
+    if token and _is_oauth_token(token):
+        token = _available_anthropic_token(token, model)
+        if token:
+            return token
+    token = _resolve_claude_code_token_from_credentials()
+    if token and _is_oauth_token(token):
+        return _available_anthropic_token(token, model)
+    return None
+
+
 def resolve_anthropic_token(*, model: Optional[str] = None) -> Optional[str]:
     """Resolve an Anthropic token from all sources in priority order (see module docstring).
 

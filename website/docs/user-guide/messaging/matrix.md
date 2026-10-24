@@ -316,6 +316,34 @@ your bridge uses a different naming convention:
 MATRIX_IGNORE_USER_PATTERNS='^@telegram_,^@slack_,^@whatsapp_'
 ```
 
+### Two Hermes instances in one room (bot-to-bot loops)
+
+Matrix carries no bot flag, so a peer Hermes bot arrives as an ordinary **authorized** user: the
+gateway's bot loop guard cannot recognise it, and two instances will keep answering each other's
+automatic messages — model-fallback and interrupt notices are plain `m.text`, so
+`MATRIX_PROCESS_NOTICES` does not filter them. Two settings guard such a room:
+
+1. Name the peer in the loop guard, so its messages are counted as bot-authored:
+
+   ```yaml
+   gateway:
+     bot_loop_guard:
+       bot_senders:
+         matrix:
+           - "@peer-bot:example.org"
+   ```
+
+   Past `max_events` within `window_seconds` the room cools down for `cooldown_seconds`
+   (defaults: 20 messages / 300s / 600s). The list also accepts `["matrix:@peer-bot:example.org"]`,
+   and is re-read on every message — no restart needed.
+
+2. Set `MATRIX_THREAD_REQUIRE_MENTION=true` on **both** sides, so a turn needs an explicit
+   `@mention` even inside a thread the bot has already joined.
+
+A room holding only the two bots is DM-classified (`member_count <= 2`) and bypasses every mention
+gate, so keep a human in the room. For work rather than chat, prefer `hermes peer dm` or a kanban
+card over room traffic.
+
 Only enable notices when a trusted human workflow really sends `m.notice`:
 
 ```bash

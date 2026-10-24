@@ -303,7 +303,8 @@ def _cmd_watch(args: argparse.Namespace) -> int:
 
 
 def _cmd_gc(args: argparse.Namespace) -> int:
-    """Remove archived tasks' scratch workspaces, old events, and old worker logs."""
+    """Remove archived tasks' workspaces, residual done scratch workspaces,
+    old events, and old worker logs."""
     import shutil
     event_days = getattr(args, "event_retention_days", 30)
     log_days = getattr(args, "log_retention_days", 30)
@@ -312,9 +313,12 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     scratch_root = kb.workspaces_root()
     removed_ws = 0
     with kbc.connect_closing() as conn:
+        # Done scratch dirs are normally removed at completion; this retries
+        # residue whose cleanup was missed or deferred with no later retry.
         rows = conn.execute(
-            "SELECT id, workspace_kind, workspace_path, branch_name FROM tasks "
-            "WHERE status = 'archived'"
+            "SELECT id, status, workspace_kind, workspace_path, branch_name FROM tasks "
+            "WHERE status = 'archived' "
+            "OR (status = 'done' AND workspace_kind = 'scratch')"
         ).fetchall()
         for row in rows:
             if row["workspace_kind"] == "worktree":
@@ -336,6 +340,10 @@ def _cmd_gc(args: argparse.Namespace) -> int:
             # Cheap existence/symlink check first: most rows were already cleaned at
             # completion, and rmtree refuses a symlink (so it must not be counted).
             if not path.is_dir() or path.is_symlink() or not kbw._is_managed_scratch_path(path):
+                continue
+            # Same deferral as completion: a done parent keeps its workspace
+            # while a non-terminal child may still read its handoff artifacts.
+            if row["status"] == "done" and kbw._has_active_children(conn, row["id"]):
                 continue
             if kbw._defer_shared_workspace_cleanup(conn, row["id"], path):
                 continue

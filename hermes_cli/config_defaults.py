@@ -859,10 +859,10 @@ DEFAULT_CONFIG = {
         # Memory updated") | "verbose" (content preview). Per-platform via
         # display.platforms.<platform>.memory_notifications.
         "memory_notifications": "on",
-        # Gateway notices when a terminal(background=true) process finishes: "concise" (one line;
-        # failures append an output tail) | "all" (running updates + final raw output) | "result"
-        # (final raw only) | "error" (raw only on non-zero exit) | "off".
+        # Gateway notices when a terminal(background=true) process finishes: "concise" (one line; failures
+        # add an output tail) | "all" (updates + final raw) | "result" (final raw) | "error" (raw if exit != 0) | "off".
         "background_process_notifications": "concise",
+        "background_process_busy_result_mode": "queue",  # finished mid-turn: queue = next turn, steer = next tool result
         "streaming": False,
         "timestamps": False,      # message timestamps (CLI labels, TUI rows, desktop transcript)
         "timestamp_format": "%H:%M",  # strftime format, e.g. "%b-%d %H:%M"
@@ -1367,8 +1367,7 @@ DEFAULT_CONFIG = {
         # children fail only from real errors (API, tools, iteration budget). A progressing child (including one
         # waiting on a multi-minute completion) restarts the window; a frozen one is caught.
         "child_timeout_seconds": 0,
-        # Subagent effort: "ultra" | "max" | "xhigh" | "high" | "medium" | "low" | "minimal" |
-        # "none" (empty = inherit)
+        # Subagent effort: "ultra" | "max" | "xhigh" | "high" | "medium" | "low" | "minimal" | "none" (empty = inherit)
         "reasoning_effort": "",
         # Max parallel children per batch AND max concurrent background delegation units; async
         # dispatches beyond it run synchronously. Floor 1, no ceiling.
@@ -1376,6 +1375,7 @@ DEFAULT_CONFIG = {
         # Background fan-outs return as ONE message when the whole call finishes. true = each task
         # (or `group`) returns on its own as it finishes — more new turns for the orchestrator.
         "independent_completions": False,
+        "busy_result_mode": "queue",  # result finishing mid-turn: queue = next turn, steer = next tool result
         # Orchestrator role controls. Depth floored at 1, no ceiling; each level multiplies cost.
         "max_spawn_depth": 1,  # 1 = flat, 2 = orchestrator→leaf, 3+ = deeper
         "orchestrator_enabled": True,  # kill switch for role="orchestrator"

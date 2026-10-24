@@ -116,6 +116,9 @@ class SearchResult:
     limit_reason: Optional[str] = None
     warning: Optional[str] = None
     error: Optional[str] = None
+    #: The total was counted exactly even though the page was cut (the search tier
+    #: re-counts past its fetch window), so it is not a lower bound.
+    _total_is_exact: bool = field(default=False, compare=False, repr=False)
 
     # Below this many matches the verbose array is already compact enough that
     # a path-grouping header would cost more tokens than it saves.
@@ -158,7 +161,9 @@ class SearchResult:
             result["counts"] = self.counts
         if self.truncated:
             result["truncated"] = True
-            result["total_count_is_lower_bound"] = True
+            # Only a fetched-row floor is a lower bound; an exact re-count is not.
+            if not self._total_is_exact:
+                result["total_count_is_lower_bound"] = True
         for key in ("limit_reason", "warning", "error"):
             value = getattr(self, key)
             if value:

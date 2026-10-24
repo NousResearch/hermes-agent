@@ -937,6 +937,17 @@ hermes skills update react --force   # Overwrite a skill you've edited locally
 
 This uses the stored source identifier plus the current upstream bundle content hash to detect drift.
 
+The same command also covers skills that record their own provenance: a skill authored by `/learn` (or written by hand) with a `metadata.hermes.sources` block in its `SKILL.md` appears in a **Learned skill sources** table, one row per recorded source, with a status of `unchanged`, `changed`, `unreachable`, `baseline_recorded` (the first check, or the first check after the skill was refreshed — the baseline the next check compares against) or `skipped` (blocked by the URL safety or website policy, or a form that cannot be checked automatically — an `ssh://` remote, a repository with no recorded revision, a relative path). Baselines live in `<skills dir>/.source_state.json`, never in `SKILL.md`.
+
+A `changed` verdict is sticky: it stays on every later check until the skill is actually refreshed, which is what makes it safe to check by hand and notice later. Re-baselining is keyed on that source's `retrieved` date in the frontmatter — refreshing one source clears that source's alert and nothing else's. Two consequences worth knowing:
+
+- A refresh that keeps the same `retrieved` date (a same-day re-learn) keeps reporting `changed`. Update the date to acknowledge the refresh.
+- A `repo` source reports `changed` on **any** new commit to its default branch, so a busy repository will often show it. That is a "there are new commits", not a "the skill is now wrong".
+
+The baseline is also taken at the **first check**, not when the skill was learned, so a change that lands between learning and that first check is not detected.
+
+When a recorded source has changed, re-run `/learn` on that skill to refresh it — `/learn` folds into the existing skill instead of duplicating it. Checking is manual: nothing fetches sources in the background.
+
 Checks skip network requests for missing or non-directory installs (`orphaned`) and unsafe or unresolvable recorded paths (`invalid_install`). Missing-directory entries can be removed with `hermes skills uninstall <name>`; invalid paths require inspecting and repairing the active profile's `skills/.hub/lock.json` before retrying. No entries are removed automatically.
 
 Valid installs continue to use their source adapter’s existing synchronous fetch and transport timeouts. There is no strict total deadline for an update check: an unreachable or slow source for an existing install can still delay later entries.

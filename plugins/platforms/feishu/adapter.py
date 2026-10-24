@@ -1933,7 +1933,8 @@ class FeishuAdapter(BasePlatformAdapter):
             if not image_key:
                 return self._response_error_result(
                     upload_response, default_message="image upload failed",
-                    override_error="Feishu image upload missing image_key",
+                    override_error=("Feishu image upload returned no image_key"
+                                    if self._response_succeeded(upload_response) else None),
                 )
             message_response = await self._send_uploaded_key(
                 chat_id=chat_id, reply_to=reply_to, metadata=metadata, caption=caption,
@@ -3680,9 +3681,12 @@ class FeishuAdapter(BasePlatformAdapter):
                 upload_response = await self._run_blocking(self._client.im.v1.file.create, request)
             file_key = self._extract_response_field(upload_response, "file_key")
             if not file_key:
+                # Only override when the upload itself claimed success — a rejected upload must
+                # surface the API's own code/msg (an oversize file otherwise reads as a missing key).
                 return self._response_error_result(
                     upload_response, default_message="file upload failed",
-                    override_error="Feishu file upload missing file_key",
+                    override_error=("Feishu file upload returned no file_key"
+                                    if self._response_succeeded(upload_response) else None),
                 )
 
             key_payload = {"file_key": file_key}
@@ -3691,27 +3695,6 @@ class FeishuAdapter(BasePlatformAdapter):
                 key_msg_type=resolved_message_type, key_payload=key_payload,
                 media_tag={"tag": "media", "file_key": file_key, "file_name": display_name},
             )
-            # Audio may fail with 99992402 under thread_id routing: retry as a reply to the
-            # thread's last message, then fall back to a plain chat_id send.
-            if (not caption
-                    and not self._response_succeeded(message_response)
-                    and getattr(message_response, "code", None) == 99992402
-                    and resolved_message_type == "audio"
-                    and (metadata or {}).get("thread_id")):
-                payload = json.dumps(key_payload, ensure_ascii=False)
-                thread_msg_id = (metadata or {}).get("reply_to_message_id")
-                if not thread_msg_id:
-                    thread_msg_id = await self._fetch_last_message_in_thread((metadata or {}).get("thread_id"))
-                if thread_msg_id:
-                    logger.info("[Feishu] Audio: retrying via reply API in thread")
-                    message_response = await self._feishu_send_with_retry(
-                        chat_id=chat_id, msg_type="audio", payload=payload, reply_to=thread_msg_id, metadata=metadata,
-                    )
-                if not self._response_succeeded(message_response):
-                    logger.warning("[Feishu] Audio send failed in thread, retrying with chat_id")
-                    message_response = await self._feishu_send_with_retry(
-                        chat_id=chat_id, msg_type="audio", payload=payload, reply_to=None, metadata=None,
-                    )
             return self._finalize_send_result(message_response, "file send failed")
         except Exception as exc:
             logger.error("[Feishu] Failed to send file %s: %s", file_path, exc, exc_info=True)
@@ -3737,8 +3720,13 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client or not thread_id:
             return None
         try:
-            from lark_oapi.api.im.v1 import ListMessageRequest
-            request = ListMessageRequest.builder().container_id_type("thread").container_id(thread_id).page_size(1).build()
+            try:
+                from lark_oapi.api.im.v1 import ListMessageRequest
+            except ImportError:  # SDK unbound (tests, partial installs): _sdk_build falls back
+                ListMessageRequest = None
+            request = _sdk_build(
+                ListMessageRequest, container_id_type="thread", container_id=thread_id, page_size=1,
+            )
             response = await self._run_blocking(self._client.im.v1.message.list, request)
             if self._response_succeeded(response):
                 items = getattr(getattr(response, "data", None), "items", None)
@@ -3760,9 +3748,18 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
         if thread_id:
-            # reply→create fallback inside a topic: thread_id as receive_id keeps it in the topic.
-            receive_id, receive_id_type = thread_id, "thread_id"
-        elif chat_id.startswith("feishu_user_id:"):
+            # Feishu rejects receive_id_type=thread_id on create ("99992402 field validation
+            # failed" — measured on both text and file), so route into the topic by replying to
+            # its last message. Unresolvable tail falls through to a plain chat send: outside the
+            # topic, but delivered, which beats a message that never arrives.
+            thread_tail = await self._fetch_last_message_in_thread(thread_id)
+            if thread_tail:
+                body = self._build_reply_message_body(
+                    content=payload, msg_type=msg_type, reply_in_thread=True, uuid_value=str(uuid.uuid4()),
+                )
+                request = self._build_reply_message_request(thread_tail, body)
+                return await self._run_blocking(self._client.im.v1.message.reply, request)
+        if chat_id.startswith("feishu_user_id:"):
             receive_id, receive_id_type = chat_id.split(":", 1)[1], "user_id"
         else:
             receive_id, receive_id_type = chat_id, "open_id" if chat_id.startswith("ou_") else "chat_id"

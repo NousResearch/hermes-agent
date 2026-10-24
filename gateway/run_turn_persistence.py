@@ -220,6 +220,33 @@ class GatewayTurnPersistenceMixin:
             logger.debug("runtime_footer build failed: %s", _footer_err)
             return ""
 
+    def _hmwa_plugin_footer_line(self, agent_result, source, _turn_seconds):
+        """Plugin-contributed footer block (``transform_render``, ``section="footer"``) for the FINAL message of
+        the turn. Independent of ``display.runtime_footer``: a plugin block still goes out
+        when that footer is disabled. Suppressed on finite (`-z`, `chat -q`) turns."""
+        from gateway.run import _platform_config_key, _terminal_scope_cwd
+        from gateway.session_finite import finite_turn_required
+        if finite_turn_required() is True:
+            return ""
+        try:
+            from gateway.runtime_footer import build_plugin_footer as _bpf
+            return _bpf(
+                model=agent_result.get("model"),
+                context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
+                context_length=agent_result.get("context_length") or None,
+                cwd=_terminal_scope_cwd(""), turn_seconds=_turn_seconds,
+                platform_key=_platform_config_key(source.platform),
+            )
+        except Exception as _plugin_footer_err:
+            logger.debug("plugin footer build failed: %s", _plugin_footer_err)
+            return ""
+
+    @staticmethod
+    def _hmwa_compose_footer(*lines):
+        """Join the runtime footer and any plugin blocks with one blank line between them,
+        dropping empty parts so a disabled runtime footer leaves a plugin block standing."""
+        return "\n\n".join(line for line in lines if line)
+
     async def _hmwa_post_turn_hooks(self, hook_ctx, agent_result, response):
         """agent:end hook, process-watcher scheduling, and watch-notification drain."""
         await self.hooks.emit("agent:end", {

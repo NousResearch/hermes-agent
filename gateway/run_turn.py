@@ -309,7 +309,12 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 reply_expected=event.reply_expected,
             )
             response = self._usage_window_chat_wording(agent_result, self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence))
-            _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
+            _footer_line = self._hmwa_compose_footer(
+                self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds),
+                # Plugin blocks stand alone when the runtime footer is off, and ride with it
+                # otherwise, so the streaming trailing-send path carries both.
+                self._hmwa_plugin_footer_line(agent_result, source, _turn_seconds),
+            )
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"

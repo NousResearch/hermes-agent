@@ -118,6 +118,7 @@ from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
 from gateway.platforms.api_server_bot_chat import reset_local_title_owner
+from gateway.platforms.api_server_provider_runtime import _resolve_request_runtime_agent_kwargs
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
     validate_media_delivery_path)
@@ -251,21 +252,6 @@ def _apply_runtime_agent_overrides(
             continue
         runtime_kwargs[key] = list(value) if key == "args" and isinstance(value, (list, tuple)) else value
     return runtime_kwargs
-
-
-def _resolve_request_runtime_agent_kwargs(provider: str, target_model: Optional[str] = None) -> dict[str, Any]:
-    """gateway.run._resolve_runtime_agent_kwargs() for an explicit provider/model, so an API
-    caller uses the same authenticated provider catalog without mutating config.yaml."""
-    from hermes_cli.runtime_provider import resolve_runtime_provider, format_runtime_provider_error, _get_model_config
-    try:
-        runtime = resolve_runtime_provider(requested=provider, target_model=target_model)
-    except Exception as exc:
-        raise RuntimeError(format_runtime_provider_error(exc)) from exc
-
-    return {
-        **{k: runtime.get(k) for k in ("api_key", "base_url", "provider", "api_mode", "command")},
-        "args": list(runtime.get("args") or []),
-        "credential_pool": runtime.get("credential_pool")}
 
 
 def _request_agent_overrides(
@@ -2060,15 +2046,17 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     @staticmethod
     def _resolve_provider_runtime(
-        provider: Optional[str], *, target_model: Optional[str], required: bool,
+        provider: Optional[str], *, target_model: Optional[str], required: bool, allow_fallback: bool = False,
     ) -> Optional[dict[str, Any]]:
         """Runtime kwargs for ``provider``, falling back to the gateway's resolver; ``required``
-        raises ``_ProviderAuthResolutionError`` (controlled response, not a raw 500), not None."""
+        raises ``_ProviderAuthResolutionError`` (controlled response, not a raw 500), not None.
+        ``allow_fallback`` lets a credential/quota failure walk the configured fallback chain first."""
         provider_name = _clean_request_string(provider)
         if not provider_name:
             return None
         try:
-            return _resolve_request_runtime_agent_kwargs(provider_name, target_model=target_model or None)
+            return _resolve_request_runtime_agent_kwargs(
+                provider_name, target_model=target_model or None, allow_fallback=allow_fallback)
         except Exception as exc:
             with suppress(Exception):
                 from gateway.run import _resolve_runtime_agent_kwargs_for_provider
@@ -2082,13 +2070,18 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     def _apply_provider_runtime(
         self, runtime_kwargs: dict[str, Any], provider: Optional[str], *,
-        target_model: Optional[str], required: bool = False) -> bool:
-        """Resolve ``provider``'s runtime and merge it into ``runtime_kwargs``; True if applied."""
+        target_model: Optional[str], required: bool = False, allow_fallback: bool = False) -> Optional[dict[str, Any]]:
+        """Resolve ``provider``'s runtime and merge it into ``runtime_kwargs``; the applied runtime, else None.
+        A resolution-time fallback runtime (it carries ``model``) also replaces ``credential_pool`` outright:
+        the primary's pool must not stay bound to an agent on another provider's key, or a later rotation
+        would swap that key for a pooled one (``_apply_runtime_agent_overrides`` skips ``None`` values)."""
         provider_runtime = self._resolve_provider_runtime(
-            provider, target_model=target_model, required=required)
+            provider, target_model=target_model, required=required, allow_fallback=allow_fallback)
         if provider_runtime:
             _apply_runtime_agent_overrides(runtime_kwargs, provider_runtime)
-        return bool(provider_runtime)
+            if provider_runtime.get("model"):
+                runtime_kwargs["credential_pool"] = provider_runtime.get("credential_pool")
+        return provider_runtime or None
 
     def _recover_or_record_model(self, model: str, runtime_kwargs: dict[str, Any], gateway_session_key) -> str:
         """Fill an empty resolved model: provider's default catalog model, then the last-known-good
@@ -2138,6 +2131,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session_row_model = _clean_request_string(session_model)
         current_provider = _clean_request_string(runtime_kwargs.get("provider"))
         session_override = None if confirmed_runtime_lock else self._session_model_override_for(session_key)
+        fallback_model = None
         # Model-string precedence (override > session-persisted > global) is owned by
         # hermes_cli.model_switch.resolve_effective_model.
         from hermes_cli.model_switch import resolve_effective_model
@@ -2167,13 +2161,17 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # model name; a route with no ``model`` key keeps the global default.
             effective_model = (route_model or model) if route is not None else (request_model or model)
             effective_provider = request_provider or route_provider or current_provider
-            applied = False
+            applied = None
             if effective_provider and (bool(request_provider or route_provider) or effective_model != model):
                 # A confirmed Browser lock fails closed: never fall through to the previous
-                # global provider's credentials.
+                # global provider's credentials. A credential/quota failure on an explicitly requested
+                # provider walks the fallback chain like the gateway default does (a mid-turn 429 on this
+                # same agent would) — not under a lock, and not for a route, which may pin its own transport.
                 applied = self._apply_provider_runtime(
                     runtime_kwargs, effective_provider, target_model=effective_model,
-                    required=bool(request_provider) or confirmed_runtime_lock)
+                    required=bool(request_provider) or confirmed_runtime_lock,
+                    allow_fallback=bool(request_provider) and route is None and not confirmed_runtime_lock)
+                fallback_model = (applied or {}).get("model")
             if not applied and effective_provider and effective_provider != current_provider:
                 runtime_kwargs["provider"] = effective_provider
             model = effective_model
@@ -2187,7 +2185,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     "api_server request selection applied: model=%s provider=%s route_provider=%s request_provider=%s",
                     model, runtime_kwargs.get("provider"), route_provider or "", request_provider or "")
         model = self._recover_or_record_model(model, runtime_kwargs, gateway_session_key)
-        return model, session_override, request_model, request_provider
+        # The requested model stays the recorded last-known-good; the fallback entry's model is what this turn sends.
+        return fallback_model or model, session_override, request_model, request_provider
 
     def _create_agent(
         self, ephemeral_system_prompt: Optional[str] = None, session_id: Optional[str] = None,

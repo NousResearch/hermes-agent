@@ -923,10 +923,23 @@ def _cmd_retitle_skills(db, args):
 
 
 def _cmd_browse(db, args):
+    is_json = bool(getattr(args, "json", False) or getattr(args, "format", None) == "json")
     limit = getattr(args, "limit", 500) or 500
     sessions = _surface_reader(db).list_sessions_rich(
         source=getattr(args, "source", None), exclude_sources=_default_exclude(args), limit=limit
     )
+    if is_json:
+        try:
+            if not sessions:
+                print("[]")
+                return
+            from hermes_cli.sessions_cmd_browse import session_browse_to_json_records
+            records = session_browse_to_json_records(sessions, session_db=db)
+            print(json.dumps(records, indent=2))
+        finally:
+            db.close()
+        return
+
     if not sessions:
         db.close()
         print("No sessions found.")
@@ -1275,6 +1288,8 @@ def _print_empty_store(action: str, args) -> None:
         print("Total sessions: 0\nTotal messages: 0")
     elif action == "pinned":
         print("[]" if getattr(args, "json", False) else "No pinned sessions. Pin one with: hermes sessions pin <session_id>")
+    elif action == "browse" and (getattr(args, "json", False) or getattr(args, "format", None) == "json"):
+        print("[]")
     else:
         print("No sessions found.")
 
@@ -1297,7 +1312,8 @@ def cmd_sessions(args, sessions_parser=None):
         and getattr(args, "yes", False) and getattr(args, "session_id", None)
         and getattr(args, "format", None) in ("md", "qmd")
     )
-    observational = action in _OBSERVATIONAL_DB_ACTIONS or (action == "export" and not deleting_export)
+    is_browse_json = action == "browse" and (getattr(args, "json", False) or getattr(args, "format", None) == "json")
+    observational = action in _OBSERVATIONAL_DB_ACTIONS or is_browse_json or (action == "export" and not deleting_export)
     if action == "prune":
         # The always-on gateway owns the store: this process only reads the preview, the owner
         # deletes. No gateway: the local prune below, behind the holder scan, as before.

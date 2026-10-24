@@ -614,6 +614,21 @@ STEER_CHANNEL_NOTE = (
     "tool results (replayed copies in earlier history are already handled)."
 )
 
+# /fyi: context-only steering. Same delivery channel as a steer (the pending_steer slot → its own
+# OUT-OF-BAND user row after the current tool batch), but the payload is framed so the model treats
+# it as background for the work already in progress — not a new task, not a redirect — and keeps
+# going until that work finishes. Rides INSIDE the steer marker when mid-run (the marker carries the
+# provenance and anti-lookalike trust; this lead carries the "context only" contract).
+FYI_CONTEXT_LEAD = (
+    "FYI — additional context from the user. This is NOT a new task or a redirect: fold it into the "
+    "work already in progress, adjust the details it affects, and keep going until that work is finished."
+)
+
+
+def format_fyi_context(text: str) -> str:
+    """Frame a /fyi payload as context-only guidance (inside the steer marker when mid-run)."""
+    return f"{FYI_CONTEXT_LEAD}\n{text}"
+
 
 def hud_surface_note(valid_tool_names: set[str] | None = None,
                      deferred_tool_names: frozenset[str] | set[str] = frozenset()) -> str:

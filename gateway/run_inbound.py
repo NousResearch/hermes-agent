@@ -954,6 +954,16 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     async def _hm_cmd_steer(self, event, source, _quick_key):
         return self._hm_send_payload_as_turn(event, t("gateway.steer.usage_idle"))
 
+    async def _hm_cmd_fyi(self, event, source, _quick_key):
+        # Idle /fyi: no run to fold into, so the payload becomes the next turn — framed as
+        # context-only so the agent treats it as background, not a new task.
+        from agent.prompt_builder import format_fyi_context
+        payload = event.get_command_args().strip()
+        if not payload:
+            return True, t("gateway.fyi.usage_idle")
+        event.text = format_fyi_context(payload)
+        return False, None
+
     @staticmethod
     def _hm_send_payload_as_turn(event, usage: str) -> tuple[bool, Optional[str]]:
         payload = event.get_command_args().strip()
@@ -995,7 +1005,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     # Idle-path built-ins with bespoke flow (confirmations, prompt rewrites, one-shot MoA), each
     # handled by ``_hm_cmd_<name>`` → ``(handled, result)``; ``(False, None)`` falls through to the agent.
     _HM_CANONICAL_COMMANDS = frozenset({
-        "new", "start", "egress", "learn", "plan", "init", "blueprint", "undo", "queue", "steer", "moa",
+        "new", "start", "egress", "learn", "plan", "init", "blueprint", "undo", "queue", "steer", "fyi", "moa",
     })
 
     async def _hm_dispatch_canonical_command(

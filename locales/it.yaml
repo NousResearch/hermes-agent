@@ -768,6 +768,16 @@ gateway:
     target_subagents: "esecuzione e nei suoi subagenti attivi"
     target_run: "esecuzione"
     queued: "⏩ Indirizzamento in coda nell'{target} corrente — arriva dopo la prossima chiamata a uno strumento: '{preview}'"
+  fyi:
+    usage: "uso: /fyi <contesto>"
+    usage_idle: "uso: /fyi <contesto>  (nessun agente attivo — inviato come messaggio normale)"
+    queued_starting: "L'agente è ancora in avvio — /fyi in coda per il prossimo turno."
+    queued_no_agent: "nessun agente attivo — /fyi in coda per il prossimo turno."
+    failed: "⚠️ errore fyi: {error}"
+    rejected_empty: "fyi rifiutato (contenuto vuoto)."
+    queued: "💡 fyi inviato al {target} corrente — solo contesto, l'agente continua a lavorare: '{preview}'"
+
+
   suggestions:
     failed: "Comando suggestions non riuscito: {error}"
   blueprint:
@@ -1092,6 +1102,11 @@ platform:
       steer:
         description: "Inserisci un messaggio dopo la prossima chiamata a uno strumento (senza interrompere)"
         arg_prompt: "Testo da inserire nel prossimo risultato di strumento dell'agente"
+      fyi:
+        description: "Condividi contesto aggiuntivo con l'agente in esecuzione (senza interrompere né dirottare)"
+        arg_context: "Contesto per il lavoro in corso dell'agente"
+
+
       plan:
         description: "Scrivi un piano di implementazione in markdown (senza esecuzione)"
         arg_task: "Cosa pianificare. Lascia vuoto per dedurlo dalla conversazione."
@@ -2423,6 +2438,14 @@ cli:
     queued: "⏩ Indirizzamento in coda — arriverà dopo la prossima chiamata a uno strumento: {preview}"
     rejected_empty: "Indirizzamento rifiutato (contenuto vuoto)."
     no_agent_queued: "Nessun agente in esecuzione; messo in coda come prossimo turno: {preview}"
+  fyi:
+    usage: "uso: /fyi <contesto>"
+    failed: "errore fyi: {error}"
+    queued: "💡 fyi in coda — solo contesto, l'agente continua a lavorare: {preview}"
+    rejected_empty: "fyi rifiutato (contenuto vuoto)."
+    no_agent_queued: "nessun agente attivo; in coda come prossimo turno: {preview}"
+
+
   title:
     session_id: "ID sessione: {session_id}"
     current: "Titolo: {title}"

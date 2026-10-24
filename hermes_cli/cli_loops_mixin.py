@@ -561,6 +561,30 @@ class CLILoopsMixin:
             self._pending_input.put(payload)
             _cprint(f"  {t('cli.steer.no_agent_queued', preview=_preview(payload))}")
 
+    def _cmd_fyi(self, cmd_original: str):
+        # Context-only variant of /steer: same mid-run delivery (pending_steer slot, drained after
+        # the current tool batch — no interrupt), but the payload is framed as background for the
+        # work in progress so the agent folds it in and finishes instead of redirecting. Idle, it
+        # queues as the next turn with the same framing.
+        from cli import _cprint, _slash_args
+        from agent.prompt_builder import format_fyi_context
+        payload = _slash_args(cmd_original)
+        if not payload:
+            _cprint(f"  {t('cli.fyi.usage')}")
+        elif self._agent_running and self.agent is not None and hasattr(self.agent, "steer"):
+            try:
+                accepted = self.agent.steer(format_fyi_context(payload))
+            except Exception as exc:
+                _cprint(f"  {t('cli.fyi.failed', error=exc)}")
+            else:
+                if accepted:
+                    _cprint(f"  {t('cli.fyi.queued', preview=_preview(payload))}")
+                else:
+                    _cprint(f"  {t('cli.fyi.rejected_empty')}")
+        else:
+            self._pending_input.put(format_fyi_context(payload))
+            _cprint(f"  {t('cli.fyi.no_agent_queued', preview=_preview(payload))}")
+
     # ────────────────────────────────────────────────────────────────
     # Session-bound managers: /goal (Ralph-style loop), /heartbeat, /loop
     # ────────────────────────────────────────────────────────────────

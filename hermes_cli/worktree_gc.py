@@ -137,6 +137,8 @@ def _classify_tree(_ops, repo_root: str, entry: Path, merge_cache, remote_heads)
     path = str(entry)
     if _KANBAN_RE.match(entry.name):
         return "keep", "kanban task tree (owned by kanban gc)", []
+    if _ops._cwd_within(entry):
+        return "keep", "in use as the current working tree", []
     if _ops._worktree_lock_is_live(repo_root, path, timeout=5) == "live":
         return "keep", "in use by a running hermes session", []
     tracked_dirty, untracked = _dirty_split(path)

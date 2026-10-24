@@ -63,11 +63,29 @@ def _normalize_git_bash_path(p: Optional[str]) -> Optional[str]:
 
 
 def _git_repo_root() -> Optional[str]:
-    """Return the git repo root for CWD (Git-Bash-normalized), or None if not in a repo."""
+    """The MAIN worktree root for CWD (Git-Bash-normalized), or None if not in a repo.
+
+    Inside a linked worktree ``--show-toplevel`` names that tree, so create/list/prune and the
+    startup sweep would read ``<linked>/.worktrees`` and miss every real tree; the parent of the
+    shared ``.git`` dir is the main checkout (else toplevel: bare or ``--separate-git-dir``).
+    """
     try:
-        return _normalize_git_bash_path(_git_out(["rev-parse", "--show-toplevel"], None, timeout=5))
+        top = _git_out(["rev-parse", "--show-toplevel"], None, timeout=5)
+        common = top and _git_out(["rev-parse", "--path-format=absolute", "--git-common-dir"], None, timeout=5)
     except Exception:
         return None
+    if common and os.path.basename(os.path.realpath(common)) == ".git":
+        top = os.path.dirname(os.path.realpath(common))
+    return _normalize_git_bash_path(top)
+
+
+def _cwd_within(path) -> bool:
+    """Whether this process works inside *path*: the tree a command was started in is never reaped."""
+    try:
+        here, tree = os.path.realpath(os.getcwd()), os.path.realpath(path)
+    except OSError:
+        return False
+    return here == tree or here.startswith(tree.rstrip(os.sep) + os.sep)
 
 
 def _path_is_within_root(path: Path, root: Path) -> bool:
@@ -1012,7 +1030,7 @@ def _prune_candidates(worktrees_dir: Path, max_age_hours: int, now: float) -> li
     kanban_re = re.compile(r"^t_[0-9a-f]+$")
     candidates: list = []
     for entry in sorted(worktrees_dir.iterdir()):
-        if not entry.is_dir() or kanban_re.match(entry.name):
+        if not entry.is_dir() or kanban_re.match(entry.name) or _cwd_within(entry):
             continue
         tier_hours = prune_tier_hours(entry.name, max_age_hours)
         try:

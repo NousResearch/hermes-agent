@@ -126,6 +126,39 @@ def durable_write_bytes(path: Path, data: bytes) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
+def inherit_parent_acl(path: Path) -> bool:
+    """Windows: give a tree just moved into place the access rules of its new parent.
+
+    ``tempfile`` folders on Python >= 3.13 carry a private, protected DACL (SYSTEM, Administrators,
+    OWNER RIGHTS) and ``os.replace`` moves a staged tree with the DACL it had, so a plugin staged
+    that way keeps none of ``plugins/``'s entries: not the user's own, not the sandbox groups'. A
+    gateway running elevated (a Windows service) then writes ``__pycache__`` owned by Administrators
+    that the same user's non-elevated processes can neither read nor delete. An empty, unprotected
+    DACL makes the root inherit from its parent, and Windows propagates that down the tree in place
+    of the entries the children inherited from the staging folder. Explicit entries are kept.
+
+    Best effort, never raises: a volume without ACLs (FAT, some shares) keeps what it had. Returns
+    whether the DACL was applied; always False off Windows.
+    """
+    if os.name != "nt":
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    advapi.InitializeAcl.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD]
+    advapi.InitializeAcl.restype = wintypes.BOOL
+    advapi.SetNamedSecurityInfoW.argtypes = [wintypes.LPCWSTR, ctypes.c_int, wintypes.DWORD, ctypes.c_void_p,
+                                             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    advapi.SetNamedSecurityInfoW.restype = wintypes.DWORD
+    acl = ctypes.create_string_buffer(8)  # sizeof(ACL) with no entries
+    if not advapi.InitializeAcl(acl, ctypes.sizeof(acl), 2):  # ACL_REVISION
+        return False
+    se_file_object, dacl, unprotected_dacl = 1, 0x00000004, 0x20000000
+    return advapi.SetNamedSecurityInfoW(os.fspath(path), se_file_object, dacl | unprotected_dacl,
+                                        None, None, acl, None) == 0
+
+
 #: A handle still open inside the tree. Windows reports antivirus and indexer scans of freshly
 #: written files this way (WinError 5 and 32 both surface as EACCES) and they clear in moments;
 #: a missing source or an occupied destination never does, so those raise at once.

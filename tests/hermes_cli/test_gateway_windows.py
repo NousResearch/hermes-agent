@@ -367,6 +367,73 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "cmd.exe" not in xml_seen["text"]
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+def test_generated_unicode_vbs_round_trips_service_identity(monkeypatch, tmp_path, legacy):
+    """The launcher's reader and WSH must see the same Unicode identity (#140682)."""
+    import sys
+    from hermes_cli.gateway_runtime_service_identity import verify_windows_task
+
+    home = tmp_path / "个人程序-hömè"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(gateway_windows, "_resolve_detached_python",
+                        lambda exe: (sys.executable, Path(sys.prefix), []))
+    script = home / "Hermes_Gateway.vbs"
+    content = gateway_windows._build_gateway_vbs_script(sys.executable, str(home), str(home), "")
+    if legacy:
+        script.write_text(content, encoding="utf-8", newline="")
+    else:
+        gateway_windows._atomic_write(script, content, script.with_suffix(".tmp"))
+        assert script.read_bytes().decode("utf-16") == content
+    xml = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", script, "DOMAIN\\owner")
+    verify_windows_task(xml, home, "DOMAIN\\owner", "S-1-5-21-123")
+
+    startup = home / "Startup.vbs"
+    startup_content = gateway_windows._build_startup_launcher(script.with_suffix(".cmd"))
+    gateway_windows._atomic_write(startup, startup_content, startup.with_suffix(".tmp"))
+    assert startup.read_bytes().decode("utf-16") == startup_content
+    assert str(home) in startup_content
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("suffix", [".vbs", ".cmd"])
+def test_native_unicode_launcher_runs_in_requested_home(monkeypatch, tmp_path, suffix):
+    """Execute generated launchers without starting or registering a real gateway."""
+    import shutil
+    import sys
+    from tests.waiting import wait_until
+
+    if suffix == ".vbs" and not shutil.which("cscript.exe"):
+        pytest.skip("Windows Script Host is not installed")
+    home = tmp_path / "个人程序-hömè"
+    home.mkdir()
+    marker = home / "started.txt"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(gateway_windows, "_resolve_detached_python",
+                        lambda exe: (sys.executable, Path(sys.prefix), []))
+    monkeypatch.setattr(gateway_windows, "_gateway_run_argv", lambda *args: [
+        sys.executable, "-c",
+        "import os; from pathlib import Path; Path('started.txt').write_text(os.environ['HERMES_HOME'], encoding='utf-8')",
+    ])
+    build = gateway_windows._build_gateway_vbs_script if suffix == ".vbs" else gateway_windows._build_gateway_cmd_script
+    script = tmp_path / ("launcher" + suffix)
+    gateway_windows._atomic_write(script, build(sys.executable, str(home), str(home), ""), script.with_suffix(".tmp"))
+    command = ["cscript.exe", "//B", "//Nologo", str(script)] if suffix == ".vbs" else ["cmd.exe", "/d", "/c", str(script)]
+    spawn_options = {}
+    if suffix == ".cmd":
+        # CI may already use UTF-8. Exercise the user's legacy console code page in
+        # a separate console so neither the runner nor the caller's console changes.
+        wrapper = tmp_path / "legacy-codepage.cmd"
+        wrapper.write_text('@echo off\r\nchcp 437 >nul\r\ncall "%~dp0launcher.cmd"\r\n',
+                           encoding="ascii", newline="")
+        command[-1] = str(wrapper)
+        spawn_options["creationflags"] = subprocess.CREATE_NEW_CONSOLE
+    result = subprocess.run(command, capture_output=True, timeout=15, check=False, **spawn_options)
+    assert result.returncode == 0, result.stderr
+    assert wait_until(marker.exists, timeout=10)
+    assert marker.read_text(encoding="utf-8") == str(home)
+
+
 def test_gateway_vbs_script_is_console_less(monkeypatch):
     """The .vbs launcher must avoid cmd.exe entirely and Run pythonw hidden
     (issue #45599 fix A: no console -> no logon CTRL_CLOSE_EVENT / 0xC000013A)."""

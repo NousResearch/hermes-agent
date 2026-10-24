@@ -390,6 +390,7 @@ def _build_gateway_cmd_script(python_path: str, working_dir: str, hermes_home: s
     pythonpath = ";".join([*_launcher_pythonpath_entries(extra_pythonpath), "%PYTHONPATH%"])
     lines = [
         "@echo off",
+        "chcp 65001 >nul",
         f"rem {_TASK_DESCRIPTION}",
         f"cd /d {_quote_cmd_script_arg(working_dir)}",
         f'set "HERMES_HOME={hermes_home}"',
@@ -488,7 +489,11 @@ def _atomic_write(path: Path, content: str, tmp: Path) -> None:
     ``Hermes_Gateway.tmp`` pops up in Notepad after every sign-in (#114093).
     """
     try:
-        tmp.write_text(content, encoding="utf-8", newline="")
+        # WSH needs a UTF-16 BOM to preserve non-ASCII paths regardless of the system code page.
+        encoding = "utf-16-le" if path.suffix.lower() == ".vbs" else "utf-8"
+        if encoding == "utf-16-le":
+            content = "\ufeff" + content
+        tmp.write_text(content, encoding=encoding, newline="")
         tmp.replace(path)
     finally:
         try:

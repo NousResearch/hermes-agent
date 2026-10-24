@@ -5870,6 +5870,11 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             return str(parent_id)
         return None
 
+    @staticmethod
+    def _get_discord_module() -> Any:
+        """Live dependency from this adapter module, regardless of its plugin import name."""
+        return discord
+
     def _is_forum_parent(self, channel: Any) -> bool:
         """Best-effort check for whether a Discord channel is a forum channel."""
         if channel is None:
@@ -5883,15 +5888,6 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             if type_value == 15:
                 return True
         return False
-
-    def _get_effective_topic(self, channel: Any, is_thread: bool = False) -> Optional[str]:
-        """Return the channel topic, falling back to the parent forum's topic for forum threads."""
-        topic = getattr(channel, "topic", None)
-        if not topic and is_thread:
-            parent = getattr(channel, "parent", None)
-            if parent and self._is_forum_parent(parent):
-                topic = getattr(parent, "topic", None)
-        return topic
 
     # ------------------------------------------------------------------
     # Attachment download helpers

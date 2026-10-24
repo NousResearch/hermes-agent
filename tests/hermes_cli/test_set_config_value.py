@@ -540,6 +540,25 @@ class TestSchemaValidation:
 
 
 
+    def test_agent_system_prompt_is_accepted(self, _isolated_hermes_home, capsys):
+        """``agent.system_prompt`` is a real, runtime-consumed key (read by
+        cli.py and gateway paths). The validator must recognize it so
+        ``hermes config set agent.system_prompt`` doesn't emit a false
+        "not a recognized config key" warning."""
+        set_config_value("agent.system_prompt", "You are a concise assistant.")
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["agent"]["system_prompt"] == "You are a concise assistant."
+        assert "not a recognized config key" not in capsys.readouterr().out
+
+    def test_agent_personalities_is_accepted(self, _isolated_hermes_home, capsys):
+        """``agent.personalities`` is a real, runtime-consumed key (read by
+        cli.py and tui_gateway/server.py). The validator must recognize it.
+        Sub-keys (user-defined personality names) are open-dict entries."""
+        set_config_value("agent.personalities", '{"sherlock": "You are a detective."}')
+        out = capsys.readouterr().out
+        assert "not a recognized config key" not in out
+
 
 
     def test_force_suppresses_notice(self, _isolated_hermes_home, capsys):
@@ -562,6 +581,11 @@ class TestValidateConfigKey:
         "mcp_servers.foo.command",
         "providers.openrouter.api_key",
         "gateway.platforms.my_platform.extra.token",
+        "approvals.mode",
+        "agent.system_prompt",
+        "agent.personalities",
+        "agent.personalities.sherlock",
+        "agent.personalities.sherlock.description",
         # _EXTRA_KNOWN_ROOT_KEYS: read by the runtime (setup wizard / tools_config save flow)
         # but absent from DEFAULT_CONFIG; they used to trip the false "not a recognized config
         # key" notice with a bogus near-miss suggestion (platform_hints.cli).

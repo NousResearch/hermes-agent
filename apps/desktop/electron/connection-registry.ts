@@ -453,6 +453,18 @@ export function registrySourceOwnsPrimaryBackend(
   return Boolean(id) && id === registry.primary && resolvedConnectionId(registry, descriptor) === id
 }
 
+/** The registry identity that owns an unscoped primary session read.
+ *
+ * The primary read is not a registry-pinned request, so its rows arrive
+ * without Desktop's synthetic connection id. Name that owner only when the
+ * registry can still prove that its primary is a live entry; a malformed or
+ * stale primary must remain untagged rather than being routed to a guess. */
+export function primaryReadOwnerConnectionId(registry: ConnectionRegistry): null | string {
+  const primary = String(registry.primary || '').trim()
+
+  return primary && registry.connections.some(connection => connection.id === primary) ? primary : null
+}
+
 export interface ReuseMatchingPrimaryRemoteBackendOptions<T extends ResolvedConnectionDescriptor> {
   connectionId: string
   ensurePrimary: (profile: null | string | undefined) => Promise<T>

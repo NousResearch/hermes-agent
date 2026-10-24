@@ -75,6 +75,29 @@ function tagRowsWithConnection(rows: unknown[], connectionId: string): void {
   }
 }
 
+/** Stamp only rows whose source omitted an owner.
+ *
+ * The primary aggregate is read without a registry pin, whereas rows fetched
+ * from a registry source are already tagged. Preserving an existing tag keeps
+ * a mixed response truthful instead of relabelling a row from another host. */
+export function tagOwnerlessRowsWithConnection(rows: unknown[], connectionId: string): void {
+  if (!connectionId.trim()) {
+    return
+  }
+
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') {
+      continue
+    }
+
+    const session = row as Record<string, unknown>
+
+    if (session.connection_id == null || session.connection_id === '') {
+      session.connection_id = connectionId
+    }
+  }
+}
+
 /** Preserve the registry source that served a session REST response.
  *
  * A registry-pinned request is dispatched directly to that remote host, so its

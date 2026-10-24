@@ -26,6 +26,7 @@ import {
   normalizeConnectionInput,
   normalizeRegistry,
   parseRemoteProfileListing,
+  primaryReadOwnerConnectionId,
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
   REGISTRY_VERSION,
@@ -60,6 +61,13 @@ const shared = (await import(String('@hermes/shared'))) as {
 function emptyRegistry(): ConnectionRegistry {
   return normalizeRegistry(null)
 }
+
+test('primary read owner requires a registered primary connection', () => {
+  const registry = emptyRegistry()
+
+  assert.equal(primaryReadOwnerConnectionId(registry), LOCAL_CONNECTION_ID)
+  assert.equal(primaryReadOwnerConnectionId({ ...registry, primary: 'retired-gateway' }), null)
+})
 
 test('Cloud apply upgrades only host labels without changing connection identity', () => {
   const url = 'https://agent.example.com'

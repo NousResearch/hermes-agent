@@ -197,6 +197,11 @@ def preprocess_context_references(
         return pool.submit(contextvars.copy_context().run, asyncio.run, coro).result()
 
 
+def _expand_and_resolve(path: str | Path) -> Path:
+    # resolve() stats the filesystem (a slow or hung mount would stall the gateway loop): off-loop.
+    return Path(path).expanduser().resolve()
+
+
 async def preprocess_context_references_async(
     message: str, *, cwd: str | Path, context_length: int, url_fetcher: UrlFetcher = None,
     allowed_root: str | Path | None = None, plugins: bool = True,
@@ -204,9 +209,11 @@ async def preprocess_context_references_async(
     refs = parse_context_references(message, plugins=plugins)
     if not refs:
         return ContextReferenceResult(message=message, original_message=message)
-    cwd_path = Path(cwd).expanduser().resolve()
+    cwd_path = await asyncio.to_thread(_expand_and_resolve, cwd)
     # Default root = cwd so @ references cannot escape the workspace unless a caller widens it.
-    allowed_root_path = Path(allowed_root).expanduser().resolve() if allowed_root is not None else cwd_path
+    allowed_root_path = (
+        await asyncio.to_thread(_expand_and_resolve, allowed_root) if allowed_root is not None else cwd_path
+    )
     # Expand concurrently (each ref is independent; several @url: refs would otherwise
     # serialize web_extract round-trips). gather preserves order, so warnings/blocks
     # are assembled in ref order; the token-budget check runs once afterwards.

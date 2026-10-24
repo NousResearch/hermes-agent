@@ -32,3 +32,29 @@ async def test_get_media_reads_and_encodes_off_event_loop(monkeypatch, tmp_path)
     assert response["data_url"].startswith("data:image/png;base64,")
     assert read_threads
     assert all(thread is not event_loop_thread for thread in read_threads)
+
+
+@pytest.mark.asyncio
+async def test_get_media_path_probes_run_off_event_loop(monkeypatch, tmp_path):
+    """Resolving and stat-ing the requested path happens on a worker thread."""
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    image = image_dir / "sample.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\nimage-data")
+
+    monkeypatch.setattr(files, "get_hermes_home", lambda: tmp_path)
+    original_is_file = Path.is_file
+    probe_threads = []
+
+    def _tracking_is_file(path, *args, **kwargs):
+        probe_threads.append(threading.current_thread())
+        return original_is_file(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_file", _tracking_is_file)
+    event_loop_thread = threading.current_thread()
+
+    response = await files.get_media(str(image))
+
+    assert response["data_url"].startswith("data:image/png;base64,")
+    assert probe_threads
+    assert all(thread is not event_loop_thread for thread in probe_threads)

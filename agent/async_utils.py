@@ -48,3 +48,16 @@ def consume_detached_task_result(task: asyncio.Future[Any]) -> None:
         task.exception()
     except (asyncio.CancelledError, Exception):
         pass
+
+
+_DETACHED_TASKS: set[asyncio.Task[Any]] = set()
+
+
+def spawn_detached_task(coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
+    """Fire-and-forget ``coro`` on the running loop. The loop holds tasks only weakly, so a
+    strong ref is kept here until the task finishes; its result is observed on completion."""
+    task = asyncio.create_task(coro)
+    _DETACHED_TASKS.add(task)
+    task.add_done_callback(_DETACHED_TASKS.discard)
+    task.add_done_callback(consume_detached_task_result)
+    return task

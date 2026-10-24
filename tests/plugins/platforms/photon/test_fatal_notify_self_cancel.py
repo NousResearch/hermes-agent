@@ -21,6 +21,9 @@ layer down, which that PR's scope could not reach.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import gc
+import weakref
 from typing import Any, Dict
 
 import pytest
@@ -126,7 +129,35 @@ class TestFatalNotifyIsDetached:
 
         assert any(r.levelname == "WARNING" for r in caplog.records)
 
+    @pytest.mark.asyncio
+    async def test_inflight_notification_is_strongly_referenced(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """asyncio holds only weak refs to tasks: a detached notifier parked on a
+        future nothing else references must survive a GC pass mid-handoff."""
+        adapter = _make_adapter(monkeypatch)
+        parked = asyncio.Event()
 
+        async def parked_notify() -> None:
+            parked.set()
+            await asyncio.get_running_loop().create_future()  # never resolved
+
+        monkeypatch.setattr(adapter, "_notify_fatal_error", parked_notify)
+        before = asyncio.all_tasks()
+        adapter._dispatch_fatal_notification()
+        (task,) = asyncio.all_tasks() - before
+        ref = weakref.ref(task)
+        del task, before
+        await asyncio.wait_for(parked.wait(), timeout=2.0)
+
+        gc.collect()
+        task = ref()
+        assert task is not None and not task.done()
+
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        assert task not in adapter._detached_fatal_tasks
 
 
 async def _noop() -> None:

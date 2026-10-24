@@ -501,7 +501,7 @@ async def _send_live_adapter_media(adapter, chat_id, message, media_files, *, th
         if not isinstance(media_path, str) or not media_path:
             return {"error": f"Adapter media send failed: invalid media descriptor {index + 1}/{total}"}
         is_voice = len(descriptor) > 1 and bool(descriptor[1])
-        if not os.path.exists(media_path):
+        if not await asyncio.to_thread(os.path.exists, media_path):
             return {"error": f"Adapter media send failed: media file {index + 1}/{total} was not found"}
         ext = os.path.splitext(media_path)[1].lower()
         method_name, media_kind = _adapter_media_method(ext, is_voice or ext in _AUDIO_EXTS, force_document)

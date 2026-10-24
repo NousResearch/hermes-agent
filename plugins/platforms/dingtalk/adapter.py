@@ -715,6 +715,7 @@ class _IncomingHandler(dingtalk_stream.ChatbotHandler if DINGTALK_STREAM_AVAILAB
         if DINGTALK_STREAM_AVAILABLE:
             super().__init__()
         self._adapter, self._loop = adapter, loop
+        self._message_tasks: set[asyncio.Task] = set()  # strong refs until done; kept out of the adapter's _bg_tasks so disconnect() doesn't cancel turns
 
     def pre_start(self) -> None:
         """No-op hook the SDK calls on every handler before opening the WebSocket (missing → AttributeError)."""
@@ -734,7 +735,8 @@ class _IncomingHandler(dingtalk_stream.ChatbotHandler if DINGTALK_STREAM_AVAILAB
             msg_id, conversation_id = getattr(chatbot_msg, "message_id", None) or "", getattr(chatbot_msg, "conversation_id", None) or ""
             if msg_id and conversation_id:
                 self._adapter._spawn_bg(self._adapter._send_emotion(msg_id, conversation_id, t("platform.dingtalk.emotion.thinking"), recall=False))
-            asyncio.create_task(self._safe_on_message(chatbot_msg))  # surfaces exceptions in logs instead of losing them
+            self._message_tasks.add(task := asyncio.create_task(self._safe_on_message(chatbot_msg)))  # _safe_on_message logs what escapes
+            task.add_done_callback(self._message_tasks.discard)
         except Exception:
             logger.exception("[%s] Error preparing incoming message", self._adapter.name)
             return AckMessage.STATUS_SYSTEM_EXCEPTION, "error"

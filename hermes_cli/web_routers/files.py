@@ -333,11 +333,8 @@ def _read_base64_file(path: Path) -> str:
     return base64.b64encode(data).decode("ascii")
 
 
-@router.get("/api/media")
-async def get_media(path: str):
-    """Return a gateway-local image as a base64 data URL for remote clients
-    that can't read this machine's disk. Auth-gated; restricted to the image
-    allowlist, a size cap AND the resolved (symlink-safe) media roots."""
+def _media_target(path: str) -> Path:
+    """Resolve and guard a /api/media path (filesystem probes; run off the loop)."""
     try:
         target = Path(path).expanduser().resolve()
     except (OSError, RuntimeError):
@@ -352,7 +349,15 @@ async def get_media(path: str):
         raise HTTPException(status_code=404, detail="File not found")
     if target.stat().st_size > _MEDIA_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
+    return target
 
+
+@router.get("/api/media")
+async def get_media(path: str):
+    """Return a gateway-local image as a base64 data URL for remote clients
+    that can't read this machine's disk. Auth-gated; restricted to the image
+    allowlist, a size cap AND the resolved (symlink-safe) media roots."""
+    target = await asyncio.to_thread(_media_target, path)
     encoded = await asyncio.to_thread(_read_base64_file, target)
     return {"data_url": f"data:{_MEDIA_CONTENT_TYPES[target.suffix.lower()]};base64,{encoded}"}
 
@@ -700,7 +705,7 @@ async def stream_upload_to_path(
         raise HTTPException(status_code=500, detail=f"{write_failed}: {exc}")
     finally:
         if not renamed:
-            tmp_path.unlink(missing_ok=True)
+            await asyncio.to_thread(tmp_path.unlink, missing_ok=True)
         await file.close()
     return total
 

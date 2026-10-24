@@ -135,3 +135,21 @@ async def test_owner_prune_is_local_operator_only(owned_store, grant):
         await connection.close()
     assert refused['error']['message'] == 'permission_denied', refused
     assert owned_store.db.get_session('old-cli') is not None
+
+
+@pytest.mark.asyncio
+async def test_owner_prune_accepts_its_own_profile_param(owned_store):
+    """Desktop's shared-primary socket names the profile on every routed RPC (Settings > Storage
+    sends ``profile`` with ``session.prune``); naming the owner's own home is implicit scope, not
+    an unknown key the strict contract refuses."""
+    from hermes_cli.profiles import profile_matches_home
+    from pathlib import Path
+    assert profile_matches_home('default', Path(owned_store.authority.profile_id))
+    connection = _connection(owned_store.authority, operator=True)
+    try:
+        frame = await connection.dispatch({'id': 1, 'method': 'session.prune', 'params': {
+            'filters': {'older_than_days': 90, 'archived': False}, 'profile': 'default'}})
+    finally:
+        await connection.close()
+    assert frame.get('result', {}).get('deleted') == 2, frame
+    assert owned_store.db.get_session('old-cli') is None and owned_store.db.get_session('fresh-cli') is not None

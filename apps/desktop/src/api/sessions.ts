@@ -712,6 +712,29 @@ export async function getAllSessionMessages(
   return { session_id: resolvedSessionId, messages }
 }
 
+export interface SessionPrunePreview {
+  matched: number
+  skipped_open: number
+  oldest_last_active: null | number
+  newest_last_active: null | number
+}
+
+/**
+ * What `hermes sessions prune --older-than <days>` would delete for `profile`: a
+ * read-only dry run of the dashboard route (it opens state.db read-only, so it
+ * answers beside a live owner). The delete itself is the owner's `session.prune`.
+ */
+export function previewSessionPrune(olderThanDays: number, scope: ProfileScope): Promise<SessionPrunePreview> {
+  const profile = typeof scope === 'object' && scope ? scope.profile : scope
+
+  return window.hermesDesktop.api<SessionPrunePreview>({
+    ...capabilityScoped(scope),
+    path: '/api/sessions/prune',
+    method: 'POST',
+    body: { older_than_days: olderThanDays, dry_run: true, ...(profile ? { profile } : {}) }
+  })
+}
+
 export function deleteSession(id: string, profile?: ProfileScope): Promise<{ ok: boolean }> {
   return mutateSessionHttp(id, 'DELETE', {}, profile)
 }

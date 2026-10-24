@@ -154,7 +154,18 @@ mkdir -p "$BACKUP_DIR"
 TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
 BACKUP_FILE="$BACKUP_DIR/world_${TIMESTAMP}.tar.gz"
 echo "[BACKUP] Starting at $(date)"
-tar -czf "$BACKUP_FILE" -C "$SERVER_DIR" world
+# Only completed archives may enter the retention set.
+TMP_FILE=$(mktemp "$BACKUP_FILE.partial.XXXXXX") || exit 1
+if ! tar -czf "$TMP_FILE" -C "$SERVER_DIR" world; then
+    rm -f -- "$TMP_FILE"
+    echo "[BACKUP] FAILED: archive creation failed; nothing pruned" >&2
+    exit 1
+fi
+if ! mv -- "$TMP_FILE" "$BACKUP_FILE"; then
+    rm -f -- "$TMP_FILE"
+    echo "[BACKUP] FAILED: archive publication failed; nothing pruned" >&2
+    exit 1
+fi
 SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
 echo "[BACKUP] Saved: $BACKUP_FILE ($SIZE)"
 BACKUP_COUNT=$(ls -1t "$BACKUP_DIR"/world_*.tar.gz 2>/dev/null | wc -l)

@@ -9,12 +9,17 @@ anchored on concrete command identifiers — so they cannot fire on prose. Defen
 
 from __future__ import annotations
 
+import errno
+import ipaddress
 import logging
 import os
 import re
 import shlex
+import socket
 import stat
+import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
@@ -392,6 +397,20 @@ def _contains_launchctl_gateway_lifecycle(normalized_text: str) -> bool:
 
 
 def contains_gateway_lifecycle_command(text: str) -> bool:
+    """Return True if *text* contains a gateway lifecycle command pattern that runs on THIS host.
+
+    The remote command of an ``ssh`` segment whose destination is provably another machine cannot
+    signal this gateway, so it is masked and the text re-scanned (``_mask_remote_ssh_payloads``).
+    Masking runs only after a match, so ``ssh -G`` costs nothing on the common no-match path, and
+    it can only ever turn a block into an allow for the remote payload itself.
+    """
+    if not _contains_local_gateway_lifecycle_command(text):
+        return False
+    masked = _mask_remote_ssh_payloads(_SHELL_LINE_CONTINUATION.sub(" ", text))
+    return masked is None or _contains_local_gateway_lifecycle_command(masked)
+
+
+def _contains_local_gateway_lifecycle_command(text: str) -> bool:
     """Return True if *text* contains a gateway lifecycle command pattern.
 
     Passes, in order: raw-text regex (the only pass that fires on inputs shlex cannot tokenize, e.g.
@@ -756,6 +775,314 @@ def _mask_data_sink_arguments(text: str) -> str:
             rebuilt.extend(segment)
         lines_out.append(" ".join(rebuilt))
     return "\n".join(lines_out) if changed else text
+
+
+# --- ssh remote payloads ----------------------------------------------------------------------
+#
+# `ssh <dest> <command>` runs <command> on <dest>. When <dest> is provably ANOTHER machine the
+# command cannot signal this gateway, so a fleet box restarting a sibling's gateway
+# (`ssh linux-lan 'hermes gateway restart'`) is not the self-SIGTERM foot-gun this guard exists for.
+# Only the remote command tokens are masked; every rule below fails closed (leaves the line as is,
+# so the plain scan decides) on anything it cannot prove:
+# - the destination must parse from argv and must not be local: loopback/unspecified addresses,
+#   `localhost`, this host's own name (short-name compare) or an address bound here. ~/.ssh/config
+#   aliases can point anywhere, so the effective `HostName` from `ssh -G` (local, no network) is
+#   compared too, and resolved (bounded) when it is a name, so `ssh <this-box's-dns-name>` stays
+#   blocked; `-o HostName=` is honoured; a failed/timed-out `ssh -G` or lookup means local;
+# - unexpanded `$`/backtick in the destination or options, `-F` (a config the guard would have to
+#   evaluate), unknown options;
+# - remote output fed back into local execution (`$(ssh ...)`, `ssh ... | sh`): only plain data
+#   consumers may follow a pipe;
+# - local command substitution inside a quoted remote argument (`"$(...)"`) is expanded HERE;
+# - lines where shlex and bash disagree on word boundaries (`#` mid-word, `$'...'`, backticks).
+_SSH_EXECUTABLES = frozenset({"ssh", "ssh.exe"})
+# OpenSSH getopt string: "1246ab:c:e:fgi:kl:m:no:p:qstvxAB:CD:E:F:GI:J:KL:MNO:P:Q:R:S:TVw:W:XYy".
+_SSH_VALUE_OPTIONS = frozenset("bceilmopBDEFIJLOPQRSwW")
+_SSH_FLAG_OPTIONS = frozenset("1246afgknqstvxACGKMNTVXYy")
+# Options passed through to `ssh -G` (they can change the effective HostName via Match blocks).
+_SSH_RESOLVE_PASSTHROUGH = frozenset("lop")
+_SSH_OPTION_ASSIGNMENT = re.compile(r"^\s*([A-Za-z]+)\s*(?:=\s*|\s+)(.*)$")
+_SSH_UNEXPANDED_MARKERS = ("$", "`")
+_SSH_LINE_DIVERGENCE_MARKERS = ("#", "$'", "`")
+_SSH_LOCAL_SUBSTITUTION_MARKERS = ("$(", "`")
+_SSH_LOCAL_NAMES = frozenset({"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"})
+# Pipeline stages that only read the remote output as data.
+_SSH_OUTPUT_DATA_SINKS = frozenset({
+    "cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "wc", "sort", "uniq", "cut", "tr",
+    "tee", "less", "more", "jq", "column", "nl",
+})
+_SSH_PIPELINE_ENDS = frozenset({";", "&&", "||", ";;"})
+_REMOTE_SSH_PAYLOAD = "ssh-remote-command"
+_SSH_RESOLVE_TIMEOUT_S = 2.0
+# Distinct destinations resolved per scan; beyond this a destination counts as local.
+_MAX_SSH_RESOLUTIONS = 8
+
+_SshOptions = list[tuple[str, str]]
+
+
+def _parse_ssh_argv(args: list[str]) -> Optional[tuple[str, _SshOptions, int]]:
+    """``(destination, options, remote_command_start)`` for ssh argv *args*, or ``None`` when the
+    destination cannot be determined. Options are read before AND after the destination, as
+    OpenSSH does, until the first operand (or ``--``) that starts the remote command."""
+    options: _SshOptions = []
+    destination: Optional[str] = None
+    position = 0
+    while position < len(args):
+        token = args[position]
+        if token == "--":
+            position += 1
+            if destination is None:
+                if position >= len(args):
+                    return None
+                destination = args[position]
+                position += 1
+            break
+        if token.startswith("-") and len(token) > 1:
+            cluster = token[1:]
+            for offset, flag in enumerate(cluster):
+                if flag in _SSH_FLAG_OPTIONS:
+                    continue
+                if flag not in _SSH_VALUE_OPTIONS:
+                    return None
+                value = cluster[offset + 1:]
+                if not value:
+                    position += 1
+                    if position >= len(args):
+                        return None
+                    value = args[position]
+                options.append((flag, value))
+                break
+            position += 1
+            continue
+        if destination is not None:
+            break
+        destination = token
+        position += 1
+    if not destination:
+        return None
+    return destination, options, position
+
+
+def _ssh_host_from_destination(destination: str) -> Optional[str]:
+    """Host part of ``[user@]host`` or ``ssh://[user@]host[:port]``."""
+    rest = destination
+    if rest[:6].lower() == "ssh://":
+        rest = rest[6:].split("/", 1)[0].rsplit("@", 1)[-1]
+        if rest.startswith("["):
+            host = rest[1:].split("]", 1)[0]
+        else:
+            host = rest.split(":", 1)[0]
+    else:
+        host = rest.rsplit("@", 1)[-1]
+        if host.startswith("[") and host.endswith("]"):
+            host = host[1:-1]
+    return host or None
+
+
+def _ip_is_assigned_here(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Whether *address* is bound to an interface of this machine (bind to port 0, no traffic)."""
+    family = socket.AF_INET6 if address.version == 6 else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_DGRAM) as probe:
+            probe.bind((str(address), 0))
+    except OSError as error:
+        not_here = {errno.EADDRNOTAVAIL, getattr(errno, "WSAEADDRNOTAVAIL", errno.EADDRNOTAVAIL)}
+        return error.errno not in not_here
+    return True
+
+
+def _own_hostnames() -> set[str]:
+    """Lower-cased short names this machine answers to."""
+    try:
+        name = socket.gethostname().strip().lower()
+    except OSError:
+        return set()
+    return {name.split(".")[0]} if name else set()
+
+
+def _resolve_host_addresses(name: str) -> Optional[list[str]]:
+    """Addresses *name* resolves to (system resolver: hosts file, mDNS, DNS), bounded by
+    ``_SSH_RESOLVE_TIMEOUT_S``. ``None`` on failure or timeout; the caller treats that as local."""
+    result: dict[str, Optional[list[str]]] = {}
+
+    def lookup() -> None:
+        try:
+            result["addresses"] = sorted({str(info[4][0]) for info in socket.getaddrinfo(name, None)})
+        except (OSError, UnicodeError, ValueError):
+            result["addresses"] = None
+
+    worker = threading.Thread(target=lookup, name="lifecycle-guard-ssh-resolve", daemon=True)
+    worker.start()
+    worker.join(_SSH_RESOLVE_TIMEOUT_S)
+    return result.get("addresses")
+
+
+def _ssh_host_is_local(host: str, *, resolve: bool = False) -> bool:
+    """True when *host* names this machine (fail closed: empty/odd names count as local). With
+    *resolve*, a name that is not obviously local is looked up and each address checked; an
+    unresolvable name counts as local. Only the ``ssh -G`` effective hostname is resolved: a
+    literal destination may be an ssh_config alias that no resolver knows."""
+    name = host.strip().strip("[]").rstrip(".").lower()
+    if not name:
+        return True
+    if name in _SSH_LOCAL_NAMES or name.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(name.split("%", 1)[0])
+    except ValueError:
+        if name.split(".")[0] in _own_hostnames():
+            return True
+        if not resolve:
+            return False
+        addresses = _resolve_host_addresses(name)
+        return not addresses or any(_ssh_host_is_local(item) for item in addresses)
+    mapped = getattr(address, "ipv4_mapped", None)
+    if mapped is not None:
+        address = mapped
+    if address.is_loopback or address.is_unspecified:
+        return True
+    return _ip_is_assigned_here(address)
+
+
+def _ssh_effective_hostname(destination: str, options: _SshOptions) -> Optional[str]:
+    """Effective ``HostName`` for *destination* per ``ssh -G`` (config evaluation only, no
+    connection). ``None`` when it cannot be determined; the caller treats that as local."""
+    if any(flag == "F" for flag, _ in options):
+        return None
+    argv = ["ssh", "-G"]
+    for flag, value in options:
+        if flag in _SSH_RESOLVE_PASSTHROUGH:
+            argv += [f"-{flag}", value]
+    argv += ["--", destination]
+    try:
+        result = subprocess.run(
+            argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=_SSH_RESOLVE_TIMEOUT_S, check=False,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    for line in (result.stdout or "").splitlines():
+        key, _, value = line.strip().partition(" ")
+        if key.lower() == "hostname" and value.strip():
+            return value.strip()
+    return None
+
+
+def _ssh_destination_is_remote(
+    destination: str, options: _SshOptions, resolutions: dict[tuple, bool]
+) -> bool:
+    """True only when every view of the destination (literal host, ``-o HostName``, ``ssh -G``)
+    is another machine."""
+    if any(marker in item for item in (destination, *(v for _, v in options)) for marker in _SSH_UNEXPANDED_MARKERS):
+        return False
+    host = _ssh_host_from_destination(destination)
+    if host is None or _ssh_host_is_local(host):
+        return False
+    for flag, value in options:
+        assignment = _SSH_OPTION_ASSIGNMENT.match(value) if flag == "o" else None
+        if assignment and assignment.group(1).lower() == "hostname" and _ssh_host_is_local(assignment.group(2)):
+            return False
+    key = (destination, tuple(options))
+    if key not in resolutions:
+        if len(resolutions) >= _MAX_SSH_RESOLUTIONS:
+            return False
+        resolved = _ssh_effective_hostname(destination, options)
+        resolutions[key] = resolved is not None and not _ssh_host_is_local(resolved, resolve=True)
+    return resolutions[key]
+
+
+def _is_control_part(part: list[str]) -> bool:
+    return len(part) == 1 and bool(part[0]) and set(part[0]) <= _CONTROL_CHARS
+
+
+def _ssh_output_stays_data(parts: list[list[str]], position: int) -> bool:
+    """Whether the pipeline after the ssh segment at *position* only reads its output as data.
+    ``&`` is not treated as a pipeline end: shlex splits ``2>&1`` there, so stay conservative."""
+    piped = False
+    for part in parts[position + 1:]:
+        if _is_control_part(part):
+            if part[0] in _SSH_PIPELINE_ENDS:
+                return True
+            if part[0] in ("|", "|&"):
+                piped = True
+            elif part[0] != "&":
+                return False
+            continue
+        if not piped or re.match(r"^(?:\d+|[<>])", part[0]):
+            continue  # `2>&1` / `&>file` tokenization debris
+        index = _executed_command_index(part)
+        if index is None or _executable_name(part[index]).lower() not in _SSH_OUTPUT_DATA_SINKS:
+            return False
+    return True
+
+
+def _remote_ssh_payload_start(
+    parts: list[list[str]], position: int, resolutions: dict[tuple, bool]
+) -> Optional[int]:
+    """Index where the remote command of ``parts[position]`` starts, when it provably runs on
+    another machine and its output is not executed here; otherwise ``None``."""
+    segment = parts[position]
+    index = _executed_command_index(segment)
+    if index is None or _executable_name(segment[index]).lower() not in _SSH_EXECUTABLES:
+        return None
+    if position and _is_control_part(parts[position - 1]) and parts[position - 1][0] in ("(", ")"):
+        return None  # `$(ssh ...)`, `<(ssh ...)`, subshells: output may be executed here
+    parsed = _parse_ssh_argv(segment[index + 1:])
+    if parsed is None:
+        return None
+    destination, options, consumed = parsed
+    start = index + 1 + consumed
+    if start >= len(segment):
+        return None
+    if any(marker in token for token in segment[start:] for marker in _SSH_LOCAL_SUBSTITUTION_MARKERS):
+        return None
+    if not _ssh_output_stays_data(parts, position):
+        return None
+    if not _ssh_destination_is_remote(destination, options, resolutions):
+        return None
+    return start
+
+
+def _mask_remote_ssh_line(line: str, resolutions: dict[tuple, bool]) -> Optional[str]:
+    if any(marker in line for marker in _SSH_LINE_DIVERGENCE_MARKERS):
+        return None
+    try:
+        tokens = _shlex_tokens(line)
+    except ValueError:
+        return None
+    parts = list(_split_segments(tokens, keep_controls=True))
+    rebuilt: list[str] = []
+    changed = False
+    for position, part in enumerate(parts):
+        if _is_control_part(part):
+            rebuilt.append(part[0])
+            continue
+        start = _remote_ssh_payload_start(parts, position, resolutions)
+        kept = part if start is None else part[:start]
+        rebuilt.extend(shlex.quote(token) for token in kept)
+        if start is not None:
+            rebuilt.append(_REMOTE_SSH_PAYLOAD)
+            changed = True
+    return " ".join(rebuilt) if changed else None
+
+
+def _mask_remote_ssh_payloads(text: str) -> Optional[str]:
+    """*text* with the remote command of every provably-remote ``ssh`` segment replaced by a
+    placeholder, or ``None`` when nothing was masked. Lines without such a segment are kept
+    verbatim; a masked line is rebuilt from its shell tokens (re-quoted, so the token-aware passes
+    see the same words)."""
+    if "ssh" not in text.lower():
+        return None
+    resolutions: dict[tuple, bool] = {}
+    changed = False
+    lines_out: list[str] = []
+    for line in _split_logical_lines(text):
+        masked = _mask_remote_ssh_line(line, resolutions) if "ssh" in line.lower() else None
+        changed = changed or masked is not None
+        lines_out.append(line if masked is None else masked)
+    return "\n".join(lines_out) if changed else None
 
 
 def _lifecycle_command_scan_with_data_exemption(text: str) -> bool:

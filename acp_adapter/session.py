@@ -504,7 +504,7 @@ class SessionManager:
         from agent.skill_utils import parse_config_string_list
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        from hermes_cli.tools_config import _get_platform_tools, enabled_mcp_server_names
+        from hermes_cli.tools_config import _get_platform_tools, enabled_mcp_server_names, mcp_server_toolset_key
         from hermes_constants import resolve_reasoning_config
 
         config = load_config()
@@ -518,10 +518,12 @@ class SessionManager:
         if enabled_toolsets is None:
             # The same per-platform resolver as the gateway/cron/api_server: platform_toolsets.acp wins, else
             # hermes-acp; its MCP half (every enabled server, a listed-name allowlist, or none for ``no_mcp``)
-            # comes back as bare server names, which ACP keys as ``mcp-<server>`` like its session servers.
+            # comes back as server keys (``mcp_server_toolset_key``: the bare name, or ``mcp-<server>`` when a
+            # toolset owns that name, which then stays that toolset), which ACP keys as ``mcp-<server>``.
             resolved = _get_platform_tools(config, "acp")
-            mcp_servers = resolved & enabled_mcp_server_names(config)
-            enabled_toolsets = _expand_acp_enabled_toolsets(sorted(resolved - mcp_servers), sorted(mcp_servers))
+            mcp_keys = {mcp_server_toolset_key(s): s for s in enabled_mcp_server_names(config)}
+            mcp_servers = {mcp_keys[k] for k in resolved & mcp_keys.keys()}
+            enabled_toolsets = _expand_acp_enabled_toolsets(sorted(resolved - mcp_keys.keys()), sorted(mcp_servers))
         kwargs = {
             "platform": "acp", "quiet_mode": True, "session_id": session_id, "session_db": self._get_db(),
             "enabled_toolsets": list(enabled_toolsets),

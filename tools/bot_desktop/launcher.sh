@@ -285,16 +285,24 @@ if [[ -n "${HERMES_BD_PYTHON:-}" ]]; then
   # A start is use: stamp it now, or an activity file left by an earlier screen could make the first check
   # stop this one before runtime.py stamps it.
   touch "$(dirname "$HERMES_BD_ENV_FILE")/activity"
-  # The TERM trap ends the sleep at once when the screen goes down (stop()'s group signal or the EXIT trap
-  # below); during the ~0.4 s check itself bash defers it, well inside stop()'s grace.
+  # The TERM trap ends this loop at once when the screen goes down (stop()'s group signal or the EXIT trap
+  # below). Both the check and the sleep run in the background and are waited on, because `wait` is
+  # interruptible: a `$(check)` would defer the trap until the check returns, while a check that is itself
+  # stopping the screen waits for this group to empty, so every self-stop would sit out stop()'s grace and
+  # end in SIGKILL with start.lock held. The check is in a session of its own and finishes the stop alone.
   (
-    trap 'kill "$!" 2>/dev/null; exit 0' TERM
+    sleeper=
+    trap 'kill $sleeper 2>/dev/null; exit 0' TERM
+    out="$(dirname "$HERMES_BD_ENV_FILE")/idle-watch.out"
     while kill -0 "$$" 2>/dev/null; do
-      delay=$(HERMES_HOME="$HERMES_BD_HOME" PYTHONPATH="$HERMES_BD_SRC_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
-              "$HERMES_BD_PYTHON" -m tools.bot_desktop.idle_watch "$$") || delay=300  # broken check: retry slowly
+      HERMES_HOME="$HERMES_BD_HOME" PYTHONPATH="$HERMES_BD_SRC_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
+        "$HERMES_BD_PYTHON" -m tools.bot_desktop.idle_watch "$$" >"$out" &
+      if wait "$!"; then delay=$(<"$out"); else delay=300; fi  # broken check: retry slowly
       [[ -n "$delay" ]] || exit 0  # it stopped the screen
       [[ "$delay" =~ ^[0-9]+$ ]] || delay=300
-      sleep "$delay" & wait "$!"
+      sleep "$delay" & sleeper=$!
+      wait "$sleeper"
+      sleeper=
     done
   ) &
   WATCH_PID=$!

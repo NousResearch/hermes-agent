@@ -92,6 +92,19 @@ def test_an_abandoned_screen_stops_itself_after_the_idle_window(abandoned_screen
                timeout=30, what="the abandoned screen to be stopped the way stop() does")
 
 
+def test_a_self_stop_does_not_sit_out_the_kill_grace(abandoned_screen):
+    """The check's stop() TERMs the launcher's group, which holds the loop that ran the check. A loop blocked
+    in ``$(check)`` defers its TERM trap until the check returns, while the check waits for the group to
+    empty: every self-stop sat out stop()'s 5 s grace and ended in SIGKILL, with start.lock held throughout."""
+    sd, launcher = abandoned_screen(idle_stop_minutes=0.02)
+    log = sd / "launcher.log"
+    wait_until(lambda: "stopping" in log.read_text(encoding="utf-8", errors="replace"), timeout=30,
+               what="the idle check to start stopping the screen")
+    began = time.monotonic()
+    wait_until(lambda: not _alive(launcher), timeout=30, what="the screen's process group to be gone")
+    assert time.monotonic() - began < 3, "the self-stop waited for stop()'s SIGKILL grace"
+
+
 def test_a_screen_in_use_is_kept_and_a_returning_gateway_reattaches(abandoned_screen, monkeypatch):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tools.bot_desktop import runtime

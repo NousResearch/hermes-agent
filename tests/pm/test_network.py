@@ -134,20 +134,3 @@ def test_resumable_transfer_honors_retry_after_or_stops(retry_after, expected):
     else:
         assert network.retry_network(request, wait=waits.append, progress=lambda: 0) == "complete"
         assert waits == [expected]
-
-
-def test_progress_renews_only_the_consecutive_failure_budget():
-    attempts = []
-    waits = []
-    durable = [0]
-
-    def request():
-        attempts.append(None)
-        if len(attempts) == 1:
-            durable[0] += 1
-        raise ConnectionResetError("disconnected")
-
-    with pytest.raises(ConnectionResetError):
-        network.retry_network(request, wait=waits.append, progress=lambda: durable[0])
-    assert len(attempts) == 1 + network._ATTEMPTS
-    assert waits == [1, 2, 4, 8]

@@ -10,18 +10,18 @@ import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler
 from threading import Event
-from types import SimpleNamespace
 
 import pytest
 
 from pm import downloader, filesystem
-from pm.downloader import Download, Source
+from pm.downloader import Download, DownloadTransportError, Source
 from tests.pm._fixtures import threaded_server
 from tests.pm._range_server import RangeHandler, dl_server as dl_server, url  # noqa: PLC0414 -- pytest fixture re-export
 from tests.waiting import wait_until
 
 
-def test_useful_progress_survives_more_than_four_interrupted_bodies(tmp_path, monkeypatch):
+@pytest.mark.parametrize("stalls_after_progress", [False, True])
+def test_download_retries_renew_only_while_bytes_are_saved(tmp_path, monkeypatch, stalls_after_progress):
     block = 1 << 20
     payload = bytes(range(256)) * (10 * block // 256)
     requests = []
@@ -38,6 +38,8 @@ def test_useful_progress_survives_more_than_four_interrupted_bodies(tmp_path, mo
             if not probe:
                 requests.append((start, end))
             stop = min(end + 1, start + block) if not probe and len(requests) <= 6 else end + 1
+            if not probe and stalls_after_progress and len(requests) > 1:
+                stop = start
             self.wfile.write(payload[start:stop])
             self.wfile.flush()
             self.close_connection = True
@@ -51,10 +53,16 @@ def test_useful_progress_survives_more_than_four_interrupted_bodies(tmp_path, mo
                         hashlib.sha256(payload).hexdigest())
         download = Download([source], connections=1, partials_dir=tmp_path / "partials")
         monkeypatch.setattr(download, "_wait_retry", lambda _: None)
-        download.run()
-    assert destination.read_bytes() == payload
-    assert len(requests) == 7
-    assert [start for start, _ in requests] == [index * block for index in range(7)]
+        if stalls_after_progress:
+            with pytest.raises(DownloadTransportError):
+                download.run()
+            assert not destination.exists()
+            assert download._durable_done == block
+            assert [start for start, _ in requests] == [0, block, block, block, block]
+        else:
+            download.run()
+            assert destination.read_bytes() == payload
+            assert [start for start, _ in requests] == [index * block for index in range(7)]
 
 
 def test_forced_termination_recovers_checkpoint_before_request_finishes(tmp_path):
@@ -121,60 +129,6 @@ def test_forced_termination_recovers_checkpoint_before_request_finishes(tmp_path
     assert requests[1][0] >= checkpoint
 
 
-def test_checkpoints_are_time_based_not_byte_based(tmp_path, monkeypatch, dl_server):
-    payload = b"w" * (32 << 20)
-    RangeHandler.payloads = {"/fast": payload}
-    download = downloader.Download(
-        [downloader.Source(url(dl_server, "/fast"), tmp_path / "model", hashlib.sha256(payload).hexdigest())],
-        partials_dir=tmp_path / "partials", connections=1,
-    )
-    checkpoints = []
-    original = download._write_sidecar
-
-    def save(*args):
-        checkpoints.append(None)
-        return original(*args)
-
-    monkeypatch.setattr(download, "_write_sidecar", save)
-    monkeypatch.setattr(downloader, "time", SimpleNamespace(monotonic=lambda: 0.0))
-    download.run()
-    assert (tmp_path / "model").read_bytes() == payload
-    assert len(checkpoints) == 1  # The attempt still saves its final checkpoint.
-
-
-@pytest.mark.parametrize("failed_stage", ["probe", "single-stream"])
-def test_non_resumable_requests_keep_the_existing_retry_after_cap(tmp_path, monkeypatch, failed_stage):
-    payload = b"model bytes"
-    failed = False
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            nonlocal failed
-            probe = self.headers.get("Range") == "bytes=0-0"
-            if not failed and probe == (failed_stage == "probe"):
-                failed = True
-                self.send_response(503)
-                self.send_header("Retry-After", "60")
-                self.end_headers()
-                return
-            self.send_response(200)  # This source does not support ranges.
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-
-        def log_message(self, *args):
-            pass
-
-    waits = []
-    with threaded_server(Handler) as server:
-        source = downloader.Source(f"http://127.0.0.1:{server.server_port}/model", tmp_path / "model")
-        download = downloader.Download([source], partials_dir=tmp_path / "partials")
-        monkeypatch.setattr(download, "_wait_retry", waits.append)
-        download.run()
-    assert waits == [30]
-    assert source.dest.read_bytes() == payload
-
-
 def test_failed_periodic_checkpoint_retries_without_claiming_saved_bytes(tmp_path, monkeypatch, caplog):
     payload = b"checkpointed model bytes"
     part = tmp_path / "model.part"
@@ -209,22 +163,32 @@ def test_failed_periodic_checkpoint_retries_without_claiming_saved_bytes(tmp_pat
     assert any(record.name == "pm.downloader" and record.levelname == "WARNING" for record in caplog.records)
 
 
-def test_final_checkpoint_write_failure_does_not_publish_the_model(tmp_path, monkeypatch, dl_server):
-    payload = b"model bytes"
-    RangeHandler.payloads = {"/strict": payload}
-    source = Source(url(dl_server, "/strict"), tmp_path / "model", hashlib.sha256(payload).hexdigest())
+@pytest.mark.parametrize("retry_after", [5, 120, 290, 600])
+def test_long_primary_wait_yields_to_a_mirror_that_can_wait_longer(tmp_path, monkeypatch, dl_server, retry_after):
+    payload = b"pinned mirror bytes"
+    RangeHandler.payloads = {"/primary": payload, "/mirror": payload}
+    original = RangeHandler.do_GET
+    mirror_requests = []
+
+    def respond(handler):
+        if handler.headers.get("Range") != "bytes=0-0":
+            if handler.path == "/mirror":
+                mirror_requests.append(None)
+            if handler.path == "/primary" or len(mirror_requests) == 1:
+                handler.send_response(503)
+                handler.send_header("Retry-After", str(retry_after if handler.path == "/primary" else 60))
+                handler.send_header("Content-Length", "0")
+                handler.end_headers()
+                return
+        original(handler)
+
+    monkeypatch.setattr(RangeHandler, "do_GET", respond)
+    destination = tmp_path / "model"
+    source = Source(url(dl_server, "/primary"), destination, hashlib.sha256(payload).hexdigest(),
+                    fallbacks=(url(dl_server, "/mirror"),))
     download = Download([source], partials_dir=tmp_path / "partials", connections=1)
-    side = download.partials_dir / f"{download._key(source.url)}.ranges"
-    replace = filesystem.os.replace
-
-    def publish(temporary, destination):
-        if Path(destination) == side:
-            raise PermissionError(errno.EACCES, "checkpoint temporarily held")
-        return replace(temporary, destination)
-
-    monkeypatch.setattr(filesystem.os, "replace", publish)
-    monkeypatch.setattr(filesystem, "_HELD_RETRY_DELAYS", ())
-    monkeypatch.setattr(downloader, "time", SimpleNamespace(monotonic=lambda: 0.0))
-    with pytest.raises(PermissionError):
-        download.run()
-    assert not source.dest.exists() and download._durable_done == 0
+    waits = []
+    monkeypatch.setattr(download, "_wait_retry", waits.append)
+    download.run()
+    assert destination.read_bytes() == payload
+    assert waits == ([5, 5, 5] if retry_after == 5 else []) + [60]

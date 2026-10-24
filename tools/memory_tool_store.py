@@ -250,6 +250,11 @@ class MemoryStore:
                 logger.warning("%s exceeds its char limit on load: %d/%d chars. Entries stay loaded; "
                                "further additions are blocked until it is back under the limit.",
                                path.name, count, limit)
+                # Also print to stderr so users see the warning in their terminal
+                import sys
+                print(f"WARNING: {path.name} exceeds its character limit: {count}/{limit} chars. "
+                      f"Memory entries are loaded but further additions will be blocked. "
+                      f"Please reduce the size of your memory entries.", file=sys.stderr)
             self._system_prompt_snapshot[target] = self._render_block(target, [_sanitize(e, path.name) for e in entries])
 
     @staticmethod

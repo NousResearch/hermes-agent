@@ -572,6 +572,8 @@ Hermes writes the incoming voice message to `{input_path}`, runs the command, an
 
 ### Fallback Behavior
 
+⚠️ **Android/Termux Note**: Local STT providers (`faster-whisper`, `ctranslate2`) do not have `aarch64-linux-android` distribution wheels and cannot be installed on Android devices. Use hosted STT providers (Groq, OpenAI, Mistral, xAI, ElevenLabs, DeepInfra) instead.
+
 An **explicit** `stt.provider` selection (written in `config.yaml`, e.g. via `hermes tools`) is honored strictly — if that provider can't run, transcription fails with a clear error (`stt is configured to use <provider> (set via hermes tools), but <failure>. Run 'hermes tools' to change it.`) instead of silently switching engines. Note that `stt.provider: local` written in your config counts as an explicit selection.
 
 When **no provider has ever been selected**, Hermes auto-detects from what's available:

@@ -222,7 +222,10 @@ def _render_gateway(ctx):
             _kv_flag("Status:", True, "running (via the default-profile multiplexer)", "stopped")
             _kv("Manage with:", "hermes gateway status   # from the default profile")
             return
-        _kv_flag("Status:", snapshot.running, "running", "stopped")
+        if snapshot.service_status_known or snapshot.running:
+            _kv_flag("Status:", snapshot.running, "running", "stopped")
+        else:
+            _kv("Status:", "unknown (service query unavailable)")
         _kv("Manager:", snapshot.manager)
         if snapshot.gateway_pids:
             _kv("PID(s):", _format_gateway_pids(snapshot.gateway_pids))
@@ -232,7 +235,9 @@ def _render_gateway(ctx):
             for name, per_platform in sorted(served_profile_ingress_urls().items()):
                 for platform, url in sorted(per_platform.items()):
                     _kv(f"  {name}/{platform}:", url)
-        if snapshot.has_process_service_mismatch:
+        if not snapshot.service_status_known:
+            _kv("Service:", "launchd supervision could not be verified")
+        elif snapshot.has_process_service_mismatch:
             _kv("Service:", "installed but not managing the current running gateway")
         elif snapshot.service_installed and not snapshot.service_running:
             _kv("Service:", "installed but stopped")

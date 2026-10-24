@@ -86,6 +86,7 @@ class GatewayRuntimeSnapshot:
     service_running: bool = False
     gateway_pids: tuple[int, ...] = ()
     service_scope: str | None = None
+    service_status_known: bool = True
 
     @property
     def running(self) -> bool:
@@ -93,7 +94,8 @@ class GatewayRuntimeSnapshot:
 
     @property
     def has_process_service_mismatch(self) -> bool:
-        return self.service_installed and self.running and not self.service_running
+        return (self.service_status_known and self.service_installed
+                and self.running and not self.service_running)
 
 
 @dataclass(frozen=True)
@@ -1519,11 +1521,6 @@ def _locate_launchd_gateway_service(label: str) -> tuple[str | None, int | None]
     return (None, None)
 
 
-def _probe_launchd_service_running() -> bool:
-    """True when the plist exists AND launchd is running a process for the current label."""
-    return get_launchd_plist_path().exists() and _launchctl_label_supervising_process(get_launchd_label())
-
-
 def _s6_gateway_snapshot(gateway_pids: tuple[int, ...]) -> GatewayRuntimeSnapshot | None:
     """Snapshot for an s6-supervised container gateway, or None when s6 isn't the service manager."""
     from hermes_cli.service_manager import detect_service_manager, get_service_manager
@@ -1581,10 +1578,12 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
         )
 
     if is_macos():
+        launchd_running = _probe_launchd_service_running()
         return GatewayRuntimeSnapshot(
             manager="launchd",
             service_installed=get_launchd_plist_path().exists(),
-            service_running=_probe_launchd_service_running(),
+            service_running=launchd_running is True,
+            service_status_known=launchd_running is not None,
             gateway_pids=gateway_pids,
             service_scope="launchd",
         )
@@ -3927,6 +3926,7 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
 
 from hermes_cli.gateway_launchd import (
     get_launchd_label,
+    _probe_launchd_service_running,
     _probe_launchd_domain_for_label,
     _launchd_domain,
     _LAUNCHD_JOB_UNLOADED_EXIT_CODES,

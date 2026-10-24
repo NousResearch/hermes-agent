@@ -10,7 +10,7 @@ import json
 import logging
 import time
 from concurrent.futures import FIRST_COMPLETED, wait as _cf_wait
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.observability.shared_metrics_loop import begin_delegation_run, finish_delegation_unit
@@ -30,10 +30,10 @@ class _Batch:
     """One delegate_task call's built children plus everything needed to run them
     and assemble the combined result (shared by the sync path and the background runner)."""
 
-    task_list: List[Dict[str, Any]]
-    children: List[tuple]
+    task_list: list[dict[str, Any]]
+    children: list[tuple]
     parent_agent: Any
-    creds: Dict[str, Any]
+    creds: dict[str, Any]
     context: Optional[str]
     top_role: str
     max_children: int
@@ -49,15 +49,19 @@ class _Batch:
     # Set on per-group units carved out by ``_dispatch_background``; None for the whole batch / ungrouped units.
     group: Optional[str] = None
     unit_id: Optional[str] = None  # the async registry id this unit runs under (``<call_id>-k`` for split calls)
+    live_home: Any = None  # explicit profile home for transcripts/manifest (#91996); None = ambient resolve
+    # Result entries of tasks their backend refused (no child): joined into a sync result, listed in a background
+    # call's dispatch payload. Units carved for async dispatch never carry them.
+    refused: list = field(default_factory=list)
 
-    def owner_kwargs(self) -> Dict[str, Any]:
+    def owner_kwargs(self) -> dict[str, Any]:
         """Steer/stop authority of the originating session, passed to every child run."""
         return {
             "owner_session_id": self.origin_ui_session_id or None, "owner_transport": self.origin_owner_transport,
             "owner_session_record": self.origin_owner_session_record,
         }
 
-    def run_child(self, i: int, task: Dict[str, Any], child: Any) -> Dict[str, Any]:
+    def run_child(self, i: int, task: dict[str, Any], child: Any) -> dict[str, Any]:
         from tools.delegate_tool import _run_single_child
         return _run_single_child(task_index=i, goal=task["goal"], child=child, parent_agent=self.parent_agent, **self.owner_kwargs())
 
@@ -202,10 +206,13 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
                 batch.live_writers[_idx].finalize(entry)
             if _idx < len(batch.live_paths):
                 entry["live_transcript"] = batch.live_paths[_idx]
-    update_manifest_statuses(batch.live_deleg_id, results)
+    if batch.refused:
+        results.extend(batch.refused)
+        results.sort(key=lambda r: r["task_index"])
+    update_manifest_statuses(batch.live_deleg_id, results, home=batch.live_home)
     finish_delegation_unit(batch.task_list, results, background=not honor_parent_interrupt)
 
-    combined: Dict[str, Any] = {"results": results, "total_duration_seconds": total_duration}
+    combined: dict[str, Any] = {"results": results, "total_duration_seconds": total_duration}
     # Runtime truth about children's background processes, as prose the parent can't miss inside the JSON.
     from tools.process_registry_notifications import _process_accounting_lines
     process_notes = [line for entry in results for line in _process_accounting_lines(entry)]
@@ -246,10 +253,11 @@ def _resolve_async_wake_sid(origin_wake_sid: str, origin_session_history_deliver
     continuation must read that row, not an authoritative caller-owned snapshot."""
     from gateway.session_context import get_session_env
 
-    # Finite chat owns no later turn to consume a detached result. Reuse its
-    # approval/lifecycle marker without disabling terminal notify completions:
-    # those have their own bounded exit linger and durable result receipts.
-    if get_session_env("HERMES_SINGLE_QUERY_SESSION") == "1":
+    # Finite consumers need the result in this tool round. Owner admission scope
+    # wins over legacy standalone launch markers, without changing terminal delivery.
+    from gateway.session_finite import finite_turn_required
+    finite = finite_turn_required()
+    if finite is True or (finite is None and get_session_env("HERMES_SINGLE_QUERY_SESSION") == "1"):
         return None
 
     try:
@@ -297,7 +305,7 @@ def _resolve_async_session_key(parent_agent: Any, origin_ui_session_id: str) -> 
             session_key = agent_session_id
     return session_key or agent_session_id, origin_ui_session_id
 
-def _batch_progress_token(child_agents: List[Any]) -> tuple:
+def _batch_progress_token(child_agents: list[Any]) -> tuple:
     """Progress token for the async registry's stale monitor: every child's (api_call_count, current_tool,
     last_activity_ts). last_activity_ts ticks on streamed chunks, tool transitions and API-call start/completion,
     so a child streaming a long response counts as alive; a fully frozen token past the threshold means the batch
@@ -343,10 +351,10 @@ _BACKGROUND_NOTES = {
     ),
 }
 
-def _dispatched_payload(batch: _Batch, units: List[tuple[_Batch, str]]) -> dict:
+def _dispatched_payload(batch: _Batch, units: list[tuple[_Batch, str]]) -> dict:
     """Model-facing handle for an accepted background call: one entry per async unit."""
     goals = [t["goal"] for t in batch.task_list]
-    n = len(goals)
+    n = len(batch.children)  # running children; refused tasks are listed under "refused"
     payload = {
         "status": "dispatched", "mode": "background", "count": n,
         "delegation_id": batch.live_deleg_id or units[0][1], "goals": goals,
@@ -361,12 +369,14 @@ def _dispatched_payload(batch: _Batch, units: List[tuple[_Batch, str]]) -> dict:
     if any(isinstance(s, str) and s for s in sids):
         payload["subagent_ids"] = sids
         payload["control_hint"] = _BACKGROUND_NOTES["control_hint"]
+    if batch.refused:
+        payload["refused"] = batch.refused
     if batch.live_paths:
         payload["live_transcripts"] = list(batch.live_paths)
         payload["live_transcripts_hint"] = _BACKGROUND_NOTES["live_transcripts_hint"]
     return payload
 
-def _units_of(batch: _Batch) -> List[_Batch]:
+def _units_of(batch: _Batch) -> list[_Batch]:
     """Partition the call's children into async units: one per distinct task ``group`` (first-appearance order) and
     one per ungrouped task. Each unit is a ``_Batch`` sharing the call's task_list/transcripts but owning a subset of
     ``children``, so a unit joins only on itself and its completion re-enters the conversation on its own.
@@ -376,7 +386,7 @@ def _units_of(batch: _Batch) -> List[_Batch]:
     from tools.delegate_tool_config import _get_independent_completions
     if not _get_independent_completions():
         return [batch]
-    members: Dict[Any, List[tuple]] = {}
+    members: dict[Any, list[tuple]] = {}
     for i, t, c in batch.children:
         g = t.get("group")
         key = ("g", str(g)) if g not in (None, "") else ("i", i)
@@ -396,7 +406,9 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         # Call-wide goals: completion formatting indexes them by task_index.
         goals=[t["goal"] for t in unit.task_list], context=unit.context,
         toolsets=None,  # metadata for the completion block only; subagents inherit the parent's toolsets
-        role=unit.top_role, model=unit.creds["model"],
+        # creds["model"] is None when delegation.model is blank (children inherit): report what the child runs on.
+        role=unit.top_role, model=unit.creds["model"] or next(
+            (getattr(c, "model", None) for c in child_agents if getattr(c, "model", None)), None),
         runner=lambda: _execute_and_aggregate(unit, honor_parent_interrupt=False),
         interrupt_fn=_interrupt, delegation_id=unit_id, slot_key=slot_key,
         task_indexes=[i for (i, _, _) in unit.children] if len(unit.children) < len(unit.task_list) else None,
@@ -431,9 +443,9 @@ def _dispatch_background(batch: _Batch) -> str:
         parent_session_id=getattr(parent_agent, "session_id", None), max_async_children=_get_max_async_children(),
     )
 
-    units = _units_of(batch)
-    dispatched: List[tuple[_Batch, str]] = []
-    inline_results: List[dict] = []
+    units = [replace(unit, refused=[]) for unit in _units_of(batch)]
+    dispatched: list[tuple[_Batch, str]] = []
+    inline_results: list[dict] = []
     slot_key: Optional[str] = None
     for k, unit in enumerate(units):
         # One unit keeps the live-transcript directory's id so the returned delegation_id matches

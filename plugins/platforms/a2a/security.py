@@ -16,6 +16,7 @@ import time
 import urllib.parse
 from dataclasses import dataclass
 from typing import Optional
+from agent.proxy_bypass import is_loopback_host
 from gateway.platforms._shared import profile_scoped as _profile_scoped
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,11 @@ def _configured_trusted_peers() -> frozenset[str]:
     return frozenset()
 
 
+def _unbracket(host: str) -> str:
+    """``[::1]`` is the URL spelling of ``::1``; sockets and the loopback check need the bare literal."""
+    return host[1:-1] if host.startswith("[") and host.endswith("]") else host
+
+
 @dataclass(frozen=True)
 class A2ASecurityContext:
     """Immutable, profile-scoped security settings captured at adapter startup. HTTP request
@@ -63,12 +69,12 @@ class A2ASecurityContext:
     push_secret: str
 
     @classmethod
-    def capture(cls) -> "A2ASecurityContext":
+    def capture(cls) -> A2ASecurityContext:
         bearer_token = _startup_env("A2A_BEARER_TOKEN")
         return cls(bearer_token=bearer_token, peer_tokens=tuple(_parse_peer_tokens(_startup_env("A2A_PEER_TOKENS")).items()),
                    trusted_peers=_configured_trusted_peers(),
                    allow_all_users=_startup_env("A2A_ALLOW_ALL_USERS").lower() in {"1", "true", "yes"},
-                   requested_host=_startup_env("A2A_HOST") or "127.0.0.1", push_secret=_startup_env("A2A_PUSH_SECRET") or bearer_token)
+                   requested_host=_unbracket(_startup_env("A2A_HOST")) or "127.0.0.1", push_secret=_startup_env("A2A_PUSH_SECRET") or bearer_token)
 
     def localhost_only(self) -> bool:
         return not (self.bearer_token or self.peer_tokens)
@@ -99,11 +105,19 @@ class A2ASecurityContext:
             return f"ip:{client_ip or 'unknown'}"
         return None
 
+    def is_loopback_bind(self) -> bool:
+        return is_loopback_host(self.resolve_bind_host())
+
+    def dispatch_fails_closed(self) -> bool:
+        """Network-exposed token bind with no allow-list and no allow-all: refuse every peer."""
+        return not (self.allow_all_users or self.localhost_only() or self.trusted_peers or self.is_loopback_bind())
+
     def is_trusted_peer(self, identity: str) -> bool:
-        """Open when allow-all or localhost-only; else the allow-list (if any) must contain identity."""
-        if self.allow_all_users or self.localhost_only() or not self.trusted_peers:
-            return True
-        return identity in self.trusted_peers
+        """Fail closed on network-exposed binds with no allow-list; loopback
+        binds without an allow-list stay open for backward compatibility."""
+        if self.dispatch_fails_closed():
+            return False  # the misconfiguration is logged once in A2AAdapter.connect()
+        return self.allow_all_users or self.localhost_only() or not self.trusted_peers or identity in self.trusted_peers
 
     def sign_push_payload(self, payload: dict) -> str:
         """HMAC-SHA256 hex over the sorted-key JSON body; "" when no secret."""

@@ -6,7 +6,7 @@ and verifies the exact native artifacts from `pm/lock.json`. The action does
 not resolve a version range, install another setup action, or modify the lock.
 
 ```yaml
-- uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+- uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
 - uses: ./.github/actions/setup-pm
   with:
     toolchain: all

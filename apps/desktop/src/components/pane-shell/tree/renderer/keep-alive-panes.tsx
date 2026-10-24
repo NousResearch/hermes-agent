@@ -125,6 +125,18 @@ const KeepAlivePaneHost = memo(function KeepAlivePaneHost({ pane, placement, epo
 
   useResizeObserver(rememberSize, ref)
 
+  // A host going hidden gives up focus. `inert` alone leaves the focused
+  // element (a webview guest) as activeElement, so keystrokes would keep
+  // landing in a page the user can no longer see — a hidden session's kept
+  // Browser. Blurring hands focus back to the document.
+  useLayoutEffect(() => {
+    const active = document.activeElement
+
+    if (!placement.visible && active instanceof HTMLElement && ref.current?.contains(active)) {
+      active.blur()
+    }
+  }, [placement.visible])
+
   return (
     <div
       {...hiddenPaneProps(!placement.visible)}

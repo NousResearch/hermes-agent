@@ -10,6 +10,8 @@ gateway/CLI surfaces in the same backend process.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 
@@ -213,3 +215,176 @@ def test_warm_never_raises_on_engine_failure(monkeypatch):
     assert result["warmed"] is False
     assert result["action"] == "error"
     assert "CUDA exploded" in result["error"]
+
+
+def test_warm_only_load_starts_idle_unload_watcher(monkeypatch):
+    """A model loaded ONLY by warm-up (mic open → cancel, no transcription)
+    must still be governed by ``stt.local.unload_after_idle_seconds``.
+
+    Pre-fix, ``_start_idle_unload_watcher`` only ran after a successful
+    ``_transcribe_local``, so the warm-only path left the model resident with
+    no watcher until some later transcription happened. The regression
+    executes the real acquire/load path with a fresh process-like state and
+    asserts the watcher started and eventually evicts the model.
+    """
+    from tools import stt_lease, transcription_tools
+
+    _local_cfg(monkeypatch)
+    monkeypatch.setattr(
+        transcription_tools,
+        "_load_stt_config",
+        lambda: {"local": {"model": "tiny", "unload_after_idle_seconds": 1}},
+    )
+
+    loaded = []
+    monkeypatch.setattr(transcription_tools, "_IDLE_UNLOAD_CHECK_INTERVAL", 0.01)
+    monkeypatch.setattr(transcription_tools, "_local_model", None)
+    monkeypatch.setattr(transcription_tools, "_local_model_name", None)
+    monkeypatch.setattr(transcription_tools, "_idle_unload_thread", None)
+    # Backdate the activity so the first watcher cycle (0.01s) already sees
+    # the configured idle window as elapsed.
+    monkeypatch.setattr(transcription_tools, "_last_transcription_time", 0.0)
+    real_model = object()
+    monkeypatch.setattr(
+        transcription_tools,
+        "_get_or_load_local_model",
+        lambda name, cfg: loaded.append(name) or real_model,
+    )
+    # The idle watcher reads the module global, not the warm-up's local ref,
+    # so mirror the singleton the real loader would have written.
+    transcription_tools._local_model = real_model
+    transcription_tools._local_model_name = "tiny"
+
+    result = stt_lease.warm_stt_provider()
+
+    assert result["warmed"] is True
+    assert loaded == ["tiny"]
+    # The watcher is running (fresh process: no prior watcher thread).
+    assert transcription_tools._idle_unload_thread is not None
+    assert transcription_tools._idle_unload_thread.is_alive()
+    # ...and eventually enforces the configured idle lifetime.
+    for _ in range(200):
+        if transcription_tools._local_model is None:
+            break
+        time.sleep(0.02)
+    assert transcription_tools._local_model is None
+
+
+def test_warm_reacquire_after_eviction_restarts_watcher(monkeypatch):
+    """After a prior watcher evicted its model and exited, a warm-up that
+    reloads it must start a NEW watcher — the old thread is gone."""
+    from tools import stt_lease, transcription_tools
+
+    _local_cfg(monkeypatch)
+    monkeypatch.setattr(
+        transcription_tools,
+        "_load_stt_config",
+        lambda: {"local": {"model": "tiny", "unload_after_idle_seconds": 60}},
+    )
+    monkeypatch.setattr(transcription_tools, "_IDLE_UNLOAD_CHECK_INTERVAL", 0.5)
+    # Simulate the post-eviction world: model gone, previous watcher exited.
+    monkeypatch.setattr(transcription_tools, "_local_model", None)
+    monkeypatch.setattr(transcription_tools, "_local_model_name", None)
+    monkeypatch.setattr(
+        transcription_tools, "_idle_unload_thread", type("Dead", (), {"is_alive": lambda self: False})()
+    )
+
+    real_model = object()
+    monkeypatch.setattr(
+        transcription_tools, "_get_or_load_local_model", lambda name, cfg: real_model
+    )
+    transcription_tools._local_model = real_model
+    transcription_tools._local_model_name = "tiny"
+
+    result = stt_lease.warm_stt_provider()
+
+    assert result["warmed"] is True
+    # A NEW watcher is running for the reloaded model.
+    assert transcription_tools._idle_unload_thread is not None
+    assert transcription_tools._idle_unload_thread.is_alive()
+    # Clean up the daemon so it does not leak into other tests.
+    transcription_tools._idle_unload_stop.set()
+    transcription_tools._idle_unload_thread.join(timeout=2)
+    transcription_tools._idle_unload_stop.clear()
+    transcription_tools._local_model = None
+    transcription_tools._local_model_name = None
+    transcription_tools._idle_unload_thread = None
+
+
+def _watch_under_profiles(monkeypatch, *owners):
+    """Start/refresh the idle watcher from each (profile, idle_seconds) caller in order, each
+    inside its own context — the same ContextVar mechanism a request's profile scope uses."""
+    import contextvars
+    import threading
+
+    from tools import transcription_tools
+
+    class _GatedStop:
+        """The watcher's first tick waits until every owner has been registered."""
+
+        def __init__(self):
+            self.event = threading.Event()
+            self.gate = threading.Event()
+
+        def wait(self, timeout):
+            self.gate.wait(2)
+            return self.event.wait(timeout)
+
+        def set(self):
+            self.event.set()
+            self.gate.set()
+
+        def clear(self):
+            self.event.clear()
+
+    stop = _GatedStop()
+    monkeypatch.setattr(transcription_tools, "_idle_unload_stop", stop)
+
+    profile = contextvars.ContextVar("test_stt_profile", default="launch")
+    idle_by_profile = {"launch": 3600, **dict(owners)}
+    monkeypatch.setattr(
+        transcription_tools,
+        "_load_stt_config",
+        lambda: {"local": {"model": "tiny", "unload_after_idle_seconds": idle_by_profile[profile.get()]}},
+    )
+    monkeypatch.setattr(transcription_tools, "_IDLE_UNLOAD_CHECK_INTERVAL", 0.01)
+    monkeypatch.setattr(transcription_tools, "_idle_unload_thread", None)
+    monkeypatch.setattr(transcription_tools, "_last_transcription_time", time.monotonic() - 2)
+    transcription_tools._local_model = object()
+    transcription_tools._local_model_name = "tiny"
+
+    for name, idle in owners:
+        def _call(name=name, idle=idle):
+            profile.set(name)
+            transcription_tools._start_idle_unload_watcher(idle)
+
+        contextvars.copy_context().run(_call)
+
+    stop.gate.set()
+    for _ in range(50):
+        if transcription_tools._local_model is None:
+            break
+        time.sleep(0.01)
+    evicted = transcription_tools._local_model is None
+
+    stop.set()
+    if transcription_tools._idle_unload_thread is not None:
+        transcription_tools._idle_unload_thread.join(timeout=2)
+    transcription_tools._local_model = None
+    transcription_tools._local_model_name = None
+    transcription_tools._idle_unload_thread = None
+    return evicted
+
+
+def test_idle_watcher_applies_the_profile_that_warmed_the_model(monkeypatch):
+    """#128668 review: the watcher thread has no request scope of its own. It must read
+    ``unload_after_idle_seconds`` in the scope of the caller that loaded the model, not the
+    launch profile's (3600s here), or a 1s policy never fires."""
+    assert _watch_under_profiles(monkeypatch, ("worker_beta", 1)) is True
+
+
+def test_idle_watcher_follows_the_latest_owner_of_the_shared_model(monkeypatch):
+    """A → B → A: the live watcher adopts each new owner's policy instead of keeping the one
+    it was started under."""
+    assert _watch_under_profiles(monkeypatch, ("alpha", 3600), ("worker_beta", 1)) is True
+    assert _watch_under_profiles(monkeypatch, ("worker_beta", 1), ("alpha", 3600)) is False

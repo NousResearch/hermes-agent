@@ -61,9 +61,9 @@ export function createMinimizeToTray(options: Options) {
     }
   }
 
-  const released = (win: BrowserWindow) => {
+  const released = (win: BrowserWindow): boolean => {
     if (!hidden.delete(win)) {
-      return
+      return false
     }
 
     if (process.platform === 'win32') {
@@ -71,6 +71,8 @@ export function createMinimizeToTray(options: Options) {
     }
 
     showDock()
+
+    return true
   }
 
   const restoreHidden = () => {
@@ -106,9 +108,18 @@ export function createMinimizeToTray(options: Options) {
     options.restoreMainWindow()
   }
 
-  const destroyTray = () => {
+  const destroyTray = (force = false) => {
     stopWatchingHost?.()
     stopWatchingHost = undefined
+
+    // Linux StatusNotifierItem stays exported after Tray.destroy(), so a later
+    // `new Tray()` in this process cannot re-export and the panel icon dies
+    // (#126353). Park the instance until the app actually quits or the host
+    // disappears.
+    if (process.platform === 'linux' && !quitting && !force) {
+      return
+    }
+
     tray?.destroy()
     tray = null
   }
@@ -117,7 +128,7 @@ export function createMinimizeToTray(options: Options) {
     // Losing the shell/tray must never strand an invisible app.
     hostGeneration += 1
     restoreHidden()
-    destroyTray()
+    destroyTray(true)
     broadcast()
   }
 
@@ -127,6 +138,20 @@ export function createMinimizeToTray(options: Options) {
     if (!on) {
       restoreHidden()
       destroyTray()
+    } else if (!quitting && status().available && process.platform === 'linux' && !stopWatchingHost) {
+      try {
+        const { watchLinuxTrayHost } = await import('./tray-host')
+        const generation = hostGeneration
+        stopWatchingHost = await watchLinuxTrayHost(hostLost)
+
+        if (generation !== hostGeneration) {
+          throw new Error('System tray host disappeared')
+        }
+      } catch (error) {
+        restoreHidden()
+        destroyTray(true)
+        options.log(`[tray] unavailable; ordinary window behavior retained: ${error}`)
+      }
     } else if (!status().available && !quitting) {
       try {
         if (process.platform === 'linux') {
@@ -245,14 +270,27 @@ export function createMinimizeToTray(options: Options) {
     win.on('query-session-end', () => {
       quitting = true
     })
-    win.on('show', () => {
-      released(win)
+
+    // A relaunch, a deep link or a notification click can restore a tray-hidden
+    // window without the tray. restore() alone paints the window on Windows but
+    // does not make it the foreground window, so it drops all input (#127349).
+    // Finish the activation like restoreHidden() does. Defer it, because the
+    // native restore must finish first (same reason as the deferred hide).
+    const release = () => {
+      if (released(win) && process.platform === 'win32') {
+        setImmediate(() => {
+          if (!win.isDestroyed() && !win.isMinimized() && win.isVisible()) {
+            win.show()
+            win.focus()
+          }
+        })
+      }
+
       syncDock()
-    })
-    win.on('restore', () => {
-      released(win)
-      syncDock()
-    })
+    }
+
+    win.on('show', release)
+    win.on('restore', release)
     win.on('closed', () => {
       windows.delete(win)
       hidden.delete(win)
@@ -298,7 +336,10 @@ export function createMinimizeToTray(options: Options) {
 
   ipcMain.handle('hermes:minimize-to-tray:get', status)
   ipcMain.handle('hermes:minimize-to-tray:set', (_event, on) => setEnabled(on === true))
-  app.on('will-quit', destroyTray)
+  app.on('will-quit', () => {
+    quitting = true
+    destroyTray()
+  })
 
   return {
     start,

@@ -2,12 +2,17 @@ import React, { useState, useMemo, useCallback, useRef, useEffect } from "react"
 import Layout from "@theme/Layout";
 import Link from "@docusaurus/Link";
 import styles from "./styles.module.css";
+import CatalogFeatured from "../../components/CatalogFeatured";
+import { isOfficialSkillSource, pickFeatured } from "../../../../apps/shared/src/catalog-featured";
 import { skillCatalogInstallIdentifier, skillCatalogInstallUrl } from "../../../../apps/shared/src/catalog-install";
 
 interface Skill {
   name: string;
   description: string;
   overview?: string;
+  image?: string;
+  /** 1-based curated hero rank from catalog-curation.json; absent when uncurated. */
+  featured?: number;
   category: string;
   categoryLabel: string;
   source: string;
@@ -310,6 +315,7 @@ function SkillCard({
       onClick={onToggle}
       style={style}
     >
+      {skill.image && <img src={skill.image} alt="" loading="lazy" decoding="async" style={{ width: "100%", aspectRatio: "2 / 1", objectFit: "cover", display: "block" }} />}
       <div className={styles.cardAccent} style={{ background: src.color }} />
 
       <div className={styles.cardInner}>
@@ -789,6 +795,19 @@ export default function SkillsDashboard() {
   const visible = filtered.slice(0, visibleCount);
   const hasMore = visibleCount < filtered.length;
 
+  // Same pick as the desktop app (apps/shared pickFeatured): curated ranks from
+  // catalog-curation.json, rotated weekly, shown only while browsing everything.
+  const featured = useMemo(
+    () =>
+      pickFeatured(allSkillsLocal, (s) => ({
+        featured: s.featured,
+        official: isOfficialSkillSource(s.source),
+        pictured: Boolean(s.image),
+      })),
+    [allSkillsLocal],
+  );
+  const browsing = !search && sourceFilter === "all" && categoryFilter === "all" && !pickerMode;
+
   const handleSourceChange = useCallback(
     (src: string) => {
       setSourceFilter(src);
@@ -838,7 +857,12 @@ export default function SkillsDashboard() {
               <strong className={styles.heroAccent}>
                 {data ? allSkillsLocal.length.toLocaleString() : "…"}
               </strong>{" "}
-              skills across {sources.length - 1} registries. Open in Hermes Desktop to review and install, or copy the CLI command.
+              skills across {sources.length - 1} registries
+              {loadError && (
+                <span style={{ color: "#f87171", marginLeft: 8 }}>
+                  · failed to load catalog ({loadError})
+                </span>
+              )}
             </p>
             {(indexMetaLocal?.indexGeneratedAt || indexMetaLocal?.extractedAt) && (
               <p className={styles.heroSub} style={{ fontSize: "0.85rem", opacity: 0.75 }}>
@@ -1099,6 +1123,21 @@ export default function SkillsDashboard() {
               </div>
             ) : visible.length > 0 ? (
               <>
+                {featured && browsing && (
+                  <CatalogFeatured
+                    author={featured.author}
+                    cta="View skill"
+                    description={featured.description}
+                    href={featured.docsPath ? `/user-guide/skills/${featured.docsPath}` : featured.sourceUrl || "#"}
+                    label="Featured skill"
+                    tags={[
+                      SOURCE_CONFIG[featured.source]?.label || featured.source,
+                      featured.categoryLabel,
+                      featured.version && `v${featured.version}`,
+                    ]}
+                    title={featured.name}
+                  />
+                )}
                 <div className={styles.grid}>
                   {visible.map((skill, i) => {
                     const key = `${skill.source}-${skill.name}-${i}`;

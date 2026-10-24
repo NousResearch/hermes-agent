@@ -75,9 +75,7 @@ describe('PreviewAttachment local target classification (#101683)', () => {
   })
 
   it('opens a Windows file:///C:/... directory link natively with no Download or preview action', async () => {
-    const { openDir, revealPath } = mountDesktopStub(() =>
-      fileTarget('C:/Users/E/reports/historical', 'directory')
-    )
+    const { openDir, revealPath } = mountDesktopStub(() => fileTarget('C:/Users/E/reports/historical', 'directory'))
 
     render(<PreviewAttachment target="file:///C:/Users/E/reports/historical" />)
 

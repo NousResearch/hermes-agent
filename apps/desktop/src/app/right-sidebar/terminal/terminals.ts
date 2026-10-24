@@ -28,10 +28,7 @@ const webglRefreshFns = new Map<Terminal, () => void>()
 
 /** Register a terminal's atlas-rebuild+redraw so sibling refreshes reach it.
  *  Returns an unregister function (call on dispose). */
-export function registerWebglRefresh(
-  term: Terminal,
-  getWebgl: () => WebglAddon | null
-): () => void {
+export function registerWebglRefresh(term: Terminal, getWebgl: () => WebglAddon | null): () => void {
   webglClearFns.set(term, () => {
     try {
       getWebgl()?.clearTextureAtlas()

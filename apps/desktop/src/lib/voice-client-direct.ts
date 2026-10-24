@@ -1,4 +1,4 @@
-import { type OwnerScope, ownerScoped } from '@/api/client'
+import { hermesApiAs, type OwnerScope, ownerScoped, type ResolvedOwner } from '@/api/client'
 import { getApiRequestConnection, getApiRequestProfile, hermesApi } from '@/hermes'
 
 /**
@@ -55,7 +55,8 @@ interface RelayConfig {
 }
 
 export interface VoiceClientConfig {
-  stt: DirectSttConfig | RelayConfig
+  /** `streaming`: the host serves live dictation over /api/audio/transcribe-stream (stt.streaming). */
+  stt: (DirectSttConfig | RelayConfig) & { streaming?: boolean }
   tts: DirectTtsConfig | RelayConfig
 }
 
@@ -86,8 +87,28 @@ export function clearVoiceClientConfigCache(): void {
 }
 
 export async function fetchVoiceClientConfig(owner?: OwnerScope): Promise<null | VoiceClientConfig> {
-  const key = scopeKey(owner)
+  // hermesApi carries connectionScoped(); profileScoped() adds the profile —
+  // the same routing every relay audio call uses, so the config comes from
+  // the backend the user is actually talking to.
+  return loadVoiceClientConfig(scopeKey(owner), () =>
+    hermesApi<VoiceConfigResponse>({ ...ownerScoped(owner), path: '/api/audio/voice-config' })
+  )
+}
 
+/** The config for an owner resolved once for a whole voice operation: the
+ *  lookup cannot drift to whatever scope is ambient by the time it runs. */
+export async function fetchVoiceClientConfigFor(owner: ResolvedOwner): Promise<null | VoiceClientConfig> {
+  return loadVoiceClientConfig(`${owner.connectionId || 'local'}::${owner.profile || 'default'}`, () =>
+    hermesApiAs<VoiceConfigResponse>(owner, { path: '/api/audio/voice-config' })
+  )
+}
+
+type VoiceConfigResponse = { ok: boolean } & VoiceClientConfig
+
+async function loadVoiceClientConfig(
+  key: string,
+  fetchConfig: () => Promise<VoiceConfigResponse>
+): Promise<null | VoiceClientConfig> {
   if (cached && cached.key === key && Date.now() - cached.at < CONFIG_TTL_MS) {
     return cached.config
   }
@@ -98,13 +119,7 @@ export async function fetchVoiceClientConfig(owner?: OwnerScope): Promise<null |
 
   const promise = (async () => {
     try {
-      // hermesApi carries connectionScoped(); profileScoped() adds the
-      // profile — the same routing every relay audio call uses, so the
-      // config comes from the backend the user is actually talking to.
-      const response = await hermesApi<{ ok: boolean } & VoiceClientConfig>({
-        ...ownerScoped(owner),
-        path: '/api/audio/voice-config'
-      })
+      const response = await fetchConfig()
 
       if (!response?.ok || !response.stt || !response.tts) {
         return null
@@ -215,7 +230,10 @@ export function isSttSilenceHallucination(
     return true
   }
 
-  if (filter.phrases.includes(cleaned.replaceAll('!', '').replaceAll('.', ''))) {
+  // Trailing `.!` only — the relay strips `cleaned.rstrip('.!')`, so an
+  // internal period (`thank. you`) stays internal and the transcript stays
+  // a real turn on both paths, never just one.
+  if (filter.phrases.includes(cleaned.replace(/[.!]+$/, ''))) {
     return true
   }
 
@@ -249,15 +267,34 @@ async function sttFetch(stt: DirectSttConfig, url: string, init: RequestInit): P
   }
 }
 
+/** Multipart body for xAI `POST /v1/stt`. */
+function xaiSttForm(audio: Blob, stt: DirectSttConfig): FormData {
+  const form = new FormData()
+  form.set('file', audio, sttFileName(audio))
+
+  if (stt.model) {
+    form.set('model', stt.model)
+  }
+
+  // xAI rejects format=true without a language (HTTP 400), so auto-detect drops the flag.
+  if (stt.language) {
+    form.set('language', stt.language)
+    form.set('format', 'true')
+  }
+
+  return form
+}
+
 /**
  * Transcribe provider-direct. Returns the transcript ('' = silence), or null
  * when the profile's provider isn't client-callable — the caller relays.
  * Provider REJECTIONS throw: the configured provider said no, and silently
  * re-running the same request through the gateway would just fail again
- * slower and hide the real error.
+ * slower and hide the real error. `owner` pins the provider config to the
+ * recording's owner (resolved when the mic opened); omitted → the active scope.
  */
-export async function transcribeAudioClientDirect(audio: Blob): Promise<null | string> {
-  const config = await fetchVoiceClientConfig()
+export async function transcribeAudioClientDirect(audio: Blob, owner?: ResolvedOwner): Promise<null | string> {
+  const config = await (owner ? fetchVoiceClientConfigFor(owner) : fetchVoiceClientConfig())
   const stt = config?.stt
 
   if (!stt || stt.mode !== 'direct') {
@@ -297,18 +334,10 @@ export async function transcribeAudioClientDirect(audio: Blob): Promise<null | s
   }
 
   if (stt.wire === 'xai-stt') {
-    const form = new FormData()
-    form.set('file', audio, sttFileName(audio))
-    form.set('format', 'true')
-
-    if (stt.language) {
-      form.set('language', stt.language)
-    }
-
     const response = await sttFetch(stt, `${stt.base_url.replace(/\/+$/, '')}/stt`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${stt.api_key}` },
-      body: form,
+      body: xaiSttForm(audio, stt),
       signal: AbortSignal.timeout(STT_REQUEST_TIMEOUT_MS)
     })
 

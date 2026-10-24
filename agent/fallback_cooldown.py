@@ -21,7 +21,7 @@ def _provider_reset_delay(reset_at) -> float | None:
     return None
 
 
-def switch_deferred_by_reset(agent, reason: "FailoverReason | None", reset_at) -> bool:
+def switch_deferred_by_reset(agent, reason: FailoverReason | None, reset_at) -> bool:
     """Opt-in ``fallback.min_switch_reset_seconds`` (default 0 = off, #117484): when the primary's
     rate limit reopens sooner than N seconds, switching model mid-task costs more than waiting, so
     the fallback walk is skipped and the retry loop's own backoff rides out the window. Only for
@@ -43,7 +43,7 @@ def switch_deferred_by_reset(agent, reason: "FailoverReason | None", reset_at) -
 
 
 def _arm_rate_limit_cooldown(
-    agent, reason: "FailoverReason | None", reset_at=None,
+    agent, reason: FailoverReason | None, reset_at=None,
 ) -> int | None:
     """Arm the primary cooldown until the provider reset, or use exponential backoff.
 

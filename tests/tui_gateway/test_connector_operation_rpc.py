@@ -191,6 +191,9 @@ def test_panel_connect_reissues_only_a_dead_link(owned, monkeypatch):
     mints = []
 
     class Client:
+        def __init__(self, **_):
+            pass
+
         def connections(self, names, *, reinitiate=False, **_):
             mints.append((tuple(names), reinitiate))
             return {"results": [{"connector": n, "status": "initiated", "connect_url": f"https://l/{n}/2"} for n in names]}
@@ -221,6 +224,9 @@ def test_a_failed_reissue_leaves_the_row_failed_with_no_link(owned, monkeypatch,
     operation.transition("notion", dead, actor, detail="vendor: nope")
 
     class Client:
+        def __init__(self, **_):
+            pass
+
         def connections(self, names, *, reinitiate=False, **_):
             return {"results": [{"connector": n, "status": "failed", "status_reason": "vendor: still no"} for n in names]}
 

@@ -1,5 +1,10 @@
-import { JSON_RPC_INTERNAL_ERROR } from '@hermes/shared'
+import { JSON_RPC_INTERNAL_ERROR, type SetupBeat } from '@hermes/shared'
 
+import {
+  hasLivePreviewSurface,
+  requestPopoutPreviewAct,
+  requestPopoutPreviewRead
+} from '@/app/chat/right-rail/preview-popout-bridge'
 import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
 import {
   abortPreviewTyping,
@@ -12,9 +17,11 @@ import { translateNow } from '@/i18n'
 import { restorePendingClarifyToolCall } from '@/lib/chat-messages'
 import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
 import type { TourAction, TourStep } from '@/lib/tour'
-import { normalizeQuestions, setClarifyRequest } from '@/store/clarify'
+import { type AppearanceValues, applyAppearance, THEME_MODES } from '@/store/appearance-apply'
+import { type ClarifyRequest, normalizeQuestions, setClarifyRequest } from '@/store/clarify'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
+import type { PreviewOwner } from '@/store/preview-ownership'
 import {
   receiveApprovalRequest,
   setSecretRequest,
@@ -25,7 +32,14 @@ import {
 } from '@/store/prompts'
 import { rememberServerRequest } from '@/store/server-requests'
 import { $selectedStoredSessionId, $sessions, lineageAliases, sessionMatchesStoredId } from '@/store/session'
-import { $sessionStates, $sessionTiles } from '@/store/session-states'
+import {
+  $sessionStates,
+  $sessionTiles,
+  previewScopeForRuntime,
+  storedSessionIdForRuntimeId
+} from '@/store/session-states'
+import { parkSetupBeat, type SetupBeatCard } from '@/store/setup-beat'
+import { parkThemePick } from '@/store/theme-pick'
 import { requestScrollToBottom } from '@/store/thread-scroll'
 import { $toursEnabled } from '@/store/tours'
 
@@ -47,6 +61,23 @@ const loadPreviewEngine = () => {
 }
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+
+/** Whose preview tabs a scoped agent request may see: the requesting
+ *  runtime's stored id plus the tabs that runtime opened before the id bound,
+ *  and the pins of the profile that runtime belongs to — never the viewed
+ *  profile's pins on another profile's behalf. An id that does not resolve
+ *  yet has no stored id — the runtime's own pending tabs — never the focused
+ *  session's tabs. Only an unscoped request (no id) falls through to the
+ *  focused session (undefined). */
+const previewOwnerFor = (sessionId: string): PreviewOwner | undefined =>
+  sessionId
+    ? {
+        profile: previewScopeForRuntime(sessionId),
+        runtimeId: sessionId,
+        sessionId: storedSessionIdForRuntimeId(sessionId)
+      }
+    : undefined
+
 const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined)
 
 /** Answer a string-valued request with a JSON-encoded result ('' = nothing / unavailable). */
@@ -76,7 +107,14 @@ type PreviewSessionRoute = 'ignore' | 'retry' | 'run'
  * would win the race, so the tool reports "no preview tab / no terminal" while
  * the owner's pane is open (#113348).
  */
-const WINDOW_OWNED_REQUESTS = new Set(['preview.act', 'preview.read', 'terminal.read', 'window.read', 'tour'])
+const WINDOW_OWNED_REQUESTS = new Set([
+  'preview.act',
+  'preview.read',
+  'terminal.read',
+  'theme.apply',
+  'window.read',
+  'tour'
+])
 
 /**
  * A window not hosting the session declines instead of staying silent. The
@@ -173,10 +211,7 @@ export function windowReadClaimsSession(sessionId: string, activeSessionId: null
 
   const sessions = $sessions.get()
 
-  const shown = [
-    $selectedStoredSessionId.get(),
-    ...$sessionTiles.get().map(tile => tile.storedSessionId)
-  ]
+  const shown = [$selectedStoredSessionId.get(), ...$sessionTiles.get().map(tile => tile.storedSessionId)]
 
   return shown.some(
     stored =>
@@ -268,42 +303,8 @@ const notifyInput = (ctx: ServerRequestContext, body: string) => {
 // user focuses that chat. The Python side blocks on the response frame; without a
 // handler the channel answers -32601 and the tool fails fast instead of stalling.
 
-const clarify: Handler = ctx => {
+const parkClarify = (ctx: ServerRequestContext, clarifyRequest: ClarifyRequest) => {
   const { deps, request, sessionId } = ctx
-  const p = request.params
-
-  if (sessionId && deps.sessionInterrupted(sessionId)) {
-    request.respond({})
-
-    return
-  }
-
-  const questions = normalizeQuestions(p.questions)
-
-  // `answers` rides along only on a reconnect replay (locks the server
-  // already accepted).
-  const lockedAnswers =
-    typeof p.answers === 'object' && p.answers !== null
-      ? Object.fromEntries(
-          Object.entries(p.answers as Record<string, unknown>).filter(
-            (entry): entry is [string, null | string] => entry[1] === null || typeof entry[1] === 'string'
-          )
-        )
-      : undefined
-
-  if (questions.length === 0) {
-    request.respond({})
-
-    return
-  }
-
-  const clarifyRequest = {
-    lockedAnswers,
-    questions,
-    receivedAt: Date.now() / 1000,
-    requestId: request.id,
-    sessionId: sessionId || null
-  }
 
   rememberServerRequest(request)
   setClarifyRequest(clarifyRequest)
@@ -336,7 +337,45 @@ const clarify: Handler = ctx => {
     }
   }
 
-  notifyInput(ctx, questions.map(q => q.question).join(' · '))
+  notifyInput(ctx, clarifyRequest.questions.map(q => q.question).join(' · '))
+}
+
+const clarify: Handler = ctx => {
+  const { deps, request, sessionId } = ctx
+  const p = request.params
+
+  if (sessionId && deps.sessionInterrupted(sessionId)) {
+    request.respond({})
+
+    return
+  }
+
+  const questions = normalizeQuestions(p.questions)
+
+  // `answers` rides along only on a reconnect replay (locks the server
+  // already accepted).
+  const lockedAnswers =
+    typeof p.answers === 'object' && p.answers !== null
+      ? Object.fromEntries(
+          Object.entries(p.answers as Record<string, unknown>).filter(
+            (entry): entry is [string, null | string] => entry[1] === null || typeof entry[1] === 'string'
+          )
+        )
+      : undefined
+
+  if (questions.length === 0) {
+    request.respond({})
+
+    return
+  }
+
+  parkClarify(ctx, {
+    lockedAnswers,
+    questions,
+    receivedAt: Date.now() / 1000,
+    requestId: request.id,
+    sessionId: sessionId || null
+  })
 }
 
 const approval: Handler = ctx => {
@@ -351,7 +390,7 @@ const approval: Handler = ctx => {
 
   rememberServerRequest(request)
   void receiveApprovalRequest(null, {
-    // false only when a tirith warning forbids it; backend omits the field otherwise.
+    // false only when the backend forbids a permanent allow; it omits the field otherwise.
     allowPermanent: p.allow_permanent !== false,
     choices: Array.isArray(p.choices)
       ? p.choices.filter((choice): choice is string => typeof choice === 'string')
@@ -480,11 +519,22 @@ const terminalRead: Handler = ({ request }) => {
   answerValue(request, readActiveTerminal({ count: num(request.params.count), start: num(request.params.start) }))
 }
 
-const previewRead: Handler = ({ request }) => {
+const previewRead: Handler = ({ request, sessionId }) => {
   // read_preview tool: the active preview tab's page text is async. Empty = nothing open.
-  void readActivePreview({ count: num(request.params.count), start: num(request.params.start) }).then(result =>
+  // The window that passes the session gate may be the chat window while the
+  // live webview lives in the popped-out Browser renderer — forward there
+  // first; a null (no pop-out answered) falls back to the legacy local read.
+  // A local read sees only the tabs the requesting session can see.
+  const opts = { count: num(request.params.count), start: num(request.params.start) }
+  const owner = previewOwnerFor(sessionId)
+
+  void (async () => {
+    const result = hasLivePreviewSurface(owner)
+      ? await readActivePreview(opts, owner)
+      : ((await requestPopoutPreviewRead(opts, owner)) ?? (await readActivePreview(opts, owner)))
+
     answerValue(request, result)
-  )
+  })()
 }
 
 const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
@@ -504,6 +554,10 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
     return
   }
 
+  // The agent drives ITS session's page: with a tile focused, the primary's
+  // agent must not reach into the tile's tabs (#73890).
+  const owner = previewOwnerFor(sessionId)
+
   // The keystroke loop has to be able to stop when this request is withdrawn
   // (tool timeout or turn interrupt). The local interrupted flag can flip
   // before request.cancel arrives; poll it so Stop cuts the loop off too.
@@ -517,35 +571,50 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
       }, 50)
     : undefined
 
-  void loadPreviewEngine()
-    .then(run =>
-      run(
-        {
-          allowShortcut: p.allow_shortcut === true,
-          amount: p.amount as never,
-          key: p.key as never,
-          kind: (str(p.action) || '') as never,
-          max: p.max as never,
-          ref: p.ref as never,
-          selector: p.selector as never,
-          submit: p.submit as never,
-          text: p.text as never,
-          to: p.to as PreviewActAction['to']
-        },
-        signal
-      )
-    )
-    .then(
-      result => answerValue(request, result),
-      error => answerValue(request, { error: error instanceof Error ? error.message : String(error), success: false })
-    )
-    .finally(() => {
+  const action = {
+    allowShortcut: p.allow_shortcut === true,
+    amount: p.amount as never,
+    key: p.key as never,
+    kind: (str(p.action) || '') as never,
+    max: p.max as never,
+    ref: p.ref as never,
+    selector: p.selector as never,
+    submit: p.submit as never,
+    text: p.text as never,
+    to: p.to as PreviewActAction['to']
+  }
+
+  void (async () => {
+    try {
+      // After pop-out the live webview lives in the Browser window; this
+      // window still owns the session gate, so forward the action there and
+      // answer with the pop-out's result. No pop-out answering (null) falls
+      // through to the local engine, which keeps the legacy NOTHING_OPEN
+      // error for a genuinely closed pane.
+      if (!hasLivePreviewSurface(owner)) {
+        const remote = await requestPopoutPreviewAct(action, owner)
+
+        if (remote) {
+          answerValue(request, remote)
+
+          return
+        }
+      }
+
+      const run = await loadPreviewEngine()
+      const result = await run(action, signal, owner)
+
+      answerValue(request, result)
+    } catch (error) {
+      answerValue(request, { error: error instanceof Error ? error.message : String(error), success: false })
+    } finally {
       if (watch !== undefined) {
         clearInterval(watch)
       }
 
       releasePreviewTyping(request.id, signal)
-    })
+    }
+  })()
 }
 
 const windowRead: Handler = ({ request }) => {
@@ -560,7 +629,9 @@ const windowRead: Handler = ({ request }) => {
   )
 }
 
-const tour: Handler = ({ isActiveSession, request }) => {
+const NOT_ACTIVE_TOUR_ERROR = 'Tours only run in the session the user is looking at.'
+
+const tour: Handler = ({ deps, isActiveSession, request, sessionId }) => {
   // tour tool: one guided-tour action via driver.js, app DOM or preview guest
   // page. Active session only, same window-ownership rule as preview.act
   // (WINDOW_OWNED_REQUESTS).
@@ -575,30 +646,123 @@ const tour: Handler = ({ isActiveSession, request }) => {
   }
 
   if (!isActiveSession) {
-    answerValue(request, { error: 'Tours only run in the session the user is looking at.', success: false })
+    answerValue(request, { error: NOT_ACTIVE_TOUR_ERROR, success: false })
 
     return
   }
 
-  void import('@/lib/tour')
-    .then(({ runTour }) =>
-      runTour(
-        {
-          kind: (str(p.action) || 'stop') as TourAction['kind'],
-          selector: p.selector as never,
-          side: p.side as TourStep['side'],
-          startAt: p.step_index as never,
-          steps: p.steps as TourStep[] | undefined,
-          text: p.text as never,
-          title: p.title as never
-        },
-        p.surface === 'preview' ? 'preview' : 'app'
-      )
-    )
-    .then(
-      result => answerValue(request, result),
-      error => answerValue(request, { error: error instanceof Error ? error.message : String(error), success: false })
-    )
+  const kind = (str(p.action) || 'stop') as TourAction['kind']
+
+  // The built-in tour waits for local-model data before it opens, and the user
+  // may switch chats meanwhile: ask again, against the live active id.
+  const stillActive = () =>
+    requestNamesActiveSession({
+      activeSessionId: deps.activeSessionIdRef.current,
+      sessionId,
+      storedIdForRuntimeId: runtimeId =>
+        deps.sessionStateByRuntimeIdRef.current.get(runtimeId)?.storedSessionId ?? undefined
+    })
+
+  // start with no steps is the app's own tour: one call, the app owns the stops.
+  // The backend validated `preset`; absent means full.
+  const run =
+    kind === 'start' && !Array.isArray(p.steps)
+      ? import('@/app/chat/built-in-tour').then(({ runBuiltInTour }) =>
+          runBuiltInTour(p.preset === 'quick' ? 'quick' : 'full', stillActive, NOT_ACTIVE_TOUR_ERROR)
+        )
+      : import('@/lib/tour').then(({ runTour }) =>
+          runTour(
+            {
+              kind,
+              selector: p.selector as never,
+              side: p.side as TourStep['side'],
+              startAt: p.step_index as never,
+              steps: p.steps as TourStep[] | undefined,
+              text: p.text as never,
+              title: p.title as never
+            },
+            p.surface === 'preview' ? 'preview' : 'app',
+            previewOwnerFor(sessionId)
+          )
+        )
+
+  void run.then(
+    result => answerValue(request, result),
+    error => answerValue(request, { error: error instanceof Error ? error.message : String(error), success: false })
+  )
+}
+
+// ── set_theme ───────────────────────────────────────────────────────────────
+
+const appearanceValues = ({ params }: ScopedServerRequest): AppearanceValues => {
+  const mode = THEME_MODES.find(candidate => candidate === params.mode)
+
+  return {
+    ...(str(params.accent) && { accent: str(params.accent) }),
+    ...(str(params.layout) && { layout: str(params.layout) }),
+    ...(mode && { mode })
+  }
+}
+
+const themeApply: Handler = ({ isActiveSession, request }) => {
+  // Active session only, like the tour: a background turn never repaints the app the user is looking at.
+  answerValue(
+    request,
+    isActiveSession
+      ? applyAppearance(appearanceValues(request))
+      : { error: 'set_theme only changes the app while the user is looking at this chat.', success: false }
+  )
+}
+
+const themePick: Handler = ctx => {
+  const picker = ctx.request.params.picker
+
+  if (!ctx.sessionId || (picker !== 'accent' && picker !== 'layout')) {
+    ctx.request.respond({ cancelled: true })
+
+    return
+  }
+
+  if (declineIfSessionStopped(ctx)) {
+    return
+  }
+
+  rememberServerRequest(ctx.request)
+  parkThemePick({ picker, requestId: ctx.request.id, sessionId: ctx.sessionId })
+  markNeedsInput(ctx)
+  notifyInput(ctx, translateNow(`assistant.themePicker.${picker}`))
+}
+
+const SETUP_BEATS: readonly SetupBeat[] = ['name', 'theme', 'layout', 'connectors', 'plugins', 'tour', 'build']
+
+const setupBeat: Handler = ctx => {
+  const { request, sessionId } = ctx
+  const beat = SETUP_BEATS.find(candidate => candidate === request.params.beat)
+
+  if (!sessionId || !beat) {
+    request.respond({})
+
+    return
+  }
+
+  if (declineIfSessionStopped(ctx)) {
+    return
+  }
+
+  const question = str(request.params.question)
+
+  rememberServerRequest(request)
+  parkSetupBeat({
+    beat,
+    // SAFETY: tools/setup_beat_tool.py::_card builds every card from agent/onboarding_flow.py::BEATS.
+    card: (request.params.card ?? {}) as SetupBeatCard,
+    question,
+    requestId: request.id,
+    sessionId,
+    toolCallId: str(request.params.tool_call_id) || null
+  })
+  markNeedsInput(ctx)
+  notifyInput(ctx, question)
 }
 
 /** Method → handler. Every `ServerRequestMap` key the desktop answers. */
@@ -609,8 +773,11 @@ export const SERVER_REQUEST_HANDLERS: Record<string, Handler> = {
   'preview.act': previewAct,
   'preview.read': previewRead,
   secret,
+  setup_beat: setupBeat,
   sudo,
   'terminal.read': terminalRead,
+  'theme.apply': themeApply,
+  'theme.pick': themePick,
   tour,
   'vault.code': vaultCode,
   'vault.save_login': vaultSaveLogin,

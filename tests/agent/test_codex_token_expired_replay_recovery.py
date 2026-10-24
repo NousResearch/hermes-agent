@@ -40,6 +40,7 @@ class _Agent:
     model = "gpt-5.3-codex"
     api_key = "same-bearer"
     _codex_reasoning_replay_enabled = True
+    _codex_reasoning_replay_rejected = False
 
     def __init__(self):
         self.refresh_calls = 0
@@ -55,9 +56,9 @@ class _Agent:
         from agent.agent_runtime_helpers import extract_api_error_context
         return extract_api_error_context(error)
 
-    def _disable_codex_reasoning_replay(self, messages=None):
+    def _disable_codex_reasoning_replay(self, messages=None, **kwargs):
         from run_agent import AIAgent
-        return AIAgent._disable_codex_reasoning_replay(self, messages)
+        return AIAgent._disable_codex_reasoning_replay(self, messages, **kwargs)
 
     def __getattr__(self, name):
         return lambda *args, **kwargs: None
@@ -87,11 +88,15 @@ def test_token_expired_strips_cached_reasoning_once_before_the_credential_path()
 
     assert retried is True
     assert agent.refresh_calls == 0  # no refresh token burned on a session-state problem
-    assert agent._codex_reasoning_replay_enabled is False
+    # First rejection: only the stale blobs go; blobs minted from now on keep replaying.
+    assert agent._codex_reasoning_replay_enabled is True
     assert not any("codex_reasoning_items" in m for m in messages)
     # A second identical 401 in the same turn is a real auth failure: refresh once, no second strip.
     assert _recover(agent, _Codex401(), retry, messages) == (False, False)
     assert agent.refresh_calls == 1
+    # A later turn rejecting its own fresh blobs means the route cannot round-trip them: replay off.
+    assert _recover(agent, _Codex401(), TurnRetryState(), _cached_history()) == (True, False)
+    assert agent._codex_reasoning_replay_enabled is False
 
 
 @pytest.mark.parametrize("err, history", [

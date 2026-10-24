@@ -55,6 +55,14 @@ verificationWritePath?: string
  * handle's `path` to let the test decide when the process exits.
  */
 backgroundReleasePath?: string
+
+/**
+ * Port to bind (default: any free port). An install/update journey runs its
+ * phases in separate CI steps, and each step's mock dies with that step while
+ * the detached gateway survives with the provider URL it read at boot; the
+ * next step rebinds the same port so that URL keeps answering.
+ */
+port?: number
 }
 
 export interface MockServer {
@@ -994,7 +1002,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
 
     server.on('error', reject)
 
-    server.listen(0, '127.0.0.1', () => {
+    server.listen(options.port ?? 0, '127.0.0.1', () => {
       const addr = server.address()
 
       if (addr === null || typeof addr === 'string') {

@@ -200,8 +200,8 @@ def _clean(value: Any) -> str:
 DIRECT_ALIASES: dict[str, DirectAlias] = {}
 
 
-def _load_direct_aliases() -> dict[str, DirectAlias]:
-    """Load direct aliases from config.yaml.
+def _load_direct_aliases(cfg: Optional[dict] = None) -> dict[str, DirectAlias]:
+    """Load direct aliases from config.yaml (or from the caller's *cfg* snapshot).
 
     ``model_aliases:`` entries are dicts (``model``, ``provider``, ``base_url``, optional
     ``api_key`` — literal or ``"${VAR}"`` — / ``key_env``); with neither credential field the key
@@ -213,8 +213,9 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
     """
     merged = dict(_BUILTIN_DIRECT_ALIASES)
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
+        if cfg is None:
+            from hermes_cli.config import load_config
+            cfg = load_config()
 
         user_aliases = cfg.get("model_aliases")
         if isinstance(user_aliases, dict):
@@ -357,7 +358,7 @@ class StartupModelRoute(NamedTuple):
 def resolve_startup_model_route(
     raw_model: str, *, explicit_provider: str = "", current_provider: str = "",
     user_providers: Optional[dict] = None,
-    custom_providers: Optional[list] = None) -> Optional[StartupModelRoute]:
+    custom_providers: Optional[list] = None, alias_config: Optional[dict] = None) -> Optional[StartupModelRoute]:
     """Resolve aliases, ``provider:model`` and configured ``provider/model`` input at startup.
 
     ``HermesCLI`` is constructed before the interactive ``/model`` pipeline runs; resolving here
@@ -365,13 +366,16 @@ def resolve_startup_model_route(
     model. ``provider/model`` strings are consumed only for providers present in user config. When
     ``current_provider`` is a routing aggregator and the raw string is an aggregator-native slug
     (``anthropic/claude-opus-4.6`` on OpenRouter) the input stays on the aggregator — a
-    ``providers:`` block for the same vendor must not steal the route."""
+    ``providers:`` block for the same vendor must not steal the route. ``alias_config`` is a
+    caller's config snapshot to read aliases from instead of the process-global cache."""
     raw = _clean(raw_model)
     if not raw:
         return None
 
-    _ensure_direct_aliases()
-    direct = DIRECT_ALIASES.get(raw.lower())
+    if alias_config is None:
+        _ensure_direct_aliases()
+    aliases = DIRECT_ALIASES if alias_config is None else _load_direct_aliases(alias_config)
+    direct = aliases.get(raw.lower())
     if direct is not None:
         if explicit_provider:
             # An explicit --provider wins over the alias's own label; the alias contributes
@@ -452,12 +456,19 @@ class ModelSwitchResult:
     request_overrides: Optional[dict] = None
     error_message: str = ""
     warning_message: str = ""
+    # Window plans only: the Large-model warning (display only, never a confirm). Empty for every other
+    # account and model, so their switch output is unchanged.
+    usage_notice: str = ""
     provider_label: str = ""
     resolved_via_alias: str = ""
     capabilities: Optional[ModelCapabilities] = None
     runtime_capabilities: Optional[dict[str, bool]] = None
     model_info: Optional[ModelInfo] = None
     is_global: bool = False
+    # The resolved direct alias's own ``base_url`` (and the credential decided for it) replaced the
+    # provider's route. ``resolved_via_alias`` alone is also set by a built-in shortcut, an endpointless
+    # entry or a process provider's declared id, which name a model like a plain pick.
+    alias_endpoint_applied: bool = False
 
 
 @dataclass(frozen=True)
@@ -514,17 +525,14 @@ def resolve_persist_behavior(
     Order: ``--once`` / ``--session`` -> False; ``--global`` -> True; no default configured yet
     (neither ``model.default`` nor ``model.provider`` — a fresh install's first pick) -> True, so
     the pick does not evaporate into whatever ``*_API_KEY`` is lying around on the next launch;
-    ``--provider`` without a persist flag -> False (exploratory); else
-    ``model.persist_switch_by_default`` (default False). A flat-string ``model`` IS a configured
+    ``model.persist_switch_by_default`` -> True (the user's explicit opt-in to persistence);
+    ``--provider`` without a persist flag -> False (exploratory). A flat-string ``model`` IS a configured
     default; an unreadable config -> False.
 
     1. ``--once`` explicitly opts out → ``False`` (next turn only). 2. ``--session`` explicitly opts out →
     ``False`` (this session only). 3. 4. Applies to every surface (CLI, gateway, Desktop picker) so no
-    client has to hardcode ``--global``. 5. Provider switches are typically exploratory — the user is trying
-    a different backend for this conversation, not reconfiguring the default. 6. Otherwise defer to
-    ``model.persist_switch_by_default`` in ``config.yaml`` (defaults to ``False``: a plain ``/model <name>``
-    affects only the current session). Users who want the old persist-by-default behavior can set the key to
-    ``true``; a one-off ``--global`` always persists. See #86414.
+    client has to hardcode ``--global``. 5. ``model.persist_switch_by_default: true`` also covers provider picks (a pick between two providers sharing one ``base_url`` is tenant selection on the same backend, not exploration;
+    session-scoping it silently serves the next chat with the other twin's key). 6. Without that opt-in, provider switches stay exploratory — the user is trying a different backend for this conversation, not reconfiguring the default. The key defaults to ``False`` (a plain ``/model <name>`` affects only the current session); users who want the old persist-by-default behavior can set it to ``true``; a one-off ``--global`` always persists, and ``--session`` / ``--once`` always opt out. See #86414.
     """
     if is_once or is_session:
         return False
@@ -538,9 +546,11 @@ def resolve_persist_behavior(
     if isinstance(model_cfg, dict):
         if not (model_cfg.get("default") or model_cfg.get("provider")):
             return True
+        if bool(model_cfg.get("persist_switch_by_default", False)):
+            return True
         if explicit_provider:
             return False
-        return bool(model_cfg.get("persist_switch_by_default", False))
+        return False
     return not model_cfg
 
 
@@ -719,7 +729,7 @@ class AmbiguousAliasError(Exception):
         super().__init__(f"alias {alias!r} matches {len(candidates)} models on {provider}")
 
 
-def _ambiguous_alias_message(err: "AmbiguousAliasError") -> str:
+def _ambiguous_alias_message(err: AmbiguousAliasError) -> str:
     """User-facing disambiguation list for an ambiguous alias."""
     shown = err.candidates[:10]
     lines = "\n".join(f"  {i}. {m}" for i, m in enumerate(shown, 1))
@@ -836,7 +846,7 @@ def _external_process_match(catalog: list[str], aliases: dict[str, str], typed: 
 
 
 def get_authenticated_provider_slugs(
-    current_provider: str = "", user_providers: dict = None, custom_providers: list | None = None
+    current_provider: str = "", user_providers: dict | None = None, custom_providers: list | None = None
 ) -> list[str]:
     """Slugs of providers that have credentials (models.dev in-memory cache + disk catalog cache;
     stale catalogs warm in the background, never in this call)."""
@@ -982,7 +992,7 @@ def _duplicates_configured_row(
                  if identity == row or (provider_key == row_slug.lower() and identity[1:3] == row[1:3])), None)
 
 
-def _current_provider_match(st: "_Switch", cfg_matches: dict[str, str]) -> Optional[str]:
+def _current_provider_match(st: _Switch, cfg_matches: dict[str, str]) -> Optional[str]:
     """The slug in *cfg_matches* the session already runs on: an exact hit, or — for a session on
     the compat projection slug (``custom:relay``) of ``providers.relay`` — that row's slug, so a
     same-provider switch keeps the caller's slug instead of flipping it (#112788)."""
@@ -1106,7 +1116,7 @@ def _config_declares_model(
     return False
 
 
-def _apply_direct_alias_endpoint(st: "_Switch", da: DirectAlias) -> None:
+def _apply_direct_alias_endpoint(st: _Switch, da: DirectAlias) -> None:
     """Route a direct alias to its own base_url and decide its credential (mutates ``st``).
 
     Credentials were resolved against the DEFAULT provider; carrying that key onto the alias
@@ -1183,6 +1193,7 @@ class _Switch:
     new_model: str = ""
     target_provider: str = ""
     resolved_alias: str = ""
+    alias_endpoint_applied: bool = False
     provider_label: str = ""
     api_key: str = ""
     base_url: str = ""
@@ -1583,6 +1594,7 @@ def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
         da = DIRECT_ALIASES.get(st.resolved_alias)
         if da is not None and da.base_url:
             _apply_direct_alias_endpoint(st, da)
+            st.alias_endpoint_applied = True
 
     # Fills an empty mode (alias cleared it) and overrides a STALE mode carried from previous
     # session state when the host mandates one wire protocol (e.g. gpt-5.x on api.openai.com
@@ -1718,6 +1730,8 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
     model_info = get_model_info(st.target_provider, st.new_model, allow_network=True)
 
     warnings = [w for w in (st.validation.get("message"), _check_hermes_model_warning(st.new_model)) if w]
+    from hermes_cli.model_picker_usage import large_model_notice
+    usage_notice = large_model_notice(st.new_model, st.target_provider, fetch=True) or ""
 
     # Carry the switched provider's request_overrides (custom_providers ``extra_body`` such as
     # chat_template_kwargs) so the gateway applies them like the default-provider path does.
@@ -1732,16 +1746,16 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
         success=True, new_model=st.new_model, target_provider=st.target_provider,
         provider_changed=st.provider_changed, api_key=st.api_key, base_url=st.base_url, api_mode=st.api_mode,
         request_overrides=dict(request_overrides or {}), warning_message=" | ".join(warnings) if warnings else "",
-        provider_label=st.provider_label, resolved_via_alias=st.resolved_alias, capabilities=capabilities,
+        usage_notice=usage_notice, provider_label=st.provider_label, resolved_via_alias=st.resolved_alias, capabilities=capabilities,
         runtime_capabilities={
             k: v for k, v in runtime_capabilities.items() if isinstance(k, str) and isinstance(v, bool)},
-        model_info=model_info, is_global=st.is_global)
+        model_info=model_info, is_global=st.is_global, alias_endpoint_applied=st.alias_endpoint_applied)
 
 
 def switch_model(
     raw_input: str, current_provider: str, current_model: str, current_base_url: str = "",
     current_api_key: str = "", is_global: bool = False, explicit_provider: str = "",
-    user_providers: dict = None, custom_providers: list | None = None) -> ModelSwitchResult:
+    user_providers: dict | None = None, custom_providers: list | None = None) -> ModelSwitchResult:
     """Core model-switching pipeline shared between CLI and gateway.
 
     Route (PATH A with ``--provider``, else PATH B) -> credentials -> validation -> result; each
@@ -1791,7 +1805,7 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
                 model_cfg.get("base_url"), result.base_url, model_cfg.get("provider"), result.target_provider):
             updates["context_length"] = None
     target = str(result.target_provider or "").strip().lower()
-    route_changed = _route_changed(model_cfg, result)
+    route_changed = selection_route_changed(model_cfg, result)
     stale = ["api_key", "api"] if (not target.startswith("custom") or route_changed) else []
     if route_changed:
         stale += ["key_env", "api_key_env"]
@@ -1801,8 +1815,9 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
     return updates
 
 
-def _route_changed(model_cfg: dict, result: ModelSwitchResult) -> bool:
-    """Provider or endpoint differs between the on-disk ``model:`` block and the switch target."""
+def selection_route_changed(model_cfg: dict, result: ModelSwitchResult) -> bool:
+    """Provider or endpoint differs between a ``model:`` block and the switch target. The one
+    route-identity test for endpoint-bound credentials (inline keys, ``key_env``, launch keys)."""
     from hermes_cli.route_identity import normalize_route_base_url
     if str(model_cfg.get("provider") or "").strip().lower() != str(result.target_provider or "").strip().lower():
         return True
@@ -1812,8 +1827,12 @@ def _route_changed(model_cfg: dict, result: ModelSwitchResult) -> bool:
 def apply_model_selection(model_cfg: Any, result: ModelSwitchResult) -> dict:
     """Apply the canonical shape to an in-memory ``model:`` dict (``None`` = key removed) for
     callers that save a whole config document they are already mutating."""
+    return _merge_selection_updates(model_cfg, model_selection_config_updates(result, model_cfg))
+
+
+def _merge_selection_updates(model_cfg: Any, updates: dict[str, Any]) -> dict:
     model_cfg = dict(model_cfg) if isinstance(model_cfg, dict) else {}
-    for key, value in model_selection_config_updates(result, model_cfg).items():
+    for key, value in updates.items():
         if value is None:
             model_cfg.pop(key, None)
         else:
@@ -1825,15 +1844,36 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
     """Write a successful :func:`switch_model` result to ``config_path`` (default:
     ``HERMES_HOME/config.yaml`` — the context override or ``HERMES_HOME`` at call time).
 
-    Targeted key writes, not a whole-``model:`` rewrite: a block rewrite destroys sibling keys the
-    user set there (``model_slots``, ``model_fallback``, ...). ``should_clear_context_pin`` can do
-    cold-start disk I/O — async callers run this on a worker thread."""
+    Build the complete selection from one raw snapshot, preserving sibling settings and secret
+    references, then publish once. Per-key publication can leave a mixed route after a failed
+    write or an overlapping selection. ``should_clear_context_pin`` can do cold-start disk I/O
+    — async callers run this on a worker thread.
+
+    The replace deletes keys missing from the snapshot, so every route decision (and its disk
+    I/O) is made from a pre-read BEFORE the snapshot; read -> merge -> replace is then a pure
+    in-memory section. Only when another writer changed ``model:`` in between are the updates
+    recomputed against the fresh block. ``_CONFIG_LOCK`` is in-process only: a cross-process
+    config lock, once one exists, must wrap the same section."""
     from pathlib import Path
-    from hermes_cli.config import get_config_path, read_user_config_raw
-    from utils import atomic_roundtrip_yaml_update
+    from hermes_cli.config import _CONFIG_LOCK, atomic_config_replace, get_config_path, read_user_config_raw
     path = Path(config_path) if config_path else get_config_path()
-    for key, value in model_selection_config_updates(result, read_user_config_raw(path).get("model")).items():
-        atomic_roundtrip_yaml_update(path, f"model.{key}", value)
+    planned_from = read_user_config_raw(path).get("model")
+    updates = model_selection_config_updates(result, planned_from)
+    with _CONFIG_LOCK:
+        config = read_user_config_raw(path)
+        model_cfg = config.get("model")
+        if model_cfg != planned_from:
+            updates = model_selection_config_updates(result, model_cfg)
+        merged = _merge_selection_updates(model_cfg, updates)
+        if isinstance(model_cfg, dict):
+            # A YAML anchor on ``model:`` reused elsewhere (``vision: *route``) loads as ONE shared
+            # dict; edit it in place so every alias carries the new route, as the shared node on
+            # disk will. A fresh copy left the alias stale and the round-trip merge wrote it back.
+            model_cfg.clear()
+            model_cfg.update(merged)
+        else:
+            config["model"] = merged
+        atomic_config_replace(path, config)
     try:  # owner-only: config files contain API keys
         os.chmod(path, 0o600)
     except (OSError, NotImplementedError):

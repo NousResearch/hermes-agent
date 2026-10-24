@@ -75,6 +75,21 @@ class TestNormalizeProfileName:
         assert normalize_profile_name("Jules") == "jules"
         assert normalize_profile_name("  Librarian ") == "librarian"
 
+    def test_non_string_name_rejected(self):
+        # A numeric profile id (DB row id / falsy sentinel) must not be
+        # silently coerced into a real on-disk profile directory (#88842).
+        with pytest.raises(ValueError):
+            normalize_profile_name(0)
+        with pytest.raises(ValueError):
+            normalize_profile_name(None)
+        with pytest.raises(ValueError):
+            normalize_profile_name(42)
+
+    def test_literal_zero_string_is_a_valid_explicit_name(self):
+        # A literal "0" typed by the user is a legal profile id; only the
+        # non-string coercion created the phantom profile.
+        assert normalize_profile_name("0") == "0"
+
 
 class TestValidateProfileName:
     """Tests for validate_profile_name()."""
@@ -238,6 +253,41 @@ class TestCreateProfile:
             assert stat.S_IMODE(cloned.stat().st_mode) == 0o600
         assert not (profile_dir / "mem0.json").exists()
 
+    def test_clone_config_copies_source_plugins(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        plugin_dir = default_home / "plugins" / "example-plugin"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text("name: example-plugin\n")
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        assert (
+            profile_dir
+            / "plugins"
+            / "example-plugin"
+            / "plugin.yaml"
+        ).read_text() == "name: example-plugin\n"
+
+    def test_clone_config_keeps_plugin_provenance_and_skips_install_staging(self, profile_env):
+        """A catalog-installed memory provider keeps its install record in the clone, so the clone
+        runs (and updates) the source's exact revision; an in-flight install staging dir stays behind."""
+        plugins = profile_env / ".hermes" / "plugins"
+        (plugins / "acme-memory").mkdir(parents=True)
+        (plugins / "acme-memory" / "plugin.yaml").write_text("name: acme-memory\nkind: memory\n")
+        (plugins / "acme-memory" / "__pycache__").mkdir()
+        (plugins / ".install-abc123" / "plugin").mkdir(parents=True)
+        record = '{"acme-memory": {"pinned": true, "revision": "%s", "source": "https://example.invalid/a.git"}}' % ("a" * 40)
+        (plugins / ".install-metadata.json").write_text(record)
+        (profile_env / ".hermes" / "config.yaml").write_text("memory:\n  provider: acme-memory\n")
+
+        cloned = create_profile("coder", clone_config=True, no_alias=True) / "plugins"
+
+        assert (cloned / ".install-metadata.json").read_text() == record
+        assert (cloned / "acme-memory" / "plugin.yaml").is_file()
+        assert not (cloned / "acme-memory" / "__pycache__").exists()
+        assert not (cloned / ".install-abc123").exists()
+
     @pytest.mark.parametrize("provider", ["../outside", "a/b", "..", "hind sight"])
     def test_clone_config_ignores_unsafe_memory_provider_names(self, profile_env, provider):
         """A hand-edited ``memory.provider`` must never aim the copy outside the source profile."""
@@ -259,20 +309,18 @@ class TestCreateProfile:
     def test_clone_sync_imports_carries_manifest_but_never_links_profiles(self, profile_env):
         """--sync-imports copies import-sync.json (a pointer at EXTERNAL agent trees) and nothing
         else changes: the clone still gets its own config/skills copies, never a live link."""
-        from hermes_cli.agent_import_sync import SYNC_MANIFEST_NAME, load_sync_manifest
-
         default_home = profile_env / ".hermes"
         (default_home / "config.yaml").write_text("model: test", encoding="utf-8")
         manifest = {"version": 1, "agents": {"claude-code": {
             "source": str(profile_env / ".claude"), "digest": "d", "overwrite": False,
             "last_import": 1, "imported_skills": ["s1"]}}}
-        (default_home / SYNC_MANIFEST_NAME).write_text(json.dumps(manifest), encoding="utf-8")
+        (default_home / "import-sync.json").write_text(json.dumps(manifest), encoding="utf-8")
 
         plain = create_profile("plain", clone_config=True, no_alias=True)
-        assert not (plain / SYNC_MANIFEST_NAME).exists()
+        assert not (plain / "import-sync.json").exists()
 
         synced = create_profile("synced", clone_config=True, sync_imports=True, no_alias=True)
-        assert load_sync_manifest(synced)["agents"] == manifest["agents"]
+        assert json.loads((synced / "import-sync.json").read_text(encoding="utf-8")) == manifest
         # Editing the source afterwards does not reach the clone: still an independent island.
         (default_home / "config.yaml").write_text("model: changed", encoding="utf-8")
         assert yaml.safe_load((synced / "config.yaml").read_text(encoding="utf-8-sig"))["model"] == "test"
@@ -377,31 +425,47 @@ class TestCreateProfile:
     @pytest.mark.platforms("linux")
     def test_clone_all_does_not_attach_to_the_source_profiles_live_browser(self, profile_env):
         """Copied Chromium markers must not route the clone through the source profile's CDP port."""
-        from tools.bot_desktop.browser import running_instance_cdp_port
+        import http.server
+        import threading
+        from tools.browser_launcher import running_instance
 
         default_home = profile_env / ".hermes"
         (default_home / "config.yaml").write_text("model: test", encoding="utf-8")
         browser_profile = default_home / "bot-desktop" / "browser-profile"
         browser_profile.mkdir(parents=True)
 
-        with socket.socket() as listener:
-            listener.bind(("127.0.0.1", 0))
-            listener.listen()
-            port = listener.getsockname()[1]
+        class _Version(http.server.BaseHTTPRequestHandler):  # a live DevTools /json/version answer
+            def do_GET(self):
+                body = b'{"webSocketDebuggerUrl": "ws://127.0.0.1/devtools/browser/source"}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Version)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            port = server.server_address[1]
             (browser_profile / "DevToolsActivePort").write_text(f"{port}\n/devtools/browser/source\n", encoding="utf-8")
             (browser_profile / "SingletonLock").symlink_to(f"host-{os.getpid()}")
-            assert running_instance_cdp_port(str(browser_profile)) == port
+            assert running_instance(str(browser_profile))[0] == port
 
             profile_dir = create_profile("coder", clone_all=True, no_alias=True)
             cloned_browser = profile_dir / "bot-desktop" / "browser-profile"
 
-            assert running_instance_cdp_port(str(cloned_browser)) is None
-            assert running_instance_cdp_port(str(browser_profile)) == port
+            assert running_instance(str(cloned_browser)) is None
+            assert running_instance(str(browser_profile))[0] == port
+        finally:
+            server.shutdown()
+            server.server_close()
 
     @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="special files need a POSIX filesystem")
     def test_clone_all_skips_special_files(self, profile_env):
         # A live source profile holds special files copytree cannot copy (e.g. a suffixless
-        # agent-browser control socket); one of them must not abort the whole clone.
+        # browser control socket); one of them must not abort the whole clone.
         default_home = profile_env / ".hermes"
         (default_home / "config.yaml").write_text("model: test", encoding="utf-8")
         browser_dir = default_home / "home" / ".agent-browser"
@@ -1224,7 +1288,6 @@ class TestRenameProfile:
     def test_rename_delegates_identity_migration_to_live_gateway(self, profile_env):
         """Under a live multiplexer the CLI must NOT rewrite the routing DB directly (the gateway holds
         it in memory and would clobber the write); it delegates to the control verb instead."""
-        tmp_path = profile_env
         create_profile("oldname", no_alias=True)
 
         with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
@@ -1608,7 +1671,6 @@ class TestEdgeCases:
 
     def test_clone_from_named_profile(self, profile_env):
         """Clone config from a named (non-default) profile."""
-        tmp_path = profile_env
         # Create source profile with config
         source_dir = create_profile("source", no_alias=True)
         (source_dir / "config.yaml").write_text("model: cloned", encoding="utf-8")

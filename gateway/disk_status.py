@@ -40,10 +40,10 @@ def classify_disk_pressure(free_mb: Any, total_mb: Any) -> str:
     return "ok"
 
 
-def collect_disk_status(home: Optional[Path] = None) -> Dict[str, Any]:
+def collect_disk_status(home: Optional[Path] = None) -> dict[str, Any]:
     """``disk`` block for ``/api/status`` (same ``home`` contract as ``memory``).
     Never raises — an unreadable/unmounted filesystem yields ``pressure="unknown"``."""
-    status: Dict[str, Any] = {"pressure": "unknown", "total_mb": None, "free_mb": None, "used_percent": None}
+    status: dict[str, Any] = {"pressure": "unknown", "total_mb": None, "free_mb": None, "used_percent": None}
     try:
         if home is None:
             from hermes_constants import get_hermes_home

@@ -21,6 +21,7 @@ import { $selectedStoredSessionId } from '@/store/session'
 import type { CronJob } from '@/types/hermes'
 
 import { jobState, jobTitle, nextRunOverdueMs, STATE_DOT } from '../../cron/job-state'
+import { isCronRunRow, openCronRun, reconcileCronRunVerdicts } from '../../cron/open-cron-run'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 
 import { SidebarRowBody, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
@@ -66,20 +67,14 @@ function formatRunTime(seconds?: null | number): string {
   return Number.isNaN(date.valueOf()) ? '—' : fmtDayTime.format(date)
 }
 
-// Script-only (no_agent) jobs have no agent sessions; the runs endpoint
-// surfaces their per-fire output docs as rows with source='cron_output'
-// (see _list_cron_output_runs in hermes_cli/web_routers/cron.py).
-function isSyntheticCronOutputRun(run: SessionInfo): boolean {
-  return run.source === 'cron_output'
-}
-
 interface SidebarCronJobsSectionProps {
   jobs: CronJob[]
   label: string
   max?: number
   // Open a run session's chat (1 click to output). The run ROW rides along so
   // the open can pin its owning (connection, profile) — the same owner-aware
-  // door every other session-list row uses.
+  // door every other session-list row uses. A run the scheduler never closed
+  // opens view-only — see `openCronRun` (#88443).
   onOpenRun: (sessionId: string, session?: SessionInfo) => void
   // Open the full Cron page focused on this job (manage / full history).
   onManageJob: (jobId: string) => void
@@ -418,6 +413,9 @@ function CronJobSidebarRuns({
     const load = () =>
       getCronJobRuns(jobId, PEEK_RUN_LIMIT)
         .then(result => {
+          // A fresh poll re-evaluates every run already opened (#88443).
+          reconcileCronRunVerdicts(result)
+
           if (!cancelled) {
             setRuns(result)
           }
@@ -466,7 +464,7 @@ function CronJobSidebarRuns({
       ) : (
         <>
           {runs.map(run =>
-            isSyntheticCronOutputRun(run) ? (
+            !isCronRunRow(run) ? (
               // Output-doc rows have no backing session to open.
               <div
                 className="truncate rounded-md px-1.5 py-0.5 text-[0.6875rem] text-(--ui-text-secondary) tabular-nums"
@@ -475,6 +473,8 @@ function CronJobSidebarRuns({
                 {formatRunTime(run.last_active || run.started_at)}
               </div>
             ) : (
+              // One click to the run's transcript; a run the scheduler never
+              // closed (watchdog kill / crash) opens view-only (#88443).
               <button
                 className={cn(
                   'truncate rounded-md px-1.5 py-0.5 text-left text-[0.6875rem] tabular-nums focus-visible:bg-(--chrome-action-hover) focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
@@ -483,7 +483,7 @@ function CronJobSidebarRuns({
                     : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
                 )}
                 key={run.id}
-                onClick={() => onOpenRun(run.id, run)}
+                onClick={() => openCronRun(run, onOpenRun)}
                 type="button"
               >
                 {formatRunTime(run.last_active || run.started_at)}

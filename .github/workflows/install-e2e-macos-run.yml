@@ -20,6 +20,10 @@ name: install-e2e macos leg
 on:
   workflow_call:
     inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
       install-method:
         description: 'How OLD gets installed. Supported: installer-script, installer-script+desktop (curl | bash one-liner, optionally with --include-desktop) and desktop-installer@latest (the published Hermes-Setup.dmg).'
         required: true
@@ -75,6 +79,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # A stable run is on the default branch, so GITHUB_SHA is not the commit under test.
+  HERMES_TESTED_COMMIT: ${{ inputs.commit || github.sha }}
+
 jobs:
   # ---- arm 1: script installs (the shared OS-agnostic driver) --------------
   e2e:
@@ -86,6 +94,7 @@ jobs:
         || (contains(fromJSON('["installer-script+desktop", "hermes-desktop-app-update"]'), inputs.update-method) && inputs.tag-has-desktop))
     uses: ./.github/workflows/install-e2e-run.yml
     with:
+      commit: ${{ inputs.commit }}
       install-method: ${{ inputs.install-method }}
       update-method: ${{ inputs.update-method }}
       install-ref: ${{ inputs.install-ref }}
@@ -109,9 +118,9 @@ jobs:
     steps:
       # Full history: the driver bare-clones this checkout as the repo the
       # installer/updater talk to.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.commit || github.sha }}
           fetch-depth: 0
 
       - name: Set up driver tools only
@@ -208,9 +217,9 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.commit || github.sha }}
 
       - name: Set up driver tools only
         uses: ./.github/actions/setup-pm

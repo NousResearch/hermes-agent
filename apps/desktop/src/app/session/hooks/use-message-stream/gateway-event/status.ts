@@ -283,8 +283,7 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
 
     // The gateway's own verdict when it sent one (agent init with no usable provider), else the
     // sentence: a blank install must reach onboarding, not a toast it cannot act on.
-    const looksLikeProviderSetup =
-      isProviderSetupErrorCode(payload?.code) || isProviderSetupErrorMessage(errorMessage)
+    const looksLikeProviderSetup = isProviderSetupErrorCode(payload?.code) || isProviderSetupErrorMessage(errorMessage)
 
     // The gateway's `error` event carries no error_surface (prompt_turn.py
     // emits it for pre-turn refusals). Recover the two codes it CAN mean from

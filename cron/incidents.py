@@ -41,6 +41,11 @@ _FAILURE_TYPE_ORDER = (
 )
 MAX_ERROR_CHARS = 500
 _MAX_SIGNATURE_ERROR_CHARS = 200
+# Measured durations ("idle for 603s", "retry in 12.5 seconds") differ run to run for the same
+# failure, so they are masked out of the signature. Status codes and other numbers still count.
+_DURATION_RE = re.compile(
+    r"\b\d+(?:\.\d+)?\s*(?:ms|s|secs?|seconds?|m|mins?|minutes?|h|hrs?|hours?)\b"
+)
 
 _lock = threading.RLock()
 
@@ -125,7 +130,7 @@ def _redact_error(error: str) -> str:
 
 def _error_signature(job_id: str, error: str) -> str:
     """Dedup key: stable for same job + same normalized error prefix."""
-    normalized = _normalize_error(error)[:_MAX_SIGNATURE_ERROR_CHARS]
+    normalized = _DURATION_RE.sub("#s", _normalize_error(error))[:_MAX_SIGNATURE_ERROR_CHARS]
     return hashlib.sha256(job_id.encode() + normalized.encode()).hexdigest()[:12]
 
 
@@ -256,7 +261,7 @@ def _state_filter(state: Optional[str]) -> tuple[str, tuple]:
     return ("", ()) if state is None else (" WHERE state=?", (state,))
 
 
-def list_incidents(state: Optional[str] = None) -> List[Dict[str, Any]]:
+def list_incidents(state: Optional[str] = None) -> list[dict[str, Any]]:
     """Return incidents, newest-activity first, optionally filtered by state."""
     if state is not None and state not in INCIDENT_STATES:
         return []
@@ -271,7 +276,7 @@ def list_incidents(state: Optional[str] = None) -> List[Dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def get_incident(incident_id: str) -> Optional[Dict[str, Any]]:
+def get_incident(incident_id: str) -> Optional[dict[str, Any]]:
     with _transaction() as conn:
         row = conn.execute(
             "SELECT * FROM cron_incidents WHERE id=?", (incident_id,)

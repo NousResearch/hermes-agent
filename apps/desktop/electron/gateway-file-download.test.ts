@@ -319,7 +319,6 @@ test('isNotFoundError matches only HTTP 404', () => {
   assert.equal(isNotFoundError(null), false)
 })
 
-
 test('resolveGatewayFileBackend pins registered files to their owning connection', async () => {
   const calls: string[] = []
 
@@ -430,4 +429,3 @@ test('saveDialogFilters reads the basename, not a directory component', () => {
     extensions: ['pptx']
   })
 })
-

@@ -25,8 +25,9 @@ import {
   TAB_SLOT_COUNT
 } from '@/lib/keybinds/actions'
 import { handleApprovalKey, releaseApprovalKey } from '@/lib/keybinds/approval-keys'
-import { actionAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
+import { actionAllowedInInput, comboFromEvent, IS_MAC, isEditableTarget, isFocusWithin } from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
+import { registerBuiltinActionRunner } from '@/lib/keybinds/plugin-actions'
 import { stepReasoningEffort, writeSessionReasoningEffort } from '@/lib/reasoning-step'
 import { openWorktreeDialog } from '@/store/coding-status'
 import { $commandPaletteOpen, openCommandPalettePage, toggleCommandPalette } from '@/store/command-palette'
@@ -71,7 +72,8 @@ import {
   setCurrentReasoningEffort,
   setModelPickerOpen
 } from '@/store/session'
-import { $focusedStoredSessionId, reopenLastClosedTile } from '@/store/session-states'
+import { $focusedStoredSessionId } from '@/store/session-focus'
+import { reopenLastClosedTile } from '@/store/session-states'
 import {
   $switcherOpen,
   closeSwitcher,
@@ -397,6 +399,25 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'profile.create': requestProfileCreate
   }
 
+  // Plugins run built-in actions by id (`ctx.runAction`) through this same
+  // table, read at call time, so a plugin run and a keypress share one handler
+  // and rebinding the chord never changes what the plugin gets.
+  useEffect(
+    () =>
+      registerBuiltinActionRunner(actionId => {
+        const handler = handlersRef.current[actionId]
+
+        if (!handler) {
+          return false
+        }
+
+        handler()
+
+        return true
+      }),
+    []
+  )
+
   // A keyboard-driven overlay closing hands typing back to the composer: Radix
   // restores focus to the trigger (a toolbar button for the model pill), so
   // without this the Enter that committed a model also eats the next keystroke.
@@ -552,6 +573,25 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
           event.preventDefault()
           requestComposerFocus('active', { typeChar: combo === '/' ? '/' : undefined })
 
+          return
+        }
+
+        // The close-tab chord over a focused user terminal is the shell's word
+        // erase (readline ^W). Main already claimed the default chord on
+        // every platform (window-accelerator) and routes it through the IPC
+        // rung above, so this guards the DEFAULT binding when it reaches the
+        // dispatcher anyway, plus a chord rebound onto another key with the
+        // same bare shape. Returning without preventDefault hands the key to
+        // xterm, whose data handler writes the ^W byte to the PTY. Read-only
+        // agent mirrors carry only [data-terminal], so they keep close.
+        if (
+          actionId === 'view.closeTab' &&
+          event.key.toLowerCase() === 'w' &&
+          (IS_MAC ? event.metaKey : event.ctrlKey) &&
+          !event.altKey &&
+          !event.shiftKey &&
+          isFocusWithin('[data-interactive-terminal]')
+        ) {
           return
         }
 

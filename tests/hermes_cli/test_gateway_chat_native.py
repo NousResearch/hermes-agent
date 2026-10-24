@@ -94,8 +94,12 @@ finally:
 
     def launch(*args):
         command = shlex.join([sys.executable, str(wrapper), *args])
+        # exit-empty off: each leg kills the only session, and by default the server then exits
+        # asynchronously; the next leg's new-session connecting mid-exit gets "server exited
+        # unexpectedly". The finally block's kill-server still ends it.
         result = tmux("new-session", "-d", "-s", "chat", "-x", "160", "-y", "45", "-c", str(cwd),
-                      command + '; rc=$?; printf "\\nCLI_RC=%s\\n" "$rc"; sleep 120')
+                      command + '; rc=$?; printf "\\nCLI_RC=%s\\n" "$rc"; sleep 120',
+                      ";", "set-option", "-s", "exit-empty", "off")
         assert result.returncode == 0, result.stderr
 
     log_path = tmp_path / "gateway.log"

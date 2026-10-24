@@ -460,6 +460,26 @@ class SessionGatewayMixin:
             deleted_ids.extend(sorted(ids - kept))
         return (deleted, routing_deleted, len(skipped))
 
+    def list_gateway_session_origins(self, *, platform: Optional[str] = None) -> list[dict[str, Any]]:
+        """Routing projection of ``list_gateway_sessions(active_only=False)``.
+
+        Directory refreshes need neither prompt payloads in the SQLite sorter nor
+        token-accounting flushes. Keep selection and order identical to the full reader.
+        """
+        query = f"""
+            SELECT origin_json, chat_id, thread_id, display_name, chat_type,
+                   {_sql_session_last_active("sessions")} AS last_active
+            FROM sessions
+            WHERE session_key IS NOT NULL
+              AND started_at = (
+                  SELECT MAX(s2.started_at) FROM sessions s2
+                  WHERE s2.session_key = sessions.session_key
+              )
+        """
+        params: list = [platform] if platform else []
+        query += (" AND LOWER(source) = LOWER(?)" if platform else "") + " ORDER BY last_active DESC"
+        return [dict(row) for row in self._read_all(query, params)]
+
     def list_gateway_sessions(
         self, *, platform: Optional[str] = None, active_only: bool = True) -> list[dict[str, Any]]:
         """List gateway sessions (rows with a session_key): newest row per key, one live

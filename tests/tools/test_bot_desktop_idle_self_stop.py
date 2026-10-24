@@ -92,6 +92,21 @@ def test_an_abandoned_screen_stops_itself_after_the_idle_window(abandoned_screen
                timeout=30, what="the abandoned screen to be stopped the way stop() does")
 
 
+def test_the_first_idle_check_waits_until_the_screen_could_be_due(abandoned_screen):
+    """A screen just started cannot be idle: checking at launch costs an interpreter start and races Xfce
+    coming up, so the launcher sleeps a window before its first check."""
+    started = time.monotonic()
+    sd, _ = abandoned_screen(idle_stop_minutes=0.15)  # 9 s
+    log = sd / "launcher.log"
+
+    def checked_while_used() -> bool:
+        (sd / "activity").touch()  # in use: the first check keeps it
+        return "idle-watch" in log.read_text(encoding="utf-8", errors="replace")
+
+    wait_until(checked_while_used, timeout=30, what="the launcher's first idle check")
+    assert time.monotonic() - started >= 7, "the first idle check ran at launch"
+
+
 def test_a_self_stop_does_not_sit_out_the_kill_grace(abandoned_screen):
     """The check's stop() TERMs the launcher's group, which holds the loop that ran the check. A loop blocked
     in ``$(check)`` defers its TERM trap until the check returns, while the check waits for the group to

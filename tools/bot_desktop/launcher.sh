@@ -290,19 +290,23 @@ if [[ -n "${HERMES_BD_PYTHON:-}" ]]; then
   # interruptible: a `$(check)` would defer the trap until the check returns, while a check that is itself
   # stopping the screen waits for this group to empty, so every self-stop would sit out stop()'s grace and
   # end in SIGKILL with start.lock held. The check is in a session of its own and finishes the stop alone.
+  # Sleep first: a screen just started cannot be idle, so the first check is due a window from now
+  # (runtime.py passes that delay), not while Xfce is still coming up.
   (
     sleeper=
     trap 'kill $sleeper 2>/dev/null; exit 0' TERM
     out="$(dirname "$HERMES_BD_ENV_FILE")/idle-watch.out"
-    while kill -0 "$$" 2>/dev/null; do
-      HERMES_HOME="$HERMES_BD_HOME" PYTHONPATH="$HERMES_BD_SRC_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
-        "$HERMES_BD_PYTHON" -m tools.bot_desktop.idle_watch "$$" >"$out" &
-      if wait "$!"; then delay=$(<"$out"); else delay=300; fi  # broken check: retry slowly
-      [[ -n "$delay" ]] || exit 0  # it stopped the screen
+    delay="${HERMES_BD_IDLE_FIRST_DELAY:-300}"
+    while :; do
       [[ "$delay" =~ ^[0-9]+$ ]] || delay=300
       sleep "$delay" & sleeper=$!
       wait "$sleeper"
       sleeper=
+      kill -0 "$$" 2>/dev/null || exit 0
+      HERMES_HOME="$HERMES_BD_HOME" PYTHONPATH="$HERMES_BD_SRC_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
+        "$HERMES_BD_PYTHON" -m tools.bot_desktop.idle_watch "$$" >"$out" &
+      if wait "$!"; then delay=$(<"$out"); else delay=300; fi  # broken check: retry slowly
+      [[ -n "$delay" ]] || exit 0  # it stopped the screen
     done
   ) &
   WATCH_PID=$!

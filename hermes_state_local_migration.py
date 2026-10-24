@@ -41,29 +41,46 @@ def login_owned_by(row, subject):
     return _login_label(subject) == user_id
 
 
-def validate_legacy_row(db, row, *, subject=None):
+def validate_legacy_row(db, row, *, subject=None, host_login_attestor=None):
     # Unrouted old local history only. Existing identity, foreign profile,
     # API, messaging, delegate and canonical rows require their own authority.
     # ``subject``: the adopting caller, whose own login stamp is not a foreign identity. A ``user_id``
     # stamp equal to ``subject`` itself names that principal: it is already its history by
     # ``authorize_history``'s rule, so it adopts like an unstamped row.
+    # ``host_login_attestor``: optional ``callable(user_id) -> bool`` supplied by the gateway layer
+    # (never the data layer) for the host's OWN native peer adopting a row a served remote backend
+    # stamped with a login this backend still serves (#139818). It positively attests the stamped
+    # user against the live per-home provider registry; a name match is not enough. Absent (CLI,
+    # tests, foreign home) the rule is unchanged: a foreign login stamp stays a foreign owner.
     user_id = row.get('user_id')
+    attested_login = False
+    # A host attestation is used only when the gateway layer explicitly supplied an attestor AND
+    # reached this through the native-peer adoption path (it never passes one for a dashboard
+    # login — those take the exact-subject ``login_owned_by`` branch). The data layer therefore
+    # does not re-derive provenance from the subject string: presence of the attestor is the gate.
+    # It applies solely to a Desktop creation stamp naming a login the host's LIVE provider
+    # registry positively attests; a messaging prefix / a login no longer served fails closed.
+    if (host_login_attestor is not None and isinstance(user_id, str)
+            and row['source'] == 'desktop' and not user_id.startswith('nous:')):
+        attested_login = bool(host_login_attestor(user_id))
     if (row['source'] not in LEGACY_LOCAL_SOURCES
             or any(row.get(k) for k in ('session_key', 'chat_id', 'origin_json'))
             or (user_id and user_id != subject and not legacy_account_label(row)
-                and not login_owned_by(row, subject))
+                and not login_owned_by(row, subject) and not attested_login)
             or row.get('profile_name') not in (None, '', db._own_profile_name() or 'default')):
         raise RuntimeStoreError('not_found')
 
 
-def bind_legacy_target(db, conn, receipt):
+def bind_legacy_target(db, conn, receipt, *, host_login_attestor=None):
     target = receipt['legacy_session_id']
     if target != receipt['session_id']:
         raise RuntimeStoreError('storage_unavailable')
     row = conn.execute('SELECT * FROM sessions WHERE id=?', (target,)).fetchone()
     if row is None:
         raise RuntimeStoreError('not_found')
-    validate_legacy_row(db, dict(row), subject=receipt['principal_id'])
+    validate_legacy_row(
+        db, dict(row), subject=receipt['principal_id'],
+        host_login_attestor=host_login_attestor)
     from hermes_state_mutation_binding import BINDING_PREFIX
     imported = conn.execute('SELECT value FROM state_meta WHERE key=?', (BINDING_PREFIX + target,)).fetchone()
     if imported and json.loads(imported[0]) != [receipt['profile_id'], receipt['principal_id']]:

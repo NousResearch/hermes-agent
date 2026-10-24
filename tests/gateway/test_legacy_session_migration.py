@@ -241,3 +241,151 @@ async def test_upgraded_desktop_history_resumes_by_id(tmp_path, monkeypatch):
         refused = await native.dispatch({'id': 3, 'method': 'session.resume', 'params': {'session_id': sid}})
         assert 'error' in refused, refused
         assert db.get_session(sid)['user_id'] == user_id
+
+
+@pytest.mark.asyncio
+async def test_native_host_adopts_row_stamped_by_a_served_login(tmp_path, monkeypatch):
+    """#139818: after its ``hermes serve`` process is gone, an unrouted Desktop row stamped with a
+    ``<provider>:<user>`` login is adoptable by the host's own native viewer WHEN a live registered
+    provider in this home positively attests that exact user. The cross-login hole stays closed:
+    a login the backend no longer serves (no registered provider / wrong user / messaging prefix)
+    is still refused without a write."""
+    import secrets
+
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_controls import AuthorityConnection
+    from gateway.session_local_migration import served_login_attests
+    from hermes_cli.dashboard_auth.registry import register_provider, get_provider
+    import plugins.dashboard_auth.basic as basic_plugin
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'gui': []}})
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    db = store._db
+
+    rows = (
+        ('served-row', 'basic:hermes'),      # the login this backend serves
+        ('other-user', 'basic:someone'),     # a basic login that is NOT the configured user
+        ('gone-login', 'oidc:carol'),        # an issuer-less label for an unregistered provider
+        ('foreign-im', 'telegram:42'),       # a messaging platform's real foreign identity
+    )
+    for sid, uid in rows:
+        db.create_session(sid, source='desktop', model='old-model', cwd=str(tmp_path), user_id=uid)
+        db.append_message(sid, role='user', content=sid.upper())
+        db.end_session(sid, 'session_switch')
+
+    provider = basic_plugin.BasicAuthProvider(
+        username='hermes', password_hash=basic_plugin.hash_password('pw'),
+        secret=secrets.token_bytes(32))
+    register_provider(provider, scope=str(tmp_path))
+    try:
+        # The registry lookup is scoped to this home and fails closed elsewhere.
+        assert served_login_attests('basic:hermes', profile_home=str(tmp_path)) is True
+        assert served_login_attests('basic:someone', profile_home=str(tmp_path)) is False
+        assert served_login_attests('oidc:carol', profile_home=str(tmp_path)) is False
+        assert served_login_attests('telegram:42', profile_home=str(tmp_path)) is False
+        assert served_login_attests('basic:hermes', profile_home=str(tmp_path / 'other')) is False
+
+        runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
+                                 _cached_agent_for=lambda route: None)
+        runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+        authority = await initialize_session_authority(runner, profile_id=str(tmp_path),
+                                                       instance_id='first')
+        # The host's own native viewer: no login subject (provider == 'local' bootstrap identity).
+        native = AuthorityConnection(authority, object(), {'provider': 'local', 'user_id': 'native',
+            'profile_id': str(tmp_path), 'instance_id': 'first'})
+
+        adopted = await native.dispatch({'id': 1, 'method': 'session.resume',
+                                         'params': {'session_id': 'served-row'}})
+        assert adopted.get('result', {}).get('session_id') == 'served-row', adopted
+        bound = db.get_session('served-row')
+        assert bound['session_key'] == 'agent:main:local:dm:served-row', bound
+        # The row is rebound to the host native peer's authenticated subject (the namespaced local
+        # bootstrap receipt), and its served-login stamp plus route columns are canonicalised.
+        assert bound['user_id'] == native.actor.subject == 'auth:v1:["local","","native"]', bound
+        assert bound['chat_id'] == 'served-row' and bound['origin_json'], bound
+
+        # Every stamp the live provider cannot positively attest is still refused and untouched.
+        for sid, uid in (('other-user', 'basic:someone'), ('gone-login', 'oidc:carol'),
+                         ('foreign-im', 'telegram:42')):
+            refused = await native.dispatch({'id': 2, 'method': 'session.resume',
+                                             'params': {'session_id': sid}})
+            assert refused.get('error', {}).get('message') == 'not_found', (sid, refused)
+            untouched = db.get_session(sid)
+            assert untouched['session_key'] is None and untouched['user_id'] == uid, (sid, untouched)
+    finally:
+        # The registry is process-global; drop the test provider from every slot so it cannot leak
+        # to another test (the basic provider registered with a scope lives in the scoped overlay).
+        from hermes_cli.dashboard_auth import registry as _registry
+        with _registry._lock:
+            _registry._providers.pop('basic', None)
+            for overlay in list(_registry._scoped_providers.values()):
+                overlay.pop('basic', None)
+        assert get_provider('basic', scope=str(tmp_path)) is None
+
+
+@pytest.mark.asyncio
+async def test_native_host_can_delete_a_served_login_row_after_adoption(tmp_path, monkeypatch):
+    """#139818 acceptance matrix cell 1 (delete leg): before adoption a bare ``basic:<user>`` row
+    is refused by ``authorize_history`` with ``permission_denied`` (the host could not even clean
+    the ghost row up); after the host native viewer's adoption commits, the row is native-owned and
+    canonical-routed, so the same viewer's ``session.mutate delete`` retires it — no 403."""
+    import secrets
+
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_controls import AuthorityConnection
+    from hermes_cli.dashboard_auth.registry import register_provider, get_provider
+    from hermes_state_mutation_binding import authorize_history
+    import plugins.dashboard_auth.basic as basic_plugin
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'gui': []}})
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    db = store._db
+    db.create_session('served-row', source='desktop', model='old-model',
+                      cwd=str(tmp_path), user_id='basic:hermes')
+    db.append_message('served-row', role='user', content='HELLO')
+    db.end_session('served-row', 'session_switch')
+
+    provider = basic_plugin.BasicAuthProvider(
+        username='hermes', password_hash=basic_plugin.hash_password('pw'),
+        secret=secrets.token_bytes(32))
+    register_provider(provider, scope=str(tmp_path))
+    try:
+        runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
+                                 _cached_agent_for=lambda route: None)
+        runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+        authority = await initialize_session_authority(runner, profile_id=str(tmp_path),
+                                                       instance_id='first')
+        native = AuthorityConnection(authority, object(), {'provider': 'local', 'user_id': 'native',
+            'profile_id': str(tmp_path), 'instance_id': 'first'})
+
+        # Pre-adoption: the foreign-login stamp refuses the host viewer's delete at the authorizer.
+        with db._read_ctx() as conn:
+            with pytest.raises(Exception, match='permission_denied'):
+                authorize_history(conn, native.actor, 'served-row', claim=True)
+
+        adopted = await native.dispatch({'id': 1, 'method': 'session.resume',
+                                         'params': {'session_id': 'served-row'}})
+        assert adopted.get('result', {}).get('session_id') == 'served-row', adopted
+
+        deleted = await native.dispatch({'id': 2, 'method': 'session.mutate', 'params': {
+            'session_id': 'served-row', 'request_id': 'delete-served-row',
+            'expected_revision': 0, 'expected_generation': 0,
+            'operation': 'delete', 'payload': {}}})
+        assert 'error' not in deleted, deleted
+        assert deleted['result'].get('deleted_ids') == ['served-row'], deleted
+        assert db.get_session('served-row') is None
+    finally:
+        from hermes_cli.dashboard_auth import registry as _registry
+        with _registry._lock:
+            _registry._providers.pop('basic', None)
+            for overlay in list(_registry._scoped_providers.values()):
+                overlay.pop('basic', None)
+        assert get_provider('basic', scope=str(tmp_path)) is None

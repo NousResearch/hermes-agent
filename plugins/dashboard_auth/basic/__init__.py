@@ -166,6 +166,18 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
         # Stateless tokens — nothing to revoke server-side; the session expires within its TTL. Must not raise.
         return None
 
+    def attests_login_user(self, *, user_id: str, issuer: str = "") -> bool:
+        # Basic auth is single-username by construction, so it can only ever attest its one
+        # configured user, and its stateless tokens carry no issuer. A constant-time compare keeps
+        # the username out of a timing side channel. Any other name (login bob vs a row stamped by
+        # alice) is refused — this is the cross-login hole a prefix/name match would reopen (#139818).
+        if issuer:
+            return False
+        try:
+            return hmac.compare_digest(str(user_id).encode("utf-8"), self._username.encode("utf-8"))
+        except Exception:
+            return False
+
     # ---- internals ---------------------------------------------------------
 
     def _mint_session(self, user_id: str) -> Session:

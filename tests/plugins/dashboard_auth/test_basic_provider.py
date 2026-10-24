@@ -80,6 +80,45 @@ class TestProvider:
     def test_protocol_compliant(self, basic):
         assert assert_protocol_compliance(basic.BasicAuthProvider) is None
 
+    def test_attests_only_its_single_configured_user(self, basic):
+        # #139818: the host adopts a row stamped with a served login only when the live provider
+        # positively attests that exact user. Basic auth is single-username: it attests its one
+        # configured user and never any other name (the cross-login hole a prefix match reopened).
+        p = self._make(basic)  # username="admin"
+        assert p.attests_login_user(user_id="admin") is True
+        assert p.attests_login_user(user_id="Admin") is False
+        assert p.attests_login_user(user_id="admin2") is False
+        assert p.attests_login_user(user_id="") is False
+        # Its stateless tokens carry no issuer: an issuer-qualified subject must never be proven
+        # by an issuer-less comparison (federated identity downgrade).
+        assert p.attests_login_user(user_id="admin", issuer="https://idp.example") is False
+
+    def test_base_provider_fails_closed(self, basic):
+        # A provider that does not override attestation can never be used to claim a stamped row.
+        from hermes_cli.dashboard_auth.base import DashboardAuthProvider
+        from hermes_cli.dashboard_auth import LoginStart, Session as AuthSession
+
+        class _Plain(DashboardAuthProvider):
+            name = "plain"
+            display_name = "Plain"
+
+            def start_login(self, *, redirect_uri):  # pragma: no cover - never called
+                return LoginStart(redirect_url="", cookie_payload={})
+
+            def complete_login(self, *, code, state, code_verifier, redirect_uri):  # pragma: no cover
+                raise NotImplementedError
+
+            def verify_session(self, *, access_token):  # pragma: no cover
+                return None
+
+            def refresh_session(self, *, refresh_token):  # pragma: no cover
+                raise NotImplementedError
+
+            def revoke_session(self, *, refresh_token):  # pragma: no cover
+                return None
+
+        assert _Plain().attests_login_user(user_id="admin") is False
+
 
     def test_login_mints_session(self, basic):
         p = self._make(basic)

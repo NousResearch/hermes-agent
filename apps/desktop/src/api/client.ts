@@ -167,6 +167,21 @@ export class HermesGateway extends JsonRpcGatewayClient {
       }
     }
 
+    if (kind === 'clarify' && typeof p.execution_generation === 'number' && !Array.isArray(p.questions)) {
+      const executionGeneration = p.execution_generation
+      const owner = this.resolveSessionProfile(sid, profile)
+      request.reportClarifyPresentation = state => {
+        // UI evidence never attaches, refreshes fences or retries on another connection.
+        if (settled || generation !== this.connectionGeneration || !this.deliveredPrompts.has(id)) { return }
+        void super.request('clarify.presentation', {
+          session_id: sid, profile: this.resolveSessionProfile(sid, owner),
+          execution_generation: executionGeneration, prompt_id: id, state
+        }).catch(() => {
+          // Older runtimes have no evidence method; ordinary human answering stays available.
+        })
+      }
+    }
+
     recordCanonicalOwner(request, this.displayProfiles.get(canonicalSessionKey(sid, profile)) ?? profile)
 
     for (const handler of this.promptHandlers) {

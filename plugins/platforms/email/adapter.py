@@ -480,6 +480,9 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_tls_verify = tls_verify("EMAIL_SMTP_TLS_VERIFY", "smtp_tls_verify")
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
         self._skip_attachments = extra.get("skip_attachments", False)  # platforms.email.skip_attachments
+        # platforms.email.mark_seen / EMAIL_MARK_SEEN: false leaves processed and rejected mail unread
+        # (BODY.PEEK[], no \Seen store) for inboxes a human also reads.
+        self._mark_seen = _esecret_bool("EMAIL_MARK_SEEN", is_truthy_value(extra.get("mark_seen"), default=True))
         # Require an authenticated From: domain (SPF/DKIM/DMARC) before trusting it for authorization
         # (GHSA-rxqh-5572-8m77). Default ON; opt out via require_authenticated_sender: false / EMAIL_TRUST_FROM_HEADER=true.
         if "require_authenticated_sender" in extra:
@@ -671,9 +674,25 @@ class EmailAdapter(BasePlatformAdapter):
         """Remember a rejected UID and mark it seen without fetching its MIME body."""
         self._seen_uids.add(uid)
         self._trim_seen_uids()
+        if not self._mark_seen:
+            return
         status, _ = imap.uid("store", uid, "+FLAGS.SILENT", r"(\Seen)")
         if status != "OK":
             logger.warning("[Email] Could not mark rejected UID %s seen", uid)
+
+    def _unread_floor(self) -> int:
+        """Lowest remembered UID when mail is left unread (``mark_seen: false``), else 0.
+
+        Without the \\Seen flag, UNSEEN keeps returning already-handled mail and only ``_seen_uids``
+        filters it. That set starts as every UID in the inbox and ``_trim_seen_uids`` keeps the
+        newest half past the cap, so any UID below its minimum was already handled; without this
+        floor a trim would re-dispatch old unread mail as new."""
+        if self._mark_seen or not self._seen_uids:
+            return 0
+        try:
+            return min(int(u) for u in self._seen_uids)
+        except (TypeError, ValueError):
+            return 0
 
     def _fetch_new_messages(self, preauthorize: Callable[[dict[str, Any]], bool]) -> list[dict[str, Any]]:
         """Fetch unseen messages; bounded headers pass *preauthorize* before RFC822 is requested."""
@@ -681,8 +700,9 @@ class EmailAdapter(BasePlatformAdapter):
         try:
             with self._inbox() as imap:
                 status, data = imap.uid("search", None, "UNSEEN")
+                floor = self._unread_floor()
                 for uid in (data[0].split() if status == "OK" and data and data[0] else []):
-                    if uid in self._seen_uids:
+                    if uid in self._seen_uids or (floor and uid.isdigit() and int(uid) < floor):
                         continue
                     header_status, header_data = imap.uid("fetch", uid, _PREAUTH_FETCH)
                     if header_status != "OK":
@@ -701,7 +721,7 @@ class EmailAdapter(BasePlatformAdapter):
                     if not accepted:
                         self._mark_uid_consumed(imap, uid)
                         continue
-                    status, msg_data = imap.uid("fetch", uid, "(RFC822)")
+                    status, msg_data = imap.uid("fetch", uid, "(RFC822)" if self._mark_seen else "(BODY.PEEK[])")
                     if status != "OK":
                         continue  # transient per-UID refusal: leave unseen so the next poll retries
                     # Mark seen once a response arrived (even malformed) so garbage is skipped once, not retried forever —

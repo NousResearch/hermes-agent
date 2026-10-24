@@ -140,13 +140,15 @@ def test_restart_wait_owner_is_attachable_on_start_and_recover(monkeypatch, tmp_
     ensured = []
     monkeypatch.setattr(gateway_runtime, "ensure_gateway_runtime",
                         lambda h, timeout=30, idle_exit=False: (ensured.append(h), receipt)[1])
-    reply = json.dumps({"ok": True, "id": 1, "result": {
-        "instance_id": endpoint.instance_id, "profile_id": endpoint.profile_id, "ticket": "grant"}}).encode()
+    reply = json.dumps({"ok": True, "protocol": 1, "id": 1, "result": {
+        "instance_id": endpoint.instance_id, "profile_id": endpoint.profile_id, "ticket": "grant",
+        "runtime_protocol": 1}}).encode() + b"\n"
     if os.name == "nt":
         import gateway.runtime_bootstrap_windows as windows_bootstrap
         monkeypatch.setattr(windows_bootstrap, "query_runtime_control", lambda h, req, timeout: reply)
     else:
         import hermes_cli.gateway_runtime_discovery as discovery
+        stream = io.BytesIO(reply)
 
         class Peer:
             def __enter__(self):
@@ -158,8 +160,11 @@ def test_restart_wait_owner_is_attachable_on_start_and_recover(monkeypatch, tmp_
             def sendall(self, _request):
                 pass
 
-            def makefile(self, _mode):
-                return io.BytesIO(reply)
+            def settimeout(self, _timeout):
+                pass
+
+            def recv(self, size):
+                return stream.read(size)
 
         monkeypatch.setattr(discovery, "connect_private", lambda h, timeout: Peer())
 

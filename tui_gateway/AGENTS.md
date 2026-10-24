@@ -8,17 +8,27 @@ and the dashboard `/chat` talk to — changes here have three consumers.
 
 ```
 hermes --tui
-  └─ Node (Ink)  ──stdio JSON-RPC──  Python (tui_gateway)
-       │                                  └─ AIAgent + tools + sessions
+  └─ Node (Ink)  ──WebSocket /api/ws, hermes-gateway-v1──  the profile's gateway owner
+       │  (URL + single-use ticket:                              ├─ session authority: sessions, AIAgent, tools
+       │   ui-tui/scripts/gateway_bootstrap.py)                  └─ tui_gateway handlers (non-session methods)
        └─ renders transcript, composer, prompts, activity
 ```
+
+Ink attaches to the profile's shared gateway owner (`hermes gateway run`, started on demand with
+its idle exit), never to a private child. `ui-tui/scripts/gateway_bootstrap.py` is a thin wrapper
+over `hermes_cli/gateway_runtime_attach.py::attach_gateway`, the attach `hermes gateway attach
+--json` gives any other local client. Only `HERMES_TUI_GATEWAY_URL` (the dashboard's `/chat`)
+dials another URL, and then negotiates the wire from that listener's ready frame.
 
 TypeScript owns the screen. Python owns sessions, tools, model calls, and slash-command logic.
 Never move agent behaviour into the renderer.
 
 ## Transport
 
-Newline-delimited JSON-RPC over stdio, peer-to-peer: client→server method calls, server→client
+Newline-delimited JSON-RPC frames over a WebSocket (`/api/ws`, `tui_gateway/ws.py`) or stdio
+(`tui_gateway/entry.py`), peer-to-peer. On the owner's ticketed socket, session methods (the
+`hermes-gateway-v1` `CANONICAL_METHODS` below) go to the session authority; other methods reach these
+handlers only with a full interactive grant (`ws_legacy_fallback.py`). Client→server method calls, server→client
 **requests** (the agent asking the user something: `approval`, `clarify`, `sudo`, `secret`, `vault.*`,
 `connection`, the desktop read/act bridges) and server→client `event` notifications. `tui_gateway/server.py`
 is the facade with the method/event catalog; methods live in `methods_*.py` siblings (`methods_config`,

@@ -39,6 +39,7 @@ mcp_servers:
       exclude: []
       resources: true
       prompts: true
+      parameter_overrides: {}
 ```
 
 ## Server keys
@@ -119,6 +120,7 @@ Any other `${...}` reference falls through to the env-var lookup above.
 | `exclude` | string or list | Blacklist server-native MCP tools. Same exact-name / glob semantics as `include` |
 | `resources` | bool-like | Enable/disable `list_resources` + `read_resource` |
 | `prompts` | bool-like | Enable/disable `list_prompts` + `get_prompt` |
+| `parameter_overrides` | mapping | Per tool, per parameter: JSON-schema keys merged onto a parameter the server declares. See [Parameter overrides](#parameter-overrides) |
 
 ## Filtering semantics
 
@@ -196,6 +198,30 @@ So this is normal:
 
 The event utilities are the exception. The MCP SDK drops a server's `events` capability while parsing
 it, so Hermes cannot check for it and registers them whenever `events: true` is set.
+
+## Parameter overrides
+
+Some servers enforce a constraint that their published input schema leaves out. The model never sees the
+constraint, so it sends values the server rejects. `parameter_overrides` adds JSON-schema keys to one
+parameter the tool declares. For example, Beeper Desktop's `search_messages` answers a `limit` above 20 with
+`400 Invalid input`, but declares `limit` as a bare integer:
+
+```yaml
+mcp_servers:
+  beeper:
+    url: http://127.0.0.1:23373/v0/mcp
+    tools:
+      parameter_overrides:
+        search_messages:
+          limit:
+            minimum: 1
+            maximum: 20
+```
+
+The keys are merged onto the parameter's existing schema, and a key you give replaces the server's value
+for that key. The override applies to the schema the model sees; the server's own schema and the schema
+cache stay as served. An override for a parameter the tool does not declare is skipped with a warning in
+the log.
 
 ## `enabled: false`
 

@@ -20,19 +20,29 @@ import zipfile
 import pytest
 
 
-def _wheel(directory: Path, name: str, version: str = "1.0", requirements=()) -> Path:
+def _wheel(directory: Path, name: str, version: str = "1.0", requirements=(), extra=None) -> Path:
+    """Build a wheel whose bytes depend only on its arguments.
+
+    A name/version on a real index is one immutable artifact, and uv keeps a seeded lock's hash
+    for an unchanged path-wheel version. A wheel rebuilt in place (``installing_member`` for a
+    second plugin) must therefore hash the same: ``writestr(name, ...)`` stamps the wall clock,
+    so a rebuild that crosses a 2-second zip-time tick failed ``uv sync`` with a hash mismatch.
+    """
     metadata = f"{name}-{version}.dist-info"
     entries = {
         f"{name}/__init__.py": f"__version__ = {version!r}\n",
         f"{metadata}/METADATA": f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n"
         + "".join(f"Requires-Dist: {requirement}\n" for requirement in requirements),
         f"{metadata}/WHEEL": "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        **(extra or {}),
     }
     entries[f"{metadata}/RECORD"] = "".join(f"{path},,\n" for path in entries)
     wheel = directory / f"{name}-{version}-py3-none-any.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
         for path, body in entries.items():
-            archive.writestr(path, body)
+            info = zipfile.ZipInfo(path, date_time=(1980, 1, 1, 0, 0, 0))
+            info.external_attr = 0o644 << 16
+            archive.writestr(info, body)
     return wheel
 
 

@@ -1,3 +1,4 @@
+// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
@@ -13,6 +14,8 @@ import { zhModelSettings } from './zh_model_settings'
 import { zhNotices } from './zh_notices'
 import { zhNotifications } from './zh_notifications'
 import { zhOnboarding } from './zh_onboarding'
+import { zhPluginPreviewAccess } from './zh_plugin_preview_access'
+import { zhPluginUpdate } from './zh_plugin_update'
 import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
 import { zhThemePicker } from './zh_theme_picker'
@@ -1671,6 +1674,15 @@ export const zhOverrides = {
         effectScheduled: (targetName, effectiveAt, creditsDelta) =>
           `更改为 ${targetName}，于 ${effectiveAt} 生效。现在不扣费；在此之前保留当前套餐。${creditsDelta ? `每月额度变化：${creditsDelta}。` : ''}`
       },
+      keepGoingOnCredits: {
+        title: '用额度继续',
+        description: '包含的用量用完后，使用你的额度。关闭时，Hermes 等待重置。',
+        approveInBrowser: '请在浏览器中批准 Remote Spending 以更改此设置。批准后立即生效。',
+        openAgain: '再次打开',
+        cancel: '取消',
+        approvedRetry: 'Remote Spending 已批准，但更改未保存。',
+        tryAgain: '重试'
+      },
       autoReload: {
         threshold: '阈值',
         thresholdAria: '自动充值阈值',
@@ -1741,6 +1753,20 @@ export const zhOverrides = {
             captionDefault: '默认上限',
             captionSpending: '每月远程支出',
             valueUsed: (spent, limit) => `${limit} 中已用 ${spent}`
+          },
+          window: {
+            today: '今天',
+            week: '本周',
+            month: '本月',
+            topTier: '大型模型（每月）',
+            barLabel: title => `${title}已用包含用量`,
+            captionPaused: '已暂停：订阅付款失败',
+            captionPausedOther: '已暂停：请在 Portal 的账单页查看',
+            captionTopTierUsedUp: '每月额度已用完，剩余部分由你的额度支付',
+            captionTopTierUsedUpKeepGoingOff: '每月额度已用完，其他包含的模型仍可使用',
+            captionResetsIn: duration => `${duration}后重置`,
+            captionIncluded: '包含用量',
+            valueUsed: percent => `已用 ${percent}`
           }
         },
         planCard: {
@@ -2023,6 +2049,7 @@ export const zhOverrides = {
     skillArchivedMessage: '可通过 hermes curator restore 恢复。',
     tabPlugins: '插件',
     plugins: {
+      ...zhPluginPreviewAccess,
       agentTitle: 'Agent 插件',
       agentBlurb: '为所选配置扩展 agent — 工具、钩子、模型提供方。重启网关后生效。',
       pageBlurb: '插件可以扩展本应用、agent，或两者 — 每一半都有自己的开关。',
@@ -2055,9 +2082,7 @@ export const zhOverrides = {
       catalogProvenance: (sha: string) => `从 Hermes 目录安装${sha ? `，固定提交 ${sha}` : ''}。`,
       pinnedProvenance: (sha: string) => `已固定到提交 ${sha}。重新固定前将拒绝更新。`,
       pinnedBadge: (sha: string) => `固定 @ ${sha}`,
-      updateToPin: (sha: string) => `更新到 ${sha}`,
-      updateFailed: (name: string) => `无法更新 ${name}`,
-      updated: (name: string) => `${name} 已更新到当前目录固定提交。重启网关后生效。`,
+      ...zhPluginUpdate,
       uninstall: '卸载',
       uninstallTip: (name: string, profile: string) => `从 ${profile} 卸载 ${name}`,
       uninstallConfirmTitle: (name: string) => `卸载 ${name}？`,
@@ -3265,7 +3290,7 @@ export const zhOverrides = {
       '/init': '扫描仓库并生成或更新 AGENTS.md 项目指引',
       '/suggestions': '查看建议的自动化项目（接受或跳过）',
       '/blueprint': '使用 blueprint 模板设置自动化',
-      '/browser': '管理智能体浏览器 [connect|disconnect|status|use]',
+      '/browser': '管理智能体浏览器 [connect|disconnect|status]',
       '/palette': '打开模糊搜索命令面板（也可使用 Ctrl+P）',
       '/usage': '显示 Token 用量与速率限制；`reset` 可兑换保留的 Codex 限额重置',
       '/subscription': '查看你的 Nous 方案，并在浏览器中更改',
@@ -3759,27 +3784,25 @@ export const zhOverrides = {
     signIn: '登录',
     signInHeading: '登录 Nous 账户以解锁更多模型和工具。',
     settingUp: '正在设置免费推理…',
-    codeBody: '在浏览器中输入此代码以完成登录。',
-    copyLink: '复制链接',
+    finishInBrowser: '在浏览器中完成',
     doNotShare: '请勿分享此代码。',
+    openPageAgain: '重新打开页面',
     waiting: '等待登录…',
     finishingHeading: '正在完成登录…',
     finishingBody: '已在浏览器中批准。正在获取账户令牌。',
-    signedInAs: email => `已登录为 ${email}`,
+    signedInAsLabel: '已登录为',
     signedIn: '已登录。',
     completedBody: '现在由你的账户提供推理和工具。',
+    reconnect: '重新连接',
+    openConnectors: '打开连接器',
     defaultModel: '默认模型',
     change: '更改',
     done: '完成',
     notNow: '暂不',
     tryAgain: '重试',
-    startAgain: '重新开始',
     didNotComplete: '登录未完成',
-    rejectedBody: '登录在浏览器中被拒绝。你仍在免费层。',
-    supersededBody: '一个更新的登录代码替换了此代码。',
     timedOutHeading: '登录超时',
     timedOutBody: '代码未在有效期内使用。你仍在免费层。',
-    retiredBody: '此免费层身份已被使用或已过期；下次启动时会重新设置。',
     errorBody: '登录未完成；请重试。',
     alreadySignedInHeading: '已登录。',
     alreadySignedInBody: '此 Hermes 已登录 Nous 账户。',
@@ -3811,7 +3834,27 @@ export const zhOverrides = {
     wasPrice: '原价',
     customModel: '自定义模型',
     addCustomModelAction: '添加自定义模型…',
-    customModelPlaceholder: '输入模型 ID，例如 openai/gpt-5'
+    customModelPlaceholder: '输入模型 ID，例如 openai/gpt-5',
+    today: '今日',
+    week: '本周',
+    month: '本月',
+    topTier: '大型模型（每月）',
+    included: '下列模型均已包含',
+    pausedRenewal: '已暂停：续费未到账',
+    pausedOther: '已暂停',
+    includedUsedUp: '包含用量已用完',
+    limitReached: name => `已达${name}上限`,
+    limitNames: { day: '每日', month: '每月', top_tier: '每月大型模型', week: '每周' },
+    limitThenCredits: '付费模型现在使用你的额度（按量付费）',
+    limitThenCreditsLarge: '大型模型现在使用你的额度（按量付费）',
+    limitThenWait: '在此之前仅可使用免费模型',
+    limitThenWaitLarge: '在此之前大型模型已暂停',
+    percentUsed: percent => `已用 ${percent}`,
+    resetsIn: duration => `${duration}后重置`,
+    usageLevels: { free: '免费', top_tier: '大' },
+    sectionRecommended: '推荐',
+    sectionOther: '其他模型',
+    largeFootnote: '大型模型也会消耗你的每月大型模型额度。'
   },
 
   modelVisibility: {
@@ -4306,12 +4349,22 @@ export const zhOverrides = {
           title: '此聊天属于一个定时任务',
           body: '它只运行该任务，因此你的消息未被执行。请新建聊天后再发送。'
         },
+        usage_window: {
+          title: '包含用量已用完',
+          body: '你的方案包含的用量已用完，将在重置后恢复。在 /topup 中添加额度即可继续。'
+        },
         workspace_unavailable: {
           title: '此聊天的文件夹已不存在',
           body: '此聊天使用的文件夹已被移动或删除，因此你的消息未被执行。请重新创建该文件夹，或使用“移动到项目”为聊天指定其他文件夹，然后重试。'
         }
       },
       errorRetry: '重试',
+      errorSwitchToModel: (model, note) => (note ? `切换到 ${model}（${note}）` : `切换到 ${model}`),
+      errorSwitchModelFailed: '无法切换模型',
+      errorUseCredits: '开启用额度继续',
+      errorUseCreditsFailed: '无法开启用额度继续',
+      errorAddCredits: '添加额度',
+      errorOpenBillingSettings: '打开账单设置',
       errorLimitResets: time => `限额将于 ${time} 重置`,
       errorRetryAtReset: time => `限额重置后重试（${time}）`,
       errorRetryScheduled: (time, wait) => `将于 ${time} 重试 — 还剩 ${wait}`,

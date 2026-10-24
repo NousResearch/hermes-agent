@@ -1,6 +1,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import type { TranslationOverrides } from './define-locale'
+import { zhHantDelegationRouting } from './zh-hant_delegation_routing'
 import { zhHantUpdateChannel } from './zh-hant_update_channel'
 
 export const zhHantSettings = {
@@ -1096,7 +1097,8 @@ export const zhHantSettings = {
         directActive: '直接端點已啟用，優先於已儲存的提供方。選擇此模式時會保留其端點與憑證。',
         directClear: '套用此路由會清除直接端點及其儲存的金鑰。其他請求設定維持不變。',
         catalogFailed: '模型目錄無法使用。請手動輸入提供方與模型，或重試。',
-        draftHint: '套用前，變更只保留在本機。'
+        draftHint: '套用前，變更只保留在本機。',
+        routing: zhHantDelegationRouting
       }
     },
     localModels: {
@@ -1297,6 +1299,15 @@ export const zhHantSettings = {
         effectScheduled: (targetName, effectiveAt, creditsDelta) =>
           `變更為 ${targetName}，於 ${effectiveAt} 生效。現在不扣款；在此之前保留目前方案。${creditsDelta ? `每月額度變化：${creditsDelta}。` : ''}`
       },
+      keepGoingOnCredits: {
+        title: '用額度繼續',
+        description: '包含的用量用完後，使用你的額度。關閉時，Hermes 等待重設。',
+        approveInBrowser: '請在瀏覽器中核准 Remote Spending 以變更此設定。核准後立即生效。',
+        openAgain: '再次開啟',
+        cancel: '取消',
+        approvedRetry: 'Remote Spending 已核准，但變更未儲存。',
+        tryAgain: '重試'
+      },
       autoReload: {
         threshold: '門檻',
         thresholdAria: '自動儲值門檻',
@@ -1367,6 +1378,20 @@ export const zhHantSettings = {
             captionDefault: '預設上限',
             captionSpending: '每月遠端支出',
             valueUsed: (spent, limit) => `${limit} 中已用 ${spent}`
+          },
+          window: {
+            today: '今天',
+            week: '本週',
+            month: '本月',
+            topTier: '大型模型（每月）',
+            barLabel: title => `${title}已用包含用量`,
+            captionPaused: '已暫停：訂閱付款失敗',
+            captionPausedOther: '已暫停：請在 Portal 的帳單頁查看',
+            captionTopTierUsedUp: '每月額度已用完，剩餘部分由你的額度支付',
+            captionTopTierUsedUpKeepGoingOff: '每月額度已用完，其他包含的模型仍可使用',
+            captionResetsIn: duration => `${duration}後重設`,
+            captionIncluded: '包含用量',
+            valueUsed: percent => `已用 ${percent}`
           }
         },
         planCard: {
@@ -1598,7 +1623,27 @@ export const zhHantSettings = {
     wasPrice: '原價',
     customModel: '自訂模型',
     addCustomModelAction: '新增自訂模型…',
-    customModelPlaceholder: '輸入模型 ID，例如 openai/gpt-5'
+    customModelPlaceholder: '輸入模型 ID，例如 openai/gpt-5',
+    today: '今日',
+    week: '本週',
+    month: '本月',
+    topTier: '大型模型（每月）',
+    included: '下列模型均已包含',
+    pausedRenewal: '已暫停：續費未到帳',
+    pausedOther: '已暫停',
+    includedUsedUp: '包含用量已用完',
+    limitReached: name => `已達${name}上限`,
+    limitNames: { day: '每日', month: '每月', top_tier: '每月大型模型', week: '每週' },
+    limitThenCredits: '付費模型現在使用你的額度（按量付費）',
+    limitThenCreditsLarge: '大型模型現在使用你的額度（按量付費）',
+    limitThenWait: '在此之前僅可使用免費模型',
+    limitThenWaitLarge: '在此之前大型模型已暫停',
+    percentUsed: percent => `已用 ${percent}`,
+    resetsIn: duration => `${duration}後重設`,
+    usageLevels: { free: '免費', top_tier: '大' },
+    sectionRecommended: '推薦',
+    sectionOther: '其他模型',
+    largeFootnote: '大型模型也會消耗你的每月大型模型額度。'
   },
 
   modelVisibility: {

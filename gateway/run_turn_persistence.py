@@ -527,6 +527,31 @@ class GatewayTurnPersistenceMixin:
         # trigger a rebuild next turn (destroying prompt caching).
         await self._refresh_agent_cache_message_count(session_key, sid)
 
+    @staticmethod
+    def _usage_window_chat_wording(agent_result: dict, response: str) -> str:
+        """A usage-window refusal sent to a chat: credits steps point at the Portal (a chat's /topup has no
+        Keep going control) and the reset reads as a duration (the gateway's clock is not the reader's).
+        Every other reply is returned unchanged."""
+        if not (agent_result.get("usage_window_message") and response):
+            return response
+        from agent.plan_limits import chat_refusal_wording
+        return chat_refusal_wording(response, agent_result.get("failure_resets_at"))
+
+    async def _deliver_turn_response_then_limit_offer(
+        self, event, source, session_entry, session_key, run_generation,
+        agent_result, agent_messages, response, footer_line, intentional_silence,
+    ):
+        """``_hmwa_deliver_turn_response``, then, for a usage-window refusal, the limit offer: the limit
+        sentence is the reply, and the button follows it once it lands."""
+        delivered = await self._hmwa_deliver_turn_response(
+            event, source, session_entry, session_key, run_generation,
+            agent_result, agent_messages, response, footer_line, intentional_silence,
+        )
+        if isinstance(agent_result.get("usage_limit"), dict):
+            self._schedule_usage_limit_offer(event, agent_result["usage_limit"], session_key=session_key,
+                                             generation=run_generation)
+        return delivered
+
     async def _hmwa_deliver_turn_response(
         self, event, source, session_entry, session_key, run_generation,
         agent_result, agent_messages, response, _footer_line, _intentional_silence,

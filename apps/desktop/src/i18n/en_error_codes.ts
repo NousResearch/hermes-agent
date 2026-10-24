@@ -153,5 +153,9 @@ export const enErrorCodes: ThreadCopy['errorCodes'] = {
   free_tier_refused: {
     title: "Hermes couldn't send that without signing in",
     body: 'Signing in with a Nous account is free.'
+  },
+  usage_window: {
+    title: 'Included usage used up',
+    body: "Your plan's included usage is used up until it resets. Add credits in /topup to keep going."
   }
 }

@@ -248,6 +248,13 @@ def _file_mtime_key(host_path: str) -> tuple[int, int, int, int] | None:
         return None
 
 
+def env_uses_host_filesystem(env: object) -> bool:
+    """Whether the file tools may touch *env*'s files on the host (``BaseEnvironment.uses_host_filesystem``).
+    Strict ``is True``: an environment without the declaration (``None``, a duck-typed plugin
+    backend, a test double) is not the host."""
+    return getattr(env, "uses_host_filesystem", False) is True
+
+
 # ---------------------------------------------------------------------------
 # BaseEnvironment
 # ---------------------------------------------------------------------------
@@ -267,6 +274,12 @@ class BaseEnvironment(ABC):
     # True only when commands execute on the SAME host as the Hermes process
     # (LocalEnvironment); controller-host facts then describe the execution target.
     is_local: bool = False
+
+    # True when the file tools may read, write, patch and search this backend's files straight on
+    # the host instead of through execute() (only LocalEnvironment). A host backend that confines its
+    # commands (a sandbox hiding paths, mounting them read-only or giving them their own $TMPDIR) sets
+    # it False, so the file tools see exactly what its commands see. Read via env_uses_host_filesystem().
+    uses_host_filesystem: bool = False
 
     # Snapshot creation timeout (override for slow cold-starts).
     _snapshot_timeout: int = 30

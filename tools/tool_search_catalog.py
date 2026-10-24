@@ -212,7 +212,12 @@ def search_catalog(catalog: list[CatalogEntry], query: str, limit: int = 5, *,
 _SENTENCE_END_RE = re.compile(r"(?<!\be\.g)(?<!\bi\.e)(?<!\betc)[.!?](?=\s|$)")
 
 
-def _short_desc(description: str, max_chars: int = 60) -> str:
+# A catalog line is its tool's first sentence: built-in tools keep that sentence within this cap
+# and lead with the key capability (tests/tools/test_tool_search.py pins it), so no line clips.
+CATALOG_SUMMARY_MAX_CHARS = 80
+
+
+def _short_desc(description: str, max_chars: int = CATALOG_SUMMARY_MAX_CHARS) -> str:
     """First sentence of a tool description, clipped to ``max_chars`` on a word boundary.
     ``e.g.``/``i.e.``/``etc.`` do not end a sentence; whitespace normalization and the regex
     search stay linear-time on hostile input."""

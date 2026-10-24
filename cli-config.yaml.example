@@ -7,7 +7,7 @@
 # Schema version of this file. The installers copy it to seed config.yaml, and
 # `hermes update` uses it to know which one-time migrations the file already
 # has. Hermes manages it: do not copy it into another config.
-_config_version: 51
+_config_version: 52
 
 # =============================================================================
 # Database Configuration
@@ -614,25 +614,14 @@ browser:
   # Inactivity timeout in seconds - browser sessions are automatically closed
   # after this period of no activity between agent loops (default: 120 = 2 minutes)
   inactivity_timeout: 120
-  # Let an authenticated browser extension register as the controller for an
-  # existing Hermes session. Disabled by default. Local API registration also
-  # requires the API server bearer key to be configured.
-  extension_control:
-    enabled: false
 
-  # Maximum characters of snapshot content before truncate-and-store.
-  # Increase for long pages (for example, documentation or financial reports),
-  # or decrease to reduce context usage. Minimum: 1000; default: 15000
-  # (same per-page budget as web_extract).
-  # snapshot_threshold: 15000
-
-  # JavaScript evaluation guardrails (both default false). restrict_evaluate
-  # opts into a denylist that blocks sensitive primitives (cookies, storage,
-  # clipboard, network, form values) in browser_console(expression=...) — use
-  # it when the agent drives a logged-in profile. allow_unsafe_evaluate is the
-  # legacy override that switches the denylist back off even when restrict is on.
-  # restrict_evaluate: false
-  # allow_unsafe_evaluate: false
+  # Local Chromium for browser_exec. Empty executable_path = pm's chromium
+  # (`hermes pm install chromium`), the Docker image's build, or a system
+  # chromium where pm builds none (Termux). user_data_dir keeps one persistent
+  # profile for every local session (empty = a throwaway profile per session).
+  # executable_path: ""
+  # user_data_dir: ""
+  # chromium_args: ["--lang=de"]
 
 # =============================================================================
 # Tool Loop Guardrails
@@ -1526,9 +1515,8 @@ platform_toolsets:
 #   search       - web_search only (no scraping)
 #   terminal     - terminal, process
 #   file         - read_file, write_file, patch, search
-#   browser      - browser_navigate, browser_snapshot, browser_click, browser_type,
-#                  browser_scroll, browser_back, browser_press,
-#                  browser_get_images, browser_vision  (requires BROWSERBASE_API_KEY)
+#   browser      - browser_exec, browser_cdp, browser_dialog, browser_vault
+#                  (local Chromium, or a cloud browser with its API key)
 #   vision       - vision_analyze  (requires OPENROUTER_API_KEY)
 #   image_gen    - image_generate  (requires FAL_KEY)
 #   skills       - skills_list, skill_view
@@ -1554,7 +1542,7 @@ platform_toolsets:
 #   search       - Web search only, no scraping (web_search)
 #   terminal     - Command execution and process management (terminal, process)
 #   file         - File operations: read, write, patch, search
-#   browser      - Full browser automation (navigate, click, type, screenshot, etc.)
+#   browser      - Browser automation over CDP (browser_exec drives a real Chromium)
 #   vision       - Image analysis (vision_analyze)
 #   image_gen    - Image generation with FLUX (image_generate)
 #   skills       - Load skill documents (skills_list, skill_view)
@@ -1843,6 +1831,30 @@ code_execution:
 # The delegate_task tool spawns child agents with isolated context.
 # Supports single tasks and batch mode (default 3 parallel, configurable).
 delegation:
+  # backend: "default"                        # Strategy routing each delegate_task task: "default" = the keys below,
+                                              # else the parent's route. model_map / profile_routes come from the
+                                              # advanced-delegation plugin; a backend that is missing, disabled or
+                                              # unavailable fails closed (tool error naming it; /delegation default or
+                                              # `hermes config set delegation.backend default` restores the default).
+  # backends:                                 # Each plugin backend's own settings, keyed by its backend name.
+  #   model_map:                              # backend: model_map (advanced-delegation)
+  #     options:
+  #       - name: fast
+  #         description: "Cheap and quick; lookups, summaries, simple edits."
+  #         provider: "openrouter"
+  #         model: "google/gemini-3-flash-preview"
+  #       - name: deep
+  #         description: "Slow and careful; hard debugging and design work."
+  #         provider: "anthropic"
+  #         model: "claude-opus-5"
+  #         reasoning_effort: "high"
+  #         service_tier: "fast"              # optional: that task is refused when the route has no such tier
+  #         # fallback_providers: [...]         # optional; absent = delegation.fallback_providers, [] = none
+  #     default: fast                         # optional: option for tasks that set none
+  #   profile_routes:                         # backend: profile_routes (advanced-delegation). A listed
+  #     profiles:                             # profile's subagents use ITS credentials, pool, SOUL.md and terminal policy.
+  #       - name: coder
+  #         description: "Writes and refactors code; runs tests."
   max_iterations: 250                         # Max tool-calling turns per child (default: 250)
   # max_concurrent_children: 10               # Max parallel child agents per batch (default: 10, floor: 1, no ceiling).
                                               # WARNING: values above 10 multiply API cost linearly.

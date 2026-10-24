@@ -104,6 +104,15 @@ _WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown"})
 _WS_CONCURRENT_READ_LIMIT = 2
 # Reads admitted beyond the running ones; one more parks the reader (as the serial lane did).
 _WS_WAITING_READ_LIMIT = 8
+# A viewer's answer to an open server→client request (its response frame, a batch clarify's
+# ``clarify.lock``) settles in memory and never queues: the serial lane may be running the very handler
+# that waits for it (a plugin slash command's ``ctx.ask_choice`` under ``slash.exec``).
+_WS_ANSWER_METHODS = frozenset({"clarify.lock"})
+
+
+def _answers_open_request(req: Any) -> bool:
+    from tui_gateway.server_requests import is_response_frame
+    return isinstance(req, dict) and (req.get("method") in _WS_ANSWER_METHODS or is_response_frame(req))
 
 # Per-token streaming frames are coalesced: buffered and flushed as a batch on a short timer instead
 # of waking the loop once per token (each wakeup competes with the agent turn for the GIL). Keep this
@@ -131,7 +140,7 @@ class WSTransport:
         self._loop = loop
         self._peer = peer
         #: Server-verified identity from the WS-upgrade credential, stamped by ``web_server_chat._ws_auth_reason``; None
-        #: for legacy-token/stdio. RPC params can never populate it: sole identity authority for browser controllers
+        #: for legacy-token/stdio. RPC params can never populate it: sole identity authority for relay authorship
         #: and for the ``user_id`` the agent is built with (``server._session_auth_user_id``).
         self.auth_identity = auth_identity
         self.desktop_local = False
@@ -398,7 +407,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                     operator: bool = False) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``. *auth_identity* is the server-minted
     ``{user_id, provider}`` recorded at WS-upgrade auth, stored as ``WSTransport.auth_identity`` (the only identity
-    authority for browser-controller registration); callers that omit it (harnesses, embedded TUI child) get None."""
+    authority for session ownership and relay authorship); callers that omit it (harnesses, embedded TUI child) get None."""
     peer, transport = _ws_peer_label(ws), None
     authority_connection = None
     messages = parse_errors = dispatch_crashes = send_failures = 0
@@ -490,6 +499,9 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             await _dispatch_one(req)
 
     async def _queue_request(req: Any) -> None:
+        if _answers_open_request(req):
+            await _dispatch_one(req)
+            return
         if isinstance(req, dict) and req.get("method") in _WS_CONCURRENT_READ_METHODS:
             # A read past the waiting cap parks the reader, as the serial lane did; released
             # when its task ends (a read cancelled before it ran releases it too).
@@ -615,14 +627,6 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         reaped_sessions = detached_sessions = 0
         if transport is not None:
             server.unregister_live_transport(transport)
-            # Owner-safely park browser controllers this transport registered (a same-identity reconnect may
-            # deliver a terminal result for in-flight work). Offloaded: disconnect takes the controller's
-            # send_lock, which a worker-thread dispatch may hold while blocking on THIS loop to transmit.
-            try:
-                from gateway.browser_control_broker import get_browser_control_broker
-                await asyncio.to_thread(get_browser_control_broker().disconnect_owner, transport)
-            except Exception:
-                _log.exception("ws browser-controller disconnect failed peer=%s", peer)
             transport.close()
             try:
                 await asyncio.to_thread(server._release_wake_for_transport, transport)

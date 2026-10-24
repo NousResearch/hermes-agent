@@ -1,3 +1,4 @@
+// health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
@@ -12,7 +13,8 @@ import { ruModelSettings } from './ru_model_settings'
 import { ruNotices } from './ru_notices'
 import { ruNotifications } from './ru_notifications'
 import { ruOnboarding } from './ru_onboarding'
-import { ruPluginSettings } from './ru_plugins'
+import { ruPluginPreviewAccess } from './ru_plugin_preview_access'
+import { ruPluginSettings, ruPluginsTab } from './ru_plugins'
 import { ruProjects } from './ru_projects'
 import { ruSharedMetrics } from './ru_shared_metrics'
 import { ruThemePicker } from './ru_theme_picker'
@@ -346,6 +348,37 @@ export const ruOverrides = {
     noResults: 'Языки не найдены'
   },
   settings: {
+    // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
+    billing: {
+      keepGoingOnCredits: {
+        title: 'Продолжать за кредиты',
+        description: 'Тратить кредиты, когда включённый объём закончится. Выключено: Hermes ждёт сброса.',
+        approveInBrowser:
+          'Чтобы изменить это, одобрите удалённые траты в браузере. Изменение применится сразу после одобрения.',
+        openAgain: 'Открыть снова',
+        cancel: 'Отмена',
+        approvedRetry: 'Удалённые траты одобрены, но изменение не сохранилось.',
+        tryAgain: 'Повторить'
+      },
+      state: {
+        usage: {
+          window: {
+            today: 'Сегодня',
+            week: 'Эта неделя',
+            month: 'Этот месяц',
+            topTier: 'Крупные модели (месяц)',
+            barLabel: title => `${title}: использовано включённого объёма`,
+            captionPaused: 'Приостановлено: платёж по подписке не прошёл',
+            captionPausedOther: 'Приостановлено: см. раздел «Оплата» на портале',
+            captionTopTierUsedUp: 'Месячный лимит исчерпан, остальное оплачивается кредитами',
+            captionTopTierUsedUpKeepGoingOff: 'Месячный лимит исчерпан, другие включённые модели работают',
+            captionResetsIn: duration => `Сброс через ${duration}`,
+            captionIncluded: 'Включённый объём',
+            valueUsed: percent => `использовано ${percent}`
+          }
+        }
+      }
+    },
     subpages: {
       appearanceTheme: 'Тема',
       appearanceTypography: 'Шрифты и масштаб',
@@ -1404,9 +1437,7 @@ export const ruOverrides = {
   },
   skillDeepLink: ruSkillDeepLink,
   skills: {
-    plugins: {
-      pageBlurb: 'Плагин может расширять приложение, агента или оба сразу — у каждой части свой переключатель.'
-    },
+    plugins: { ...ruPluginPreviewAccess, ...ruPluginsTab },
     tabSkills: 'Навыки',
     tabToolsets: 'Инструменты',
     configuringProfile: 'Настраивается:',
@@ -2614,7 +2645,7 @@ export const ruOverrides = {
       '/init': 'Просканировать репозиторий и создать или обновить инструкции AGENTS.md',
       '/suggestions': 'Просмотреть, принять или отклонить предложенные автоматизации',
       '/blueprint': 'Настроить автоматизацию по шаблону',
-      '/browser': 'Управлять браузером агента [connect|disconnect|status|use]',
+      '/browser': 'Управлять браузером агента [connect|disconnect|status]',
       '/palette': 'Открыть палитру команд',
       '/usage': 'Показать расход токенов и лимиты; reset использует накопленный сброс лимита Codex',
       '/subscription': 'Показать план Nous и изменить его в браузере',
@@ -3085,7 +3116,32 @@ export const ruOverrides = {
     wasPrice: 'было',
     customModel: 'Своя модель',
     addCustomModelAction: 'Добавить свою модель…',
-    customModelPlaceholder: 'Введите id модели, например openai/gpt-5'
+    customModelPlaceholder: 'Введите id модели, например openai/gpt-5',
+    today: 'Сегодня',
+    week: 'Неделя',
+    month: 'Месяц',
+    topTier: 'Крупные модели (в месяц)',
+    included: 'Все модели ниже включены',
+    pausedRenewal: 'пауза: оплата не прошла',
+    pausedOther: 'пауза',
+    includedUsedUp: 'Включённый объём исчерпан',
+    limitReached: name => `Достигнут ${name}`,
+    limitNames: {
+      day: 'дневной лимит',
+      month: 'месячный лимит',
+      top_tier: 'месячный лимит крупных моделей',
+      week: 'недельный лимит'
+    },
+    limitThenCredits: 'платные модели теперь используют ваши кредиты (оплата по факту)',
+    limitThenCreditsLarge: 'крупные модели теперь используют ваши кредиты (оплата по факту)',
+    limitThenWait: 'до сброса только бесплатные модели',
+    limitThenWaitLarge: 'крупные модели приостановлены до сброса',
+    percentUsed: percent => `${percent} использовано`,
+    resetsIn: duration => `сброс через ${duration}`,
+    usageLevels: { free: 'Бесплатно', top_tier: 'Крупная' },
+    sectionRecommended: 'Рекомендуемые',
+    sectionOther: 'Другие модели',
+    largeFootnote: 'Крупные модели также расходуют месячный лимит крупных моделей.'
   },
 
   modelVisibility: {
@@ -3483,6 +3539,13 @@ export const ruOverrides = {
   },
   assistant: {
     thread: {
+      errorSwitchToModel: (model: string, note?: string) =>
+        note ? `Переключиться на ${model} (${note})` : `Переключиться на ${model}`,
+      errorSwitchModelFailed: 'Не удалось переключить модель',
+      errorUseCredits: 'Включить «Продолжать за кредиты»',
+      errorUseCreditsFailed: 'Не удалось включить «Продолжать за кредиты»',
+      errorAddCredits: 'Пополнить кредиты',
+      errorOpenBillingSettings: 'Открыть настройки оплаты',
       loadingSession: 'Загрузка сеанса',
       showEarlier: 'Показать ранние сообщения',
       loadingResponse: 'Hermes загружает ответ',

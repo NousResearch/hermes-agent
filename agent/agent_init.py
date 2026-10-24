@@ -1106,21 +1106,17 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     except Exception:
         logger.warning("Plugin discovery failed during agent setup", exc_info=True)
 
-    # Capture the registry generation FIRST so a concurrent refresh can detect staleness.
-    try:
-        from tools.registry import registry as _snapshot_registry
-        agent._tool_snapshot_generation = _snapshot_registry._generation
-    except Exception:
-        agent._tool_snapshot_generation = 0
+    # Capture the registry generation FIRST so a concurrent refresh can detect staleness, and the delegation
+    # backend this delegate_task is built from: the session routes on it (agent/delegation_backends.py).
+    from agent.delegation_backends import saved_backend
+    from tools.registry import registry as _snapshot_registry
+    agent._tool_snapshot_generation, agent._delegation_backend = _snapshot_registry._generation, saved_backend()
     import model_tools
     from toolsets import agent_tool_drops, session_disabled_toolsets
     disabled_toolsets = session_disabled_toolsets(disabled_toolsets, getattr(agent, "platform", None))
     agent.disabled_toolsets = disabled_toolsets  # so the tool_search bridge and delegate children drop them too
     agent.tools = model_tools.get_tool_definitions(
         enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets, quiet_mode=agent.quiet_mode)
-    # A finite -q run has no later session to learn for: no skill authoring tool (agent/oneshot_footprint.py).
-    from agent.oneshot_footprint import prune_oneshot_tools
-    agent.tools = prune_oneshot_tools(agent.tools or [])
     if drops := agent_tool_drops(agent):
         agent.tools = [t for t in agent.tools if t["function"]["name"] not in drops]
 

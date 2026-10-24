@@ -616,7 +616,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
         notify({
           kind: 'error',
           title: apply ? g.applyFailed : g.saveFailed,
-          message: (errors as Record<string, string>)[sshError] || g.sshErrUnknown
+          message: (errors as Record<string, string>)[sshError] || readableError(err, g.sshErrUnknown).message
         })
       } else {
         notifyError(err, apply ? g.applyFailed : g.saveFailed)
@@ -1022,7 +1022,12 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
           unknown: g.sshErrUnknown
         }
 
-        throw new Error(errors[result.sshError || 'unknown'] || result.error || g.sshErrUnknown)
+        // An unclassified failure carries its own cause (the remote probe's error); the generic copy would hide it.
+        throw new Error(
+          (result.sshError && result.sshError !== 'unknown' && errors[result.sshError]) ||
+            result.error ||
+            g.sshErrUnknown
+        )
       }
 
       const message = g.sshReachable(result.host || state.sshHost, result.remotePlatform || '?')

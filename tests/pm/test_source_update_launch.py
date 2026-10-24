@@ -166,7 +166,7 @@ def test_source_python_pin_update_survives_real_gc(source_launch, tmp_path, monk
         monkeypatch.setattr(cli, "resolve_package", lambda *a, **k: Resolved("python", "A", "semver", "B"))
         monkeypatch.setattr(cli, "_pin_artifacts", lambda *a: {})
         monkeypatch.setattr(importlib.import_module("pm.install"), "sync_venv", pm.sync_venv)
-        assert cli.cmd_update(SimpleNamespace(names=["python"], target=None, check=False, uv=False, npm=False, termux=False)) == 0
+        assert cli.cmd_update(SimpleNamespace(names=["python"], target=None, skip_target=[], check=False, uv=False, npm=False, termux=False)) == 0
         assert Lockfile(paths.lockfile_path()).version("python") == "B"
     assert pm.venv_is_current(project_root=root)
     assert selected_venv(root) != previous

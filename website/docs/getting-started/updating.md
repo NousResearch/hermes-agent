@@ -223,6 +223,19 @@ If the maintained updater script is missing (for example after antivirus quarant
 
 On Windows, a Desktop reopened during packaging is stopped again immediately before the staged build is promoted. This cleanup is restricted to executables inside that checkout's Desktop release tree; unrelated installations are not stopped. A remaining lock still makes staged promotion fail rather than bypassing the rename error.
 
+### Fetch fails with `not a git repository`
+
+`hermes update` stops with "This Hermes checkout's git data is damaged" when the install's `.git` folder is still there but git no longer accepts it: a lost or empty `HEAD`, or a `.git` file pointing at a folder that is gone. A killed update, a crash mid-write, or a sync or antivirus tool touching `.git` can leave it that way. No update can fetch on such a checkout. Gateways the update paused are started again on the unchanged code, since nothing was written.
+
+Run the installer again to repair it. It moves the damaged checkout aside as `hermes-agent.broken-<timestamp>` (nothing is deleted) and clones fresh; your config, sessions and other data live outside the checkout and are kept. The error prints the exact command for your checkout. For the default location it is:
+
+- Linux / macOS / WSL2: `curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash`
+- Windows (PowerShell): `iex (irm https://hermes-agent.nousresearch.com/install.ps1)`
+
+A checkout installed somewhere else needs its directory passed again (`bash -s -- --dir <path>` on Linux/macOS, `-InstallDir <path>` on Windows), as in the printed command; without it the installer repairs the default location instead.
+
+Once Hermes works again you can delete the `.broken-*` folder.
+
 ### Fetch fails with `should_include_obj should only be called on existing objects`
 
 Git 2.53 and newer can crash while fetching into a partial clone when some of its pack files lack a

@@ -1,7 +1,8 @@
 import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 
+import { COMPOSER_AREAS } from '@/app/chat/composer/contrib'
 import { terminalMenuHandleFor } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { openStarMapNodeMenuFor } from '@/app/starmap/context-menu-handle'
 import { DROPDOWN_KIT } from '@/components/ui/actions-menu'
@@ -16,6 +17,7 @@ import {
   DropdownMenuShortcut,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { useContributions } from '@/contrib/react/use-contributions'
 import { type Translations, useI18n } from '@/i18n'
 import { hostPathLabel, hudForcesNativeLinks, normalizeExternalUrl, openExternalLink } from '@/lib/external-link'
 import { formatCombo } from '@/lib/keybinds/combo'
@@ -23,6 +25,7 @@ import { isRemoteGateway } from '@/lib/media'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { openPreview } from '@/store/preview'
 
+import { type ComposerMenuRow, resolveComposerMenuSections } from './composer-menu'
 import { ShellMenuItems } from './shell-menu-items'
 import {
   $contextMenu,
@@ -120,7 +123,21 @@ function terminalSections(open: Extract<OpenContextMenu, { kind: 'terminal' }>, 
   ]
 }
 
-function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Translations): ReactNode[][] {
+/** One section per plugin, already ordered and capped by the resolver; each row
+ *  runs after the menu closed, like the built-in edit verbs. */
+function composerItemSections(sections: ComposerMenuRow[][], afterClose: (run: () => void) => void): ReactNode[][] {
+  return sections.map(rows =>
+    rows.map(row => (
+      <Item disabled={row.disabled} key={row.key} label={row.label} onSelect={() => afterClose(row.run)} />
+    ))
+  )
+}
+
+function domSections(
+  open: Extract<OpenContextMenu, { kind: 'dom' }>,
+  t: Translations,
+  composerSections: ComposerMenuRow[][]
+): ReactNode[][] {
   const copy = t.contextMenu
   const { spellcheck, target } = open
   const sections: ReactNode[][] = []
@@ -290,6 +307,9 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
         />
       ])
     }
+
+    // Plugin rows (composer only), after the app's own spell-check rows.
+    sections.push(...composerItemSections(composerSections, withEditableFocus))
 
     // Verb availability mirrors the native menu: cut/copy act on the
     // SELECTION, so they need selected text — not just field content.
@@ -543,6 +563,19 @@ function guestSections(open: Extract<OpenContextMenu, { kind: 'guest' }>, t: Tra
 export function AppContextMenu() {
   const { t } = useI18n()
   const open = useStore($contextMenu)
+  const composerContributions = useContributions(COMPOSER_AREAS.contextMenu)
+  const composerTarget = open?.kind === 'dom' ? open.target.composer : null
+
+  // Resolved once per right-click (the target is captured at open and kept
+  // across the late spell-check update), and again only if a plugin
+  // registers or unloads while the menu is up.
+  const composerSections = useMemo(
+    () =>
+      composerTarget && composerContributions.length
+        ? resolveComposerMenuSections(composerContributions, composerTarget)
+        : [],
+    [composerContributions, composerTarget]
+  )
 
   useEffect(() => {
     // stopPropagation beats other renderer handlers; preventDefault is never
@@ -627,7 +660,9 @@ export function AppContextMenu() {
       ? terminalSections(open, t)
       : open.kind === 'guest'
         ? guestSections(open, t)
-        : (list => (list.length ? list : [[<ShellMenuItems key="shell" kit={DROPDOWN_KIT} />]]))(domSections(open, t))
+        : (list => (list.length ? list : [[<ShellMenuItems key="shell" kit={DROPDOWN_KIT} />]]))(
+            domSections(open, t, composerSections)
+          )
 
   return (
     <DropdownMenu

@@ -409,6 +409,26 @@ describe('refreshSessions identity + loading hygiene', () => {
     removals.untombstoneSessions(['doomed'])
   })
 
+  it('fences an externally deleted profile row but admits an unseen foreign twin', async () => {
+    const pending = deferred<SidebarSessionsResponse>()
+    listSidebarSessions.mockReturnValue(pending.promise)
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'all' }))
+    const refresh = result.current.refreshSessions()
+    const removals = await import('@/store/session-removal')
+    removals.recordProfileSessionRemovals(['external-twin'], 'default')
+
+    await act(async () => {
+      pending.resolve(
+        sidebar({
+          sessions: [row('external-twin', { profile: 'default' }), row('external-twin', { profile: 'other' })]
+        })
+      )
+      await refresh
+    })
+
+    expect($sessions.get().map(s => [s.id, s.profile])).toEqual([['external-twin', 'other']])
+  })
+
   it('re-admits a row whose archive rolled back mid-flight (release edge)', async () => {
     // A failed archive untombstones immediately; a page that raced the
     // rollback must still list the row — the guard only vetoes rows whose

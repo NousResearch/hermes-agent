@@ -162,6 +162,39 @@ describe('projects RPC profile forwarding', () => {
     })
   })
 
+  it('fences a stale project-tree preview by profile after external deletion', async () => {
+    const pending = deferred<unknown>()
+    const request = vi.fn(() => pending.promise)
+    const gateway = { connectionState: 'open', request }
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
+    $activeGatewayProfile.set('default')
+    const refresh = refreshProjectTree()
+    await waitFor(() => expect(request).toHaveBeenCalled())
+    const removals = await import('./session-removal')
+    removals.recordProfileSessionRemovals(['tree-twin'], 'default')
+    pending.resolve({
+      active_id: null,
+      scoped_session_ids: ['tree-twin'],
+      projects: [
+        {
+          id: 'p_external',
+          label: 'External',
+          path: '/external',
+          repos: [],
+          sessionCount: 2,
+          sessionIds: ['tree-twin'],
+          previewSessions: [
+            { id: 'tree-twin', profile: 'default' },
+            { id: 'tree-twin', profile: 'other' }
+          ]
+        }
+      ]
+    })
+    await refresh
+    expect($projectTree.get()[0].previewSessions?.map(s => s.profile)).toEqual(['other'])
+  })
+
   it('keeps unchanged project nodes by reference across tree refreshes (#77591)', async () => {
     const payload = () => ({
       active_id: null,

@@ -435,6 +435,8 @@ class GatewaySlashCommandsMixin(
         session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
         await self._hm_stop_owner_turn(session_key)  # also between turns, before the next claim (N53)
+        from gateway.platforms.base_auto_tts import cancel_auto_tts
+        audio_stopped = await cancel_auto_tts(getattr(self, "_background_tasks", ()), session_key)
 
         async def _stop(key: str, invalidation_reason: str) -> None:
             await self._interrupt_and_clear_session(
@@ -476,7 +478,7 @@ class GatewaySlashCommandsMixin(
         # earlier turn still count as "active": stop them; each returns as an interrupted completion.
         from tools.async_delegation import interrupt_for_session
         if interrupt_for_session(session_key=session_key, reason="stop_command",
-                                 parent_session_id=str(getattr(session_entry, "session_id", "") or "")):
+                                 parent_session_id=str(getattr(session_entry, "session_id", "") or "")) or audio_stopped:
             return EphemeralReply(t("gateway.stop.stopped"))
         # A platform status indicator can still be stuck —
         # e.g. Slack's persistent assistant.threads.setStatus survives a gateway restart or a turn

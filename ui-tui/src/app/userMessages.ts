@@ -189,7 +189,9 @@ export const describeShellExecError = (err: unknown): string => {
     const backend = typeof data.detail === 'string' ? data.detail.trim() : ''
 
     // An older gateway names no backend: say so without a backend-shaped sentence.
-    return backend ? t('userMessages.rpc.shellBackendRefused', backend) : t('userMessages.rpc.shellBackendRefusedUnnamed')
+    return backend
+      ? t('userMessages.rpc.shellBackendRefused', backend)
+      : t('userMessages.rpc.shellBackendRefusedUnnamed')
   }
 
   return describeRpcError(err)

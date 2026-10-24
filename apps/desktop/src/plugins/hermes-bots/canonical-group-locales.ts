@@ -234,8 +234,7 @@ export const CANONICAL_GROUP_LOCALES = {
     loadingGroup: 'Chargement du groupe…',
     loadingGroups: 'Chargement des groupes de la passerelle…',
     emptyGroups: 'Aucun groupe de passerelle trouvé.',
-    driverUnavailable:
-      'Pilote de groupe indisponible. Mettez à jour ou reconnectez la passerelle propriétaire.',
+    driverUnavailable: 'Pilote de groupe indisponible. Mettez à jour ou reconnectez la passerelle propriétaire.',
     invalidLogCursor: 'Curseur de journal de salon invalide',
     allowOnce: 'Autoriser une fois',
     deny: 'Refuser',
@@ -244,7 +243,7 @@ export const CANONICAL_GROUP_LOCALES = {
     confirmDiscard: "Confirmer l'abandon",
     unconfirmedSend:
       "L'envoi précédent n'est pas confirmé. Réessayez son texte d'origine avant d'envoyer un autre message.",
-    restoredPendingSend: 'Un envoi non confirmé a été restauré. Réessayez-le avant d\'envoyer un autre message.',
+    restoredPendingSend: "Un envoi non confirmé a été restauré. Réessayez-le avant d'envoyer un autre message.",
     groupMessage: 'Message de groupe',
     attachFiles: 'Joindre des fichiers',
     removeAttachment: 'Retirer la pièce jointe',
@@ -301,16 +300,14 @@ export const CANONICAL_GROUP_LOCALES = {
     loadingGroup: 'Cargando grupo…',
     loadingGroups: 'Cargando grupos de la pasarela…',
     emptyGroups: 'No se encontraron grupos de la pasarela.',
-    driverUnavailable:
-      'Controlador de grupo no disponible. Actualiza o vuelve a conectar la pasarela propietaria.',
+    driverUnavailable: 'Controlador de grupo no disponible. Actualiza o vuelve a conectar la pasarela propietaria.',
     invalidLogCursor: 'Cursor de registro de sala no válido',
     allowOnce: 'Permitir una vez',
     deny: 'Denegar',
     discardUnknown: 'Descartar trabajo con resultado desconocido',
     discardWarning: 'Puede que ya se hayan producido efectos secundarios. Descartar no los deshace.',
     confirmDiscard: 'Confirmar descarte',
-    unconfirmedSend:
-      'El envío anterior no está confirmado. Reintenta su texto original antes de enviar otro mensaje.',
+    unconfirmedSend: 'El envío anterior no está confirmado. Reintenta su texto original antes de enviar otro mensaje.',
     restoredPendingSend: 'Se restauró un envío sin confirmar. Reintántalo antes de enviar otro mensaje.',
     groupMessage: 'Mensaje de grupo',
     attachFiles: 'Adjuntar archivos',

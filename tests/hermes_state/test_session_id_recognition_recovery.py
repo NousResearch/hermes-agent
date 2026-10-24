@@ -14,6 +14,7 @@ from datetime import datetime
 import pytest
 
 from hermes_state import SessionDB
+from hermes_state_keys import local_identity
 from hermes_cli.session_recovery import _quoted_columns, _table_columns
 from hermes_cli.session_lost_and_found import _is_session_id, map_lost_and_found_rows
 
@@ -28,8 +29,9 @@ API_ID = "api_1790000000_0123abcd"
 API_CHAT_ID = "api-0123456789abcdef"
 RUN_ID = "run_" + "0123456789abcdef" * 2
 UUID_ID = "0b36145a-e5c7-4d2a-9f00-0123456789ab"
+LOCAL_ID = local_identity("default", "test-user", "test-request")
 
-DERIVED_IDS = [CRON_ID, CRON_SLUG_ID, BG_ID, ROOM_ID, TUI_BG_ID, API_ID, API_CHAT_ID, RUN_ID, UUID_ID]
+DERIVED_IDS = [CRON_ID, CRON_SLUG_ID, BG_ID, ROOM_ID, TUI_BG_ID, API_ID, API_CHAT_ID, RUN_ID, UUID_ID, LOCAL_ID]
 
 # Near-misses and arbitrary cell values. These sit at the id position of a candidate
 # layout, so accepting any of them costs real wrong-column-mapping safety.
@@ -46,6 +48,8 @@ NOT_SESSION_IDS = [
     "20260101_100500",
     "bg_abcde", "api_123_0123abcd", "api-0123", "run_" + "a" * 31,
     "0b36145a-e5c7-1d2a-9f00-0123456789ab",
+    "local-", "local-" + "a" * 63, "local-" + "a" * 65,
+    "local-" + "g" * 64, "local-" + "A" * 64, LOCAL_ID + "\n", LOCAL_ID + "_extra",
 ]
 
 
@@ -111,3 +115,26 @@ def test_layout_inference_survives_every_derived_id_shape(store, tmp_path) -> No
     assert report["mapped"]["sessions"] == len(rows)
     assert report["unrecognized_layout_rows"] == 0
     assert report["inferred_layouts"]["sessions"][str(len(columns))] == columns
+
+
+def test_salvage_preserves_a_committed_local_session(tmp_path) -> None:
+    """The gateway's durable creation receipt must survive schema-less recovery."""
+    from hermes_state_runtime import begin_runtime_epoch
+    from tests.hermes_state.test_target_advance_fence import _local_session
+
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        epoch = begin_runtime_epoch(db, instance_id="recovery-test")
+        session_id = _local_session(db, epoch, tmp_path)
+        db.set_session_title(session_id, "Local session to recover")
+        conn = sqlite3.connect(str(tmp_path / "state.db"))
+        try:
+            columns, rows = _sessions_rows(conn)
+        finally:
+            conn.close()
+
+    report = _map_as_salvage(tmp_path, columns, rows)
+    assert report["mapped"]["sessions"] == 1
+    assert report["unmapped_rows"] == 0
+    with sqlite3.connect(str(tmp_path / "mapped.db")) as recovered:
+        assert recovered.execute("SELECT id, title, source FROM sessions").fetchall() == [
+            (session_id, "Local session to recover", "cli")]

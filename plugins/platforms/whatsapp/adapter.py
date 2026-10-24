@@ -210,7 +210,11 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+from gateway.platforms.whatsapp_common import (
+    WhatsAppBehaviorMixin,
+    record_whatsapp_bridge_dependency_fingerprint,
+    whatsapp_bridge_dependencies_fresh,
+)
 from gateway.whatsapp_identity import normalize_whatsapp_mention_jid, to_whatsapp_jid
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
@@ -281,16 +285,17 @@ def ensure_aiohttp() -> Optional[tuple[str, bool]]:
     Every bridge call imports aiohttp; a sealed env without it used to fail each /health poll silently and loop
     forever on "did not start in 15s" while the bridge was healthy (#126358).
     """
+    from pm.install import lazy_installs_allowed
+
     try:
         _import_aiohttp()
         return None
     except ImportError as exc:
-        if not isinstance(exc, ModuleNotFoundError):
-            return str(exc), False  # present but broken: PM sees it as installed, reinstalling is the user's call
+        if not isinstance(exc, ModuleNotFoundError) or not lazy_installs_allowed():
+            return str(exc), False  # damaged installs and policy refusals require explicit maintenance
     from pm.environments import running_from_selected_environment
     from pm.environments_adopt import restart_needed
     from pm.extras import ensure_import
-    from pm.install import lazy_installs_allowed
     from pm.paths import repo_root
 
     # Read before the sync moves the selection. A foreign interpreter (dev venv, Nix) can never lazy-install; one an
@@ -415,19 +420,21 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 return True, None
 
     def _ensure_bridge_deps(self, bridge_dir: Path) -> bool:
-        """npm install when node_modules is missing OR package.json hash != stamp file. False = fatal error set."""
-        _dep_stamp = bridge_dir / "node_modules" / ".hermes-pkg-hash"  # holds the package.json hash of the last install
-        _pkg_hash = _file_content_hash(bridge_dir / "package.json")
-        try:
-            if (bridge_dir / "node_modules").exists() and _dep_stamp.read_text(encoding="utf-8-sig").strip() == _pkg_hash and bool(_pkg_hash):
-                return True
-        except OSError:
-            pass
+        """Refresh stale manifests only when the native lazy-install policy permits."""
+        import pm
+
+        if whatsapp_bridge_dependencies_fresh(bridge_dir):
+            return True
+        if not pm.lazy_installs_allowed():
+            self._set_fatal_error(
+                "whatsapp_bridge_dependencies_stale",
+                "WhatsApp bridge dependencies are missing or stale. Run `hermes whatsapp`, then restart `hermes gateway`.",
+                retryable=False,
+            )
+            return False
         print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
         detail = ""
         try:  # Default 300s accommodates slow systems like an Unraid NAS.
-            import pm
-
             _npm_bin = find_node_executable("npm")
             env = with_hermes_node_path()
             if _npm_bin is None:
@@ -439,16 +446,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             install_result = subprocess.run([_npm_bin, "install", "--silent"], cwd=str(bridge_dir), timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300),
                                             env=env, **_RUN_TEXT, check=False)
             if install_result.returncode == 0:
+                if not record_whatsapp_bridge_dependency_fingerprint(bridge_dir):
+                    raise OSError("could not record WhatsApp bridge dependency fingerprint")
                 print(f"[{self.name}] Dependencies installed")
-                with suppress(OSError):  # Stamp is an optimization; install still succeeded
-                    if _pkg_hash:
-                        _dep_stamp.write_text(_pkg_hash, encoding="utf-8")
                 return True
             print(f"[{self.name}] npm install failed: {install_result.stderr}")
             detail = f" ({install_result.stderr.strip()[-500:]})" if install_result.stderr else ""
-        except Exception as e:
-            print(f"[{self.name}] Failed to install dependencies: {e}")
-            detail = f" ({e})"
+        except (OSError, subprocess.SubprocessError, RuntimeError, ValueError) as exc:
+            print(f"[{self.name}] Failed to install dependencies: {exc}")
+            detail = f" ({exc})"
         self._set_fatal_error("whatsapp_npm_install_failed", f"WhatsApp bridge npm install failed{detail}. "
                               "Run `hermes whatsapp`, then restart `hermes gateway`.", retryable=False)
         return False
@@ -604,16 +610,23 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         logger.info("[%s] Bridge found at %s", self.name, bridge_path)
         return True
 
-    async def connect(self, *, is_reconnect: bool = False) -> bool:
-        """Start (or adopt) the Node.js bridge and wait for it to be ready."""
+    async def _ensure_node_runtime(self) -> bool:
+        """Prepare a missing Node runtime only when the native policy allows it."""
         if find_node_executable("node") is None:
             import pm
 
-            try:
-                await asyncio.to_thread(pm.ensure, "node")
-            except pm.InstallError as exc:
-                self._set_fatal_error("whatsapp_node_missing", str(exc), retryable=False)
-                return False
+            if pm.lazy_installs_allowed():
+                try:
+                    await asyncio.to_thread(pm.ensure, "node")
+                except pm.InstallError as exc:
+                    self._set_fatal_error("whatsapp_node_missing", str(exc), retryable=False)
+                    return False
+        return True
+
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        """Start (or adopt) the Node.js bridge and wait for it to be ready."""
+        if not await self._ensure_node_runtime():
+            return False
         secondary = bool(getattr(self, "_runtime_status_platform_key", ""))
         prior_bridge_is_ours = False
         if secondary:
@@ -638,7 +651,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except Exception as e:
             logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
         try:
-            if not self._ensure_bridge_deps(bridge_path.parent):
+            if not await asyncio.to_thread(self._ensure_bridge_deps, bridge_path.parent):
                 return False
             self._session_path.mkdir(parents=True, exist_ok=True)
             # A secondary adopts or reaps only a bridge its own pidfile identifies (crash restart);

@@ -278,7 +278,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/subgoal <text>` | Append criteria to the active `/goal` mid-loop (`/subgoal`, `/subgoal remove <N>`, `/subgoal clear`). |
 | `/heartbeat every <interval> <prompt>` (alias: `/hb`) | Set a recurring prompt that re-enters this session when idle. Subcommands: `status`, `pause`, `resume`, `clear`. On Slack use `/hermes heartbeat …`. |
 | `/loop [interval] <prompt> [--times N] [--until <condition>]` (alias: `/proactive`) | Re-run a prompt on a recurring interval in this session. Subcommands: `status`, `pause`, `resume`, `stop`. See [Loops](../user-guide/features/loops.md). |
-| `/refine [focus]` | Run the memory/skill self-improvement review now, optionally with focus instructions. On Slack use `/hermes refine …`. |
+| `/refine [focus]` | Run the memory/skill self-improvement review now, optionally with focus instructions. Works on a chat left idle (no message needed first): it reviews the stored conversation and posts the result in the same chat. On Slack use `/hermes refine …`. |
 | `/review [instructions]` | Spawn an independent reviewer subagent for the work just discussed (PR, code, docs); its review re-enters this chat when done. On Slack use `/hermes review …`. |
 | `/moa <prompt>` | Run one prompt through the default [Mixture of Agents](../user-guide/features/mixture-of-agents.md) preset, then restore the session model. |
 | `/branch [--here] [name]` (alias: `/fork`) | Branch the current session. Thread-capable platforms (Discord, Telegram, Slack, Matrix) open the branch in a new sibling thread and keep this chat on the original; `--here` switches this chat onto the branch. |

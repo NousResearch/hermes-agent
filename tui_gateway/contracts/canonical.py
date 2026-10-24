@@ -3,7 +3,8 @@
 ``gateway/session_controls.py::AuthorityConnection.dispatch`` answers these on the authenticated
 native socket; the TUI sidecar (``server._methods``) never registers them, so they live in
 ``CANONICAL_METHODS`` rather than ``METHODS``. Shared names with different authority semantics are overridden in
-``canonical_sessions`` / ``canonical_projections``; unchanged names reuse ``METHODS``. The dispatcher refuses an unknown or missing key with ``4001 invalid_params`` before the
+``canonical_sessions`` / ``canonical_projections`` (and ``reload.mcp`` below, whose authority wire has no
+``always`` opt-out); unchanged names reuse ``METHODS``. The dispatcher refuses an unknown or missing key with ``4001 invalid_params`` before the
 handler runs; value checks stay in the handlers, which own their domain reasons.
 """
 
@@ -17,6 +18,7 @@ from .events import SkinPayload
 from .groups_bot_relay import RoomParams, RoomTaskReceipt
 from .prompt_voice import ClarifyLockParams, ClarifyLockResult
 from .registry import canonical_method
+from .tools_mcp_plugins import ReloadMcpResult
 
 # ── admissions ────────────────────────────────────────────────────────────────────────────────
 
@@ -564,6 +566,26 @@ class GroupsDiscardResult(Result):
 
 canonical_method("groups.discard", params=GroupsDiscardParams, result=GroupsDiscardResult,
                  doc="Discard one indeterminate room task after explicit user confirmation.")
+
+
+# ── tools / mcp ───────────────────────────────────────────────────────────────────────────────
+
+
+class CanonicalReloadMcpParams(Params):
+    """The authority's ``reload.mcp`` (``gateway/session_ancillary.reload_mcp``) reconciles THIS profile's
+    servers and moves the calling session to a new tool policy generation when it is idle. It has no
+    persistent opt-out, so ``always`` — the sidecar's own confirm opt-out — is not part of this wire
+    (the handler refuses it, ``4001 invalid_params``), and ``profile`` is its routing key."""
+
+    session_id: str | None = None
+    confirm: bool = False
+    rev: str | None = None
+    profile: str | None = None
+
+
+canonical_method("reload.mcp", params=CanonicalReloadMcpParams, result=ReloadMcpResult,
+                 doc="Reconcile this profile's live MCP servers with its config; this chat's tools change "
+                     "as a new policy generation (deferred while a turn runs).")
 
 
 # Shared-name overrides load after the authority-only value shapes above.

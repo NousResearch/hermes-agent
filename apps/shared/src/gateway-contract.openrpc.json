@@ -4225,7 +4225,7 @@
         {
           "name": "params",
           "schema": {
-            "$ref": "#/components/schemas/_SessionScoped"
+            "$ref": "#/components/schemas/ToolsShowParams"
           }
         }
       ],
@@ -9215,6 +9215,55 @@
           "profiles"
         ],
         "title": "CanonicalProfilesResult",
+        "type": "object"
+      },
+      "CanonicalReloadMcpParams": {
+        "additionalProperties": false,
+        "description": "The authority's ``reload.mcp`` (``gateway/session_ancillary.reload_mcp``) reconciles THIS profile's\nservers and moves the calling session to a new tool policy generation when it is idle. It has no\npersistent opt-out, so ``always`` \u2014 the sidecar's own confirm opt-out \u2014 is not part of this wire\n(the handler refuses it, ``4001 invalid_params``), and ``profile`` is its routing key.",
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "confirm": {
+            "default": false,
+            "title": "Confirm",
+            "type": "boolean"
+          },
+          "rev": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Rev"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "title": "CanonicalReloadMcpParams",
         "type": "object"
       },
       "CanonicalReplaceQueuedParams": {
@@ -32609,7 +32658,7 @@
       },
       "ReloadMcpParams": {
         "additionalProperties": false,
-        "description": "Without ``confirm`` the handler may answer ``confirm_required`` (per ``approvals.mcp_reload_confirm``);\n``always`` persists the opt-out; ``rev`` is the config revision the caller wants loaded (coalescing).",
+        "description": "Without ``confirm`` the handler may answer ``confirm_required`` (per ``approvals.mcp_reload_confirm``);\n``always`` persists the opt-out; ``rev`` is the config revision the caller wants loaded (coalescing).\n``profile`` is the owner's routing key: the sidecar handler ignores it, the authority routes on it.\n``always`` is the SIDECAR's opt-out only \u2014 the authority has none and refuses the key\n(``CANONICAL_METHODS['reload.mcp']``).",
         "properties": {
           "session_id": {
             "anyOf": [
@@ -32644,6 +32693,18 @@
             ],
             "default": null,
             "title": "Rev"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
           }
         },
         "title": "ReloadMcpParams",
@@ -44142,6 +44203,38 @@
         "title": "ToolsConfigureResult",
         "type": "object"
       },
+      "ToolsShowParams": {
+        "additionalProperties": false,
+        "description": "``tools.show`` is ALSO served by the session owner (``gateway/session_ancillary.show_tools``),\nwhich routes on ``profile`` and refuses nothing else; the sidecar handler ignores it. Kept off\n``_SessionScoped`` so ``tools.list`` / ``toolsets.list`` stay as narrow as their handlers, which\nresolve no profile.",
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "title": "ToolsShowParams",
+        "type": "object"
+      },
       "ToolsShowResult": {
         "additionalProperties": false,
         "properties": {
@@ -47835,6 +47928,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/CanonicalSubmitResult"
+        }
+      }
+    },
+    {
+      "name": "reload.mcp",
+      "summary": "Reconcile this profile's live MCP servers with its config; this chat's tools change as a new policy generation (deferred while a turn runs).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalReloadMcpParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ReloadMcpResult"
         }
       }
     },

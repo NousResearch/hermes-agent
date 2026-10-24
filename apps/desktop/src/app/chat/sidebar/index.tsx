@@ -156,6 +156,7 @@ import { SidebarFilterMenu } from './filter-menu'
 import { buildGatewaySessionGroups, scopeGatewaySessionGroups, useGatewaySessionGroups } from './gateway-group-model'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
+import { recentsFillsSidebar, recentsSectionClassNames } from './recents-layout'
 import { filterSessionsByProfileScope } from './profile-scope'
 import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
@@ -1509,6 +1510,21 @@ export function ChatSidebar({
   // every background refresh instead of the empty state.
   const showSessionSkeletons = sessionsLoading && scopedSessions.length === 0
 
+  // An empty Recents list must not keep flex-1. That grows the open section
+  // through the leftover sidebar height, leaving a blank gap above messaging.
+  const recentsSectionLayout = recentsSectionClassNames(
+    recentsFillsSidebar({
+      inProject,
+      showSessionSkeletons,
+      sessionCount: displayAgentSessions.length,
+      projectCount: projectOverview?.length ?? 0,
+      projectTreeLoading,
+      worktreeGroupingActive,
+      groupedSessionCount: displayAgentGroups?.reduce((count, group) => count + group.sessions.length, 0) ?? 0
+    }),
+    recentsVirtualizes
+  )
+
   // Filtered down to nothing still renders the section: the empty state is what
   // tells you the filter — not an empty account — is why the list is bare.
   // Messaging threads and cron jobs live inside this area too: a profile whose
@@ -1797,20 +1813,7 @@ export function ChatSidebar({
                 // the overview previews all render the same card.
                 card={cardRows}
                 collapsible={!inProject}
-                contentClassName={cn(
-                  'flex min-h-0 flex-1 flex-col gap-px pb-1.75',
-                  // The section is the ONE authority on whether the virtual
-                  // list owns scrolling: it neutralizes this wrapper scroller
-                  // itself (overflow-visible) when it virtualizes. Gating
-                  // SCROLL_Y here on index's own parallel guess desynced the
-                  // two — a cached project tree flipped this side but not the
-                  // section's, leaving the list with no scroller at all and
-                  // the recents pane rendering blank under Updated grouping.
-                  SCROLL_Y,
-                  // Flatten into the single scroll when compact — unless this is the
-                  // virtualized long list, which must keep its own scroller.
-                  !recentsVirtualizes && COMPACT_FLAT
-                )}
+                contentClassName={recentsSectionLayout.contentClassName}
                 dndSensors={dndSensors}
                 emptyState={
                   inProject && projectLoadFailed ? null : showSessionSkeletons || (inProject && projectLoading) ? (
@@ -1976,10 +1979,7 @@ export function ChatSidebar({
                 projectRepoWorktrees={inProject ? scopedRepoWorktrees : undefined}
                 projectsLoading={worktreeGroupingActive ? projectTreeLoading : false}
                 removedSessionIds={inProject ? removedSessionIds : undefined}
-                rootClassName={cn(
-                  'min-h-32 flex-1 overflow-hidden p-0',
-                  !recentsVirtualizes && 'compact:min-h-0 compact:flex-none compact:overflow-visible'
-                )}
+                rootClassName={recentsSectionLayout.rootClassName}
                 sessions={displayAgentSessions}
                 sortable={!showAllProfiles && agentSessions.length > 1}
               />

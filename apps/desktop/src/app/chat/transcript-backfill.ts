@@ -216,6 +216,25 @@ function durableRowIds(messages: ChatMessage[]): Set<number> {
   return new Set(messages.flatMap(message => (message.rowId === undefined ? [] : [message.rowId])))
 }
 
+/** Keep durable rows an older, partial refresh omitted from an active tile. */
+function retainNewerDurableSuffix(messages: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
+  const newestRefreshedRowId = messages.reduce((newest, message) => Math.max(newest, message.rowId ?? 0), 0)
+
+  const newestPreviousRowId = previous.reduce((newest, message) => Math.max(newest, message.rowId ?? 0), 0)
+
+  if (!newestRefreshedRowId || newestRefreshedRowId >= newestPreviousRowId) {
+    return messages
+  }
+
+  const presentRowIds = durableRowIds(messages)
+
+  const missingNewerRows = previous.filter(
+    message => message.rowId !== undefined && message.rowId > newestRefreshedRowId && !presentRowIds.has(message.rowId)
+  )
+
+  return missingNewerRows.length ? [...messages, ...missingNewerRows] : messages
+}
+
 /** A text-only refresh can omit the live tool bubble after the turn settles. */
 function retainCompletedTurnTools(messages: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
   const previousFinalIndex = previous.findLastIndex(
@@ -402,7 +421,7 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
     previous.slice(0, anchor).every(message => message.rowId === undefined || message.rowId < anchorRowId)
 
   if (anchor === 0) {
-    return retainCompletedTurnTools(refreshedTail, previous)
+    return retainNewerDurableSuffix(retainCompletedTurnTools(refreshedTail, previous), previous)
   }
 
   if (prefixIsEarlier) {
@@ -421,7 +440,10 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
       .slice(0, anchor)
       .filter(message => message.rowId !== undefined || !refreshedIds.has(message.id))
 
-    return retainCompletedTurnTools(prefix.length ? [...prefix, ...refreshedTail] : refreshedTail, previous)
+    return retainNewerDurableSuffix(
+      retainCompletedTurnTools(prefix.length ? [...prefix, ...refreshedTail] : refreshedTail, previous),
+      previous
+    )
   }
 
   const refreshedIds = new Set(refreshedTail.map(message => message.id))
@@ -430,10 +452,10 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
   // tail really did cover. Take the page. This is what keeps a finished reply
   // through a long tool turn.
   if (pageCoversWindow(previous, refreshedIds, refreshedRowIds)) {
-    return retainCompletedTurnTools(refreshedTail, previous)
+    return retainNewerDurableSuffix(retainCompletedTurnTools(refreshedTail, previous), previous)
   }
 
-  return retainCompletedTurnTools(mergeOverlappingTail(previous, refreshedTail), previous)
+  return retainNewerDurableSuffix(retainCompletedTurnTools(mergeOverlappingTail(previous, refreshedTail), previous), previous)
 }
 
 const REFRESH_OVERLAP_PAGE_LIMIT = 4

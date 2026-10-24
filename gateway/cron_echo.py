@@ -66,10 +66,21 @@ __all__ = [
 CRON_ENVELOPE_HEADER = "Cronjob Response:"
 
 # ``(job_id: <id>)`` — the delivery layer's second line.
-_JOB_ID_RE = re.compile(r"^\(job_id:\s*(?P<job_id>[0-9a-fA-F-]{4,})\)\s*$", re.MULTILINE)
+#
+# The delivery layer writes it on its own line, but the text that actually
+# REACHES the receiving gateway has been flattened to a single line somewhere in
+# the delivery pipeline (Telegram cannot carry a raw newline in a caption, so
+# the envelope arrives as "Cronjob Response: <job> (job_id: <id>) ------------").
+# The regex must match BOTH forms, or the job id is never parsed and the
+# per-job state file falls back to a mangled name.
+_JOB_ID_RE = re.compile(r"\(job_id:\s*(?P<job_id>[0-9a-fA-F-]{4,})\)")
 
 # The dashed divider between the envelope header and the payload.
 _DIVIDER_RE = re.compile(r"^-{3,}\s*$", re.MULTILINE)
+
+# The same divider when the envelope was flattened onto one line: a run of 3+
+# dashes followed by whitespace.
+_DIVIDER_INLINE_RE = re.compile(r"-{3,}\s*")
 
 # The delivery layer's footer ("To stop or manage this job, send me a new message").
 _FOOTER_RE = re.compile(r"To stop or manage this job, send me a new message", re.IGNORECASE)
@@ -204,6 +215,18 @@ def parse_cron_envelope(text: Any) -> Optional[CronEchoVerdict]:
     The envelope is only recognised at the START of the message. A human message
     that quotes a cron post ("can you kill the VPN alert?") is not an envelope
     and must keep the normal path.
+
+    Two physical forms are accepted, because the delivery pipeline flattens the
+    envelope before it reaches the receiving gateway:
+
+    * the multi-line form the delivery layer writes —
+      ``Cronjob Response: <job>\\n(job_id: <id>)\\n-------------\\n<payload>``
+    * the flattened single-line form that actually arrives —
+      ``Cronjob Response: <job> (job_id: <id>) ------------ <payload>``
+
+    Both yield the same job name, job id, and payload. The job NAME must not
+    carry the ``(job_id: ...)`` tail or the divider run — those are envelope
+    furniture, not part of the job's name.
     """
     if not isinstance(text, str):
         return None
@@ -211,28 +234,7 @@ def parse_cron_envelope(text: Any) -> Optional[CronEchoVerdict]:
     if not stripped.startswith(CRON_ENVELOPE_HEADER):
         return None
 
-    header_line, _, remainder = stripped.partition("\n")
-    # "Cronjob Response: <job name>" — the name may be empty, but the header must be alone on its line.
-    if "\n" in header_line and not header_line.startswith(CRON_ENVELOPE_HEADER):
-        return None
-    job_name = header_line[len(CRON_ENVELOPE_HEADER):].strip()
-
-    job_id = ""
-    id_match = _JOB_ID_RE.search(remainder)
-    if id_match:
-        job_id = id_match.group("job_id")
-
-    # The payload is what sits under the divider. Without a divider the whole
-    # remainder is the payload.
-    payload = remainder
-    divider = _DIVIDER_RE.search(remainder)
-    if divider:
-        payload = remainder[divider.end():]
-    # The delivery layer's footer is not payload.
-    footer = _FOOTER_RE.search(payload)
-    if footer:
-        payload = payload[: footer.start()]
-
+    job_name, job_id, payload = _split_envelope(text)
     escalation = bool(_ESCALATION_PAYLOAD_RE.search(payload))
     return CronEchoVerdict(is_envelope=True, is_escalation=escalation, job_name=job_name, job_id=job_id)
 
@@ -242,18 +244,79 @@ def is_cron_envelope(text: Any) -> bool:
     return parse_cron_envelope(text) is not None
 
 
-def _extract_payload(text: Any) -> str:
-    """The job's own output: what sits under the envelope's divider."""
+def _split_envelope(text: Any) -> Tuple[str, str, str]:
+    """Split an envelope into ``(job_name, job_id, payload)``.
+
+    One implementation, used by BOTH ``parse_cron_envelope`` and
+    ``_extract_payload``, so the two can never disagree about where the payload
+    starts — a drift there silently fingerprints the wrong span and reads one
+    job as two different states.
+
+    Handles both physical forms:
+
+    * the multi-line form the delivery layer writes —
+      ``Cronjob Response: <job>\\n(job_id: <id>)\\n-------------\\n<payload>``
+    * the flattened single-line form that actually arrives at the gateway —
+      ``Cronjob Response: <job> (job_id: <id>) ------------ <payload>``
+    """
     if not isinstance(text, str):
-        return ""
+        return "", "", ""
     stripped = text.lstrip()
-    remainder = stripped.partition("\n")[2]
-    divider = _DIVIDER_RE.search(remainder)
-    payload = remainder[divider.end():] if divider else remainder
+    header_line, newline, remainder = stripped.partition("\n")
+
+    header_tail = header_line[len(CRON_ENVELOPE_HEADER):].strip() if header_line.startswith(
+        CRON_ENVELOPE_HEADER
+    ) else ""
+
+    job_id = ""
+    id_match = _JOB_ID_RE.search(header_tail)
+    if id_match:
+        job_id = id_match.group("job_id")
+        # The "(job_id: ...)" tail is envelope furniture, not part of the name.
+        header_tail = header_tail[: id_match.start()].strip()
+    else:
+        # The multi-line form puts the id on the NEXT line.
+        id_match = _JOB_ID_RE.search(remainder)
+        if id_match:
+            job_id = id_match.group("job_id")
+
+    # Strip the divider run from the name (the flattened form puts it inline).
+    job_name = _DIVIDER_INLINE_RE.split(header_tail, maxsplit=1)[0].strip()
+
+    # The payload is what sits under the divider.
+    if newline:
+        divider = _DIVIDER_RE.search(remainder)
+        if divider:
+            payload = remainder[divider.end():]
+        elif id_match is not None:
+            # The flattened form with a newline after the header: the divider
+            # run follows the id on the same line.
+            flat = _DIVIDER_INLINE_RE.search(remainder, id_match.end())
+            payload = remainder[flat.end():] if flat else remainder
+        else:
+            payload = remainder
+    else:
+        # Single line: the id and the divider are both on the header line.
+        flat = _DIVIDER_INLINE_RE.search(header_line, len(CRON_ENVELOPE_HEADER))
+        payload = header_line[flat.end():] if flat else ""
+
+    # The delivery layer's footer is not payload.
     footer = _FOOTER_RE.search(payload)
     if footer:
         payload = payload[: footer.start()]
-    return payload
+    return job_name, job_id, payload
+
+
+def _extract_payload(text: Any) -> str:
+    """The job's own output: what sits under the envelope's divider.
+
+    Handles both the multi-line envelope and the flattened single-line form
+    that actually reaches the gateway (see ``parse_cron_envelope``). The
+    fingerprint MUST be computed over the same payload in both forms, or the
+    same job would read as two different states depending on how the delivery
+    pipeline happened to flatten it.
+    """
+    return _split_envelope(text)[2]
 
 
 # Volatile noise: the parts of a status payload that change every tick without the
@@ -328,7 +391,14 @@ class CronEchoSuppressor:
 
     def _resolve_state_dir(self) -> Optional[Any]:
         if self._state_dir is not None:
-            return self._state_dir
+            # The caller may hand us a plain string path. Normalise it to a Path
+            # so the mkdir()/write path below works for both.
+            try:
+                from pathlib import Path
+
+                return Path(self._state_dir)
+            except (TypeError, ValueError):
+                return self._state_dir
         try:
             from hermes_constants import get_hermes_home
 

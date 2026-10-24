@@ -466,3 +466,102 @@ def test_load_settings_falls_back_to_the_defaults(monkeypatch):
 
     monkeypatch.setattr(hermes_config, "load_config_readonly", boom)
     assert load_settings() == CronEchoSettings()
+
+
+# ---------------------------------------------------------------------------
+# The FLATTENED envelope: what actually reaches the gateway.
+#
+# The delivery layer writes a multi-line envelope, but the text that arrives at
+# the receiving gateway has been flattened onto one line — Telegram cannot carry
+# a raw newline in a caption. Verified against gateway.log:
+#
+#   inbound ... msg='Cronjob Response: mac-ssh-key-watchdog
+#   (job_id: 4155843881c1) -------------  ⚠️ '
+#
+# A parser that only understands the multi-line form silently loses the job id,
+# and the per-job state file falls back to a mangled name. These tests pin the
+# flattened form.
+# ---------------------------------------------------------------------------
+
+
+def _flat_envelope(job: str = "mac-ssh-key-watchdog", job_id: str = JOB_ID, payload: str = "OK") -> str:
+    """The single-line form the receiving gateway actually sees."""
+    return (
+        f"{CRON_ENVELOPE_HEADER} {job} (job_id: {job_id}) ------------- {payload} "
+        'To stop or manage this job, send me a new message (e.g. "stop reminder").'
+    )
+
+
+def test_the_flattened_envelope_is_recognised():
+    assert is_cron_envelope(_flat_envelope()) is True
+
+
+def test_the_flattened_envelope_yields_the_job_id():
+    verdict = parse_cron_envelope(_flat_envelope())
+    assert verdict is not None
+    assert verdict.job_id == JOB_ID
+
+
+def test_the_flattened_envelope_yields_a_clean_job_name():
+    """The name must not carry the "(job_id: ...)" tail or the divider run."""
+    verdict = parse_cron_envelope(_flat_envelope())
+    assert verdict is not None
+    assert verdict.job_name == "mac-ssh-key-watchdog"
+
+
+def test_the_flattened_envelope_keys_the_state_file_on_the_job_id():
+    verdict = parse_cron_envelope(_flat_envelope())
+    assert verdict is not None
+    assert verdict.job_key == JOB_ID
+
+
+def test_the_flattened_and_multiline_forms_agree_on_name_and_id():
+    multi = parse_cron_envelope(_envelope())
+    flat = parse_cron_envelope(_flat_envelope())
+    assert multi is not None and flat is not None
+    assert (multi.job_name, multi.job_id) == (flat.job_name, flat.job_id)
+
+
+def test_the_flattened_and_multiline_forms_agree_on_the_fingerprint():
+    """The same job must fingerprint the same in either form, or the state
+    file reads one job as two and the hub answers it twice."""
+    multi = payload_fingerprint(_envelope(payload="SSH key probe OK for mac-mini"))
+    flat = payload_fingerprint(_flat_envelope(payload="SSH key probe OK for mac-mini"))
+    assert multi == flat
+
+
+def test_the_flattened_envelope_is_suppressed():
+    suppressor = CronEchoSuppressor()
+    verdict = suppressor.verdict(_flat_envelope())
+    assert verdict.is_envelope is True
+    assert verdict.suppress is True
+
+
+def test_a_flattened_escalation_is_still_admitted():
+    payload = "I need help with **Patroni disk usage** -- volume full"
+    verdict = CronEchoSuppressor().verdict(_flat_envelope(payload=payload))
+    assert verdict.is_escalation is True
+    assert verdict.suppress is False
+
+
+def test_the_flattened_envelope_detects_a_changed_payload(tmp_path):
+    settings = CronEchoSettings(enabled=True, reply_on_change_only=True)
+    suppressor = CronEchoSuppressor(settings_provider=lambda: settings, state_dir=tmp_path)
+    first = suppressor.verdict(_flat_envelope(payload="probe OK for mac-mini"))
+    assert first.suppress is False
+    same = suppressor.verdict(_flat_envelope(payload="probe OK for mac-mini"))
+    assert same.suppress is True
+    changed = suppressor.verdict(_flat_envelope(payload="probe FAILED for mac-mini: host key mismatch"))
+    assert changed.suppress is False
+
+
+def test_a_state_dir_given_as_a_plain_string_path_works(tmp_path):
+    """The constructor accepts a str path; it must not crash on the mkdir."""
+    settings = CronEchoSettings(enabled=True, reply_on_change_only=True)
+    suppressor = CronEchoSuppressor(
+        settings_provider=lambda: settings,
+        state_dir=str(tmp_path / "cron-echo"),
+    )
+    verdict = suppressor.verdict(_envelope())
+    assert verdict.suppress is False
+    assert (tmp_path / "cron-echo").exists()

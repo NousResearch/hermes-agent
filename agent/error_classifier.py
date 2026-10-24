@@ -549,6 +549,13 @@ _REASONING_REQUIRED_MARKERS = (
 _REASONING_LEVEL_REJECTION_MARKERS = ("must be one of", "invalid value for")
 
 
+def _reasoning_token_window(msg: str) -> Optional[str]:
+    """The text around the first reasoning-field token in *msg* (48 chars before, 96 after), where
+    the required / level wording has to sit; None when no such token is present."""
+    token = _REASONING_FIELD_TOKEN.search(msg)
+    return None if token is None else msg[max(0, token.start() - 48):token.end() + 96]
+
+
 def is_reasoning_level_rejection(error_msg: str) -> bool:
     """Provider 400 rejecting the *value* of a reasoning wire control against the endpoint's closed
     level set ("'reasoning_effort' must be one of: 'minimal', 'low', …", Alibaba token-plan /
@@ -557,28 +564,50 @@ def is_reasoning_level_rejection(error_msg: str) -> bool:
     understood and has to stay on the wire; only the disabled level ("none") is invalid, so the
     recovery is the floor step-up in the auxiliary ladder and the disable-drop in the main loop, not
     the strip rung and not an abort to the fallback chain."""
+    near = _reasoning_token_window((error_msg or "").lower())
+    return near is not None and any(m in near for m in _REASONING_LEVEL_REJECTION_MARKERS)
+
+
+# Same rejection, wording by the model's own "off": Claude Sonnet 5.5 refuses
+# ``thinking: {"type": "disabled"}`` and names its lowest setting instead — 'To turn thinking off on
+# this model, send "thinking": {"type": "between_tools"} instead of {"type": "disabled"}'. The native
+# Anthropic adapter already sends ``between_tools`` (#132922), but a route that translates the
+# generic disable into Anthropic's ``disabled`` (seen through an OpenAI-compatible relay on the
+# ``custom`` provider) gets this 400. The generic reasoning controls on those wires have no
+# ``between_tools`` value, so the recovery is the floor step-up, as for "reasoning is mandatory".
+_REASONING_BETWEEN_TOOLS_MARKER = "between_tools"
+
+
+def is_reasoning_between_tools_rejection(error_msg: str) -> bool:
+    """Provider 400 naming the ``between_tools`` thinking type next to a reasoning field: Claude Sonnet
+    5.5's answer to a relayed ``thinking: {"type": "disabled"}``, or a thinking-type enum that lists it.
+    Matched by message alone (the 400 carries no structured code that says so), anchored on the marker:
+    some reasoning-field token must sit within 96 chars before it or 48 after (the other reasoning
+    predicates' window, seen from the marker), so a wrapper that names a reasoning field earlier in the
+    message doesn't hide it. The disable is what's refused, so the recovery is the floor step-up in the
+    auxiliary ladder and the main loop, not the strip rung and not an abort to the fallback chain."""
     msg = (error_msg or "").lower()
-    token = _REASONING_FIELD_TOKEN.search(msg)
-    if token is None:
-        return False
-    near = msg[max(0, token.start() - 48):token.end() + 96]
-    return any(m in near for m in _REASONING_LEVEL_REJECTION_MARKERS)
+    width = len(_REASONING_BETWEEN_TOOLS_MARKER)
+    marks = [m.start() for m in re.finditer(_REASONING_BETWEEN_TOOLS_MARKER, msg)]
+    return any(t.start() - 48 <= i and i + width <= t.end() + 96
+               for t in _REASONING_FIELD_TOKEN.finditer(msg) for i in marks)
 
 
 def is_reasoning_required_rejection(error_msg: str) -> bool:
     """Provider 400 saying the model's reasoning cannot be switched OFF ("Reasoning is mandatory for
     this endpoint and cannot be disabled", the Nous Portal on gpt-6-astra) — or refusing the OFF
     *level* because the endpoint's closed set starts at ``minimal``
-    (``is_reasoning_level_rejection``). The opposite of ``is_reasoning_field_rejection``: the field is
-    understood, the *disable* is refused, so the right reaction is to step the effort up to the
-    lowest level rather than drop the field (a dropped field also works, but tells the caller nothing
-    about the next call)."""
+    (``is_reasoning_level_rejection``), or naming a different "off" (Claude Sonnet 5.5's
+    ``between_tools``, ``is_reasoning_between_tools_rejection``). The opposite of
+    ``is_reasoning_field_rejection``: the field is understood, the *disable* is refused, so the right
+    reaction is to step the effort up to the lowest level rather than drop the field (a dropped field
+    also works, but tells the caller nothing about the next call)."""
     msg = (error_msg or "").lower()
-    token = _REASONING_FIELD_TOKEN.search(msg)
-    if token is None:
+    near = _reasoning_token_window(msg)
+    if near is None:
         return False
-    near = msg[max(0, token.start() - 48):token.end() + 96]
-    return any(m in near for m in _REASONING_REQUIRED_MARKERS) or is_reasoning_level_rejection(msg)
+    return (any(m in near for m in _REASONING_REQUIRED_MARKERS) or is_reasoning_level_rejection(msg)
+            or is_reasoning_between_tools_rejection(msg))
 
 
 def is_reasoning_field_rejection(error_msg: str) -> bool:
@@ -1239,13 +1268,14 @@ def _classify_400(c: _Ctx) -> Verdict:
         return _V_INVALID_ENCRYPTED
     # Route rejecting a reasoning disable: a reasoning-mandatory route (GLM-5.3 on Nous Portal /
     # OpenRouter), a chat-only relay that does not accept ``reasoning_effort: none`` at all
-    # (#114460), or an endpoint whose closed level set starts above the disable ("must be one of:
-    # 'minimal', …" — Alibaba token-plan). Deterministic for the request shape, but the only bad
-    # value is the disable — the loop drops it (or, when the disable is refused rather than the
-    # field, steps the effort up to the floor) and retries once. Must precede request-validation,
-    # which would abort as format_error.
+    # (#114460), an endpoint whose closed level set starts above the disable ("must be one of:
+    # 'minimal', …" — Alibaba token-plan), or Claude Sonnet 5.5 off the native adapter naming
+    # ``between_tools`` as its "off". Deterministic for the request shape, but the only bad value
+    # is the disable — the loop drops it (or, when the disable is refused rather than the field,
+    # steps the effort up to the floor) and retries once. Must precede request-validation, which
+    # would abort as format_error.
     if (_REASONING_MANDATORY_PATTERN in msg or is_reasoning_field_rejection(msg)
-            or is_reasoning_level_rejection(msg)):
+            or is_reasoning_level_rejection(msg) or is_reasoning_between_tools_rejection(msg)):
         return _V_REASONING_MANDATORY
     # 400 blaming a field this route never sent (Codex OAuth injects then rejects
     # prompt_cache_retention ~20% of the time): transient, retry identical request.

@@ -68,6 +68,17 @@ def _blines(agent: Any, *lines: str) -> None:
         agent._buffer_vprint(line)
 
 
+def _rearm_refused_continuation(agent: Any, sent: Any) -> None:
+    """On a route that refused a disable but takes a level: if the refused request (*sent*) carried a
+    disable and the session's own config isn't one, it was the one-shot "answer without thinking"
+    length-continuation. Re-arm it, so the retry goes out at the floor effort (the closest the route
+    allows) instead of re-spending the full thinking budget that just ate the output cap."""
+    def _is_off(c: Any) -> bool:
+        return isinstance(c, dict) and (c.get("enabled") is False or c.get("effort") == "none")
+    if _is_off(sent) and not _is_off(getattr(agent, "reasoning_config", None)):
+        agent._ephemeral_reasoning_off = True
+
+
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
     """Extract a provider-reported image dimension ceiling, if present."""
     parts = []
@@ -745,10 +756,11 @@ def recover_after_classification(
             logger.warning("%sReasoning-effort recovery: dropping reasoning config for %s", agent.log_prefix, agent.model)
             return True, recovered_with_pool
         agent._reasoning_disable_rejected = True
-        # "Reasoning is mandatory ... cannot be disabled" understands the field and refuses only the
-        # OFF: step up to the floor effort (the closest the route allows to what the user asked for)
-        # rather than the route default. A relay that does not know the field at all keeps the
-        # drop (a floor would 400 the same way).
+        # "Reasoning is mandatory ... cannot be disabled" (or a closed level set, or Claude Sonnet
+        # 5.5's ``between_tools``) understands the field and refuses only the OFF: step up to the
+        # floor effort (the closest the route allows to what the user asked for) rather than the
+        # route default. A relay that does not know the field at all keeps the drop (a floor would
+        # 400 the same way).
         from agent.error_classifier import is_reasoning_required_rejection
         agent._reasoning_floor_required = is_reasoning_required_rejection(str(api_error))
         try:
@@ -758,7 +770,8 @@ def recover_after_classification(
             pass
         if agent._reasoning_floor_required:
             from agent.auxiliary_reasoning_floor import REASONING_FLOOR_EFFORT
-            _vlines(agent, f"⚠️  {agent.model} cannot disable reasoning — using effort={REASONING_FLOOR_EFFORT} for this session, retrying...")
+            _rearm_refused_continuation(agent, sent)
+            _vlines(agent, f"⚠️  {agent.model} cannot disable reasoning — reasoning-off requests will use effort={REASONING_FLOOR_EFFORT} this session, retrying...")
             logger.warning("%sReasoning-disable recovery: stepping reasoning up to %s for %s",
                            agent.log_prefix, REASONING_FLOOR_EFFORT, agent.model)
         else:

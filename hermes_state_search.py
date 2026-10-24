@@ -19,7 +19,7 @@ from hermes_state_common import (
     MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION, _FTS_CJK_TRIGGERS,
     escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql, routed_sessions_setting,
 )
-from hermes_state_fts import fts_layout_current, fts_layout_drift
+from hermes_state_fts import fts_layout_current, fts_layout_drift, fts_projection_short
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
@@ -518,8 +518,8 @@ class SessionSearchMixin:
 
     def _repair_optimize_bookkeeping(self) -> None:
         """Heal interrupted demote/backfill bookkeeping before optimize runs: orphan high_water
-        gets progress re-seeded; an empty external index with messages and no markers gets
-        a full backfill claim. Never invents markers on a still-legacy inline DB — optimize
+        gets progress re-seeded; an empty or short external index with messages and no markers
+        gets a full backfill claim. Never invents markers on a still-legacy inline DB — optimize
         would then skip demote and INSERT against the inline table forever.
 
         Covers two post-#65798 failure classes:
@@ -530,8 +530,11 @@ class SessionSearchMixin:
                 return
             if self._db_has_legacy_inline_fts(conn):
                 return  # demote owns marker creation
-            if self._fts_external_index_empty_with_messages(conn):
+            if self._fts_external_index_empty_with_messages(conn) or fts_projection_short(conn):
                 _delete_meta(conn, "fts_storage_version")
+                # Markers over a populated index make the UPDATE/DELETE triggers skip rows that
+                # are still indexed, so redacted text would stay searchable: start from empty.
+                self._reset_fts_index_to_empty(conn)
                 self._seed_fts_rebuild_markers(conn, force=True)
         self._execute_write(_do)
 
@@ -553,6 +556,7 @@ class SessionSearchMixin:
                 ))
                 or self._has_fts_trash(conn)
                 or self._fts_external_index_empty_with_messages(conn)
+                or fts_projection_short(conn)
             )
 
     def _demote_legacy_fts_to_trash(self) -> int:
@@ -642,7 +646,7 @@ class SessionSearchMixin:
             return "backfill_incomplete"
         if self._has_fts_trash(conn):
             return "teardown_incomplete"
-        if self._fts_external_index_empty_with_messages(conn):
+        if self._fts_external_index_empty_with_messages(conn) or fts_projection_short(conn):
             return "backfill_incomplete"
         current = fts_layout_current(conn)
         if not current and fts_layout_drift(conn):
@@ -714,7 +718,7 @@ class SessionSearchMixin:
         with self._read_ctx() as conn:
             still_pending = _meta_row(conn, "fts_rebuild_high_water") is not None
             still_trash = self._has_fts_trash(conn)
-            empty_index = self._fts_external_index_empty_with_messages(conn)
+            empty_index = self._fts_external_index_empty_with_messages(conn) or fts_projection_short(conn)
         if still_pending or still_trash or empty_index:
             reason = "backfill_incomplete" if still_pending or empty_index else "teardown_incomplete"
             logger.warning("FTS storage optimization did not settle (%s): pending=%s trash=%s empty_index=%s",

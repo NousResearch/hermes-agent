@@ -1805,16 +1805,14 @@ def _normalize_root_model_keys(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _normalize_max_turns_config(config: dict[str, Any]) -> dict[str, Any]:
-    """Move legacy root-level ``max_turns`` under ``agent``; the schema default is injected only
-    when the user set max_turns somewhere (so save_config can otherwise omit it)."""
-    config = dict(config)
-    agent_config = dict(config.get("agent") or {})
-    if "max_turns" in config and "max_turns" not in agent_config:
-        agent_config["max_turns"] = config["max_turns"]
-    if agent_config or "agent" in config:  # a sparse save must not grow an `agent: {}` section
-        config["agent"] = agent_config
-    config.pop("max_turns", None)
-    return config
+    """Move legacy root-level ``max_turns`` under ``agent`` (moved to config_agent_section, #144067)."""
+    from hermes_cli.config_agent_section import _normalize_max_turns_config as _impl  # lazy: no import cycle
+    return _impl(config)
+
+
+def _tolerant_agent_section_impl(config: dict[str, Any]) -> dict[str, Any]:
+    from hermes_cli.config_agent_section import _tolerant_agent_section as _impl
+    return _impl(config)
 
 
 def _canonicalize_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -2364,7 +2362,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
                 _CONFIG_PARSE_FAILURES.pop(path_key, None)  # the file reads now (a transient error left the record)
 
                 if "max_turns" in user_config:
-                    agent_user_config = dict(user_config.get("agent") or {})
+                    agent_user_config = _tolerant_agent_section_impl(user_config)
                     if agent_user_config.get("max_turns") is None:
                         agent_user_config["max_turns"] = user_config["max_turns"]
                     user_config["agent"] = agent_user_config

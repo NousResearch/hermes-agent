@@ -20,6 +20,7 @@ import weakref
 from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import safe_url_for_log
+from tools.approval_queue import clear_idle_typing_pause
 
 from utils import normalize_proxy_url
 from agent.i18n import t
@@ -3383,8 +3384,7 @@ class BasePlatformAdapter(ABC):
         finally:
             # A send_typing after an outer stop_typing() may have recreated the platform loop.
             await self._stop_typing_quietly(chat_id, metadata)
-            self._typing_paused.discard(chat_id)
-            # getattr-guard: tests build adapters via object.__new__ without _status_text.
+            clear_idle_typing_pause(self, chat_id)
             getattr(self, "_status_text", {}).pop(str(chat_id), None)
 
     async def _stop_typing_refresh(
@@ -3403,7 +3403,7 @@ class BasePlatformAdapter(ABC):
                     await asyncio.sleep(0)
                 await self._stop_typing_quietly(chat_id, metadata)
         finally:
-            self._typing_paused.discard(chat_id)
+            clear_idle_typing_pause(self, chat_id)
 
     async def _stop_typing_quietly(self, chat_id: str, metadata=None) -> None:
         """Best-effort platform stop_typing; adapter errors are swallowed."""

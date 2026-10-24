@@ -273,8 +273,6 @@ class GatewaySlashCommandsMixin(
         proactive send, not the finalized reply stream). ``is not True``: mocks auto-create attrs."""
         source = event.source
         adapter = self._delivery_adapter_for(source)  # the receiving bot, not the default profile's
-        if adapter:
-            adapter.resume_typing_for_chat(source.chat_id)  # agent is about to continue
         if getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False) is not True:
             return confirmation_text
         if adapter:
@@ -1210,7 +1208,10 @@ class GatewaySlashCommandsMixin(
         args = event.get_command_args().strip().lower().split()
         choices = {_APPROVE_CHOICE_BY_ARG[a] for a in args if a in _APPROVE_CHOICE_BY_ARG}
         choice = "always" if "always" in choices else "session" if "session" in choices else "once"
-        count = resolve_gateway_approval(session_key, choice, resolve_all="all" in args)
+        adapter = self._delivery_adapter_for(event.source)
+        count = resolve_gateway_approval(
+            session_key, choice, resolve_all="all" in args,
+            before_wake=(lambda: adapter.resume_typing_for_chat(event.source.chat_id)) if adapter else None)
         if not count:
             return t("gateway.approve.no_pending")
         confirmation_text = t(f"gateway.approve.{choice}_{'plural' if count > 1 else 'singular'}", count=count)
@@ -1235,7 +1236,10 @@ class GatewaySlashCommandsMixin(
         tokens = raw_args.split()
         resolve_all = bool(tokens) and tokens[0].lower() == "all"
         reason = (raw_args[len(tokens[0]):].strip() if resolve_all else raw_args)[:280].strip()
-        count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all, reason=reason or None)
+        adapter = self._delivery_adapter_for(event.source)
+        count = resolve_gateway_approval(
+            session_key, "deny", resolve_all=resolve_all, reason=reason or None,
+            before_wake=(lambda: adapter.resume_typing_for_chat(event.source.chat_id)) if adapter else None)
         if not count:
             return t("gateway.deny.no_pending")
         logger.info("User denied %d dangerous command(s) via /deny%s", count,

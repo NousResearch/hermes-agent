@@ -17,7 +17,7 @@ import importlib
 import logging
 import os
 import threading
-from typing import Optional
+from typing import Callable, Optional
 
 from utils import env_var_enabled, is_truthy_value
 from agent.i18n import t
@@ -121,13 +121,24 @@ def _denial_breaker_addendum(session_key: str) -> str:
 # instead of only hearing "denied". Ported from qwibitai/nanoclaw#2832.
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
+_gateway_wait_groups: dict[str, object] = {}  # session_key → shared human-input surface
+_gateway_before_wake_cbs: dict[str, Callable[[], None]] = {}
 
 
-def register_gateway_notify(session_key: str, cb) -> None:
+def register_gateway_notify(session_key: str, cb, *, wait_group: object = None,
+                            before_wake: Optional[Callable[[], None]] = None) -> None:
     """Register ``cb(approval_data: dict) -> None`` for sending approval requests. The callback
-    bridges sync→async: it runs in the agent thread and must schedule the send on the loop."""
+    bridges sync→async: it runs in the agent thread and must schedule the send on the loop.
+    ``wait_group`` is an opaque, hashable shared surface identity (e.g. adapter + chat).
+    ``before_wake`` is the turn-owned idle-surface callback for responders without a native UI;
+    it follows the synchronous, non-reentrant contract of ``resolve_gateway_approval``."""
     with _lock:
         _gateway_notify_cbs[session_key] = cb
+        _gateway_wait_groups[session_key] = session_key if wait_group is None else wait_group
+        if before_wake is None:
+            _gateway_before_wake_cbs.pop(session_key, None)
+        else:
+            _gateway_before_wake_cbs[session_key] = before_wake
 
 
 def unregister_gateway_notify(session_key: str) -> None:
@@ -135,6 +146,8 @@ def unregister_gateway_notify(session_key: str) -> None:
     they don't hang forever (agent run finished or interrupted)."""
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
+        _gateway_wait_groups.pop(session_key, None)
+        _gateway_before_wake_cbs.pop(session_key, None)
         for entry in _gateway_queues.pop(session_key, []):
             entry.event.set()
 
@@ -142,12 +155,17 @@ def unregister_gateway_notify(session_key: str) -> None:
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
                              reason: Optional[str] = None,
-                             request_id: Optional[str] = None) -> int:
+                             request_id: Optional[str] = None, *,
+                             before_wake: Optional[Callable[[], None]] = None) -> int:
     """Unblock waiting agent thread(s) from the gateway's /approve or /deny handler.
 
     *resolve_all* resolves every pending approval (``/approve all``); otherwise the oldest
     (FIFO) or the one matching *request_id*. *reason* is the ``/deny <reason>`` free text,
     relayed to the agent in the BLOCKED message. Returns the number resolved.
+    ``before_wake`` resumes an idle human-input surface: it runs only when the selected
+    decisions leave no queued waits in their wait group(s), under the queue lock, before
+    workers continue. It must be synchronous, nonblocking and must not re-enter approval APIs.
+    If it raises, the pending queue is unchanged.
     """
     with _lock:
         queue = _gateway_queues.get(session_key)
@@ -157,12 +175,21 @@ def resolve_gateway_approval(session_key: str, choice: str,
             targets = [entry for entry in queue if entry.data.get("request_id") == request_id]
             if not targets:
                 return 0
-            queue[:] = [entry for entry in queue if entry not in targets]
         elif resolve_all:
             targets = list(queue)
+        else:
+            targets = [queue[0]]
+        from tools.approval_queue import resolved_surface_is_idle
+        if before_wake is None:
+            before_wake = _gateway_before_wake_cbs.get(session_key)
+        if before_wake is not None and resolved_surface_is_idle(_gateway_queues, session_key, targets):
+            before_wake()
+        if request_id:
+            queue[:] = [entry for entry in queue if entry not in targets]
+        elif resolve_all:
             queue.clear()
         else:
-            targets = [queue.pop(0)]
+            queue.pop(0)
         if not queue:
             _gateway_queues.pop(session_key, None)
         # Popping the entry and committing its outcome are ONE critical section: the waiter's

@@ -201,6 +201,21 @@ class _Routing:
     valid_names: set[str]
 
 
+def _observe_jev(task_id: str, candidates: list[dict], routing: _Routing) -> None:
+    """Run the optional advisory observer without affecting decomposition.
+
+    Import lazily so Kanban keeps working when the observer or its optional
+    Jev dependency is unavailable. The observer owns its safe local audit log;
+    only an exception type reaches the ordinary application log.
+    """
+    try:
+        from hermes_cli.kanban_jev_observer import observe_routing
+
+        observe_routing(task_id=task_id, candidates=candidates, roster=routing.roster)
+    except Exception as exc:
+        logger.warning("decompose: Jev observer unavailable (%s)", type(exc).__name__)
+
+
 def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
     from hermes_cli.config import load_config_readonly
     try:
@@ -229,11 +244,18 @@ def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -
     if title_val is None and body_val is None:
         return DecomposeOutcome(task.id, False, "decomposer returned fanout=false with no title/body")
     with kbc.connect_closing() as conn:
-        ok = kb.specify_triage_task(
+        committed = kb.specify_triage_task(
             conn, task.id, title=title_val, body=body_val, assignee=assignee_val, author=author,
+            return_snapshot=True,
         )
-    if not ok:
+    if not committed:
         return DecomposeOutcome(task.id, False, "task moved out of triage before promotion")
+    observed_candidate = [{
+        "title": committed.title,
+        "body": committed.body,
+        "assignee": committed.assignee or routing.default_assignee,
+    }]
+    _observe_jev(task.id, observed_candidate, routing)
     return DecomposeOutcome(task.id, True, "single task (no fanout)", fanout=False, new_title=title_val)
 
 
@@ -295,6 +317,7 @@ def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) ->
         return DecomposeOutcome(task_id, False, f"DB error: {type(exc).__name__}")
     if child_ids is None:
         return DecomposeOutcome(task_id, False, "task already decomposed or moved out of triage")
+    _observe_jev(task_id, children, routing)
     return DecomposeOutcome(
         task_id, True, f"decomposed into {len(child_ids)} children", fanout=True, child_ids=child_ids,
     )

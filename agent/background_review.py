@@ -884,6 +884,12 @@ def _detach_fork_compression(review_agent: Any) -> None:
             # persistence policy, so a failed rebind never aborts the review.
             bind(session_db=None, session_id="")
             detached = True
+        except NotImplementedError:
+            logger.warning(
+                "background-review compressor detachment is unsupported; "
+                "keeping compression DISABLED on this review fork "
+                "(fail-closed, issue #93057 / #38727)"
+            )
         except Exception:
             # FAIL-CLOSED: the compressor may still point at the parent's SessionDB; enabling
             # compression would re-open the sibling race.

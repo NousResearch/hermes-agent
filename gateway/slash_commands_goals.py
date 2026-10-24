@@ -177,39 +177,39 @@ class GatewayGoalCommandsMixin:
         """Handle /refine — run the memory/skill review fork on demand, in a daemon thread against a
         snapshot of the cached AIAgent's conversation (live session and prompt cache untouched)."""
         args = (event.get_command_args() or "").strip()
-        _quick_key, agent, error = self._idle_cached_agent_or_error(event, "refine")
+        quick_key, agent, error = self._idle_cached_agent_or_error(event, "refine")
         snapshot = list(getattr(agent, "_session_messages", None) or [])
-        if not snapshot and _quick_key and _quick_key not in self._running_agents:
+        session_id = None
+        if not snapshot and quick_key and quick_key not in self._running_agents:
             # A local session's conversation is its stored transcript, not the cached agent: /moa
             # (and its settle) drop that agent, so /refine reads the session itself (T7).
             from gateway.session_refine import refine_local_session
             local = await refine_local_session(self, event.source, args)
             if local is not None:
                 return local
-            # A cold cache (or an agent holding no messages) is not an empty conversation: read the
-            # durable transcript without creating a session for an unknown key.
+            # A released cached agent (idle TTL, pressure, /moa), or one holding no messages, is not
+            # an empty conversation: refine the stored transcript.
+            from gateway.session_cold_review import stored_transcript
             from gateway.session_transcript import TranscriptReadError
             from gateway.slash_commands_status import history_unreadable
-            session_id = await self.async_session_store.peek_session_id(_quick_key)
             try:
-                history = await self.async_session_store.load_transcript(session_id) if session_id else []
+                session_id, snapshot = await stored_transcript(self, quick_key)
             except TranscriptReadError:
                 return history_unreadable()
-            turns = sum(1 for m in history if m.get("role") in {"user", "assistant"})
-            if agent is None and turns:
-                return (f"This session has {turns} persisted user/assistant messages, but the live agent "
-                        "isn't cached. Send a message (or /resume) to wake the session first, then /refine.")
-            if turns:
-                snapshot = list(history)
+            error = None if snapshot else error
         if error:
             return error
         if not snapshot:
             return t("gateway.refine.empty")
         try:
-            agent._spawn_background_review(
-                messages_snapshot=snapshot, review_memory=True,
-                review_skills="skill_manage" in getattr(agent, "valid_tool_names", set()), focus=args or None,
-            )
+            if agent is None:
+                from gateway.session_cold_review import start_cold_refine
+                await start_cold_refine(self, event.source, quick_key, session_id, snapshot, args)
+            else:
+                agent._spawn_background_review(
+                    messages_snapshot=snapshot, review_memory=True,
+                    review_skills="skill_manage" in getattr(agent, "valid_tool_names", set()), focus=args or None,
+                )
         except Exception as exc:
             return t("gateway.refine.start_failed", error=exc)
         tail = t("gateway.refine.focus_suffix", focus=args) if args else ""

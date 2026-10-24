@@ -1,4 +1,4 @@
-"""``/review`` for a session whose cached agent is gone.
+"""``/review`` and messaging ``/refine`` for a session whose cached agent is gone.
 
 The gateway drops a session's cached agent after an idle hour (``agent.agent_cache.idle_ttl_secs``),
 under LRU or memory pressure, and around ``/moa``. The conversation outlives it in the session's
@@ -8,7 +8,9 @@ stored transcript and dispatches the reviewer from a fresh agent on the route, t
 id the session's next turn would use, so its completion comes back exactly as a resident agent's.
 """
 import asyncio
+import concurrent.futures
 import contextlib
+import threading
 
 
 async def cold_review_history(runner, source):
@@ -26,6 +28,16 @@ async def cold_review_history(runner, source):
         return await asyncio.to_thread(load)
     entry = await runner.async_session_store.get_or_create_session(source)
     return entry.session_id, await runner.async_session_store.load_transcript(entry.session_id)
+
+
+async def stored_transcript(runner, session_key):
+    """``(session_id, transcript)`` of a messaging session; the transcript is empty when the chat has no
+    session or no user/assistant turn. Read-only: ``/refine`` in a new chat must not create a session."""
+    session_id = await runner.async_session_store.peek_session_id(session_key)
+    history = await runner.async_session_store.load_transcript(session_id) if session_id else []
+    if not any(m.get("role") in {"user", "assistant"} for m in history):
+        return session_id, []
+    return session_id, list(history)
 
 
 @contextlib.contextmanager
@@ -80,3 +92,41 @@ def cold_review_parent(runner, source, session_key, session_id):
         finally:
             with contextlib.suppress(Exception):
                 agent.release_clients()
+
+
+def start_cold_refine(runner, source, session_key, session_id, history, focus):
+    """``/refine`` for a messaging session whose cached agent is gone: the resident path's own
+    ``_spawn_background_review`` call, made from the cold parent. A resident agent sends its review
+    summary into the chat through its last turn's callback (``run_turn_runner._make_bg_review_callbacks``);
+    this one sends it to the same chat and thread directly. Returns a future that resolves once the review
+    is spawned (or raises its start error); the parent's clients are released when the review's request ends,
+    on the thread that built it."""
+    from gateway.run import _interim_metadata, _non_conversational_metadata
+    from tools.thread_context import propagate_context_to_thread
+    loop = asyncio.get_running_loop()
+    adapter = runner._delivery_adapter_for(source)
+    metadata = _interim_metadata(_non_conversational_metadata(
+        runner._thread_metadata_for_source(source), platform=source.platform))
+    started = concurrent.futures.Future()
+
+    def deliver(message):
+        if adapter is not None:
+            asyncio.run_coroutine_threadsafe(adapter.send(source.chat_id, str(message), metadata=metadata), loop)
+
+    def body():
+        try:
+            with cold_review_parent(runner, source, session_key, session_id) as parent:
+                parent.background_review_callback = deliver
+                parent._spawn_background_review(
+                    messages_snapshot=history, review_memory=True,
+                    review_skills="skill_manage" in getattr(parent, "valid_tool_names", set()), focus=focus or None)
+                started.set_result(None)
+                run = getattr(parent, "_background_review_run", None)
+                if run is not None:
+                    run.request_done.wait()
+        except Exception as exc:
+            if not started.done():
+                started.set_exception(exc)
+
+    threading.Thread(target=propagate_context_to_thread(body), daemon=True, name="cold-refine").start()
+    return asyncio.wrap_future(started)

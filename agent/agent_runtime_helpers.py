@@ -764,14 +764,14 @@ def _normalize_sentinel_encoded_content(messages: list[dict]) -> None:
 
 
 def repair_message_sequence(agent, messages: list[dict]) -> int:
-    """Collapse malformed role-alternation left in the live history; returns repair count.
-    Providers require strict alternation after the system message (violations: silent empty
-    responses or 400s); this is the pre-call belt for host-fed, resumed or replayed histories.
-    Passes in order: decode any sentinel-encoded multimodal rows (so an image is not merged as text);
-    merge consecutive assistant turns (BEFORE orphan detection so the merged tool_call-id union is
-    known); drop stray tool results; prune unanswered tool_calls; merge consecutive user turns. A user
-    turn directly after an assistant turn is valid and left alone.
+    """Repair host-fed or model-produced role alternation before a request.
+    Authenticated Retry boundaries remain durable display rows between model segments.
+    Each segment decodes sentinels, merges assistants before pairing tool calls/results,
+    drops orphans, prunes unanswered calls and merges consecutive user input.
     """
+    from agent.retry_context import repair_preserving_failure_rows
+    if (repairs := repair_preserving_failure_rows(agent, messages, repair_message_sequence)) is not None:
+        return repairs
     if not messages:
         return 0
     _normalize_sentinel_encoded_content(messages)

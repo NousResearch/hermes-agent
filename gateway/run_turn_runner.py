@@ -790,6 +790,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             _select_cached_agent_history,
         )
         ctx = self._ctx
+        from gateway.session_retry import resumed_history
+        if (history := resumed_history(agent)) is not None:
+            return history, None, _collect_history_media_paths(history)
         from gateway.session_api_turn import api_execution
         api = api_execution.get()
         if api is not None and api['history'] is not None:
@@ -861,6 +864,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         Returns (persist_user_message_override, persist_user_timestamp_override): real user text is
         kept separate from API-only recovery guidance so stale guidance never replays as user text.
         """
+        from gateway.session_retry import continuation
+        if continuation.get() is not None:
+            return None, None
         from gateway.run import (
             _auto_continue_freshness_window, _is_fresh_gateway_interruption,
             _last_transcript_timestamp, _prepare_resume_pending_message, build_resume_recovery_note,
@@ -980,7 +986,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             if ctx.moa_config is not None:
                 kwargs["moa_config"] = ctx.moa_config
             from gateway.session_onboarding import arm_onboarding_turn
-            prelude = arm_onboarding_turn(agent, self._approval_owner, agent_history)
+            from gateway.session_retry import continuation
+            prelude = None if continuation.get() is not None else arm_onboarding_turn(agent, self._approval_owner, agent_history)
             if prelude is not None and _accepts_keyword(agent.run_conversation, "prelude"):
                 kwargs["prelude"] = prelude
             if persist_user_timestamp_override is not None:
@@ -995,7 +1002,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             before = (getattr(agent, 'session_prompt_tokens', 0) or 0,
                       getattr(agent, 'session_completion_tokens', 0) or 0)
             with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""):
-                result = agent.run_conversation(api_message, **kwargs)
+                from gateway.session_retry import resume_agent
+                with resume_agent(agent):
+                    result = agent.run_conversation(api_message, **kwargs)
             if captured is not None:
                 incoming = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
                 outgoing = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])

@@ -41,7 +41,7 @@ hermes acp --setup          # interactive provider/model setup for ACP terminal 
 ### Method catalog (selected)
 
 ```
-prompt.submit           prompt.background       session.steer
+prompt.submit           prompt.retry            prompt.background       session.steer
 session.create          session.list            session.active_list
 session.activate        session.close           session.interrupt
 session.history         session.compress        session.branch
@@ -80,6 +80,16 @@ A truncation parameter without `confirm_truncate` is refused with code `4004` or
 A truncating submit is never absorbed by the busy-input policy. While a turn is still running, an ordinary `prompt.submit` is steered, redirected, or queued (`display.busy_input_mode`), but a rewind / edit / regenerate refuses with code `4009` (`session busy`) instead — queueing it would drop the history cut and run the edit as a plain follow-up after the un-edited turn. Hosts call `session.interrupt` and retry the same submit until it lands; the Desktop app does this automatically, so editing a message while Hermes is still thinking stops the live turn and reruns from the edited prompt.
 
 On a successful truncating submit against a durable session, the `prompt.submit` result additionally carries `survivor_user_row_ids` — the fresh post-rewrite row IDs of the surviving user turns, in visible-user-ordinal order. The rewrite re-inserts the kept prefix as new rows, so every row ID the host cached before the rewind is stale afterward; rebind cached IDs from this list (a `null` entry means that turn has no durable ID — drop the cached one) or the next rewind targeting an older surviving turn will be refused with `4018`.
+
+### Continuing a failed provider request on `prompt.retry`
+
+A retained provider rate-limit failure can carry `retry_token` on `message.complete` and on `session.resume.inflight`. Send `prompt.retry {session_id, retry_token}` to continue the durable context, including completed tool results, without adding user input or truncating history. The token is consumed once; busy retries refuse with `4009` on standalone serve or `4001 session_busy` on the canonical owner and never enter the input queue. Explicit Regenerate still uses the rewind contract above.
+
+The canonical `hermes-gateway-v1` owner supports this for Desktop (`source: gui`) sessions using the same retained agent. Its result is an `AdmissionStatus` receipt: execution runs through the durable FIFO, but continues the existing user row and skips inbound command/plugin dispatch. `session.resume.inflight` uses the same `user`/`retry_token` projection. Standalone TUI/serve returns `status: streaming`.
+
+Tokens are process-local. A missing token, backend restart, agent replacement, changed/compacted transcript, unproven tool outcome, screenshot replay depending on external image files/config, or unsupported isolated/Codex worker refuses with `4034` on standalone serve or `4001 retry_checkpoint_unavailable` on the canonical owner; clients must preserve the transcript and ask the user to review completed work before continuing. Never downgrade this refusal to a truncating submit or replay the original prompt. A tool effect that occurs before its result commits remains an unknowable window: this mechanism does not guarantee arbitrary exactly-once effects.
+
+A forwarded send refused as `SESSION_OWNER_UNCONFIRMED` may already be queued: do not resend it, even though it shares code `4090` with definite ownership refusals. Fresh error-card resubmission is limited to definitively rejected, text-only input on the original runtime; it never automatically resumes onto another owner. Each fresh attempt needs its own definite refusal before another resend is allowed; an unconfirmed retry consumes the old refusal proof without replacing newer output or a new checkpoint. Token continuation retains runtime recovery and backend validation. A `SESSION_OWNER_BUSY` refusal can discard staged images; review and resend the restored composer draft so its images upload again instead of reusing stale attachment references or sending text alone.
 
 ### Events streamed back
 

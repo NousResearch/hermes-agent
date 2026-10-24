@@ -17,7 +17,7 @@ def is_viewer_input(row):
     admission: ``local_automation_v1`` (plugin injection, delegation completions, process and watch notices,
     /loop, heartbeat), a hosted-room task (``hosted:`` request id) or any other envelope."""
     return (not str(row['request_id']).startswith('hosted:')
-            and {'text'} <= set(row['payload']) <= LOCAL_INPUT_FIELDS | {'local_operator_v1'})
+            and {'text'} <= set(row['payload']) <= LOCAL_INPUT_FIELDS | {'local_operator_v1', 'retry_continuation_v1'})
 
 
 def check_local_input(authority, ref, row, *, source=None):
@@ -33,5 +33,9 @@ def check_local_input(authority, ref, row, *, source=None):
         source = source or authority.sessions[ref.session_id].source
         if row['principal_id'] != source.user_id:
             raise RuntimeStoreError('permission_denied')
+    if 'retry_continuation_v1' in payload:
+        from gateway.session_retry import check_retry_input
+        check_retry_input(authority, ref, row)
+        allowed.add('retry_continuation_v1')
     if not {'text'} <= set(payload) <= allowed:
         raise RuntimeStoreError('permission_denied')

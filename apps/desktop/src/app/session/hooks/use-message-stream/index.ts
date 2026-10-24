@@ -738,7 +738,7 @@ export function useMessageStream({
       sessionId: string,
       text: string,
       responsePreviewed?: boolean,
-      failure?: { error: string; partial: boolean; surface?: ErrorSurface | null },
+      failure?: { error: string; partial: boolean; retryToken?: string; surface?: ErrorSurface | null },
       occurredAt = Date.now() / 1000,
       persistedTurn?: PersistedTurn | null,
       responseTransformed?: boolean,
@@ -837,7 +837,8 @@ export function useMessageStream({
             interim: false,
             recovered: false,
             ...(durationS !== undefined ? { durationS } : {}),
-            ...(completionError && failure?.surface ? { errorSurface: failure.surface } : {})
+            ...(completionError && failure?.surface ? { errorSurface: failure.surface } : {}),
+            ...(completionError && failure?.retryToken ? { retryToken: failure.retryToken } : {})
           }
 
           if (completionError && !keepFailedPartialText) {
@@ -868,7 +869,8 @@ export function useMessageStream({
             branchGroupId: state.pendingBranchGroup ?? undefined,
             ...(durationS !== undefined ? { durationS } : {}),
             ...(completionError && { error: completionError }),
-            ...(completionError && failure?.surface ? { errorSurface: failure.surface } : {})
+            ...(completionError && failure?.surface ? { errorSurface: failure.surface } : {}),
+            ...(completionError && failure?.retryToken ? { retryToken: failure.retryToken } : {})
           })
 
         const prev = state.messages

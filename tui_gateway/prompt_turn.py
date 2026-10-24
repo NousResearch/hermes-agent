@@ -505,6 +505,7 @@ class _TurnRun:
     prompt_text: str = ""
     marker_key: str = ""
     receipt_attempted: bool = False
+    resume_user_row_id: int | None = None
 
 
 def _adopt_out_of_band_turns(session: dict) -> None:
@@ -699,8 +700,9 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         st.history_version = int(session.get("history_version", 0))
     # Install-first-message onboarding (#82750): gateway parity for the TUI/Desktop
     # surface — no-op unless this is the install's very first message ever.
-    _stage_first_contact_onboarding_note(session, agent, not st.history)
-    _stage_onboarding_turn_note(sid, agent, not st.history)
+    if st.resume_user_row_id is None:
+        _stage_first_contact_onboarding_note(session, agent, not st.history)
+        _stage_onboarding_turn_note(sid, agent, not st.history)
     cwd = _session_cwd(session)
     _register_session_cwd(session)
     cols = session.get("cols", 80)
@@ -796,7 +798,7 @@ def _invoke_agent(
         run_kwargs["persist_user_display_metadata"] = display_metadata
     if turn_author and "turn_author" in run_params:
         run_kwargs["turn_author"] = turn_author
-    if "prelude" in run_params:
+    if "prelude" in run_params and st.resume_user_row_id is None:
         from agent.onboarding_session import onboarding_prelude
         prelude = onboarding_prelude(agent, st.history)
         if prelude is not None:
@@ -810,7 +812,14 @@ def _invoke_agent(
     try:
         from agent.notification_presentation import notification_turn, event_presentation_muted
         with notification_turn(agent, muted=event_presentation_muted("message.delta", sid), session_id=sid):
-            st.result = agent.run_conversation(run_message, **st.run_kwargs)
+            from agent.retry_context import retry_failure_row_ids
+            agent._resume_failure_row_ids = retry_failure_row_ids(st.history) if st.resume_user_row_id is not None else ()
+            agent._resume_user_row_id = st.resume_user_row_id
+            try:
+                st.result = agent.run_conversation(run_message, **st.run_kwargs)
+            finally:
+                agent._resume_user_row_id = None
+                agent._resume_failure_row_ids = ()
     finally:
         # Stop AND join before anything emits: a tick surviving past message.complete would
         # roll the client's usage back to a stale snapshot (unbounded join: same worst case).
@@ -954,6 +963,8 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
                 # Non-streaming results need a replay body too; keep existing streamed segments intact.
                 _append_inflight_delta(session, raw)
             _fail_inflight_turn(session, error_value, error_surface=_error_surface)
+            if token := _record_retry_checkpoint(session, st, _error_surface):
+                payload["retry_token"] = token
             st.error_retained = True
             st.error_detail = _turn_failure_detail(
                 error_value, result.get("failure_reason"), st.prompt_text)
@@ -1096,6 +1107,7 @@ def _run_prompt_submit(
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
     turn_author: dict | None = None, report_ownership_refusal: bool = True) -> bool:
+    resume_user_row_id = session.pop("_retry_user_row_id", None)
     # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
     # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
     # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
@@ -1141,7 +1153,7 @@ def _run_prompt_submit(
         runtime_session_token = _current_runtime_session_record.set(session)
         st = _TurnRun(
             session["agent"], session.pop("one_turn_model_restore", None), terminal_callback,
-            receipt_committed=terminal_callback is None)
+            receipt_committed=terminal_callback is None, resume_user_row_id=resume_user_row_id)
         st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None,
             notification_category=(display_metadata or {}).get("notification_category"))
         goal_followup = None

@@ -2923,6 +2923,24 @@
       }
     },
     {
+      "name": "prompt.retry",
+      "summary": "Continue the exact retained failed provider request; stale checkpoints are refused without a rewind.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/PromptRetryParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/PromptSubmitResult"
+        }
+      }
+    },
+    {
       "name": "prompt.submit",
       "summary": "Send a user turn to a live session; busy sessions queue / steer / redirect instead of refusing.",
       "params": [
@@ -9498,6 +9516,25 @@
         "title": "CanonicalResumeParams",
         "type": "object"
       },
+      "CanonicalRetryParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "retry_token": {
+            "title": "Retry Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "retry_token"
+        ],
+        "title": "CanonicalRetryParams",
+        "type": "object"
+      },
       "CanonicalRoomApproveParams": {
         "additionalProperties": false,
         "properties": {
@@ -10315,6 +10352,17 @@
             ],
             "default": null,
             "title": "Display Messages"
+          },
+          "inflight": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InflightTurn"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "message_count": {
             "title": "Message Count",
@@ -20837,6 +20885,18 @@
             "default": null,
             "title": "Status"
           },
+          "retry_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retry Token"
+          },
           "recoverable": {
             "anyOf": [
               {
@@ -23320,6 +23380,18 @@
             ],
             "default": null,
             "title": "Error"
+          },
+          "retry_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retry Token"
           },
           "recoverable": {
             "anyOf": [
@@ -31807,6 +31879,37 @@
           "prompt_id"
         ],
         "title": "PromptResponseResult",
+        "type": "object"
+      },
+      "PromptRetryParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "retry_token": {
+            "title": "Retry Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "retry_token"
+        ],
+        "title": "PromptRetryParams",
         "type": "object"
       },
       "PromptSubmitParams": {
@@ -47792,6 +47895,24 @@
           "name": "params",
           "schema": {
             "$ref": "#/components/schemas/PromptResolveUnknownParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AdmissionStatus"
+        }
+      }
+    },
+    {
+      "name": "prompt.retry",
+      "summary": "Continue a proven failed provider request without new user input or rewind.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalRetryParams"
           }
         }
       ],

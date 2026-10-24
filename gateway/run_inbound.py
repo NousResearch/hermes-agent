@@ -1149,6 +1149,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         """Idle path: resolve + dispatch slash commands; rewriting commands fall through to the agent.
         A command rewritten into a turn keeps the /stop and /new epoch it arrived under, read before
         the (slow, off-loop) rewrite, so a reset during it drops the command, as on the busy path."""
+        from gateway.session_retry import continuation
+        if continuation.get() is not None:
+            return False, None
         stop_epoch = self._route_stop_epoch(_quick_key)
         _handled, _result, command, canonical = await self._hm_resolve_command(event, source, _quick_key)
         if not _handled:
@@ -1243,6 +1246,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.session_retry import continuation
+        retrying = continuation.get() is not None
         _admitted = await self._hm_admit_event(event)
         if _admitted is None:
             return None
@@ -1264,7 +1269,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             return _paused_notice
 
         _quick_key = self._session_key_for_source(source)
-        _reply = None if is_internal else await self._hm_pending_reply_intercepts(event, source, _quick_key)
+        _reply = None if is_internal or retrying else await self._hm_pending_reply_intercepts(event, source, _quick_key)
         if _reply is not None:
             return _reply
 
@@ -1657,6 +1662,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         follow-up paths so attribution, image enrichment, STT, document notes, reply context and
         @ references behave the same. Side effect: buffers per-session native image paths when the
         model supports native vision; the caller consumes that buffer at ``run_conversation``."""
+        from gateway.session_retry import continuation
+        if continuation.get() is not None:
+            return event.text
         rehome_inbound_media(event)  # before any consumer (vision, STT, document notes) reads media_urls
         _pending_stt_prepared = hasattr(event, "_gateway_pending_stt_text")
         message_text = (event._gateway_pending_stt_text if _pending_stt_prepared else event.text) or ""

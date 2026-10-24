@@ -40,12 +40,35 @@ class _Stream:
 
 def _publish(outcome, captured=None):
     stream = _Stream()
-    live = SimpleNamespace(controls=SimpleNamespace(snapshot=lambda *a: None), event_stream=stream)
+    live = SimpleNamespace(controls=SimpleNamespace(snapshot=lambda *a: None), event_stream=stream,
+                           retry_checkpoint=None)
     row = {'admission_id': 'adm-1', 'request_id': 'sub-1'}
     _publish_completion(SimpleNamespace(runner=None), live, SimpleNamespace(session_id='s'), row,
                         {'outcome': outcome}, 'partial reply', captured)
     (frame,) = stream.frames
     return frame
+
+
+def test_retry_completion_keeps_its_checkpoint_and_existing_warning():
+    stream = _Stream()
+    live = SimpleNamespace(controls=SimpleNamespace(snapshot=lambda *a: None), event_stream=stream,
+                           retry_checkpoint={'generation': 4, 'token': 'proven-context'})
+    row = {'admission_id': 'adm-1', 'request_id': 'sub-1', 'generation': 4}
+    captured = {'result': {'failure_reason': 'rate_limit', 'local_viewer': True,
+                           'warning': 'Provider quota reached'}}
+    _publish_completion(SimpleNamespace(runner=None), live, SimpleNamespace(session_id='s'), row,
+                        {'outcome': 'failed'}, '', captured)
+    (frame,) = stream.frames
+    assert frame['retry_token'] == 'proven-context'
+    assert frame['warning'] == 'Provider quota reached'
+    assert frame['error_surface']['retryable'] is True
+
+
+def test_explicit_gateway_refusal_descriptor_wins_over_provider_failure():
+    descriptor = {'layer': 'gateway', 'code': 'SESSION_OWNER_UNCONFIRMED', 'retryable': False}
+    frame = _publish('failed', {'result': {'failure_reason': 'rate_limit', 'error_surface': descriptor}})
+    assert frame['error_surface'] == descriptor
+    assert 'retry_token' not in frame
 
 
 def _cause(message, **extra):
@@ -317,7 +340,8 @@ def test_automation_turn_the_owner_stop_interrupted_is_never_asked_to_resend(cau
     automation copy (GW-10's rule), never "Send your message again"."""
     from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
     stream = _Stream()
-    live = SimpleNamespace(controls=SimpleNamespace(snapshot=lambda *a: None), event_stream=stream)
+    live = SimpleNamespace(controls=SimpleNamespace(snapshot=lambda *a: None), event_stream=stream,
+                           retry_checkpoint=None)
     _publish_completion(SimpleNamespace(runner=None), live, SimpleNamespace(session_id='s'),
                         {'admission_id': 'adm-1', 'request_id': 'sub-1', **row},
                         {'outcome': 'interrupted'}, '', _cause(cause))

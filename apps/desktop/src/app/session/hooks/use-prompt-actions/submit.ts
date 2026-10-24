@@ -57,6 +57,7 @@ import {
   removePreparedSubmission,
   writePreparedSubmission
 } from './prepared-submissions'
+import { promptAdmissionRejected } from './retry'
 import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
 import { captureSubmissionDestination, destinationAfterCreate, sameAuthorityPublishedOwner } from './submission-destination'
 import {
@@ -1384,6 +1385,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                 role: 'assistant',
                 parts: [],
                 error: message || copy.promptFailed,
+                admissionRejected: promptAdmissionRejected(err),
                 ...ownershipErrorSurface(err),
                 branchGroupId: state.pendingBranchGroup ?? undefined,
                 completedAt: occurredAt,

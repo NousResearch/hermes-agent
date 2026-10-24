@@ -59,6 +59,8 @@ SID = "op-rpc-session"
 
 @pytest.fixture
 def owned(monkeypatch):
+    # These RPC tests fake the connector service; identity bootstrap must stay offline too.
+    monkeypatch.setattr("tools.connectors.managed.ensure_guest_identity", lambda: None)
     live.reset_for_tests()
     with ExitStack() as stack:
         owner, stranger = PipeClient(stack), PipeClient(stack)

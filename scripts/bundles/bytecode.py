@@ -12,10 +12,12 @@ stall on first launch. Baking turns that into a warm read:
   source validation and never rewritten, so staging-repack mtimes
   cannot invalidate it and a stale source cannot trigger a rewrite
   into the sealed tree;
-* the baked pycs are chmodded read-only BEFORE packaging, so no
-  incidental write can touch them; the dirs stay writable because
-  in-place rebuilds rmtree the tree, and asserted coverage means no
-  cache-miss write can target them;
+* the baked pycs are chmodded owner-writable (0o644) BEFORE packaging:
+  Squirrel.Mac's ShipIt clears the quarantine attribute off every file
+  in the .app and aborts the whole update with EACCES on any read-only
+  one (#138659); writes still cannot land — unchecked-hash never
+  triggers a rewrite and asserted coverage means no cache-miss write
+  can target them;
 * the runtime's sys.pycache_prefix redirect is dropped when the baked
   marker is present (the prefix relocates READS too — see
   scripts/build/launcher_wrapper.py), so imports read the source-
@@ -76,7 +78,7 @@ def _uncovered(root: Path) -> tuple[list[Path], int]:
 
 def bake_bytecode(root: Path, python: Path) -> dict:
     """Compile every payload module with the staged interpreter and seal the
-    caches read-only. ``root`` is the payload root; ``python`` MUST be the
+    caches owner-writable. ``root`` is the payload root; ``python`` MUST be the
     payload's own staged interpreter binary."""
     root = Path(root).resolve()
     python = Path(python).resolve()
@@ -95,16 +97,17 @@ def bake_bytecode(root: Path, python: Path) -> dict:
                              f"({sample}…): a fresh install would cold-compile them "
                              "every launch")
         total += sum(1 for _ in source_root.rglob("__pycache__/*.pyc"))
-    # Pycs are read-only BEFORE packaging so a stale-source rewrite (which
-    # unchecked-hash never triggers anyway) or any incidental write can never
-    # touch them and the macOS signature never observes a pyc change. The
-    # __pycache__ DIRS stay writable: in-place payload rebuilds rmtree the
-    # tree (native._prepare_native), and complete asserted coverage plus
-    # unchecked-hash means no cache-miss write can ever target these dirs.
+    # Pycs get owner write BEFORE packaging: Squirrel.Mac's ShipIt clears
+    # the quarantine attribute from every file in the .app and aborts the
+    # whole update with EACCES on any file lacking it (#138659) — a
+    # read-only pyc wedges every macOS update at the swap step. Writes
+    # still cannot land: unchecked-hash never triggers a stale-source
+    # rewrite and asserted coverage means no cache-miss write can target
+    # these dirs, so the macOS signature never observes a pyc change.
     for source_root in _import_roots(root):
         for cache in source_root.rglob("__pycache__"):
             for pyc in cache.iterdir():
                 if pyc.is_file():
-                    pyc.chmod(0o444)
+                    pyc.chmod(0o644)
     (root / MARKER).write_text("unchecked-hash\n", encoding="utf-8")
     return {"modules": total, "marker": str(root / MARKER)}

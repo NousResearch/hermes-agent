@@ -9,7 +9,7 @@ import type * as HermesApi from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import type * as HubActions from '@/store/hub-actions'
 
-import { parseCatalog } from './catalog/catalog-data'
+import { catalogFeed, parseCatalog } from './catalog/catalog-data'
 import { $catalogCardView } from './catalog/store'
 
 const getSkills = vi.fn()
@@ -115,7 +115,7 @@ beforeEach(() => {
   // Single profile by default → the scope selector stays hidden (>1 gate),
   // so existing tests see unchanged single-profile behavior.
   getProfiles.mockResolvedValue({ profiles: [{ name: 'default', is_default: true }] })
-  queryClient.setQueryData(['public-catalog', 'skills'], [])
+  queryClient.setQueryData(['public-catalog', catalogFeed('skills')], [])
 })
 
 afterEach(() => {
@@ -270,7 +270,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       { name: 'web-research', description: 'Research', enabled: true, category: 'research' }
     ])
     queryClient.setQueryData(
-      ['public-catalog', 'skills'],
+      ['public-catalog', catalogFeed('skills')],
       parseCatalog('skills', [
         { name: 'web-research', source: 'official', identifier: 'official/research/web-research' },
         { name: 'gif-search', source: 'official', identifier: 'official/gifs/gif-search' }
@@ -533,7 +533,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       }
     ])
     queryClient.setQueryData(
-      ['public-catalog', 'skills'],
+      ['public-catalog', catalogFeed('skills')],
       parseCatalog('skills', [
         { name: 'docx', source: 'ClawHub', identifier: 'wordpro' },
         { name: 'gif-search', source: 'ClawHub', identifier: 'gif-raccoon' }

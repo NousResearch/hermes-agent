@@ -24,6 +24,8 @@ interface CatalogFilterBarProps {
   sortControl: ReactNode
   actions: ReactNode
   resultCount: number
+  /** Skills only: the community-registries opt-in, shown beside the source chips. */
+  communityToggle?: ReactNode
 }
 
 
@@ -70,6 +72,7 @@ export function CatalogFilterBar(props: CatalogFilterBarProps) {
               <div className="flex flex-wrap gap-1.5">{overflow.map(row => <Button aria-pressed={selected.includes(row.value)} key={row.value} onClick={() => onSelect(row.value)} size="xs" variant={selected.includes(row.value) ? 'default' : 'outline'}>{row.label}</Button>)}</div>
             </PopoverContent>
           </Popover>}
+          {props.communityToggle}
         </div>
         <div className="catalog-filter-trigger">
           <span className="text-[0.625rem] font-medium uppercase tracking-wider text-(--ui-text-tertiary)" id={`${panelId}-label`}>{c.filters}{activeCount > 0 && ` · ${activeCount}`}</span>

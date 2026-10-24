@@ -28,6 +28,7 @@ export const enCatalog: CatalogTranslations = {
   install: 'Install',
   installed: 'Installed',
   searchSkills: 'Search skills',
+  showCommunity: 'Show community registries',
   searchPlugins: 'Search plugins',
   allSources: 'All sources',
   allCategories: 'All categories',

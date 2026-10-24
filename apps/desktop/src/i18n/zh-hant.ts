@@ -43,6 +43,7 @@ export const zhHantOverrides = {
     install: '安裝',
     installed: '已安裝',
     searchSkills: '搜尋技能',
+    showCommunity: '顯示社群登錄檔',
     searchPlugins: '搜尋外掛',
     allSources: '所有來源',
     allCategories: '所有分類',

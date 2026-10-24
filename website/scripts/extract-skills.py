@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Extract skill metadata into website/static/api/skills.json for the Skills Hub page.
 
+Also writes website/static/api/skills-official.json — the first-party-only
+subset of the same rows — as the desktop app's default Skills feed (#142192).
+
 Two data sources:
 
 1. Local SKILL.md files under ``skills/`` (built-in) and ``optional-skills/``
@@ -39,6 +42,14 @@ LEGACY_INDEX_CACHE_DIR = os.path.join(REPO_ROOT, "skills", "index-cache")
 # bundled payload was ~26 MB; lazy-fetch keeps the initial page load
 # fast and shrinks the JS chunk back to a few hundred KB.
 OUTPUT = os.path.join(REPO_ROOT, "website", "static", "api", "skills.json")
+# First-party-only snapshot from the same build (#142192): the desktop Skills
+# catalog loads this by default so it never downloads the ~60 MB community
+# feed unless the user explicitly asks for the community registries.
+OFFICIAL_OUTPUT = os.path.join(REPO_ROOT, "website", "static", "api", "skills-official.json")
+# Sources this script itself stamps on first-party rows (LOCAL_SKILL_DIRS).
+# The wider OFFICIAL_SKILL_SOURCES list in apps/shared/src/catalog-featured.ts
+# also admits 'bundled'/'official'; reconciling the two is still open.
+FIRST_PARTY_SOURCES = tuple(source for _, source in LOCAL_SKILL_DIRS)
 # Curated artwork ships in website/static/img/catalog/, which the docs site serves
 # from its own host (docusaurus `url` + `baseUrl`); one place to change if it moves.
 CATALOG_ART_URL = "https://hermes-agent.nousresearch.com/docs/img/catalog/"
@@ -676,6 +687,12 @@ def main():
         # At 50k+ skills the indented version was ~30% larger.
         json.dump(all_skills, f, separators=(",", ":"), ensure_ascii=False)
 
+    # First-party-only companion (same rows, same build) for the desktop's
+    # default Skills feed. Subset of skills.json by construction.
+    official_skills = [s for s in all_skills if s["source"] in FIRST_PARTY_SOURCES]
+    with open(OFFICIAL_OUTPUT, "w", encoding="utf-8") as f:
+        json.dump(official_skills, f, separators=(",", ":"), ensure_ascii=False)
+
     # Sidecar meta file so the page can render a "Last refreshed" badge
     # without changing the shape of skills.json.
     by_source = Counter(s["source"] for s in all_skills)
@@ -693,6 +710,7 @@ def main():
         json.dump(meta, f, separators=(",", ":"), ensure_ascii=False)
 
     print(f"Extracted {len(all_skills)} skills to {OUTPUT}")
+    print(f"  {len(official_skills)} first-party skills to {OFFICIAL_OUTPUT}")
     print(f"  {len(local)} local ({sum(1 for s in local if s['source'] == 'built-in')} built-in, "
           f"{sum(1 for s in local if s['source'] == 'optional')} optional)")
     print(f"  {len(external)} from {external_source}")

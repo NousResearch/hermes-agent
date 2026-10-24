@@ -382,6 +382,8 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
             delay = 2.0 * (2 ** attempt)
             try:
                 resp = hub()._skills_hub_http_get(url, timeout=20)
+            except hub().SkillsHubFetchBlocked:
+                return None
             except (httpx.HTTPError, OSError):
                 reason = "transport error"
             else:

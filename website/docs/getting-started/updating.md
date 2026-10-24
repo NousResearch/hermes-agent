@@ -236,6 +236,27 @@ A checkout installed somewhere else needs its directory passed again (`bash -s -
 
 Once Hermes works again you can delete the `.broken-*` folder.
 
+### Fetch times out on a slow connection
+
+A network fetch that runs longer than the updater's time budget is killed and the update stops with `✗ The fetch timed out ...` (git reports `git fetch timed out after Ns ...`).
+
+The budget is a dead-stall guard, not a transfer estimate: it exists so a stalled connection cannot leave `hermes update` hanging on "Fetching updates..." forever. A large but perfectly healthy transfer can hit it too — if your link is slow, five minutes may simply not be enough for a big download.
+
+When that happens, run the fetch by hand — a manual `git fetch` has no time limit, so it can grind through a transfer the updater would kill:
+
+```bash
+git fetch origin main
+hermes update
+```
+
+The manual fetch leaves the downloaded data in place, so the re-run `hermes update` only has the small remaining delta to move.
+
+`hermes update --check` fetches under the same time budget, so a timed-out check is the same signal: the network path needs the manual `git fetch` above.
+
+An aborted fetch leaves `tmp_pack_*` transfer files behind in `.git/objects/pack/`; those are removed immediately after the kill, so a timed-out fetch cannot pile up disk debris.
+
+A very large first update is the most common way a healthy transfer outgrows the budget: a fresh shallow install filling in the history it was cloned without moves far more data than a routine update. See [`.git` keeps growing in a partial clone](#git-keeps-growing-in-a-partial-clone) for what that first conversion downloads.
+
 ### Fetch fails with `should_include_obj should only be called on existing objects`
 
 Git 2.53 and newer can crash while fetching into a partial clone when some of its pack files lack a
@@ -289,6 +310,11 @@ dependency work: one `git fetch --refetch --filter=blob:none` brings every commi
 120 MB), and later updates stop re-downloading them. Re-running the installer over such a checkout
 converts it the same way. If that fetch fails, the update prints a warning, carries on, and retries
 the conversion next time.
+
+Shallow checkouts (`--depth 1` installs) keep that depth for a release update: the update fetches
+only the new release's tag, which carries the one commit the checkout moves to. A `main`-branch
+update, or a shallow checkout with local commits on top, still fills in the history, because the
+fast-forward and the version label need it.
 
 A Hermes Desktop built before the conversion existed runs path-filtered history walks every few
 minutes, so on a treeless checkout it could fill a disk with pack files (one report reached 434 GB)

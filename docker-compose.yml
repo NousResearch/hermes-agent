@@ -17,7 +17,7 @@
 #     adds authentication — do NOT pass --insecure --host 0.0.0.0.
 #   - If you override entrypoint, keep `/init` as the first command in
 #     the chain (or let docker use the image's default ENTRYPOINT,
-#     which is `["/init", "/opt/hermes/docker/main-wrapper.sh"]`).
+#     which is `docker/entrypoint-dispatch.sh`, it execs `/init` as PID 1).
 #     `/init` is s6-overlay's PID 1 — it runs the cont-init.d scripts
 #     (chown, profile reconcile, dashboard toggle) and sets up the
 #     supervision tree before any service starts. Bypassing it skips

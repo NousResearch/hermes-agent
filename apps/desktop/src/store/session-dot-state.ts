@@ -86,6 +86,16 @@ export type SessionStatusBucket = 'draft' | 'idle' | 'needs-input' | 'unread' | 
 export const sessionStatusBucket = (state: SessionDotState = 'idle'): SessionStatusBucket =>
   state === 'stalled' || state === 'background' ? 'working' : state
 
+/** Whether the sidebar's Working/Done grouping files the session under
+ *  Working. Wider than `hasLiveTurn`: work that outlived the turn (async
+ *  subagents, background processes) is not done yet. Same call the status
+ *  filter makes through `sessionStatusBucket`, so the two never disagree. */
+export const isStillWorking = (state: SessionDotState = 'idle'): boolean => {
+  const bucket = sessionStatusBucket(state)
+
+  return bucket === 'working' || bucket === 'needs-input'
+}
+
 const STATUS_RANK: Record<SessionStatusBucket, number> = {
   'needs-input': 0,
   working: 1,

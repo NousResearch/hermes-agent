@@ -17,6 +17,16 @@ from utils import atomic_json_write
 logger = logging.getLogger(__name__)
 
 
+def consume_detached_handler_exception(task: asyncio.Task) -> None:
+    """Done-callback for a detached fatal-error handler task (carrier cancelled in
+    ``_notify_fatal_error``): retrieve its exception so asyncio never logs "never retrieved"."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("Detached fatal-error handler task failed: %s", exc, exc_info=exc)
+
+
 class MessageDeduplicator:
     """TTL-based message deduplication cache (``if dedup.is_duplicate(msg_id): return``)."""
 

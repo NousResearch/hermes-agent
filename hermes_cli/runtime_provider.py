@@ -1139,6 +1139,12 @@ def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, targe
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         yield _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, target_model)
+    if pconfig and pconfig.auth_type in {"oauth_external", "oauth_device_code"} and swallowed_auth_error is None:
+        raise AuthError(
+            f"No available credentials for provider '{provider}' and model '{target_model or ''}'. "
+            "Credentials may be cooling down; choose an available model or check `hermes auth status`.",
+            provider=provider, code="credentials_unavailable",
+        )
     fallback = _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url)
     if swallowed_auth_error is not None and not fallback.get("api_key"):
         fallback["auth_error"] = swallowed_auth_error

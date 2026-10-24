@@ -1218,6 +1218,20 @@ class _Switch:
         for ``new_model``; headers keep their current value when the resolver returns none."""
         from hermes_cli.runtime_provider import resolve_runtime_provider
         rt = resolve_runtime_provider(target_model=self.new_model, **kwargs)
+        from hermes_cli.auth import AuthError, resolve_provider
+        from hermes_cli.runtime_provider import _same_registered_provider
+        resolved = rt.get("provider")
+        if resolved and resolved != self.target_provider:
+            pdef = resolve_provider_full(self.target_provider, self.user_providers, self.custom_providers)
+            expected = "custom" if pdef and pdef.source == "user-config" else resolve_provider(self.target_provider)
+        else:
+            expected = self.target_provider
+        if resolved and not _same_registered_provider(expected, resolved):
+            raise AuthError(
+                f"Requested provider '{self.target_provider}' resolved to a different provider "
+                f"'{rt.get('provider', '')}'; refusing to mix its endpoint and credentials.",
+                provider=self.target_provider, code="provider_mismatch",
+            )
         self.api_key, self.base_url = rt.get("api_key", ""), rt.get("base_url", "")
         self.api_mode = rt.get("api_mode", "")
         self.validation_headers = rt.get("extra_headers") or self.validation_headers
@@ -1487,7 +1501,7 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
     return None
 
 
-def _creds_for_current_provider(st: _Switch) -> None:
+def _creds_for_current_provider(st: _Switch) -> Optional[ModelSwitchResult]:
     """Credentials when staying on the current provider. Mid-session ``/model <name>`` on a local
     Ollama-compatible endpoint keeps the endpoint in use; re-resolving bare ``custom`` from config
     can fall through to an unrelated default provider."""
@@ -1514,8 +1528,12 @@ def _creds_for_current_provider(st: _Switch) -> None:
         st.api_mode = determine_api_mode(st.current_provider, st.base_url)
         st.validation_headers = ollama_headers
     else:
+        from hermes_cli.auth import AuthError
         try:
             st.resolve_runtime(requested=st.current_provider)
+        except AuthError as exc:
+            if st.current_provider not in {"custom", "local"}:
+                return st.fail_on_target(str(exc))
         except Exception:
             pass
         # Bare ``custom``/``local`` sessions whose base_url is session-only (not a trusted config
@@ -1586,7 +1604,9 @@ def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
         if fail is not None:
             return fail
     else:
-        _creds_for_current_provider(st)
+        fail = _creds_for_current_provider(st)
+        if fail is not None:
+            return fail
 
     # Direct alias override: use the alias's exact base_url if set.
     if st.resolved_alias:

@@ -13,6 +13,12 @@ from __future__ import annotations
 from typing import Any, Callable, Optional
 
 _SCOPED_PROVIDER_REGISTRARS: tuple[tuple[str, str, str, str, str, str, dict[str, Any]], ...] = (
+    ("register_login_backend", "login_backend", "agent.vault_backend_registry",
+     "agent.vault_backends.base:LoginBackend", "login backend",
+     "Register a trusted in-process browser-vault LoginBackend; explicit vault.<name>.enabled "
+     "is required. Registration is profile-scoped and removed on plugin unload. "
+     "Backend instances must read active-profile configuration lazily.",
+     {"normalize": None, "reject_message": "Plugin '%s' login backend rejected: %s"}),
     ("register_image_gen_provider", "image_gen_provider", "agent.image_gen_registry",
      "agent.image_gen_provider:ImageGenProvider", "image_gen provider",
      "Register an :class:`agent.image_gen_provider.ImageGenProvider`; "

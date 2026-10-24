@@ -55,6 +55,5 @@ ONESHOT_SKILLS_LOAD_GUIDANCE = (
     "## Skills\n"
     "Scan the skills below and load one with skill_view(name) only when it carries domain knowledge you lack "
     "for THIS task (an API, a tool's commands, a project's conventions). Do not load general process skills "
-    "(testing, debugging, review methodology) for work you already know how to do, and do not create or edit "
-    "skills: this is a one-shot run with no later session to reuse them.\n"
+    "(testing, debugging, review methodology) for work you already know how to do.\n"
 )

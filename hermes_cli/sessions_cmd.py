@@ -311,11 +311,15 @@ def _cmd_list(db, args):
     has_ws = bool(_ws_filter) or any(_ws_key(s) for s in sessions)
     has_titles = any(s.get("title") for s in sessions)
 
-    def _ws(s):  # repo/dir basename, "—" when unbound
+    # Clip and pad title/preview/workspace cells by display columns, not characters: CJK text is
+    # double-width and would shift every column to its right (#44199). ASCII renders unchanged.
+    from hermes_cli.textwidth import clip_to_width, pad_to_width
+
+    def _ws(s, n):  # repo/dir basename, "—" when unbound
         key = _ws_key(s)
-        return ((os.path.basename(key.rstrip("/\\")) or key) if key else "—")[:16]
-    _title = lambda s, n: (s.get("title") or "—")[:n]
-    _preview = lambda s, n: s.get("preview", "")[:n]
+        return pad_to_width(clip_to_width((os.path.basename(key.rstrip("/\\")) or key) if key else "—", 16), n)
+    _title = lambda s, n, w: pad_to_width(clip_to_width(s.get("title") or "—", n), w)
+    _preview = lambda s, n, w: pad_to_width(clip_to_width(s.get("preview", ""), n), w)
     _ago = lambda s: _relative_time(s.get("last_active"), session_id=s["id"])
 
     def _src(s):  # current routing platform; "<created>→<current>" when provenance diverged (#56439)
@@ -323,13 +327,13 @@ def _cmd_list(db, args):
         return f"{created}→{s['source']}" if created and created != s["source"] else s["source"]
     layouts = {  # (has_ws, has_titles): header, rule width, row formatter
         (True, True): (f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}", 110,
-                       lambda s: f"{_title(s, 26):<28} {_ws(s):<18} {_ago(s):<13} {s['id']}"),
+                       lambda s: f"{_title(s, 26, 28)} {_ws(s, 18)} {_ago(s):<13} {s['id']}"),
         (True, False): (f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<16} {'ID'}", 110,
-                        lambda s: f"{_preview(s, 36):<38} {_ws(s):<18} {_ago(s):<13} {_src(s):<16} {s['id']}"),
+                        lambda s: f"{_preview(s, 36, 38)} {_ws(s, 18)} {_ago(s):<13} {_src(s):<16} {s['id']}"),
         (False, True): (f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}", 110,
-                        lambda s: f"{_title(s, 30):<32} {_preview(s, 38):<40} {_ago(s):<13} {s['id']}"),
+                        lambda s: f"{_title(s, 30, 32)} {_preview(s, 38, 40)} {_ago(s):<13} {s['id']}"),
         (False, False): (f"{'Preview':<50} {'Last Active':<13} {'Src':<16} {'ID'}", 105,
-                         lambda s: f"{_preview(s, 48):<50} {_ago(s):<13} {_src(s):<16} {s['id']}"),
+                         lambda s: f"{_preview(s, 48, 50)} {_ago(s):<13} {_src(s):<16} {s['id']}"),
     }
     header, rule, fmt = layouts[(has_ws, has_titles)]
     print(header + "\n" + "─" * rule)
@@ -873,10 +877,11 @@ def _cmd_pinned(db, args):
     if not pinned_rows:
         print("No pinned sessions. Pin one with: hermes sessions pin <session_id>")
         return
+    from hermes_cli.textwidth import clip_to_width, pad_to_width
     print(f"{'Title':<32} {'Last Active':<13} {'Src':<9} {'ID'}\n" + "─" * 100)
     for s in pinned_rows:
-        title = (s.get("title") or s.get("preview", "") or "—")[:30]
-        print(f"{title:<32} {_relative_time(s.get('last_active'), session_id=s['id']):<13} {(s.get('source') or '-'):<9} {s['id']}")
+        title = pad_to_width(clip_to_width(s.get("title") or s.get("preview", "") or "—", 30), 32)  # columns (#44199)
+        print(f"{title} {_relative_time(s.get('last_active'), session_id=s['id']):<13} {(s.get('source') or '-'):<9} {s['id']}")
 
 
 def _cmd_retitle_skills(db, args):

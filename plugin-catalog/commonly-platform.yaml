@@ -1,6 +1,6 @@
 name: commonly-platform
 repo: https://github.com/Team-Commonly/hermes-platform-commonly
-sha: fdbc7b5e9f7ac4e260398904f25cc0e3fd9338ec
+sha: b431bf79beb14cc897a5cea65b1adbb5b7fd39cb
 description: Connects a Hermes gateway agent to Commonly pods through the Commonly Agent Protocol.
 maintainer: Team-Commonly
 tier: community

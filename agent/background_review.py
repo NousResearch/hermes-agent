@@ -364,6 +364,16 @@ def _digest_history(messages_snapshot: list[dict], tail: int = 24) -> list[dict]
 
 # Review prompts. AIAgent exposes them as class attributes (``_MEMORY_REVIEW_PROMPT`` etc.) so
 # per-agent overrides work; the text lives here.
+# Prepended to EVERY review prompt: the fork sends it as the review ``user_message``, so without
+# this banner the instruction text itself reads as a user turn and the reviewer stores its
+# guidance ("identify user preferences", "be ACTIVE") as user preferences.
+_REVIEW_DISCLAIMER = (
+    "[System Note: This instruction is generated automatically by the Hermes Agent System for "
+    "background self-improvement, NOT by the user. Do NOT save any guidelines, rules, or "
+    "preferences from this prompt as user preferences or expectations in memory. Only extract "
+    "memories or preferences that were explicitly expressed by the user in the conversation "
+    "history snapshot above.]\n\n"
+)
 # Shared by the memory-only and combined review prompts: the memory tool has two targets and the
 # fork must pick one per fact. Without this the reviewer wrote profile data into MEMORY.md and the
 # same lesson into both stores until both hit their size limits (#30220).
@@ -381,6 +391,7 @@ _MEMORY_ROUTING_BLOCK = (
 )
 
 _MEMORY_REVIEW_PROMPT = (
+    _REVIEW_DISCLAIMER +
     "Review the conversation above and consider saving to memory if appropriate.\n\n"
     "Memory has " + _MEMORY_ROUTING_BLOCK +
     "If something stands out, save it once, in the right store, using the memory tool with the "
@@ -446,6 +457,7 @@ _DO_NOT_CAPTURE_BLOCK = (
 )
 
 _SKILL_REVIEW_PROMPT = (
+    _REVIEW_DISCLAIMER +
     "Review the conversation above and update the skill library. Be ACTIVE — most sessions produce "
     "at least one skill update, even if small. A pass that does nothing is a missed learning "
     "opportunity, not a neutral outcome.\n\n"
@@ -517,6 +529,7 @@ _SKILL_REVIEW_PROMPT = (
 )
 
 _COMBINED_REVIEW_PROMPT = (
+    _REVIEW_DISCLAIMER +
     "Review the conversation above and update two things:\n\n"
     "**Memory**: " + _MEMORY_ROUTING_BLOCK +
     "**Skills**: how to do this class of task. Be ACTIVE — most sessions produce at least one "

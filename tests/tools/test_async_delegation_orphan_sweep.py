@@ -123,10 +123,12 @@ def test_orphaned_terminal_completion_is_offered_once_while_the_process_runs(tmp
     assert _row(home, delegation_id)["delivery_state"] == "delivered"
 
 
-def test_row_owned_by_a_live_process_is_never_swept(tmp_path):
+def test_pending_row_owned_by_a_live_process_is_reoffered_after_its_queue_copy_is_lost(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     q = queue.Queue()
+    lost_copy = queue.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", lost_copy)
     with _Home(home):
         handle = ad.dispatch_async_delegation(
             goal="mine", context=None, toolsets=None, role="leaf", model="m", session_key="live",
@@ -136,8 +138,11 @@ def test_row_owned_by_a_live_process_is_never_swept(tmp_path):
             time.sleep(0.01)
         row = _row(home, handle["delegation_id"])
         assert row["owner_pid"] == os.getpid() and row["delivery_state"] == "pending"
-        assert ad.sweep_orphaned_completions(q, now=row["updated_at"] + 3600) == 0
-    assert q.empty()
+        # A foreign poller can dequeue then abandon the only in-memory event. The durable pending
+        # row must therefore be re-offered even while this owner stays alive.
+        assert [evt["delegation_id"] for evt in _drain(lost_copy)] == [handle["delegation_id"]]
+        assert ad.sweep_orphaned_completions(q, now=row["updated_at"] + ad._ORPHAN_STALE_S + 1) == 1
+    assert [evt["delegation_id"] for evt in _drain(q)] == [handle["delegation_id"]]
 
 
 def test_sweep_is_bound_to_the_profile_home_it_runs_under(tmp_path):

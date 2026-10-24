@@ -7,15 +7,18 @@ import type { RosterGroupRow } from './roster-pane-derivation'
 import { GatewayKindGlyph, GatewaySectionHeading, RosterSectionHeader } from './roster-sections'
 import type { ResolvedRosterGatewaySection } from './roster-sections'
 import type { BotMeta, GroupChat, GroupMember, RosterRow } from './types'
-import type { $botSections, SectionDialogState } from './user-sections'
+import type { $botSections, $groupChatSections, SectionDialogState } from './user-sections'
 import {
   deleteBotSection,
+  deleteGroupChatSection,
   GROUP_DRAG_PREFIX,
   groupDragKey,
   groupRowsBySection,
   moveBotSection,
   moveBotsToSection,
+  moveGroupChatSection,
   moveGroupChatsToSection,
+  sectionDropMatchesScope,
   UNASSIGNED_SECTION_KEY
 } from './user-sections'
 import { SectionDropZone, UserSectionHeader } from './user-sections-ui'
@@ -23,6 +26,7 @@ import { SectionDropZone, UserSectionHeader } from './user-sections-ui'
 interface RosterSectionRenderersProps {
   b: ReturnType<typeof useBots>
   userSections: ReturnType<typeof $botSections.get>
+  groupChatSections: ReturnType<typeof $groupChatSections.get>
   roster: RosterRow[]
   allMeta: Record<string, BotMeta>
   groupRooms: Record<string, GroupChat>
@@ -38,6 +42,7 @@ interface RosterSectionRenderersProps {
 export function rosterSectionRenderers({
   b,
   userSections,
+  groupChatSections,
   roster,
   allMeta,
   groupRooms,
@@ -49,9 +54,14 @@ export function rosterSectionRenderers({
   renderGroupRow,
   sortedGroupRows
 }: RosterSectionRenderersProps) {
-  const removeSection = (id: string) => {
-    const name = userSections.find(section => section.id === id)?.name || ''
-    const { members, undo } = deleteBotSection(id, roster)
+  const removeSection = (id: string, scope: 'bot' | 'group') => {
+    const sections = scope === 'group' ? groupChatSections : userSections
+    const name = sections.find(section => section.id === id)?.name || ''
+
+    const { members, undo } =
+      scope === 'group'
+        ? deleteGroupChatSection(id, Object.keys(groupRooms))
+        : deleteBotSection(id, roster)
 
     // No confirmation: nothing is lost (the bots fall back to Unassigned) and
     // the toast's Undo puts the section and its members back.
@@ -72,14 +82,19 @@ export function rosterSectionRenderers({
   // `keyPrefix` keeps row keys unique across the gateway buckets.
   type UserSectionRow = { bot: RosterRow; kind?: 'bot' } | RosterGroupRow
 
-  const renderUserSections = (rows: UserSectionRow[], keyPrefix = '') => {
+  const renderUserSections = (
+    rows: UserSectionRow[],
+    keyPrefix = '',
+    sections = userSections,
+    scope: 'bot' | 'group' = 'bot'
+  ) => {
     // No sections made: the plain list, exactly as before this feature.
-    if (!userSections.length) {
+    if (!sections.length) {
       return rows.map(row => (row.kind === 'group' ? renderGroupRow(row) : renderBotRow(row.bot, keyPrefix)))
     }
 
     const nested = Boolean(keyPrefix)
-    const blocks = groupRowsBySection(rows, userSections, allMeta, groupRooms)
+    const blocks = groupRowsBySection(rows, sections, allMeta, groupRooms, scope === 'group')
 
     return (
       blocks
@@ -93,7 +108,7 @@ export function rosterSectionRenderers({
         .map(block => {
           const key = `${keyPrefix}${block.id ? `user-section:${block.id}` : UNASSIGNED_SECTION_KEY}`
           const collapsed = rosterSectionCollapsed(key)
-          const order = userSections.findIndex(section => section.id === block.id)
+          const order = sections.findIndex(section => section.id === block.id)
 
           return (
             <SectionDropZone
@@ -106,6 +121,10 @@ export function rosterSectionRenderers({
               key={key}
               nested={nested}
               onDropBot={rosterKey => {
+                if (!sectionDropMatchesScope(rosterKey, scope)) {
+                  return
+                }
+
                 // `block.id` is null for Unassigned, which is exactly the value
                 // both movers want for "clear the assignment".
                 if (rosterKey.startsWith(GROUP_DRAG_PREFIX)) {
@@ -122,15 +141,15 @@ export function rosterSectionRenderers({
               }}
             >
               <UserSectionHeader
-                canMoveDown={order >= 0 && order < userSections.length - 1}
+                canMoveDown={order >= 0 && order < sections.length - 1}
                 canMoveUp={order > 0}
                 collapsed={collapsed}
                 count={block.rows.length}
                 id={block.id}
                 name={block.name}
-                onDelete={() => block.id && removeSection(block.id)}
-                onMove={delta => block.id && moveBotSection(block.id, delta)}
-                onRename={() => block.id && setSectionDialog({ id: block.id, mode: 'rename', name: block.name })}
+                onDelete={() => block.id && removeSection(block.id, scope)}
+                onMove={delta => block.id && (scope === 'group' ? moveGroupChatSection(block.id, delta) : moveBotSection(block.id, delta))}
+                onRename={() => block.id && setSectionDialog({ id: block.id, mode: 'rename', name: block.name, scope })}
                 onToggle={() => toggleRosterSection(key)}
               />
               {collapsed ? null : block.rows.length ? (
@@ -143,7 +162,7 @@ export function rosterSectionRenderers({
                 // Empty section: a quiet dashed slot that says what it is for,
                 // and doubles as a roomy drop target.
                 <div className="mx-1 mb-1 rounded-md border border-dashed border-(--ui-stroke-secondary) px-2 py-2 text-center text-[0.6875rem] text-(--ui-text-quaternary)">
-                  {b.sections.emptyHint}
+                  {scope === 'group' ? 'Drag group chats here' : b.sections.emptyHint}
                 </div>
               )}
             </SectionDropZone>
@@ -186,7 +205,7 @@ export function rosterSectionRenderers({
           tip={`${sortedGroupRows.length} global group chat${sortedGroupRows.length === 1 ? '' : 's'}`}
         />
         {collapsed ? null : (
-          <div className="grid min-w-0 gap-0.5">{renderUserSections(sortedGroupRows, 'groups:')}</div>
+          <div className="grid min-w-0 gap-0.5">{renderUserSections(sortedGroupRows, 'groups:', groupChatSections, 'group')}</div>
         )}
       </div>
     )

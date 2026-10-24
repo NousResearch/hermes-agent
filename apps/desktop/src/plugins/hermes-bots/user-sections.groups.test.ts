@@ -61,10 +61,15 @@ import { $groupChats } from './group-chat'
 import type { RosterRow } from './types'
 import {
   $botSections,
+  $groupChatSections,
   createBotSection,
+  createGroupChatSection,
+  deleteGroupChatSection,
   groupChatSectionId,
+  groupDragKey,
   groupRowsBySection,
   moveGroupChatsToSection,
+  sectionDropMatchesScope,
   UNASSIGNED_SECTION_KEY
 } from './user-sections'
 
@@ -75,13 +80,38 @@ beforeEach(() => {
   storage.clear()
   $botMeta.set({})
   $botSections.set([])
+  $groupChatSections.set([])
   $groupChats.set({})
   saveBotMeta.mockClear()
 })
 
 describe('user sections — group chats', () => {
-  it('filing a group writes sectionId on its room record and rides the durable group-chats persistence; clearing returns it to the bucket', () => {
-    const section = createBotSection('XYZ')!
+  it('rejects cross-type drops before they can write a category id to the other record type', () => {
+    expect(sectionDropMatchesScope(groupDragKey('Team Chat'), 'group')).toBe(true)
+    expect(sectionDropMatchesScope(groupDragKey('Team Chat'), 'bot')).toBe(false)
+    expect(sectionDropMatchesScope('local::nanox', 'bot')).toBe(true)
+    expect(sectionDropMatchesScope('local::nanox', 'group')).toBe(false)
+  })
+
+  it('keeps group-chat categories independent from bot sections and clears only group memberships when deleted', () => {
+    const botSection = createBotSection('Clients')!
+    const groupSection = createGroupChatSection('Projects')!
+
+    moveGroupChatsToSection(['Team Chat'], groupSection.id)
+
+    expect($botSections.get()).toEqual([botSection])
+    expect($groupChatSections.get()).toEqual([groupSection])
+
+    const { members } = deleteGroupChatSection(groupSection.id, ['Team Chat'])
+
+    expect(members).toEqual(['Team Chat'])
+    expect($botSections.get()).toEqual([botSection])
+    expect($groupChatSections.get()).toEqual([])
+    expect(groupChatSectionId('Team Chat', $groupChats.get())).toBeNull()
+  })
+
+  it('filing a group writes its independent category to the room record and durable group-chat persistence; clearing returns it to the bucket', () => {
+    const section = createGroupChatSection('XYZ')!
 
     moveGroupChatsToSection(['Team Chat'], section.id)
 
@@ -103,8 +133,9 @@ describe('user sections — group chats', () => {
     ).toBeNull()
   })
 
-  it('grouping seats group rows per their room record section; unfiled or dangling groups fall to Unassigned', () => {
-    const section = createBotSection('XYZ')!
+  it('grouping seats group rows only in group-chat categories; bot folders and dangling groups fall to Unassigned', () => {
+    const botSection = createBotSection('Clients')!
+    const section = createGroupChatSection('XYZ')!
 
     moveGroupChatsToSection(['Team Chat'], section.id)
     // A room whose section was deleted keeps a dangling id — it must land in
@@ -114,12 +145,13 @@ describe('user sections — group chats', () => {
 
     const rows = [row('nanox'), groupRow('Team Chat'), groupRow('Ghosted'), groupRow('Room')]
 
-    const blocks = groupRowsBySection(rows, $botSections.get(), $botMeta.get(), $groupChats.get())
+    const blocks = groupRowsBySection(rows, $groupChatSections.get(), $botMeta.get(), $groupChats.get(), true)
 
     expect(blocks.map(block => [block.key, block.rows.length])).toEqual([
-      [`section:${section.id}`, 2],
-      [UNASSIGNED_SECTION_KEY, 2]
+      [`section:${section.id}`, 1],
+      [UNASSIGNED_SECTION_KEY, 3]
     ])
+    expect($botSections.get()).toEqual([botSection])
     // Every row lands exactly once, groups included.
     expect(blocks.flatMap(block => block.rows)).toHaveLength(rows.length)
   })

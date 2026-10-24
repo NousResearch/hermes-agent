@@ -74,6 +74,34 @@ _SECRET_SOURCE_CACHE_LOCK = threading.RLock()
 # callers (gateway with a project .env, cron without; home A then B) must peel each other's output too.
 _DOTENV_PUBLISHED: dict[str, tuple[str | None, str, int]] = {}
 _DOTENV_PASSES = itertools.count()
+
+# ``hermes_cli.config`` is imported during early bootstrap -- ``_sanitize_env_file_if_needed``
+# does ``from hermes_cli.config import _sanitize_env_lines`` BEFORE the dotenv load below, and
+# config.py runs ``_inject_profile_env_vars()`` at module scope, which expands every
+# ``${env:...}`` ref in config.yaml against a still-empty ``os.environ``. Warning there is a
+# false positive: the value usually arrives moments later from ``<home>/.env``. So the warning
+# waits until a load has actually happened; a genuine post-load miss still warns.
+_DOTENV_LOAD_COMPLETED = False
+
+
+def dotenv_load_completed() -> bool:
+    """True once at least one ``.env`` load pass has completed in this process."""
+    return _DOTENV_LOAD_COMPLETED
+
+
+def log_unresolved_env_ref(logger_, raw: str, name: str) -> None:
+    """Report a ``${env:VAR}`` ref that resolved to nothing, at a level that matches what it means.
+
+    Before any ``.env`` has loaded this is a bootstrap-ordering artifact rather than a missing
+    credential (see ``_DOTENV_LOAD_COMPLETED``), so it goes to ``debug``; afterwards the value
+    really is absent and it warrants ``warning``. ``hermes_cli.config`` calls this instead of
+    logging directly so the two stay in step.
+    """
+    log = logger_.warning if _DOTENV_LOAD_COMPLETED else logger_.debug
+    log("Config ref %r: %s is not set (check ~/.hermes/.env); "
+        "keeping the literal placeholder", raw, name)
+
+
 _DOTENV_LOCK = threading.RLock()
 
 # Per-process credentials a parent mints and injects into the child's environment (the Desktop shell /
@@ -558,6 +586,8 @@ def load_hermes_dotenv(
 
     if user_env.exists():
         _load_dotenv_with_fallback(user_env, override=True, load_pass=load_pass)
+        global _DOTENV_LOAD_COMPLETED
+        _DOTENV_LOAD_COMPLETED = True
         loaded.append(user_env)
         _clear_known_keys_missing_from_dotenv(user_env)  # mirrors reload_env(): inherited keys must not leak
 

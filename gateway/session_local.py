@@ -24,6 +24,8 @@ class LocalSessionAdapter(BasePlatformAdapter):
     def __init__(self, authority):
         super().__init__(PlatformConfig(enabled=True), Platform.LOCAL)
         self.authority = authority
+        # Producers must enter the owning authority's FIFO, not the generic adapter handler.
+        self.gateway_runner = authority.runner
         self.sources = {}
         self.policies = {}
 
@@ -54,6 +56,16 @@ class LocalSessionAdapter(BasePlatformAdapter):
 
     async def edit_message(self, chat_id, message_id, content, *, finalize=False):
         return SendResult(success=True, message_id=message_id)
+
+    async def send_notification(self, chat_id, content, *, notice_key):
+        """Publish an off-turn notice; send() is only the already-streamed turn's ACK."""
+        live = self.authority.sessions.get(chat_id)
+        if live is None or not self.authorize_source(live.source):
+            return SendResult(success=False, error='Local session is not live')
+        live.event_stream.publish(chat_id, {
+            'text': content, 'level': 'info', 'kind': 'sticky', 'key': notice_key, 'id': notice_key,
+        }, event_type='notification.show')
+        return SendResult(success=True, message_id=notice_key)
 
     async def _record_delivery_obligation(self, *args, **kwargs):
         # No platform ACK to lose: viewers replay the durable transcript. A ledger row would only

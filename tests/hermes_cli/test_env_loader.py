@@ -1,4 +1,5 @@
 import codecs
+import logging
 import os
 
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -622,3 +623,59 @@ def test_dotenv_published_dashboard_session_token_still_reloads(tmp_path, monkey
     (home / ".env").write_text("HERMES_DASHBOARD_SESSION_TOKEN=second\n", encoding="utf-8")
     load_hermes_dotenv(hermes_home=home)
     assert os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] == "second"
+
+
+def test_dotenv_load_marks_the_env_as_loaded(tmp_path, monkeypatch):
+    """``dotenv_load_completed()`` must flip only once a .env has been applied."""
+    from hermes_cli import env_loader
+
+    monkeypatch.setattr(env_loader, "_DOTENV_LOAD_COMPLETED", False)
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("DOTENV_FLAG_KEY=loaded\n", encoding="utf-8")
+    monkeypatch.delenv("DOTENV_FLAG_KEY", raising=False)
+
+    assert env_loader.dotenv_load_completed() is False
+
+    loaded = load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
+
+    assert loaded == [home / ".env"]
+    assert os.environ["DOTENV_FLAG_KEY"] == "loaded"
+    assert env_loader.dotenv_load_completed() is True
+
+
+def test_unresolved_config_ref_stays_quiet_until_the_dotenv_load_has_run(monkeypatch, caplog):
+    """A ref that resolves fine must not warn during early bootstrap.
+
+    ``hermes_cli.config`` runs ``_inject_profile_env_vars()`` at module scope, and the
+    module is first imported from ``env_loader._sanitize_env_file_if_needed()`` — which
+    ``load_hermes_dotenv()`` calls *before* ``_load_dotenv_with_fallback()``. So config
+    refs were expanded against a still-empty ``os.environ`` and every ref backed by
+    ``~/.hermes/.env`` logged a false "is not set" warning on every invocation.
+
+    The placeholder is still kept verbatim in both phases; only the log level moves.
+    """
+    from hermes_cli import config as config_mod
+    from hermes_cli import env_loader
+
+    ref = "${env:CONFIG_REF_REGRESSION_KEY}"
+    monkeypatch.delenv("CONFIG_REF_REGRESSION_KEY", raising=False)
+
+    # Phase 1: the env has not been loaded yet — a miss here is a bootstrap artifact.
+    monkeypatch.setattr(env_loader, "_DOTENV_LOAD_COMPLETED", False)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+        expanded = config_mod._expand_env_vars({"key": ref})
+    assert expanded["key"] == ref, "an unresolved ref must still be kept verbatim"
+    assert caplog.records == [], "bootstrap-order miss must not warn"
+
+    # Phase 2: the env has been loaded — the same miss is now genuinely missing.
+    monkeypatch.setattr(env_loader, "_DOTENV_LOAD_COMPLETED", True)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+        expanded = config_mod._expand_env_vars({"key": ref})
+    assert expanded["key"] == ref
+    assert any(
+        "CONFIG_REF_REGRESSION_KEY" in record.getMessage()
+        for record in caplog.records
+    ), "a real post-load miss must still warn"

@@ -1559,9 +1559,8 @@ def _env_expand_match(m: re.Match) -> str:
     if val is not None:
         return val
     if inner.startswith("env:"):
-        logger.warning(
-            "Config ref %r: %s is not set (check ~/.hermes/.env); "
-            "keeping the literal placeholder", raw, name)
+        from hermes_cli.env_loader import log_unresolved_env_ref
+        log_unresolved_env_ref(logger, raw, name)
     return raw
 
 

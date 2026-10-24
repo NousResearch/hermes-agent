@@ -194,6 +194,7 @@ result = ctx.llm.complete(
     profile=None,          # 可选，受门控——显式指定认证 profile 名称
     purpose="optional-audit-string",
     task=None,             # 可选——plugin 注册的辅助槽位
+    allow_fallback=True,   # False 保持解析后的 provider/模型路由
 )
 # → PluginLlmCompleteResult(text, provider, model, agent_id, usage, audit)
 ```
@@ -225,6 +226,7 @@ result = ctx.llm.complete_structured(
     profile=None,
     purpose=None,
     task=None,             # 可选——plugin 注册的辅助槽位
+    allow_fallback=True,
 )
 # → PluginLlmStructuredResult(text, provider, model, agent_id,
 #                             usage, parsed, content_type, audit)
@@ -245,6 +247,20 @@ result = await ctx.llm.acomplete_structured(
 ```
 
 参数和结果类型与对应的同步版本相同。在 gateway 适配器、异步 hook 或任何已运行在 asyncio 事件循环上的 plugin 代码中使用。
+
+### 严格 provider/模型路由
+
+四种方法均接受仅限关键字的布尔参数 `allow_fallback=True`。省略或传入 `True` 保留宿主正常的回退行为。当调用必须失败而不能尝试其他 provider 或模型时，传入 `False`：
+
+```python
+result = ctx.llm.complete(messages=[...], task="classifier", allow_fallback=False)
+```
+
+信任和任务门控仍然有效。路由解析后，严格调用不会通过任务或自动回退链、主模型兜底或模型替换改用其他 provider/模型。路由不可用时会在传输前失败；provider 错误和重试耗尽的超时异常从辅助客户端向上传播。非布尔值（包括 `"false"`、`0`、`None`）会在传输前抛出 `TypeError`。
+
+严格路由**不会**禁用同路由瞬态重试、凭据刷新、凭据池轮换或请求参数修复。它固定的是 provider/模型身份，**不是**端点主机或 API key：凭据刷新可能改变端点，池轮换可能改变 key。`timeout=` 仍按通常的单次请求超时解释，不是所有重试的总时限。
+
+结构化调用的参数修复或能力处理可能移除 `response_format`；严格路由不保证 provider 强制输出 JSON。本地解析、schema 验证和 `content_type` 保持原有行为。它也不确定 session/profile 路由或保证 reasoning 等价。
 
 ### 通过任务路由的辅助调用
 
@@ -364,7 +380,7 @@ Plugin id 对于扁平 plugin 是 manifest 中的 `name:` 字段，对于嵌套 
 * **Provider 解析。** 从用户配置中读取 `model.provider` + `model.model`（或在受信任时读取显式覆盖值）。
 * **认证。** 从 `~/.hermes/auth.json` / 环境变量中提取 API 密钥、OAuth token 或刷新 token，包括配置了凭据池时的处理。Plugin 永远看不到这些内容。
 * **视觉路由。** 当提供图像输入而用户当前激活的文本模型仅支持文本时，宿主自动回退到已配置的视觉模型。
-* **回退链。** 若用户主 provider 返回 5xx 或 429，请求在向 plugin 返回错误前会经过 Hermes 常规的聚合器感知回退流程。
+* **回退链。** 若用户主 provider 返回 5xx 或 429，请求在向 plugin 返回错误前会经过 Hermes 常规的聚合器感知回退流程，除非传入 `allow_fallback=False`。
 * **超时。** 遵循你的 `timeout=` 参数，回退到 `auxiliary.<task>.timeout` 配置或全局辅助默认值。
 * **JSON 塑形。** 在你请求 JSON 时向 provider 发送 `response_format`，若 provider 返回了代码围栏格式的响应则在本地重新解析。
 * **Schema 验证。** 安装了 `jsonschema` 时对你的 `json_schema` 进行验证；否则记录一行 debug 日志并跳过严格验证。

@@ -176,9 +176,25 @@ _LAST_EXPANDED_CONFIG_BY_PATH: dict[str, Any] = {}
 # _normalize_* + _expand_env_vars (~13 ms/call). save_config() + migrate_config() write via
 # the config writer seam, which produces a fresh inode, so stat() sees a new signature and the next load
 # repopulates automatically — no explicit invalidation hook. See #58514.
-_LOAD_CONFIG_CACHE: dict[str, tuple[int, ...]] = {}
+_LOAD_CONFIG_CACHE: dict[tuple[str, bool, Optional[str]], tuple[int, ...]] = {}
 # path -> (mtime_ns, size, ino, ctime_ns, raw yaml dict) for read_raw_config() (no defaults merged in).
 _RAW_CONFIG_CACHE: dict[str, tuple[int, ...]] = {}
+
+
+def _load_config_cache_key(path_key: str) -> tuple[str, bool, Optional[str]]:
+    """Cache key for ``_LOAD_CONFIG_CACHE``: ``(path, in_scope, scope_home)``.
+
+    Scoped and unscoped callers expand ``${VAR}`` against different sources (profile ``.env`` vs
+    ``os.environ``), so a single path-keyed entry makes them evict each other and re-parse on every
+    crossing (#141857). Keying by scope keeps each side's entry separate.
+    """
+    try:
+        from agent.secret_scope import current_secret_scope, current_secret_scope_home
+    except Exception:
+        return path_key, False, None
+    if current_secret_scope() is None:
+        return path_key, False, None
+    return path_key, True, current_secret_scope_home()
 
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS (managed by setup/provider
 # flows directly). Also the set reload_env() may remove from os.environ.
@@ -2275,7 +2291,7 @@ def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: 
         # Cache under the failed file's signature (empty env snapshot: always valid) so repeated
         # loads don't re-parse the fallback; fixing the file changes the signature and reloads
         # normally, and a read error is re-probed on every hit (_load_config_cache_hit).
-        _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, lkg_copy, {})
+        _LOAD_CONFIG_CACHE[_load_config_cache_key(path_key)] = (*cache_sig, lkg_copy, {})
     return lkg_copy
 
 
@@ -2297,13 +2313,13 @@ def _merge_managed_overlay(expanded: dict[str, Any]) -> tuple[dict[str, Any], An
     return _deep_merge(expanded, _expand_env_vars(managed_normalized)), managed_config
 
 
-def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[dict[str, Any]]:
-    """Lookup: the cached expanded config for ``path_key`` if its signature equals
+def _load_config_cache_hit(cache_key: tuple[str, bool, Optional[str]], cache_sig: Any) -> Optional[dict[str, Any]]:
+    """Lookup: the cached expanded config for ``cache_key`` if its signature equals
     ``cache_sig`` AND every ``${VAR}`` it was expanded against still has the same value, else
     ``None``. Signatures matching is not enough: a load before load_hermes_dotenv() would otherwise
     pin unexpanded literals (e.g. auxiliary.<task>.api_key) for the process lifetime (#58514).
     Shared by the lock-free fast path and the locked re-check of ``_load_config_impl``."""
-    cached = _LOAD_CONFIG_CACHE.get(path_key)
+    cached = _LOAD_CONFIG_CACHE.get(cache_key)
     if cached is None or cache_sig is None or cached[:8] != cache_sig:
         return None
     hit = cached[8]
@@ -2311,7 +2327,7 @@ def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[dict[str, 
         # A read error (EMFILE/EIO/sharing violation) can clear without touching the file's
         # signature: serve the fallback only while the file still cannot be read.
         try:
-            with open(path_key, "rb") as f:
+            with open(cache_key[0], "rb") as f:
                 f.read()
             return None
         except OSError:
@@ -2334,9 +2350,10 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
     try:
         config_path = get_config_path()
         path_key = str(config_path)
-        if path_key in _LOAD_CONFIG_CACHE:
+        cache_key = _load_config_cache_key(path_key)
+        if cache_key in _LOAD_CONFIG_CACHE:
             _, fast_sig = _load_config_cache_sig(config_path)
-            hit = _load_config_cache_hit(path_key, fast_sig)
+            hit = _load_config_cache_hit(cache_key, fast_sig)
             if hit is not None:
                 return copy.deepcopy(hit) if want_deepcopy else hit
     except Exception:
@@ -2348,10 +2365,11 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
         ensure_hermes_home()
         config_path = get_config_path()
         path_key = str(config_path)
+        cache_key = _load_config_cache_key(path_key)
 
         user_sig, cache_sig = _load_config_cache_sig(config_path)
 
-        hit = _load_config_cache_hit(path_key, cache_sig)
+        hit = _load_config_cache_hit(cache_key, cache_sig)
         if hit is not None:
             return copy.deepcopy(hit) if want_deepcopy else hit
 
@@ -2387,7 +2405,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
                 fallback = FailedConfigRead(
                     _merge_managed_overlay(_expand_env_vars(_canonicalize_config(config)))[0], error=e)
                 if cache_sig is not None:
-                    _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, fallback, {})
+                    _LOAD_CONFIG_CACHE[cache_key] = (*cache_sig, fallback, {})
                 return copy.deepcopy(fallback) if want_deepcopy else fallback
 
         normalized = _canonicalize_config(config)
@@ -2401,12 +2419,12 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
             env_snapshot = _env_ref_snapshot(normalized)
             if managed_config:
                 _env_ref_snapshot(managed_config, env_snapshot)
-            _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, cached_copy, env_snapshot)
+            _LOAD_CONFIG_CACHE[cache_key] = (*cache_sig, cached_copy, env_snapshot)
             # Readonly path returns the same object later calls will see (identity invariant).
             if not want_deepcopy:
                 return cached_copy
         else:
-            _LOAD_CONFIG_CACHE.pop(path_key, None)
+            _LOAD_CONFIG_CACHE.pop(cache_key, None)
         # First-load result is a fresh dict (not aliased to the cache); safe to return directly.
         return expanded
 

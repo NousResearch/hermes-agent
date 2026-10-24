@@ -1,0 +1,17 @@
+name: catalogo-it
+repo: https://github.com/Lazzdaycod/hermes-lang-it
+sha: 7bb28ed61954004053232e9532e659173343a78d
+subdir: plugins/catalogo-it
+version: "1.0.0"
+description: "Catalogo plugin Hermes in italiano con traduzione al volo."
+maintainer: Lazzdaycod
+tier: community
+category: desktop
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/Lazzdaycod/hermes-lang-it#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

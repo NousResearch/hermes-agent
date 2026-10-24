@@ -659,12 +659,16 @@ _TAG_REFRESH_TIMEOUT_SECONDS = 30
 _HISTORY_FETCH_TIMEOUT_SECONDS = 900
 
 
-def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs) -> bool:
+def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, release_tag: str | None = None,
+                            **run_kwargs) -> bool:
     """Refresh release tags and fill shallow history before publishing identity.
 
     A full commit graph does not imply current tags, especially after a --no-tags
     clone. Fetch version tags explicitly without fetching every remote branch or
-    replacing existing tags. The fetch never changes the clone's mode: ``--filter`` makes git
+    replacing existing tags. When the caller knows ``release_tag``, fetch that one ref
+    instead of the ``refs/tags/v*`` wildcard: enumerating every published tag can exceed
+    the tag-refresh bound on a slow link and leave the tag naming this build missing
+    (#143361). The fetch never changes the clone's mode: ``--filter`` makes git
     write ``remote.origin.promisor``/``partialclonefilter``, so a full clone fetches unfiltered
     (#122353) and a partial clone repeats its own filter. The one conversion is deliberate: a
     depth-limited full clone whose history is really missing unshallows as a partial clone, because
@@ -686,10 +690,12 @@ def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs)
     if converts:
         fetch_filter = "blob:none"
     try:
+        tag_refspec = (f"refs/tags/{release_tag}:refs/tags/{release_tag}" if release_tag
+                       else "refs/tags/v*:refs/tags/v*")
         run_git(
             ["git"], ["fetch", "--quiet", *(["--unshallow"] if shallow else []),
              *([f"--filter={fetch_filter}"] if fetch_filter else []),
-             "--no-tags", "origin", "refs/tags/v*:refs/tags/v*", *extra_refspecs],
+             "--no-tags", "origin", tag_refspec, *extra_refspecs],
             cwd=str(repo_root), check=True, capture_output=True, text=True,
             encoding="utf-8", errors="replace",
             timeout=_HISTORY_FETCH_TIMEOUT_SECONDS if shallow else _TAG_REFRESH_TIMEOUT_SECONDS, **run_kwargs,

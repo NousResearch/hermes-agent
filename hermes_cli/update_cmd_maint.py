@@ -965,7 +965,7 @@ def _migrate_relay_exporter_env() -> None:
 
 def _run_post_update_maintenance(
     *, assume_yes, gateway_mode, pre_update_snapshot_id, had_desktop_app_before_update,
-    pre_update_version, completion_message=None, followups=None,
+    pre_update_version, completion_message=None, followups=None, release_tag: str | None = None,
 ) -> bool:
     """Post-build housekeeping and completion, returning the SQLite runtime verdict.
 
@@ -1020,11 +1020,16 @@ def _run_post_update_maintenance(
 
     # Both shallow history and missing tags can hide the release identity.
     # Refresh them before the completion line and install stamp read it.
+    # A release tag is one ref: the wildcard refresh enumerates every published tag and can
+    # exceed its bound on a slow link, leaving the checkout without the tag that names the
+    # build it already contains (#143361).
     try:
         from hermes_cli.gitlock import fetch_full_commit_graph
         from hermes_cli.update_cmd import _no_prompt_git_kwargs
-        if fetch_full_commit_graph(Path(_m().PROJECT_ROOT), **_no_prompt_git_kwargs()):
-            print("  ✓ Fetched release history (commits only) for version identity")
+        if fetch_full_commit_graph(Path(_m().PROJECT_ROOT), **_no_prompt_git_kwargs(),
+                                   release_tag=release_tag):
+            print(f"  ✓ Fetched release tag {release_tag} for version identity" if release_tag
+                  else "  ✓ Fetched release history (commits only) for version identity")
     except (OSError, subprocess.SubprocessError) as exc:
         detail = (getattr(exc, "stderr", None) or str(exc)).strip().splitlines()[-1:] or [type(exc).__name__]
         print(f"  ⚠ Could not refresh release history ({detail[0]}); the version label may be stale or unknown until the next update")

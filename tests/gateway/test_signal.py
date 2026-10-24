@@ -1383,3 +1383,30 @@ class TestRecentSentTimestampRing:
         adapter._track_sent_timestamp({"timestamp": 3})
         # Both 1 and 2 should be evicted on TTL, only 3 remains
         assert list(adapter._recent_sent_timestamps.keys()) == [3]
+
+
+class TestSignalPreAuthReaction:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("authorized, reactions", [(False, []), (True, ["👀"])])
+    async def test_open_allowlist_defers_reaction_to_gateway_authorization(
+            self, monkeypatch, authorized, reactions):
+        """SIGNAL_ALLOWED_USERS unset ("*"): the gateway check decides, so a stranger gets no reaction."""
+        monkeypatch.delenv("SIGNAL_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("SIGNAL_REACTIONS", raising=False)
+        from gateway.platforms.event import MessageEvent, MessageType
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter.set_authorization_check(lambda user_id, chat_type, chat_id, **_: authorized)
+        sent = []
+
+        async def fake_send_reaction(chat_id, emoji, target_author, target_timestamp):
+            sent.append(emoji)
+            return True
+
+        monkeypatch.setattr(adapter, "send_reaction", fake_send_reaction)
+        source = adapter.build_source(chat_id="+15559999999", chat_type="dm", user_id="+15559999999")
+        event = MessageEvent(text="hi", message_type=MessageType.TEXT, source=source,
+                             raw_message={"sender": "+15559999999", "timestamp_ms": 1700000000000})
+
+        await adapter.on_processing_start(event)
+
+        assert sent == reactions

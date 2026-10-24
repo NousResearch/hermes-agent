@@ -1,6 +1,6 @@
 name: code-assurance-engine
 repo: https://github.com/Sahil-SS9/code-assurance-engine
-sha: effffefdb6362763e69b904ddc02ccaa3bbddcd0
+sha: 6b8898f68794a128e8b68c3be6d0aeb11e05d195
 description: "Change-assurance engine: evaluates an immutable repository candidate against an explicit, reviewer-approved check contract and returns machine-readable evidence, findings and unverified gaps, so a green result has a defined scope. Disclosure - default operation is read-only local analysis with private reports; the candidate is frozen and identified by content and the check contract is agreed before evaluation; candidate execution (assure_run) is a separate, explicitly approved operation in an isolated lane rather than a default code path; reports render without external assets and stay local; no third-party network calls, no stored credentials, no telemetry and no self-updater."
 maintainer: Sahil-SS9
 tier: community

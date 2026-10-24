@@ -181,8 +181,23 @@ def lease_directory(generation: Path) -> Callable[[], None]:
     return release
 
 
-def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> list[Path]:
-    """Remove unselected lease-managed generations after their readers exit."""
+#: Unselected generations younger than ``min_age_seconds`` stay even without a lease, for
+#: readers that never take one (a child the backend spawned with the generation on its
+#: PYTHONPATH, a boot between selection and ``lease_generation``). That grace assumes a
+#: generation arrives a few times a day at most. A launch loop (#122349: a member stamp that
+#: changes on every launch) commits one per launch, and nothing else bounded them: 59
+#: generations / 41 GB there, 138 / 23 GB on a 1-minute timer host. Only this many young,
+#: unleased generations survive, newest first; the rest are collected as if they had aged out.
+RECENT_UNLEASED_GENERATIONS_KEPT = 2
+
+
+def collect_generations(project: Path, *, min_age_seconds: float = 86400,
+                        keep_recent: int = RECENT_UNLEASED_GENERATIONS_KEPT) -> list[Path]:
+    """Remove unselected lease-managed generations after their readers exit.
+
+    A generation younger than *min_age_seconds* survives without a lease only while it is
+    one of the *keep_recent* newest such generations.
+    """
     from pm.environments import selected_venv
     removed = []
     root = install_state_dir(project)
@@ -196,15 +211,31 @@ def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> lis
         generations = root / "environments"
         if not generations.is_dir():
             return removed
+        young: list[tuple[float, Path]] = []
+        now = time.time()
         for generation in generations.iterdir():
             if generation.is_symlink() or not generation.is_dir() or generation.resolve() == selected:
                 continue
             marker = generation / ".lease-managed"
-            if not marker.is_file() or time.time() - marker.stat().st_mtime < min_age_seconds:
+            if not marker.is_file():
+                continue
+            published = marker.stat().st_mtime
+            if now - published < min_age_seconds:
+                young.append((published, generation))
                 continue
             if not leases_held(generation):
                 shutil.rmtree(generation)
                 removed.append(generation)
+        # Newest first. A leased generation is never a victim and does not use up the cap.
+        kept = 0
+        for _published, generation in sorted(young, key=lambda item: item[0], reverse=True):
+            if leases_held(generation):
+                continue
+            if kept < keep_recent:
+                kept += 1
+                continue
+            shutil.rmtree(generation)
+            removed.append(generation)
     return removed
 
 

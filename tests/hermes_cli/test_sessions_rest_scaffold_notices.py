@@ -13,6 +13,9 @@ A stored ``role=user`` ``display_kind=steer`` row must ship the user's own words
 ``display_content`` (the same unwrap ``session.resume`` applies) — marker-wrapped content
 never pairs with the optimistic plain-text copy, so Desktop renders the correction twice
 and reorders it (#121978).
+
+An MCP App view record on a tool row ships only the server and tool it names; its arguments
+and raw result are served on demand by ``mcp.app.view``.
 """
 
 from hermes_cli.web_routers.sessions import _project_for_display
@@ -106,6 +109,23 @@ def test_rest_projection_unwraps_steer_rows_for_display():
     assert "display_content" not in by_id[22]
     # Input rows are not mutated in place.
     assert "display_content" not in steer_row
+
+
+def test_rest_projection_keeps_only_the_view_an_mcp_app_record_names():
+    """An MCP App view record on a tool row carries the call's arguments and raw result, up to
+    the MCP hard cap; a transcript page ships only its server and tool (``mcp.app.view`` serves
+    the rest), and the row's other display metadata stays."""
+    record = {"server": "maps", "tool": "show_map", "arguments": {"city": "Oslo"},
+              "result": {"content": [{"type": "text", "text": "x" * 4096}]}}
+    row = {"role": "tool", "id": 41, "content": "{}", "tool_call_id": "call-1", "timestamp": 9.0,
+           "display_metadata": {"mcp_app": record, "preview": "map"}}
+
+    projected = _project_for_display([row])
+
+    assert projected[0]["display_metadata"] == {"mcp_app": {"server": "maps", "tool": "show_map"},
+                                                "preview": "map"}
+    # Input rows are not mutated in place.
+    assert row["display_metadata"]["mcp_app"] is record and "result" in record
 
 
 def test_rest_projection_keeps_steer_row_without_marker_as_is():

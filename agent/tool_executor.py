@@ -17,7 +17,7 @@ import os
 import random
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from agent.display import (
@@ -54,6 +54,7 @@ from agent.tool_dispatch_helpers import (
     _plan_tool_batch_segments,
     make_tool_result_message,
 )
+from tools import mcp_app_host
 from tools.terminal_tool_lifecycle import get_active_env
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
@@ -275,13 +276,15 @@ _emit_terminal_post_tool_call = emit_terminal_post_tool_call
 @dataclass
 class _ToolCallRef:
     """Identity of one tool call as every hook / result message sees it: the (possibly
-    middleware-rewritten) name and args, the task, the pairing id and the request trace."""
+    middleware-rewritten) name and args, the task, the pairing id and the request trace;
+    ``view`` is the call's MCP App view slot (``tools/mcp_app_host.py``)."""
 
     name: str
     args: dict
     task_id: str
     call_id: str
     trace: list
+    view: dict = field(default_factory=dict)
 
     def middleware_kwargs(self) -> dict[str, Any]:
         """Keyword form ``_run_agent_tool_execution_middleware`` (and tests patching it) expect."""
@@ -1085,6 +1088,7 @@ def _commit_tool_result(
     error_preview: Callable[[Any], Any] = lambda result: result,
     success_log_chars: Optional[int] = None,
     verbose_text: Callable[[Any], Any] = lambda result: result,
+    view: Optional[dict] = None,
 ):
     """Observe (``observed`` results only) and log the outcome; mark the tool done; persist/
     spill, hint, wrap and append the result; flush the session DB; project ``tool.completed``.
@@ -1169,6 +1173,10 @@ def _commit_tool_result(
         except Exception as callback_error:
             logging.debug("Tool result metadata callback error: %s", callback_error)
     stamp_data_use(tool_message, sorted(data_use))
+    # An MCP App view's record rides its tool row (display-only: never sent to the provider). A copy:
+    # a result the abandoned worker writes after this point never reaches the row.
+    if view and "server" in view and not blocked:
+        tool_message["display_metadata"] = {**(tool_message.get("display_metadata") or {}), "mcp_app": dict(view)}
     messages.append(tool_message)
     if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
         return None
@@ -1407,7 +1415,9 @@ class _ConcurrentBatch:
             _set_worker_activity_callback(agent)
             start_gate = _WorkerStartOnce(self.gate, start_order, pc.name)
             try:
-                outcome = self._dispatch_worker(index, pc.ref(self.effective_task_id), pc.scope_block, start_gate)
+                ref = pc.ref(self.effective_task_id)
+                with mcp_app_host.bind_slot(ref.name, ref.view):
+                    outcome = self._dispatch_worker(index, ref, pc.scope_block, start_gate)
                 if outcome is not None:
                     self.results[index] = outcome
             finally:
@@ -1566,7 +1576,7 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
             agent, messages, ref, function_result,
             budget=budget, tool_duration=tool_duration, is_error=is_error, blocked=blocked,
             effect_disposition=effect_disposition, observed=r is not None, data_use=r.data_use if r else frozenset(),
-            error_preview=lambda res: _multimodal_text_summary(res)[:200],
+            error_preview=lambda res: _multimodal_text_summary(res)[:200], view=ref.view,
         )
         if committed is None:
             return False
@@ -1777,13 +1787,14 @@ def _run_sequential_call(
     before re-raising so the tool-call turn keeps matching results (alternation)."""
     _spinner_result = None
     try:
-        managed = _run_sequential_tool_execution_middleware(
-            agent,
-            **dict(ref.middleware_kwargs(), middleware_trace=dispatch.middleware_trace_arg),
-            execute=dispatch.execute,
-            scope_block=scope_block,
-            display_index=display_index,
-        )
+        with mcp_app_host.bind_slot(ref.name, ref.view):
+            managed = _run_sequential_tool_execution_middleware(
+                agent,
+                **dict(ref.middleware_kwargs(), middleware_trace=dispatch.middleware_trace_arg),
+                execute=dispatch.execute,
+                scope_block=scope_block,
+                display_index=display_index,
+            )
         ref.args = managed.args
         _spinner_result = managed.result
     except KeyboardInterrupt:
@@ -1844,6 +1855,7 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
         error_preview=lambda res: res[:200] if isinstance(res, str) and not agent.verbose_logging else res,
         success_log_chars=_result_len,
         verbose_text=_multimodal_text_summary,
+        view=ref.view,
     )
     if committed is None:
         return False

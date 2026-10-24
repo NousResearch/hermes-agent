@@ -325,12 +325,14 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
             args = tc_args or {}
             # `context` is an 80-char preview; ship args so a full-call renderer isn't truncated.
             labels = _bridged_tool_labels(name, args)
+            # An MCP App view record carries the raw result; ``mcp.app.view`` serves it on demand.
+            display_metadata = {k: v for k, v in (m.get("display_metadata") or {}).items() if k != "mcp_app"}
             messages.append({"role": "tool", "name": name, "context": _tool_ctx(name, args),
                              # Edit cards need the original result; other tool outputs
                              # remain omitted from this compact display projection.
                              **({"content": m.get("content")} if name in {"write_file", "patch", "skill_manage"} else {}),
-                             **{key: m[key] for key in ("tool_call_id", "timestamp", "display_metadata")
-                                if m.get(key) is not None},
+                             **{key: m[key] for key in ("tool_call_id", "timestamp") if m.get(key) is not None},
+                             **({"display_metadata": display_metadata} if display_metadata else {}),
                              **({"args": args} if args else {}), **({"labels": labels} if labels else {})})
             continue
         # Assistant detail sidecars can carry the only visible reply or reasoning after resume/reload.

@@ -2661,7 +2661,8 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
                 }
             ],
         },
-        {"role": "tool", "content": "{}", "tool_call_id": "call_1"},
+        {"role": "tool", "content": "{}", "tool_call_id": "call_1",
+         "display_metadata": {"mcp_app": {"server": "srv", "tool": "search_files", "arguments": {}}}},
         {"role": "assistant", "content": "first answer"},
         {"role": "user", "content": "second prompt"},
     ]
@@ -20729,6 +20730,72 @@ def test_prompt_submit_passes_persist_user_message_to_agent(monkeypatch):
         assert captured.get("persist_user_message") == "hi"
     finally:
         server._sessions.pop("sid", None)
+
+
+def test_mcp_app_model_context_reaches_the_next_turn_once_wrapped(monkeypatch, tmp_path):
+    """MCP Apps ``ui/update-model-context``: the view's LAST update (spec 1101) reaches the next
+    user turn's model input once, wrapped as untrusted MCP output; the user's own text stays as
+    typed, a turn the user did not send (a wake-up) leaves the context waiting, and an empty update
+    clears it."""
+    from hermes_state import SessionDB
+
+    captured = []
+
+    class _Agent:
+        session_id = "agent-sid"
+
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **kwargs):
+            captured.append((prompt, kwargs.get("persist_user_message")))
+            return {"final_response": "reply", "messages": [{"role": "assistant", "content": "reply"}]}
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None, **_thread_options):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="agent-sid", source="tui", model="test/model")
+    db.append_message("agent-sid", "assistant", "", tool_calls=[
+        {"id": "call-1", "type": "function", "function": {"name": "mcp__srv__view", "arguments": "{}"}}])
+    db.append_message("agent-sid", "tool", "{}", tool_name="mcp__srv__view", tool_call_id="call-1",
+                      display_metadata={"mcp_app": {"server": "srv", "tool": "view", "arguments": {}}})
+    transport = types.SimpleNamespace(write=lambda frame: True)
+    session = _session(agent=_Agent(), transport=transport)
+    session["profile_home"] = str(tmp_path)  # the RPC scope hydrates the profile's secrets from here
+    server._sessions["sid"] = session
+
+    def update(**params):
+        reply = _dispatch_sync({"id": "u", "method": "mcp.app.update_model_context",
+                                "params": {"session_id": "sid", "tool_call_id": "call-1", **params}}, transport)
+        assert reply.get("result") == {}, reply
+
+    def submit(text):
+        resp = server.handle_request({"id": "1", "method": "prompt.submit", "params": {"session_id": "sid", "text": text}})
+        assert resp.get("result"), resp
+
+    try:
+        monkeypatch.setattr(server, "_get_db", lambda: db)
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+        for context in ("superseded selection " * 3, "the user picked Oslo on the map " * 2):
+            update(content=[{"type": "text", "text": context}])
+        server._run_prompt_submit("wake", "sid", server._sessions["sid"], "wake-up")
+        submit("hi")
+        update(content=[{"type": "text", "text": "a selection the view took back " * 2}])
+        update(content=[], structured_content={})
+        submit("again")
+    finally:
+        server._sessions.pop("sid", None)
+
+    (wake, _), (first, persisted), (second, _) = captured
+    assert wake == "wake-up"
+    assert persisted == "hi" and first.endswith("\n\nhi") and second == "again"
+    assert "the user picked Oslo" in first and "superseded selection" not in first
+    assert '<untrusted_tool_result source="mcp__srv__view">' in first
 
 
 def test_fallback_session_info_reports_session_cwd_not_launch_dir(monkeypatch):

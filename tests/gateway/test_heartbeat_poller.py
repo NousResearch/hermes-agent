@@ -207,47 +207,69 @@ async def test_emergency_stop_gate_drops_heartbeat_silently_but_tells_real_users
 
 
 @pytest.mark.asyncio
-async def test_local_session_heartbeat_admitted_under_authority(monkeypatch):
-    """A local-session adapter (never wired with a _message_handler) still gets its
-    heartbeat tick admitted when a session authority is active (#144051).
+async def test_local_session_heartbeat_admitted_under_authority(tmp_path):
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_contract import Principal
+    from gateway.session_local import create_local_session
+    from hermes_constants import get_hermes_home
+    from hermes_cli.heartbeat import HeartbeatState, save_heartbeat
+    from hermes_state_runtime import begin_runtime_epoch, list_session_admissions
 
-    The poller used to gate the whole tick on ``adapter._message_handler`` — only
-    connected messaging adapters ever get one — so Desktop/local sessions returned
-    on every tick and never reached the authority branch, which commits the
-    heartbeat without needing the handler at all."""
-    from gateway import run_heartbeat_acceptance as acceptance
-
-    admitted = []
-
-    async def _fake_admit(runner, adapter, source, session_id, route):
-        admitted.append((session_id, route))
-
-    monkeypatch.setattr(acceptance, "admit_heartbeat", _fake_admit)
-
-    adapter = _HeartbeatAdapter(
-        PlatformConfig(enabled=True, typing_indicator=False), Platform.TELEGRAM
-    )
-    assert adapter._message_handler is None  # the local-session shape: never wired
-
+    home = get_hermes_home()
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("model:\n  default: test-model\n")
     runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    runner.adapters = {}
+    runner._draining = False
     runner._running_agents = {}
-    runner._delivery_adapter_for = lambda source: adapter
-    runner.session_store = None
-    runner.session_authority = object()  # the session-authority path is active
-
-    async def _warm(tag):
-        return None
-
-    runner._warm_goals_session_db = _warm
-
-    source = SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id="7",
-        user_id="7",
-        chat_type="dm",
-        message_id="m",
+    runner.session_store = SessionStore(home / "sessions", runner.config)
+    db = runner.session_store._db
+    runner._session_db = db
+    authority = SessionAuthority(
+        runner,
+        profile_id=str(home),
+        instance_id="heartbeat-test",
+        db=db,
+        epoch=begin_runtime_epoch(db, instance_id="heartbeat-test"),
     )
-    key = build_session_key(source)
-    await GatewayRunner._heartbeat_poll_watch(runner, {}, key, source, "local-session")
-
-    assert admitted == [("local-session", key)]
+    runner.session_authority = authority
+    actor = Principal("owner", str(home), frozenset({"session:create"}), "local")
+    ref = create_local_session(
+        authority,
+        actor,
+        {
+            "request_id": "heartbeat",
+            "source": "gui",
+            "cwd": str(tmp_path),
+            "model": "test-model",
+            "toolsets": [],
+        },
+    )
+    live = authority.sessions[ref.session_id]
+    adapter = runner.adapters[Platform.LOCAL]
+    assert adapter._message_handler is None
+    live.task = asyncio.create_task(asyncio.Event().wait())
+    try:
+        save_heartbeat(
+            ref.session_id,
+            HeartbeatState(prompt="check local work", interval_seconds=60, created_at=1),
+        )
+        for _ in range(2):
+            await runner._heartbeat_poll_watch({}, live.route, live.source, ref.session_id)
+        rows = list_session_admissions(db, session_id=ref.session_id)
+        assert len(rows) == 1
+        assert rows[0]["status"] == "queued"
+        descriptor = rows[0]["payload"]["local_automation_v1"]
+        assert descriptor["heartbeat"] == ref.session_id
+        assert descriptor["route"] == live.route
+        assert HeartbeatManager(ref.session_id).state.fire_count == 1
+    finally:
+        live.task.cancel()
+        await asyncio.gather(live.task, return_exceptions=True)
+        runner.session_store.close_all_db_handles()
+        executor = getattr(runner, "_executor", None)
+        if executor is not None:
+            executor.shutdown(wait=True)

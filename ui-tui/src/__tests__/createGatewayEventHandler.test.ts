@@ -1424,6 +1424,64 @@ describe('createGatewayEventHandler', () => {
     expect(newSession).not.toHaveBeenCalled()
   })
 
+  it('on gateway.ready with STARTUP_RESUME_ID refused, keeps the failure visible and forges nothing (#143907)', async () => {
+    const appended: Msg[] = []
+    const newSession = vi.fn()
+    // Refused resume: resolves null, binds no session (the useSessionLifecycle
+    // contract for a refused/failed resume).
+    const resumeById = vi.fn(async () => null)
+    const ctx = buildCtx(appended)
+
+    ctx.session.newSession = newSession
+    ctx.session.resumeById = resumeById
+    ctx.session.STARTUP_RESUME_ID = 'sess-refused'
+    ctx.gateway.rpc = vi.fn(async () => ({
+      config: { display: { tui_auto_resume_recent: true } }
+    }))
+
+    createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
+
+    await vi.waitFor(() => expect(resumeById).toHaveBeenCalledWith('sess-refused'))
+    // The failure must stay in the transcript as a panel naming the refused
+    // id — not just the one-line error flash — and hold a failure status.
+    await vi.waitFor(() =>
+      expect(
+        appended.some(
+          m => m.kind === 'panel' && (m as any).panelData?.title === 'could not resume session sess-refused'
+        )
+      ).toBe(true)
+    )
+    expect(getUiState().status).toBe('resume failed')
+    expect(getUiState().sid).toBeFalsy()
+    expect(newSession).not.toHaveBeenCalled()
+  })
+
+  it('on gateway.ready with STARTUP_RESUME_ID succeeding, shows no failure panel', async () => {
+    const appended: Msg[] = []
+    const newSession = vi.fn()
+    const resumeById = vi.fn(async () => {
+      patchUiState({ sid: 'sess-ok', status: 'ready' })
+
+      return 'sess-ok'
+    })
+    const ctx = buildCtx(appended)
+
+    ctx.session.newSession = newSession
+    ctx.session.resumeById = resumeById
+    ctx.session.STARTUP_RESUME_ID = 'sess-ok'
+    ctx.gateway.rpc = vi.fn(async () => ({
+      config: { display: { tui_auto_resume_recent: true } }
+    }))
+
+    createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
+
+    await vi.waitFor(() => expect(resumeById).toHaveBeenCalledWith('sess-ok'))
+    await vi.waitFor(() => expect(getUiState().sid).toBe('sess-ok'))
+    expect(appended.some(m => m.kind === 'panel')).toBe(false)
+    expect(getUiState().status).not.toBe('resume failed')
+    expect(newSession).not.toHaveBeenCalled()
+  })
+
   it('keeps gateway noise informational and approval out of Activity', async () => {
     const appended: Msg[] = []
     const ctx = buildCtx(appended)

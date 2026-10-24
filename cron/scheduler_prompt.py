@@ -197,6 +197,7 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
     from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
     from agent.skill_commands import _inject_skill_config, ambiguous_skill_label
     from agent.skill_utils import normalize_skill_lookup_name
+    from tools.skills_tool_dedup import register_inline_skill_block
     job_label = job.get("name", job.get("id"))
     task_id = str(job.get("id") or "") or None
     parts: list[str] = []
@@ -241,10 +242,13 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
 
         if parts:
             parts.append("")
-        parts.extend([
+        content = str(loaded.get("content") or "")
+        block = "\n".join([
             f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
             "",
-            str(loaded.get("content") or "").strip()])
+            content.strip()])
+        parts.append(block)
+        register_inline_skill_block(block, loaded, content)
         _inject_skill_config(loaded, parts)
 
     if skipped:

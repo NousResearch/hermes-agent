@@ -7,6 +7,7 @@ failure propagates without changing plugin configuration or the live venv.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 from collections.abc import Mapping
@@ -30,7 +31,7 @@ def _member_ignored(directory, names):
 # The uv failure classifier lives beside the uv runner (stdlib-only imports): the bootstrap
 # runner streams uv output from a pre-3.11 system python where this module's tomllib import
 # cannot load. Workspace callers keep reaching it from here.
-from pm.environment import ResolutionConflict, classify_uv_failure  # noqa: E402,F401
+from pm.environment import ResolutionConflict, classify_uv_failure
 
 
 def member_sources(plugin_dirs) -> dict[Path, Path]:
@@ -62,6 +63,29 @@ def members_stamp(plugin_dirs) -> str:
     return h.hexdigest()
 
 
+def _published_store_entries(directory: Path) -> frozenset[str]:
+    """Names of the PM tool-store entries published in *directory*, if it is a store root.
+
+    The container image keeps its store in the ``tools`` package directory, so the snapshot would
+    otherwise copy every pinned interpreter, browser and media binary (about 1.5 GB) into each
+    dependency generation. Nothing builds from them: the build runs the store's own tools in
+    place. A directory counts as a store only when its ``facts.json`` records published entries,
+    and only those entries (plus hash-keyed fetch caches) are left out.
+    """
+    try:
+        facts = json.loads((directory / "facts.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return frozenset()
+    packages = facts.get("packages") if isinstance(facts, dict) else None
+    if not isinstance(packages, dict):
+        return frozenset()
+    names = {fact["entry"] for fact in packages.values()
+             if isinstance(fact, dict) and isinstance(fact.get("entry"), str)}
+    names = {name for name in names if name and Path(name).name == name}
+    names.update(child.name for child in directory.glob("fetch-*") if child.is_dir())
+    return frozenset(name for name in names if (directory / name).is_dir())
+
+
 def _copy_core_inputs(source: Path, destination: Path) -> None:
     """Build from a writable snapshot, never from signed/read-only source."""
     import fnmatch
@@ -89,8 +113,9 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
     # environment runs from this snapshot and serves bundled plugins' dashboard/dist/.
     nested_excluded = excluded - {"dist"}
     def ignore(directory, names):
+        published = _published_store_entries(Path(directory))
         return [name for name in names if name in nested_excluded or name.startswith(".")
-                or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]
+                or name in published or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]
 
     for entry in source.iterdir():
         if (entry.is_dir() and not entry.is_symlink() and entry.name not in excluded
@@ -129,47 +154,36 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
         import tomli_w
 
         document = tomllib.loads(core_text)
-        _core_release_quarantine(document, source / "uv.lock")
-        document.setdefault("tool", {}).setdefault("uv", {})["workspace"] = {"members": sorted(members)}
+        uv_policy = document.setdefault("tool", {}).setdefault("uv", {})
+        # Release age is checked when Hermes locks; users trust that lock (#135589).
+        uv_policy.pop("exclude-newer", None)
+        uv_policy.pop("exclude-newer-package", None)
+        uv_policy["workspace"] = {"members": sorted(members)}
         text = tomli_w.dumps(document)
     else:
-        # Byte-identical to core: a member-less generation syncs frozen against core's own lock.
+        # A member-less generation syncs frozen against core's own lock.
         text = core_text.rstrip("\n") + "\n"
     target = root / "pyproject.toml"
+    text = _without_release_age(text)
     _copy_core_inputs(source, root)
     target.write_text(text, encoding="utf-8")
 
 
-def _core_release_quarantine(document: dict, core_lock: Path) -> None:
-    """Scope core's ``exclude-newer`` to the packages in core's own lock.
+def _without_release_age(text: str) -> str:
+    """Drop ``[tool.uv] exclude-newer`` from a generated root's pyproject text.
 
-    The quarantine covers Hermes's own dependencies only; a plugin's dependencies
-    follow the plugin's own policy, so a catalog pin floored on a fresh release still
-    installs. A global cutoff would filter plugin-only packages too, so it moves onto
-    every registry package core locks. A plugin still cannot drag one of those past
-    the window, and core's own ``= false`` exemptions stay as written.
+    The lock already holds checked versions; on the user's machine the cutoff only gates the
+    build tools uv fetches for source builds (setuptools for Hermes itself), and a mirror that
+    serves no upload times rejects all of them (#135589). Text-level so the pre-3.11 bootstrap
+    python, which has no tomllib, can run it.
     """
     import re
-    import tomllib
 
-    settings = document.get("tool", {}).get("uv", {})
-    cutoff = settings.pop("exclude-newer", None)
-    if cutoff is None:
-        return
-
-    def normalized(name: str) -> str:
-        return re.sub(r"[-_.]+", "-", name).lower()
-
-    per_package = {normalized(name): value
-                   for name, value in settings.get("exclude-newer-package", {}).items()}
-    for package in tomllib.loads(core_lock.read_text(encoding="utf-8-sig")).get("package", []):
-        if "registry" in package.get("source", {}):
-            per_package.setdefault(normalized(package["name"]), cutoff)
-    settings["exclude-newer-package"] = per_package
+    return re.sub(r"(?m)^exclude-newer\s*=.*\n", "", text)
 
 
 def _is_member_candidate(plugin_dir: Path) -> bool:
-    return read_python_declaration(plugin_dir).is_member
+    return read_python_declaration(plugin_dir).installs_packages
 
 
 def enabled_plugin_entries(*, proposed_home=None, enabled=None, disabled=None,
@@ -229,7 +243,7 @@ def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None) -> l
         reason = manifest_version_error(declaration.manifest, path.name)
         if reason:
             raise InstallError("venv", reason)
-        if declaration.is_member:
+        if declaration.installs_packages:
             members.append(path)
     return members
 
@@ -283,6 +297,15 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
                 changed = True
         if virtual:
             document.setdefault("project", {})["name"] = f"hermes-plugin-{key}"
+        project = document.get("project")
+        # uv rejects any [project] table whose version is neither set nor dynamic, at
+        # parse time and for buildable members too, so a version-less member would abort
+        # every `uv lock` of the workspace. Give it the same inert version plugin-deps use.
+        # PEP 621 forbids a static version while "version" is listed under
+        # project.dynamic, so an explicitly dynamic version is left alone.
+        if project is not None and "version" not in project and "version" not in project.get("dynamic", ()):
+            project["version"] = "0.0.0"
+            changed = True
         if virtual or changed:
             import tomli_w
 
@@ -377,6 +400,9 @@ def lock_and_sync(
         # snapshotted members and their exact lock travel with the workspace.
         # Use the snapshot's exclusions: build/ may hold an in-tree backend.
         shutil.copytree(replay, root, symlinks=True, ignore=_member_ignored)
+        # A generation recorded before the cutoff left the user's machine still carries it.
+        manifest = root / "pyproject.toml"
+        manifest.write_text(_without_release_age(manifest.read_text(encoding="utf-8-sig")), encoding="utf-8")
         frozen = True
 
     environment.sync(root, extras=extras, frozen=frozen)

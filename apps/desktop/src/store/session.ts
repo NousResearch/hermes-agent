@@ -1166,6 +1166,7 @@ export const $awaitingResponse = atom(false)
 // Null whenever the active route has a healthy (or in-flight) resume.
 export const $resumeFailedSessionId = atom<string | null>(null)
 export interface SessionResumeRequest {
+  authoritativeSnapshot?: boolean
   ownerRoute?: SessionOwnerRoute
   sequence: number
   sessionId: string
@@ -1582,8 +1583,14 @@ export const markSessionRead = (storedSessionId: string | null | undefined) => {
     return
   }
 
-  const sessions = $sessions.get()
-  const familyIds = new Set<string>(lineageAliases(storedSessionId, sessions))
+  // The family is the opened session's own profile's rows: another profile's same-id session is a
+  // different conversation. Its owner is the first matching row, recents first as selection reads them.
+  // (Local normalize: importing @/store/profile here would be circular.)
+  const profileOf = (row: SessionInfo) => (row.profile ?? '').trim() || 'default'
+  const rows = [...$sessions.get(), ...$messagingSessions.get(), ...$cronSessions.get()]
+  const opened = rows.find(row => sessionMatchesStoredId(row, storedSessionId))
+  const own = opened ? rows.filter(row => profileOf(row) === profileOf(opened)) : rows
+  const familyIds = new Set<string>(lineageAliases(storedSessionId, own))
 
   const lastReadAt = Date.now()
   const nextReadMap = { ...$lastReadAtBySessionId.get() }
@@ -1606,7 +1613,11 @@ export { $freshDraftKey, rotateFreshDraftKey } from './composer'
 
 export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
 
-export const requestSessionResume = (sessionId: string, ownerRoute?: SessionOwnerRoute) => {
+export const requestSessionResume = (
+  sessionId: string,
+  ownerRoute?: SessionOwnerRoute,
+  options?: { authoritativeSnapshot?: boolean }
+) => {
   const id = sessionId.trim()
 
   if (!id) {
@@ -1628,6 +1639,7 @@ export const requestSessionResume = (sessionId: string, ownerRoute?: SessionOwne
   }
 
   $sessionResumeRequest.set({
+    ...(options?.authoritativeSnapshot ? { authoritativeSnapshot: true } : {}),
     ...(ownerRoute ? { ownerRoute: { ...ownerRoute } } : {}),
     sequence: ++sessionResumeRequestSequence,
     sessionId: id

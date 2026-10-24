@@ -91,8 +91,8 @@ class BotLoopGuard:
         self._settings = settings
         self._clock = clock
         self._lock = threading.Lock()
-        self._events: Dict[Hashable, Deque[float]] = {}
-        self._cooldown_until: Dict[Hashable, float] = {}
+        self._events: dict[Hashable, deque[float]] = {}
+        self._cooldown_until: dict[Hashable, float] = {}
         self._last_sweep = 0.0
 
     @property
@@ -107,7 +107,7 @@ class BotLoopGuard:
         with self._lock:
             return self._cooldown_until.get(conversation, 0.0) > self._clock()
 
-    def admit(self, conversation: Hashable) -> Tuple[bool, str]:
+    def admit(self, conversation: Hashable) -> tuple[bool, str]:
         """Count one admitted bot-authored message for ``conversation``.
         Returns ``(allowed, state)``; state is ``disabled``, ``ok``, ``tripped`` (this message started the cooldown) or ``cooldown``."""
         settings = self._settings()

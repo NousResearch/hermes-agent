@@ -1,0 +1,32 @@
+name: youtube-dock
+repo: https://github.com/metamindedu/hermes-youtube-dock
+sha: 56f3ddcabf766bc927b4ab9144916f00038c851a
+title: YouTube Dock
+description: >-
+  Open your signed-in YouTube Home recommendations and Shorts in the existing
+  Hermes Desktop Browser beside your conversation, without pasting video URLs
+  or launching an external browser. Desktop-only SDK launcher; no agent tools,
+  hooks, middleware or API keys. Disclosure — explicit user clicks load YouTube
+  and its normal service/CDN requests in the native Browser; this plugin does
+  not read credentials, cookies, recommendations or watch history. No telemetry,
+  shell commands, backend service or self-updater. Uses the native preview
+  toggle (Hide for an already-open destination), not a dedicated PIP player.
+maintainer: metamindedu
+tier: community
+category: desktop
+requires_hermes: ">=0.22.2"
+version: "1.0.0"
+docs_url: https://github.com/metamindedu/hermes-youtube-dock
+screenshots:
+  - https://raw.githubusercontent.com/metamindedu/hermes-youtube-dock/56f3ddcabf766bc927b4ab9144916f00038c851a/docs/menu.png
+readme: true
+platforms: []
+known_issues:
+  - "Dedicated picture-in-picture is not included; uses the existing docked Browser."
+  - "Google sign-in and playback restrictions still apply; no browser-cookie import."
+  - "Windows 11/Desktop 0.22.2 manually verified; macOS/Linux playback not manually tested."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

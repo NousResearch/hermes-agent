@@ -46,7 +46,7 @@ class ApiErrorVerdict:
     max_retries: Any
     compression_attempts: Any
     _provider_overflow_recovery_pending: Any
-    result: Optional[Dict[str, Any]] = None
+    result: Optional[dict[str, Any]] = None
 
 
 def handle_api_error(
@@ -62,7 +62,7 @@ def handle_api_error(
     preflight re-runs against the fallback's context window (#84733)."""
     _provider_overflow_recovery_pending = False
 
-    def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ApiErrorVerdict:
+    def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> ApiErrorVerdict:
         return ApiErrorVerdict(
             action=action, thinking_spinner=thinking_spinner, messages=messages,
             active_system_prompt=active_system_prompt, conversation_history=conversation_history,
@@ -88,6 +88,19 @@ def handle_api_error(
 
     status_code = getattr(api_error, "status_code", None)
     error_context = agent._extract_api_error_context(api_error)
+
+    # A Nous 402/403 carries the same x-nous-credits-* headers as a success, and a usage-window plan's
+    # "ran out for this model" / "payment paused" state is only visible on the blocking response itself
+    # (the stream path captures headers after the stream opens, which a 402 never does). Fail-open.
+    # Usage-window responses only: every other account keeps main's behaviour (no capture here).
+    if status_code in (402, 403) and getattr(agent, "provider", "") == "nous":
+        try:
+            from agent.credits_tracker import response_is_usage_window
+            response = getattr(api_error, "response", None)
+            if response_is_usage_window(response):
+                agent._capture_credits(response, refused=True)
+        except Exception:
+            logger.debug("credits ▸ header capture on %s failed (fail-open)", status_code, exc_info=True)
 
     # Process is exiting mid-flight: retries/rotation/fallbacks are futile and the
     # retry trace spams the shell. One log line.
@@ -247,7 +260,7 @@ class UnrecoveredErrorVerdict:
     active_system_prompt: Any
     retry_count: Any
     compression_attempts: Any
-    result: Optional[Dict[str, Any]] = None
+    result: Optional[dict[str, Any]] = None
 
 
 def settle_unrecovered_error(
@@ -267,7 +280,7 @@ def settle_unrecovered_error(
         _arm_fallback_restart, _is_copilot_provider, _is_stale_copilot_credential_error
     )
 
-    def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> UnrecoveredErrorVerdict:
+    def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> UnrecoveredErrorVerdict:
         return UnrecoveredErrorVerdict(
             action=action, active_system_prompt=active_system_prompt, retry_count=retry_count,
             compression_attempts=compression_attempts, result=result,

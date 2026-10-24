@@ -133,6 +133,8 @@ def test_failed_config_migration_is_owed_and_later_maintenance_runs(tmp_path, mo
 
     calls = []
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from hermes_cli import update_windows_acl
+    monkeypatch.setattr(update_windows_acl, "repair_windows_home_acl", lambda: calls.append("repair_windows_home_acl"))
     for name in ("_verify_and_restore_state_dbs_post_update", "_invalidate_live_plugin_catalog_caches",
                  "_print_bundled_skills_sync_report", "_sync_profiles_after_update"):
         monkeypatch.setattr(maint, name, lambda name=name: calls.append(name))
@@ -151,6 +153,7 @@ def test_failed_config_migration_is_owed_and_later_maintenance_runs(tmp_path, mo
         assume_yes=True, gateway_mode=False, pre_update_snapshot_id=None,
         had_desktop_app_before_update=False, pre_update_version=None, followups=owed) is True
     assert [step for step, _ in owed] == ["config_migration"]
+    assert calls[0] == "repair_windows_home_acl"
     assert calls[-2:] == ["verdict", "notices"]
     assert "⚠ Update follow-up 'config_migration'" in capsys.readouterr().out
     update_receipt.finalize_update_receipt("success")
@@ -175,7 +178,7 @@ def test_owed_restart_names_its_gateways_so_a_dead_fleet_cannot_discharge_it(tmp
     assert [(r["kind"], r["profile"]) for r in inventory["runtimes"]] == [("gateway", "default")]
     # HEAD still holds the pulled code, so only the fleet evidence can settle it.
     monkeypatch.setattr(fleet, "_current_checkout_sha", lambda: "a" * 40)
-    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda: [])
+    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", list)
     assert fleet._marker_only_restart_obsolete() is False
     assert fleet._fleet_restart_obligation_armed()
 
@@ -190,7 +193,7 @@ def test_owed_restart_rearms_a_settled_obligation_and_a_later_run_keeps_owing_it
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
     monkeypatch.setattr(fleet, "_current_checkout_sha", lambda: "b" * 40)
-    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda: [])
+    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", list)
     assert not fleet._fleet_restart_obligation_armed()
     fleet_verify._record_owed_gateway_inventory(UpdatePlan(runtimes=[RuntimeRecord(kind="gateway", profile="default")]))
     assert fleet._obligation_fields()["expected_sha"] == "b" * 40
@@ -211,7 +214,7 @@ def test_followup_line_is_the_one_both_desktop_handoffs_parse(tmp_path, monkeypa
     out = capsys.readouterr().out
     scripts = Path(__file__).resolve().parents[2] / "scripts/desktop-update"
     posix = (scripts / "posix.sh").read_text(encoding="utf-8")
-    function = re.search(r"^owed_followup_steps\(\) \{.*?^\}", posix, re.S | re.M).group(0)
+    function = re.search(r"^owed_followup_steps\(\) \{.*?^\}", posix, re.DOTALL | re.MULTILINE).group(0)
     steps = subprocess.run(["bash", "-c", f"{function}\nowed_followup_steps"], env={**os.environ, "OUT": out},
                            capture_output=True, text=True, encoding="utf-8", check=True).stdout.strip()
     assert steps == "gateway_restart windows_resume"

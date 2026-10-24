@@ -1,0 +1,35 @@
+name: aphrodite
+repo: https://github.com/PlayForm/Aphrodite-Hermes
+sha: e95afcd9d99360fdf73ecdd2f540af7cd81597ec
+description: "CCR compression plugin - 28-type classifier, 13 tools, opt-in context engine, TOML-driven templates. Disclosure - pre_tool_call auto-backgrounds long terminal/process commands (modify: background=true, notify_on_complete=true) and rewrites chained terminal commands when enabled. Disclosure — hook and tool logic runs in prebuilt native binaries (libaphrodite_hermes + aphrodite proxy, v1.6.6) built from the public PlayForm/Aphrodite source and fetched by an explicit download.sh step checked against in-tree SHA-256 sums; register() starts a background proxy on 127.0.0.1:9797/9798 whose management routes are open to local processes unless APHRODITE_MGMT_TOKEN is set; pre_tool_call by default rewrites slow terminal commands (cargo/npm/pip/docker/curl…) to run in the background (background=true, notify_on_complete=true) and splits chained commands when enabled; aphrodite_prefetch reads files the model names into its store (refuses .env, auth.json, ~/.ssh and the Hermes home); requires its own APHRODITE_API_KEY for an upstream LLM endpoint (default api.openai.com)."
+maintainer: NikolaRHristov
+tier: community
+category: tools
+requires_hermes: ">=0.20.2"
+docs_url: https://github.com/PlayForm/Aphrodite-Hermes#readme
+version: "2.2.6"
+capabilities:
+  provides_tools:
+  - aphrodite_retrieve
+  - aphrodite_compress
+  - aphrodite_stats
+  - aphrodite_rebuild
+  - aphrodite_files
+  - aphrodite_diff
+  - aphrodite_search
+  - aphrodite_directive
+  - aphrodite_test
+  - aphrodite_catalog
+  - aphrodite_reclassify
+  - aphrodite_prefetch
+  - aphrodite_prefetch_status
+  provides_hooks:
+  - on_session_start
+  - transform_tool_result
+  - pre_llm_call
+  - transform_terminal_output
+  - post_llm_call
+  - pre_tool_call
+  provides_middleware: []
+  requires_env:
+  - APHRODITE_API_KEY

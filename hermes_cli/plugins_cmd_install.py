@@ -11,7 +11,6 @@ import logging
 import os
 import sys
 import tempfile
-import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -19,7 +18,6 @@ from typing import Any, Callable, Optional
 
 from hermes_cli.cli_output import line_input
 from hermes_cli.plugin_install_phase import InstallPhase
-from hermes_constants import hermes_home_key
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +60,7 @@ class _ConsentRefusal(str):
     """A refusal reason (user-facing text) carrying its closed extension-install ``failure_class``,
     so publication classifies the refusal without matching the copy."""
 
-    def __new__(cls, text: str, failure_class: str) -> "_ConsentRefusal":
+    def __new__(cls, text: str, failure_class: str) -> _ConsentRefusal:
         refusal = super().__new__(cls, text)
         refusal.failure_class = failure_class
         return refusal
@@ -92,7 +90,7 @@ def _install_plugin_python_deps(
         deps = declaration.install_requirements
     except Exception as exc:
         return False, _ConsentRefusal(f"invalid Python dependency declaration: {exc}", "manifest_invalid")
-    has_python = declaration.is_member
+    has_python = declaration.installs_packages
     has_package_json = (target / "package.json").is_file()
     if not has_python and not has_package_json:
         return True, None  # no declared deps at all
@@ -206,12 +204,14 @@ def _prompt_plugin_env_vars(manifest: dict, console) -> None:
     console.print()
 
 
-def _display_after_install(plugin_dir: Path, identifier: str) -> None:
-    """Show after-install.md if it exists, otherwise a default message."""
+def _display_after_install(plugin_dir: Path, identifier: str, *, brief: bool = False) -> None:
+    """Show after-install.md if it exists, otherwise a default message (skipped when *brief*)."""
     from rich.markdown import Markdown
     from rich.panel import Panel
     console = _pc()._console()
     after_install = plugin_dir / "after-install.md"
+    if brief and not after_install.exists():
+        return
     if after_install.exists():
         body, title = Markdown(after_install.read_text(encoding="utf-8-sig")), None
     else:
@@ -297,29 +297,30 @@ def _ensure_tree_readable(root: Path, plugins_dir: Path) -> None:
             ) from exc
 
 
-def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path) -> None:
+def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path, app_title: Optional[str] = None) -> None:
+    """Refuse a portable plugin whose app is missing here, in the same sentence the runtime surfaces use.
+
+    *app_title* is the catalog's human name for the app ("Blender"); without it the server name stands in."""
     if not (tree / "plugin.json").is_file():
         return
     from hermes_cli.agent_plugins import load_agent_plugin
-    from hermes_platform.declaration import gpu_label
     from hermes_platform.resolver.availability import availability
+    from tools.mcp_liveness import availability_problem, describe
 
     try:
         package = load_agent_plugin(tree, tree.parent / ".hermes-install-data")
     except ValueError as exc:
         raise _pc().PluginOperationError(f"Plugin '{plugin_name}' is unavailable: {exc}.",
                                          failure_class="manifest_invalid") from exc
-    for server_name, server_decl in package.server_declarations.items():
+    for server_decl in package.server_declarations.values():
         result = availability(server_decl.declaration)
         if result.offerable:
             continue
-        found = f", found version {result.version}" if result.version else ""
-        if result.state == "unsupported_gpu":
-            found = f", needs {gpu_label(server_decl.declaration.required_gpu)}"
-        raise _pc().PluginOperationError(
-            f"Plugin '{plugin_name}' server '{server_name}' is unavailable: {result.state}{found}.",
-            failure_class="incompatible",
-        )
+        problem = availability_problem(result)
+        reason = (describe(server_decl.declaration, result, problem, display_name=app_title)
+                  if problem else f"its app is unavailable ({result.state}).")
+        raise _pc().PluginOperationError(f"Can't install plugin '{plugin_name}': {reason}",
+                                         failure_class="incompatible")
 
 
 def _known_issue_warnings(entry) -> list[str]:
@@ -330,10 +331,36 @@ def _known_issue_warnings(entry) -> list[str]:
     return [f"Known issue: {issue}" for issue in entry.known_issues]
 
 
+def interactive_scan_decision(console, verb: str) -> Callable[[Any], bool]:
+    """The terminal ``[y/N]`` that accepts a caution verdict, shared by install and update (*verb*)."""
+    def decide(scan_result) -> bool:
+        from tools.plugin_guard import format_scan_report
+        console.print()
+        console.print("[yellow]⚠ Security scan flagged this plugin:[/yellow]")
+        console.print(format_scan_report(scan_result))
+        return _pc()._is_tty() and _pc()._ask_yes(f"  {verb} anyway? Only continue if you trust the source. [y/N]: ")
+    return decide
+
+
+def scan_blocked_result(exc) -> dict[str, Any]:
+    """The non-interactive surfaces' answer to a scan block: the verdict and findings, so the client can
+    show them and, for a caution verdict, retry with ``force``."""
+    fields = ("pattern_id", "severity", "category", "file", "line", "description")
+    return {
+        "ok": False, "error": str(exc), "scan_blocked": True,
+        "scan_verdict": getattr(exc.scan_result, "verdict", "dangerous"),
+        "scan_findings": [
+            {k: getattr(f, k) for k in fields}
+            for f in (exc.scan_result.findings if exc.scan_result is not None else ())
+        ],
+    }
+
+
 def _install_plugin_core(
     identifier: str,
     *,
     force: bool,
+    accept_caution: Optional[bool] = None,
     ref: Optional[str] = None,
     scan_decision_cb=None,
     reviewed_pin: Optional[str] = None,
@@ -342,6 +369,7 @@ def _install_plugin_core(
     catalog: Optional[dict] = None,
     allow_removed: bool = False,
     before_swap=None,
+    app_title: Optional[str] = None,
 ) -> tuple[Path, dict, str]:
     """Clone a Git plugin and atomically record its source and exact revision.
 
@@ -358,7 +386,9 @@ def _install_plugin_core(
     *before_swap(manifest, tree)* runs on the manifest-checked clone BEFORE the security scan, so
     the single scan and portable-package check admit the merged tree (file-count/size limits
     included). It may return the relative paths it merged in, which a scan block then attributes,
-    and may raise :class:`PluginOperationError` to abort (re-pin consent)."""
+    and may raise :class:`PluginOperationError` to abort (re-pin consent). *accept_caution* decides a
+    caution scan verdict on its own when *force* only means "replace the existing tree" (an update's
+    re-clone); None lets *force* decide both, as ``install --force`` does."""
     requested_revision = _pc()._normalize_exact_revision(ref) if ref is not None else None
     try:
         git_url, subdir = _pc()._resolve_git_url(identifier)
@@ -387,6 +417,15 @@ def _install_plugin_core(
         manifest = _read_manifest_for_install(tmp_target)
         plugin_name = manifest.get("name") or (
             subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _pc()._repo_name_from_url(git_url))
+        link = plugins_dir / str(plugin_name)
+        from pm.filesystem import is_junction
+        if "/" not in str(plugin_name) and (link.is_symlink() or is_junction(link)):
+            # A provider's own installer (e.g. `mnemosyne-hermes install`) links its package here; the
+            # name is fine, the slot is taken. Say so instead of blaming the manifest.
+            raise _pc().PluginOperationError(
+                f"Plugin '{plugin_name}' is already installed outside the catalog: {link} is a link to "
+                f"{os.path.realpath(link)}. Delete that link to install the catalog version.",
+                failure_class="already_installed")
         try:
             target = _pc()._sanitize_plugin_name(plugin_name, plugins_dir)
         except ValueError as e:
@@ -408,8 +447,8 @@ def _install_plugin_core(
         # admits the final bytes.
         merged = before_swap(manifest, tmp_target) if before_swap is not None else None
         # Scan BEFORE anything is moved into place; raises PluginScanBlocked when blocked.
-        _pc()._scan_merged_tree(tmp_target, identifier, merged, force=force, scan_decision_cb=scan_decision_cb,
-                                reviewed_pin=at_reviewed_pin)
+        _pc()._scan_merged_tree(tmp_target, identifier, merged, force=force if accept_caution is None else accept_caution,
+                                scan_decision_cb=scan_decision_cb, reviewed_pin=at_reviewed_pin)
         if not python_deps:
             from pm.workspace import enabled_plugin_dirs
 
@@ -417,7 +456,7 @@ def _install_plugin_core(
                 raise _pc().PluginOperationError(
                     "--no-deps cannot replace an active plugin. Retry without --no-deps; "
                     "PM must prepare its dependencies before publication.", failure_class="already_installed")
-        _refuse_unavailable_portable_plugin(plugin_name, tmp_target)
+        _refuse_unavailable_portable_plugin(plugin_name, tmp_target, app_title)
 
         if target.exists() and not force:
             from pm.environments import cli_command_name
@@ -522,6 +561,20 @@ def recorded_install(install: Callable[[], tuple], *, catalog_name: Optional[str
     return result
 
 
+def _announce_source(identifier: str, console, *, brief: bool) -> tuple[Optional[Any], str]:
+    """``(catalog entry or None, install identifier)``, printing where the install comes from: the
+    catalog pin (plus the entry's description unless *brief*) or the custom-source warning."""
+    from hermes_cli import plugins_cmd_catalog as catalog
+    if not catalog.looks_like_catalog_name(identifier):
+        console.print("[yellow]Warning:[/yellow] custom (unreviewed) source — not from the Hermes catalog.")
+        return None, identifier
+    entry = catalog.resolve_catalog_name(identifier, console)
+    console.print(f"[bold]{entry.name}[/bold] [cyan]\\[{entry.tier}][/cyan] [dim]pinned @ {entry.sha[:8]}[/dim]")
+    if not brief:
+        console.print(catalog.entry_capability_summary(entry))
+    return entry, entry.install_identifier
+
+
 def cmd_install(
     identifier: str,
     force: bool = False,
@@ -530,7 +583,7 @@ def cmd_install(
     allow_removed: bool = False,
     no_deps: bool = False,
     yes_deps: bool = False,
-    allow_live_gateway: bool = False,
+    brief: bool = False,
 ) -> None:
     """Install a plugin from the curated catalog (bare name), a Git URL, or owner/repo shorthand.
 
@@ -543,27 +596,19 @@ def cmd_install(
     finish in one run instead of being refused and left for an ``enable`` that
     cannot recover a refused publication (#122134). The default without it stays
     fail-closed in non-interactive sessions.
+    *brief* is for a caller that already told the user what is being installed and why (first-time
+    setup): the catalog line, questions, warnings, errors and the outcome print, the catalog
+    description, clone line and default "Installed" panel do not.
     """
     from hermes_cli import plugins_cmd_catalog as catalog
     console = _pc()._console()
-    entry = None
-    if catalog.looks_like_catalog_name(identifier):
-        entry = catalog.resolve_catalog_name(identifier, console)
-        identifier = entry.install_identifier
-        console.print(f"[bold]{entry.name}[/bold] [cyan]\\[{entry.tier}][/cyan] [dim]pinned @ {entry.sha[:8]}[/dim]")
-        console.print(catalog.entry_capability_summary(entry))
-    else:
-        console.print("[yellow]Warning:[/yellow] custom (unreviewed) source — not from the Hermes catalog.")
+    entry, identifier = _announce_source(identifier, console, brief=brief)
     if allow_removed:
         console.print(
             "[bold red]WARNING:[/bold red] [red]--allow-removed set — skipping the catalog kill-list check. "
             "This plugin may have been removed for security reasons.[/red]")
 
     try:
-        if force:
-            # `install --force` over an existing install replaces its code in place — the same
-            # destructive mutation of a loaded checkout that `update` is (#70473).
-            _pc()._refuse_live_gateway_mutation("reinstall", allow_live_gateway=allow_live_gateway)
         git_url, _subdir = _pc()._resolve_git_url(identifier)
         if not allow_removed:
             catalog.raise_if_removed(identifier, git_url, *((entry.name,) if entry else ()))
@@ -574,15 +619,9 @@ def cmd_install(
             "[yellow]Warning:[/yellow] Using insecure/local URL scheme. "
             "Consider using https:// or git@ for production installs.")
 
-    console.print(f"[dim]Cloning {git_url}{f' (subdir: {_subdir})' if _subdir else ''}...[/dim]")
-
-    def _interactive_scan_decision(scan_result) -> bool:
-        """Prompt the user to accept a caution-verdict plugin."""
-        from tools.plugin_guard import format_scan_report
-        console.print()
-        console.print("[yellow]⚠ Security scan flagged this plugin:[/yellow]")
-        console.print(format_scan_report(scan_result))
-        return _pc()._is_tty() and _pc()._ask_yes("  Install anyway? Only continue if you trust the source. [y/N]: ")
+    if not brief:
+        console.print(f"[dim]Cloning {git_url}{f' (subdir: {_subdir})' if _subdir else ''}...[/dim]")
+    _interactive_scan_decision = interactive_scan_decision(console, "Install")
 
     def _install() -> tuple:
         if entry is not None:
@@ -626,7 +665,7 @@ def cmd_install(
         deps_ok, deps_reason = _install_plugin_python_deps(installed_manifest, target, console,
                                                            assume_yes=yes_deps)
 
-    _pc()._display_after_install(target, identifier)
+    _pc()._display_after_install(target, identifier, brief=brief)
 
     # ONE admission transaction for the enable (C13): resolve the candidate
     # union (enabled members + this target) and commit the config in the
@@ -670,14 +709,17 @@ def cmd_install(
             f"[dim]Plugin installed but not enabled. "
             f"Run `hermes plugins enable {installed_name}` to activate.[/dim]")
 
+    from hermes_cli.plugin_provider_requests import requires_auth_notice
+    if notice := requires_auth_notice(installed_manifest):
+        console.print(f"[yellow]{notice}[/yellow]")
     # Non-interactive installs and declines leave declared capabilities ungranted (fail closed).
     declared_caps = _pc()._declared_capabilities_from_manifest(installed_manifest, installed_name)
     if declared_caps:
         _pc()._run_capability_consent(console, installed_name, declared_caps, context="install")
     if enable and not is_memory_provider:
         # Loads it into the running gateway now (handlers live) or says what needs a restart (#87770).
-        from hermes_cli.plugins_activation import activate_plugin_now, activation_hint
-        console.print(f"[dim]{activation_hint(activate_plugin_now(installed_name, in_process=False))}[/dim]")
+        from hermes_cli.plugins_activation import report_activation
+        report_activation(console, installed_name)
     console.print()
 
 
@@ -729,18 +771,14 @@ def _catalog_install_on_disk(catalog_name: str, ref: Optional[str]) -> Optional[
     Like ``hermes plugins enable``, the tree is used at the commit it has; an explicit *ref* only
     matches a tree checked out at that commit."""
     from hermes_cli.plugins_cmd_catalog import catalog_install_record
-    enabled = _pc()._get_enabled_set()
-    for key in _pc()._read_install_metadata():
-        target = _pc()._plugins_dir() / key
-        record = catalog_install_record(target) if target.is_dir() else None
-        if not record or record["catalog_name"] != catalog_name:
-            continue
-        if ref and str(record["sha"]).lower() != ref.lower():
-            return None
-        manifest = _pc()._read_manifest(target)
-        installed_name = manifest.get("name") or target.name
-        return None if {installed_name, target.name} & enabled else (target, manifest, installed_name)
-    return None
+    target = _pc()._catalog_installed_dir(catalog_name)
+    if target is None:
+        return None
+    if ref and str(catalog_install_record(target)["sha"]).lower() != ref.lower():
+        return None
+    manifest = _pc()._read_manifest(target)
+    installed_name = manifest.get("name") or target.name
+    return None if {installed_name, target.name} & _pc()._get_enabled_set() else (target, manifest, installed_name)
 
 
 def _resolve_source(identifier: str, catalog_name: Optional[str]) -> tuple:
@@ -791,29 +829,9 @@ def _place_tree(entry, identifier: str, *, force: bool, ref: Optional[str], assu
         return recorded_install(_install, catalog_name=entry.name if entry is not None else None,
                                 identifier=identifier)
     except _pc().PluginScanBlocked as exc:
-        fields = ("pattern_id", "severity", "category", "file", "line", "description")
-        return {
-            "ok": False, "error": str(exc), "scan_blocked": True,
-            "scan_verdict": getattr(exc.scan_result, "verdict", "dangerous"),
-            "scan_findings": [
-                {k: getattr(f, k) for k in fields}
-                for f in (exc.scan_result.findings if exc.scan_result is not None else ())
-            ],
-        }
+        return scan_blocked_result(exc)
     except _pc().PluginOperationError as exc:
         return {"ok": False, "error": str(exc)}
-
-
-# One lock per Hermes home. The Desktop install card enables several plugins at once, each on its own
-# thread; without it every thread read the same config version and all but the first commit were
-# refused as stale. The version check in PM stays: it still catches an edit from another process.
-_ENABLE_LOCKS: dict[str, threading.Lock] = {}
-_ENABLE_LOCKS_GUARD = threading.Lock()
-
-
-def _enable_lock() -> threading.Lock:
-    with _ENABLE_LOCKS_GUARD:
-        return _ENABLE_LOCKS.setdefault(hermes_home_key(), threading.Lock())
 
 
 def _enable_placed(installed_name: str, deps, step: Callable[[InstallPhase], None]) -> Optional[dict]:
@@ -824,8 +842,8 @@ def _enable_placed(installed_name: str, deps, step: Callable[[InstallPhase], Non
     if deps:
         step(InstallPhase.python_packages)
     try:
-        with _enable_lock():
-            _pc()._set_plugin_enabled(installed_name, enable=True)
+        # _set_plugin_enabled serializes per home itself (parallel install-card rows).
+        _pc()._set_plugin_enabled(installed_name, enable=True)
     except AdmissionRefused as exc:
         return {"ok": False, "error": f"enable refused: {exc}", "plugin_name": installed_name, "enabled": False}
     return None

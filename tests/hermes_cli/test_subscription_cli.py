@@ -27,14 +27,14 @@ def cli():
 
 
 _TIERS = (
-    SubscriptionTier(tier_id="free", name="Free", tier_order=0, dollars_per_month=Decimal("0"), monthly_credits=Decimal("0"), is_current=False, is_enabled=True),
-    SubscriptionTier(tier_id="plus", name="Plus", tier_order=1, dollars_per_month=Decimal("20"), monthly_credits=Decimal("22"), is_current=False, is_enabled=True),
-    SubscriptionTier(tier_id="ultra", name="Ultra", tier_order=3, dollars_per_month=Decimal("200"), monthly_credits=Decimal("220"), is_current=True, is_enabled=True),
+    SubscriptionTier(tier_id="free", name="Free", tier_order=0, dollars_per_month=Decimal(0), monthly_credits=Decimal(0), is_current=False, is_enabled=True),
+    SubscriptionTier(tier_id="plus", name="Plus", tier_order=1, dollars_per_month=Decimal(20), monthly_credits=Decimal(22), is_current=False, is_enabled=True),
+    SubscriptionTier(tier_id="ultra", name="Ultra", tier_order=3, dollars_per_month=Decimal(200), monthly_credits=Decimal(220), is_current=True, is_enabled=True),
 )
 
 
 def _sub_state(**current_over) -> SubscriptionState:
-    current_fields = dict(tier_id="ultra", tier_name="Ultra", monthly_credits=Decimal("220"), cycle_ends_at="2026-07-28")
+    current_fields = dict(tier_id="ultra", tier_name="Ultra", monthly_credits=Decimal(220), cycle_ends_at="2026-07-28")
     current_fields.update(current_over)
     current = CurrentSubscription(**current_fields)
     return SubscriptionState(
@@ -65,9 +65,9 @@ def _no_usage_model(monkeypatch):
 
 
 _FREE_TIERS = (
-    SubscriptionTier(tier_id="free", name="Free", tier_order=0, dollars_per_month=Decimal("0"), monthly_credits=Decimal("0"), is_current=False, is_enabled=True),
-    SubscriptionTier(tier_id="plus", name="Plus", tier_order=1, dollars_per_month=Decimal("20"), monthly_credits=Decimal("22"), is_current=False, is_enabled=True),
-    SubscriptionTier(tier_id="ultra", name="Ultra", tier_order=3, dollars_per_month=Decimal("200"), monthly_credits=Decimal("220"), is_current=False, is_enabled=True),
+    SubscriptionTier(tier_id="free", name="Free", tier_order=0, dollars_per_month=Decimal(0), monthly_credits=Decimal(0), is_current=False, is_enabled=True),
+    SubscriptionTier(tier_id="plus", name="Plus", tier_order=1, dollars_per_month=Decimal(20), monthly_credits=Decimal(22), is_current=False, is_enabled=True),
+    SubscriptionTier(tier_id="ultra", name="Ultra", tier_order=3, dollars_per_month=Decimal(200), monthly_credits=Decimal(220), is_current=False, is_enabled=True),
 )
 
 
@@ -129,8 +129,8 @@ def test_open_url_in_browser_refuses_remote_session(cli, monkeypatch):
     # (4): a remote/SSH session must NOT auto-open — webbrowser.open is never called.
     import webbrowser
 
-    import hermes_cli.auth as auth
-    import hermes_cli.auth_device_flow as auth_device_flow
+    from hermes_cli import auth
+    from hermes_cli import auth_device_flow
 
     monkeypatch.setattr(auth, "_is_remote_session", lambda: True, raising=False)
     monkeypatch.setattr(auth_device_flow, "_is_remote_session", lambda: True, raising=False)

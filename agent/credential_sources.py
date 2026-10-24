@@ -59,8 +59,8 @@ class RemovalResult:
     ``load_pool`` skips the source; only ``manual`` entries legitimately use False.
     """
 
-    cleaned: List[str] = field(default_factory=list)
-    hints: List[str] = field(default_factory=list)
+    cleaned: list[str] = field(default_factory=list)
+    hints: list[str] = field(default_factory=list)
     suppress: bool = True
 
 
@@ -224,7 +224,7 @@ def _suppress_only(*hints: str) -> Callable[..., RemovalResult]:
 # ORDER MATTERS — ``find_removal_step`` returns the first match. Provider-
 # specific steps precede the generic ``env:*`` step so copilot's ``env:GH_TOKEN``
 # takes the copilot path (no .env edits) rather than the generic env-var removal.
-_REGISTRY: List[RemovalStep] = [
+_REGISTRY: list[RemovalStep] = [
     RemovalStep(
         provider="copilot", source_id="gh_cli",
         match_fn=lambda src: src == "gh_cli" or src.startswith("env:"),

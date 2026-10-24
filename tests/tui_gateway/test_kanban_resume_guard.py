@@ -23,8 +23,8 @@ def _restore_stdout():
 def server():
     # Same import-window pattern as tests/tui_gateway/test_protocol.py: the mocks only need
     # to cover the initial import of tui_gateway.server.
-    import tui_gateway.server_requests  # noqa: F401
-    import tui_gateway.transport  # noqa: F401
+    import tui_gateway.server_requests
+    import tui_gateway.transport
     with patch.dict("sys.modules", {
         "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test")),
         "hermes_cli.env_loader": MagicMock(),

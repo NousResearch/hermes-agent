@@ -23,6 +23,7 @@ import statistics
 from typing import Any, Dict, List
 
 from evals.postmortem.forensics.common import Run
+import itertools
 
 _LINE = re.compile(
     r"^(\S+ \S+) INFO \[(\S+)\] agent\.conversation_loop: API call #(\d+): model=(\S+) provider=\S+ "
@@ -35,8 +36,8 @@ _ID = re.compile(r" id=(\S+)")
 _UPSTREAM = re.compile(r" upstream=(.+?)(?: [a-z_]+=|$)")
 
 
-def parse_logs(paths: List[str], sids: set) -> List[Dict[str, Any]]:
-    calls: List[Dict[str, Any]] = []
+def parse_logs(paths: list[str], sids: set) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
     for path in paths:
         try:
             fh = open(path, encoding="utf-8", errors="replace")
@@ -58,7 +59,7 @@ def parse_logs(paths: List[str], sids: set) -> List[Dict[str, Any]]:
     return calls
 
 
-def sawtooth_real(by_sid: Dict[str, List[Dict[str, Any]]], cap: int, floor: int) -> float:
+def sawtooth_real(by_sid: dict[str, list[dict[str, Any]]], cap: int, floor: int) -> float:
     """Replay on REAL prompt sizes: appended = in[i] - in[i-1]; compress to floor when above cap."""
     total = 0.0
     for calls in by_sid.values():
@@ -91,7 +92,7 @@ def main(argv=None) -> int:
     for c in calls:
         r = c["hit"] / c["inp"] if c["inp"] else 0
         buckets["<50%" if r < .5 else "50-90%" if r < .9 else "90-97%" if r < .97 else "97-99%" if r < .99 else ">=99%"] += 1
-    by_sid: Dict[str, List[Dict[str, Any]]] = collections.defaultdict(list)
+    by_sid: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
     for c in calls:
         by_sid[c["sid"]].append(c)
     # Two definitions, reported separately (an independent review caught them being conflated):
@@ -100,7 +101,7 @@ def main(argv=None) -> int:
     strict_pairs = strict_uncached = loose_pairs = loose_uncached = pairs = uncached_total = 0
     for cs in by_sid.values():
         cs.sort(key=lambda c: c["n"])
-        for prev, cur in zip(cs, cs[1:]):
+        for prev, cur in itertools.pairwise(cs):
             pairs += 1
             u = max(0, cur["inp"] - cur["hit"]); uncached_total += u
             if cur["inp"] > prev["inp"]:

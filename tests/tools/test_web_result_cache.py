@@ -30,7 +30,7 @@ def _isolated_cache(tmp_path, monkeypatch):
     cache_dir = tmp_path / "cache" / "web"
     cache_dir.mkdir(parents=True)
     monkeypatch.setattr(wrc, "_cache_dir", lambda: cache_dir)
-    monkeypatch.setattr(wrc, "_web_config", lambda: {})
+    monkeypatch.setattr(wrc, "_web_config", dict)
     yield cache_dir
 
 

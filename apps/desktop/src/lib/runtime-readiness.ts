@@ -113,6 +113,24 @@ export async function fetchRuntimeReadinessSignals(
   }
 }
 
+// The checks' own failure sentences. With nothing set up they only restate that in CLI terms
+// (`hermes model`, the home path), so every surface gets the caller's default instead; a requested
+// provider keeps its cause, since that check was about that provider.
+function reportedFailure(
+  signals: RuntimeReadinessSignals,
+  options: RuntimeReadinessOptions,
+  setupConfigured: boolean | undefined
+): { any: string | null; raw: string | null; runtime: string | null } {
+  const runtime = normalizeMessage(signals.runtime?.error) ?? normalizeMessage(signals.runtimeError) ?? null
+  const raw = runtime ?? normalizeMessage(signals.setupError) ?? null
+
+  if (setupConfigured === false && !options.requestedProvider?.trim()) {
+    return { any: null, raw, runtime: null }
+  }
+
+  return { any: raw, raw, runtime }
+}
+
 export function interpretRuntimeReadiness(
   signals: RuntimeReadinessSignals,
   options: RuntimeReadinessOptions = {}
@@ -124,8 +142,7 @@ export function interpretRuntimeReadiness(
     typeof signals.setup?.provider_configured === 'boolean' ? Boolean(signals.setup.provider_configured) : undefined
 
   const runtimeOk = typeof signals.runtime?.ok === 'boolean' ? Boolean(signals.runtime.ok) : undefined
-  const runtimeFailure = normalizeMessage(signals.runtime?.error) ?? normalizeMessage(signals.runtimeError)
-  const setupFailure = normalizeMessage(signals.setupError)
+  const failure = reportedFailure(signals, options, setupConfigured)
 
   // Route facts the check reported, carried through untouched so consumers
   // (free-tier chrome) don't have to re-issue setup.runtime_check. Left
@@ -149,7 +166,7 @@ export function interpretRuntimeReadiness(
       }
     }
 
-    let reason = runtimeFailure ?? defaultReason
+    let reason = failure.runtime ?? defaultReason
 
     if (checksDisagree && setupConfigured) {
       reason = `${reason} setup.status reports configured credentials, but runtime resolution still failed.`
@@ -169,7 +186,7 @@ export function interpretRuntimeReadiness(
       ...route,
       checksDisagree: false,
       ready: setupConfigured,
-      reason: setupConfigured ? null : (runtimeFailure ?? setupFailure ?? defaultReason),
+      reason: setupConfigured ? null : (failure.any ?? defaultReason),
       source: 'setup_status'
     }
   }
@@ -178,7 +195,7 @@ export function interpretRuntimeReadiness(
     ...route,
     checksDisagree: false,
     ready: unknownReady,
-    reason: unknownReady ? null : (runtimeFailure ?? setupFailure ?? defaultReason),
+    reason: unknownReady ? null : (failure.raw ?? defaultReason),
     source: 'fallback'
   }
 }

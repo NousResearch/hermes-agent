@@ -6,7 +6,7 @@ refresh in the background: a slow or hung usage endpoint can't be allowed to sta
 
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 from agent import account_usage
 from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
@@ -15,9 +15,9 @@ from hermes_cli.inventory import build_model_options_payload, load_picker_contex
 
 
 def _snapshot(used: float) -> AccountUsageSnapshot:
-    reset = datetime.now(timezone.utc) + timedelta(hours=2)
+    reset = datetime.now(UTC) + timedelta(hours=2)
     return AccountUsageSnapshot(
-        provider="openrouter", source="test", fetched_at=datetime.now(timezone.utc),
+        provider="openrouter", source="test", fetched_at=datetime.now(UTC),
         windows=(AccountUsageWindow(label="Current session", used_percent=used, reset_at=reset),))
 
 
@@ -48,4 +48,4 @@ def test_picker_reads_cached_usage_and_refreshes_without_waiting(monkeypatch):
     row = next(r for r in build_model_options_payload(ctx)["providers"] if r["slug"] == "openrouter")
     (window,) = row["usage"]["windows"]
     assert window["label"] == "Current session" and window["used_percent"] == 92.0
-    assert datetime.fromisoformat(window["resets_at"]) > datetime.now(timezone.utc)
+    assert datetime.fromisoformat(window["resets_at"]) > datetime.now(UTC)

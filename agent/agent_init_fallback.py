@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 logger = logging.getLogger("run_agent")
 
 
-def _fallback_entries(fallback_model) -> List[Dict[str, Any]]:
+def _fallback_entries(fallback_model) -> list[dict[str, Any]]:
     """Normalize legacy single-dict ``fallback_model`` / list ``fallback_providers``."""
     if isinstance(fallback_model, dict):
         fallback_model = [fallback_model]

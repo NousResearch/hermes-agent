@@ -168,7 +168,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b'{"jsonrpc":"2.0","id":1,"result":{}}')
 
-    def log_message(self, format, *args):  # noqa: A002
+    def log_message(self, format, *args):
         pass
 
 
@@ -225,7 +225,7 @@ class _SlowDrip(BaseHTTPRequestHandler):
                 return
             _t.sleep(0.3)
 
-    def log_message(self, format, *args):  # noqa: A002
+    def log_message(self, format, *args):
         pass
 
 

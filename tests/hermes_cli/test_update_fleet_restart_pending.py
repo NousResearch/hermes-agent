@@ -22,10 +22,10 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli import main as hermes_main
-import hermes_cli.main_web_build as main_web_build
-import hermes_cli.main_install_repair as main_install_repair
+from hermes_cli import main_web_build
+from hermes_cli import main_install_repair
 from hermes_cli import update_cmd
-import hermes_cli.update_cmd_fleet as update_cmd_fleet
+from hermes_cli import update_cmd_fleet
 from hermes_cli.update_receipt import COMMAND_BOUNDARY_STOP_REASON
 from hermes_constants import get_hermes_home
 import hermes_cli.update_host_obligation as host_obligation
@@ -182,7 +182,7 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     )
     monkeypatch.setattr(
         "hermes_cli.update_inventory.collect_runtime_inventory",
-        lambda: SimpleNamespace(runtimes=[], to_dict=lambda: {}),
+        lambda: SimpleNamespace(runtimes=[], to_dict=dict),
     )
     # The restart phase imports discovery fns fresh after
     # _purge_stale_hermes_modules (the update reloads code in-place), so

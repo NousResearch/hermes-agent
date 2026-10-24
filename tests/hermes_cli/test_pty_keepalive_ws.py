@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -221,7 +222,7 @@ async def test_legacy_channel_connect_pops_marker_on_disconnect(pty_keepalive_ha
 
     deadline = time.monotonic() + 5.0
     while "LEGACY63553" in markers and time.monotonic() < deadline:
-        time.sleep(0.01)
+        await asyncio.sleep(0.01)
     assert "LEGACY63553" not in markers
 
 
@@ -252,7 +253,7 @@ async def test_legacy_marker_dropped_when_cancel_lands_mid_close(pty_keepalive_h
     # ... and leaving the client context cancelled the handler there.
     deadline = time.monotonic() + 5.0
     while "LEGACYCANCEL" in markers and time.monotonic() < deadline:
-        time.sleep(0.01)
+        await asyncio.sleep(0.01)
     assert "LEGACYCANCEL" not in markers
 
 

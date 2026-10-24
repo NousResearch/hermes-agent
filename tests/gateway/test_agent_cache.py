@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
-from tools import browser_tool_lifecycle as bt_lifecycle
+from tools import browser_session_lifecycle as bt_lifecycle
 
 def _make_runner():
     """Create a minimal GatewayRunner with just the cache infrastructure."""
@@ -98,7 +98,7 @@ class TestAgentConfigSignature:
                 },
             },
         )
-        monkeypatch.setattr(runtime_provider, "_get_model_config", lambda: {})
+        monkeypatch.setattr(runtime_provider, "_get_model_config", dict)
 
         runtime = _resolve_runtime_agent_kwargs()
 
@@ -156,7 +156,7 @@ class TestExtractCacheBustingConfig:
 
         default_cap = DEFAULT_CONFIG["compression"]["threshold_tokens"]
         other_cap = (default_cap or 0) + 100_000
-        sig = lambda cfg: GatewayRunner._extract_cache_busting_config(cfg)["compression.threshold_tokens"]  # noqa: E731
+        sig = lambda cfg: GatewayRunner._extract_cache_busting_config(cfg)["compression.threshold_tokens"]
         assert sig({}) == sig({"compression": {"threshold_tokens": default_cap}}) == default_cap
         assert sig({"compression": {"threshold_tokens": other_cap}}) == other_cap != sig({})
 

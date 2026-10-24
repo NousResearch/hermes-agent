@@ -48,7 +48,7 @@ def _is_reserved_mcp_meta_key(key: str) -> bool:
     return any(label in ("modelcontextprotocol", "mcp") and i < len(labels) - 1 for i, label in enumerate(labels))
 
 
-def _strip_reserved_meta_keys(meta) -> Optional[Dict[str, Any]]:
+def _strip_reserved_meta_keys(meta) -> Optional[dict[str, Any]]:
     """Drop protocol-reserved keys from ``_meta``; None if nothing model-facing remains or the
     input wasn't a mapping."""
     if not isinstance(meta, dict):
@@ -71,7 +71,7 @@ def _mcp_image_extension_for_mime_type(mime_type: str) -> str:
 
 
 def _decode_block_b64(data, what: str, label: str, *, cap_what: Optional[str] = None,
-                      cap_suffix: str = "", decode_fail: str = "") -> Tuple[Optional[bytes], str]:
+                      cap_suffix: str = "", decode_fail: str = "") -> tuple[Optional[bytes], str]:
     """Base64-decode one block payload: ``(bytes, "")`` or ``(None, inline_marker)``. With
     ``cap_what`` the payload is rejected on b64 length BEFORE decoding and on decoded size
     after. Decode failures warn and return ``decode_fail`` ("" = drop the block)."""
@@ -88,7 +88,7 @@ def _decode_block_b64(data, what: str, label: str, *, cap_what: Optional[str] = 
 
 
 def _write_block_cache(writer: str, what: str, skip_label: str, *args,
-                       unavailable: str = "", failed: str = "", **kwargs) -> Tuple[Optional[str], str]:
+                       unavailable: str = "", failed: str = "", **kwargs) -> tuple[Optional[str], str]:
     """Call ``gateway.platforms.base.<writer>(*args, **kwargs)``: ``(path, "")`` or ``(None,
     marker)``. Fail-open so one bad block never kills the tool result: gateway deps missing
     (cron without gateway) → ``unavailable``; any other cache error → warning + ``failed``."""
@@ -130,7 +130,7 @@ _MCP_NATIVE_IMAGE_MAX = 4  # images attached natively from one tool result; the 
 _MCP_NATIVE_IMAGE_CANDIDATES = 16  # images prepared at most per result: skips refill the 4 slots, within a bound
 
 
-def _mcp_native_image_part(path: str) -> Optional[Tuple[Dict[str, Any], Optional[str]]]:
+def _mcp_native_image_part(path: str) -> Optional[tuple[dict[str, Any], Optional[str]]]:
     """``(image_url part, scale note)`` for one cached MCP image, sized like every other native embed (the
     result is re-sent each later turn: ``vision.embed_target_bytes``, 1568 px long edge, JPEG) and normalized
     to a provider-accepted format (BMP and friends → PNG). None when the file cannot be embedded safely. The
@@ -149,7 +149,7 @@ def _mcp_native_image_part(path: str) -> Optional[Tuple[Dict[str, Any], Optional
     normalized, mime, err = _normalize_to_supported_image(src, mime)
     if err or normalized is None:
         return None
-    scale: Dict[str, int] = {}
+    scale: dict[str, int] = {}
     target = min(resolve_embed_target_bytes(), _MAX_BASE64_BYTES)
     try:
         # A valid header over a truncated pixel stream passes the sniff and the cache; one undecodable
@@ -173,7 +173,7 @@ def _mcp_native_image_part(path: str) -> Optional[Tuple[Dict[str, Any], Optional
     return {"type": "image_url", "image_url": {"url": url}}, _build_scale_note(scale or None, None)
 
 
-def _mcp_result_with_native_images(text: str, image_paths: List[str]) -> Any:
+def _mcp_result_with_native_images(text: str, image_paths: list[str]) -> Any:
     """*text* as-is, or the ``_multimodal`` envelope carrying the call's cached images when the active route
     takes images inside tool results — the same gate as ``vision_analyze`` and ``computer_use`` captures
     (``agent.image_input_mode``, an explicit ``auxiliary.vision`` backend, catalog vision, provider support).

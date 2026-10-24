@@ -1,3 +1,4 @@
+import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -5,11 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPluginContext } from '@/contrib/plugin'
 import { $pluginRecords, dropPlugin, publishPlugin } from '@/contrib/plugins-store'
 import { pluginSettingsHref } from '@/contrib/settings-pages'
+import { queryClient } from '@/lib/query-client'
 import { $agentPlugins, $agentPluginsStatus, type AgentPluginRow } from '@/store/agent-plugins'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
 import { $settingsScopeOverride } from '@/store/settings-scope'
 import type { ProfileInfo } from '@/types/hermes'
 
+import { $catalogCardView } from '../capabilities/catalog/store'
 import { PluginsTab } from '../capabilities/plugins/plugins-tab'
 import { OverlayNav } from '../overlays/overlay-split-layout'
 
@@ -135,7 +138,12 @@ const settingsCalls = () =>
 /** Click a Capabilities ▸ Plugins gear and return the deep link it produced. */
 function gearHref(props: Parameters<typeof PluginsTab>[0], label: string): string {
   window.location.hash = ''
-  const view = render(<PluginsTab {...props} />)
+
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <PluginsTab {...props} />
+    </QueryClientProvider>
+  )
 
   fireEvent.click(screen.getByRole('button', { name: label }))
   view.unmount()
@@ -155,6 +163,7 @@ describe('Settings ▸ Plugins ownership (review of #133182)', () => {
     $agentPluginsStatus.set('idle')
     $activeGatewayProfile.set('default')
     $settingsScopeOverride.set(null)
+    $catalogCardView.set(false)
     $profiles.set([profile('default', true), profile('review-b'), profile('review-empty')])
   })
 

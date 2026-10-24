@@ -86,7 +86,7 @@ def _details_line(exc: BaseException) -> str:
     return f"  Details: {text}"
 
 
-_Rule = Tuple[Callable[[BaseException], bool], str]
+_Rule = tuple[Callable[[BaseException], bool], str]
 
 
 def _classify(exc: BaseException, rules: Sequence[_Rule], other: str) -> str:

@@ -73,7 +73,7 @@ async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None
         raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
 
 
-def _rows(db, sql: str, cutoff: float) -> List[Dict[str, Any]]:
+def _rows(db, sql: str, cutoff: float) -> list[dict[str, Any]]:
     return [dict(r) for r in db._conn.execute(sql, (cutoff,)).fetchall()]
 
 
@@ -161,11 +161,11 @@ _USAGE_KEYS = (
 )
 
 
-def _has_usage(row: Dict[str, Any]) -> bool:
+def _has_usage(row: dict[str, Any]) -> bool:
     return any((row.get(key) or 0) != 0 for key in _USAGE_KEYS)
 
 
-def _fold_session_only_rows(raw_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _fold_session_only_rows(raw_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Fold model rows that carry no billing_provider and no usage into the single
     accounted provider row for that model.
 
@@ -174,11 +174,11 @@ def _fold_session_only_rows(raw_rows: List[Dict[str, Any]]) -> List[Dict[str, An
     to show a duplicate "0 tokens / — API calls" card. Only folds when ownership is
     unambiguous (exactly one provider row).
     """
-    rows_by_model: Dict[str, List[Dict[str, Any]]] = {}
+    rows_by_model: dict[str, list[dict[str, Any]]] = {}
     for row in raw_rows:
         rows_by_model.setdefault(row.get("model") or "", []).append(row)
 
-    rows: List[Dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
     for model_rows in rows_by_model.values():
         provider_rows = [r for r in model_rows if r.get("billing_provider")]
         if len(provider_rows) != 1:
@@ -225,14 +225,14 @@ _AUX_SUMMED_KEYS = (
 )
 
 
-def _merge_aux_into_rows(raw_rows: List[Dict[str, Any]], aux_rows: List[Dict[str, Any]]) -> None:
+def _merge_aux_into_rows(raw_rows: list[dict[str, Any]], aux_rows: list[dict[str, Any]]) -> None:
     """Add auxiliary usage onto the matching (model, billing_provider) row in place.
 
     Aux calls happen inside sessions the sessions-derived row already counted, so
     ``sessions`` is never added onto an existing row; only an aux-only pair (no
     sessions-derived row) gets a new row that carries its own session count.
     """
-    index: Dict[tuple, Dict[str, Any]] = {
+    index: dict[tuple, dict[str, Any]] = {
         (row.get("model") or "", row.get("billing_provider") or ""): row
         for row in raw_rows
     }
@@ -270,7 +270,7 @@ _MODEL_CARD_KEYS = (
 )
 
 
-def _attach_tool_calls(db, cutoff: float, raw_rows: List[Dict[str, Any]]) -> None:
+def _attach_tool_calls(db, cutoff: float, raw_rows: list[dict[str, Any]]) -> None:
     """Fill the ``tool_calls`` card metric for per-call rows, in place.
 
     Tool calls are session-level data (``sessions.tool_call_count``), not per API
@@ -289,8 +289,8 @@ def _attach_tool_calls(db, cutoff: float, raw_rows: List[Dict[str, Any]]) -> Non
         (r.get("model") or "", r.get("billing_provider") or ""): r.get("tool_calls") or 0
         for r in pair_rows
     }
-    index: Dict[tuple, Dict[str, Any]] = {}
-    by_model: Dict[str, List[Dict[str, Any]]] = {}
+    index: dict[tuple, dict[str, Any]] = {}
+    by_model: dict[str, list[dict[str, Any]]] = {}
     for row in raw_rows:
         row["tool_calls"] = 0
         index.setdefault((row["model"], row.get("billing_provider") or ""), row)

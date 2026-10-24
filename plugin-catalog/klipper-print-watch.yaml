@@ -1,7 +1,7 @@
 name: klipper-print-watch
 repo: https://github.com/TakeshiTGAL/hermes-plugin-klipper-print-watch
-sha: a970970b9d27f8e1b5000e6770748b3c4d68a86b
-description: "Built on the Moonraker HTTP API. Cron reports klippy_shutdown, complete, error, paused (after printing), cancelled, stalled. Disclosure — Talks to the one Moonraker URL you set. Over plain http on a LAN, MOONRAKER_API_KEY is sent unencrypted. Pause, resume and cancel ask for Hermes approval every time and are refused under cron, yolo, approvals off and unattended sessions. The plugin has no user list of its own: anyone you allow on your Hermes gateway can request a move and approve it. Answering \"always\" adds an unused line to config.yaml. The optional watch is a cron job (a model turn every 5 minutes by default) that stays after uninstall until you run unschedule. vision_check, off by default, sends webcam stills to your model. Not tested on real hardware."
+sha: 20aa6f0083d0a81bea36f47490ea9be7ac4a72ff
+description: "Built on the Moonraker HTTP API. Cron reports klippy_shutdown, complete, error, paused (after printing), cancelled, stalled. Disclosure — Talks to the one Moonraker URL you set. Over plain http on a LAN, MOONRAKER_API_KEY is sent unencrypted. Pause, resume and cancel ask for Hermes approval every time and are refused under cron, yolo, approvals off and unattended sessions. The plugin has no user list of its own: anyone you allow on your Hermes gateway can request a move and approve it. Answering \"always\" adds an unused line to config.yaml. The optional watch is a cron job (a model turn every 5 minutes by default) that stays after uninstall until you run unschedule. vision_check, off by default, sends webcam stills to your model. The plugin host cannot watch. Not tested on real hardware."
 maintainer: TakeshiTGAL
 tier: community
 category: tools

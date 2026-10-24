@@ -1,14 +1,14 @@
 name: linkup
 repo: https://github.com/LinkupPlatform/linkup-hermes-plugin
-sha: 6a1909656b96f5e951bb6a332ea252501f4fb686
+sha: d83d1162f2941e51bb4cbf34841b4c6b3305081c
 description: "Linkup web search: live cited search (fast/standard/deep), URL-to-Markdown fetch with JS rendering, async deep research, and a Linkup backend for the built-in web_search / web_extract tools. Disclosure — sends search queries, fetch URLs and research briefs to api.linkup.so with your LINKUP_API_KEY (Linkup fetches pages server-side); when selected with hermes linkup use-as-web-backend it also handles the built-in web_search and web_extract calls; large fetched pages are cached under $HERMES_HOME/cache/linkup for 24 hours."
 maintainer: LinkupPlatform
 tier: community
 category: web
 requires_hermes: ">=0.21"
 docs_url: https://github.com/LinkupPlatform/linkup-hermes-plugin#readme
-version: "1.0.0"
-image: "https://raw.githubusercontent.com/LinkupPlatform/linkup-hermes-plugin/6a1909656b96f5e951bb6a332ea252501f4fb686/docs/banner.png"
+version: "1.0.1"
+image: "https://raw.githubusercontent.com/LinkupPlatform/linkup-hermes-plugin/d83d1162f2941e51bb4cbf34841b4c6b3305081c/docs/banner.png"
 platforms: []
 capabilities:
   provides_tools:

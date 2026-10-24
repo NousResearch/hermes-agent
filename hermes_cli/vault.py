@@ -9,7 +9,7 @@ Subcommands:
 - ``hermes vault rm``    remove an item by handle/id.
 
 The vault backs the password-blind browser autofill tools
-(``browser_vault_list`` / ``browser_vault_fill``): the agent sees handles
+(``browser_vault`` list / fill): the agent sees handles
 and login identifiers, types the identifier itself, and fills the password
 server-side without ever seeing it.
 """
@@ -165,7 +165,7 @@ def _cmd_sources(args) -> None:
         if name in enabled:
             status = "[green]detected[/] · the agent asks you to unlock it when it needs a login"
         elif is_installed(name):
-            status = "[dim]turned off[/] (`hermes vault sources --enable {name}` to use it)".format(name=name)
+            status = f"[dim]turned off[/] (`hermes vault sources --enable {name}` to use it)"
         else:
             status = "[dim]not installed[/]"
         c.print(f"  {cls.display_name:<10} {status}")

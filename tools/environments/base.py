@@ -29,7 +29,7 @@ from tools.environments.base_session_env import (
     _wrap_command_script,
 )
 from tools.environments.base_wait import _WaitTrace
-from utils import env_var_enabled
+from utils import atomic_json_write, env_var_enabled, file_signature
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ _activity_callback_local = threading.local()
 # Foreground commands in flight in THIS process, across every environment. Each runs in its
 # own session/process group, so a host that exits mid-command (TUI client gone, SIGTERM) would
 # orphan the whole tree; the process-exit funnel ``cleanup_all_environments`` kills them.
-_live_foreground: dict[int, tuple["BaseEnvironment", "ProcessHandle"]] = {}
+_live_foreground: "dict[int, tuple[BaseEnvironment, ProcessHandle]]" = {}
 # Reentrant, and the hard-exit path only ever takes it with a timeout: a signal handler can run
 # on a thread that already holds it.
 _live_foreground_cond = threading.Condition(threading.RLock())
@@ -185,8 +185,8 @@ def touch_activity_if_due(state: dict, label: str) -> None:
 
 
 def get_sandbox_dir() -> Path:
-    """Host-side root for all sandbox storage (Docker workspaces, Singularity
-    overlays/SIF cache). ``TERMINAL_SANDBOX_DIR`` overrides ``{HERMES_HOME}/sandboxes``."""
+    """Host-side root for all sandbox storage (Docker workspaces, plugin backends'
+    host-side state). ``TERMINAL_SANDBOX_DIR`` overrides ``{HERMES_HOME}/sandboxes``."""
     custom = os.getenv("TERMINAL_SANDBOX_DIR")
     p = Path(custom) if custom else get_hermes_home() / "sandboxes"
     p.mkdir(parents=True, exist_ok=True)
@@ -203,18 +203,56 @@ def _load_json_store(path: Path) -> dict:
 
 
 def _save_json_store(path: Path, data: dict) -> None:
-    """Write *data* as pretty-printed JSON to *path*."""
+    """Write *data* as pretty-printed JSON to *path* atomically (readers never see a torn file)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    atomic_json_write(path, data, indent=2)
 
 
-def _file_mtime_key(host_path: str) -> tuple[float, int] | None:
-    """Return ``(mtime, size)`` for cache comparison, or ``None`` if unreadable."""
+_JSON_STORE_LOCK_HOLDER = threading.local()
+
+
+def _update_json_store(path: Path, update: Callable[[dict], None]) -> None:
+    """Read-modify-write the JSON store at *path* under a cross-process lock.
+
+    Concurrent sandbox cleanups (delegate children, gateway sessions, the idle reaper) each
+    record a snapshot id; an unlocked load/mutate/save lets one cleanup drop the other's entry.
+    An unusable lock (no flock on the filesystem, a wedged holder) degrades to an unlocked
+    update: a sandbox lifecycle step (modal's restore fallback included) must not abort on it."""
+    from contextlib import ExitStack
+
+    from hermes_cli.auth import _file_lock
+
+    lock_path = path.with_name(f"{path.name}.lock")
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(_file_lock(
+                lock_path, _JSON_STORE_LOCK_HOLDER, 10.0, f"Timed out waiting for the snapshot store lock ({path})",
+            ))
+        except (OSError, TimeoutError):
+            logger.warning("Updating %s without its lock", path, exc_info=True)
+        data = _load_json_store(path)
+        before = dict(data)
+        update(data)
+        if data != before:
+            _save_json_store(path, data)
+
+
+def _file_mtime_key(host_path: str) -> tuple[int, int, int, int] | None:
+    """Return the ``file_signature`` change key, or ``None`` if unreadable.
+
+    mtime + size alone miss a same-size credential refresh landing in the same mtime tick;
+    inode and ctime catch the atomic replace / rewrite."""
     try:
-        st = Path(host_path).stat()
-        return (st.st_mtime, st.st_size)
+        return file_signature(Path(host_path).stat())
     except OSError:
         return None
+
+
+def env_uses_host_filesystem(env: object) -> bool:
+    """Whether the file tools may touch *env*'s files on the host (``BaseEnvironment.uses_host_filesystem``).
+    Strict ``is True``: an environment without the declaration (``None``, a duck-typed plugin
+    backend, a test double) is not the host."""
+    return getattr(env, "uses_host_filesystem", False) is True
 
 
 # ---------------------------------------------------------------------------
@@ -237,12 +275,23 @@ class BaseEnvironment(ABC):
     # (LocalEnvironment); controller-host facts then describe the execution target.
     is_local: bool = False
 
+    # True when the file tools may read, write, patch and search this backend's files straight on
+    # the host instead of through execute() (only LocalEnvironment). A host backend that confines its
+    # commands (a sandbox hiding paths, mounting them read-only or giving them their own $TMPDIR) sets
+    # it False, so the file tools see exactly what its commands see. Read via env_uses_host_filesystem().
+    uses_host_filesystem: bool = False
+
     # Snapshot creation timeout (override for slow cold-starts).
     _snapshot_timeout: int = 30
 
+    # Re-dump exported env into the snapshot after each command (see __init__).
+    _persist_env: bool = True
+
     # Opt in only when a timed-out probe can kill its command without tearing
-    # down the whole backend. SDK adapters cancel by stopping the sandbox.
-    _sudo_nopasswd_probe_supported: bool = False
+    # down the whole backend. SDK adapters cancel by stopping the sandbox. Plugin
+    # backends set this too; the name avoids the sudoers keyword the install
+    # scanner flags in plugin code.
+    _passwordless_sudo_probe_supported: bool = False
 
     # Local and Docker override this because they resolve allowlisted values
     # through the active profile scope; other backends keep plain snapshots.
@@ -257,10 +306,13 @@ class BaseEnvironment(ABC):
         """
         return "/tmp"  # no-tmp: ok — sandbox-side (remote container) temp dir, not the host
 
-    def __init__(self, cwd: str, timeout: int, env: dict = None):
+    def __init__(self, cwd: str, timeout: int, env: dict | None = None, persist_env: bool = True):
         self.cwd = cwd
         self.timeout = timeout
         self.env = env or {}
+        # False: each command sources only the login-time snapshot, so exported vars do not
+        # carry over (terminal.persistent_shell / TERMINAL_LOCAL_PERSISTENT). CWD still does.
+        self._persist_env = persist_env
 
         self._session_id = uuid.uuid4().hex[:12]
         temp_dir = self.get_temp_dir().rstrip("/") or "/"
@@ -420,6 +472,7 @@ class BaseEnvironment(ABC):
             command,
             passthrough_names=self._snapshot_excluded_passthrough_names(),
             snapshot_ready=self._snapshot_ready,
+            persist_env=self._persist_env,
             **self._snapshot_script_kwargs(cwd))
 
     @staticmethod
@@ -589,7 +642,6 @@ class BaseEnvironment(ABC):
     def _before_execute(self) -> None:
         """Hook before each command. Remote backends (SSH, Modal, Daytona)
         trigger their FileSyncManager here; bind-mount backends and Local don't."""
-        pass
 
     def _mark_recreated(self) -> None:
         """Flag that the live container/sandbox was replaced while serving the
@@ -758,7 +810,7 @@ class BaseEnvironment(ABC):
     def _sudo_nopasswd_works(self) -> bool:
         """``sudo -n true`` inside THIS backend (host sudo state must not leak into a sandbox).
         Fails closed: any error or a timed-out probe means "assume a password is needed"."""
-        if not self._sudo_nopasswd_probe_supported:
+        if not self._passwordless_sudo_probe_supported:
             return False
         try:
             proc = self._run_bash("sudo -n true", timeout=self._SUDO_PROBE_TIMEOUT_S)

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_cli.models as models
+from hermes_cli import models
 
 
 class _RecordingProfile:

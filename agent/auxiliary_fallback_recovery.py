@@ -9,7 +9,7 @@ This module runs those rungs — and only those — around a candidate's request
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 
-def _parameter_ladder(first_err: Exception, client: Any, kwargs: Dict[str, Any], *,
+def _parameter_ladder(first_err: Exception, client: Any, kwargs: dict[str, Any], *,
                       task: Optional[str], tag: str):
     from agent.auxiliary_client import _LadderRoute, _ladder_parameter_rungs
     # Keyword construction: the route tuple grows with every new ladder rung (a positional 13-tuple
@@ -25,7 +25,7 @@ def _parameter_ladder(first_err: Exception, client: Any, kwargs: Dict[str, Any],
 
 
 def send_with_parameter_rungs(
-    send: Callable[[Any, Dict[str, Any]], Any], client: Any, kwargs: Dict[str, Any], *, task: Optional[str],
+    send: Callable[[Any, dict[str, Any]], Any], client: Any, kwargs: dict[str, Any], *, task: Optional[str],
 ) -> Any:
     """``send(client, kwargs)``; on a parameter 400, retry through the parameter rungs. Any other
     error (auth, payment, connection) propagates unchanged for the caller's own handling."""
@@ -38,7 +38,7 @@ def send_with_parameter_rungs(
 
 
 async def send_with_parameter_rungs_async(
-    send: Callable[[Any, Dict[str, Any]], Awaitable[Any]], client: Any, kwargs: Dict[str, Any], *,
+    send: Callable[[Any, dict[str, Any]], Awaitable[Any]], client: Any, kwargs: dict[str, Any], *,
     task: Optional[str],
 ) -> Any:
     """Async twin of :func:`send_with_parameter_rungs`."""

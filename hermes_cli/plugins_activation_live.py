@@ -4,7 +4,7 @@
 point (``skill_view`` resolves ``<plugin>:<skill>``). MCP servers are not: nothing connects them until
 ``reload.mcp``. :func:`connect_plugin_mcp` connects the plugin's servers one by one (the connector
 flow's ``register_mcp_servers({name: config})``), and :func:`live_notice` renders what became usable
-as the note an open chat receives on its next turn.
+as the note an open chat receives on its next tool result or turn (``agent/plugin_live_notes.py``).
 
 MCP tools are deferred behind ``tool_search`` / ``tool_describe`` / ``tool_call``, so adding them to a
 live session leaves the model-facing tool array (and the cached prompt prefix) byte-identical.
@@ -13,11 +13,12 @@ live session leaves the model-facing tool array (and the cached prompt prefix) b
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-def connect_plugin_mcp(activation: Dict[str, Any], portable: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+def connect_plugin_mcp(activation: dict[str, Any], portable: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """Connect every portable MCP server ``activation`` defers, under the caller's profile scope.
     ``portable`` is the manager's portable server configs, read together with ``activation``.
 
@@ -47,7 +48,7 @@ def connect_plugin_mcp(activation: Dict[str, Any], portable: Dict[str, Dict[str,
         except Exception as exc:
             rows.append({"name": name, "connected": False, "tools": [], "error": str(exc)})
             continue
-        row: Dict[str, Any] = {"name": name, "connected": bool(tools), "tools": tools}
+        row: dict[str, Any] = {"name": name, "connected": bool(tools), "tools": tools}
         if not tools:
             row["error"] = _server_error(name) or "the server did not connect"
         rows.append(row)
@@ -72,7 +73,7 @@ def _server_error(name: str) -> Optional[str]:
     return None
 
 
-def plugin_skills(plugin_key: str) -> List[Dict[str, str]]:
+def plugin_skills(plugin_key: str) -> list[dict[str, str]]:
     """``[{name, description}]`` for the skills ``plugin_key`` registered (qualified ``<ns>:<skill>``)."""
     try:
         from hermes_cli.plugins import get_plugin_manager
@@ -83,49 +84,56 @@ def plugin_skills(plugin_key: str) -> List[Dict[str, str]]:
             for qualified, entry in sorted(skills.items()) if entry.get("plugin_key") == plugin_key]
 
 
-def live_notice(activation: Dict[str, Any]) -> str:
-    """The note an open chat gets on its next turn: connected MCP servers with their tools, skills,
-    and what waits for the next session. Empty when nothing became usable."""
+def catalog_plugin_skill(written: str) -> Optional[str]:
+    """The registered name of a plugin skill written ``<catalog-name>:<skill>`` (``blender:blender``), or
+    None when that catalog plugin is not installed in this profile or registered no such skill. A
+    portable plugin's skills register under a collision-resistant namespace
+    (``agent-plugin-<slug>-<sha8>:<skill>``, ``hermes_cli/plugins_manifest.py``), so the readable form
+    is never itself a name ``skill_view`` resolves."""
+    from hermes_cli.plugins import get_plugin_manager
+    from hermes_cli.plugins_cmd import _catalog_installed_dir
+    catalog_name, _, bare = written.partition(":")
+    target = _catalog_installed_dir(catalog_name)
+    if target is None:
+        return None
+    manager = get_plugin_manager()
+    keys = {key for key, loaded in manager._plugins.items()
+            if loaded.manifest.path and Path(loaded.manifest.path).resolve() == target.resolve()}
+    return next((qualified for qualified, entry in sorted(manager._plugin_skills.items())
+                 if entry.get("plugin_key") in keys and entry.get("bare_name") == bare), None)
+
+
+def live_notice(activation: dict[str, Any]) -> str:
+    """The note an open chat gets on its next tool result or turn (``agent/plugin_live_notes.py``): the
+    plugin's skills and, per MCP server, its tool prefix and count or why it did not connect. Tools are
+    not listed one by one: the note stays in the chat's history and rides every later request, and
+    ``tool_search`` lists them on demand. Empty when nothing of the plugin is live now."""
     live = activation.get("live_now") or {}
     servers, skills = live.get("mcp_servers") or [], live.get("skills") or []
-    deferred = activation.get("deferred") or {}
     if not servers and not skills:
         return ""
-    lines = [f"[plugin installed: {activation.get('name') or activation.get('key')}]"]
-    connected = [s for s in servers if s.get("connected")]
-    if connected:
-        lines.append("MCP servers now connected; call their tools with tool_describe / tool_call:")
-        for server in connected:
-            lines.append(f"- {server['name']}")
-            listing = _tool_listing(server["tools"])
-            if listing:
-                lines.extend(f"    {line}" for line in listing.splitlines())
-    for server in (s for s in servers if not s.get("connected")):
-        lines.append(f"- {server['name']}: not connected ({server.get('error') or 'unknown error'})")
-    if skills:
-        lines.append("Skills now available; load one with skill_view:")
-        lines.extend(f"- {s['name']}: {s['description']}" if s.get("description") else f"- {s['name']}"
-                     for s in skills)
+    name = activation.get("name") or activation.get("key")
+    lines = [f"[System note: plugin {name} was installed and is live in this chat now (a Hermes note, "
+             "not tool output)."]
+    lines.extend(f"- Skill {skill['name']}: load it with skill_view." for skill in skills)
+    for server in servers:
+        if server.get("connected"):
+            lines.append(f"- MCP server {server['name']}: {len(server['tools'])} tools, "
+                         f"{_tool_prefix(server['name'])}*.")
+        else:
+            lines.append(f"- MCP server {server['name']}: not connected ({server.get('error') or 'unknown error'}).")
+    if any(server.get("connected") for server in servers):
+        lines.append("Its MCP tools are deferred: find them with tool_search, read one with tool_describe, "
+                     "run it with tool_call.")
+    deferred = activation.get("deferred") or {}
     later = [f"{len(deferred['tools'])} Python tools" if deferred.get("tools") else "",
              f"{len(deferred['prompt'])} prompt sections" if deferred.get("prompt") else ""]
     if any(later):
         lines.append("Next session: " + ", ".join(p for p in later if p) + ".")
-    return "\n".join(lines)
+    return "\n".join(lines) + "]"
 
 
-def _tool_listing(names: List[str]) -> str:
-    """``name: first sentence`` per tool."""
-    try:
-        from tools.registry import registry
-        from tools.tool_search_catalog import _short_desc
-        definitions = registry.get_definitions(set(names), quiet=True)
-    except Exception:
-        return ""
-    rows = []
-    for definition in definitions:
-        fn = definition.get("function") or definition
-        name = str(fn.get("name") or "")
-        if name:
-            desc = _short_desc(fn.get("description") or "")
-            rows.append(f"{name}: {desc}" if desc else name)
-    return "\n".join(sorted(rows))
+def _tool_prefix(server: str) -> str:
+    """``mcp__<server>__``: the start of every registered tool name of ``server``."""
+    from tools.mcp_tool_schema import MCP_TOOL_NAME_PREFIX, sanitize_mcp_name_component
+    return f"{MCP_TOOL_NAME_PREFIX}{sanitize_mcp_name_component(server)}__"

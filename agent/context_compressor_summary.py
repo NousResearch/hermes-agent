@@ -27,7 +27,7 @@ def _accepts_keyword_argument(callable_obj: Any, name: str) -> bool:
 
 
 class SummaryDispatchMixin:
-    def _apply_summary_route(self, call_kwargs: dict, pinned: Optional[Dict[str, Any]] = None) -> None:
+    def _apply_summary_route(self, call_kwargs: dict, pinned: Optional[dict[str, Any]] = None) -> None:
         """Pin the summary route onto ``call_kwargs`` for both compression entry points.
 
         After a fallback, an omitted route is NOT "use the main model": ``call_llm`` re-resolves
@@ -35,6 +35,8 @@ class SummaryDispatchMixin:
         is refused, so every later attempt aborts (#123362). Name the main runtime explicitly.
         A stall-fallback ``pinned`` route replaces the whole route: merged over the main runtime, the
         main api_key/base_url would ride into the fallback entry's call (to its host, or instead of it).
+        The main route is complete even with empty fields: an authoritative task keeps compression
+        policy but never fills an unset endpoint/key/wire mode from the failed aux route (#130895).
         """
         if pinned:
             # Clear first: a keyless pin (local server) resolves its own credential, never the main one.
@@ -47,6 +49,9 @@ class SummaryDispatchMixin:
             return
         if not getattr(self, "_summary_model_fallen_back", False):
             return
+        from agent.auxiliary_task_config import authoritative_auxiliary_task
+
+        call_kwargs["task"] = authoritative_auxiliary_task(call_kwargs.get("task") or "compression")
         for key, value in (
             ("provider", self.provider),
             ("model", self.model),
@@ -58,7 +63,7 @@ class SummaryDispatchMixin:
                 call_kwargs[key] = value
 
     def _summarize_window(
-        self, messages: List[Dict[str, Any]], turns_to_summarize: List[Dict[str, Any]], scan: "_HandoffScan",
+        self, messages: list[dict[str, Any]], turns_to_summarize: list[dict[str, Any]], scan: _HandoffScan,
         focus_topic: Optional[str], memory_context: str, bypass_cooldown: bool,
     ) -> Optional[str]:
         """Run the summary LLM; a cancellation rolls back the handoff scan's self-heal mutation first.
@@ -80,7 +85,7 @@ class SummaryDispatchMixin:
                 telemetry["failure_class"] = "stall_deterministic_fallback"
             return None
         # Focus-topic derivation scans user turns; only pay when a summary is generated.
-        summary_kwargs: Dict[str, Any] = {
+        summary_kwargs: dict[str, Any] = {
             "focus_topic": focus_topic or self._derive_auto_focus_topic(messages),
             "memory_context": memory_context,
         }

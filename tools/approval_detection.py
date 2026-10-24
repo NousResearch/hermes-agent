@@ -225,6 +225,13 @@ def detect_hardline_command(command: str) -> tuple:
 
 
 # ---- Dangerous command patterns -----------------------------------------------------------
+# A git push DESTINATION — or the ref a lease is held against — that is main/master, in any
+# spelling git accepts: bare, `+name` (forced refspec), `refs/heads/name`, `src:name`,
+# `HEAD:name`, `"name"`. The separator class is what keeps path-adjacent text out (`feature/main`
+# is not `main`), and the trailing lookahead keeps near-misses (`main-ref`, `main/x`, `main~1`)
+# out — the block must land on the default branch, not on any name that merely starts with it.
+_PUSH_MAIN_REF = r'''[:+\s"'](?:refs/heads/)?(?:main|master)(?![\w./^~-])'''
+
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
@@ -444,6 +451,29 @@ DANGEROUS_PATTERNS = [
     # --ha, --har): --hard is the only reset mode starting with "h", and `--help` is special-cased
     # by git before mode resolution.
     (r'\bgit\s+reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
+    # `git push --force-with-lease` is ONE verb with TWO verdicts, and it is NOT the bare
+    # `--force` class: it refuses to overwrite a remote tip that moved since the lease was
+    # taken, so it can be consented to on its own (``command_allowlist`` holds the pattern key,
+    # see ``tools/approval.py::_is_permanently_approved``). ORDER IS THE MECHANISM — this function
+    # returns the FIRST matching pattern — so the scope guards come first and keep the BARE key
+    # for everything outside the authorized shape: a leased push whose destination (or lease ref)
+    # is main/master, and the bulk `--all` / `--mirror` / `-a` forms, which are never "the
+    # caller's own branch". Segment-bounded (`[^;|&\n]`) so an unrelated later command cannot
+    # contaminate the verdict. An ABBREVIATED spelling (`--force-with-leas`, which git resolves)
+    # does not match the lease pattern below and falls through to the bare key: it fails CLOSED.
+    (rf'\bgit\s+push\b[^;|&\n]*--force-with-lease[^;|&\n]*{_PUSH_MAIN_REF}',
+     "git force push (rewrites remote history)"),
+    (rf'\bgit\s+push\b[^;|&\n]*{_PUSH_MAIN_REF}[^;|&\n]*--force-with-lease',
+     "git force push (rewrites remote history)"),
+    (r'\bgit\s+push\b[^;|&\n]*--force-with-lease[^;|&\n]*(?:\s)(?:--(?:mirror|all)|-a)\b',
+     "git force push (rewrites remote history)"),
+    (r'\bgit\s+push\b[^;|&\n]*(?:\s)(?:--(?:mirror|all)|-a)\b[^;|&\n]*--force-with-lease',
+     "git force push (rewrites remote history)"),
+    # The lease-checked form itself, with its OWN key so a profile can pre-approve exactly this
+    # verb and nothing wider. Covers `--force-with-lease` and `--force-with-lease=<ref>` (`\b`
+    # sits between the flag name and `=`).
+    (r'\bgit\s+push\b[^;|&\n]*--force-with-lease\b',
+     "git push --force-with-lease (lease-checked force push)"),
     (r'\bgit\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
     (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),

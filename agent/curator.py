@@ -1041,7 +1041,9 @@ def _resolve_review_runtime(cfg: dict[str, Any]) -> _ReviewRuntimeBinding:
       3. Main ``model.{provider,default/model}`` pair ("auto" + "" = main chat model)
     Non-empty slot ``api_key``/``base_url`` are returned as explicit overrides so ``resolve_runtime_provider`` doesn't reuse the main chat credential chain."""
     def _slot(provider: str, model: str, slot: dict[str, Any]) -> _ReviewRuntimeBinding:
+        from hermes_cli.runtime_provider_custom import expand_direct_api_alias_keyed
         api_key, base_url = ((str(v).strip() or None) if v is not None else None for v in (slot.get("api_key"), slot.get("base_url")))
+        api_key = expand_direct_api_alias_keyed(provider, base_url, api_key)[2]
         return _ReviewRuntimeBinding(provider, model, api_key, base_url, _merge_request_overrides({}, slot.get("extra_body")))
 
     task = _subdict(cfg, "auxiliary", "curator")

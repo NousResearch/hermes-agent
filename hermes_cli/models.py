@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from typing import TypeGuard
 
 from hermes_cli.route_identity import normalize_route_base_url
+from hermes_cli.runtime_provider_custom import direct_api_alias_base_url, openai_alias_model_endpoint_key
 from hermes_cli.urllib_security import open_credentialed_url
 from hermes_cli.version_info import get_version_info
 from hermes_cli.models_catalog_static import (
@@ -1382,17 +1383,15 @@ def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
 
 
 def _openai_discovery_base_url(provider: str) -> str:
-    """OpenAI endpoint for model discovery, mirroring runtime precedence so discovery probes the SAME
-    endpoint inference uses: ``$OPENAI_BASE_URL`` → config ``model.base_url`` (when the configured
-    provider matches) → the canonical default."""
+    """The endpoint inference uses: ``openai`` alias resolver, else $OPENAI_BASE_URL → openai-api model.base_url → default."""
+    if normalize_provider(provider) == "openai":
+        return direct_api_alias_base_url("openai")
     env_raw = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
     if env_raw:
         return env_raw
     try:
         model_cfg = _get_model_config_dict()
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
-        same_provider = normalize_provider(provider) == normalize_provider(cfg_provider)
-        if cfg_provider in ("openai", "openai-api") and same_provider:
+        if normalize_provider(provider) == "openai-api" == str(model_cfg.get("provider") or "").strip().lower():
             cfg_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
             if cfg_url:
                 return cfg_url
@@ -1536,10 +1535,11 @@ def _anthropic_catalog(normalized: str, force_refresh: bool) -> list[str]:
 
 
 def _openai_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    base = _openai_discovery_base_url(normalized)
+    model_key = openai_alias_model_endpoint_key(base)  # model.base_url gets model.key_env, never OPENAI_API_KEY
+    api_key = os.getenv("OPENAI_API_KEY", "").strip() if model_key is None else model_key
     if not api_key:
         return None
-    base = _openai_discovery_base_url(normalized)
     # Custom OpenAI-compatible endpoints serve a small curated catalog — use it verbatim. Official
     # OpenAI hosts (canonical and data-residency regional) return 120+ embeddings/whisper/tts/…
     # entries, so intersect with the curated agentic catalog so ``/model`` matches ``hermes model``.

@@ -418,6 +418,9 @@ def _npm_graph(source):
     _put(source, "packages/value/index.js", "export const value = 'compiled local graph';\n")
     _put(source, "packages/value/index.d.ts", "export const value: string;\n")
     _put(source, "ui-tui/src/entry.tsx", "import { value } from 'fixture-value'; console.log(value);\n")
+    # scripts/build/tui.mjs copies these runtime helpers into the built product.
+    for helper in ("gateway_bootstrap.py", "clipboard_image.py"):
+        _put(source, f"ui-tui/scripts/{helper}", f"# fixture stand-in for ui-tui/scripts/{helper}\n")
     _put(source, "web/src/main.ts", "import { value } from 'fixture-value'; document.body.textContent = value;\n")
     _put(source, "web/index.html", '<html><body><script type="module" src="/src/main.ts"></script></body></html>')
     _put(source, "web/tsconfig.json", json.dumps({"compilerOptions": {

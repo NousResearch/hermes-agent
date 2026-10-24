@@ -4235,6 +4235,23 @@ class SlackAdapter(BasePlatformAdapter):
         if original_message_ts and original_message_ts in self._processed_message_ts:
             return None
         edited = updated_message.get("edited")
+        explicit_edit = isinstance(edited, dict)
+        previous_message = event.get("previous_message")
+        if isinstance(previous_message, dict) and (
+            updated_message.get("text") == previous_message.get("text")):
+            # Same text: Slack re-emits on thread-reply metadata (reply_count / latest_reply /
+            # reply_users) and unfurls. Only an explicit edit that changed something counts.
+            edited_changed = edited != previous_message.get("edited")
+            content_changed = explicit_edit and any(
+                updated_message.get(key) != previous_message.get(key)
+                for key in ("attachments", "files", "blocks"))
+            if not (edited_changed or content_changed):
+                return None
+        if not explicit_edit and (
+            updated_message.get("reply_count") is not None
+            or updated_message.get("latest_reply") is not None):
+            # Thread-root metadata update without a user edit (previous_message may be omitted).
+            return None
         edited_ts = str(edited.get("ts") or "") if isinstance(edited, dict) else ""
         outer_event_ts = str(event.get("ts") or "")
         changed_event_ts = (
@@ -4655,6 +4672,12 @@ class SlackAdapter(BasePlatformAdapter):
         _claim_ts = str(event.get("ts") or "")
         if _claim_ts:
             self._remember_processed_message_ts(_claim_ts)
+        # Also claim the thread root: after a restart ``_processed_message_ts`` is empty, and the
+        # reply/task-card stream we are about to post bumps the root's reply_count, making Slack
+        # emit ``message_changed`` on the root — which would otherwise replay it as a new turn.
+        _claim_thread_ts = str(event_thread_ts or "")
+        if _claim_thread_ts and _claim_thread_ts != _claim_ts:
+            self._remember_processed_message_ts(_claim_thread_ts)
         if is_mentioned:
             text, original_text, command_probe_text, is_command_text = self._apply_bot_mention(
                 text, original_text, command_probe_text, is_command_text, bot_uid, thread_ts,

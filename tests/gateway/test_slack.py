@@ -2179,6 +2179,150 @@ class TestMessageRouting:
         assert msg_event.text == "whats the rapchat summary for last 12 hours"
         assert msg_event.message_id == "1234567890.000001"
 
+    # -- Post-restart thread-root ``message_changed`` replay ------------------
+
+    @staticmethod
+    def _thread_root_metadata_event(*, with_previous: bool) -> dict:
+        root = {
+            "type": "message",
+            "text": "<@U_BOT> please look into the outage",
+            "user": "U_USER",
+            "ts": "1700000000.000100",
+            "thread_ts": "1700000000.000100",
+        }
+        event = {
+            "type": "message",
+            "subtype": "message_changed",
+            "channel": "C123",
+            "channel_type": "channel",
+            "team": "T123",
+            "ts": "1700000050.000900",
+            "event_ts": "1700000050.000900",
+            "message": dict(
+                root, reply_count=2, latest_reply="1700000050.000800",
+                reply_users=["U_USER", "U_BOT"], reply_users_count=2),
+        }
+        if with_previous:
+            event["previous_message"] = dict(
+                root, reply_count=1, latest_reply="1700000010.000200",
+                reply_users=["U_USER"], reply_users_count=1)
+        return event
+
+    @pytest.mark.parametrize("with_previous", [True, False])
+    def test_thread_root_metadata_change_dropped_after_restart(self, adapter, with_previous):
+        """reply_count/latest_reply bumps on a root are not user edits, even with no claims."""
+        assert adapter._processed_message_ts == {}
+        event = self._thread_root_metadata_event(with_previous=with_previous)
+        assert adapter._normalize_changed_message(event) is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("with_previous", [True, False])
+    async def test_thread_root_metadata_change_not_routed_after_restart(
+            self, adapter, with_previous):
+        assert adapter._processed_message_ts == {}
+        await adapter._handle_slack_message(
+            self._thread_root_metadata_event(with_previous=with_previous))
+        adapter.handle_message.assert_not_called()
+
+    def test_same_text_without_edit_dropped(self, adapter):
+        """previous_message with identical text and no edit marker is not a user edit."""
+        event = {
+            "subtype": "message_changed",
+            "channel": "C123",
+            "ts": "1700000099.000001",
+            "message": {"text": "<@U_BOT> hi", "user": "U_USER", "ts": "1700000000.000001",
+                        "attachments": [{"title": "unfurl"}]},
+            "previous_message": {"text": "<@U_BOT> hi", "user": "U_USER",
+                                 "ts": "1700000000.000001"},
+        }
+        assert adapter._normalize_changed_message(event) is None
+
+    @pytest.mark.asyncio
+    async def test_thread_reply_after_restart_claims_thread_root(self, adapter):
+        """A reply in an existing thread claims the root ts, so the root's later
+        ``message_changed`` (from our reply / task-card stream) is ignored."""
+        assert adapter._processed_message_ts == {}
+        reply = {
+            "type": "message",
+            "text": "<@U_BOT> any update?",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "team": "T123",
+            "ts": "1700000050.000800",
+            "thread_ts": "1700000000.000100",
+        }
+        await adapter._handle_slack_message(reply)
+        adapter.handle_message.assert_called_once()
+        assert "1700000050.000800" in adapter._processed_message_ts
+        assert "1700000000.000100" in adapter._processed_message_ts
+
+        # Even a root change carrying an edit marker is suppressed once claimed.
+        root_changed = self._thread_root_metadata_event(with_previous=False)
+        root_changed["message"]["edited"] = {"user": "U_USER", "ts": "1700000000.000500"}
+        assert adapter._normalize_changed_message(root_changed) is None
+        await adapter._handle_slack_message(root_changed)
+        adapter.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_genuine_edit_with_previous_message_still_routes(self, adapter):
+        """A real edit (text changed, ``edited`` set) of an unprocessed message still routes."""
+        assert adapter._processed_message_ts == {}
+        event = {
+            "type": "message",
+            "subtype": "message_changed",
+            "channel": "C123",
+            "channel_type": "channel",
+            "team": "T123",
+            "ts": "1700000099.000001",
+            "event_ts": "1700000099.000001",
+            "message": {
+                "text": "<@U_BOT> what changed in the deploy?",
+                "user": "U_USER",
+                "ts": "1700000000.000001",
+                "edited": {"user": "U_USER", "ts": "1700000099.000000"},
+            },
+            "previous_message": {
+                "text": "what changed in the deploy?",
+                "user": "U_USER",
+                "ts": "1700000000.000001",
+            },
+        }
+        normalized = adapter._normalize_changed_message(event)
+        assert normalized is not None
+        assert normalized["ts"] == "1700000000.000001"
+        assert normalized["channel"] == "C123"
+        assert normalized["_slack_changed_event_ts"] == "1700000099.000001"
+
+        await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_called_once()
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "what changed in the deploy?"
+        assert msg_event.message_id == "1700000000.000001"
+
+    def test_edited_thread_root_with_reply_metadata_still_normalizes(self, adapter):
+        """An explicit user edit of a thread root (text changed) is not mistaken for metadata."""
+        event = self._thread_root_metadata_event(with_previous=True)
+        event["message"]["text"] = "<@U_BOT> please look into the outage in us-east"
+        event["message"]["edited"] = {"user": "U_USER", "ts": "1700000060.000000"}
+        normalized = adapter._normalize_changed_message(event)
+        assert normalized is not None
+        assert normalized["text"] == "<@U_BOT> please look into the outage in us-east"
+
+    def test_same_text_explicit_edit_with_new_files_still_normalizes(self, adapter):
+        event = {
+            "subtype": "message_changed",
+            "channel": "C123",
+            "ts": "1700000099.000001",
+            "message": {"text": "see file", "user": "U_USER", "ts": "1700000000.000001",
+                        "files": [{"id": "F1"}],
+                        "edited": {"user": "U_USER", "ts": "1700000099.000000"}},
+            "previous_message": {"text": "see file", "user": "U_USER",
+                                 "ts": "1700000000.000001",
+                                 "edited": {"user": "U_USER", "ts": "1700000099.000000"}},
+        }
+        assert adapter._normalize_changed_message(event) is not None
+
 
 # ---------------------------------------------------------------------------
 # TestSendTyping — assistant.threads.setStatus

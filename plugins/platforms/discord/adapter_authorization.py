@@ -1,5 +1,13 @@
-"""Fresh membership checks for owner-held durable native inputs."""
+"""Author classification and fresh membership checks for owner-held durable native inputs."""
 import asyncio
+
+
+def is_automated_message(message) -> bool:
+    """True for bot- or webhook-authored messages. Discord only guarantees ``webhook_id`` on
+    webhook posts (the author object is the webhook's id/name/avatar, with ``bot`` optional), so
+    ``author.bot`` alone admits a flagless webhook as a person and bypasses DISCORD_ALLOW_BOTS."""
+    return bool(getattr(getattr(message, "author", None), "bot", False)
+                or isinstance(getattr(message, "webhook_id", None), int))
 
 
 class DiscordAuthorizationMixin:

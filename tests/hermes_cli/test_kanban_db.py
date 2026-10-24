@@ -1394,6 +1394,18 @@ def test_link_tasks_rejects_unowned_running_child_without_recording_edge(kanban_
         assert "linked" not in [event.kind for event in kb.list_events(conn, child)]
 
 
+def test_link_tasks_rejects_self_dependency_without_recording_edge(kanban_home):
+    """A task cannot become its own prerequisite."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="standalone task")
+
+        with pytest.raises(ValueError, match="cannot depend on itself"):
+            kb.link_tasks(conn, task_id, task_id)
+
+        assert kb.parent_ids(conn, task_id) == []
+        assert "linked" not in [event.kind for event in kb.list_events(conn, task_id)]
+
+
 def test_link_tasks_no_dependency_wait_when_parent_done(kanban_home):
     """A done parent demotes nothing and reports no gate."""
     with kbc.connect() as conn:

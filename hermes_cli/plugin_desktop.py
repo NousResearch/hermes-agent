@@ -100,10 +100,13 @@ class DesktopPluginCapability:
         if not _valid_operation(operation):
             return {"error": "invalid-operation"}
         try:
-            # Late import keeps plugin SDK users out of private server internals;
-            # the host seam itself rechecks exact live session authority.
-            from tui_gateway.server import request_player_agent_for_session
-            result = request_player_agent_for_session(session_id, operation)
+            # Canonical local turns have no legacy runtime record. Their lease
+            # owns the route; an expired/foreign lease must never fall back.
+            from gateway.local_player import request
+            result = request(session_id, operation)
+            if result is None:
+                from tui_gateway.server import request_player_agent_for_session
+                result = request_player_agent_for_session(session_id, operation)
             parsed = json.loads(result) if isinstance(result, str) else result
             return parsed if isinstance(parsed, dict) else {"error": "player-request-unavailable"}
         except Exception as exc:  # health: allow BLE001 -- tracebacks can expose account URLs or media context

@@ -264,7 +264,8 @@ def _scan_discovered_repos_remote(conn, policy: dict) -> bool:
 
 
 def _discover_repos_payload(
-    db, *, conn=None, backfill: bool = True, include_cached: bool = True) -> list[dict]:
+    db, *, conn=None, backfill: bool = True, include_cached: bool = True,
+    count_exclude_sources: list[str] | None = None) -> list[dict]:
     """Merge cached filesystem-scanned repos with session-derived roots, junk-filtered, with
     session totals. ``backfill`` persists resolved roots onto session rows — kept OFF the
     per-turn tree path and done only on explicit refresh."""
@@ -275,7 +276,10 @@ def _discover_repos_payload(
             root, {"root": root, "label": "", "sessions": 0, "last_active": 0.0})
     # ``db`` is None for a profile whose session store was never initialized (read-only foreign
     # handles never bootstrap it): the scan cache in projects.db is still authoritative.
-    cwd_rows = list(db.distinct_session_cwds()) if db is not None else []
+    cwd_rows = (
+        list(db.distinct_session_cwds(count_exclude_sources=count_exclude_sources))
+        if db is not None else []
+    )
     # Parallel-warm the per-cwd git probes so a cold first paint doesn't serialize them.
     git_probe.warm_roots(str(r.get("cwd") or "") for r in cwd_rows)
     cwd_to_root: dict[str, str] = {}
@@ -317,8 +321,9 @@ def _discover_repos_payload(
     return out
 
 
-# Not user conversations; subagent/compression children are dropped by include_children=False.
-_PROJECT_TREE_EXCLUDED_SOURCES = ["cron", "kanban", "oneshot"]
+# Automation sources are not user conversations, even without a parent session.
+# include_children=False separately hides delegate/compression lineage children.
+_PROJECT_TREE_EXCLUDED_SOURCES = ["cron", "kanban", "oneshot", "subagent", "tool"]
 
 
 def _project_tree_row(r: dict) -> dict:
@@ -365,7 +370,8 @@ def _project_tree_inputs(
         discovered = []
         if include_discovered:
             discovered = _discover_repos_payload(
-                db, conn=conn, backfill=False, include_cached=policy["enabled"])
+                db, conn=conn, backfill=False, include_cached=policy["enabled"],
+                count_exclude_sources=_PROJECT_TREE_EXCLUDED_SOURCES)
     return sessions, projects, discovered, active_id
 
 

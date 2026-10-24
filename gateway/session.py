@@ -978,7 +978,28 @@ class SessionStore(
             end_reason=decision.reset_reason or "session_reset", create_kwargs=create_kwargs,
             origin=source, display_name=decision.entry.display_name,
         )
+        # Auto-reset rotated the session id — carry any standing /goal across
+        # the boundary (policy resets only; /new leaves create_kwargs None).
+        if create_kwargs is not None and decision.reset_reason is not None:
+            self._migrate_goal_across_reset(decision, create_kwargs)
         return decision.entry
+
+    def _migrate_goal_across_reset(self, decision: _RouteDecision, create_kwargs) -> None:
+        """Migrate any standing /goal across the auto-reset boundary: the
+        session id just rotated (policy reset — daily schedule etc.), and
+        goals are keyed goal:<session_id> in state_meta. Without this an
+        active/paused goal orphans at every reset (found 2026-10-01).
+        force_new (/new) intentionally does NOT carry goals over — its
+        create_kwargs are None, so the guard below skips it naturally."""
+        if create_kwargs is None or not decision.prev_session_id:
+            return
+        try:
+            from hermes_cli.goals import migrate_goal_to_session
+            migrate_goal_to_session(
+                decision.prev_session_id, create_kwargs["session_id"], reason="auto-reset"
+            )
+        except Exception as e:
+            logger.debug("goal migration on session auto-reset failed: %s", e)
 
     def _apply_route_checks(
         self, session_key: str, checks: Optional[_RouteChecks], force_new: bool,

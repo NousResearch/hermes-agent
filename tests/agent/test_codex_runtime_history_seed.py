@@ -21,6 +21,9 @@ class _FakeClient:
     def initialize(self, **_kw):
         return {}
 
+    def is_alive(self):
+        return True
+
     def request(self, method, params=None, timeout=None):
         self.requests.append((method, params))
         return {"thread": {"id": (params or {}).get("threadId", "fresh")}}

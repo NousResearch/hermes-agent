@@ -389,16 +389,46 @@ def _memoized_search(provider, query: str, limit: int) -> dict:
     return slice_search_response(response_data, limit)
 
 
-async def web_extract_tool(urls: list[Any], format: str | None = None, char_limit: Optional[int] = None) -> str:
+def _sanitize_extract_headers(headers: Any) -> Optional[dict[str, str]]:
+    """Coerce a caller-supplied ``headers`` value into a clean str→str map.
+
+    The tool schema already declares an object of strings, but tool arguments
+    arrive from a model and can't be trusted to match: drop non-mapping input,
+    skip pairs whose key or value isn't a string, and reject blank/control
+    characters in either (a stray newline is a header-injection primitive).
+    Returns ``None`` when nothing usable remains, so the caller omits the
+    argument entirely rather than forwarding an empty dict.
+    """
+    if not isinstance(headers, dict):
+        return None
+    cleaned: dict[str, str] = {}
+    for key, value in headers.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            continue
+        name = key.strip()
+        if not name or any(c in key for c in "\r\n\x00") or any(c in value for c in "\r\n\x00"):
+            continue
+        cleaned[name] = value
+    return cleaned or None
+
+
+async def web_extract_tool(urls: list[Any], format: str | None = None, char_limit: Optional[int] = None,
+                           headers: Optional[dict[str, str]] = None) -> str:
     """Extract clean page content (no LLM) from URLs via the configured backend.
 
     Pages over ``char_limit`` (default web.extract_char_limit or 15000) are head+tail truncated with a footer
     pointing at the stored full text; inline base64 images become ``[IMAGE: alt]``. URLs carrying secrets are
     refused before any fetch; private-network URLs are blocked per entry. Returns JSON ``{"results": [...]}``.
+
+    ``headers`` (optional): HTTP request headers to send with the fetch (e.g. a descriptive ``User-Agent``,
+    a ``Referer``, or an ``Authorization`` for a partner endpoint). Only the Firecrawl backend forwards
+    these today; others ignore them. Header-customized fetches bypass the shared extract cache (both read
+    and write), since they may return caller-specific content. Omitted entirely when unset (#74177).
     """
     normalized_urls, normalized_indices, invalid_urls, blocked = _validate_extract_urls(urls)
     if blocked is not None:
         return blocked
+    safe_headers = _sanitize_extract_headers(headers)
     debug_call_data = {
         "parameters": {"urls": normalized_urls, "format": format, "char_limit": char_limit}, "error": None,
         "pages_extracted": 0, "pages_truncated": 0, "original_response_size": 0, "final_response_size": 0,
@@ -425,7 +455,7 @@ async def web_extract_tool(urls: list[Any], format: str | None = None, char_limi
             provider, error_json = _resolve_extract_provider(backend)
             if error_json is not None:
                 return error_json
-            results = await _extract_safe_urls(provider, safe_urls, format)
+            results = await _extract_safe_urls(provider, safe_urls, format, safe_headers)
         # Reconstruct input order across invalid, blocked, and provider entries (providers preserve
         # the order of the safe URL list they receive).
         if invalid_urls or ssrf_blocked:
@@ -550,6 +580,11 @@ WEB_EXTRACT_SCHEMA = {
                 "type": "integer",
                 "description": "Optional per-page character budget sent back (default 15000). Pages larger than this are head+tail truncated with the full text stored to disk. Raise it when you need more of a long page inline.",
                 "minimum": 2000
+            },
+            "headers": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "description": "Optional HTTP request headers to send with the fetch (e.g. a descriptive User-Agent, a Referer, or an Authorization header for a partner endpoint). Currently applied by the Firecrawl backend."
             }
         },
         "required": ["urls"]
@@ -567,6 +602,7 @@ registry.register(
     handler=lambda args, **kw: web_extract_tool(
         args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown",
         char_limit=args.get("char_limit"),
+        headers=args.get("headers"),
     ),
     check_fn=check_web_api_key, requires_env=_web_requires_env(), is_async=True, emoji="📄",
     max_result_size_chars=100_000,

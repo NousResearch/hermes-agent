@@ -318,6 +318,12 @@ def close_interrupted_tool_sequence(messages: list, final_response: Any = None) 
 # reason silently skips stop handling and length recovery. Single owner —
 # call at wire intake (transport normalize_response, stream chunk capture),
 # never re-fold at comparison sites.
+#: Finish reasons a provider sends when it stopped generating for its OWN reasons, not because
+#: the answer was complete: DeepSeek documents ``insufficient_system_resource`` and ``aborted``;
+#: OpenCode Zen ends streams with ``network_error`` / ``network-error``. Accepting them as "stop"
+#: takes a cut-off answer, or a tool call from a failed generation, as final.
+INTERRUPTED_FINISH_REASONS = frozenset({"insufficient_system_resource", "aborted", "network_error", "network-error"})
+
 _FINISH_REASON_ALIASES = {
     "max_tokens": "length",  # Gemini-native / Anthropic-style cap reason
     "end": "stop",  # some gateways' clean-completion spelling

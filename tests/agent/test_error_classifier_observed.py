@@ -38,6 +38,10 @@ AFFORD_402 = {"error": {"message": (
     "code": 402}}
 NOT_MULTIMODAL_400 = {"error": {"message": "glm-5.2-fp8 is not a multimodal model", "type": "BadRequestError",
                                 "param": None, "code": 400}}
+POOL_EXHAUSTED_503 = {"error": {"message": (
+    "no usable account for realm 'intl': all are disabled, cooling down, expired or parked by the daily token "
+    "limit；各账号：a1b2c3d4 熔断 剩余 57s，e5f6a7b8 模型 deepseek-v4.1-flash 冷却 剩余 15h45m - add or enable one "
+    "at the dashboard (/)"), "type": "server_error", "param": "", "code": 503}}
 
 # (id, provider, exception, expected reason, retryable, should_fallback)
 OBSERVED = [
@@ -69,6 +73,10 @@ OBSERVED = [
     ("router-no-workers", "custom", _status(openai.InternalServerError, 500, {"error": {
         "message": "No available workers (all circuits open or unhealthy)"}}),
      FailoverReason.server_error, True, False),
+    # Account-pool gateway (WorkBuddy2API) with every pooled account breaker-tripped or quota-parked: the
+    # "daily token limit" tail is not a context overflow — compressing it ended in a gateway session reset.
+    ("account-pool-exhausted", "custom", _status(openai.InternalServerError, 503, POOL_EXHAUSTED_503),
+     FailoverReason.overloaded, True, False),
 ]
 
 

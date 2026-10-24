@@ -469,6 +469,23 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         assert kbd.check_respawn_guard(conn, tid) is None
 
 
+def test_promote_blocked_clears_auth_failure_before_respawn(kanban_home):
+    """An explicit blocked -> ready promotion is a fresh operator retry."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="retry after credentials update", assignee="a")
+        conn.execute(
+            "UPDATE tasks SET status='blocked', last_failure_error=? WHERE id=?",
+            ("provider authentication failed", task_id),
+        )
+        conn.commit()
+
+        ok, reason = kb.promote_task(conn, task_id, actor="operator")
+
+        assert (ok, reason) == (True, None)
+        assert kb.get_task(conn, task_id).last_failure_error is None
+        assert kbd.check_respawn_guard(conn, task_id) is None
+
+
 @pytest.mark.parametrize(
     "error_text, expected",
     [

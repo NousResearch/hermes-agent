@@ -434,12 +434,28 @@ hermes config set compression.codex_gpt55_autoraise_notice false
 
 ### Codex large-context `-900k` picker variants (opt-in)
 
-The ChatGPT Codex backend *advertises* a 272K window for the gpt-5.4, gpt-5.6
-(Sol/Terra/Luna) and GPT-6 (Sol/Terra/Luna) families, but actually accepts ~911K input tokens
-for ChatGPT-subscription accounts (live-verified Aug 2026). Hermes keeps the
-**advertised 272K as the default** for the base slugs — a bigger window means
-more tokens per request and much faster subscription-usage burn, so the large
-window is strictly opt-in.
+The ChatGPT Codex backend advertises **500K for `gpt-6.1-sol`** and 272K
+for most other supported Codex families. Hermes keeps the advertised window
+for the standard model; extended context is an explicit opt-in because a
+larger retained conversation can consume subscription usage much faster.
+
+For Sol 6.1, both choices are available in `/model`, including offline
+fallback discovery and cached fallback lists from older Hermes versions:
+
+| Selection | Context behavior |
+| --- | --- |
+| `gpt-6.1-sol` | Standard: the catalog's default; 500K offline fallback |
+| `gpt-6.1-sol-900k` | Extended: raises a recognized default toward 900K, capped by the account's published maximum (for example, 872K) |
+
+Successful account discovery is not replaced with the offline fallback list.
+Existing forward-compatibility synthesis may still suggest newer Sol models
+from a recognized predecessor; such a suggestion is not proof of account
+entitlement, and the backend remains authoritative about availability.
+
+The `-900k` name is an opt-in alias, not a promise that every account accepts
+exactly 900,000 tokens. The 900K limit applies to the verified extension of a
+recognized smaller default; an unrecognized live default remains authoritative
+rather than being silently reduced or increased.
 
 To use the large window, pick the explicit `-900k` variant in `/model` (e.g.
 `gpt-6.1-sol-900k`, `gpt-6-sol-900k`, `gpt-6-luna-900k`, `gpt-5.6-sol-900k`,

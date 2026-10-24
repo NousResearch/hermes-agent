@@ -105,14 +105,27 @@ _EXACT_HANDLERS = {
 # clear/stop/done stay out — guessing wrong would end a goal the user meant to keep.
 _BARE_CONTROL_VERBS = frozenset({"resume", "continue", "unpause", "pause", "status", "show", "unwait"})
 # First words that make a command goal control (the gateway busy path dispatches these).
-_CONTROL_FIRST_WORDS = _BARE_CONTROL_VERBS | {"wait", "gate"}
+_CONTROL_FIRST_WORDS = _BARE_CONTROL_VERBS | {"wait", "gate", "progress"}
+
+
+def _ignored_note(rest: str) -> str:
+    return (f"\n(ignored {rest!r}: a control command never sets goal text — use /goal -- <text> "
+            "when the goal really starts with a control word.)")
 
 
 def _bare_control(mgr, verb, rest, render):
     result = _EXACT_HANDLERS[verb](mgr, "", render)
-    return replace(result, output=result.output + (
-        f"\n(ignored {rest!r}: a control command never sets goal text — use /goal -- <text> "
-        "when the goal really starts with a control word.)"))
+    return replace(result, output=result.output + _ignored_note(rest))
+
+
+def _progress(mgr, progress=None):
+    """Ask the judge how far along the goal is. Read-only: it reports an estimate and leaves goal
+    state, the turn counter, and the continuation loop untouched."""
+    if not mgr.has_goal():
+        return GoalCommandResult("No active goal. Set one with /goal <text>.")
+    if progress is not None:
+        progress("Asking the judge how far along the goal is…")
+    return GoalCommandResult(mgr.progress_report())
 
 
 def _gate(mgr, arg, authorize_gate):
@@ -168,7 +181,8 @@ def _set(mgr, arg, *, drafting, last_user_message, render, progress):
         against = " against the contract above" if state.has_contract() else ""
         output += (f"\nAfter each turn, a judge model checks if the goal is done{against}. "
                    "Hermes keeps working until it is, you pause/clear it, or the budget is "
-                   "exhausted. Use /goal status, /goal show, /goal pause, /goal resume, /goal clear.")
+                   "exhausted. Use /goal status, /goal progress, /goal show, /goal pause, "
+                   "/goal resume, /goal clear.")
     return GoalCommandResult(output, goals.goal_kick_prompt(state.goal, last_user_message), kickoff=True)
 
 
@@ -206,6 +220,9 @@ def dispatch_goal_command(
         if verb == "wait":
             prefix = "/goal wait"
             return _wait(mgr, rest)
+        if verb == "progress":
+            result = _progress(mgr, progress)
+            return replace(result, output=result.output + _ignored_note(rest)) if rest else result
         if verb == "gate":
             prefix = "/goal gate"
             return _gate(mgr, rest, authorize_gate)

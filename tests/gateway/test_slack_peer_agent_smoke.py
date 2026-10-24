@@ -172,3 +172,34 @@ class TestSlackPeerAgentSmoke:
         )
         smoke_adapter._fetch_thread_context.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_peer_bot_mention_cannot_issue_gateway_command(self, smoke_adapter):
+        event = _make_event(
+            text=f"<@{BOT_USER_ID}> /yolo",
+            user=PEER_USER_ID,
+            bot_id="B_PEER",
+            ts=REPLY_TS,
+        )
+
+        await smoke_adapter._handle_slack_message(event)
+
+        msg_event = smoke_adapter.handle_message.await_args.args[0]
+        assert msg_event.source.is_bot is True
+        assert msg_event.allow_gateway_control is False
+        assert msg_event.get_command() is None
+
+    @pytest.mark.asyncio
+    async def test_human_mention_can_issue_gateway_command(self, smoke_adapter):
+        event = _make_event(
+            text=f"<@{BOT_USER_ID}> /yolo",
+            user="U_HUMAN",
+            ts=REPLY_TS,
+        )
+
+        await smoke_adapter._handle_slack_message(event)
+
+        msg_event = smoke_adapter.handle_message.await_args.args[0]
+        assert msg_event.source.is_bot is False
+        assert msg_event.allow_gateway_control is True
+        assert msg_event.get_command() == "yolo"
+

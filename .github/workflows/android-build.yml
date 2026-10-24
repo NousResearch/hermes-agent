@@ -47,14 +47,14 @@ jobs:
           distribution: 'temurin'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
-          cmdline-tools-version: 9.0
           accept-android-sdk-licenses: true
+          packages: 'platform-tools'
 
       - name: Install Android SDK packages
         run: |
-          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          SDKMANAGER="$(command -v sdkmanager)"
           test -x "$SDKMANAGER" || { echo "sdkmanager not found at $SDKMANAGER"; exit 1; }
           yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses
           "$SDKMANAGER" --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-34" "build-tools;34.0.0" "emulator"
@@ -126,14 +126,14 @@ jobs:
           distribution: 'temurin'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
-          cmdline-tools-version: 9.0
           accept-android-sdk-licenses: true
+          packages: 'platform-tools'
 
       - name: Install Android SDK packages
         run: |
-          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          SDKMANAGER="$(command -v sdkmanager)"
           test -x "$SDKMANAGER" || { echo "sdkmanager not found at $SDKMANAGER"; exit 1; }
           yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses
           "$SDKMANAGER" --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-34" "build-tools;34.0.0"

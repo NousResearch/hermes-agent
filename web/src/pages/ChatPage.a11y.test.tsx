@@ -74,6 +74,10 @@ class FakeTerminal {
 
   loadAddon() {}
 
+  onBell() {
+    return { dispose() {} };
+  }
+
   onData() {
     return { dispose() {} };
   }

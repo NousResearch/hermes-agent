@@ -31,9 +31,15 @@ function render(
   refreshSessions: () => Promise<void>,
   gatewayRequest = requestGateway
 ) {
+  const captureLiveStatusRequest = async () => ({
+    scope: { connectionId: activeConnectionId, profile: activeGatewayProfile },
+    request: gatewayRequest as never
+  })
+
   return renderHook(
     ({ connectionId, profile }: { connectionId: string; profile: string }) => {
       useBackgroundSync({
+        captureLiveStatusRequest,
         activeConnectionId: connectionId,
         activeGatewayProfile: profile,
         activeIsMessaging: false,

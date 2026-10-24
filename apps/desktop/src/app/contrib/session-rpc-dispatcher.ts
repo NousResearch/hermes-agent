@@ -35,6 +35,7 @@ import type { MutableRefObject } from 'react'
 
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import type { ClientSessionState } from '@/app/types'
+import { activeGatewayConnectionId, activeGatewayProfileKey } from '@/store/gateway'
 import { isSessionGoneForBackgroundPolling } from '@/store/runtime-gone'
 import { getSessionOwnerHint, knownSessionOwner, ownerLookupSessionRows, requestSessionResume } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
@@ -42,6 +43,7 @@ import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
 import { runtimeSessionOwner, sessionTileOwnerRoute, storedSessionIdForRuntimeId } from '@/store/session-states'
 
+import type { CaptureLiveStatusRequest, LiveStatusScope } from './live-status-scope'
 import { findStoredIdForRuntimeId, resolveRoutingSessionId, resolveSessionRpcOwner } from './wiring-routing'
 
 export type AmbientGatewayRequest = <T>(
@@ -58,10 +60,12 @@ export interface SessionRpcDispatcherDeps {
   sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
 }
 
-export function createSessionRpcDispatcher(deps: SessionRpcDispatcherDeps): AmbientGatewayRequest {
+export function createSessionRpcDispatcher(deps: SessionRpcDispatcherDeps): AmbientGatewayRequest & {
+  captureLiveStatusRequest: CaptureLiveStatusRequest
+} {
   const { ambientRequest, runtimeIdByStoredSessionIdRef, selectedStoredSessionIdRef, sessionStateByRuntimeIdRef } = deps
 
-  return async <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
+  const resolveTarget = async (params?: Record<string, unknown>) => {
     const paramSessionId = typeof params?.session_id === 'string' && params.session_id ? params.session_id : undefined
 
     const routingSessionId = resolveRoutingSessionId({
@@ -102,6 +106,12 @@ export function createSessionRpcDispatcher(deps: SessionRpcDispatcherDeps): Ambi
       }
     }
 
+    return { owner: owner && typeof owner === 'object' ? { ...owner } : owner, paramSessionId, routingSessionId }
+  }
+
+  const dispatch: AmbientGatewayRequest = async <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
+    const { owner, paramSessionId, routingSessionId } = await resolveTarget(params)
+
     // A request that names a session but whose owner nobody can name must not
     // ride the ambient socket: that turns missing metadata into a misleading
     // backend "session not found" on a backend that never held the runtime.
@@ -131,4 +141,24 @@ export function createSessionRpcDispatcher(deps: SessionRpcDispatcherDeps): Ambi
       throw error
     }
   }
+
+  // Capture BEFORE any owner probe/dial awaits. Chrome's nominal profile need
+  // not match the focused Bot Chat, and focus may move again before the reply.
+  const captureLiveStatusRequest: CaptureLiveStatusRequest = async source => {
+    const ambientScope = { connectionId: activeGatewayConnectionId(), profile: activeGatewayProfileKey() }
+    const { owner } = source ? { owner: source } : await resolveTarget()
+
+    const scope: LiveStatusScope = typeof owner === 'object' && owner
+      ? { ...owner }
+      : owner ? { connectionId: null, profile: owner } : ambientScope
+
+    const route = scope.connectionId ? { ...scope, connectionId: scope.connectionId } : scope.profile
+
+    return {
+      scope,
+      request: <T>() => requestForSessionProfile<T>(route, ambientRequest, 'session.active_list', scope.targetProfile ? { profile: scope.targetProfile } : {})
+    }
+  }
+
+  return Object.assign(dispatch, { captureLiveStatusRequest })
 }

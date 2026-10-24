@@ -42,7 +42,7 @@ import type { SessionInfo } from '@/types/hermes'
 import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './composer-status-drawer'
 import { registryConnectionKind } from './connection-registry-state'
 import { recordDislike } from './desktop-metrics'
-import { dialedGatewayModeFor } from './gateway'
+import { activeGatewayConnectionId, activeGatewayProfileKey, dialedGatewayModeFor } from './gateway'
 import {
   adoptPendingRuntimeTabs,
   dropPreviewTabsForProfile,
@@ -86,6 +86,7 @@ import { secondaryProfileOwnerForEvent } from './session-event-provenance'
 import { $focusedStoredSessionId, TILE_PANE_PREFIX } from './session-focus'
 import { turnHasReply, withNoReplyNotice } from './session-no-reply'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
+import { type ReconnectStatusSource, unconfirmedReconnectSettles } from './session-reconnect-settles'
 import {
   isSessionOwnerRoute,
   requestForSessionProfile,
@@ -733,7 +734,7 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
     clearSettled(storedId)
     // The turn is live (or a new one starts): a reconnect downgrade that was
     // waiting for the snapshot's verdict was a socket blip, not a completion.
-    unconfirmedReconnectSettles.delete(storedId)
+    unconfirmedReconnectSettles.delete(runtimeId)
     // A NEW turn is starting: the read baseline guarded the PREVIOUS
     // completion's re-asserts. Dropping it here means this turn's finish
     // re-lights even if it lands within the same millisecond as the last
@@ -752,7 +753,11 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
     // producer and a turn that ended while the socket was down would never
     // earn its dot.
     if (deferringReconcileUnread) {
-      unconfirmedReconnectSettles.set(storedId, runtimeId)
+      unconfirmedReconnectSettles.set(runtimeId, {
+        storedId,
+        scope: registryBackendScopeKey(deferringReconcileUnread.connectionId, deferringReconcileUnread.profile),
+        source: deferringReconcileUnread
+      })
 
       return
     }
@@ -795,27 +800,20 @@ function lightUnreadCompletion(storedId: string, runtimeId?: string) {
   }
 }
 
-/** Stored ids whose busy claim a PRIMARY reconnect reconcile retired without
- *  any proof the turn ended — mapped to their runtime id so a later confirm
- *  can still consult the socket-proven owner (the unread marker's profile
- *  bucket). The authoritative post-reconnect snapshot settles each one:
- *  `confirmReconnectSettlesExcept` when the runtime is idle or gone, a busy
- *  re-assert (stream event or `working` row) when the turn is still live. */
-const unconfirmedReconnectSettles = new Map<string, string>()
-let deferringReconcileUnread = false
+/** Primary reconnect claims await a snapshot from the SAME captured source. */
+let deferringReconcileUnread: ReconnectStatusSource | undefined
 
-/** A fresh authoritative snapshot arrived: every parked completion whose
- *  session it does not report as still working is over and earns its unread
- *  dot. The parked set itself is the eligibility list — a turn that started
- *  just before the drop was never polled, so "seen live last poll" cannot be
- *  the gate. Pass an empty set when no snapshot can be had (old gateway): a
- *  parked completion with no confirm producer must fall back to lighting
- *  rather than never lighting. No-op when nothing is parked. */
-export function confirmReconnectSettlesExcept(workingStoredIds: ReadonlySet<string>) {
-  for (const [storedId, runtimeId] of unconfirmedReconnectSettles) {
-    if (!workingStoredIds.has(storedId)) {
-      unconfirmedReconnectSettles.delete(storedId)
-      lightUnreadCompletion(storedId, runtimeId)
+/** Confirm same-source parked claims, including turns never seen by a poll.
+ * An empty set retains the old-gateway fallback, but only for its own source. */
+export function confirmReconnectSettlesExcept(workingStoredIds: ReadonlySet<string>, scope = 'default') {
+  for (const [runtimeId, pending] of unconfirmedReconnectSettles) {
+    if (pending.scope === scope) {
+      unconfirmedReconnectSettles.delete(runtimeId)
+
+      // A live replacement runtime proves the old parked claim was a blip too.
+      if (!workingStoredIds.has(pending.storedId)) {
+        lightUnreadCompletion(pending.storedId, runtimeId)
+      }
     }
   }
 }
@@ -996,7 +994,7 @@ export function clearAllSessionStates() {
  *  wiring mounted). A PRIMARY reconcile also clears the focused draft
  *  latches, which outlive the state they mirrored; a scoped one leaves them
  *  alone — a background socket says nothing about the primary composer. */
-export function reconcileBusyStatesOnReconnect(scope?: string) {
+export function reconcileBusyStatesOnReconnect(scope?: string, primarySource: ReconnectStatusSource = { connectionId: activeGatewayConnectionId(), profile: activeGatewayProfileKey() }) {
   const states = $sessionStates.get()
   const focusedRuntimeId = $activeSessionId.get()
   let retiredFocusedTurn = false
@@ -1004,7 +1002,7 @@ export function reconcileBusyStatesOnReconnect(scope?: string) {
   // Only the primary socket has a confirm producer for a parked completion
   // (the active profile's `session.active_list` poll); a scoped reconcile
   // lights the dot immediately — see handleTransition.
-  deferringReconcileUnread = scope === undefined
+  deferringReconcileUnread = scope === undefined ? { ...primarySource } : undefined
 
   try {
     for (const [runtimeId, state] of Object.entries(states)) {
@@ -1038,7 +1036,7 @@ export function reconcileBusyStatesOnReconnect(scope?: string) {
       }
     }
   } finally {
-    deferringReconcileUnread = false
+    deferringReconcileUnread = undefined
   }
 
   if (scope === undefined) {

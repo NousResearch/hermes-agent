@@ -1520,21 +1520,28 @@ _ENV_REF_RE = re.compile(r"\${([^}]+)}")
 
 
 def _env_ref_lookup(name: str) -> Optional[str]:
-    """Resolve the env var behind a ``${VAR}`` / ``${env:VAR}`` ref — plain ``os.environ`` outside
-    a profile secret scope (legacy behavior for the default profile).
+    """Resolve the env var behind a ``${VAR}`` / ``${env:VAR}`` ref.
+
+    Outside a profile secret scope, read ``os.environ`` first and fall back to the active
+    profile's ``.env`` (``load_env()``): plain CLI processes never call
+    ``load_hermes_dotenv()``, so an environ-only read misses vars that live only in
+    ``.env`` and the caller warns "not set" spuriously (#89199). Same policy as
+    ``get_env_value()``.
 
     Inside a scope (a multiplexed gateway turn, a secondary profile's config load, a cron job) the read goes
     through ``agent.secret_scope.get_secret`` so the ref resolves against *that* profile's ``.env``: under
-    multiplexing a miss is a miss, never another profile's ``os.environ`` value (#84079 — every profile
+    multiplexing a miss is a miss, never another profile's ``os.environ`` value (#84079: every profile
     "had" the default profile's ``${MATRIX_ACCESS_TOKEN}`` and fanned out). Same policy as
     ``gateway.config._getenv`` and ``get_env_value``.
     """
     try:
         from agent.secret_scope import current_secret_scope, get_secret as _get_secret
     except Exception:
-        return os.environ.get(name)
+        val = os.environ.get(name)
+        return val if val is not None else load_env().get(name)
     if current_secret_scope() is None:
-        return os.environ.get(name)
+        val = os.environ.get(name)
+        return val if val is not None else load_env().get(name)
     return _get_secret(name)
 
 

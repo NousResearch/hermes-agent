@@ -315,7 +315,7 @@ def validate_room(value: Any, *, local_profiles: Iterable[str]) -> DiscussionRoo
 def is_pass_text(value: Any) -> bool:
     """Return whether a settled member result is Discussion silence."""
     text = str(value or "").strip()
-    return not text or re.fullmatch(r"\(?\s*pass\s*\)?\.?", text, re.IGNORECASE) is not None
+    return not text or re.fullmatch(r"[(（]?\s*pass\s*[)）]?[.。．｡]?", text, re.IGNORECASE) is not None
 
 
 def resolve_mentions(

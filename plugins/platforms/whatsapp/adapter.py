@@ -921,6 +921,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 async with self._bridge_req("get", "messages", 30) as resp:
                     if resp.status == 200:
                         for msg_data in await resp.json():
+                            if msg_data.get("event") == "delivery_status":
+                                self._log_delivery_status(msg_data)
+                                continue
                             event = await self._build_message_event(msg_data)
                             if event:
                                 # Fire-and-forget: a slow bridge /read must not delay dispatch.
@@ -937,6 +940,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 print(f"[{self.name}] Poll error: {e}")
                 await asyncio.sleep(5)
             await asyncio.sleep(1)  # Poll interval
+
+    def _log_delivery_status(self, data: dict[str, Any]) -> None:
+        """One gateway.log line per delivery/read status change of a message Hermes sent (Baileys
+        ``messages.update`` for DMs, ``message-receipt.update`` per recipient in groups)."""
+        logger.info(
+            "[%s] WhatsApp delivery status: message=%s chat=%s status=%s%s at=%s%s", self.name,
+            data.get("messageId"), data.get("chatId"), data.get("status"),
+            f" recipient={data['recipientId']}" if data.get("recipientId") else "", data.get("timestamp"),
+            f" error={data['error']}" if data.get("error") else "",
+        )
 
     async def _send_read_receipt(self, data: dict[str, Any]) -> None:
         key = data.get("readReceiptKey")

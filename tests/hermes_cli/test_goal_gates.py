@@ -184,8 +184,7 @@ def test_passing_gates_fall_through_to_judge():
 
 def test_gate_retry_exhaustion_pauses_goal():
     mgr = _mgr_with_goal("gate-exhaust-sid")
-    mgr.add_gate("exit 1")
-    mgr.state.gates[0].max_retries = 2
+    mgr.add_gate("exit 1", max_retries=2)
     with patch("hermes_cli.goals.judge_goal") as mock_judge:
         d1 = mgr.evaluate_after_turn("attempt one")
         d2 = mgr.evaluate_after_turn("attempt two")

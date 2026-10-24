@@ -330,7 +330,11 @@ class TestAggregateChatStream:
                             lambda task: 0.4 if task == "compression" else None)
         # Loopback stands in for a remote endpoint: the first-token window applies to non-local ones.
         monkeypatch.setattr("agent.model_metadata.is_local_endpoint", lambda _url: False)
-        client = openai.OpenAI(api_key="k", base_url=f"http://127.0.0.1:{server.server_port}/v1", max_retries=0)
+        from agent.auxiliary_client import _openai_http_client_kwargs
+        base_url = f"http://127.0.0.1:{server.server_port}/v1"
+        # The HTTP stack _create_openai_client gives a real aux client (keepalive pool; on Windows
+        # the abortable reads the watchdog's shutdown depends on, #143704).
+        client = openai.OpenAI(api_key="k", base_url=base_url, max_retries=0, **_openai_http_client_kwargs(base_url))
 
         def call(model, task, *, via_relay_seam=False, provider=None):
             from agent.auxiliary_client import _relay_aux_call_scope, _relay_sync_completion

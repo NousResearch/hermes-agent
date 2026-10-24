@@ -3750,15 +3750,15 @@ def _shutdown_socket(sock: Any) -> None:
     in the wrong file (once clobbered a SQLite header). ``shutdown()`` is FD-safe from any thread.
     Already shut down / not connected / FD invalid are all benign."""
     import socket as _socket
-    try:
+    from agent.process_bootstrap import mark_socket_aborted
+    mark_socket_aborted(sock)  # wakes the owner's read where shutdown() does not (Windows, #143704)
+    with contextlib.suppress(OSError):
         # Clear a blocking timeout so a hung SSL_read notices the shutdown. Still no close().
         settimeout = getattr(sock, "settimeout", None)
         if callable(settimeout):
             with contextlib.suppress(OSError):
                 settimeout(0)
         sock.shutdown(_socket.SHUT_RDWR)
-    except OSError:
-        pass
 
 
 def force_close_tcp_sockets(client: Any) -> int:

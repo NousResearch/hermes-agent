@@ -2569,16 +2569,14 @@ _OPENCODE_FAMILY_PATHS = {"opencode-zen": "/zen", "opencode-go": "/zen/go"}
 
 
 def normalize_opencode_base_url(
-    provider_id: Optional[str], api_mode: Optional[str], base_url: Optional[str]) -> str:
-    """Normalize an OpenCode Zen / Go base URL for the API mode. Must be SYMMETRIC: the anthropic-
-    stripped URL gets persisted to ``model.base_url`` after switching into an anthropic-routed model,
-    and chat/codex modes heal it by re-adding ``/v1`` — but only on opencode.ai hosts, so custom
-    ``OPENCODE_*_BASE_URL`` proxies are left alone. On those hosts the relay path segment follows
-    the resolved family too (``/zen`` vs ``/zen/go``): the two relays serve different model sets,
-    so a ``model.base_url`` carried over from the other family 401s ("Model ... is not supported").
-    The family heal applies to the BUILT-IN providers only: a custom provider merely named after a
-    family (``opencode-go-bridge``) declared its relay path explicitly in ``providers:`` and keeps it.
-    Only the path is edited, so a port, userinfo, query or fragment round-trips untouched."""
+    provider_id: Optional[str], api_mode: Optional[str], base_url: Optional[str],
+    *, preserve_relay: bool = False) -> str:
+    """Strip ``/v1`` for Anthropic; restore it for Chat/Responses on opencode.ai.
+    Built-in providers also heal ``/zen`` vs ``/zen/go`` to match the selected family,
+    since the relays serve different model sets. Named custom endpoints set
+    ``preserve_relay`` to keep their configured relay path while normalizing the suffix.
+    Custom proxy URLs stay unchanged for Chat/Responses. Only the path is edited;
+    port, userinfo, query and fragment round-trip untouched."""
     url = str(base_url or "").strip().rstrip("/")
     family = opencode_provider_family(provider_id)
     if not url or family is None:
@@ -2587,7 +2585,8 @@ def normalize_opencode_base_url(
     host = (parsed.hostname or "").lower()
     official = host == "opencode.ai" or host.endswith(".opencode.ai")
     path = parsed.path.rstrip("/")
-    if official and normalize_provider(provider_id) in _OPENCODE_FAMILIES and re.fullmatch(r"/zen(/go)?(/v1)?", path):
+    if (not preserve_relay and official and normalize_provider(provider_id) in _OPENCODE_FAMILIES
+            and re.fullmatch(r"/zen(/go)?(/v1)?", path)):
         path = _OPENCODE_FAMILY_PATHS[family] + ("/v1" if path.endswith("/v1") else "")
     if api_mode == "anthropic_messages":
         path = re.sub(r"/v1$", "", path)

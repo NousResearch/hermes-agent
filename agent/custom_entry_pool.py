@@ -60,16 +60,20 @@ def custom_entry_for_endpoint(
     base_url: Optional[str], provider_name: Optional[str] = None, config: Optional[dict] = None,
 ) -> Optional[tuple[str, dict[str, Any]]]:
     """``(normalized_name, entry)`` of the configured custom entry that owns ``base_url``: by name
-    first (a named entry's pool never serves another URL), else by URL. ``config`` is a frozen
-    route's config, whose entry owns the endpoint even after a live edit."""
+    first (a named entry's pool never serves another endpoint), else by URL: exact owners win
+    over a unique OpenCode wire match. ``config`` is a frozen route's config, whose entry owns
+    the endpoint even after a live edit."""
     from agent import credential_pool as cp
+    from hermes_cli.config_providers import _entries_for_route, custom_provider_route_matches
     if not base_url:
         return None
     url = cp._norm_url(base_url)
     if (named := named_custom_entry(provider_name, config)) is not None:
         entry_url = cp._norm_url(named[1].get("base_url"))
-        return None if entry_url and entry_url != url else named
-    return next(((n, e) for n, e in cp._iter_custom_providers(config) if url and cp._norm_url(e.get("base_url")) == url), None)
+        return None if entry_url and not custom_provider_route_matches(entry_url, url) else named
+    entries = [entry for _, entry in cp._iter_custom_providers(config)]
+    owner = next(_entries_for_route(base_url, entries, config), None)
+    return (cp._normalize_custom_pool_name(owner["name"]), owner) if owner else None
 
 
 def named_custom_entry(provider_name: Optional[str], config: Optional[dict] = None) -> Optional[tuple[str, dict[str, Any]]]:

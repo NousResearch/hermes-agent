@@ -1802,17 +1802,9 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
             if not fb_provider or not fb_model:
                 continue
             try:
-                from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
-
-                fb_kwargs = {"requested": fb_provider, "target_model": fb_model}
-                if entry.get("base_url"):
-                    fb_kwargs["explicit_base_url"] = entry["base_url"]
-                fb_api_key = resolve_entry_api_key(entry)
-                if fb_api_key:
-                    fb_kwargs["explicit_api_key"] = fb_api_key
-                runtime = resolve_runtime_provider(**fb_kwargs)
-                # Named custom entries resolve to the bare "custom" billing class; keep the configured
-                # identity so job sessions record the provider name (#98739).
+                from hermes_cli.fallback_config import effective_runtime_provider, entry_runtime_kwargs
+                runtime = resolve_runtime_provider(**entry_runtime_kwargs(entry))
+                # Preserve the named custom identity in job sessions (#98739).
                 runtime["provider"] = effective_runtime_provider(entry, runtime)
                 logger.info(
                     "Job '%s': fallback resolved to %s model %s",

@@ -123,6 +123,19 @@ def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
+def entry_runtime_kwargs(entry: dict[str, Any]) -> dict[str, Any]:
+    """Refresh entry credentials and pass route hints before endpoint normalization."""
+    from hermes_cli.runtime_provider import _parse_api_mode
+    kwargs = {"requested": entry["provider"].strip().lower(), "target_model": entry["model"].strip()}
+    if entry.get("base_url"):
+        kwargs["explicit_base_url"] = entry["base_url"]
+    if key := resolve_entry_api_key(entry):
+        kwargs["explicit_api_key"] = key
+    if mode := _parse_api_mode(entry.get("api_mode") or entry.get("transport")):
+        kwargs["explicit_api_mode"] = mode
+    return kwargs
+
+
 def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     """Return the effective fallback chain merged across old and new config keys.
 

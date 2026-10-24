@@ -95,16 +95,19 @@ export const titlebarHeaderShadowClass =
 
 export function titlebarControlsPosition(
   windowButtonPosition: HermesConnection['windowButtonPosition'] | undefined,
-  isFullscreen = false
+  isFullscreen = false,
+  nativeInsetLeft = 0
 ) {
   const top = Math.max(0, TITLEBAR_CONTROLS_TOP)
 
-  // No left-side native controls to dodge:
-  //   - Windows/Linux: native min/max/close render on the right via titleBarOverlay.
+  // No traffic lights to dodge:
+  //   - Windows/Linux: native min/max/close come from titleBarOverlay, usually on
+  //     the right, but Linux follows the desktop's button order and may put them
+  //     on the left (`nativeInsetLeft`, measured from the overlay).
   //   - macOS fullscreen: traffic lights are hidden.
-  // In both cases, pin the cluster to the edge with a small inset.
+  // Pin the cluster to the edge (clear of any left-side overlay) with a small inset.
   if (windowButtonPosition === null || isFullscreen) {
-    return { left: TITLEBAR_EDGE_INSET, top }
+    return { left: nativeInsetLeft + TITLEBAR_EDGE_INSET, top }
   }
 
   return {

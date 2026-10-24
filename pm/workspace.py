@@ -120,8 +120,7 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
     core_text = core_pyproject.read_text(encoding="utf-8-sig")
 
     members = [_workspace_member(source, root, identity=identity).relative_to(root).as_posix()
-               for identity, source in member_sources(plugin_dirs).items()
-               if _is_member_candidate(source)]
+               for identity, source in _unique_member_sources(plugin_dirs)]
 
     if members:
         import tomllib
@@ -159,6 +158,35 @@ def _without_release_age(text: str) -> str:
 
 def _is_member_candidate(plugin_dir: Path) -> bool:
     return read_python_declaration(plugin_dir).installs_packages
+
+
+def _member_project_name(plugin_dir: Path) -> str:
+    """``[project].name`` when declared, else the directory name: what uv identifies a member by."""
+    import tomllib
+
+    try:
+        document = tomllib.loads((plugin_dir / "pyproject.toml").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return plugin_dir.name
+    name = (document.get("project") or {}).get("name")
+    return str(name) if name else plugin_dir.name
+
+
+def _unique_member_sources(plugin_dirs) -> list[tuple[Path, Path]]:
+    """One ``(identity, source)`` per project name, later home wins.
+
+    The same plugin installed in the default home AND in a live profile reaches the shared
+    venv twice. uv refuses a workspace whose members declare one ``[project].name`` twice
+    (a buildable plugin keeps its declared name, so the virtual-member key rewrite cannot
+    save it), which used to abort ``uv lock`` for that profile with "Two workspace members
+    are both named ...". A profile-level install is the more specific selection, so it
+    shadows the default home's copy; either way only one can exist in the shared venv.
+    """
+    chosen: dict[str, tuple[Path, Path]] = {}
+    for identity, source in member_sources(plugin_dirs).items():
+        if _is_member_candidate(source):
+            chosen[_member_project_name(source)] = (identity, source)
+    return list(chosen.values())
 
 
 def enabled_plugin_entries(*, proposed_home=None, enabled=None, disabled=None,
@@ -345,6 +373,31 @@ def install_node_sidecar(
     return None
 
 
+def _repair_seed_lock(text: str, root: Path) -> str:
+    """Point the seed lock's member references at the members this generation created.
+
+    A member key is ``<plugin-dir-name>-<sha256(identity path)[:16]>``, so installing the same
+    plugin from another home changes only the hash half. Rewriting that half keeps the seed's
+    pins; dropping the seed resolves fresh, which can pick versions that no longer build.
+    """
+    import re
+
+    present: dict[str, str] = {}
+    for folder in ("plugin-sources", "plugin-deps"):
+        base = root / folder
+        if base.is_dir():
+            for entry in base.iterdir():
+                present.setdefault(entry.name.rsplit("-", 1)[0], entry.name)
+
+    def replace(match: "re.Match[str]") -> str:
+        folder, key = match.group(1), match.group(2)
+        if (root / folder / key).is_dir():
+            return match.group(0)
+        return f"{folder}/{present.get(key.rsplit('-', 1)[0], key)}"
+
+    return re.sub(r"(plugin-(?:sources|deps))/([A-Za-z0-9._-]+)", replace, text)
+
+
 def lock_and_sync(
     plugin_dirs: list[Path] | Mapping[Path, Path],
     extras: list[str],
@@ -367,7 +420,10 @@ def lock_and_sync(
     if replay is None:
         _generate_pyproject(plugin_dirs, root, source=source)
         if seed_lock is not None:
-            (root / "uv.lock").write_bytes(seed_lock.read_bytes())
+            (root / "uv.lock").write_text(
+                _repair_seed_lock(seed_lock.read_text(encoding="utf-8", errors="replace"), root),
+                encoding="utf-8",
+            )
     else:
         if not (replay / "pyproject.toml").is_file() or not (replay / "uv.lock").is_file():
             raise InstallError("venv", f"recorded workspace is missing: {replay}")

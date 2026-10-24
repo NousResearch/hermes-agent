@@ -12,8 +12,12 @@ def read_catalog_rows(path):
     path = Path(path)
     if not path.exists():
         return {}
+    from hermes_cli.gateway_session_store import SurfaceLabelReader
+    # The gateway owner stores an editor thread as ``source='local'`` with ``created_source='acp'``;
+    # the surface reader matches those rows as ``acp`` too, as the CLI's pickers do for ``cli``.
     with SessionDB(db_path=path, read_only=True) as db:
-        return {str(row["id"]): dict(row) for row in db.list_sessions_rich(source="acp", limit=1000)}
+        rows = SurfaceLabelReader(db).list_sessions_rich(source="acp", limit=1000)
+        return {str(row["id"]): dict(row) for row in rows}
 
 
 def _local_owners(db):

@@ -313,6 +313,32 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         except (IndexError, ValueError):
             return segments[1:-1], None, result
 
+    def file_digest(self, path: str) -> tuple[str, str | None]:
+        """Return a SHA-256 digest from the backend that owns ``path``.
+
+        The status is ``file``, ``missing``, ``not_regular``, or ``unavailable``.
+        A failed probe must not make an existing remote file look new.
+        """
+        arg = self._escape_shell_arg(self._expand_path(path))
+        body = (
+            f"if [ -f {arg} ]; then "
+            f"if command -v sha256sum >/dev/null 2>&1; then sha256sum < {arg}; "
+            f"elif command -v shasum >/dev/null 2>&1; then shasum -a 256 < {arg}; "
+            "else echo HASH_UNAVAILABLE; fi; "
+            f"elif [ -e {arg} ] || [ -L {arg} ]; then echo NOT_REGULAR; "
+            "else echo MISSING; fi"
+        )
+        segments, status, _ = self._fenced_read(body)
+        if segments is None or status != 0:
+            return "unavailable", None
+        value = _strip_terminal_fence_leaks(segments[0]).strip()
+        if value == "MISSING":
+            return "missing", None
+        if value == "NOT_REGULAR":
+            return "not_regular", None
+        match = re.fullmatch(r"([0-9a-fA-F]{64})\s+[-*]?", value)
+        return ("file", match.group(1).lower()) if match else ("unavailable", None)
+
     @staticmethod
     def _matches_size(data: bytes, size_segment: str) -> bool:
         """Whether DATA is exactly as long as the file's own ``wc -c``. Noise inside the payload

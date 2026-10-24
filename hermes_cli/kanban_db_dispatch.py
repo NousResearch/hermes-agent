@@ -2039,6 +2039,10 @@ def dispatch_once(
 def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -> Optional[int]:
     """Back-compat: older spawn_fn signatures (and test stubs) accept only
     ``(task, workspace)``; pass ``board`` only when the callable supports it."""
+    if spawn_fn is None:
+        from hermes_cli.kanban_worker_preflight import validate_worker_model
+        validate_worker_model(task, board=board)
+        spawn_fn = _default_spawn
     import inspect
     try:
         sig = inspect.signature(spawn_fn)
@@ -2148,7 +2152,7 @@ def _dispatch_lane_task(
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
     try:
-        pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
+        pid = _call_spawn_fn(spawn_fn, claimed, str(workspace), board)
         if pid:
             _set_worker_pid(conn, claimed.id, int(pid), run_id=claimed.current_run_id, claim_lock=claimed.claim_lock)
         # Fires AFTER the PID (when reported) is durably persisted. Best-effort.

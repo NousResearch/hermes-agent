@@ -1846,21 +1846,51 @@ def _load_credential_pool(runtime: dict, job_id: str):
     return None
 
 
+# A cold worker's own first registration can race the MCP loop thread it just started:
+# ``_ensure_mcp_loop`` starts the thread and returns, while ``loop.is_running()`` only turns true
+# once ``run_forever`` is actually on it — under load (plugin imports, GIL contention) the window
+# is wide enough for discovery to raise "MCP event loop is not running", and the job then runs a
+# whole tick with no MCP tools. One bounded retry, after the thread has had
+# time to start; a job that still fails is stamped for `hermes cron doctor`.
+_CRON_MCP_INIT_RETRY_DELAY_S = 2.0
+_CRON_MCP_INIT_LOOP_RACE = "MCP event loop is not running"
+
+
+def _stamp_mcp_init_health(job_id: str, error: Optional[BaseException]) -> None:
+    """Durably record MCP-init health on the job record for ``hermes cron doctor`` (``error=None``
+    clears it after a later successful init). Bookkeeping must never fail the run."""
+    try:
+        from cron.jobs import note_mcp_init_failure
+        note_mcp_init_failure(job_id, None if error is None else str(error))
+    except Exception as _exc:
+        logger.debug("Job '%s': could not record MCP init health: %s", job_id, _exc)
+
+
 def _init_cron_mcp_tools(job_id: str) -> None:
     """Register MCP servers for the agent's tool registry. Idempotent across ticks; non-fatal so a
     broken MCP server never kills a working job."""
-    try:
-        # Initialize MCP servers so configured mcp_servers are available to the agent's tool registry before
-        # AIAgent is constructed. Without this, cron jobs never saw any MCP tools — only the gateway / CLI
-        # paths called discover_mcp_tools() at startup. Idempotent: subsequent ticks short-circuit on
-        # already-connected servers inside register_mcp_servers(). Non-fatal on failure: a broken MCP server
-        # shouldn't kill an otherwise-working cron job. See #4219.
-        from tools.mcp_tool_discovery import discover_mcp_tools
-        _mcp_tools = discover_mcp_tools()
-        if _mcp_tools:
-            logger.info("Job '%s': %d MCP tool(s) available", job_id, len(_mcp_tools))
-    except Exception as _mcp_exc:
-        logger.warning("Job '%s': MCP initialization failed (non-fatal): %s", job_id, _mcp_exc)
+    # Initialize MCP servers so configured mcp_servers are available to the agent's tool registry before
+    # AIAgent is constructed. Without this, cron jobs never saw any MCP tools — only the gateway / CLI
+    # paths called discover_mcp_tools() at startup. Idempotent: subsequent ticks short-circuit on
+    # already-connected servers inside register_mcp_servers(). Non-fatal on failure: a broken MCP server
+    # shouldn't kill an otherwise-working cron job. See #4219.
+    from tools.mcp_tool_discovery import discover_mcp_tools
+    for attempt in (0, 1):
+        try:
+            _mcp_tools = discover_mcp_tools()
+            if _mcp_tools:
+                logger.info("Job '%s': %d MCP tool(s) available", job_id, len(_mcp_tools))
+            _stamp_mcp_init_health(job_id, None)
+            return
+        except Exception as _mcp_exc:
+            if attempt == 0 and _CRON_MCP_INIT_LOOP_RACE in str(_mcp_exc):
+                logger.warning("Job '%s': MCP init raced the event-loop start (%s); retrying in %.0fs",
+                               job_id, _mcp_exc, _CRON_MCP_INIT_RETRY_DELAY_S)
+                time.sleep(_CRON_MCP_INIT_RETRY_DELAY_S)
+                continue
+            logger.warning("Job '%s': MCP initialization failed (non-fatal): %s", job_id, _mcp_exc)
+            _stamp_mcp_init_health(job_id, _mcp_exc)
+            return
 
 
 def _open_cron_session_db(job: dict):

@@ -257,6 +257,10 @@ SESSION_SEARCH_GUIDANCE = (
 SKILL_SAFETY_HEADING = "## Skill Safety Rule"
 SKILLS_GUIDANCE = (
     "When you work out a non-trivial workflow, record it with skill_manage for future reuse.\n\n"
+    "Record only a durable, reusable lesson: keep a conditional workaround's real trigger and "
+    "boundary, and do not turn task-local state or a one-off choice into a general rule. Preserve "
+    "a user preference or prohibition at its stated scope. If the workflow is already covered or "
+    "does not apply beyond this run, leave the skill unchanged.\n\n"
     f"{SKILL_SAFETY_HEADING}\n"
     "A skill placeholder containing `[SKILL_PRUNED]` lost its content in context compression and is inaccessible — "
     "reload it with skill_view(name='...') before acting on anything that depends on it. After reloading, ignore any "

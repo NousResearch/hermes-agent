@@ -416,7 +416,21 @@ _LESSON_LAYER_BLOCK = (
     "'<date>-<incident>.md'. Prefer extending an existing references/ file over creating one; "
     "a skill with dozens of one-off references is the failure shape, not the goal.\n"
     "  • Fix the skill in place when it is wrong: edit the sentence that misled, do not append "
-    "'UPDATE: actually...' underneath it.\n\n"
+    "'UPDATE: actually...' underneath it.\n"
+    "  • Preserve every condition that makes an instruction true. Remove incident identifiers, "
+    "not the hardware, provider, authorization scope, project, or lifecycle boundary that limits "
+    "a reusable conditional rule.\n\n"
+)
+
+_DURABLE_LESSON_CHECK_BLOCK = (
+    "Before an autonomous skill edit, make a lightweight candidate check: what evidence says this "
+    "lesson applies beyond this run; under exactly which conditions; would it contradict an existing "
+    "rule or reduce capability; and would the unchanged skill already handle the next case? This is "
+    "reasoning, not a required reviewer, tool call, approval, checkpoint, or file.\n\n"
+    "Persist a durable mechanism or reproducibly correct workflow. Persist a conditional workaround "
+    "only when it is broadly reusable and retains its real trigger and boundary. Keep current state "
+    "and one-off project choices in task or project state, or do not save them. Preserve a standing "
+    "user preference or prohibition at its stated scope; never silently broaden it.\n\n"
 )
 
 # Shared tail of the skill and combined prompts: what NOT to persist as a skill.
@@ -446,14 +460,14 @@ _DO_NOT_CAPTURE_BLOCK = (
 )
 
 _SKILL_REVIEW_PROMPT = (
-    "Review the conversation above and update the skill library. Be ACTIVE — most sessions produce "
-    "at least one skill update, even if small. A pass that does nothing is a missed learning "
-    "opportunity, not a neutral outcome.\n\n"
+    "Review the conversation above and update the skill library only when it contains a genuinely "
+    "new, durable, reusable lesson. 'Nothing to save.' is a successful review when a candidate is "
+    "temporary, unverified, redundant, task-local, or already correctly covered.\n\n"
     "Target shape of the library: CLASS-LEVEL skills, each with a SKILL.md of always-on rules and a "
     "small `references/` set of topical depth. Not a flat list of narrow one-session skills, and "
     "not an umbrella hoarding a references/ file per session. This shapes HOW you update, not "
     "WHETHER you update.\n\n" + _LESSON_LAYER_BLOCK +
-    "Signals to look for (any one of these warrants action):\n"
+    "Signals to evaluate for a durable lesson:\n"
     "  • User corrected your style, tone, format, legibility, or verbosity. Frustration signals "
     "like 'stop doing X', 'this is too verbose', 'don't format like this', 'why are you "
     "explaining', 'just give me the answer', 'you always do Y and I hate it', or an explicit "
@@ -461,10 +475,10 @@ _SKILL_REVIEW_PROMPT = (
     "skill(s) to embed the preference so the next session starts already knowing.\n"
     "  • User corrected your workflow, approach, or sequence of steps. Encode the correction as a "
     "pitfall or explicit step in the skill that governs that class of task.\n"
-    "  • Non-trivial technique, fix, workaround, debugging path, or tool-usage pattern emerged "
-    "that a future session would benefit from. Capture it.\n"
-    "  • A skill that got loaded or consulted this session turned out to be wrong, missing a step, "
-    "or outdated. Patch it NOW.\n\n"
+    "  • A non-trivial technique, fix, workaround, debugging path, or tool-usage pattern emerged "
+    "that a future session would benefit from beyond this run.\n"
+    "  • A skill that got loaded or consulted this session is demonstrably wrong, missing a step, "
+    "or outdated.\n\n" + _DURABLE_LESSON_CHECK_BLOCK +
     "Preference order — prefer the earliest action that fits, but do pick one when a signal above "
     "fired:\n"
     "  1. UPDATE A CURRENTLY-LOADED SKILL. Look back through the conversation for skills the user "
@@ -511,28 +525,27 @@ _SKILL_REVIEW_PROMPT = (
     "If you notice two existing skills that overlap, note it in your reply — the background "
     "curator handles consolidation at scale. Never delete a skill here.\n\n"
     "Do NOT capture" + _DO_NOT_CAPTURE_BLOCK +
-    "'Nothing to save.' is a real option but should NOT be the default. If the session ran "
-    "smoothly with no corrections and produced no new technique, just say 'Nothing to save.' and "
-    "stop. Otherwise, act."
+    "If no candidate clears that bar, say 'Nothing to save.' and stop."
 )
 
 _COMBINED_REVIEW_PROMPT = (
     "Review the conversation above and update two things:\n\n"
     "**Memory**: " + _MEMORY_ROUTING_BLOCK +
-    "**Skills**: how to do this class of task. Be ACTIVE — most sessions produce at least one "
-    "skill update. A pass that does nothing is a missed learning opportunity, not a neutral "
-    "outcome.\n\n"
+    "**Skills**: how to do this class of task. Update them only for genuinely new, durable, "
+    "reusable lessons. 'Nothing to save.' is a successful review when a candidate is temporary, "
+    "unverified, redundant, task-local, or already correctly covered.\n\n"
     "Target shape of the skill library: CLASS-LEVEL skills with a SKILL.md of always-on rules and a "
     "small `references/` set of topical depth — not narrow one-session skills, and not an umbrella "
     "hoarding a references/ file per session.\n\n" + _LESSON_LAYER_BLOCK +
-    "Signals that warrant a skill update (any one is enough):\n"
+    "Signals to evaluate for a durable skill update:\n"
     "  • User corrected your style, tone, format, legibility, verbosity, or approach. Frustration "
     "is a FIRST-CLASS skill signal, not just a memory signal. 'stop doing X', 'don't format like "
     "this', 'I hate when you Y' — embed the lesson in the skill that governs that task so the next "
     "session starts fixed.\n"
-    "  • Non-trivial technique, fix, workaround, or debugging path emerged.\n"
-    "  • A skill that was loaded or consulted turned out wrong, missing, or outdated — patch it "
-    "now.\n\n"
+    "  • A non-trivial technique, fix, workaround, or debugging path emerged that applies beyond "
+    "this run.\n"
+    "  • A skill that was loaded or consulted is demonstrably wrong, missing, or outdated.\n\n" +
+    _DURABLE_LESSON_CHECK_BLOCK +
     "Preference order for skills — pick the earliest that fits:\n"
     "  1. UPDATE A CURRENTLY-LOADED SKILL. Check what skills were loaded via /skill-name or "
     "skill_view in the conversation. If one of them covers the learning, PATCH it first (re-load "
@@ -564,8 +577,8 @@ _COMBINED_REVIEW_PROMPT = (
     "If you notice overlapping existing skills, mention it — the background curator handles "
     "consolidation. Never delete a skill here.\n\n"
     "Do NOT capture as skills" + _DO_NOT_CAPTURE_BLOCK +
-    "Act on whichever of the two dimensions has real signal. If genuinely nothing stands out on "
-    "either, say 'Nothing to save.' and stop — but don't reach for that conclusion as a default."
+    "Act on whichever dimension has a candidate that clears the durable-lesson bar. If neither "
+    "does, say 'Nothing to save.' and stop."
 )
 
 

@@ -17,6 +17,7 @@ emitted when ``skill_manage`` is available — never its exact wording.
 from __future__ import annotations
 
 
+from agent.background_review import _COMBINED_REVIEW_PROMPT, _SKILL_REVIEW_PROMPT
 from agent.prompt_builder import SKILLS_GUIDANCE
 
 
@@ -30,6 +31,15 @@ class TestBehaviourIsPreserved:
         literals) so the safety-rule heading renders as a heading."""
         assert chr(10) in SKILLS_GUIDANCE
         assert (chr(92) + 'n') not in SKILLS_GUIDANCE
+
+    def test_guidance_requires_durable_lessons_before_a_skill_update(self):
+        """Background and interactive guidance must keep task-local fixes local."""
+        for prompt in (_SKILL_REVIEW_PROMPT, _COMBINED_REVIEW_PROMPT, SKILLS_GUIDANCE):
+            assert "durable" in prompt.lower()
+            assert "condition" in prompt.lower()
+
+        assert "Nothing to save.' is a successful review" in _SKILL_REVIEW_PROMPT
+        assert "Nothing to save.' is a successful review" in _COMBINED_REVIEW_PROMPT
 
 
 class TestGuidanceReachesTheSystemPrompt:

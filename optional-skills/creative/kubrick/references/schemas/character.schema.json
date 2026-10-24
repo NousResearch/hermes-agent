@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Character",
+  "type": "object",
+  "properties": {
+    "name": {"type": "string"},
+    "story_function": {"type": "string"},
+    "conscious_goal": {"type": "string"},
+    "contradiction": {"type": "string"},
+    "arc_start": {"type": "string"},
+    "arc_end": {"type": "string"},
+    "underlying_need": {"type": ["string", "null"]},
+    "false_belief": {"type": ["string", "null"]},
+    "values": {"type": "array", "items": {"type": "string"}},
+    "speech_profile": {"type": "object"},
+    "physical_behavior": {"type": "string"},
+    "provenance": {"type": "string", "enum": ["OBSERVED", "INFERRED", "SPECULATIVE"]}
+  },
+  "required": ["name", "story_function", "conscious_goal", "contradiction", "arc_start", "arc_end"]
+}

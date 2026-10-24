@@ -1,0 +1,83 @@
+registry_version: 0.11.5
+runtime: standalone-hermes
+source_manifests:
+- references/pattern-manifests/wave1-batch1.yaml
+- references/pattern-manifests/wave1-batch2.yaml
+- references/pattern-manifests/wave1-batch3.yaml
+- references/pattern-manifests/wave1-batch4.yaml
+- references/pattern-manifests/wave1-batch5.yaml
+selection_policy:
+  primary_limit: 1
+  supporting_limit: 2
+  minimum_confidence: 0.55
+  fail_closed: NOT_COMPUTABLE
+  require_observable_evidence: true
+  latent_surface_default: true
+default_routes:
+  identity_and_transformation:
+  - alchemical_calcination_false_structure
+  - alchemical_dissolution_boundary_loss
+  - alchemical_separation_signal_from_noise
+  - alchemical_conjunction_opposed_forces
+  - alchemical_distillation_iterative_refinement
+  - alchemical_coagulation_embodied_consequence
+  - costume_state_identity_migration
+  - lynch_causal_discontinuity_residue
+  authority_and_institutions:
+  - kubrick_center_transfer_authority
+  - interface_badge_authority_transfer
+  - corporate_grid_enclosure_compliance
+  - surveillance_distributed_gaze
+  - doorway_ownership_transfer
+  - vertical_hierarchy_descent
+  - negative_space_authority_vacancy
+  memory_time_and_residue:
+  - resnais_temporal_recurrence_substitution
+  - tarkovsky_material_memory_weathering
+  - object_residue_continuity_after_use
+  - material_repair_visible_scar
+  - reflection_substitution_ownership
+  sound_rhythm_and_absence:
+  - sonic_motif_source_migration
+  - sonic_silence_withdrawal_revelation
+  - indian_tala_accent_displacement
+  - japanese_ma_active_interval
+  spatial_and_collective_pressure:
+  - soviet_montage_collision_thesis
+  - labyrinth_route_pressure
+  - crowd_formation_fracture
+  - broken_symmetry_state_evidence
+  - occlusion_relational_denial
+  light_color_and_counterpoint:
+  - dual_light_conflicting_claims
+  - kubrick_red_culmination_state
+  - image_dialogue_counterpoint
+  - environmental_response_world_agency
+  contemporary_symbolic_systems:
+  - meme_template_role_mutation
+  - interface_badge_authority_transfer
+  - corporate_grid_enclosure_compliance
+  - surveillance_distributed_gaze
+  - memetic_template_half_life
+  - platform_attention_economy_gaze
+  gesture_and_material_agency:
+  - bresson_gesture_object_transfer
+  - object_residue_continuity_after_use
+  - material_repair_visible_scar
+strong_defaults:
+- alchemical_separation_signal_from_noise
+- alchemical_coagulation_embodied_consequence
+- kubrick_center_transfer_authority
+- bresson_gesture_object_transfer
+- tarkovsky_material_memory_weathering
+- sonic_silence_withdrawal_revelation
+- image_dialogue_counterpoint
+- environmental_response_world_agency
+- negative_space_authority_vacancy
+guards:
+  preserve_observed_form_first: true
+  preserve_mandatory_mutation: true
+  preserve_tradition_boundaries: true
+  prohibit_surface_occult_defaults: true
+  prohibit_direct_film_imitation: true
+  require_project_specific_color_meaning: true

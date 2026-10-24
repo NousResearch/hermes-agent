@@ -1,0 +1,199 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://github.com/scrimshawlife-ctrl/Kubrick/schemas/design-specification.schema.yaml
+title: Kubrick Design Specification
+type: object
+additionalProperties: false
+required:
+  - schema_version
+  - project
+  - authority
+  - observed_inputs
+  - design_intent
+  - pillars
+  - invariants
+  - experience
+  - systems
+  - design_languages
+  - continuity_contract
+  - risks
+  - open_questions
+properties:
+  schema_version:
+    const: "1.0.0"
+  project:
+    type: object
+    additionalProperties: false
+    required: [name, artifact_type]
+    properties:
+      name: {type: string, minLength: 1}
+      artifact_type:
+        type: string
+        enum: [game, film, series, application, website, installation, mixed_media, other]
+      version: {type: string}
+      audience: {type: string}
+      platform: {type: string}
+  authority:
+    type: object
+    additionalProperties: false
+    required: [status, generated_by]
+    properties:
+      status:
+        type: string
+        enum: [PROPOSED, OBSERVATION, NOT_COMPUTABLE]
+      generated_by: {const: kubrick}
+      source_revision: {type: string}
+      generated_at: {type: string, format: date-time}
+  observed_inputs:
+    type: array
+    minItems: 1
+    items:
+      type: object
+      additionalProperties: false
+      required: [source, kind, provenance]
+      properties:
+        source: {type: string, minLength: 1}
+        kind:
+          type: string
+          enum: [repository, document, screenplay, prototype, asset, transcript, reference, operator_note, other]
+        provenance:
+          type: string
+          enum: [OBSERVED, INFERRED, SPECULATIVE]
+        revision: {type: string}
+        notes: {type: string}
+  design_intent:
+    type: object
+    additionalProperties: false
+    required: [premise, governing_tension, intended_transformation]
+    properties:
+      premise: {type: string, minLength: 1}
+      governing_tension: {type: string, minLength: 1}
+      intended_transformation: {type: string, minLength: 1}
+      non_goals:
+        type: array
+        items: {type: string}
+  pillars:
+    type: array
+    minItems: 1
+    maxItems: 7
+    items:
+      type: object
+      additionalProperties: false
+      required: [id, statement, test]
+      properties:
+        id: {type: string, pattern: "^[a-z0-9][a-z0-9_-]*$"}
+        statement: {type: string, minLength: 1}
+        test: {type: string, minLength: 1}
+        provenance:
+          type: string
+          enum: [OBSERVED, INFERRED, SPECULATIVE]
+  invariants:
+    type: array
+    minItems: 1
+    items:
+      type: object
+      additionalProperties: false
+      required: [id, rule, verification]
+      properties:
+        id: {type: string, pattern: "^[a-z0-9][a-z0-9_-]*$"}
+        rule: {type: string, minLength: 1}
+        verification: {type: string, minLength: 1}
+        severity:
+          type: string
+          enum: [critical, high, medium, low]
+  experience:
+    type: object
+    additionalProperties: false
+    required: [user_state, core_loop, emotional_arc, failure_experience]
+    properties:
+      user_state: {type: string}
+      core_loop:
+        type: array
+        minItems: 1
+        items: {type: string}
+      emotional_arc:
+        type: array
+        minItems: 1
+        items: {type: string}
+      failure_experience: {type: string}
+      success_experience: {type: string}
+  systems:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required: [id, purpose, inputs, outputs, constraints]
+      properties:
+        id: {type: string, pattern: "^[a-z0-9][a-z0-9_-]*$"}
+        purpose: {type: string}
+        inputs:
+          type: array
+          items: {type: string}
+        outputs:
+          type: array
+          items: {type: string}
+        constraints:
+          type: array
+          items: {type: string}
+        dependencies:
+          type: array
+          items: {type: string}
+  design_languages:
+    type: object
+    additionalProperties: false
+    required: [visual, interaction, audio, narrative, motion]
+    properties:
+      visual: {$ref: "#/$defs/language"}
+      interaction: {$ref: "#/$defs/language"}
+      audio: {$ref: "#/$defs/language"}
+      narrative: {$ref: "#/$defs/language"}
+      motion: {$ref: "#/$defs/language"}
+  continuity_contract:
+    type: object
+    additionalProperties: false
+    required: [locked_facts, mutable_variables, prohibited_drift, revision_protocol]
+    properties:
+      locked_facts:
+        type: array
+        items: {type: string}
+      mutable_variables:
+        type: array
+        items: {type: string}
+      prohibited_drift:
+        type: array
+        items: {type: string}
+      revision_protocol: {type: string}
+  risks:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required: [risk, signal, mitigation]
+      properties:
+        risk: {type: string}
+        signal: {type: string}
+        mitigation: {type: string}
+  open_questions:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required: [question, blocking]
+      properties:
+        question: {type: string}
+        blocking: {type: boolean}
+        resolution_owner: {type: string}
+$defs:
+  language:
+    type: object
+    additionalProperties: false
+    required: [principles, avoid]
+    properties:
+      principles:
+        type: array
+        items: {type: string}
+      motifs:
+        type: array
+        items: {type: string}
+      avoid:
+        type: array
+        items: {type: string}

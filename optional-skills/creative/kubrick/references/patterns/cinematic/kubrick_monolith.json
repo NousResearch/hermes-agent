@@ -1,0 +1,19 @@
+{
+  "pattern_id": "kubrick_monolith",
+  "title": "Threshold Object Across Temporal Scale",
+  "version": "0.11.5",
+  "domain": "cinematic",
+  "source_tier": "SCHOLARLY",
+  "source_refs": [{"author": "Stanley Kubrick", "title": "2001: A Space Odyssey", "date": "1968"}],
+  "observed_structure": ["An unfamiliar object recurs at transitions between materially different states or eras.", "Symmetry, scale, silence, and temporal matching make the object function as a threshold rather than an explained symbol."],
+  "dramatic_operations": ["evolutionary threshold", "initiation into new state"],
+  "transformation_grammars": ["initiation", "descent"],
+  "cinematic_affordances": ["perfect symmetry", "low angle", "graphic match across time", "silence"],
+  "applicable_genres": ["science fiction", "art film"],
+  "misuse_risks": ["literal black slab imitation", "mystery object without causal state change", "empty Kubrick pastiche"],
+  "mutation_requirements": {"required": true, "variables": ["object form", "scale", "recurrence interval", "state transition", "observer response"]},
+  "transferable_structure": "Repeat an unfamiliar threshold object across escalating states or times, using formal continuity to connect otherwise discontinuous transformations.",
+  "non_transferable_surface": "Do not use a literal black rectangle, Jupiter alignment, ape staging, or copied graphic match.",
+  "production_cost": {"location_dependency": 0.4, "prop_dependency": 0.7, "VFX_dependency": 0.9},
+  "confidence": 0.9
+}

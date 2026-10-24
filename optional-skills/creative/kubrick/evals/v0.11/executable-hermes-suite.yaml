@@ -1,0 +1,27 @@
+suite: executable-hermes-suite-v0.11
+runtime: standalone-hermes
+entrypoint: scripts/run_hermes_evals.py
+required_checks:
+  - validate_hermes_skill
+  - validate_pattern_corpus
+  - audit_corpus_coverage
+  - anti_slop_adversarial
+adversarial_gates:
+  N: mixed occult collage
+  O: channel redundancy
+  P: fixed one-to-one symbolism
+  Q: recurrence without mutation
+  R: named archetype costume
+  S: tradition flattening
+  U: symbolic supremacy over causality
+  W: premature interpretive closure
+expected_behavior:
+  violating_samples: FAIL
+  clean_observed_form_sample: PASS
+  report_path: out/kubrick/eval-report.json
+  exit_nonzero_on_failure: true
+privacy:
+  model_api_required: false
+  forge_required: false
+  mcp_required: false
+  network_required: false

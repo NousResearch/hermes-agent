@@ -1,0 +1,23 @@
+{
+  "pattern_id": "broken_symmetry_state_evidence",
+  "title": "Broken Symmetry / State Change Becomes Measurable",
+  "version": "0.11.4",
+  "domain": "spatial-geometric",
+  "source_tier": "COMPARATIVE",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Comparative visual composition analysis","title":"Symmetry, deviation, and state evidence","date":"cross-period","cultural_context":"Architecture, cinema, photography, and stage composition"}],
+  "observed_structure": ["a symmetrical relation is established clearly enough to be remembered", "one side changes in occupancy, orientation, material, or timing", "the deviation records a causal event rather than generic instability"],
+  "dramatic_operations": ["make disruption measurable", "record absence or damage through relation", "convert formal deviation into state evidence"],
+  "transformation_grammars": ["symmetry-to-deviation", "order-to-evidence"],
+  "cinematic_affordances": ["paired positions with one altered", "matching objects with one missing, damaged, or reassigned", "camera preserving the comparison axis", "sound or movement asymmetry reinforcing the changed state"],
+  "applicable_genres": ["drama", "thriller", "horror", "science fiction", "satire"],
+  "applicable_formats": ["feature", "pilot", "episode", "short", "single-frame"],
+  "cultural_scope": ["general relational structure; symmetry does not carry fixed moral meaning"],
+  "misuse_risks": ["symmetry equals control", "broken frame equals madness", "unmotivated imbalance"],
+  "mutation_requirements": {"required":true,"variables":["comparison axis","changed side","deviation type","causal event","persistence"]},
+  "transferable_structure": "an established balanced relation is altered so the formal difference becomes evidence of a causal state change",
+  "non_transferable_surface": "copied twins, hallways, centered rooms, or arbitrary crooked compositions",
+  "production_cost": {"location_dependency":0.3,"prop_dependency":0.4,"lighting_dependency":0.3,"VFX_dependency":0.0},
+  "lexicon_links": ["balance", "quaternity", "rupture", "symmetry"],
+  "confidence": 0.87
+}

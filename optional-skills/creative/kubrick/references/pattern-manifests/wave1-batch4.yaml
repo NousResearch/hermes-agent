@@ -1,0 +1,36 @@
+manifest_version: 0.11.4
+batch_id: hermes-corpus-wave1-batch4
+runtime: standalone-hermes
+patterns:
+  - id: labyrinth_route_pressure
+    path: references/patterns/spatial-geometric/labyrinth_route_pressure.json
+    routes: [route_pressure, detour_to_center, constrained_navigation]
+  - id: doorway_ownership_transfer
+    path: references/patterns/spatial-geometric/doorway_ownership_transfer.json
+    routes: [threshold_control, access_transfer, status_crossing]
+  - id: vertical_hierarchy_descent
+    path: references/patterns/spatial-geometric/vertical_hierarchy_descent.json
+    routes: [vertical_hierarchy, descent, altered_return]
+  - id: crowd_formation_fracture
+    path: references/patterns/spatial-geometric/crowd_formation_fracture.json
+    routes: [group_discipline, deviation, formation_break]
+  - id: image_dialogue_counterpoint
+    path: references/patterns/semiotic/image_dialogue_counterpoint.json
+    routes: [counterpoint, declared_vs_enacted, claim_evidence_gap]
+  - id: environmental_response_world_agency
+    path: references/patterns/cinematic/environmental_response_world_agency.json
+    routes: [environmental_agency, place_response, persistent_world_state]
+  - id: costume_state_identity_migration
+    path: references/patterns/semiotic/costume_state_identity_migration.json
+    routes: [costume_continuity, identity_migration, role_transfer]
+selection_policy:
+  primary_limit: 1
+  supporting_limit: 2
+  minimum_confidence: 0.55
+  fail_closed: NOT_COMPUTABLE
+guards:
+  observed_structure_required: true
+  mutation_required: true
+  provenance_required: true
+  latent_surface_default: true
+  cultural_context_required_for_specific_dress_or_sacred_space: true

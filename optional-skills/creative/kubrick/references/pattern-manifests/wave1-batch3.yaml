@@ -1,0 +1,36 @@
+manifest_version: 0.11.3
+batch_id: hermes-corpus-wave1-batch3
+runtime: standalone-hermes
+patterns:
+  - id: lynch_causal_discontinuity_residue
+    path: references/patterns/cinematic/lynch_causal_discontinuity_residue.json
+    routes: [identity_discontinuity, residue_bridge, contradictory_continuity]
+  - id: bresson_gesture_object_transfer
+    path: references/patterns/cinematic/bresson_gesture_object_transfer.json
+    routes: [gesture_agency, ownership_transfer, behavior_before_explanation]
+  - id: tarkovsky_material_memory_weathering
+    path: references/patterns/cinematic/tarkovsky_material_memory_weathering.json
+    routes: [material_memory, weathering, persistent_trace]
+  - id: corporate_grid_enclosure_compliance
+    path: references/patterns/contemporary/corporate_grid_enclosure_compliance.json
+    routes: [institutional_pressure, compliance_geometry, measurable_deviation]
+  - id: meme_template_role_mutation
+    path: references/patterns/contemporary/meme_template_role_mutation.json
+    routes: [template_reuse, role_reversal, participatory_mutation]
+  - id: surveillance_distributed_gaze
+    path: references/patterns/contemporary/surveillance_distributed_gaze.json
+    routes: [distributed_observation, self_regulation, persistent_visibility]
+  - id: object_residue_continuity_after_use
+    path: references/patterns/semiotic/object_residue_continuity_after_use.json
+    routes: [prop_residue, persistent_consequence, continuity_memory]
+selection_policy:
+  primary_limit: 1
+  supporting_limit: 2
+  minimum_confidence: 0.55
+  fail_closed: NOT_COMPUTABLE
+guards:
+  observed_structure_required: true
+  mutation_required: true
+  provenance_required: true
+  latent_surface_default: true
+  contemporary_context_required: true

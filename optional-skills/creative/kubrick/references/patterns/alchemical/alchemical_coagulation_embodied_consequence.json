@@ -1,0 +1,23 @@
+{
+  "pattern_id": "alchemical_coagulation_embodied_consequence",
+  "title": "Coagulation / Insight Becomes Material Consequence",
+  "version": "0.11.1",
+  "domain": "alchemical",
+  "source_tier": "PRIMARY",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"European alchemical tradition","title":"Coagulation operation","date":"medieval to early modern","cultural_context":"European alchemy"}],
+  "observed_structure": ["an abstract realization precedes a material decision", "the body, object, or environment records the decision", "the new state persists after the initiating emotion passes"],
+  "dramatic_operations": ["embody insight", "convert intention into irreversible action", "stabilize transformation in matter"],
+  "transformation_grammars": ["coagulation", "insight-to-embodiment"],
+  "cinematic_affordances": ["gesture becomes changed object state", "costume or gait records a completed decision", "abstract sound resolves into a physical action", "final composition preserves visible consequence"],
+  "applicable_genres": ["drama", "thriller", "romance", "science fiction"],
+  "applicable_formats": ["feature", "pilot", "short", "single-frame"],
+  "cultural_scope": ["European alchemical source; translate only as persistence of embodied change"],
+  "misuse_risks": ["symbolic ending without causal action", "redemptive pose replacing consequence", "literal transmutation imagery"],
+  "mutation_requirements": {"required":true,"variables":["body state","object state","environmental trace","action cost","persistence duration"]},
+  "transferable_structure": "an internal transformation becomes verifiable through durable material consequence",
+  "non_transferable_surface": "gold-making imagery, philosopher stones, or spoken alchemical completion",
+  "production_cost": {"location_dependency":0.2,"prop_dependency":0.4,"lighting_dependency":0.3,"VFX_dependency":0.1},
+  "lexicon_links": ["coagulation", "rubedo", "salt", "malkuth"],
+  "confidence": 0.87
+}

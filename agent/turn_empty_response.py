@@ -1,10 +1,11 @@
 """Empty / thinking-only final-response recovery ladder for the conversation turn loop.
 
 Runs when the model returned no visible text after ``<think>`` blocks. Ladder order is
-load-bearing: partial-stream recovery → reuse prior turn content (housekeeping tools only)
-→ one post-tool-call nudge → thinking-only prefill continuation (×2) → empty-response
-retries (budgeted, deterministic-empty short-circuit) → fallback provider → terminal
-``(empty)`` sentinel. Nothing here imports ``agent.conversation_loop`` at module level.
+load-bearing: partial-stream recovery → machinery-turn quiet exit → reuse prior
+turn content (housekeeping tools only) → one post-tool-call nudge → thinking-only
+prefill continuation (×2) → empty-response retries (budgeted, deterministic-empty
+short-circuit) → fallback provider → terminal ``(empty)`` sentinel. Nothing here imports
+``agent.conversation_loop`` at module level.
 """
 
 from __future__ import annotations
@@ -22,6 +23,43 @@ from agent.turn_recovery import interruptible_backoff_sleep
 logger = logging.getLogger("agent.conversation_loop")
 
 _INLINE_THINK_RE = re.compile(r'<think>|<thinking>|<reasoning>', re.IGNORECASE)
+
+# The persisted user-row display kinds the gateway types as machinery: the self-injected
+# internal_notification turn plus the producer-notice cards (background-process completions,
+# async delegation results). Mirrors gateway.response_filters.MACHINERY_DISPLAY_KINDS;
+# agent/ cannot import gateway/.
+_MACHINERY_DISPLAY_KINDS = frozenset({"internal_notification", "process_complete", "async_delegation_complete"})
+
+# Loop exit stamped when a machinery turn ends with the model adding nothing.
+NOTIFICATION_NO_REPLY_EXIT = "notification_no_reply"
+
+# Assistant row persisted for that exit: the same marker a deliberate no-reply on a human
+# turn already leaves in the transcript (gateway.response_filters.LIVE_GATEWAY_SILENT_MARKERS).
+MACHINERY_NO_REPLY_ROW = "[SILENT]"
+
+
+def _latest_user_display_kind(messages: list[dict[str, Any]]) -> str | None:
+    for msg in reversed(messages):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            return msg.get("display_kind")
+    return None
+
+
+def _notification_turn_without_tool_round(messages: list[dict[str, Any]]) -> bool:
+    """True when the latest user row is a machinery turn no tool has followed.
+
+    Scans back to the turn's user row: a ``tool`` row first means the model already
+    acted on the notice (mid-task, keeps the full empty-response ladder), and any
+    other user row (a steer, a recovery nudge) is the message the model is answering.
+    """
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "tool":
+            return False
+        if msg.get("role") == "user":
+            return msg.get("display_kind") in _MACHINERY_DISPLAY_KINDS
+    return False
 
 
 @dataclass
@@ -174,6 +212,28 @@ def recover_empty_response(
         # A streamed fragment isn't a confirmed preview: gateway fallback delivery
         # sends the text plus the abnormal-turn explanation.
         agent._response_was_previewed = False
+        return _verdict("break")
+
+    # Machinery turn (a self-injected internal_notification or a background-process /
+    # delegation completion the gateway staged as its own user row): an empty reply means
+    # "nothing to add", so end the turn quietly (no nudge, no paid retries, no provider
+    # switch, no sentinel row). Only when no tool ran this turn; a model that acted on the
+    # notice is mid-task and keeps the ladder below unchanged.
+    if _notification_turn_without_tool_round(messages):
+        _turn_exit_reason = NOTIFICATION_NO_REPLY_EXIT
+        logger.info(
+            "Empty response on a machinery turn (%s): ending the turn without a reply",
+            _latest_user_display_kind(messages),
+        )
+        # Close the turn in the transcript. The finalizer appends an assistant row only for a
+        # non-empty final, and a user row left unanswered makes the next pre-call repair merge
+        # the following human prompt into the notice (text and display_kind both lost). The
+        # row carries the marker a deliberate no-reply already persists on human turns, so the
+        # gateway keeps treating it as silence and the wire keeps alternating.
+        assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
+        assistant_msg["content"] = MACHINERY_NO_REPLY_ROW
+        append_message(messages, assistant_msg)
+        final_response = ""
         return _verdict("break")
 
     # Prior turn had real content + ONLY housekeeping tools: model is done, reuse it.

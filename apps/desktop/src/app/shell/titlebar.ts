@@ -1,4 +1,5 @@
 import type { HermesConnection } from '@/global'
+import { isMacPlatform } from '@/lib/platform'
 
 export const TITLEBAR_HEIGHT = 34
 /** Browser touch chrome: the band (and the controls flush in it) are 44px
@@ -92,6 +93,17 @@ export const titlebarHeaderTitleClass = 'min-w-0 flex-1 overflow-hidden'
 
 export const titlebarHeaderShadowClass =
   "after:pointer-events-none after:absolute after:left-0 after:right-0 after:top-full after:h-4 after:bg-linear-to-b after:from-(--ui-chat-surface-background) after:to-transparent after:content-['']"
+
+/**
+ * `windowButtonPosition` arrives with the connection. Until then only macOS can
+ * have traffic lights, so other platforms already lay out as Windows/Linux.
+ */
+export function knownWindowButtonPosition(
+  position: HermesConnection['windowButtonPosition'] | undefined,
+  isMac = isMacPlatform()
+): HermesConnection['windowButtonPosition'] | undefined {
+  return position === undefined && !isMac ? null : position
+}
 
 export function titlebarControlsPosition(
   windowButtonPosition: HermesConnection['windowButtonPosition'] | undefined,

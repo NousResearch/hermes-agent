@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  knownWindowButtonPosition,
   MACOS_TAHOE_DARWIN_MAJOR,
   TITLEBAR_CONTROL_OFFSET_X,
   TITLEBAR_EDGE_INSET,
@@ -65,5 +66,20 @@ describe('titlebarToolsRightCss', () => {
 
   it('matches the left edge inset on macOS fullscreen', () => {
     expect(titlebarToolsRightCss(0, { darwinMajor: 25, isFullscreen: true })).toBe(`${TITLEBAR_EDGE_INSET}px`)
+  })
+})
+
+describe('knownWindowButtonPosition', () => {
+  it('treats an unknown position as no traffic lights off macOS', () => {
+    expect(knownWindowButtonPosition(undefined, false)).toBeNull()
+  })
+
+  it('keeps an unknown position unknown on macOS', () => {
+    expect(knownWindowButtonPosition(undefined, true)).toBeUndefined()
+  })
+
+  it('passes a reported position through', () => {
+    expect(knownWindowButtonPosition({ x: 24, y: 10 }, false)).toEqual({ x: 24, y: 10 })
+    expect(knownWindowButtonPosition(null, true)).toBeNull()
   })
 })

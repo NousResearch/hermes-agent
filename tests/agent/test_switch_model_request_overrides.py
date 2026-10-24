@@ -50,30 +50,34 @@ def _agent(*, model, base_url, request_overrides, custom_providers=CUSTOM_PROVID
 
 def test_switch_applies_matched_provider_extra_body():
     """Switching to the matching provider+model applies its extra_body and
-    preserves non-provider overrides (service_tier/speed from /fast)."""
+    preserves non-provider overrides, but drops a /fast override the local route
+    cannot take (#122010)."""
     a = _agent(
         model="think-model",
         base_url="http://10.0.0.1:8000/v1",
-        request_overrides={"service_tier": "priority"},
+        request_overrides={"service_tier": "priority", "top_p": 0.9},
     )
     arh._apply_switched_provider_request_overrides(a, "custom:main-think")
-    assert a.request_overrides["extra_body"] == {"chat_template_kwargs": {"enable_thinking": True}}
-    assert a.request_overrides["service_tier"] == "priority"  # preserved
+    assert a.request_overrides == {
+        "top_p": 0.9,  # preserved
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": True}},
+    }
 
 
 def test_switch_to_noncustom_clears_stale_extra_body():
     """Switching to a built-in provider clears the previous provider's extra_body."""
     a = _agent(
-        model="claude-x",
+        model="claude-opus-4-8",
         base_url="https://api.anthropic.com",
         request_overrides={
             "extra_body": {"chat_template_kwargs": {"enable_thinking": True}},
-            "service_tier": "priority",
+            "speed": "fast",
         },
     )
+    a.provider = "anthropic"
     arh._apply_switched_provider_request_overrides(a, "anthropic")
     assert "extra_body" not in a.request_overrides  # stale extra_body cleared
-    assert a.request_overrides["service_tier"] == "priority"  # preserved
+    assert a.request_overrides["speed"] == "fast"  # fast-capable route keeps /fast
 
 
 def test_switch_from_none_overrides():
@@ -115,3 +119,16 @@ def test_switch_endpoint_mismatch_does_not_inherit():
     )
     arh._apply_switched_provider_request_overrides(a, "custom:main-think")
     assert "extra_body" not in a.request_overrides  # base_url mismatch -> cleared
+
+
+def test_switch_to_openai_compatible_server_drops_anthropic_speed():
+    """#122010: ``speed`` pinned for an Anthropic fast model must not reach a local
+    OpenAI-compatible server, where the SDK rejects it as an unknown keyword."""
+    a = _agent(
+        model="Hermes-3-Llama-3.1-8B-4bit",
+        base_url="http://127.0.0.1:8080/v1",
+        request_overrides={"speed": "fast"},
+        custom_providers=[],
+    )
+    arh._apply_switched_provider_request_overrides(a, "custom")
+    assert a.request_overrides == {}

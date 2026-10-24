@@ -1,5 +1,6 @@
 """Bounded /fast auto|cold windows and the shared route-aware gate."""
 
+import logging
 from types import SimpleNamespace
 
 from agent import fast_mode
@@ -194,3 +195,82 @@ def test_recovery_retries_at_standard_speed_before_classification():
     assert (retry, prompt) == (True, "sys")
     assert agent._fast_mode_unavailable_models == {"claude-opus-5"}
     assert any("standard speed" in line for line in printed)
+
+
+def test_regate_pinned_fast_overrides_follows_the_new_route():
+    # Anthropic speed on a route the gate rejects (local OpenAI-compatible server): dropped.
+    agent = _agent(
+        service_tier="priority", model="claude-opus-4-8", provider="custom",
+        base_url="http://127.0.0.1:8080/v1", request_overrides={"speed": "fast", "extra_body": {"keep": 1}},
+    )
+    fast_mode.regate_pinned_fast_overrides(agent)
+    assert agent.request_overrides == {"extra_body": {"keep": 1}}
+
+    # Fast-capable route of the other kind: the pinned override is swapped, not kept.
+    agent = _agent(service_tier="priority", request_overrides={"speed": "fast"})
+    fast_mode.regate_pinned_fast_overrides(agent)
+    assert agent.request_overrides == {"service_tier": "priority"}
+
+    # Still fast-capable: unchanged.
+    agent = _agent(
+        service_tier="priority", model="claude-opus-4-8", provider="anthropic",
+        base_url="https://api.anthropic.com", api_mode="anthropic_messages", request_overrides={"speed": "fast"},
+    )
+    fast_mode.regate_pinned_fast_overrides(agent)
+    assert agent.request_overrides == {"speed": "fast"}
+
+
+def test_regate_leaves_non_fast_values_and_unpinned_sessions_alone(monkeypatch, caplog):
+    # A user-configured tier that /fast never pins (e.g. flex) is not the gate's to drop.
+    agent = _agent(model="local", provider="custom", base_url="http://127.0.0.1:8080/v1",
+                   request_overrides={"service_tier": "flex"})
+    fast_mode.regate_pinned_fast_overrides(agent)
+    assert agent.request_overrides == {"service_tier": "flex"}
+
+    # Nothing pinned: /fast off must not start sending fast params after a switch.
+    agent = _agent(service_tier=None, request_overrides={})
+    fast_mode.regate_pinned_fast_overrides(agent)
+    assert agent.request_overrides == {}
+
+    # Without static /fast a configured tier (delegation.request_overrides) is only dropped where
+    # the route rejects it; it is never swapped for Anthropic ``speed`` (Fast Mode billing).
+    agent = _agent(
+        service_tier=None, model="claude-opus-4-8", provider="anthropic", base_url="https://api.anthropic.com",
+        api_mode="anthropic_messages", request_overrides={"service_tier": "priority"},
+    )
+    fast_mode.regate_pinned_fast_overrides(agent)
+    assert agent.request_overrides == {}
+    agent = _agent(service_tier=None, request_overrides={"service_tier": "priority"})
+    fast_mode.regate_pinned_fast_overrides(agent)
+    assert agent.request_overrides == {"service_tier": "priority"}
+
+    # A failing gate falls back to standard speed instead of breaking the switch.
+    import hermes_cli.models
+
+    def boom(*a, **k):
+        raise RuntimeError("catalog unavailable")
+
+    monkeypatch.setattr(hermes_cli.models, "resolve_fast_mode_overrides", boom)
+    agent = _agent(service_tier="priority", request_overrides={"service_tier": "priority"})
+    with caplog.at_level(logging.DEBUG, logger="agent.fast_mode"):
+        fast_mode.regate_pinned_fast_overrides(agent)
+    assert agent.request_overrides == {}
+    assert any(r.name == "agent.fast_mode" and r.exc_info for r in caplog.records)  # logged, not silent
+
+
+def test_regate_restores_fast_on_a_later_capable_rung_only_while_fast_is_on():
+    # Anthropic primary pinned speed; an earlier local rung dropped it. The next rung is OpenAI.
+    primary = {"request_overrides": {"speed": "fast"}}
+    agent = _agent(service_tier="priority", request_overrides={}, _primary_runtime=primary)
+    fast_mode.regate_pinned_fast_overrides(agent)
+    assert agent.request_overrides == {"service_tier": "priority"}
+
+    # /fast off clears the live overrides but not the snapshot: never re-enable fast.
+    agent = _agent(service_tier=None, request_overrides={}, _primary_runtime=primary)
+    fast_mode.regate_pinned_fast_overrides(agent)
+    assert agent.request_overrides == {}
+
+    # Primary never had fast pinned: nothing to restore.
+    agent = _agent(service_tier="priority", request_overrides={}, _primary_runtime={"request_overrides": {}})
+    fast_mode.regate_pinned_fast_overrides(agent)
+    assert agent.request_overrides == {}

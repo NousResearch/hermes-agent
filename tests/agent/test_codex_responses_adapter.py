@@ -1055,6 +1055,63 @@ def test_token_leading_serialized_shape_stays_posted_beside_the_real_call():
     assert 'to=functions.execute_code {"path": "a.py"}' in assistant_message.content
 
 
+def test_commentary_parallel_wrapper_echo_is_dropped_beside_the_real_call():
+    """Production-observed wrapper shape (#125482 review): the ``to=multi_tool_use.parallel`` token leads
+    and the serialized wrapper JSON follows across a line break. The echo must not reach the reasoning
+    channel or the replay items; the structured calls carry the turn."""
+    response = _echo_leak_response(commentary_texts=[
+        'to=multi_tool_use.parallel 0200\n'
+        '{"tool_uses":[{"recipient_name":"functions.web_search","parameters":{"query":"test"}}]} junk',
+    ])
+    # The real deployment also carried the five structured web_search calls; one suffices here.
+    response.output[-1] = SimpleNamespace(
+        type="function_call", id="fc_1", call_id="call_1", name="web_search", status="completed",
+        arguments='{"query": "test"}',
+    )
+    assistant_message, finish_reason = _normalize_codex_response(response, issuer_kind="codex_backend")
+
+    assert finish_reason == "tool_calls"
+    assert len(assistant_message.tool_calls) == 1
+    assert assistant_message.tool_calls[0].function.name == "web_search"
+    assert assistant_message.reasoning is None
+    assert assistant_message.codex_message_items is None
+
+
+def test_final_answer_parallel_wrapper_echo_is_dropped_beside_the_real_call():
+    """The wrapper echo riding a final-answer message must not be posted as the reply nor replayed."""
+    response = _echo_leak_response(
+        commentary_texts=["Fetching the docs first."],
+        final_text='to=multi_tool_use.parallel 0200\n'
+                   '{"tool_uses":[{"recipient_name":"functions.web_search","parameters":{"query":"test"}}]}',
+    )
+    assistant_message, finish_reason = _normalize_codex_response(response, issuer_kind="codex_backend")
+
+    assert finish_reason == "tool_calls"
+    assert assistant_message.content == ""
+    assert assistant_message.reasoning == "Fetching the docs first."
+    assert assistant_message.codex_message_items is not None
+    assert all(
+        "multi_tool_use" not in part["text"]
+        for item in assistant_message.codex_message_items for part in item["content"]
+    )
+
+
+def test_parallel_wrapper_prose_discussion_survives_beside_the_real_call():
+    """Prose/code explaining the wrapper syntax keeps words or punctuation between token and JSON;
+    the strict predicate must not eat it while covering the observed echo (#125482 review)."""
+    response = _echo_leak_response(
+        commentary_texts=["Fetching the docs first."],
+        final_text='Batch calls via to=multi_tool_use.parallel like this: '
+                   '{"tool_uses": [{"recipient_name": "functions.web_search", "parameters": {}}]}',
+    )
+    assistant_message, finish_reason = _normalize_codex_response(response, issuer_kind="codex_backend")
+
+    assert finish_reason == "tool_calls"
+    assert "Batch calls via" in assistant_message.content
+    assert "to=multi_tool_use.parallel" in assistant_message.content
+    assert assistant_message.codex_message_items is not None
+
+
 def test_failed_response_surfaces_error_code():
     """Regression: response_status == 'failed' should surface the error
     code, not just the message. Used to leak a bare 'Slow down' string

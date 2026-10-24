@@ -57,7 +57,9 @@ def _wire_model_identity(model: Any) -> Optional[str]:
 
 # Codex/Harmony tool-call serialization leaked into assistant text (no structured function_call).
 # ``}`` leads the real Harmony shape: the serialized args JSON closes immediately before ``to=``.
-_TOOL_CALL_LEAK_PATTERN = re.compile(r"(?:^|[\s>|}])to=functions\.[A-Za-z_][\w.]*", re.IGNORECASE)
+_TOOL_CALL_LEAK_PATTERN = re.compile(
+    r"(?:^|[\s>|}])to=(?:functions\.[A-Za-z_][\w.]*|multi_tool_use\.parallel)", re.IGNORECASE
+)
 
 # Codex-CLI-style shell call leaked as assistant text (``{"cmd": "..."}`` closing the message, scalar siblings only).
 # Only classified as a leak when the previous line is an action lead-in ("Creating the script now.") — a bare or
@@ -96,6 +98,15 @@ def _shell_json_echo(text: str) -> bool:
 # than posting a rare bare-token echo (#125458 review).
 _SERIALIZED_TOOL_CALL_ECHO_PATTERN = re.compile(r"\}\s*to=functions\.[A-Za-z_][\w.]*", re.IGNORECASE)
 
+# Parallel-wrapper echo (production-observed on a QQ deployment, #125458): the token leads and the
+# serialized wrapper JSON follows, possibly across a line break behind a stray numeric marker
+# (``to=multi_tool_use.parallel 0200\n{"tool_uses": ...}``). Only whitespace/digits may sit between
+# token and JSON — prose explaining the wrapper syntax ("use it like this: {…}") carries words or
+# punctuation there and must survive part-level drops.
+_PARALLEL_WRAPPER_ECHO_PATTERN = re.compile(
+    r"to=multi_tool_use\.parallel[\s\d]{0,16}\{\s*\"tool_uses\"\s*:", re.IGNORECASE
+)
+
 
 def _serialized_tool_call_echo(text: str) -> bool:
     """True only for the serialized call shape itself, not for prose naming the tool.
@@ -103,14 +114,20 @@ def _serialized_tool_call_echo(text: str) -> bool:
     Gates part-level drops where whole reply parts are discarded; contrast ``_leaked_tool_call_text``,
     whose broad token match is reserved for paths that only downgrade the turn (re-elicit, incomplete).
 
-    The two branches key on different shapes on purpose. The Harmony branch demands the args
+    The three branches key on different shapes on purpose. The Harmony branch demands the args
     JSON close right before ``to=functions.*`` — a bare token in prose must survive the drop —
     and lets a token-leading echo (``to=functions.x {"...": ...}``, never observed in a leak)
-    ride through as text rather than risk eating clean prose. The shell branch needs no wire
-    token because the Codex-CLI echo it matches is an action lead-in line followed by a
-    ``{"cmd": ...}`` blob; the lead-in line alone makes a prose false positive unlikely.
+    ride through as text rather than risk eating clean prose. The parallel-wrapper branch accepts
+    the one token-leading shape that HAS been observed in a leak, keyed on the wrapper JSON
+    immediately following the token. The shell branch needs no wire token because the Codex-CLI
+    echo it matches is an action lead-in line followed by a ``{"cmd": ...}`` blob; the lead-in
+    line alone makes a prose false positive unlikely.
     """
-    return bool(_SERIALIZED_TOOL_CALL_ECHO_PATTERN.search(text)) or _shell_json_echo(text)
+    return (
+        bool(_SERIALIZED_TOOL_CALL_ECHO_PATTERN.search(text))
+        or bool(_PARALLEL_WRAPPER_ECHO_PATTERN.search(text))
+        or _shell_json_echo(text)
+    )
 
 # The Codex backend rejects literal Harmony wire tokens (``invalid_prompt: Request
 # blocked.``). Fullwidth bars survive format-character stripping and stay legible.

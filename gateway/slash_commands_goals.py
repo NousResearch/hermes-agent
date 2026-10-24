@@ -186,6 +186,21 @@ class GatewayGoalCommandsMixin:
             local = await refine_local_session(self, event.source, args)
             if local is not None:
                 return local
+            # A cold cache (or an agent holding no messages) is not an empty conversation: read the
+            # durable transcript without creating a session for an unknown key.
+            from gateway.session_transcript import TranscriptReadError
+            from gateway.slash_commands_status import history_unreadable
+            session_id = await self.async_session_store.peek_session_id(_quick_key)
+            try:
+                history = await self.async_session_store.load_transcript(session_id) if session_id else []
+            except TranscriptReadError:
+                return history_unreadable()
+            turns = sum(1 for m in history if m.get("role") in {"user", "assistant"})
+            if agent is None and turns:
+                return (f"This session has {turns} persisted user/assistant messages, but the live agent "
+                        "isn't cached. Send a message (or /resume) to wake the session first, then /refine.")
+            if turns:
+                snapshot = list(history)
         if error:
             return error
         if not snapshot:

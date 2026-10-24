@@ -7530,7 +7530,7 @@ def _prepare_aux_request(
 
 class _LadderStep(NamedTuple):
     """A provider request the ladder asks its driver to perform. kind: "call" (client, kwargs) |
-    "retry_same_provider" (provider, model) | "fallback" (fb_client, fb_model, fb_label)."""
+    "retry_same_provider" (provider, model[, kwarg overrides]) | "fallback" (fb_client, fb_model, fb_label)."""
     kind: str
     args: tuple
 
@@ -7789,8 +7789,8 @@ def _ladder_credential_rungs(
             logger.info("Auxiliary %s%s: recovered %s via credential-pool rotation after %s",
                         task or "call", tag, pool_provider, type(recovery_err).__name__)
             try:
-                return (yield _LadderStep(
-                    "retry_same_provider", (resolved_provider, route.resolved_model))), None
+                return (yield _LadderStep("retry_same_provider", (resolved_provider, route.resolved_model, {  # unpin: the main key just failed
+                    "resolved_api_key": None, "main_runtime": dict(route.main_runtime or {}, api_key="")}))), None
             except Exception as retry2_err:
                 # Rotated key also hit a wall: mark it now so concurrent processes skip it,
                 # then fall through to the provider fallback.
@@ -8129,8 +8129,8 @@ def _ladder_step_call(
     if step.kind == "call":
         return "call", step.args, dict(provider=req.resolved_provider, api_mode=req.resolved_api_mode)
     if step.kind == "retry_same_provider":
-        retry_provider, retry_model = step.args
-        return "retry", (), dict(retry_kwargs, resolved_provider=retry_provider, resolved_model=retry_model)
+        retry_provider, retry_model, *overrides = step.args
+        return "retry", (), dict(retry_kwargs, resolved_provider=retry_provider, resolved_model=retry_model, **(overrides or [{}])[0])
     return "fallback", step.args, candidate_kwargs
 
 

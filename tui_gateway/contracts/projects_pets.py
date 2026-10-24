@@ -335,6 +335,7 @@ class PetInfoResult(OpenModel):
     framesByRow: dict[str, int] | None = None
     loopMs: int | None = None
     scale: float | None = None
+    marginRight: int = 1
     stateRows: list[str] | None = None
 
 
@@ -348,6 +349,7 @@ class PetInfoMetaResult(Result):
     displayName: str | None = None
     scale: float | None = None
     spritesheetRevision: str | None = None
+    marginRight: int = 1
 
 
 method("pet.info.meta", params=ProfileParams, result=PetInfoMetaResult,
@@ -374,6 +376,7 @@ class PetCellsResult(Result):
     frameMs: float | None = None
     frames: list[list[list[list[int]]]] | list[str] | None = None
     scale: float | None = None
+    marginRight: int = 1
     graphics: str | None = None
     imageId: int | None = None
     color: str | None = None

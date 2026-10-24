@@ -1799,7 +1799,8 @@ def _reap_unsupervised_gateway_orphans(
     supervisor exists (there ``gateway restart`` is a transient command). ``extra_exclude``: already killed.
 
     ``min_age_s`` spares a candidate younger than the grace: a gateway claims
-    ``gateway.pid``/``gateway.lock`` only after imports + runner setup, so a process
+    ``gateway.pid`` only after imports + runner setup (``gateway.lock`` too for ``--replace``
+    and named non-standalone profiles; see ``_claim_gateway_runtime_lock_before_boot``), so a process
     that a previous Desktop generation (or a concurrent ``gateway start``) just launched
     is scan-visible but not yet record-visible, and the argv sweep cannot tell it from
     a corpse. Reaping it writes a planned-stop marker it consumes seconds later — a clean
@@ -4382,7 +4383,7 @@ def _guard_supervised_gateway_conflict(force: bool = False) -> None:
 
 
 def _guard_existing_gateway_process_conflict(replace: bool = False) -> None:
-    """Cheap PID-file preflight before the expensive ``gateway.run`` import (the authoritative lock check):
+    """Cheap PID-file preflight before the expensive ``gateway.run`` import (and the runtime lock claim):
     supervisor loops re-running bare ``gateway run`` burned memory on plugin discovery just to fail
     "already running". Same user-facing contract; never scans other HERMES_HOME roots."""
     if replace or _running_under_gateway_supervisor():
@@ -4413,6 +4414,59 @@ def _guard_existing_gateway_process_conflict(replace: bool = False) -> None:
     print("  Check with `hermes gateway status`.")
     print("  To restart it: `hermes gateway restart`. To stop it: `hermes gateway stop`.")
     print("  To replace it from here: `hermes gateway run --replace`.")
+    sys.exit(1)
+
+
+def _claim_gateway_runtime_lock_before_boot(replace: bool = False) -> None:
+    """Reserve this profile's runtime lock before ``gateway.run`` is imported or an event loop exists.
+
+    ``start_gateway`` re-reserves it (idempotent) and stays authoritative, but it runs inside
+    ``asyncio.run`` after the heavy import. Concurrent ordinary starts all pass the PID-file
+    preflight, and on Windows a losing ``pythonw … gateway run`` could stall in Proactor loop
+    construction before reaching that claim, lingering as an orphan with a gateway argv. Holding the
+    lock this early also makes the starter visible to discovery and the orphan reaper through its
+    lock record.
+
+    Excluded, keeping start_gateway's order: ``--replace`` (it must stop the current owner before
+    it can lock) and named non-standalone profiles, whose home the default multiplexer reserves
+    too — claiming it here would beat the multiplexer's all-or-nothing reservation at boot, and a
+    host rescan that ``start_gateway``'s attach decision asks for could no longer serve it.
+    """
+    if replace:
+        return
+    from gateway.status import _clear_running_pid_cache, _get_process_hermes_home, get_running_pid
+    home = _get_process_hermes_home()
+    try:
+        from hermes_constants import profile_name_for_home
+        from hermes_cli.profiles import profile_is_standalone
+        if profile_name_for_home(home) not in (None, "default") and not profile_is_standalone(home):
+            return
+    except Exception:
+        logger.debug("Early gateway lock scope probe failed", exc_info=True)
+        return
+    from gateway.runtime_ownership import OwnershipConflict, process_ownership
+    # Probe while the lock is unheld: only then does get_running_pid() unlink a stale gateway.pid a
+    # killed owner left behind. Once we hold the lock it trusts our lock record and keeps that file,
+    # so start_gateway's O_EXCL PID claim would lose a "race" to the stale file.
+    try:
+        get_running_pid()
+    except Exception:
+        logger.debug("Pre-claim gateway PID probe failed", exc_info=True)
+    try:
+        process_ownership.reserve([home])
+    except OwnershipConflict:
+        message = ("Another process holds this profile's gateway runtime lock "
+                   "(a gateway starting or running, or a backup/profile operation).")
+        hint = "  Check with `hermes gateway status`."
+    except OSError as exc:
+        message, hint = f"Cannot reserve this profile's gateway runtime lock: {exc}", None
+    else:
+        _clear_running_pid_cache()
+        return
+    logger.warning("gateway run refused (exit 1): %s", message)
+    print_error(message)
+    if hint:
+        print(hint)
     sys.exit(1)
 
 
@@ -4565,6 +4619,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     _attach_to_host_gateway_or_guard(force=force, replace=replace)
     _guard_supervised_gateway_conflict(force=force)
     _guard_existing_gateway_process_conflict(replace=replace)
+    _claim_gateway_runtime_lock_before_boot(replace=replace)
     sys.path.insert(0, str(PROJECT_ROOT))
     _apply_startup_watchdog_config()
     from hermes_cli.observability.shared_metrics_process import begin_process

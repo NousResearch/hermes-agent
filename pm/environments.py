@@ -402,6 +402,36 @@ def venv_python_version(venv: Path) -> tuple[int, int] | None:
     return None
 
 
+def ensure_environment_matches_interpreter(
+    venv: Path, *, running: tuple[int, int] | None = None,
+) -> None:
+    """Refuse to graft a dependency generation built for another Python.
+
+    :func:`activate_dependencies` replaces this process's site-packages with the selected
+    generation's. That contract only holds when both use the same CPython minor version:
+    a 3.14 tree on a 3.11 interpreter leaves every compiled module unimportable
+    (``pydantic_core``, ``_cffi_backend``, ``mcp``), and the failure is quiet — tool search
+    is skipped, MCP servers are parked, Group Chat dies — because a missing optional import
+    is tolerated at every call site. Fail here, where the remedy is still nameable.
+
+    A generation whose version cannot be read keeps today's behaviour: older trees may
+    predate ``pyvenv.cfg`` version pinning, and refusing them would break working setups.
+    """
+    import sys
+
+    selected = venv_python_version(venv)
+    if selected is None:
+        return
+    current = running or (sys.version_info.major, sys.version_info.minor)
+    if selected != current:
+        raise RuntimeError(
+            f"dependency environment {venv} was built for Python "
+            f"{selected[0]}.{selected[1]} but this process runs "
+            f"{current[0]}.{current[1]}; refusing to mix ABIs. Relaunch with the managed "
+            "interpreter (source launchers do), or run `hermes pm repair` to rebuild it"
+        )
+
+
 def site_packages(venv: Path) -> Path:
     import sys
 
@@ -490,6 +520,9 @@ def activate_dependencies(project_root: Path) -> None:
             return  # External/Nix interpreter owns its original sys.path.
     if not selected.is_dir():
         raise RuntimeError(f"dependency environment has no site-packages: {selected}")
+    # The tree must be importable by THIS interpreter before it replaces our site-packages;
+    # otherwise compiled modules vanish and every optional import degrades quietly.
+    ensure_environment_matches_interpreter(environment)
     import site
 
     sys.path[:] = [entry for entry in sys.path

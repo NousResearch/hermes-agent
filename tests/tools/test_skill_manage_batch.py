@@ -59,9 +59,15 @@ class TestSkillManageBatch(unittest.TestCase):
         # operations[] is the only call shape, so a finding the per-op handler attaches must
         # survive into the batch row or the linter is silent for every model call.
         from tools.skill_linter import _BODY_SOFT_BUDGET_CHARS
-        self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])
-        r = self._call("probe", [{"action": "patch", "old_string": "Step 1.",
-                                  "new_string": "- rule; why.\n" * (_BODY_SOFT_BUDGET_CHARS // 12 + 1)}])
+        from unittest.mock import patch
+        # The 24k-body probe would first hit the 20k routing cap (local patch: a fat SKILL.md is
+        # a routing layer, skill_manage refuses body growth). This test targets the LINTER
+        # contract riding the batch rows, so the routing guard is switched off via its knob.
+        with patch("hermes_cli.config.load_config",
+                   return_value={"skills": {"routing_cap_chars": 0}}):
+            self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])
+            r = self._call("probe", [{"action": "patch", "old_string": "Step 1.",
+                                      "new_string": "- rule; why.\n" * (_BODY_SOFT_BUDGET_CHARS // 12 + 1)}])
         self.assertTrue(r["success"], r)
         rules = {w["rule"] for w in r["results"][0]["lint_warnings"]}
         self.assertIn("oversized-body", rules)

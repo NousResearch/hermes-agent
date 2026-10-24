@@ -64,22 +64,39 @@ def _timeout_from_env_or_config(
     return None
 
 
-def _get_script_timeout() -> int:
-    """Resolve cron pre-run script timeout from module/env/config with a safe default."""
+def _script_timeout_seconds(raw) -> int:
+    """Whole seconds > 0, or 0 for an exact numeric zero (no deadline); raises on anything else,
+    so a negative, fractional-below-one or unparsable value falls back instead of disabling."""
+    if isinstance(raw, bool):
+        raise ValueError("script timeout must be a number, not a boolean")
+    value = float(raw)
+    if value == 0:
+        return 0
+    timeout = int(value)
+    if timeout <= 0:
+        raise ValueError(f"script timeout must be positive or exactly 0, got {raw!r}")
+    return timeout
+
+
+def _get_script_timeout() -> Optional[int]:
+    """Resolve cron pre-run script timeout from module/env/config with a safe default.
+
+    None means no deadline (an exact 0 at the first layer that sets one); cancellation and
+    shutdown still stop the script."""
     if _sched._SCRIPT_TIMEOUT != _sched._DEFAULT_SCRIPT_TIMEOUT:
         try:
-            timeout = _positive_int(_sched._SCRIPT_TIMEOUT)
-            if timeout is not None:
-                return timeout
+            return _script_timeout_seconds(_sched._SCRIPT_TIMEOUT) or None
         except Exception:
             logger.warning(
                 "Invalid patched _SCRIPT_TIMEOUT=%r; using env/config/default",
                 _sched._SCRIPT_TIMEOUT)
     resolved = _timeout_from_env_or_config(
-        "HERMES_CRON_SCRIPT_TIMEOUT", "script_timeout_seconds", _positive_int,
+        "HERMES_CRON_SCRIPT_TIMEOUT", "script_timeout_seconds", _script_timeout_seconds,
         "cron script timeout",
     )
-    return _sched._DEFAULT_SCRIPT_TIMEOUT if resolved is None else resolved
+    if resolved is None:
+        return _sched._DEFAULT_SCRIPT_TIMEOUT
+    return resolved or None
 
 
 _DEFAULT_MEDIA_SEND_TIMEOUT = 300
@@ -487,7 +504,9 @@ def _run_job_script(
         proc = subprocess.Popen(
             argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             cwd=workdir or str(path.parent), env=env, **popen_kwargs)
-        deadline = time.monotonic() + script_timeout
+        # No deadline (script_timeout None): only the deadline check is skipped; the cancel poll
+        # below still runs every 0.1s, so ownership loss and shutdown stop the script.
+        deadline = None if script_timeout is None else time.monotonic() + script_timeout
         while True:
             # Tree-kill on cancel AND timeout: killpg misses setsid grandchildren (watchdogs,
             # backgrounded shell jobs); kill_process_tree snapshots descendants BEFORE signalling.
@@ -495,7 +514,7 @@ def _run_job_script(
                 _terminate_cron_script_tree(proc)
                 _drain_script_pipes(proc)
                 return False, "Script cancelled because cron fire ownership was lost"
-            remaining = deadline - time.monotonic()
+            remaining = 0.1 if deadline is None else deadline - time.monotonic()
             if remaining <= 0:
                 _terminate_cron_script_tree(proc)
                 _drain_script_pipes(proc)

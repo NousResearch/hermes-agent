@@ -1092,11 +1092,27 @@ def _entry_ids(entries: Iterable[Any]) -> dict[str, dict[str, Any]]:
     return {e.get("id"): e for e in entries if isinstance(e, dict) and e.get("id")}
 
 
+def _merge_pool_runtime_metadata(entry, disk_entry, base, incoming=None):
+    """Merge runtime usage deltas while preserving a peer's label edit."""
+    if not isinstance(disk_entry, dict) or not isinstance(base, dict):
+        return entry
+    incoming = entry if incoming is None else incoming
+    merged = dict(entry)
+    previous = int(base.get("request_count") or 0)
+    delta = max(0, int(incoming.get("request_count") or 0) - previous)
+    merged["request_count"] = int(disk_entry.get("request_count") or 0) + delta
+    if incoming.get("label") == base.get("label"):
+        merged["label"] = disk_entry.get("label", entry.get("label"))
+    return merged
+
+
 def write_credential_pool(
     provider_id: str, entries: list[dict[str, Any]], *,
     removed_ids: Optional[Iterable[str]] = None,
     status_cleared_ids: Optional[Iterable[str]] = None,
     token_bases: Optional[dict[str, tuple[Any, Any]]] = None,
+    preserve_disk_order: bool = False,
+    metadata_bases: Optional[dict[str, dict[str, Any]]] = None,
 ) -> list[dict[str, Any]]:
     """Persist one provider's credential pool under auth.json.
 
@@ -1127,10 +1143,50 @@ def write_credential_pool(
             )
             if isinstance(e, dict) else e
             for e in sanitized]
+        merged = [
+            _merge_pool_runtime_metadata(e, existing_by_id.get(e.get("id")),
+                                         (metadata_bases or {}).get(e.get("id")), incoming=original)
+            if isinstance(e, dict) else e for e, original in zip(merged, sanitized)
+        ]
         for disk_entry in existing_list:
             disk_id = disk_entry.get("id") if isinstance(disk_entry, dict) else None
             if disk_id and disk_id not in new_ids and disk_id not in removed:
                 merged.append(sanitize_borrowed_credential_payload(disk_entry, provider_id))
+        if preserve_disk_order:
+            merged_by_id = {
+                entry.get("id"): entry
+                for entry in merged
+                if isinstance(entry, dict) and entry.get("id")
+            }
+            disk_order_ids = [
+                entry.get("id")
+                for entry in existing_list
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("id")
+                    and entry.get("id") not in removed
+                    and entry.get("id") in merged_by_id
+                )
+            ]
+            ordered_ids = disk_order_ids + [
+                entry.get("id")
+                for entry in merged
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("id")
+                    and entry.get("id") not in disk_order_ids
+                )
+            ]
+            ordered_entries = [merged_by_id[entry_id] for entry_id in ordered_ids]
+            unkeyed_entries = [
+                entry
+                for entry in merged
+                if not isinstance(entry, dict) or not entry.get("id")
+            ]
+            merged = [
+                {**entry, "priority": priority}
+                for priority, entry in enumerate(ordered_entries)
+            ] + unkeyed_entries
         pool[provider_id] = merged
         _save_auth_store(auth_store)
         return merged

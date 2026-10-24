@@ -333,7 +333,7 @@ class GatewayTurnPersistenceMixin:
         # When compression is exhausted, the session is permanently too large to process. (#9893) Never wipe
         # the session for that — retry-next-message semantics apply (#69870 lock-skip consumer; salvaged
         # from #49874).
-        if agent_result.get("compression_deferred"):
+        if agent_result.get("compression_deferred") or agent_result.get("compression_retryable"):
             logger.info(
                 "Compression deferred for session %s — the compression "
                 "lock is held by a concurrent compressor. Keeping the "

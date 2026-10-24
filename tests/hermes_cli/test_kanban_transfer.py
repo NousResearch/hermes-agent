@@ -203,6 +203,33 @@ def test_claimed_task_arrives_unclaimed_and_queued(kanban_root, tmp_path):
     assert task["consecutive_failures"] == 0
 
 
+def test_run_session_link_never_travels(kanban_root, tmp_path):
+    """``worker_session_id`` names a session in the exporter's state.db, and the transcript API
+    reads whatever session it names — an archive must not be able to choose one."""
+    ids = _seed_board()
+    with kbc.connect_closing(board="alpha") as conn:
+        with kb.write_txn(conn):
+            conn.execute(
+                "INSERT INTO task_runs (task_id, profile, status, started_at, worker_session_id) "
+                "VALUES (?, 'default', 'done', 1, 'someone-elses-session')", (ids["scratch"],))
+    archive = kt.export_board("alpha", str(tmp_path / "alpha"))["archive"]
+
+    kanban_root("target")
+    board = kt.import_board(archive)["board"]
+    with kbc.connect_closing(board=board) as conn:
+        sessions = [row["worker_session_id"] for row in conn.execute("SELECT worker_session_id FROM task_runs")]
+    assert sessions == [None]
+
+
+def test_export_of_a_board_not_opened_since_an_upgrade(kanban_root, tmp_path):
+    """Export copies the DB file without running migrations, so the scrub may meet a schema
+    older than the columns it clears."""
+    _seed_board()
+    with kbc.connect_closing(board="alpha") as conn:
+        conn.execute("ALTER TABLE task_runs DROP COLUMN worker_session_id")
+    assert Path(kt.export_board("alpha", str(tmp_path / "alpha"))["archive"]).is_file()
+
+
 def test_gateway_subscriptions_never_travel(kanban_root, tmp_path):
     ids = _seed_board()
     _subscribe(ids["scratch"])

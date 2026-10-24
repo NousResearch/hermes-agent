@@ -3,6 +3,7 @@ import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { capabilityScoped, hermesApi, type OwnerScope } from '@/api/client'
 import type { HermesConnection } from '@/global'
 import { translateNow } from '@/i18n'
+import { resolveAgentHostPath } from '@/lib/agent-path'
 import { desktopFsCacheKey, isReadFileErrorResult, readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { LruCache } from '@/lib/lru-cache'
 import { capitalize } from '@/lib/text'
@@ -117,14 +118,8 @@ export async function resolveMediaDisplaySrc(path: string, owner?: OwnerScope): 
   // An explicit local owner is this device, even with a remote foreground.
   // Keep the native reader and its configured size cap; the backend preview
   // endpoint has a separate fixed limit.
-  if (owner?.connectionId === LOCAL_CONNECTION_ID && window.hermesDesktop?.readFileDataUrl) {
-    const dataUrl = await window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
-
-    if (isReadFileErrorResult(dataUrl)) {
-      throw new Error(dataUrl.message || `Media file read failed: ${dataUrl.error}`)
-    }
-
-    return dataUrl
+  if (owner?.connectionId === LOCAL_CONNECTION_ID && typeof window.hermesDesktop?.readFileDataUrl === 'function') {
+    return readLocalMediaDataUrl(path)
   }
 
   // A tile can belong to a different gateway than the foreground. Pin both
@@ -147,7 +142,18 @@ export async function resolveMediaDisplaySrc(path: string, owner?: OwnerScope): 
     return mediaExternalUrl(path)
   }
 
-  const dataUrl = await window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+  return readLocalMediaDataUrl(path)
+}
+
+// A docker agent's container path misses on this disk; retry once with its host path (#143098).
+async function readLocalMediaDataUrl(path: string): Promise<string> {
+  const filePath = filePathFromMediaPath(path)
+  let dataUrl = await window.hermesDesktop.readFileDataUrl(filePath)
+
+  if (isReadFileErrorResult(dataUrl)) {
+    const hostPath = await resolveAgentHostPath(filePath)
+    dataUrl = hostPath ? await window.hermesDesktop.readFileDataUrl(hostPath) : dataUrl
+  }
 
   if (isReadFileErrorResult(dataUrl)) {
     throw new Error(dataUrl.message || `Media file read failed: ${dataUrl.error}`)

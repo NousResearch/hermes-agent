@@ -331,7 +331,10 @@ def test_fs_media_posix_paths_are_not_interpreted_as_windows_drives():
         assert _fs_path(path) == Path(path).resolve()
 
 
-@pytest.mark.parametrize("endpoint", ["/api/fs/read-text", "/api/fs/read-data-url", "/api/fs/download"])
+@pytest.mark.parametrize(
+    "endpoint",
+    ["/api/fs/read-text", "/api/fs/read-data-url", "/api/fs/download", "/api/fs/resolve-agent-path"],
+)
 @pytest.mark.parametrize("relative", [".env", "auth.json", "mcp-tokens/github.json"])
 def test_fs_readers_reject_sensitive_paths(client, tmp_path, endpoint, relative):
     target = tmp_path / relative
@@ -468,6 +471,52 @@ def test_fs_read_untranslated_container_path_names_the_agent_sandbox(
 
     assert response.status_code == 404
     assert "agent sandbox" in response.json()["detail"]
+
+
+def test_fs_resolve_agent_path_maps_docker_workspace_path_to_host(client, docker_volumes):
+    """#143098: the local Desktop reads through Electron, which cannot see docker
+    mounts; it asks for the host path behind the agent's /workspace path."""
+    target = docker_volumes / "generated report.md"
+    target.write_text("container output", encoding="utf-8")
+
+    response = client.get(
+        "/api/fs/resolve-agent-path", params={"path": "/workspace/generated report.md"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"path": str(target.resolve())}
+
+
+def test_fs_resolve_agent_path_keeps_readable_host_path(client, docker_volumes, tmp_path):
+    host_file = tmp_path / "plain.txt"
+    host_file.write_text("host", encoding="utf-8")
+
+    response = client.get("/api/fs/resolve-agent-path", params={"path": str(host_file)})
+
+    assert response.status_code == 200
+    assert response.json() == {"path": str(host_file.resolve())}
+
+
+def test_fs_resolve_agent_path_unmapped_container_path_names_the_sandbox(client, docker_volumes):
+    response = client.get(
+        "/api/fs/resolve-agent-path", params={"path": "/workspace/never-written.md"},
+    )
+
+    assert response.status_code == 404
+    assert "agent sandbox" in response.json()["detail"]
+
+
+def test_fs_resolve_agent_path_refuses_dotdot_and_directories(client, docker_volumes, tmp_path):
+    (tmp_path / "outside.txt").write_text("outside", encoding="utf-8")
+    (docker_volumes / "nested").mkdir()
+
+    escape = client.get(
+        "/api/fs/resolve-agent-path", params={"path": "/workspace/../outside.txt"},
+    )
+    directory = client.get("/api/fs/resolve-agent-path", params={"path": "/workspace/nested"})
+
+    assert escape.status_code == 404
+    assert directory.status_code == 400
 
 
 def test_fs_list_translates_docker_workspace_path_to_host(client, docker_volumes):

@@ -4,6 +4,7 @@ import {
   type ClipboardEvent,
   type FormEvent,
   type KeyboardEvent,
+  type MouseEvent,
   useCallback,
   useEffect,
   useId,
@@ -1107,6 +1108,23 @@ export function ChatBar({
   // dispatchSubmitRef — no effect needed for a plain mirror.
   voiceStopRef.current = { active: voiceConversationActive, end: endConversation }
 
+  const handleComposerSurfaceClick = useCallback(
+    (event: MouseEvent<HTMLDivElement>) => {
+      if (!busy || hasComposerPayload) {
+        return
+      }
+
+      const target = event.target
+
+      if (target instanceof Element && target.closest('button, a, input, select, textarea, [role="button"]')) {
+        return
+      }
+
+      void haltRun()
+    },
+    [busy, haltRun, hasComposerPayload]
+  )
+
   const contextMenu = (
     <ContextMenu
       onInsertText={insertText}
@@ -1450,6 +1468,7 @@ export function ChatBar({
                   dragActive && COMPOSER_DROP_ACTIVE_CLASS
                 )}
                 data-slot="composer-surface"
+                onClick={handleComposerSurfaceClick}
                 ref={composerSurfaceRef}
               >
                 <div aria-hidden className={composerInputBacking} />

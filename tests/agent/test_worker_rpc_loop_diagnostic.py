@@ -1,5 +1,5 @@
 """The on-loop guard names its caller at WARNING (#139029): a best-effort write swallows the raise
-at debug, and only the sticky follow-up failures reached the logs."""
+at debug, so the guard's own WARNING is what names it."""
 import asyncio
 import logging
 
@@ -61,6 +61,7 @@ def test_on_loop_store_write_names_the_caller_not_the_store(tmp_path, monkeypatc
         assert message.split('caller: ', 1)[1].startswith(f'{__name__}:best_effort_usage:')
         assert 'agent.runtime_session_store' not in message.split('caller: ', 1)[1]
         assert SECRET not in message
-        assert store.failure == 'synchronous_rpc_on_event_loop'
+        # Refused before journaling: nothing pending, and later off-loop writes are not poisoned.
+        assert store.failure is None and store.journal['pending'] == []
     finally:
         store._outbox_owner.close()

@@ -9,7 +9,7 @@ from typing import NamedTuple, Optional
 
 from agent.conversation_compression_archive import ABSORBED_ROW_IDS
 from agent.message_metadata import (
-    CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, PERSISTENCE_ONLY_MESSAGE_FIELDS, TOOL_CALL_UID, TOOL_CALL_UIDS,
+    CANONICAL_ROW, DATA_USE, DB_ROW_SNAPSHOT, MESSAGE_UID, PERSISTENCE_ONLY_MESSAGE_FIELDS, TOOL_CALL_UID, TOOL_CALL_UIDS,
 )
 from hermes_state_keys import admission_fingerprint
 
@@ -455,6 +455,8 @@ def recover_session_inputs(db, *, epoch: int) -> int:
     """Never replay started work. Live worker adoption is a separate explicit operation."""
     def write(conn):
         _epoch(conn, epoch)
+        from hermes_state_runtime_workers import retire_stale_children
+        retire_stale_children(conn, epoch)
         conn.execute("UPDATE worker_executions SET status='unknown' WHERE status IN ('registered','running') AND owner_epoch!=?", (epoch,))
         # A steer handed to a lost claim may or may not have reached its agent: never replayed.
         conn.execute("UPDATE session_admissions SET outcome='interrupted' WHERE status='terminal' AND outcome=? "
@@ -805,7 +807,7 @@ _MESSAGE_FIELDS = frozenset({
     'finish_reason', 'reasoning', 'reasoning_content', 'reasoning_details',
     'codex_reasoning_items', 'codex_message_items', 'platform_message_id', 'message_id',
     'observed', 'effect_disposition', '_compressed_summary', 'timestamp', 'api_content',
-    'display_kind', 'display_metadata', '_row_id', '_canonical_content', DB_ROW_SNAPSHOT, CANONICAL_ROW,
+    'display_kind', 'display_metadata', '_row_id', '_canonical_content', DB_ROW_SNAPSHOT, CANONICAL_ROW, DATA_USE,
     # Main's durable message identity (message_uid / merge witness / tool-call uids) and the alternation
     # repair's row counts ride every persisted dict; the owner's insert and coverage read them.
 }) | PERSISTENCE_ONLY_MESSAGE_FIELDS | {ABSORBED_ROW_IDS}

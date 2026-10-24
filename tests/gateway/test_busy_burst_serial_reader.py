@@ -218,7 +218,15 @@ async def test_restart_waits_for_a_held_text_queued_behind_a_slow_capture(monkey
         release.set()
     await asyncio.wait_for(restart, 15)
     assert sorted(row['request_id'] for row in _rows(authority)) == ['B', 'V'], _rows(authority)
+    # The stand-in for the next owner. Whether V's drain claims before or after /restart closes
+    # admission is scheduling: once closed, its claim is refused and it pauses (runtime_draining),
+    # leaving the rows queued. So let this owner's drains finish, then run the startup recovery
+    # the next owner runs, rather than hoping a drain was still in flight when the flag flips.
+    await async_wait_until(lambda: all(live.task is None or live.task.done() for live in authority.sessions.values()),
+                           timeout=15, what="the draining owner's drains to exit")
     runner._draining = False
+    from gateway.run_runtime import recover_profile_native_sessions
+    assert set((await recover_profile_native_sessions(runner, authority)).values()) <= {'ready'}
     await async_wait_until(lambda: all(row['status'] == 'terminal' for row in _rows(authority)), timeout=15,
                            what='both turns to run')
     await asyncio.to_thread(authority.db.close)

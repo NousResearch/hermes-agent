@@ -1,15 +1,15 @@
 name: blender
 repo: https://github.com/NousResearch/hermes-official-plugins
-sha: ad20043d4faf61081a905fc684d7c0ba3dfe9d6b
+sha: e9910ad065087f2833c9a460157290eff5d5b186
 subdir: blender
-version: "0.2.0"
-description: "Official Blender Lab MCP server over stdio, pinned to upstream v1.0.3, with a Blender workflow skill. Requires Blender 5.1+, its separately installed MCP add-on, Git and uv. First startup downloads Python dependencies; prepare the uv environment before connecting. Disclosure — tools execute arbitrary Python in Blender with your privileges; first start downloads the pinned Blender Lab MCP server and its Python dependencies with uv; at install Hermes looks for Blender in the standard install locations (Windows uninstall registry and Program Files, /Applications and the Steam library on macOS, PATH, flatpak, snap and Steam on Linux) and refuses the install when it is missing. Server discovery does not prove scene readiness."
+version: "0.3.0"
+description: "Official Blender Lab MCP server over stdio, pinned to upstream v1.0.3, with a Blender workflow skill. Requires Blender 5.1+, Git and uv. The skill opens Blender itself when a task needs it and offers to install Blender Lab's MCP add-on. First startup downloads Python dependencies; prepare the uv environment before connecting. Disclosure — tools execute arbitrary Python in Blender with your privileges; the skill starts Blender with online access for that session only (your saved preference is unchanged), and the add-on's local server on port 9876 has no password, so any program on this computer can use it while Blender is open; only after you agree does the skill download the v1.0.3 add-on, check its hash and install or enable it; first start downloads the pinned Blender Lab MCP server and its Python dependencies with uv; at install Hermes looks for Blender in the standard install locations (Windows uninstall registry and Program Files, /Applications and the Steam library on macOS, PATH, flatpak, snap and Steam on Linux) and refuses the install when it is missing. Server discovery does not prove scene readiness."
 title: Blender
 maintainer: NousResearch
 tier: official
 category: tools
 docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/blender
-image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/ad20043d4faf61081a905fc684d7c0ba3dfe9d6b/assets/blender.jpg
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/e9910ad065087f2833c9a460157290eff5d5b186/assets/blender.jpg
 platforms: [windows, macos, linux]
 onboarding: true
 capabilities:

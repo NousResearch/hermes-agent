@@ -333,6 +333,7 @@ _UPDATE_DEPENDENCIES = (
     "hermes_cli/desktop_build_lock.py",
     "hermes_cli/memory_provider_migration.py",
     "hermes_cli/left_core_migration.py",  # source_build migrates plugins that left core
+    "hermes_cli/config_version_stamp.py",  # post_update converts legacy AGENT_BROWSER_* before stamping
     "hermes_cli/web_build_limits.py",  # source_build caps the dashboard Node build
     "hermes_cli/desktop_console.py",
     "hermes_cli/bundled_app.py",
@@ -425,6 +426,8 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_cli/old_updater",
         # The downgrade refusal (hermes_cli/update_downgrade_guard.py) reads state.db through it.
         "hermes_state_holders.py",
+        # The search-index notice (hermes_cli/update_cmd_maint.py) reads the stored FTS layout through it.
+        "hermes_state_fts.py",
         "hermes_cli/_old_updater",
         "hermes_cli/post_update",
         "hermes_cli/config_migrations",

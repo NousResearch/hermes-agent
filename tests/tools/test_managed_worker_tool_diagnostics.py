@@ -1,10 +1,11 @@
 """A tool this session cannot reach must never be answered with "call it directly".
 
 ``_HERMES_CORE_TOOLS`` is static, so ``tool_call`` matched any core tool by name, including
-``clarify`` inside a subagent and ``delegate_task`` inside a managed worker turn (every Kanban
-card, ef52a09a558), where no direct call can ever succeed and the model retries. Absence is
-reported as unavailability, and a managed worker names the supported alternative (#141793).
-Both tests drive the real ``tool_call`` bridge in ``model_tools``.
+``clarify`` inside a subagent, where no direct call can ever succeed and the model retries. Absence
+is reported as unavailability. In a managed worker (every Kanban card) ``delegate_task`` works
+through owner-reserved children (#141793), so a turn whose toolsets leave delegation off gets the
+same ordinary answer, never a claim that the worker boundary itself forbids delegation. The tests
+drive the real ``tool_call`` bridge in ``model_tools``.
 """
 import json
 
@@ -24,24 +25,26 @@ def _bridge(name: str, toolsets: list[str]) -> str:
     return json.loads(result).get("error", "")
 
 
-def test_managed_worker_explains_the_boundary_for_delegate_task(monkeypatch):
-    monkeypatch.setattr(runtime_session_store, "_worker_process", True)
-    worker_tools = [{"type": "function", "function": {"name": "kanban_create", "parameters": {}}}]
-    described = json.loads(dispatch_tool_describe({"names": ["delegate_task"]}, current_tool_defs=worker_tools,
+@pytest.mark.parametrize("worker", [True, False])
+def test_delegate_task_absent_from_a_turn_is_reported_as_unavailable(monkeypatch, worker):
+    monkeypatch.setattr(runtime_session_store, "_worker_process", worker)
+    turn_tools = [{"type": "function", "function": {"name": "kanban_create", "parameters": {}}}]
+    described = json.loads(dispatch_tool_describe({"names": ["delegate_task"]}, current_tool_defs=turn_tools,
                                                   config=ToolSearchConfig.from_raw({})))
-    direct = _invalid_tool_name_error_content("delegate_task", ["kanban_create"])
-    for message in (_bridge("delegate_task", ["file"]), described["errors"]["delegate_task"], direct):
-        assert "managed worker" in message and "kanban_create" in message, message
-        assert "Call it directly" not in message and "does not exist" not in message, message
+    for message in (_bridge("delegate_task", ["file"]), described["errors"]["delegate_task"]):
+        assert "not available in this execution context" in message, message
+        assert "Call it directly" not in message and "managed worker" not in message, message
+    assert "managed worker" not in _invalid_tool_name_error_content("delegate_task", ["kanban_create"])
 
 
-@pytest.mark.parametrize("toolsets, expected", [
-    (["file"], "not available in this execution context"),  # stripped here: never "call it directly"
-    (["file", "clarify"], "Call it directly"),               # reachable here: the door guidance holds
+@pytest.mark.parametrize("name, toolsets, expected", [
+    ("clarify", ["file"], "not available in this execution context"),  # stripped: never "call it directly"
+    ("clarify", ["file", "clarify"], "Call it directly"),               # reachable: the door guidance holds
+    ("delegate_task", ["file", "delegation"], "Call it directly"),      # a worker turn that has it
 ])
-def test_outside_a_worker_core_tool_guidance_follows_the_session(monkeypatch, toolsets, expected):
-    monkeypatch.setattr(runtime_session_store, "_worker_process", False)
-    message = _bridge("clarify", toolsets)
+def test_core_tool_guidance_follows_the_session(monkeypatch, name, toolsets, expected):
+    monkeypatch.setattr(runtime_session_store, "_worker_process", name == "delegate_task")
+    message = _bridge(name, toolsets)
     assert expected in message and "managed worker" not in message, message
 
 

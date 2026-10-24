@@ -483,10 +483,23 @@ def subagent_records(parent, session_id=None, *, session_db=None, route=None, in
     # A rotating /compress moves the conversation to a new stored id; an evicted parent keeps its earlier one.
     target_sids = _compression_lineage(expected_db, target_sid)
     with registry._active_subagents_lock:
-        # Deliberately no unconditional durable-ID fallback: only a parent evicted by this session's own fallback keeps its children visible in the read-only roster.
         return [dict(record) for record in registry._active_subagents.values()
                 if (parent is not None and registry._is_descendant_of(record.get('agent'), parent))
-                or _has_fallback_evicted_ancestor(record.get('agent'), target_sids, expected_db, effective_route, registry)]
+                or _has_fallback_evicted_ancestor(record.get('agent'), target_sids, expected_db, effective_route, registry)
+                or _owned_by_lineage(record, target_sids, expected_db)]
+
+
+def _owned_by_lineage(record, target_sids, expected_db):
+    """The read-only roster follows the conversation, as ``delegate_task(action="list")`` does: a
+    child whose durable owner id is in this session's compression lineage, written to the same
+    session database file. Without it every cached-agent rebuild (``/reasoning``, ``/model``, a
+    policy refresh, idle eviction) hid still-running children from the dock while the status bar
+    kept counting them. Control and tail stay pinned to the resident parent."""
+    if not target_sids or record.get('owner_agent_session_id') not in target_sids:
+        return False
+    expected_path = getattr(expected_db, 'db_path', None)
+    child_path = getattr(getattr(record.get('agent'), '_session_db', None), 'db_path', None)
+    return expected_path is not None and child_path is not None and str(child_path) == str(expected_path)
 
 
 def _compression_lineage(db, session_id):

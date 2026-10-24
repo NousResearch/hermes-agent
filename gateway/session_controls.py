@@ -230,6 +230,8 @@ class AuthorityConnection:
         handlers.update(connection_handlers(self))
         from gateway.session_control_actions import control
         handlers['session.control'] = partial(control, self)
+        from gateway.session_onboarding import handlers as onboarding_handlers
+        handlers.update(onboarding_handlers(self))
         return handlers
 
     async def dispatch(self, request):
@@ -462,7 +464,8 @@ class AuthorityConnection:
                     skills_prompt = await asyncio.to_thread(render_launch_skills, params, sid)
             # Host-bound client values apply only over the gateway's own ticketed attach (run_api).
             ref = stage_local_session(self.authority, self.actor, params, skills_prompt=skills_prompt,
-                                      client_local=self.native_owner)
+                                      client_local=self.native_owner,
+                                      desktop_local=getattr(self.transport, 'desktop_local', False))
             if isinstance(ref, dict):
                 # The creation commit runs off the owner loop: a held writer must not freeze
                 # every session behind one new chat (N50).
@@ -623,13 +626,16 @@ class AuthorityConnection:
             await asyncio.to_thread(refresh_profile_hooks, policy_for_source(self.authority.runner, source))
             info = await snapshot_info(self.authority, snapshot.handle.ref)
         from gateway.session_connections import pending_connection
-        display = {}
+        from gateway.session_server_requests import open_requests
+        # Its home module, not tui_gateway.server: importing the stdio sidecar points sys.stdout at stderr.
+        from tui_gateway.tool_progress import _todo_state_from_history
+        history, display = list(snapshot.history), {}
         if params.get('display_projection'):
             # A micro-compaction merge stays in ``messages`` (an undo target); its originals are what shows.
             display['display_messages'] = display_projection(
-                [row for row in snapshot.history if not model_only(row)], self.authority.profile_id)
+                [row for row in history if not model_only(row)], self.authority.profile_id)
         return {'session_id': ref.session_id, 'stored_session_id': ref.session_id,
-                'messages': list(snapshot.history), **display, 'message_count': len(snapshot.history),
+                'messages': history, **display, 'message_count': len(history),
                 'running': snapshot.handle.execution_state == 'running',
                 'authority_epoch': snapshot.handle.authority_epoch,
                 'replay_epoch': snapshot.replay_epoch, 'last_sequence': snapshot.last_sequence,
@@ -637,7 +643,13 @@ class AuthorityConnection:
                 'execution_generation': snapshot.handle.execution_generation,
                 'pending': [asdict(r) for r in snapshot.pending],
                 'prompts': list(snapshot.prompts), 'info': info,
-                'pending_connection': pending_connection(self.authority, ref.session_id)}
+                'pending_connection': pending_connection(self.authority, ref.session_id),
+                # Still-waiting server→client requests: the event ring cannot say "still open".
+                'open_requests': open_requests(self.authority.sessions[snapshot.handle.ref.session_id].event_stream,
+                                               snapshot.handle.ref.session_id),
+                # The newest todo result in the transcript, the snapshot the session's agent hydrates
+                # from and its ``todo.updated`` frames carried: a viewer attaching shows the plan now.
+                'todo_state': _todo_state_from_history(history)}
 
     def _spawn_notice(self, ref):
         """Low-disk auto-prune question for this viewer, off the resume reply's path."""
@@ -677,7 +689,9 @@ class AuthorityConnection:
         epoch = params.get('replay_epoch')
         if type(sequence) is not int or sequence < 0 or (epoch is not None and not isinstance(epoch, str)):
             raise RuntimeStoreError('invalid_params')
-        return self.authority.sessions[ref.session_id].event_stream.since(epoch, sequence)
+        from gateway.session_server_requests import open_requests
+        stream = self.authority.sessions[ref.session_id].event_stream
+        return {**stream.since(epoch, sequence), 'open_requests': open_requests(stream, ref.session_id)}
 
     async def submit(self, ref, params):
         if self._voice_stop_replay(ref, params) or await self._typed_voice_stop(ref, params):

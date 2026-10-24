@@ -100,7 +100,7 @@ class TestChatVerboseArg:
 class TestAcceptHooksOnAgentSubparsers:
     """Verify --accept-hooks is accepted at every agent-subcommand
     position (before the subcommand, between group/subcommand, and
-    after the leaf subcommand) for gateway/cron/mcp/acp.  Regression
+    after the leaf subcommand) for gateway/cron/acp.  Regression
     against prior behaviour where the flag only worked on the root
     parser and `chat`, so `hermes gateway run --accept-hooks` failed
     with `unrecognized arguments`."""
@@ -113,17 +113,14 @@ class TestAcceptHooksOnAgentSubparsers:
         ["cron", "--accept-hooks", "tick", "--help"],
         ["cron", "tick", "--accept-hooks", "--help"],
         ["cron", "run", "--accept-hooks", "dummy-id", "--help"],
-        ["--accept-hooks", "mcp", "serve", "--help"],
-        ["mcp", "--accept-hooks", "serve", "--help"],
-        ["mcp", "serve", "--accept-hooks", "--help"],
         ["acp", "--accept-hooks", "--help"],
     ]
 
     # One driver subprocess parses ALL argvs: hermes_cli.main is a very heavy
     # import (previously 11 separate `python -m hermes_cli.main` spawns with a
     # 15s timeout each — a cold import on a loaded CI worker regularly blew
-    # that deadline, making this test flaky). Importing once and parsing 11
-    # times removes the repeated-import cost entirely; the generous timeout
+    # that deadline, making this test flaky). Importing once and parsing each
+    # argv removes the repeated-import cost entirely; the generous timeout
     # only trips on a genuine hang. `--help` exits via SystemExit(0), which
     # the driver catches per argv.
     _DRIVER = r"""

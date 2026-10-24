@@ -68,7 +68,7 @@ class SessionState:
         self.session_id = session_id
         self.info: dict = {}
         self.title: str | None = None
-        self.todos: list = []
+        self.todo_state: dict | None = None  # the session's {todos, revision}: resume snapshot, then todo.updated
         self.revision = None
         self.subscription_id = None
         self.execution_generation = None
@@ -110,6 +110,9 @@ class SessionState:
         self.subscription_id = snapshot.get("subscription_id", self.subscription_id)
         self.execution_generation = snapshot.get("execution_generation", self.execution_generation)
         self.messages = list(snapshot.get("messages") or [])
+        if "todo_state" in snapshot:  # null clears an earlier plan; a missing key (older gateway) keeps it
+            todo_state = snapshot["todo_state"]
+            self.todo_state = dict(todo_state) if isinstance(todo_state, dict) else None
         if isinstance(snapshot.get("pending"), list):
             self.pending = list(snapshot["pending"])
             self.pending_seq += 1  # a (re)attach replays no frames: the idle tick checks this viewer's /queue rows
@@ -131,7 +134,7 @@ class SessionState:
             if payload.get("title"):
                 self.title = payload["title"]
         elif kind == "todo.updated" and isinstance(payload, dict):
-            self.todos = list(payload.get("todos") or [])
+            self.todo_state = {"todos": list(payload.get("todos") or []), "revision": payload.get("revision")}
         elif kind == "session.usage" and isinstance(payload, dict):
             # The gateway's frame carries the flat counters next to a nested TUI ``usage`` view this
             # reader can't map (``session_usage.usage_frame``): the counters win when present.

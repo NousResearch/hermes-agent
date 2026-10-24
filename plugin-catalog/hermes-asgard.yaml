@@ -1,0 +1,24 @@
+name: hermes-asgard
+title: Asgard
+repo: https://github.com/Adolanium/hermes-asgard
+sha: ccd740074fa8178e9ff974f2132aeefb41b2ea05
+description: "Twelve Norse gods carved in runestone and wood: Odin, Thor, Freyja, Loki, Frigg, Baldur, Tyr, Heimdall, Hel, Skadi, Freyr and Bragi, as Hermes Desktop themes. Install once, then switch with /skin <name>. Disclosure — theme-only desktop plugin: it registers twelve themes through the plugin SDK, and their stylesheets restyle parts of Desktop's own UI (sidebar art, tabs, composer, wordmark) only while one of its themes is active. Fonts and art are bundled; no network requests, no agent tools or hooks."
+maintainer: Adolanium
+tier: community
+category: desktop
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/Adolanium/hermes-asgard#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/Adolanium/hermes-asgard/ccd740074fa8178e9ff974f2132aeefb41b2ea05/assets/catalog-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Adolanium/hermes-asgard/ccd740074fa8178e9ff974f2132aeefb41b2ea05/media/shots/odin.png
+  - https://raw.githubusercontent.com/Adolanium/hermes-asgard/ccd740074fa8178e9ff974f2132aeefb41b2ea05/media/shots/thor.png
+  - https://raw.githubusercontent.com/Adolanium/hermes-asgard/ccd740074fa8178e9ff974f2132aeefb41b2ea05/media/shots/loki.png
+  - https://raw.githubusercontent.com/Adolanium/hermes-asgard/ccd740074fa8178e9ff974f2132aeefb41b2ea05/media/shots/heimdall.png
+  - https://raw.githubusercontent.com/Adolanium/hermes-asgard/ccd740074fa8178e9ff974f2132aeefb41b2ea05/media/shots/hel.png
+  - https://raw.githubusercontent.com/Adolanium/hermes-asgard/ccd740074fa8178e9ff974f2132aeefb41b2ea05/media/shots/freyja.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

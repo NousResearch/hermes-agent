@@ -3750,7 +3750,7 @@ def specify_triage_task(
         ).fetchone()
         if existing is None:
             return False
-        sets: list[str] = ["status = 'todo'"]
+        sets: list[str] = ["status = 'todo'", "consecutive_failures = 0", "last_failure_error = NULL"]
         params: list[Any] = []
         changed_fields: list[str] = []
         if title is not None and title.strip() != (existing["title"] or ""):

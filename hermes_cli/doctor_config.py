@@ -54,6 +54,43 @@ def collect_deprecated_env_vars(env_map: dict | None) -> list[tuple[str, str]]:
             if env_map.get(name) is not None and str(env_map[name]).strip() != ""]
 
 
+def collect_unknown_config_keys(raw_config: dict | None) -> list[tuple[str, str | None]]:
+    """``(dotted_path, did_you_mean)`` for on-disk config keys the runtime never reads.
+
+    Walks the raw (on-disk) tree and asks ``hermes config set``'s validator
+    (``_validate_config_key``) about every path, so doctor and ``config set`` share ONE
+    schema: the optional roots DEFAULT_CONFIG omits (``platform_toolsets``, ``timeouts``),
+    open mappings (``compression.model_thresholds.<model>``, ``providers.<name>``), platform
+    ``extra`` fields and ``platforms.<name>`` containers are all accepted, the same way the
+    write path accepts them. A raw DEFAULT_CONFIG walk flagged every one of those as a typo.
+    An unknown section is reported once and not descended into (``modle:`` is one finding,
+    not one per child). Underscore-prefixed keys are intentionally non-schema and skipped.
+
+    Mirrors Codex CLI 0.156 "Warn about ignored configuration settings" (openai/codex#44691)
+    on the doctor surface, where a warning belongs; it never blocks and never echoes values.
+    """
+    from hermes_cli.config import _validate_config_key
+
+    findings: list[tuple[str, str | None]] = []
+    if not isinstance(raw_config, dict):
+        return findings
+
+    def _walk(node: dict, prefix: str) -> None:
+        for key, value in node.items():
+            if not isinstance(key, str) or key.startswith("_"):
+                continue
+            path = f"{prefix}.{key}" if prefix else key
+            is_known, suggestion = _validate_config_key(path)
+            if not is_known:
+                findings.append((path, suggestion))
+                continue
+            if isinstance(value, dict):
+                _walk(value, path)
+
+    _walk(raw_config, "")
+    return findings
+
+
 def collect_relay_plugin_cutover_findings(raw_config: dict | None, env_map: dict | None) -> list[tuple[str, str]]:
     """Return actionable findings for the removed Hermes Relay plugin."""
     from hermes_cli.relay_plugin_cutover import (LEGACY_RELAY_EXPORT_ENV_VARS, RELAY_PLUGINS_CONFIG_ENV,
@@ -80,19 +117,27 @@ def collect_relay_plugin_cutover_findings(raw_config: dict | None, env_map: dict
 
 def report_deprecated_config_and_env(raw_config: dict | None = None, env_map: dict | None = None) -> list[tuple[str, str]]:
     """Emit non-failing doctor warnings for deprecated config keys and env vars; returns the findings reported.
-    Does not mutate config/env and does not append to the blocking ``issues`` list."""
+    Does not mutate config/env and does not append to the blocking ``issues`` list.
+    Also warns on unknown config.yaml keys (possible typos or obsolete keys, #91876)."""
     deprecated = collect_deprecated_config_keys(raw_config) + collect_deprecated_env_vars(env_map)
     relay_cutover = collect_relay_plugin_cutover_findings(raw_config, env_map)
     findings = deprecated + relay_cutover
     if not findings:
         check_ok("No deprecated config keys or env vars")
-        return findings
     for legacy, replacement in deprecated:
         check_warn(f"Deprecated: {legacy}", f"(use {replacement} instead)")
         check_info(f"Replace {legacy} → {replacement} (warn-only; not auto-migrated here)")
     for legacy, replacement in relay_cutover:
         check_warn(f"Breaking Relay migration: {legacy}", f"({replacement})")
         check_info(f"Migrate {legacy}: {replacement}")
+    unknown_keys = collect_unknown_config_keys(raw_config)
+    for path, suggestion in unknown_keys[:15]:
+        hint = f"did you mean '{suggestion}'?" if suggestion else "Hermes never reads it — typo or obsolete key"
+        check_warn(f"Unrecognized config key '{path}'", f"({hint})")
+    if len(unknown_keys) > 15:
+        check_info(f"... and {len(unknown_keys) - 15} more unrecognized keys")
+    if not unknown_keys and not findings:
+        check_ok("No unrecognized config keys")
     return findings
 
 

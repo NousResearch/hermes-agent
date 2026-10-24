@@ -498,14 +498,43 @@ class GatewayBusySessionMixin:
             event._gateway_accepted = True
             return
 
-        if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
-            logger.warning(
-                "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).",
-                session_key, self._BUSY_QUEUE_MAX_PENDING,
-            )
+        if self._busy_queue_refuses(session_key, event, adapter):
             return
 
         self._enqueue_fifo(session_key, event, adapter)
+
+    def _busy_queue_refuses(self, session_key: str, event: MessageEvent, adapter: Any) -> bool:
+        """Whether the pending queue refuses *event*: at the cap, or a process wake over its share.
+
+        Wakes and humans share ``_BUSY_QUEUE_MAX_PENDING``, so a burst of process notifications would
+        otherwise fill it and drop the next human follow-up. Only process-registry wakes are held to
+        the share: their producers keep the event and retry while it stays unaccepted.
+        """
+        cap = self._BUSY_QUEUE_MAX_PENDING
+        if self._queue_depth(session_key, adapter=adapter) >= cap:
+            logger.warning(
+                "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).", session_key, cap,
+            )
+            return True
+        metadata = getattr(event, "metadata", None) or {}
+        if not event.internal or metadata.get("notification_origin") != "process_registry_synthetic":
+            return False
+        if not hasattr(self, "_busy_wake_refused_sessions"):  # bare object.__new__ runners in tests
+            self._busy_wake_refused_sessions = set()
+        refused_sessions = self._busy_wake_refused_sessions
+        wake_share = cap - min(8, cap // 4)
+        slot = (getattr(adapter, "_pending_messages", None) or {}).get(session_key)
+        queued = [slot, *(self._overflow_queue(session_key) or ())]
+        if sum(1 for queued_event in queued if getattr(queued_event, "internal", False)) < wake_share:
+            refused_sessions.discard(session_key)
+            return False
+        if session_key not in refused_sessions:
+            refused_sessions.add(session_key)
+            logger.info(
+                "Deferring process notifications for session %s — %d of %d pending slots are held for "
+                "human follow-ups; the producer retries.", session_key, cap - wake_share, cap,
+            )
+        return True
 
     async def _prepare_busy_steer_text(self, event: MessageEvent) -> str:
         """Steerable text for a busy follow-up, transcribing voice-message media first.

@@ -88,14 +88,77 @@ describe('handleDeferredPickEvent', () => {
     let answer: (value: boolean) => void = () => undefined
     surfaceModelSwitchConfirm.mockReturnValueOnce(new Promise<boolean>(resolve => (answer = resolve)))
 
-    const { ctx } = context({ committed_model: 'frozen', confirm: 'token', operation: 'model',
+    const { ctx, states } = context({ committed_model: 'frozen', confirm: 'token', operation: 'model',
       payload: { model: 'guarded' }, session_id: 's', status: 'confirmation_required', target_model: 'guarded' })
 
     handleDeferredPickEvent(ctx)
     setCurrentModelTransient('newer')
+    states.s = { model: 'newer', provider: 'custom' }
     answer(false)
     await new Promise(resolve => setTimeout(resolve, 0))
     expect($currentModel.get()).toBe('newer')
+    expect(states.s).toMatchObject({ model: 'newer', provider: 'custom' })
+  })
+
+  it('a confirmed request that goes stale in flight never rewinds the newer pick', async () => {
+    setCurrentModelTransient('guarded')
+    let finishRequest: () => void = () => undefined
+    requestGatewayForAgent.mockReturnValueOnce(new Promise(resolve => (finishRequest = () => resolve({}))))
+    surfaceModelSwitchConfirm.mockImplementationOnce((async (options: { requestConfirmed: () => Promise<unknown> }) => {
+      await options.requestConfirmed()
+
+      return false
+    }) as never)
+
+    const { ctx, states } = context({ committed_model: 'frozen', confirm: 'token', operation: 'model',
+      payload: { model: 'guarded' }, session_id: 's', status: 'confirmation_required', target_model: 'guarded' })
+
+    handleDeferredPickEvent(ctx)
+    await vi.waitFor(() => expect(requestGatewayForAgent).toHaveBeenCalled())
+    setCurrentModelTransient('newer')
+    states.s = { model: 'newer', provider: 'custom' }
+    finishRequest()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect($currentModel.get()).toBe('newer')
+    expect(states.s).toMatchObject({ model: 'newer', provider: 'custom' })
+  })
+
+  it('a decline never rewinds the same model picked through another provider', async () => {
+    setCurrentModelTransient('guarded')
+    setCurrentProviderTransient('custom')
+    let answer: (value: boolean) => void = () => undefined
+    surfaceModelSwitchConfirm.mockReturnValueOnce(new Promise<boolean>(resolve => (answer = resolve)))
+
+    const { ctx, states } = context({ committed_model: 'frozen', committed_provider: 'openrouter', confirm: 'token', operation: 'model',
+      payload: { model: 'guarded', provider: 'custom' }, session_id: 's', status: 'confirmation_required', target_model: 'guarded' })
+
+    handleDeferredPickEvent(ctx)
+    setCurrentProviderTransient('other')
+    states.s = { model: 'guarded', provider: 'other' }
+    answer(false)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect([$currentModel.get(), $currentProvider.get()]).toEqual(['guarded', 'other'])
+    expect(states.s).toMatchObject({ model: 'guarded', provider: 'other' })
+  })
+
+  it('a settlement after the active source moved never repaints a reused runtime', async () => {
+    setCurrentModelTransient('guarded')
+    setCurrentProviderTransient('custom')
+    let fromActive = true
+    let answer: (value: boolean) => void = () => undefined
+    surfaceModelSwitchConfirm.mockReturnValueOnce(new Promise<boolean>(resolve => (answer = resolve)))
+
+    const { ctx, states } = context({ committed_model: 'frozen', committed_provider: 'openrouter', confirm: 'token', operation: 'model',
+      payload: { model: 'guarded', provider: 'custom' }, session_id: 's', status: 'confirmation_required', target_model: 'guarded' },
+    { fromActiveSource: () => fromActive })
+
+    states.s = { model: 'guarded', provider: 'custom' }
+    handleDeferredPickEvent(ctx)
+    fromActive = false
+    answer(false)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect([$currentModel.get(), $currentProvider.get()]).toEqual(['guarded', 'custom'])
+    expect(states.s).toMatchObject({ model: 'guarded', provider: 'custom' })
   })
 
   it("another profile's same-ID refusal leaves the active composer and its cache alone", () => {

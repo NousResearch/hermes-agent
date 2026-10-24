@@ -8,11 +8,14 @@ auth, billing and payment failures keep benching the whole credential with.
 """
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Dict, Iterable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agent.credential_pool import PooledCredential
+
+logger = logging.getLogger(__name__)
 
 # A Codex ChatGPT-account model entitlement 400 is a plan property, not a window: bench the
 # (credential, model) pair until an explicit ``hermes auth reset`` clears model_cooldowns (#71970).
@@ -144,3 +147,54 @@ class CredentialPoolModelCooldownMixin:
                 if waits and all(waits) and min(waits) - now < MODEL_ENTITLEMENT_BENCH_SECONDS / 2:
                     cooled[model] = min(waits)
         return {"scope": "models", "models": cooled} if cooled else None
+
+    def has_rotation_target(
+        self, *, model: Optional[str] = None, exclude_key: Optional[str] = None,
+        exclude_id: Optional[str] = None,
+    ) -> bool:
+        """Whether rotating away from the credential that just failed can land on another one.
+
+        ``has_available`` answers "is any entry usable?"; the 429 recovery hinge needs "is there
+        somewhere ELSE to go for *model*?". Three things distinguish the two: the failed entry
+        itself (and every row sharing its key — a duplicate seat is the same quota) is not a
+        target; the question is scoped to the model that was rate-limited, since Anthropic
+        benches per (credential, model); and a cooldown a PEER process persisted for that model
+        counts, because this pool only learns about sibling benches on its own 429
+        (``_persist`` deliberately never adopts peer cooldown state). Read-only: nothing is
+        cleared, adopted or persisted. A store that cannot be read falls open to the
+        in-memory verdict.
+        """
+        with self._lock:
+            available, _pending = self._available_entries(model=model)
+            targets = [
+                entry for entry in available
+                if entry.id != exclude_id
+                and not (exclude_key and entry.runtime_api_key == exclude_key)
+            ]
+            if not targets or not model:
+                return bool(targets)
+            persisted = self._persisted_model_cooldowns()
+            return any(
+                _cooldown_active(persisted.get(entry.id, {}).get(model)) is False for entry in targets
+            )
+
+    def _persisted_model_cooldowns(self) -> dict[str, dict[str, Any]]:
+        """``{entry_id: model_cooldowns}`` as the auth store has them right now (peer writers included)."""
+        from hermes_cli.auth import read_credential_pool
+
+        try:
+            rows = read_credential_pool(self.provider)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            # A malformed or vanished auth.json must not turn a 429 into a crash: fall open to the
+            # in-memory verdict (yesterday's behaviour) and leave a trace for "why did it still wait?".
+            logger.debug("credential pool: could not read persisted cooldowns for %s: %s", self.provider, exc)
+            return {}
+        return {
+            row["id"]: row.get("model_cooldowns") or {}
+            for row in (rows if isinstance(rows, list) else [])
+            if isinstance(row, dict) and isinstance(row.get("id"), str)
+        }
+
+
+def _cooldown_active(until: Any) -> bool:
+    return isinstance(until, (int, float)) and until > time.time()

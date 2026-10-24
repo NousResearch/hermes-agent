@@ -1937,9 +1937,16 @@ def route_classified_error(
         # upstream-aggregator 429 — the pool can't help, always fall back.
         # Fixes #11314.
         _is_upstream = classified.reason == FailoverReason.upstream_rate_limit
-        pool_may_recover = (
-            False if _is_upstream else _ra()._pool_may_recover_from_rate_limit(agent._credential_pool)
-        )
+        if _is_upstream or agent._credential_pool is None:
+            pool_may_recover = False
+        else:
+            # The failed credential is still the bound one: a successful rotation returned
+            # ``continue`` before this point, so ``_failed_credential_identity`` names what 429'd.
+            from agent.agent_runtime_helpers import _failed_credential_identity
+            failed_key, failed_entry_id = _failed_credential_identity(agent, agent._credential_pool)
+            pool_may_recover = _ra()._pool_may_recover_from_rate_limit(
+                agent._credential_pool, model=model if isinstance(model, str) and model else None,
+                failed_key=failed_key, failed_entry_id=failed_entry_id)
         if not pool_may_recover:
             agent._buffer_diagnostic_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))
             reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None

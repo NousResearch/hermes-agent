@@ -457,6 +457,8 @@ PATH, HOME, USER, LANG, LC_ALL, TERM, SHELL, TMPDIR
 
 以及所有 `XDG_*` 变量。所有其他环境变量（API 密钥、token、密钥）均被**剥离**。
 
+由[外部密钥源](secrets/index.md)（Bitwarden、1Password、命令辅助程序）提供的变量也会传递，但 Hermes 管理的凭据除外：模型提供商密钥、Hermes 自身使用的工具密钥，以及机器人、网关和中继 token。这包括 Hermes 读取此类凭据时使用的所有名称：带编号的轮换密钥（`DEEPSEEK_API_KEY_2`）、[凭据池](features/credential-pools.md)条目所指向的任何变量（`source: env:MY_KEY`），以及当前 profile 使用的带 profile 后缀的形式（`TELEGRAM_BOT_TOKEN_<PROFILE>`）。无论这些凭据存放在哪里，都会被剥离。如果某个服务器需要其中之一，请在该服务器的 `env` 中显式声明（例如 `OPENAI_API_KEY: "${OPENAI_API_KEY}"`）。
+
 在 MCP 服务器的 `env` 配置中显式定义的变量会被透传：
 
 ```yaml

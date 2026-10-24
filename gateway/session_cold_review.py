@@ -38,6 +38,7 @@ def cold_review_parent(runner, source, session_key, session_id):
     from gateway.session_api_turn import api_runtime_locked
     from gateway.session_authorities import active_authority
     from gateway.session_policy import policy_for_source, policy_scope, policy_turn_toolsets
+    from gateway.session_worker_construct import session_prefill, session_routing
     from run_agent import AIAgent
     policy = policy_for_source(runner, source)
     authority = active_authority(runner) if policy else None
@@ -46,16 +47,24 @@ def cold_review_parent(runner, source, session_key, session_id):
     enabled, disabled = runner._resolve_turn_toolsets(user_config, source, platform_key)
     if policy:
         enabled = policy_turn_toolsets(authority, policy, user_config, source.chat_id)
+    # Each input below is the one the turn runner reads for this session (``run_turn_runner``).
+    pr = session_routing(authority, policy) if policy else runner._provider_routing
+    prefill = session_prefill(authority, policy, source.chat_id) if policy else runner._prefill_messages
+    tier = (policy.current_service_tier(runner, session_key) if policy else
+            runner._resolve_session_service_tier(source=source, session_key=session_key))
     with policy_scope(policy, authority=authority):
         model, runtime = runner._resolve_session_agent_runtime(
             source=source, session_key=session_key, user_config=user_config)
-        pr = runner._provider_routing
+        route = runner._resolve_turn_agent_config("", model, runtime, tier=tier)  # /fast request options
         agent = AIAgent(
-            model=model, **runtime, quiet_mode=True, verbose_logging=False,
+            model=route["model"], **route["runtime"], quiet_mode=True, verbose_logging=False,
             enabled_toolsets=enabled, disabled_toolsets=disabled,
             # Launch-preloaded skills (``hermes -s``): the reviewer is told to load them too.
             ephemeral_system_prompt=(policy.skills_prompt if policy else None) or None,
-            reasoning_config=runner._resolve_session_reasoning_config(source=source, model=model),
+            prefill_messages=prefill or None,
+            reasoning_config=runner._resolve_session_reasoning_config(source=source, session_key=session_key,
+                                                                      model=model),
+            service_tier=tier, request_overrides=route.get("request_overrides"),
             providers_allowed=pr.get("only"), providers_ignored=pr.get("ignore"), providers_order=pr.get("order"),
             provider_sort=pr.get("sort"), provider_require_parameters=pr.get("require_parameters", False),
             provider_data_collection=pr.get("data_collection"),

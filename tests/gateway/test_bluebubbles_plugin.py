@@ -111,6 +111,71 @@ class TestBlueBubblesMentionGating:
         assert handled == []
 
 
+class TestBlueBubblesTapbackFiltering:
+    """Regression for #144113: reactions must not start agent turns."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("associated_type", [
+        "love", "like", "dislike", "laugh", "emphasize", "question",
+        "-love", "-like", "-dislike", "-laugh", "-emphasize", "-question",
+        *range(2000, 2008), *range(3000, 3008),
+        *map(str, range(2000, 2008)), *map(str, range(3000, 3008)),
+    ], ids=lambda value: f"{type(value).__name__}-{value}")
+    async def test_tapback_is_acknowledged_without_dispatch(self, monkeypatch, associated_type):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handle_message = AsyncMock()
+        monkeypatch.setattr(adapter, "handle_message", handle_message)
+
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "reaction-1",
+                "text": 'Emphasized "hello"',
+                "handle": {"address": "+15555550100"},
+                "chats": [{"guid": "iMessage;-;+15555550100"}],
+                "associatedMessageType": associated_type,
+                "associatedMessageGuid": "p:0/original-message",
+            },
+        }))
+        await asyncio.gather(*adapter._background_tasks)
+
+        assert response.status == 200
+        handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("associated_fields", [
+        {}, {"associatedMessageType": None},
+        {"associatedMessageType": 0}, {"associatedMessageType": "0"},
+        {"associatedMessageType": 1000}, {"associatedMessageType": "1000"},
+        {"associatedMessageType": "sticker"}, {"associatedMessageType": "2008"},
+    ], ids=["missing", "null", "int-0", "str-0", "int-1000", "str-1000", "bubble-sticker", "str-2008"])
+    async def test_normal_message_and_bubble_sticker_are_dispatched(self, monkeypatch, tmp_path, associated_fields):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handle_message = AsyncMock()
+        cached_path = str(tmp_path / "sticker.png")
+        monkeypatch.setattr(adapter, "handle_message", handle_message)
+        monkeypatch.setattr(adapter, "_download_attachment", AsyncMock(return_value=cached_path))
+
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-1",
+                "text": "hello",
+                "handle": {"address": "+15555550100"},
+                "chats": [{"guid": "iMessage;-;+15555550100"}],
+                "attachments": [{"guid": "att-1", "mimeType": "image/png"}],
+                **associated_fields,
+            },
+        }))
+        await asyncio.gather(*adapter._background_tasks)
+
+        assert response.status == 200
+        handle_message.assert_awaited_once()
+        event = handle_message.await_args.args[0]
+        assert event.text == "hello"
+        assert event.media_urls == [cached_path]
+
+
 class TestBlueBubblesWebhookParsing:
 
     def test_webhook_can_fall_back_to_sender_when_chat_fields_missing(self, monkeypatch):

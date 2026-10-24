@@ -852,6 +852,27 @@ def _is_failed_reference(text: str) -> bool:
     return text.lstrip().lower().startswith(("[failed:", "[skipped:"))
 
 
+# Outbound tool-syntax guard (issue #139568). The advisory view renders the acting agent's real
+# tool traffic as ``[called tool: …]`` / ``[tool result: …]`` blocks, and advisors imitate that
+# genre: they fabricate well-formed blocks whose content can contradict the transcript they were
+# shown, and block-shaped output is exactly what the aggregator replays as evidence. The
+# reference system prompt already forbids this explicitly, so the guard is structural — it runs
+# on the egress paths (aggregator guidance + display events), not as another prompt sentence.
+# Line-anchored on purpose: a mid-line quote ("you already ran `[called tool: gh --version]`")
+# is hedging prose, not a fabricated block. Quarantining a genuine re-quote of a real tool
+# result loses nothing — the aggregator reads the full transcript, so the authoritative copy is
+# already in its own context. Traces keep the raw advisor text for post-hoc inspection.
+_FABRICATED_TOOL_BLOCK_RE = re.compile(r"^\[(?:called tool|tool result):.*$", re.MULTILINE)
+_QUARANTINED_TOOL_SYNTAX_NOTE = "[reference emitted tool syntax — unverified, not executed]"
+
+
+def _quarantine_fabricated_tool_syntax(text: Any) -> Any:
+    """Rewrite block-form tool-call/tool-result syntax in advisor text as a labelled note."""
+    if not isinstance(text, str) or not text:
+        return text
+    return _FABRICATED_TOOL_BLOCK_RE.sub(_QUARANTINED_TOOL_SYNTAX_NOTE, text)
+
+
 def _join_reference_outputs(outputs: list[tuple[str, str, Any]], degraded: str = "") -> str:
     """Render numbered reference blocks for the aggregator, appending any degraded notice."""
     joined = "\n\n".join(f"Reference {idx} — {label}:\n{text}" for idx, (label, text, _acct) in enumerate(outputs, start=1))
@@ -890,10 +911,12 @@ def _guidance_inputs(
 
     'full' privacy mode redacts advisor text reaching the aggregator (applied to a
     per-call copy — caches hold raw text). Failed refs are filtered out first.
+    Block-form tool syntax in advisor text is quarantined in every mode (issue #139568).
     """
     successful = [o for o in reference_outputs if not _is_failed_reference(o[1])]
     failed_labels = [label for label, text, _acct in reference_outputs if _is_failed_reference(text)]
-    agg_refs = _redact_reference_outputs(successful) if privacy_full else successful
+    quarantined = [(label, _quarantine_fabricated_tool_syntax(text), acct) for label, text, acct in successful]
+    agg_refs = _redact_reference_outputs(quarantined) if privacy_full else quarantined
     return agg_refs, _degraded_notice(failed_labels, policy), bool(reference_outputs) and not successful
 
 
@@ -1365,11 +1388,12 @@ class MoAChatCompletions:
             self._last_reference_metrics = None
 
         # Surface each answer BEFORE the aggregator acts; the cache keeps RAW text.
+        # Fabricated tool blocks are quarantined on the way out in every mode (issue #139568).
         ref_count = len(reference_outputs)
         for idx, (label, text, _accounting) in enumerate(reference_outputs, start=1):
             self._emit(
                 "moa.reference", index=idx, count=ref_count, label=label,
-                text=_redact_reference_text(text) if privacy_mode else text,
+                text=_quarantine_fabricated_tool_syntax(_redact_reference_text(text) if privacy_mode else text),
             )
         if ref_count:
             # Phase transition: fan-out complete, aggregator about to act.

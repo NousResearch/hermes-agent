@@ -401,7 +401,9 @@ class CopilotACPClient:
             for line in stream or ():
                 sink(line)
 
-        threading.Thread(target=_pump, args=(proc.stdout, lambda line: inbox.put(_decode(line))), daemon=True).start()
+        stdout_pump = threading.Thread(
+            target=_pump, args=(proc.stdout, lambda line: inbox.put(_decode(line))), daemon=True)
+        stdout_pump.start()
         stderr_pump = threading.Thread(
             target=_pump, args=(proc.stderr, lambda line: stderr_tail.append(line.rstrip("\n"))), daemon=True)
         stderr_pump.start()
@@ -410,16 +412,33 @@ class CopilotACPClient:
         # request: a hung CLI must not get 2x the caller's timeout on the foreground /model path.
         session_deadline = time.monotonic() + timeout_seconds
 
+        def _send(payload: dict[str, Any]) -> None:
+            # A CLI that died (or closed stdin) mid-session turns this write into a BrokenPipeError
+            # (EINVAL on Windows) that would replace the crash report; the read loop reports it instead.
+            try:
+                proc.stdin.write(json.dumps(payload) + "\n")
+                proc.stdin.flush()
+            except OSError:
+                logger.debug("Copilot ACP stdin is closed; reporting the CLI's exit instead", exc_info=True)
+
         def _request(method: str, params: dict[str, Any], *, text_parts: list[str] | None = None,
                      reasoning_parts: list[str] | None = None) -> Any:
             request_id = next(request_ids)
-            proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}) + "\n")
-            proc.stdin.flush()
+            _send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
             deadline = session_deadline
-            while time.monotonic() < deadline and proc.poll() is None:
+            exit_deadline = None
+            while time.monotonic() < min(deadline, exit_deadline or deadline):
+                if exit_deadline is None and proc.poll() is not None:
+                    # A CLI that replies and exits can be seen dead before the pump queues its
+                    # last lines; keep reading what it wrote before calling it an early exit.
+                    exit_deadline = time.monotonic() + 1.0
                 try:
                     msg = inbox.get(timeout=0.1)
                 except queue.Empty:
+                    # Check the queue only after seeing the pump finish: its last put can land
+                    # between this get's timeout and is_alive(), so a dead pump alone is not EOF.
+                    if exit_deadline is not None and not stdout_pump.is_alive() and inbox.empty():
+                        break
                     continue
                 if self._handle_server_message(
                     msg, process=proc, cwd=self._acp_cwd, text_parts=text_parts,
@@ -505,6 +524,10 @@ class CopilotACPClient:
                     response = _jsonrpc_error(message_id, -32602, str(exc))
         else:
             response = _jsonrpc_error(message_id, -32601, f"ACP client method '{method}' is not supported by Hermes yet.")
-        process.stdin.write(json.dumps(response) + "\n")
-        process.stdin.flush()
+        try:
+            process.stdin.write(json.dumps(response) + "\n")
+            process.stdin.flush()
+        except OSError:
+            # The CLI died with this request pending; the caller's read loop reports the exit.
+            logger.debug("Copilot ACP stdin is closed; dropping the answer to %s", method, exc_info=True)
         return True

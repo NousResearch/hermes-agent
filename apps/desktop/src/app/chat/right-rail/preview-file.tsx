@@ -15,7 +15,7 @@ import { requestComposerFocus, requestComposerInsertRefs } from '@/app/chat/comp
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
 import { RichCodeBlock } from '@/components/assistant-ui/embeds'
-import { CodeEditor } from '@/components/chat/code-editor'
+import { LazyCodeEditor as CodeEditor } from '@/components/chat/code-editor-lazy'
 import { FileDiffPanel } from '@/components/chat/diff-lines'
 import { chunkTextLines, useFixedRowWindow } from '@/components/chat/fixed-row-window'
 import { LazyShiki as ShikiHighlighter } from '@/components/chat/shiki-highlighter'
@@ -34,11 +34,11 @@ import {
 } from '@/lib/desktop-fs'
 import { ExternalLink } from '@/lib/external-link'
 import { Check, Pencil, X } from '@/lib/icons'
-import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { isComposerChord } from '@/lib/keybinds/chords'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
 import { normalizeFilePreviewMath } from '@/lib/markdown-preprocess'
+import { useMathPlugin } from '@/lib/math-plugin-loader'
 import {
   decodeHashFragment,
   noteDirectory,
@@ -59,10 +59,9 @@ const SOURCE_CHUNK_LINES = 200
 const SOURCE_LINE_PX = 20
 const SOURCE_OVERSCAN_LINES = 400
 
-// Math plugin for the static file preview, configured once at module scope.
-// Mirrors the chat transcript's plugin (`markdown-text.tsx`) — same memoized
-// KaTeX wrapper, with `singleDollarTextMath: true` so `$x$` renders inline.
-const previewMathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
+// The static file preview shares the chat transcript's memoized KaTeX setup
+// (`singleDollarTextMath: true` so `$x$` renders inline) — loaded lazily per
+// surface via `useMathPlugin` so katex stays off the entry graph.
 
 type EmptyStateTone = 'neutral' | 'warning'
 
@@ -494,6 +493,7 @@ const PREVIEW_REHYPE_PLUGINS = [...Object.values(defaultRehypePlugins), rehypePr
 
 export function MarkdownPreview({ filePath, text }: { filePath?: string; text: string }) {
   const mathText = useMemo(() => normalizeFilePreviewMath(text), [text])
+  const math = useMathPlugin()
 
   return (
     <PreviewNoteContext.Provider value={filePath}>
@@ -507,7 +507,7 @@ export function MarkdownPreview({ filePath, text }: { filePath?: string; text: s
           controls={false}
           mode="static"
           parseIncompleteMarkdown={false}
-          plugins={{ math: previewMathPlugin }}
+          plugins={{ ...(math ? { math } : null) }}
           rehypePlugins={PREVIEW_REHYPE_PLUGINS}
           remarkPlugins={PREVIEW_REMARK_PLUGINS}
         >

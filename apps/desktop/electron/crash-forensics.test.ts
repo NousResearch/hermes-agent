@@ -42,7 +42,17 @@ describe('describeCrashReason', () => {
     const circular: Record<string, unknown> = {}
     circular.self = circular
 
-    expect(describeCrashReason(circular)).toBe('[object Object]')
+    // Circular-safe: marked placeholder instead of "[object Object]".
+    expect(describeCrashReason(circular)).toBe('{"self":"[circular]"}')
+  })
+
+  it('truncates huge rejection bodies instead of serializing megabytes', () => {
+    const huge = { blob: 'x'.repeat(100_000) }
+    const rendered = describeCrashReason(huge)
+
+    expect(rendered.length).toBeLessThan(100_000)
+    expect(rendered).toContain('forensics truncated')
+    expect(rendered).toContain('"blob":"xxx')
   })
 })
 

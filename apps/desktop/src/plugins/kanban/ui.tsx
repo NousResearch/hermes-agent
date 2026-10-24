@@ -15,10 +15,11 @@ import {
   relativeTime,
   useQuery
 } from '@hermes/plugin-sdk'
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode } from 'react'
 
 import { fetchOrchestration, orchestrationKey, useKanbanScope } from './api'
 import { columnLabel, useKanban } from './i18n'
+import { useBoardTick } from './tick'
 import { columnMeta, type KanbanTask } from './types'
 
 // Plugin-scoped i18n lives in ./i18n; re-exported so components import strings
@@ -91,25 +92,17 @@ export function duration(start?: null | number, end?: null | number): null | str
 
 // ── liveness ─────────────────────────────────────────────────────────────────
 
-/** Live elapsed label ("34s", "2m") that keeps ticking while mounted. */
+/** Live elapsed label ("34s", "2m") that keeps ticking while mounted. Shares
+ *  one 5s board tick across every card (`./tick`) instead of one
+ *  `setInterval` per card. */
 function useTicking(start?: null | number): null | string {
-  const [, force] = useState(0)
-
-  useEffect(() => {
-    if (!start) {
-      return
-    }
-
-    const id = window.setInterval(() => force(n => n + 1), 5_000)
-
-    return () => window.clearInterval(id)
-  }, [start])
+  const now = useBoardTick()
 
   if (!start) {
     return null
   }
 
-  const { unit, value } = coarseElapsed(Math.max(0, Date.now() - start * 1000))
+  const { unit, value } = coarseElapsed(Math.max(0, now - start * 1000))
 
   return `${value}${ELAPSED_SUFFIX[unit]}`
 }

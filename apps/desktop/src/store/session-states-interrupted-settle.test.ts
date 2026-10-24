@@ -8,13 +8,13 @@ import { requestGatewayForAgent } from '@/store/gateway'
 import { $activeSessionId, $selectedStoredSessionId, $unreadFinishedSessionIds } from './session'
 import {
   $sessionStates,
-  $workingSessionIds,
   clearAllSessionStates,
   LIVE_TURN_EVENT_SILENCE_MS,
   noteSessionEvent,
   publishSessionState,
   setLiveTurnBackend
 } from './session-states'
+import { $workingSessionIds } from './session-states-status-sets'
 
 vi.mock('@/store/gateway', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),

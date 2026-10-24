@@ -14,10 +14,8 @@ import {
 } from './session'
 import { stampSecondaryProfileOwner } from './session-event-provenance'
 import {
-  $attentionSessionIds,
   $sessionStates,
   $stalledSessionIds,
-  $workingSessionIds,
   clearAllSessionStates,
   liveSessionScopes,
   publishSessionState,
@@ -27,6 +25,7 @@ import {
   type SessionTileDelegate,
   setSessionTileDelegate
 } from './session-states'
+import { $attentionSessionIds, $workingSessionIds } from './session-states-status-sets'
 
 function state(over: Partial<ClientSessionState> = {}): ClientSessionState {
   return { ...createClientSessionState(null), storedSessionId: 's1', ...over }

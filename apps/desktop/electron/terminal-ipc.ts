@@ -197,6 +197,13 @@ export function registerTerminalIpc({
   // tab's original launch dir. Shell-agnostic (no prompt/OSC config needed) on
   // POSIX; Windows has no cheap per-process cwd query without a native module, so
   // it returns null and the caller falls back to the launch cwd.
+  // Per-pid cwd cache (1.5s TTL). The darwin leg spawns `lsof -p <pid>`
+  // per call, and the renderer polls cwd per prompt — without this, every
+  // prompt is a child spawn. A stale-for-a-second cwd only seeds a reopened
+  // tab's start dir, so brief staleness is harmless.
+  const processCwdCache = new Map<number, { at: number; value: string | null }>()
+  const PROCESS_CWD_CACHE_TTL_MS = 1500
+
   function readProcessCwd(pid) {
     return new Promise(resolve => {
       if (!Number.isInteger(pid) || pid <= 0) {
@@ -205,11 +212,32 @@ export function registerTerminalIpc({
         return
       }
 
+      const cached = processCwdCache.get(pid)
+
+      if (cached && Date.now() - cached.at < PROCESS_CWD_CACHE_TTL_MS) {
+        resolve(cached.value)
+
+        return
+      }
+
+      const remember = value => {
+        if (processCwdCache.size >= 64 && !processCwdCache.has(pid)) {
+          const oldest = processCwdCache.keys().next()
+
+          if (!oldest.done) {
+            processCwdCache.delete(oldest.value)
+          }
+        }
+
+        processCwdCache.set(pid, { at: Date.now(), value })
+        resolve(value)
+      }
+
       if (process.platform === 'linux') {
         fs.promises
           .readlink(`/proc/${pid}/cwd`)
-          .then(target => resolve(target || null))
-          .catch(() => resolve(null))
+          .then(target => remember(target || null))
+          .catch(() => remember(null))
 
         return
       }
@@ -218,7 +246,7 @@ export function registerTerminalIpc({
         // lsof ships with macOS; -Fn emits the cwd fd's path on an `n<path>` line.
         execFile('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { timeout: 2000 }, (err, stdout) => {
           if (err) {
-            resolve(null)
+            remember(null)
 
             return
           }
@@ -227,7 +255,7 @@ export function registerTerminalIpc({
             .split('\n')
             .find(entry => entry.startsWith('n'))
 
-          resolve(line ? line.slice(1) : null)
+          remember(line ? line.slice(1) : null)
         })
 
         return
@@ -245,6 +273,12 @@ export function registerTerminalIpc({
     }
 
     terminalSessions.delete(id)
+    sessionInfo.outputGate.dispose()
+
+    if (Number.isInteger(sessionInfo.pty?.pid)) {
+      // Pids recycle: never serve the dead process's cwd to its successor.
+      processCwdCache.delete(sessionInfo.pty.pid)
+    }
 
     try {
       sessionInfo.pty.kill()

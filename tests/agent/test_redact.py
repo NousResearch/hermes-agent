@@ -331,6 +331,31 @@ class TestControlCharSplitTokens:
         assert "HOME=/home/user" in result
 
 
+class TestInvisibleSplitKeyNames:
+    """A key NAME split by invisible format chars (``PASS\\u200bWORD=``) must still mask its value
+    — the value-side join above never sees the keyword (Claude Code 2.1.286 closed the same leak)."""
+
+    @pytest.mark.parametrize("text", [
+        "DATABASE_PASS\u200bWORD=hunter2hunter2hunter2hunter2",   # ZWSP, ENV pass
+        "db_pass\u200cword=hunter2hunter2hunter2hunter2",         # ZWNJ, lowercase ENV pass
+        '{"api\u200b_key": "hunter2hunter2hunter2hunter2"}',       # JSON pass
+        "pass\u200bword: hunter2hunter2hunter2hunter2",           # YAML pass
+        "{'API\u200b_KEY': 'hunter2hunter2hunter2hunter2'}",       # Python-repr pass
+        "PASS\u202eWORD=hunter2hunter2hunter2hunter2",            # BiDi override
+        "PASS\u00adWORD=hunter2hunter2hunter2hunter2",            # soft hyphen
+        "PASS\U000e0041WORD=hunter2hunter2hunter2hunter2",        # TAG character
+        "S\u200bE\u200bC\u200bR\u200bE\u200bT=hunter2hunter2hunter2hunter2",
+    ])
+    def test_invisible_split_key_masks_value(self, text):
+        assert "hunter2hunter2hunter2hunter2" not in redact_sensitive_text(text, force=True)
+
+    def test_non_secret_text_keeps_every_byte(self):
+        # ZWJ emoji sequences, a split non-secret key and a newline between identifiers are untouched.
+        for text in ("family=\U0001f468\u200d\U0001f469\u200d\U0001f467 ok",
+                     "MAX\u200bTOKENS=100", "FOO\nBAR=baz", "a\u200bb hello"):
+            assert redact_sensitive_text(text, force=True) == text
+
+
 class TestEnvLookupPreserved:
     """Programmatic env var lookups must not be corrupted (issue #2852)."""
 

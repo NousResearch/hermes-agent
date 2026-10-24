@@ -378,6 +378,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/creative/creative-comfyui',
                     'user-guide/skills/optional/creative/creative-concept-diagrams',
                     'user-guide/skills/optional/creative/creative-creative-ideation',
+                    'user-guide/skills/optional/creative/creative-diagram-design',
                     'user-guide/skills/optional/creative/creative-draw-your-font',
                     'user-guide/skills/optional/creative/creative-dream-loop',
                     'user-guide/skills/optional/creative/creative-excalidraw',

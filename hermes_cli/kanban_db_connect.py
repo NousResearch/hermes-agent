@@ -713,13 +713,8 @@ def _refuse_dead_board_resurrection(path: Path, board: Optional[str]) -> None:
         raise ValueError(f"kanban board {slug!r} does not exist; create it with `hermes kanban boards create {slug}`")
 
 
-def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> sqlite3.Connection:
-    """Open (and initialize if needed) the kanban DB. WAL is (re)enabled on
-    every connection so a re-created file stays robust; the first connection
-    per path auto-runs :func:`init_db`, later ones skip via
-    ``_INITIALIZED_PATHS``. Path: explicit ``db_path``, else ``board``, else
-    :func:`kanban_db_path` (``HERMES_KANBAN_DB`` -> ``HERMES_KANBAN_BOARD`` ->
-    ``<root>/kanban/current`` -> ``default``)."""
+def _connect_unlocked(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> sqlite3.Connection:
+    """Open while the caller holds the stable board-topology fence."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
     from agent.delegation_context import kanban_path_is_fenced
     if kanban_path_is_fenced(path):
@@ -782,6 +777,18 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
 
         conn, _ = _open_configured(path, _init_if_needed)
     return conn
+
+
+def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> sqlite3.Connection:
+    """Open/initialize a board while fenced against topology snapshots."""
+    from agent.delegation_context import kanban_path_is_fenced
+    from hermes_cli.kanban_board_topology import board_topology_lock
+
+    path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
+    if kanban_path_is_fenced(path):
+        return _connect_unlocked(db_path=db_path, board=board)
+    with board_topology_lock(_kb.kanban_home(), purpose="open"):
+        return _connect_unlocked(db_path=db_path, board=board)
 
 
 @contextlib.contextmanager

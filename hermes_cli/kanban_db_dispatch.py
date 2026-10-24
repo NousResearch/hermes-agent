@@ -2031,8 +2031,6 @@ def dispatch_once(
             result = _locked_tick()
             # Still under the dispatch lock: periodic PASSIVE WAL checkpoint.
             _kbc._maybe_checkpoint_wal(conn, db_path)
-    # Lock released. Fire the tick observer strictly OUTSIDE the critical
-    # section: a slow subscriber must never stall a sibling dispatcher's tick.
     _kb._fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
     return result
 
@@ -2923,6 +2921,7 @@ def run_daemon(
 
     if stop_event is None:
         stop_event = threading.Event()
+    pr_maintenance_thread = None
 
     def _handle(_signum, _frame):
         stop_event.set()
@@ -2938,8 +2937,8 @@ def run_daemon(
 
     while not stop_event.is_set():
         try:
-            # Re-resolved every tick (config load is mtime-cached) so operator
-            # edits apply without a restart.
+            pr_maintenance_thread = _kbpm.start(pr_maintenance_thread)
+            # Re-resolve every tick so operator edits apply without a restart.
             max_in_progress = resolve_max_in_progress(configured_max_in_progress())
             with contextlib.closing(_kbc.connect()) as conn:
                 res = dispatch_once(
@@ -2963,3 +2962,4 @@ def run_daemon(
 from hermes_cli import kanban_db as _kb
 from hermes_cli import kanban_db_connect as _kbc
 from hermes_cli import kanban_db_workspace as _kbw
+from hermes_cli import kanban_pr_maintenance as _kbpm

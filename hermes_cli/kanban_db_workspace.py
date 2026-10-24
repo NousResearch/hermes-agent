@@ -8,11 +8,16 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import os
+import json
+import re
 import shutil
 import sqlite3
+import stat
 import subprocess
+import threading
 import time
 import unicodedata
+import uuid
 from pathlib import Path
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -423,46 +428,251 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         pass  # best-effort — never block completion
 
 
-def _cleanup_worktree_workspace(
-    task_id: str, path: str, branch_name: Optional[str] = None
-) -> None:
-    """Remove a finished task's linked git worktree when it holds no work.
-    Mirrors the CLI startup pruner (``cli._prune_stale_worktrees``): removal
-    requires a clean tree AND every commit reachable from a remote-tracking
-    ref; any doubt (dirty, unpushed, unresolvable repo, failing git) preserves
-    it. The auto-generated ``wt/<task-id>`` branch is deleted with it; custom
-    branches are kept. Best-effort."""
+def _ref_lock_owner_alive(payload: dict) -> bool:
+    pid, started_at = payload.get("pid"), payload.get("started_at")
+    if not isinstance(pid, int) or not isinstance(started_at, int):
+        return True
     try:
-        from hermes_cli.worktree_ops import _worktree_has_unpushed_commits, _worktree_is_dirty
-    except Exception:
-        return  # CLI safety predicates unavailable — preserve
+        from gateway.status import _pid_exists, get_process_start_time
+
+        current = get_process_start_time(pid)
+    except (ImportError, OSError, ValueError):
+        return True
+    if current is not None:
+        return current == started_at
+    return _pid_exists(pid)
+
+
+_REF_RECOVERY_GUARD = object()
+_REF_RECOVERY_LOCAL = threading.local()
+
+
+@contextlib.contextmanager
+def _ref_recovery_guard(common: Path):
+    from hermes_cli.active_sessions import _FileLock
+
+    depth = int(getattr(_REF_RECOVERY_LOCAL, "depth", 0))
+    if depth:
+        _REF_RECOVERY_LOCAL.depth = depth + 1
+        try:
+            yield _REF_RECOVERY_GUARD
+        finally:
+            _REF_RECOVERY_LOCAL.depth = depth
+        return
+    guard_path = common.resolve(strict=True) / "hermes-kanban-ref-recovery.lock"
+    with _FileLock(guard_path):
+        _REF_RECOVERY_LOCAL.depth = 1
+        try:
+            yield _REF_RECOVERY_GUARD
+        finally:
+            _REF_RECOVERY_LOCAL.depth = 0
+
+
+def _remove_abandoned_ref_lock_under_guard(lock_path: Path, guard: object) -> bool:
+    """Remove a dead Hermes lock while the persistent recovery guard is held."""
+    if guard is not _REF_RECOVERY_GUARD or not getattr(_REF_RECOVERY_LOCAL, "depth", 0):
+        return False
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(lock_path, flags)
+    except (FileNotFoundError, OSError):
+        return False
+    try:
+        identity = os.fstat(fd)
+        if not stat.S_ISREG(identity.st_mode) or identity.st_size > 4096:
+            return False
+        raw = os.read(fd, 4097)
+        payload = json.loads(raw.decode("utf-8"))
+        if payload.get("owner") != "hermes-kanban-pr-cleanup":
+            return False
+        if _ref_lock_owner_alive(payload):
+            return False
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return False
+    finally:
+        os.close(fd)
+    try:
+        current = lock_path.stat(follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != (identity.st_dev, identity.st_ino):
+            return False
+        lock_path.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def _unlink_matching_inode(path: Path, identity: os.stat_result) -> None:
+    try:
+        current = path.stat(follow_symlinks=False)
+        if (current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino):
+            path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _validated_branch_ref_paths(
+    common: Path, branch: str
+) -> tuple[Path, str, Path, Path]:
+    repo_root = common.parent
+    if _git(repo_root, "check-ref-format", "--branch", branch, timeout=10).returncode != 0:
+        raise RuntimeError("invalid branch for cleanup ref lock")
+    ref = f"refs/heads/{branch}"
+    ref_path = common.joinpath(*ref.split("/"))
+    lock_path = ref_path.with_name(ref_path.name + ".lock")
+    common_real = common.resolve(strict=True)
+    parent = lock_path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    if not parent.resolve(strict=True).is_relative_to(common_real):
+        raise RuntimeError("branch ref lock escapes git common directory")
+    candidates = (common / "refs", common / "refs" / "heads", parent, *parent.parents)
+    for candidate in candidates:
+        if candidate == common:
+            break
+        if candidate.is_symlink():
+            raise RuntimeError("branch ref lock traverses a symlink")
+    return repo_root, ref, lock_path, parent
+
+
+def _prepare_ref_lock_temp(parent: Path, lock_path: Path, payload: bytes):
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    temp_path = parent / f".{lock_path.name}.hermes-{uuid.uuid4().hex}.tmp"
+    fd = os.open(temp_path, flags, 0o600)
+    identity = os.fstat(fd)
+    try:
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(fd, remaining)
+            if written <= 0:
+                raise OSError("short write while preparing branch ref lock")
+            remaining = remaining[written:]
+        os.fsync(fd)
+    except BaseException:
+        os.close(fd)
+        _unlink_matching_inode(temp_path, identity)
+        raise
+    os.close(fd)
+    return temp_path, identity
+
+
+def _publish_prepared_ref_lock(
+    temp_path: Path,
+    lock_path: Path,
+    identity: os.stat_result,
+    publication: list[bool],
+) -> None:
+    for attempt in range(2):
+        try:
+            os.link(temp_path, lock_path, follow_symlinks=False)
+            publication[0] = True
+            break
+        except FileExistsError:
+            if attempt or not _remove_abandoned_ref_lock_under_guard(
+                lock_path, _REF_RECOVERY_GUARD
+            ):
+                raise RuntimeError(
+                    "branch ref is locked by Git or a live cleanup owner"
+                ) from None
+    else:
+        raise RuntimeError("could not acquire branch ref lock")
+    current = lock_path.stat(follow_symlinks=False)
+    if (current.st_dev, current.st_ino) != (identity.st_dev, identity.st_ino):
+        raise RuntimeError("branch ref lock inode changed during publication")
+
+
+@contextlib.contextmanager
+def _branch_ref_write_lock_guarded(common: Path, branch: str, expected_head: str):
+    """Inner ref lock protocol; caller holds the persistent recovery guard."""
+    repo_root, ref, lock_path, parent = _validated_branch_ref_paths(common, branch)
+    from gateway.status import get_process_start_time
+
+    started_at = get_process_start_time(os.getpid())
+    if started_at is None:
+        raise RuntimeError("process identity unavailable for crash-recoverable ref lock")
+    payload = json.dumps(
+        {
+            "owner": "hermes-kanban-pr-cleanup",
+            "pid": os.getpid(),
+            "started_at": started_at,
+            "branch": branch,
+            "expected_head": expected_head,
+            "created_at": int(time.time()),
+        },
+        sort_keys=True,
+    ).encode("utf-8")
+    temp_path, identity = _prepare_ref_lock_temp(parent, lock_path, payload)
+    publication = [False]
+    try:
+        _publish_prepared_ref_lock(temp_path, lock_path, identity, publication)
+        _unlink_matching_inode(temp_path, identity)
+        actual = (_kb._git_out(repo_root, "rev-parse", ref) or "").strip()
+        if actual != expected_head:
+            raise RuntimeError("branch advanced before cleanup ref lock")
+        yield
+    finally:
+        if publication[0]:
+            _unlink_matching_inode(lock_path, identity)
+        _unlink_matching_inode(temp_path, identity)
+
+
+@contextlib.contextmanager
+def _branch_ref_write_lock(common: Path, branch: str, expected_head: str):
+    """Serialize stale recovery/publication, then hold Git's ref lock."""
+    common_real = common.resolve(strict=True)
+    with _ref_recovery_guard(common_real):
+        with _branch_ref_write_lock_guarded(common_real, branch, expected_head):
+            yield
+
+
+def _cleanup_worktree_workspace_locked(
+    task_id: str,
+    path: str,
+    branch_name: Optional[str] = None,
+    *,
+    merged_pr_head_oid: Optional[str] = None,
+) -> bool:
+    """Remove a finished task's linked git worktree when it holds no work.
+
+    Normally removal requires a clean tree and every commit reachable from a
+    remote-tracking ref. An exact GitHub merged-PR head OID may substitute for
+    reachability after GitHub deleted the head branch or squash-merged it. Any
+    doubt preserves the tree. Returns True only after Git removed the worktree.
+    """
+    from hermes_cli.worktree_ops import _worktree_has_unpushed_commits, _worktree_is_dirty
+
     try:
         wp = Path(path).expanduser()
         if not wp.is_dir():
-            return
+            return False
         common = _git_common_dir(wp)
         if common is None or common.name != ".git":
-            return  # not a linked worktree of a normal repo — never guess
+            return False
         repo_root = common.parent
         if _path_key(wp.resolve(strict=False)) == _path_key(repo_root.resolve(strict=False)):
-            return  # never remove the main checkout
-        if _worktree_is_dirty(str(wp), str(repo_root)) or _worktree_has_unpushed_commits(str(wp)):
+            return False
+        expected_head = (merged_pr_head_oid or "").strip()
+        current_head = (_kb._git_out(wp, "rev-parse", "HEAD") or "").strip()
+        branch = (branch_name or "").strip() or f"wt/{task_id}"
+        if expected_head and (
+            current_head != expected_head or _git_current_branch(wp) != branch
+        ):
+            return False
+        merged_pr_proves_head = bool(expected_head)
+        if _worktree_is_dirty(str(wp), str(repo_root)) or (
+            _worktree_has_unpushed_commits(str(wp)) and not merged_pr_proves_head
+        ):
             _kb._log.info(
                 "Preserving worktree for task %s: dirty or unpushed work at %s",
                 task_id, wp,
             )
-            return
-        # Windows cannot delete a directory while this process has its current
-        # directory inside it. Completed workers normally run from their own
-        # linked worktree, so move this process back to the main checkout
-        # before asking Git to remove the worktree.
+            return False
         worktree_path = wp.resolve(strict=False)
         try:
             cwd = Path.cwd().resolve(strict=False)
         except OSError:
-            # cwd was already deleted (a scratch-kind child's own workspace is
-            # rmtree'd before this deferred parent cleanup runs, #33774). A
-            # dead cwd cannot hold the worktree open, so leaving it is safe.
             cwd = None
         if cwd is None or cwd == worktree_path or cwd.is_relative_to(worktree_path):
             try:
@@ -472,28 +682,677 @@ def _cleanup_worktree_workspace(
                     "Preserving worktree for task %s: cannot leave %s for %s: %s",
                     task_id, cwd or "<deleted cwd>", repo_root, exc,
                 )
-                return
-        # No --force: git's own dirty guard re-verifies at removal time, so if
-        # the tree became dirty since our check (TOCTOU) removal fails safe.
-        release_lsp_clients(str(worktree_path))
-        result = _git(repo_root, "worktree", "remove", str(wp), timeout=60)
-        if result.returncode != 0:
-            # Windows can retain a directory handle briefly after cwd changes.
-            # Retry once without --force; Git still enforces its dirty guard.
-            time.sleep(0.1)
+                return False
+        # No --force: Git re-verifies dirtiness at removal time. Re-read the
+        # proof-bound identity immediately before mutation as well. A standard
+        # Git ref lock then prevents a clean concurrent commit from advancing
+        # the branch between this check and ``worktree remove``.
+        if expected_head and (
+            (_kb._git_out(wp, "rev-parse", "HEAD") or "").strip() != expected_head
+            or _git_current_branch(wp) != branch
+        ):
+            return False
+        ref_lock = (
+            _branch_ref_write_lock(common, branch, expected_head)
+            if expected_head else contextlib.nullcontext()
+        )
+        with ref_lock:
+            release_lsp_clients(str(worktree_path))
             result = _git(repo_root, "worktree", "remove", str(wp), timeout=60)
+            if result.returncode != 0:
+                time.sleep(0.1)
+                result = _git(repo_root, "worktree", "remove", str(wp), timeout=60)
         if result.returncode != 0:
             _kb._log.warning(
                 "git worktree remove failed for task %s at %s: %s",
                 task_id, wp, (result.stderr or result.stdout or "").strip(),
             )
-            return
+            return False
         _kb._log.debug("Removed worktree workspace: %s", wp)
         branch = (branch_name or "").strip() or f"wt/{task_id}"
         if branch.startswith("wt/"):
-            _git(repo_root, "branch", "-D", branch, timeout=30)
-    except Exception:
-        pass  # best-effort — never block completion
+            if expected_head:
+                # Compare-and-delete is atomic. A branch advanced after the PR
+                # proof survives even though its obsolete checkout was removed.
+                _git(
+                    repo_root,
+                    "update-ref",
+                    "-d",
+                    f"refs/heads/{branch}",
+                    expected_head,
+                    timeout=30,
+                )
+            else:
+                _git(repo_root, "branch", "-D", branch, timeout=30)
+        return True
+    except Exception:  # health: allow BLE001 -- destructive cleanup must preserve the tree on any Git/filesystem fault
+        _kb._log.exception("Preserving worktree for task %s after cleanup fault", task_id)
+        return False
+
+
+def _cleanup_worktree_workspace(
+    task_id: str,
+    path: str,
+    branch_name: Optional[str] = None,
+    *,
+    merged_pr_head_oid: Optional[str] = None,
+) -> bool:
+    """Lock the repository lifecycle before removing a linked worktree."""
+    try:
+        common = _git_common_dir(Path(path).expanduser())
+        if common is None or common.name != ".git":
+            return False
+        with _worktree_lifecycle_lock(common):
+            return _cleanup_worktree_workspace_locked(
+                task_id,
+                path,
+                branch_name,
+                merged_pr_head_oid=merged_pr_head_oid,
+            )
+    except Exception:  # health: allow BLE001 -- lifecycle lock uncertainty must preserve the worktree
+        _kb._log.exception("Preserving worktree for task %s after lifecycle-lock fault", task_id)
+        return False
+
+
+_MERGED_PR_PROBE_EVENT = "workspace_cleanup_pr_probe"
+_MERGED_PR_CLEANUP_EVENT = "workspace_cleanup_pr_merged"
+
+
+def _view_pr(pr_url: str, assignee: Optional[str]) -> Optional[dict]:
+    """Exact durable-contract PR identity, using the assignee's GitHub login."""
+    try:
+        from hermes_cli.kanban_pr_acceptance import _PR, _api, _assignee_profile_home
+
+        match = _PR.fullmatch(pr_url)
+        if match is None:
+            return None
+        repo, number = match[1], int(match[2])
+        owner, name = repo.split("/", 1)
+        query = (
+            f'{{repository(owner:{json.dumps(owner)},name:{json.dumps(name)})'
+            f'{{pullRequest(number:{number}){{number url state mergedAt mergeable mergeStateStatus '
+            'headRefName headRefOid headRepository{nameWithOwner}}}}}}'
+        )
+        repository = _api(
+            "graphql",
+            query=query,
+            profile_home=_assignee_profile_home(assignee),
+            timeout=5,
+        )["data"]["repository"]
+        pr = repository["pullRequest"] if repository else None
+        return pr if isinstance(pr, dict) else None
+    except Exception as exc:  # health: allow BLE001 -- remote/API uncertainty is a fail-closed preservation boundary
+        _kb._log.warning("Cannot query PR state for task contract %s: %s", pr_url, exc)
+        return None
+
+
+_PR_RECONCILE_CLAIM_TTL = 90
+_PR_WORKER_GRACE_SECONDS = 120
+_PR_INTENT_EVENT = "workspace_cleanup_pr_intent"
+_PR_ALIGNMENT_EVENT = "pr_alignment_scheduled"
+
+
+def _terminal_worker_settled(conn: sqlite3.Connection, task_id: str, now: int) -> bool:
+    row = conn.execute(
+        "SELECT COUNT(*) AS n, "
+        "SUM(CASE WHEN ended_at IS NULL OR worker_pid IS NOT NULL THEN 1 ELSE 0 END) AS unsettled, "
+        "MAX(ended_at) AS last_ended FROM task_runs WHERE task_id=?",
+        (task_id,),
+    ).fetchone()
+    return bool(
+        row
+        and int(row["n"] or 0) > 0
+        and int(row["unsettled"] or 0) == 0
+        and row["last_ended"] is not None
+        and int(row["last_ended"]) <= now - _PR_WORKER_GRACE_SECONDS
+    )
+
+
+def _conn_path_workers_settled(
+    conn: sqlite3.Connection, path_key: str, now: int
+) -> bool:
+    rows = conn.execute(
+        "SELECT id, status, workspace_path FROM tasks WHERE workspace_path IS NOT NULL"
+    ).fetchall()
+    for row in rows:
+        try:
+            other_key = _path_key(Path(row["workspace_path"]).expanduser().resolve(strict=False))
+        except OSError:
+            return False
+        if other_key != path_key:
+            continue
+        if row["status"] not in {"done", "archived", "failed", "cancelled"}:
+            return False
+        if not _terminal_worker_settled(conn, row["id"], now):
+            return False
+    return True
+
+
+def _all_path_workers_settled(
+    conn: sqlite3.Connection, path: str, now: int
+) -> bool:
+    """Every same- or sibling-board owner is terminal and its worker is gone."""
+    try:
+        key = _path_key(Path(path).expanduser().resolve(strict=False))
+        if not key or not _conn_path_workers_settled(conn, key, now):
+            return False
+        for db_file in _sibling_board_db_files(conn):
+            uri = db_file.as_uri() + "?mode=ro"
+            sibling = sqlite3.connect(uri, uri=True, timeout=1.0)
+            try:
+                sibling.row_factory = sqlite3.Row
+                if not _conn_path_workers_settled(sibling, key, now):
+                    return False
+            finally:
+                sibling.close()
+        return True
+    except (OSError, sqlite3.Error):
+        return False
+
+
+@contextlib.contextmanager
+def _all_board_write_fences(conn: sqlite3.Connection):
+    """Freeze topology, then fence every board in canonical path order."""
+    from hermes_cli.kanban_board_topology import board_topology_lock
+    from hermes_cli.kanban_db_connect import _main_db_file
+
+    with board_topology_lock(_kb.kanban_home(), purpose="snapshot"):
+        current_file = _main_db_file(conn)
+        if current_file is None:
+            raise sqlite3.OperationalError("current board database path unavailable")
+        current_file = Path(current_file).resolve(strict=True)
+        db_files = {current_file}
+        db_files.update(path.resolve(strict=True) for path in _sibling_board_db_files(conn))
+        fenced: list[tuple[Path, sqlite3.Connection]] = []
+        try:
+            for db_file in sorted(db_files, key=lambda item: str(item)):
+                handle = sqlite3.connect(db_file, timeout=1.0, isolation_level=None)
+                handle.row_factory = sqlite3.Row
+                handle.execute("PRAGMA busy_timeout=1000")
+                handle.execute("BEGIN IMMEDIATE")
+                fenced.append((db_file, handle))
+            current = next(handle for path, handle in fenced if path == current_file)
+            siblings = [handle for path, handle in fenced if path != current_file]
+            yield current, siblings
+        finally:
+            for _path, handle in reversed(fenced):
+                with contextlib.suppress(sqlite3.Error):
+                    handle.execute("ROLLBACK")
+                handle.close()
+
+
+def _fenced_path_workers_settled(
+    conn: sqlite3.Connection,
+    siblings: list[sqlite3.Connection],
+    path: str,
+    now: int,
+) -> bool:
+    try:
+        key = _path_key(Path(path).expanduser().resolve(strict=False))
+        return bool(
+            key
+            and _conn_path_workers_settled(conn, key, now)
+            and all(_conn_path_workers_settled(sibling, key, now) for sibling in siblings)
+        )
+    except (OSError, sqlite3.Error):
+        return False
+
+
+def _origin_github_repo(path: Path) -> Optional[str]:
+    remote = (_kb._git_out(path, "remote", "get-url", "origin") or "").strip()
+    patterns = (
+        r"https?://github\.com/([^/]+/[^/]+?)(?:\.git)?$",
+        r"git@github\.com:([^/]+/[^/]+?)(?:\.git)?$",
+        r"ssh://git@github\.com/([^/]+/[^/]+?)(?:\.git)?$",
+    )
+    for pattern in patterns:
+        match = re.fullmatch(pattern, remote, re.IGNORECASE)
+        if match:
+            return match[1]
+    return None
+
+
+def _claim_pr_reconciliation(
+    conn: sqlite3.Connection, task_id: str, now: int
+) -> Optional[str]:
+    token = f"pr-reconcile:{uuid.uuid4().hex}"
+    try:
+        with _kb.write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks SET claim_lock=?, claim_expires=? "
+                f"WHERE id=? AND status IN {_TERMINAL_STATUSES_SQL} "
+                "AND (claim_lock IS NULL OR claim_expires IS NULL OR claim_expires < ?)",
+                (token, now + _PR_RECONCILE_CLAIM_TTL, task_id, now),
+            )
+            return token if cur.rowcount == 1 else None
+    except sqlite3.Error:
+        return None
+
+
+def _finish_pr_probe_txn(
+    conn: sqlite3.Connection,
+    task_id: str,
+    token: str,
+    result: str,
+    extra: Optional[dict] = None,
+) -> None:
+    _kb._append_event(
+        conn, task_id, _MERGED_PR_PROBE_EVENT, {"result": result, **(extra or {})}
+    )
+    conn.execute(
+        "UPDATE tasks SET claim_lock=NULL, claim_expires=NULL "
+        "WHERE id=? AND claim_lock=?",
+        (task_id, token),
+    )
+
+
+def _finish_pr_probe(
+    conn: sqlite3.Connection,
+    task_id: str,
+    token: str,
+    result: str,
+    extra: Optional[dict] = None,
+) -> None:
+    try:
+        with _kb.write_txn(conn):
+            _finish_pr_probe_txn(conn, task_id, token, result, extra)
+    except sqlite3.Error:
+        pass
+
+
+def _recover_finished_pr_cleanup(
+    conn: sqlite3.Connection, task_id: str, path: str
+) -> bool:
+    """Settle DB state only after proving Git no longer registers the worktree."""
+    row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id=? AND kind=? "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id, _PR_INTENT_EVENT),
+    ).fetchone()
+    if not row:
+        return False
+    try:
+        payload = json.loads(row["payload"] or "{}")
+        repo_root = Path(payload["repo_root"]).expanduser().resolve(strict=True)
+        recorded_common = Path(payload["common_dir"]).expanduser().resolve(strict=True)
+        recorded_head = payload["head"]
+        branch = payload["branch"]
+    except (KeyError, TypeError, ValueError, OSError):
+        return False
+    if payload.get("path") != path:
+        return False
+    actual_common = _git_common_dir(repo_root)
+    if actual_common is None:
+        return False
+    try:
+        if actual_common.resolve(strict=True) != recorded_common:
+            return False
+        listing = _git(repo_root, "worktree", "list", "--porcelain", "-z", timeout=30)
+        if listing.returncode != 0:
+            return False
+        registered = {
+            _path_key(Path(field[len("worktree "):]).resolve(strict=False))
+            for field in (listing.stdout or "").split("\0")
+            if field.startswith("worktree ")
+        }
+        if _path_key(Path(path).expanduser().resolve(strict=False)) in registered:
+            return False
+        branch_head = (_kb._git_out(repo_root, "rev-parse", f"refs/heads/{branch}") or "").strip()
+        if branch_head and branch_head != recorded_head:
+            return False
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+    try:
+        with _kb.write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks SET workspace_path=NULL, claim_lock=NULL, claim_expires=NULL "
+                f"WHERE id=? AND workspace_path=? AND status IN {_TERMINAL_STATUSES_SQL}",
+                (task_id, path),
+            )
+            if cur.rowcount != 1:
+                return False
+            _kb._append_event(
+                conn, task_id, _MERGED_PR_CLEANUP_EVENT,
+                {**payload, "recovered": True},
+            )
+        return True
+    except sqlite3.Error:
+        return False
+
+
+def _existing_alignment_task(
+    conn: sqlite3.Connection, idempotency_key: str
+) -> Optional[str]:
+    row = conn.execute(
+        "SELECT id FROM tasks WHERE idempotency_key=? LIMIT 1",
+        (idempotency_key,),
+    ).fetchone()
+    if row:
+        return row["id"]
+    for db_file in _sibling_board_db_files(conn):
+        uri = db_file.as_uri() + "?mode=ro"
+        sibling = sqlite3.connect(uri, uri=True, timeout=1.0)
+        try:
+            sibling.row_factory = sqlite3.Row
+            row = sibling.execute(
+                "SELECT id FROM tasks WHERE idempotency_key=? LIMIT 1",
+                (idempotency_key,),
+            ).fetchone()
+            if row:
+                return row["id"]
+        finally:
+            sibling.close()
+    return None
+
+
+def _schedule_pr_alignment(
+    conn: sqlite3.Connection, row: sqlite3.Row, pr: dict, head: str
+) -> Optional[str]:
+    pr_url = row["completion_contract"]
+    number = pr.get("number")
+    idempotency_key = f"pr-alignment:{pr_url}:{head}"
+    try:
+        common = _git_common_dir(Path(row["workspace_path"]).expanduser())
+        if common is None or common.name != ".git":
+            return None
+        # Every controller that can create this special task participates in
+        # the repository lifecycle lock. The cross-board scan + insert is thus
+        # atomic for PR-alignment writers even though ordinary task keys are not
+        # globally unique in SQLite.
+        with _worktree_lifecycle_lock(common):
+            existing = _existing_alignment_task(conn, idempotency_key)
+            if existing:
+                return existing
+            child_id = _kb.create_task(
+                conn,
+                title=f"Align PR #{number} with its base branch",
+                body=(
+                    f"Resolve merge conflicts for {pr_url}. Work only in the existing branch "
+                    f"{row['branch_name']!r} at {row['workspace_path']}. Fetch the base branch, "
+                    "align the PR branch, preserve intended changes, run relevant gates, push the "
+                    "updated branch, and complete only with current PR acceptance evidence."
+                ),
+                assignee=row["assignee"],
+                created_by="kanban-pr-controller",
+                workspace_kind="worktree",
+                workspace_path=row["workspace_path"],
+                branch_name=row["branch_name"],
+                priority=int(row["priority"] or 0),
+                idempotency_key=idempotency_key,
+                creator_task_id=row["id"],
+                skills=("github-pr-workflow",),
+                project_id=row["project_id"],
+                project_source_task_id=row["id"],
+                completion_contract=pr_url,
+            )
+            with _kb.write_txn(conn):
+                _kb._append_event(
+                    conn,
+                    row["id"],
+                    _PR_ALIGNMENT_EVENT,
+                    {"alignment_task_id": child_id, "pr_url": pr_url, "head": head},
+                )
+            return child_id
+    except Exception as exc:  # health: allow BLE001 -- alignment creation fails closed and is retried
+        _kb._log.exception("Cannot schedule PR alignment for task %s: %s", row["id"], exc)
+        return None
+
+
+def _record_pr_probe(
+    conn: sqlite3.Connection, task_id: str, result: str
+) -> None:
+    try:
+        with _kb.write_txn(conn):
+            _kb._append_event(conn, task_id, _MERGED_PR_PROBE_EVENT, {"result": result})
+    except sqlite3.Error:
+        pass
+
+
+def _finalize_merged_pr_cleanup(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    wp: Path,
+    common: Path,
+    branch: str,
+    head: str,
+    token: str,
+    intent: dict,
+) -> bool:
+    task_id, path = row["id"], row["workspace_path"]
+    removed = False
+    _cleanup_worker_tmux(conn, task_id)
+    try:
+        with _all_board_write_fences(conn) as (current_board, siblings):
+            fresh = current_board.execute(
+                "SELECT status, workspace_path, branch_name, completion_contract, claim_lock "
+                "FROM tasks WHERE id=?",
+                (task_id,),
+            ).fetchone()
+            valid = bool(
+                fresh
+                and fresh["status"] in {"done", "archived", "failed", "cancelled"}
+                and fresh["workspace_path"] == path
+                and fresh["branch_name"] == branch
+                and fresh["completion_contract"] == row["completion_contract"]
+                and fresh["claim_lock"] == token
+                and _fenced_path_workers_settled(
+                    current_board, siblings, path, int(time.time())
+                )
+                and not _has_active_children(current_board, task_id)
+                and _git_current_branch(wp) == branch
+                and (_kb._git_out(wp, "rev-parse", "HEAD") or "").strip() == head
+            )
+            if not valid:
+                _finish_pr_probe_txn(
+                    current_board, task_id, token, "final_revalidation_failed"
+                )
+            else:
+                removed = _cleanup_worktree_workspace_locked(
+                    task_id, path, branch, merged_pr_head_oid=head,
+                )
+                if removed:
+                    cur = current_board.execute(
+                        "UPDATE tasks SET workspace_path=NULL, claim_lock=NULL, "
+                        "claim_expires=NULL WHERE id=? AND workspace_path=? "
+                        "AND claim_lock=?",
+                        (task_id, path, token),
+                    )
+                    if cur.rowcount != 1:
+                        raise sqlite3.IntegrityError(
+                            "cleanup ownership changed after Git removal"
+                        )
+                    _kb._append_event(
+                        current_board, task_id, _MERGED_PR_CLEANUP_EVENT, intent,
+                    )
+                else:
+                    _finish_pr_probe_txn(
+                        current_board, task_id, token, "cleanup_deferred"
+                    )
+            current_board.execute("COMMIT")
+    except (OSError, sqlite3.Error):
+        if not removed:
+            _finish_pr_probe(conn, task_id, token, "finalization_failed")
+        return False
+    return removed
+
+
+def _cleanup_merged_pr_candidate(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    pr: dict,
+    wp: Path,
+    common: Path,
+    branch: str,
+    head: str,
+    token: str,
+) -> bool:
+    task_id, path = row["id"], row["workspace_path"]
+    intent = {
+        "path": path,
+        "repo_root": str(common.parent.resolve(strict=True)),
+        "common_dir": str(common.resolve(strict=True)),
+        "branch": branch,
+        "head": head,
+        "pr_number": pr.get("number"),
+        "pr_url": pr.get("url"),
+        "merged_at": pr.get("mergedAt"),
+        "claim": token,
+    }
+    with _worktree_lifecycle_lock(common):
+        current = conn.execute(
+            "SELECT status, workspace_path, branch_name, completion_contract, claim_lock "
+            "FROM tasks WHERE id=?",
+            (task_id,),
+        ).fetchone()
+        valid = bool(
+            current
+            and current["status"] in {"done", "archived", "failed", "cancelled"}
+            and current["workspace_path"] == path
+            and current["branch_name"] == branch
+            and current["completion_contract"] == row["completion_contract"]
+            and current["claim_lock"] == token
+            and _all_path_workers_settled(conn, path, int(time.time()))
+            and not _has_active_children(conn, task_id)
+            and _git_current_branch(wp) == branch
+            and (_kb._git_out(wp, "rev-parse", "HEAD") or "").strip() == head
+        )
+        if not valid:
+            _finish_pr_probe(conn, task_id, token, "revalidation_failed")
+            return False
+        try:
+            with _kb.write_txn(conn):
+                fresh = conn.execute(
+                    "SELECT status, workspace_path, branch_name, claim_lock "
+                    "FROM tasks WHERE id=?",
+                    (task_id,),
+                ).fetchone()
+                if not fresh or (
+                    fresh["status"] not in {"done", "archived", "failed", "cancelled"}
+                    or fresh["workspace_path"] != path
+                    or fresh["branch_name"] != branch
+                    or fresh["claim_lock"] != token
+                ):
+                    raise sqlite3.IntegrityError("cleanup intent ownership changed")
+                _kb._append_event(conn, task_id, _PR_INTENT_EVENT, intent)
+        except sqlite3.Error:
+            _finish_pr_probe(conn, task_id, token, "intent_failed")
+            return False
+        return _finalize_merged_pr_cleanup(
+            conn, row, wp, common, branch, head, token, intent
+        )
+
+
+def _reconcile_pr_candidate(
+    conn: sqlite3.Connection, row: sqlite3.Row, now: int
+) -> bool:
+    task_id, path = row["id"], row["workspace_path"]
+    wp = Path(path).expanduser()
+    if not wp.is_dir():
+        recovered = _recover_finished_pr_cleanup(conn, task_id, path)
+        if not recovered:
+            _record_pr_probe(conn, task_id, "missing_path_unproven")
+        return recovered
+    if not _is_linked_worktree_checkout(wp) or not _terminal_worker_settled(
+        conn, task_id, now
+    ):
+        _record_pr_probe(conn, task_id, "precheck_deferred")
+        return False
+    token = _claim_pr_reconciliation(conn, task_id, now)
+    if token is None:
+        return False
+    branch = (row["branch_name"] or "").strip()
+    common = _git_common_dir(wp)
+    head = (_kb._git_out(wp, "rev-parse", "HEAD") or "").strip()
+    origin_repo = _origin_github_repo(wp)
+    if (
+        common is None
+        or common.name != ".git"
+        or not head
+        or not origin_repo
+        or _git_current_branch(wp) != branch
+    ):
+        _finish_pr_probe(conn, task_id, token, "git_identity_unproven")
+        return False
+    pr = _view_pr(row["completion_contract"], row["assignee"])
+    head_repo = ((pr or {}).get("headRepository") or {}).get("nameWithOwner")
+    if (
+        not pr
+        or not head_repo
+        or head_repo.casefold() != origin_repo.casefold()
+        or pr.get("headRefName") != branch
+        or pr.get("headRefOid") != head
+    ):
+        _finish_pr_probe(conn, task_id, token, "pr_identity_unproven")
+        return False
+    if pr.get("state") == "OPEN" and (
+        pr.get("mergeable") == "CONFLICTING" or pr.get("mergeStateStatus") == "DIRTY"
+    ):
+        alignment_id = _schedule_pr_alignment(conn, row, pr, head)
+        _finish_pr_probe(
+            conn,
+            task_id,
+            token,
+            "conflicting" if alignment_id else "alignment_failed",
+            {"pr_url": pr.get("url"), "alignment_task_id": alignment_id},
+        )
+        return False
+    if pr.get("state") != "MERGED" or not pr.get("mergedAt"):
+        _finish_pr_probe(
+            conn, task_id, token, "not_merged", {"pr_url": pr.get("url")}
+        )
+        return False
+    return _cleanup_merged_pr_candidate(
+        conn, row, pr, wp, common, branch, head, token
+    )
+
+
+def reap_merged_pr_worktrees(
+    conn: sqlite3.Connection,
+    *,
+    max_checks: int = 1,
+    probe_interval_seconds: int = 900,
+) -> list[str]:
+    """Reconcile exact-contract PRs: align conflicts, reap only after merge.
+
+    The specific persisted PR URL is authoritative. A merged PR must still
+    match the local origin repository, branch and exact head. Conflict state
+    schedules one idempotent alignment task per PR head. All destructive work
+    requires a settled terminal worker, a claim, a pre-delete intent record,
+    repeated DB/Git identity checks, and the repository lifecycle lock.
+    """
+    now = int(time.time())
+    cutoff = now - max(0, int(probe_interval_seconds))
+    try:
+        rows = conn.execute(
+            "SELECT t.id, t.workspace_path, t.branch_name, t.completion_contract, "
+            "t.assignee, t.project_id, t.priority "
+            "FROM tasks t "
+            "WHERE t.workspace_kind='worktree' "
+            "AND t.workspace_path IS NOT NULL AND t.branch_name IS NOT NULL "
+            "AND t.completion_contract GLOB 'https://github.com/*/*/pull/*' "
+            f"AND t.status IN {_TERMINAL_STATUSES_SQL} "
+            "AND NOT EXISTS (SELECT 1 FROM task_events done "
+            "  WHERE done.task_id=t.id AND done.kind=?) "
+            "AND COALESCE((SELECT MAX(probe.created_at) FROM task_events probe "
+            "  WHERE probe.task_id=t.id AND probe.kind=?), 0) <= ? "
+            "ORDER BY COALESCE((SELECT MAX(probe.created_at) FROM task_events probe "
+            "  WHERE probe.task_id=t.id AND probe.kind=?), 0), "
+            "COALESCE(t.completed_at, t.created_at), t.id",
+            (
+                _MERGED_PR_CLEANUP_EVENT,
+                _MERGED_PR_PROBE_EVENT,
+                cutoff,
+                _MERGED_PR_PROBE_EVENT,
+            ),
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+
+    cleaned: list[str] = []
+    for row in rows[: max(0, int(max_checks))]:
+        if _reconcile_pr_candidate(conn, row, now):
+            cleaned.append(row["id"])
+    return cleaned
 
 
 def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> None:
@@ -686,23 +1545,33 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
+def _worktree_lifecycle_lock(common_dir: Path):
+    """Cross-process lock shared by Kanban worktree creation and removal."""
+    from hermes_cli.active_sessions import _FileLock
+
+    return _FileLock(common_dir / "hermes-kanban-worktrees.lock")
+
+
 def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
     target = target.expanduser()
     repo_common = _git_common_dir(repo_root)
-    if target.exists() and repo_common is not None and _path_key(_git_common_dir(target)) == _path_key(repo_common):
-        return
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if _git_branch_exists(repo_root, branch_name):
-        args = ["worktree", "add", str(target), branch_name]
-    else:
-        args = ["worktree", "add", "-b", branch_name, str(target), "HEAD"]
-    result = _git(repo_root, *args, timeout=60)
-    if result.returncode != 0:
-        stderr = (result.stderr or result.stdout or "").strip()
-        raise RuntimeError(
-            f"git worktree add failed for {target} on branch {branch_name}: {stderr}"
-        )
+    if repo_common is None:
+        raise RuntimeError(f"cannot resolve git common directory for {repo_root}")
+    with _worktree_lifecycle_lock(repo_common):
+        if target.exists() and _path_key(_git_common_dir(target)) == _path_key(repo_common):
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if _git_branch_exists(repo_root, branch_name):
+            args = ["worktree", "add", str(target), branch_name]
+        else:
+            args = ["worktree", "add", "-b", branch_name, str(target), "HEAD"]
+        result = _git(repo_root, *args, timeout=60)
+        if result.returncode != 0:
+            stderr = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(
+                f"git worktree add failed for {target} on branch {branch_name}: {stderr}"
+            )
 
 
 def _anchored_worktree(repo_root: Path, task_id: str, branch_name: str) -> tuple[Path, str]:

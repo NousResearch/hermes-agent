@@ -132,9 +132,123 @@ const emojibaseAssets = () => ({
   }
 })
 
+// One checkout, ONE spelling of its path in the module graph.
+//
+// A Windows `subst` drive — the documented recipe for building this repo from a
+// non-ASCII checkout path (`subst X: D:\<non-ascii>\hermes-agent`) — gives the
+// same files two names. Node's NATIVE realpath resolves the alias to its target
+// (`fs.realpathSync.native`, which is what Vite's own root/symlink handling
+// uses), while `root`, the `resolve.alias` entries below and `require.resolve`
+// keep the alias as typed. A file reached through both spellings then enters the
+// graph under two ids: it is instantiated twice, and every module-level React
+// context splits in half.
+//
+// @assistant-ui's store is exactly that kind of context, which is how this
+// surfaced: the entry's `AssistantRuntimeProvider` published a context object
+// the reader never saw, and every transcript died on the launch path with "You
+// are using a component or hook that requires an AuiProvider" (thrown by the
+// store's default client proxy). Grouping the library into a single chunk does
+// NOT help — both instances are already grouped; only collapsing the spelling
+// does. Outside an aliased drive the plugin is a no-op (`rootNames.length < 2`),
+// so it costs nothing on a normal checkout.
+const repoRoot = path.resolve(__dirname, '../..')
+
+const sep = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '')
+const sepKey = (p: string) => sep(p).toLowerCase()
+
+/** Node's NATIVE realpath: the one that resolves a Windows `subst` alias drive
+ *  to the target it points at (plain `realpathSync` keeps the alias as typed). */
+const nativeReal = (p: string): string | null => {
+  try {
+    return fs.realpathSync.native(p)
+  } catch {
+    return null
+  }
+}
+
+/** Both names of this checkout: `key` is the case/separator-insensitive form
+ *  used for matching, `name` the spelling to rewrite with. One entry (and a
+ *  no-op plugin) everywhere the drive is not aliased. */
+const rootNames = [
+  ...new Map(
+    [repoRoot, nativeReal(repoRoot)]
+      .filter((p): p is string => Boolean(p))
+      .map(p => [sepKey(p), sep(p)] as const)
+  ).entries()
+]
+
+/** Rewrite a path-typed id that is inside this checkout but spelled with the
+ *  OTHER name of it, so one file can only ever become one module. */
+function collapseSpelling(id: string, keep: string): string {
+  if (rootNames.length < 2 || !path.isAbsolute(id)) {
+    return id
+  }
+
+  const idPath = sep(id)
+  const idKey = idPath.toLowerCase()
+  const keepKey = sepKey(keep)
+
+  for (const [key, name] of rootNames) {
+    if (key === keepKey || (idKey !== key && !idKey.startsWith(`${key}/`))) {
+      continue
+    }
+
+    const rewritten = keep + idPath.slice(key.length)
+
+    return id.includes('\\') ? rewritten.replace(/\//g, '\\') : rewritten
+  }
+
+  return id
+}
+
+/** Collapse every id inside this checkout onto ONE name — the spelling Vite
+ *  itself resolved as `root`, because the html entry name and the renderer
+ *  manifest are computed with `path.relative(root, id)` and an id on the other
+ *  name comes back absolute (which fails the build outright). */
+const singlePathSpelling = () => {
+  let keep = sep(nativeReal(repoRoot) ?? repoRoot)
+
+  return {
+    name: 'hermes:single-path-spelling',
+    // `pre`: this must SEE every specifier. A `post` hook only runs when no
+    // other plugin resolved it, and the split hides in resolutions earlier
+    // plugins DO handle.
+    enforce: 'pre' as const,
+    configResolved(config: { root: string }) {
+      const named = rootNames.find(([key]) => key === sepKey(config.root))
+
+      if (named) {
+        keep = named[1]
+      }
+    },
+    async resolveId(
+      this: { resolve: (source: string, importer?: string, options?: object) => Promise<{ id: string } | null> },
+      source: string,
+      importer?: string,
+      options?: object
+    ) {
+      // One name for this checkout (no alias drive, no symlinked root): the ids
+      // cannot disagree, so stay out of the resolution path entirely.
+      if (rootNames.length < 2) {
+        return null
+      }
+
+      const resolved = await this.resolve(source, importer, { ...options, skipSelf: true })
+
+      if (!resolved) {
+        return null
+      }
+
+      const id = collapseSpelling(resolved.id, keep)
+
+      return id === resolved.id ? null : { ...resolved, id }
+    }
+  }
+}
+
 export default defineConfig(({ command }) => ({
   base: './',
-  plugins: [react(), cachedCompilerPass(command), tailwindcss(), emojibaseAssets()],
+  plugins: [singlePathSpelling(), react(), cachedCompilerPass(command), tailwindcss(), emojibaseAssets()],
   css: {
     // Pin an explicit (empty) PostCSS config. Tailwind is handled entirely by
     // `@tailwindcss/vite`, so the renderer needs no PostCSS plugins — and

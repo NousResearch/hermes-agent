@@ -218,8 +218,20 @@ class GatewayTurnProgressMixin:
                     kwargs.get("goal"), status, error=kwargs.get("summary") or preview,
                     duration_seconds=kwargs.get("duration_seconds"), failure_reason=kwargs.get("failure_reason"),
                 )
+                def _present_failure_notice():
+                    try:
+                        self._schedule(
+                            self._runner._deliver_platform_notice(
+                                ctx.source,
+                                line,
+                                event_metadata=ctx.event_metadata,
+                            ),
+                            "subagent failure notice scheduling error",
+                        )
+                    except Exception:
+                        logger.debug("subagent failure notice delivery failed", exc_info=True)
                 render_notification(
-                    lambda: self._schedule(self._runner._deliver_platform_notice(ctx.source, line), "subagent failure notice scheduling error"),
+                    _present_failure_notice,
                     platform=ctx.source.platform, user_config=ctx.user_config)
         except Exception:
             logger.debug("subagent failure notice failed", exc_info=True)

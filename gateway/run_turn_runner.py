@@ -348,7 +348,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 logger.debug("render_notice_line failed", exc_info=True)
                 return
             if line:
-                self._schedule(self._runner._deliver_platform_notice(self._ctx.source, line), "notice_callback delivery scheduling error")
+                self._schedule(
+                    self._runner._deliver_platform_notice(
+                        self._ctx.source,
+                        line,
+                        event_metadata=self._ctx.event_metadata,
+                    ),
+                    "notice_callback delivery scheduling error",
+                )
         render_notification(present, platform=self._ctx.source.platform,
                             user_config=self._ctx.user_config, diagnostic=diagnostic)
 

@@ -177,7 +177,11 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
 
     def _event_thread_metadata(self, event, source):
         """Thread metadata for a send that replies to ``event`` on ``source``."""
-        return self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+        return self._thread_metadata_for_source(
+            source,
+            self._reply_anchor_for_event(event),
+            getattr(event, "metadata", None),
+        )
 
     @staticmethod
     def _pop_post_delivery_callback(adapter, key, generation):
@@ -269,6 +273,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 session_id=_run_start_session_id, session_key=session_key,
                 run_generation=run_generation, event_message_id=self._reply_anchor_for_event(event),
                 inbound_message_id=str(event.message_id) if event.message_id else None,
+                # Trusted per-inbound-event routing authority (e.g. Telegram Business
+                # send-as-account). Never reconstructed from durable session state.
+                event_metadata=getattr(event, "metadata", None),
                 channel_prompt=_turn_channel_prompt, moa_config=getattr(event, "_moa_config", None),
                 title_user_message=prepared.title_user_message,
                 persist_user_message=prepared.persist_user_message,
@@ -823,6 +830,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         self, message: str, context_prompt: str, history: list[dict[str, Any]],
         source: SessionSource, session_id: str, session_key: str | None = None,
         run_generation: Optional[int] = None, event_message_id: Optional[str] = None,
+        event_metadata: Optional[dict[str, Any]] = None,
         scheduled_heartbeat: bool = False,
     ) -> dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of running a local AIAgent.
@@ -876,7 +884,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             headers["X-Hermes-Session-Id"] = session_id
         body = {"model": "hermes-agent", "messages": api_messages, "stream": True}
 
-        _thread_metadata: Optional[dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
+        _thread_metadata: Optional[dict[str, Any]] = self._thread_metadata_for_source(
+            source, event_message_id, event_metadata
+        )
         _stream_consumer = (
             None if scheduled_heartbeat
             else self._proxy_stream_consumer(source, event_message_id, _thread_metadata, _run_still_current)
@@ -1174,16 +1184,19 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
 
     def _thread_metadata_for_progress(
         self, source: SessionSource, event_message_id: Optional[str], _progress_thread_id: Any,
-        _relay_prospective_thread_id: Optional[str],
+        _relay_prospective_thread_id: Optional[str], event_metadata: Optional[dict[str, Any]] = None,
     ) -> Optional[dict[str, Any]]:
         """Thread metadata for a progress-lane send; relay Discord auto-thread lane falls back to the reply anchor.
 
         The connector will auto-thread on the reply anchor (thread is born on its FIRST send), so
         carrying it routes progress / status bubbles into the same thread as the final reply."""
         if not _progress_thread_id:
-            metadata = None
+            metadata = (
+                self._thread_metadata_for_source(source, event_message_id, event_metadata)
+                if event_metadata else None
+            )
         elif _progress_thread_id == source.thread_id:
-            metadata = self._thread_metadata_for_source(source, event_message_id)
+            metadata = self._thread_metadata_for_source(source, event_message_id, event_metadata)
         else:
             metadata = self._thread_metadata_for_target(
                 source.platform, source.chat_id, _progress_thread_id,
@@ -1194,7 +1207,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         return metadata
 
     def _run_agent_progress_threading(
-        self, source: SessionSource, event_message_id: Optional[str], _native_slack_task_cards: bool
+        self, source: SessionSource, event_message_id: Optional[str], _native_slack_task_cards: bool,
+        event_metadata: Optional[dict[str, Any]] = None,
     ) -> tuple[Optional[dict], Optional[str], Optional[dict]]:
         """Resolve where progress bubbles are threaded (platform-specific).
 
@@ -1232,7 +1246,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         )
         _progress_metadata = _non_conversational_metadata(
             self._thread_metadata_for_progress(
-                source, event_message_id, _progress_thread_id, _relay_prospective_thread_id,
+                source, event_message_id, _progress_thread_id,
+                _relay_prospective_thread_id, event_metadata,
             ),
             platform=source.platform,
         )
@@ -1256,7 +1271,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             _status_thread_metadata = {"thread_id": _progress_thread_id, "reply_to_message_id": event_message_id}
         else:
             _status_thread_metadata = self._thread_metadata_for_progress(
-                source, event_message_id, _progress_thread_id, _relay_prospective_thread_id,
+                source, event_message_id, _progress_thread_id,
+                _relay_prospective_thread_id, event_metadata,
             )
         return _progress_metadata, _progress_reply_to, _status_thread_metadata
 
@@ -1884,6 +1900,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         next_persist_message = None
         next_display_kind = display_kind_for_event(pending_event)
         next_reply_expected = pending_event.reply_expected if pending_event is not None else None
+        next_event_metadata = None
         # See #60671.
         if pending_event is not None:
             next_source = getattr(pending_event, "source", None) or source
@@ -1919,6 +1936,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 # A drained human turn re-pins its channel inputs; make them durable like a first turn.
                 await self._persist_prompt_pins(next_session_key, session_id)
             next_message_type = getattr(pending_event, "message_type", None)
+            next_event_metadata = getattr(pending_event, "metadata", None)
         else:
             # Event-less interrupt/steer follow-ups continue the effective prompt
             # of the turn they are recursively following.
@@ -1967,6 +1985,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 source=next_source, session_id=session_id, session_key=next_session_key,
                 run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
                 event_message_id=next_message_id, inbound_message_id=next_inbound_id,
+                event_metadata=next_event_metadata,
                 channel_prompt=next_channel_prompt, message_type=next_message_type,
                 persist_user_message=next_persist_message,
                 persist_user_display_kind=next_display_kind,
@@ -2057,14 +2076,20 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         ``(session, error)`` and an exception logs ``fail_exc`` as ``(session, exc)``; either way
         ``already_sent`` stays unset so the normal final send delivers the content."""
         try:
-            _res = await _sc.adapter.edit_message(
-                chat_id=source.chat_id, message_id=_sc.message_id, content=content, finalize=True,
+            # Edit through the CONSUMER's own helper: it carries the turn's routing
+            # metadata (e.g. a Telegram Business connection identity) into the
+            # adapter, so a reconcile-by-edit does not drop the sending identity.
+            _res = await _sc._edit_message(
+                message_id=_sc.message_id,
+                content=content,
+                finalize=True,
             )
         except Exception as _edit_err:
             logger.warning(fail_exc, _sk, _edit_err)
             return
         if not getattr(_res, "success", True):
-            logger.warning(fail_result, _sk, getattr(_res, "error", None))
+            if fail_result is not None:
+                logger.warning(fail_result, _sk, getattr(_res, "error", None))
             return
         response["already_sent"] = True
         logger.info(*ok)
@@ -2202,7 +2227,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         ``turn_ctx`` (the one-slot holders shared with run_sync's executor thread are TurnContext
         defaults). Returns ``_status_thread_metadata``."""
         turn_ctx._progress_metadata, turn_ctx._progress_reply_to, _status_thread_metadata = (
-            self._run_agent_progress_threading(source, event_message_id, _native_slack_task_cards)
+            self._run_agent_progress_threading(
+                source, event_message_id, _native_slack_task_cards, turn_ctx.event_metadata,
+            )
         )
         # Bridges: sync step/event/status callbacks → async hooks.emit and adapter.send.
         turn_ctx._loop_for_step = asyncio.get_running_loop()
@@ -2295,6 +2322,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         source: SessionSource, session_id: str, session_key: str | None = None,
         run_generation: Optional[int] = None, _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None, inbound_message_id: Optional[str] = None,
+        # Trusted per-inbound-event routing authority; never reconstructed from durable state.
+        event_metadata: Optional[dict[str, Any]] = None,
         channel_prompt: Optional[str] = None, moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
@@ -2311,6 +2340,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 message=message, context_prompt=context_prompt, history=history, source=source,
                 session_id=session_id, session_key=session_key, run_generation=run_generation,
                 event_message_id=event_message_id, scheduled_heartbeat=scheduled_heartbeat,
+                event_metadata=event_metadata,
             )
             # The remote turn is this admission's executed turn (``TurnRunner.run_sync`` records
             # the local one): without it a finite run would settle as a no-execution refusal.
@@ -2340,6 +2370,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             run_generation=run_generation, context_prompt=context_prompt, history=history,
             session_id=session_id, _interrupt_depth=_interrupt_depth,
             event_message_id=event_message_id, inbound_message_id=inbound_message_id,
+            event_metadata=event_metadata,
             channel_prompt=channel_prompt, moa_config=moa_config,
             title_user_message=title_user_message,
             persist_user_message=persist_user_message,

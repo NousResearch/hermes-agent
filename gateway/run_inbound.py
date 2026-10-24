@@ -71,6 +71,18 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
 class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionMixin, GatewayPluginInjectionMixin):
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
+    @staticmethod
+    def _gateway_command_for_event(event: "MessageEvent") -> Optional[str]:
+        """Return a slash command only when the event owns control authority.
+
+        Restricted delegated transports (e.g. Telegram Business customers) may
+        converse but must not dispatch gateway lifecycle/control commands; their
+        literal slash text stays an ordinary agent message.
+        """
+        if getattr(event, "allow_gateway_control", True) is not True:
+            return None
+        return event.get_command()
+
     async def _hm_offer_pairing_code(self, source: SessionSource) -> None:
         """DM an unauthorized sender a pairing code (rate-limited; groups never reach here)."""
         platform_name = source.platform.value if source.platform else "unknown"
@@ -811,7 +823,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             _def = _resolve_cmd(cmd) if cmd else None
             return _def, (_def.name if _def else cmd)
 
-        command = event.get_command()
+        # Restricted delegated transports may converse but cannot dispatch
+        # gateway lifecycle/control commands. Their literal slash text remains
+        # an ordinary agent message.
+        command = self._gateway_command_for_event(event)
         _cmd_def, canonical = _canon(command)
 
         # Expand alias quick commands before built-in dispatch so targets like /model openai/gpt-5.5

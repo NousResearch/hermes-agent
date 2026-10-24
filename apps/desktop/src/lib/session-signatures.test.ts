@@ -72,4 +72,48 @@ describe('sessionMessagesSignature', () => {
     const one = [msg('user', 'hi')]
     expect(sessionMessagesSignature(one)).not.toBe(sessionMessagesSignature([...one, msg('assistant', 'hey')]))
   })
+
+  // A stored correction that only moves a presentation field is authoritative
+  // for the rendered transcript; the poll signature has to see it or the old
+  // answer repaints never (#140396).
+  const presentationDeltas: readonly { delta: Record<string, unknown>; field: string }[] = [
+    { delta: { display_content: 'Corrected public answer.' }, field: 'display_content' },
+    { delta: { display_kind: 'hidden' }, field: 'display_kind' },
+    { delta: { display_reasoning: 'Verified reasoning.' }, field: 'display_reasoning' },
+    { delta: { display_commentary: ['Public note.'] }, field: 'display_commentary' },
+    { delta: { display_metadata: { reactions: [{ at: 3, author: 'user', emoji: '👍' }] } }, field: 'display_metadata' },
+    { delta: { row_id: 20 }, field: 'row_id' },
+    {
+      delta: {
+        tool_calls: [
+          { function: { arguments: '{"path":"notes.md"}', name: 'read_file' }, id: 'call_read', type: 'function' }
+        ]
+      },
+      field: 'tool_calls'
+    }
+  ]
+
+  it.each(presentationDeltas)('changes when only $field changes', ({ delta }) => {
+    const base = [msg('assistant', 'Original answer.')] as Parameters<typeof sessionMessagesSignature>[0]
+    const corrected = [{ ...base[0], ...delta }] as Parameters<typeof sessionMessagesSignature>[0]
+
+    expect(sessionMessagesSignature(base)).not.toBe(sessionMessagesSignature(corrected))
+  })
+
+  it('keeps an absent display_content apart from an explicit null', () => {
+    const absent = [msg('assistant', 'raw scaffolding')] as Parameters<typeof sessionMessagesSignature>[0]
+
+    const explicitNull = [
+      { ...absent[0], display_content: null }
+    ] as Parameters<typeof sessionMessagesSignature>[0]
+
+    expect(sessionMessagesSignature(absent)).not.toBe(sessionMessagesSignature(explicitNull))
+  })
+
+  it('ignores fields the transcript hydration never reads', () => {
+    const base = [msg('assistant', 'answer')] as Parameters<typeof sessionMessagesSignature>[0]
+    const extra = [{ ...base[0], some_future_field: 'not rendered' }] as unknown as typeof base
+
+    expect(sessionMessagesSignature(base)).toBe(sessionMessagesSignature(extra))
+  })
 })

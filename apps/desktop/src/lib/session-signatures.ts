@@ -40,7 +40,7 @@ export function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
   })
 }
 
-// FNV-1a over role/timestamp/content.
+// FNV-1a over the row fields below.
 function hashString(hash: number, value: string): number {
   let next = hash
 
@@ -62,6 +62,42 @@ export function sessionListFingerprint(session: {
   return `${session.message_count ?? 0}:${session.last_active ?? 0}:${session.preview ?? ''}`
 }
 
+/** Row fields the transcript hydration (`toChatMessages`) reads beyond
+ *  role+timestamp+raw content. "Unchanged signature" must imply unchanged
+ *  rendered projection, so an authoritative presentation-only correction —
+ *  corrected public text, a hidden row, a reaction — still repaints (#140396). */
+const MESSAGE_SIGNATURE_FIELDS: readonly (keyof SessionMessage)[] = [
+  'args',
+  'codex_message_items',
+  'codex_reasoning_items',
+  'context',
+  'display_commentary',
+  'display_content',
+  'display_kind',
+  'display_metadata',
+  'display_reasoning',
+  'labels',
+  'name',
+  'reasoning',
+  'reasoning_content',
+  'reasoning_details',
+  'row_id',
+  'text',
+  'tool_call_id',
+  'tool_call_labels',
+  'tool_name',
+  'tool_calls'
+]
+
+// An absent field and an explicit `null` hydrate differently
+// (`display_content !== undefined ? display_content : fallback`), so the
+// sentinel keeps them apart; JSON quoting keeps `"1"` and `1` apart.
+const ABSENT_FIELD = '\u0000'
+
+function fieldText(value: unknown): string {
+  return JSON.stringify(value) ?? ABSENT_FIELD
+}
+
 /** Transcript fingerprint for the active-messaging-session poll. */
 export function sessionMessagesSignature(messages: SessionMessage[]): string {
   let hash = 2166136261
@@ -69,7 +105,11 @@ export function sessionMessagesSignature(messages: SessionMessage[]): string {
   for (const m of messages) {
     hash = hashString(hash, m.role)
     hash = hashString(hash, String(m.timestamp ?? ''))
-    hash = hashString(hash, typeof m.content === 'string' ? m.content : (JSON.stringify(m.content) ?? ''))
+    hash = hashString(hash, fieldText(m.content))
+
+    for (const field of MESSAGE_SIGNATURE_FIELDS) {
+      hash = hashString(hash, fieldText(m[field]))
+    }
   }
 
   return `${messages.length}:${hash}`

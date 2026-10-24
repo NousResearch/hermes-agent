@@ -11,6 +11,20 @@ if TYPE_CHECKING:
     from agent.context_compressor import _HandoffScan
 
 
+def _response_finish_reason(response: Any) -> str:
+    """Lowercased ``choices[0].finish_reason`` of a dict- or object-shaped response; ``""`` when unreadable."""
+    try:
+        if isinstance(response, dict):
+            first = (response.get("choices") or [{}])[0]
+            reason = first.get("finish_reason") if isinstance(first, dict) else getattr(first, "finish_reason", None)
+        else:
+            choices = getattr(response, "choices", None) or []
+            reason = getattr(choices[0], "finish_reason", None) if choices else None
+        return str(reason).strip().lower() if reason else ""
+    except Exception:
+        return ""
+
+
 def _accepts_keyword_argument(callable_obj: Any, name: str) -> bool:
     """Return whether an inspectable callable accepts ``name`` as a keyword."""
     try:

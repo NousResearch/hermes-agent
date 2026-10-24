@@ -974,6 +974,33 @@ class TestConfigKeyRedosResistance:
         assert "hunter2" not in result
         assert time.perf_counter() - t0 < 2.0
 
+    def test_dotted_cfg_scan_stays_linear_when_the_run_repeats_a_keyword(self):
+        """A run that repeats a secret keyword gives _CFG_DOTTED_RE a keyword match at
+        every few bytes; without ``=`` after it (or with no dot after any keyword) each
+        one used to be retried in full, cubic on the run (14 KB took about a minute)."""
+        import time
+
+        for text in ("a.token" * 1_000 + " done", "token" * 3_000 + "=value"):
+            t0 = time.perf_counter()
+            assert redact_sensitive_text("password=hunter2\n" + text, force=True).endswith(text)
+            assert time.perf_counter() - t0 < 2.0
+
+    def test_dotted_cfg_scan_keeps_spaced_api_key(self):
+        """``api key`` (with a space) is a secret name, so the ``=`` lookahead must see past it."""
+        for key in ("spring.datasource.api key", "x.api key", "some.api key.value", "my.api key.token"):
+            result = redact_sensitive_text(f"{key}=hunter2", force=True)
+            assert "hunter2" not in result
+            assert result.startswith(f"{key}=")
+
+    def test_dotted_cfg_scan_stays_linear_on_long_prose(self):
+        """A long line of words with no ``=`` must not be rescanned from every word."""
+        import time
+
+        text = "a.b " * 20_000 + "done"
+        t0 = time.perf_counter()
+        assert redact_sensitive_text(text, force=True) == text
+        assert time.perf_counter() - t0 < 2.0
+
     def test_yaml_assign_redos_resistance(self):
         """_YAML_ASSIGN_RE must not backtrack excessively on long inputs."""
         import time

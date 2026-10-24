@@ -119,7 +119,7 @@ _KNOWN_PROVIDER_KEYS = {
     "api_mode", "transport", "model", "default_model", "models", "models_discovered",
     "context_length", "rate_limit_delay", "request_timeout_seconds", "stale_timeout_seconds",
     "discover_models", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify",
-    "catalog_provider", "session_affinity_header"}
+    "catalog_provider", "session_affinity_header", "initiator_header"}
 
 
 def _pick_provider_base_url(entry: dict[str, Any], provider_key: str) -> str:
@@ -271,6 +271,7 @@ def _normalize_custom_provider_entry(
     # Per-provider extra HTTP headers may carry credentials — never log them downstream.
     _put("extra_headers", normalize_extra_headers(entry.get("extra_headers")))
     _put("session_affinity_header", _stripped("session_affinity_header"))
+    _put("initiator_header", entry.get("initiator_header") is True)
     _put("ssl_ca_cert", _stripped("ssl_ca_cert"))
 
     ssl_verify = entry.get("ssl_verify")
@@ -293,7 +294,7 @@ def _custom_provider_entry_to_provider_config(
     for field in (
         "name", "api_key", "key_env", "key_cmd", "models", "models_discovered", "context_length",
         "rate_limit_delay", "discover_models", "extra_body", "extra_headers",
-        "session_affinity_header", "ssl_ca_cert", "ssl_verify", "catalog_provider"):
+        "session_affinity_header", "initiator_header", "ssl_ca_cert", "ssl_verify", "catalog_provider"):
         if field in normalized:
             provider_entry[field] = normalized[field]
     if "model" in normalized:
@@ -526,6 +527,11 @@ def get_custom_provider_session_affinity_header(
         if isinstance(header, str) and header.strip():
             return header.strip()
     return ""
+
+
+def get_custom_provider_initiator_header(base_url: str) -> bool:
+    """True when the route-matching entry sets ``initiator_header: true`` (opt-in, default off)."""
+    return any(entry.get("initiator_header") is True for entry in _entries_for_route(base_url, None, None))
 
 
 def get_custom_provider_context_length(

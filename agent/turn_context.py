@@ -193,6 +193,9 @@ def append_notes_to_multimodal_content(content: Any, notes: Optional[str]) -> bo
 # Cron sessions are never auto-titled: cron names its own session and its opener is a delivery hint.
 # Subagent runs get a cheap ``Subagent: <goal>`` title instead of a model call (apply_subagent_title).
 _UNTITLED_PLATFORMS = frozenset({"cron"})
+# Display kinds of turns Hermes starts itself; their first call is not a person's request.
+_AGENT_STARTED_DISPLAY_KINDS = frozenset({
+    "internal_notification", "auto_continue", "async_delegation_complete", "process_complete", "hidden"})
 
 
 def _maybe_title_session_at_turn_start(
@@ -1126,6 +1129,7 @@ def build_turn_context(
     # Copilot x-initiator: the first API call of this user turn is user-initiated;
     # tool-loop follow-ups revert to "agent".
     agent._is_user_initiated_turn = True
+    agent._x_initiator_pending = persist_user_display_kind not in _AGENT_STARTED_DISPLAY_KINDS
 
     # Preserve the original user message (no nudge injection).
     original_user_message = persist_user_message if persist_user_message is not None else user_message

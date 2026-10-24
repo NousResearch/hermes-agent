@@ -40,6 +40,29 @@ def _set_extra_header(api_kwargs: Any, key: str, value: str) -> None:
     api_kwargs["extra_headers"] = _xh
 
 
+def _delivers_steer(messages: Any) -> bool:
+    from agent.prompt_builder import STEER_DISPLAY_KIND
+
+    for message in reversed(messages or ()):
+        if message.get("role") == "assistant":
+            return False
+        if message.get("display_kind") == STEER_DISPLAY_KIND:
+            return True
+    return False
+
+
+def _apply_user_x_initiator(agent: Any, api_kwargs: Any, messages: Any) -> None:
+    """Opted-in custom providers get ``x-initiator: agent`` with the routing headers; mark the calls
+    that carry a person's words ``user``: every attempt (retry, recovery, fallback) at a turn's first
+    call until the loop accepts its response, and the call that delivers a /steer."""
+    if not (getattr(agent, "_x_initiator_pending", False) or _delivers_steer(messages)):
+        return
+    from hermes_cli.config_providers import get_custom_provider_initiator_header
+
+    if get_custom_provider_initiator_header(str(agent.base_url or "")):
+        _set_extra_header(api_kwargs, "x-initiator", "user")
+
+
 def _fire_pre_api_request_hook(
     agent: Any, api_kwargs: Any, api_messages: Any, _llm_middleware_trace: Any, *, messages: Any,
     original_user_message: Any, approx_tokens: Any, total_chars: Any, retry_count: Any,
@@ -139,6 +162,7 @@ def build_api_request(
     if getattr(agent, "_is_user_initiated_turn", False) and agent._is_copilot_url():
         _set_extra_header(api_kwargs, "x-initiator", "user")
         agent._is_user_initiated_turn = False
+    _apply_user_x_initiator(agent, api_kwargs, messages)
     try:
         from hermes_cli.middleware import apply_llm_request_middleware
 

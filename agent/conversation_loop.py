@@ -1757,6 +1757,7 @@ def _run_conversation_turn(
                 return _ri.result
             if _ri.action == "continue":
                 continue
+            agent._x_initiator_pending = False
             _v = _run_phase(
                 run_tool_round if s.assistant_message.tool_calls else finish_text_response, agent, s
             )

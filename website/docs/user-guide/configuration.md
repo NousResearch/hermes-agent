@@ -120,6 +120,8 @@ database:
   # Optional WAL sizing pragmas (integers). Unset = SQLite defaults.
   # wal_autocheckpoint: 1000     # pages between automatic checkpoints
   # journal_size_limit: 67108864 # cap the WAL/journal size in bytes
+  # retired_generation_max_bytes: 536870912 # above this, the retired-WAL forensic capture keeps
+  #                                         # only the main-image header (logged at WARNING)
 ```
 
 Hermes also warns (once per process per database) when an existing

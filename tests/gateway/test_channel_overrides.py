@@ -1,5 +1,6 @@
 """Tests for per-channel model and system prompt overrides (Fixes #1955)."""
 
+import logging
 from unittest.mock import patch
 
 import pytest
@@ -152,5 +153,33 @@ class TestResolveSessionAgentRuntimePriority:
             )
         assert model == "channel/model"
         assert runtime["provider"] == "openrouter"
+
+
+class TestChannelOverrideUnknownKeys:
+    """ChannelOverride.from_dict warns on unknown keys instead of discarding them (#79468)."""
+
+    def test_from_dict_warns_on_unknown_key(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            ov = ChannelOverride.from_dict(
+                {"model": "m", "provider": "p", "typo_key": 1}
+            )
+        assert ov.model == "m"
+        assert ov.provider == "p"
+        assert "typo_key" in caplog.text
+
+    def test_from_dict_known_keys_do_not_warn(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            ov = ChannelOverride.from_dict(
+                {"model": "m", "provider": "p", "system_prompt": "s"}
+            )
+        assert ov.system_prompt == "s"
+        assert caplog.records == []
+
+    def test_from_dict_mixed_type_unknown_keys_do_not_raise(self, caplog):
+        """YAML coerces unquoted keys (``2: x`` -> int): mixed-type unknowns must warn, not raise."""
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            ov = ChannelOverride.from_dict({"model": "m", 2: "y", "typo": "x"})
+        assert ov.model == "m"
+        assert "typo" in caplog.text
 
 

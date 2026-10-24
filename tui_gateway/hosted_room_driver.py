@@ -676,7 +676,8 @@ class HostedRoomRuntime:
         try:
             self._publish(
                 binding,
-                state.settle_task(self.db_path, attempt, **asdict(terminal), clock=self.clock))
+                state.settle_task(
+                    self.db_path, attempt, **asdict(terminal), clock=self.clock, allow_expired_lease=True))
         except state.StaleTaskError:
             with suppress(state.StaleLeaseError, state.StaleTaskError):
                 current = state.get_task(self.db_path, attempt.identity)
@@ -700,6 +701,9 @@ class HostedRoomRuntime:
         attempt: state.TaskAttempt, transport: InternalSessionRPC, deadline_monotonic: float,
     ) -> _TerminalReceipt | None:
         lease = attempt.lease
+        # Sleep at most a quarter lease ttl: `_renew_lease_if_needed` must get a chance to act
+        # inside its ttl/2 renewal window however the configured cadence compares to the ttl.
+        wait_cap = min(self.active_poll_interval_seconds, self.lease_ttl_seconds / 4)
         while not self._stop.is_set():
             task = state.get_task(self.db_path, attempt.identity)
             if task["status"] in state.TERMINAL_STATUSES:
@@ -711,7 +715,7 @@ class HostedRoomRuntime:
                         return None
                 except Exception as exc:
                     self._record_error(_STOP_PENDING.format(exc=exc))
-                self._wake.wait(self.active_poll_interval_seconds)
+                self._wake.wait(wait_cap)
                 self._wake.clear()
                 continue
             if time.monotonic() >= deadline_monotonic:
@@ -724,7 +728,7 @@ class HostedRoomRuntime:
             info = transport.info(**_session_kw(profile, session_id))
             self._report_pending_action(task, session_id=session_id, info=info)
             remaining = max(0.0, deadline_monotonic - time.monotonic())
-            self._wake.wait(min(self.active_poll_interval_seconds, remaining))
+            self._wake.wait(min(wait_cap, remaining))
             self._wake.clear()
         return None
 

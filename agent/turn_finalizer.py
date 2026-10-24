@@ -475,6 +475,7 @@ def _apply_output_hooks(
             assistant_response=final_response,
             conversation_history=list(messages),
             model=agent.model,
+            turn_origin=getattr(agent, "_turn_origin", None),
             platform=platform,
         )
     return final_response, transformed, pre_transform

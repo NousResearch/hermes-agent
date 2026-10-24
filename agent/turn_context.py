@@ -818,6 +818,7 @@ def _collect_pre_llm_call_context(
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
             parent_session_id=getattr(agent, "_parent_session_id", None) or "",
+            turn_origin=getattr(agent, "_turn_origin", None),
             sender_id=getattr(agent, "_user_id", None) or "",
         )
         try:
@@ -1039,7 +1040,7 @@ def build_turn_context(
     persist_user_message: Optional[Any], persist_user_timestamp: Optional[float]=None,
     persist_user_platform_id: Optional[str]=None, *, persist_user_display_kind: Optional[str]=None,
     persist_user_display_metadata: Optional[dict[str, Any]]=None, turn_author: Optional[dict[str, Any]]=None,
-    restore_or_build_system_prompt,
+    turn_origin: Optional[str]=None, restore_or_build_system_prompt,
     install_safe_stdio, sanitize_surrogates, summarize_user_message_for_log, set_session_context,
     set_current_write_origin, ra, moa_active: bool=False,
     title_user_message: Optional[str]=None,
@@ -1058,6 +1059,8 @@ def build_turn_context(
     # Reset first: a cached gateway agent must never carry the previous turn's bot author into a human turn.
     turn_author = parse_turn_author(turn_author)
     agent._turn_author = turn_author
+    # Where the turn came from (``turn_origin`` on pre/post_llm_call); a fork passes its own.
+    agent._turn_origin = turn_origin
 
     # Recover a rotated session before binding log/turn ids or copying client history so
     # everything in this turn belongs to the canonical child.
@@ -1102,7 +1105,7 @@ def build_turn_context(
         _msg_preview.replace("\n", " "),
     ]
     # Fork turns (background review, side questions) reuse the parent's session_id and
-    # model; tag their turn-start line so logs can tell them apart (#118693).
+    # model; tag their turn-start line (and any other turn's origin) so logs tell them apart (#118693).
     if (_turn_origin := getattr(agent, "_turn_origin", None)):
         _turn_fmt += " origin=%s"
         _turn_args.append(_turn_origin)

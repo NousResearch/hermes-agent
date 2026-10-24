@@ -21,6 +21,9 @@ class TurnContext:
     # Scheduled heartbeats are proactive work, not replies to the source message that
     # registered the watch.  Their routine delivery surfaces stay quiet.
     scheduled_heartbeat: bool = False
+    # ``turn_origin`` of a turn run without an admission (``gateway.session_turn_origin.direct_turn_origin``);
+    # an admitted turn reads ``session_ingress.admission_origin`` instead. None for an in-band follow-up.
+    turn_origin: Optional[str] = None
     _run_still_current: Callable[[], bool] = None  # type: ignore[assignment]
     _live_status_adapter: Any = None
     _live_status_mode: str = "off"

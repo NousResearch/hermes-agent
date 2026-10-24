@@ -736,7 +736,7 @@ def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=N
     client so the outer retry builds a fresh pool. Streaming returns the event stream; else a SimpleNamespace."""
     from agent.bedrock_adapter import (_get_bedrock_runtime_client, invalidate_runtime_client,
         is_stale_connection_error, is_streaming_access_denied_error, normalize_converse_response,
-        recover_from_cache_point_rejection, recover_from_redacted_reasoning_rejection)
+        recover_from_redacted_reasoning_rejection, retry_without_rejected_cache_points)
     region = api_kwargs.pop("__bedrock_region__", "us-east-1")
     api_kwargs.pop("__bedrock_converse__", None)
     client = _get_bedrock_runtime_client(region)
@@ -745,9 +745,9 @@ def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=N
     try:
         raw_response = method(**api_kwargs)
     except Exception as exc:
-        retry_kwargs = (recover_from_cache_point_rejection(exc, api_kwargs)
-                        or recover_from_redacted_reasoning_rejection(exc, api_kwargs))
-        if retry_kwargs is not None:
+        if (retried := retry_without_rejected_cache_points(method, api_kwargs, exc)) is not None:
+            return finish(retried)
+        if (retry_kwargs := recover_from_redacted_reasoning_rejection(exc, api_kwargs)) is not None:
             return finish(method(**retry_kwargs))
         if on_stream_denied is not None and is_streaming_access_denied_error(exc):
             return on_stream_denied(client, api_kwargs, exc)

@@ -157,6 +157,7 @@ def reset_client_cache():
     _bedrock_control_client_cache.clear()
     _bedrock_clients_by_home.clear()
     _inference_profile_model_cache.clear()
+    _inference_profile_failures.clear()
     _DEFAULT_WINDOW_WARNED.clear()
 
 
@@ -504,8 +505,14 @@ def _model_supports_tool_use(model_id: str) -> bool:
 
 def _model_supports_prompt_cache(model_id: str) -> bool:
     # An application-inference-profile ARN names no model: match on the wrapped model (cached lookup).
+    # If the lookup fails, cache optimistically: losing caching silently bills every turn at full input
+    # price, while a profile that does not support cachePoint costs one rejected call per placement,
+    # after which recover_from_cache_point_rejection strips the marker and remembers the verdict.
     if _APPLICATION_PROFILE_ARN_RE.search(model_id):
-        model_id = _resolve_inference_profile_model_id(model_id)
+        resolved = _resolve_inference_profile_model_id(model_id)
+        if resolved == model_id:
+            return True
+        model_id = resolved
     return any(pattern in model_id.lower() for pattern in _CACHE_POINT_PATTERNS)
 
 
@@ -522,10 +529,15 @@ _CACHE_POINT = {"cachePoint": {"type": "default"}}
 
 
 def cache_point_rejection_placement(exc: BaseException) -> Optional[str]:
-    """Converse section whose cachePoint Bedrock refused, or None. Message-based: the JSON pointer in the
-    ValidationException is the only thing naming the section (raw or SDK-wrapped). Unlocalisable → "tools"."""
+    """Converse section whose cachePoint Bedrock refused, ``"all"`` when the model takes no cachePoint
+    anywhere, or None. Message-based: the JSON pointer in the ValidationException is the only thing
+    naming the section (raw or SDK-wrapped). Unlocalisable → "tools"."""
     msg = str(exc)
     lowered = msg.lower()
+    if "support the cachepoint field" in lowered:  # "This model doesn't support the cachePoint field."
+        return "all"
+    if "cache point cannot be inserted" in lowered:  # "...after the preceding content block for this model."
+        return "messages"
     if "cachepoint" not in lowered or ("not permitted" not in lowered and "extraneous" not in lowered):
         return None
     match = _CACHE_POINT_PATH_PATTERN.search(msg)
@@ -588,16 +600,40 @@ def recover_from_cache_point_rejection(exc: BaseException, kwargs: dict[str, Any
     placement = cache_point_rejection_placement(exc)
     if placement is None:
         return None
-    retry_kwargs = strip_cache_points(kwargs, placement)
+    placements = CACHE_POINT_PLACEMENTS if placement == "all" else (placement,)
+    retry_kwargs = kwargs
+    for section in placements:
+        retry_kwargs = strip_cache_points(retry_kwargs, section)
     if retry_kwargs is kwargs:
         return None
     model_id = str(kwargs.get("modelId", ""))
-    note_cache_point_rejection(model_id, placement)
+    for section in placements:
+        note_cache_point_rejection(model_id, section)
     logger.warning(
-        "bedrock: %s rejected a cachePoint block in %s — dropping that cache marker for this model and "
-        "retrying. Prompt caching stays active for the remaining sections.", model_id or "model", placement,
+        "bedrock: %s rejected a cachePoint block in %s, dropping that cache marker for this model and "
+        "retrying. %s", model_id or "model", placement,
+        "Prompt caching is off for this model." if placement == "all"
+        else "Prompt caching stays active for the remaining sections.",
     )
     return retry_kwargs
+
+
+def retry_without_rejected_cache_points(method: Any, kwargs: dict[str, Any], exc: BaseException) -> Any:
+    """Raw response of ``method`` retried after a cachePoint rejection, or None when ``exc`` is not one.
+    A model may reject the marker section by section; each new rejection strips one more section,
+    at most once per placement, so the call settles uncached instead of failing."""
+    retry_kwargs = recover_from_cache_point_rejection(exc, kwargs)
+    if retry_kwargs is None:
+        return None
+    for _ in range(len(CACHE_POINT_PLACEMENTS) - 1):
+        try:
+            return method(**retry_kwargs)
+        except Exception as again:
+            next_kwargs = recover_from_cache_point_rejection(again, retry_kwargs)
+            if next_kwargs is None:
+                raise
+            retry_kwargs = next_kwargs
+    return method(**retry_kwargs)
 
 
 # --- Encrypted-content redacted-reasoning suppression ---
@@ -1316,9 +1352,9 @@ def call_converse(
     try:
         response = client.converse(**kwargs)
     except Exception as exc:
-        retry_kwargs = recover_from_cache_point_rejection(exc, kwargs)
-        if retry_kwargs is not None:
-            return normalize_converse_response(client.converse(**retry_kwargs))
+        retried = retry_without_rejected_cache_points(client.converse, kwargs, exc)
+        if retried is not None:
+            return normalize_converse_response(retried)
         redacted_retry_kwargs = recover_from_redacted_reasoning_rejection(exc, kwargs)
         if redacted_retry_kwargs is not None:
             return normalize_converse_response(client.converse(**redacted_retry_kwargs))
@@ -1540,15 +1576,24 @@ def get_bedrock_context_length(model_id: str, region: str = "", probe: bool = Tr
 _APPLICATION_PROFILE_ARN_RE = re.compile(r":application-inference-profile/")
 _ARN_REGION_RE = re.compile(r"^arn:[^:]+:bedrock:([a-z0-9-]+):", re.IGNORECASE)
 _inference_profile_model_cache: dict[str, str] = {}
+# Failed lookups are NOT cached for the process lifetime: a lookup that fails at startup (expired SSO
+# token, transient error) would otherwise disable prompt caching for the whole process, silently,
+# because cachePoint is gated on the resolved model id. Retry after a short backoff instead.
+_inference_profile_failures: dict[str, float] = {}
+_INFERENCE_PROFILE_RETRY_SECONDS = 60.0
 
 
 def _resolve_inference_profile_model_id(profile_arn: str, region: str = "") -> str:
     """Application-profile ARN → the wrapped model's ARN (its ``foundation-model/<id>`` tail satisfies the
     static-table substring match); the profile ARN itself when ``bedrock:GetInferenceProfile`` is not
-    granted or unavailable, so callers keep the default-window behaviour. Both outcomes are cached per
-    process: this runs on every context-length resolution, not once per model."""
+    granted or unavailable, so callers keep the default-window behaviour. Successes are cached per
+    process; failures are retried after ``_INFERENCE_PROFILE_RETRY_SECONDS`` and logged at WARNING,
+    because an unresolved profile also turns prompt caching off."""
     if profile_arn in _inference_profile_model_cache:
         return _inference_profile_model_cache[profile_arn]
+    failed_at = _inference_profile_failures.get(profile_arn)
+    if failed_at is not None and time.monotonic() - failed_at < _INFERENCE_PROFILE_RETRY_SECONDS:
+        return profile_arn
     arn_region = _ARN_REGION_RE.match(profile_arn)
     region = (arn_region.group(1) if arn_region else "") or region or resolve_bedrock_region()
     resolved = profile_arn
@@ -1557,6 +1602,16 @@ def _resolve_inference_profile_model_id(profile_arn: str, region: str = "") -> s
         models = client.get_inference_profile(inferenceProfileIdentifier=profile_arn).get("models") or []
         resolved = next((m["modelArn"] for m in models if m.get("modelArn")), profile_arn)
     except Exception as exc:  # no boto3 / credentials / GetInferenceProfile not granted
-        logger.debug("Inference profile resolution skipped for %s: %s", profile_arn, exc)
+        if failed_at is None:
+            logger.warning(
+                "bedrock: could not resolve inference profile %s (%s); sending prompt cache markers "
+                "anyway (a rejection is stripped and retried). Retrying the lookup every %ds.",
+                profile_arn, exc, int(_INFERENCE_PROFILE_RETRY_SECONDS),
+            )
+        _inference_profile_failures[profile_arn] = time.monotonic()
+        return profile_arn
+    if failed_at is not None:
+        logger.warning("bedrock: inference profile %s resolved after an earlier failure.", profile_arn)
+    _inference_profile_failures.pop(profile_arn, None)
     _inference_profile_model_cache[profile_arn] = resolved
     return resolved

@@ -602,6 +602,10 @@ class ClientLifecycleMixin:
         if old_key and api_key.strip() == old_key:
             logger.debug("%s credential refresh returned the same token; refresh likely failed silently", self.provider)
             return False
+        # Refresh the token, not the session's explicit Codex transport endpoint:
+        # a session pinned to a proxy pool entry must keep routing through it.
+        if self.provider == "openai-codex":
+            base_url = getattr(self, "base_url", None) or base_url
         return self._adopt_openai_credentials(api_key, base_url, reason=f"{self.provider}_credential_refresh")
 
     def _try_refresh_nous_client_credentials(self, *, force: bool = True, require_account: str | None = None) -> bool:

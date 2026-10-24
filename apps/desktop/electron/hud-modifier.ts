@@ -20,6 +20,7 @@ export function installHudModifierTap({
   const monitor = new HudModifierMonitor({ appPath: app.getAppPath() })
   let enabled = false
   let state: HudModifierStatus['state'] = 'disabled'
+  let reason: HudModifierStatus['reason']
   let disposed = false
   let generation = 0
 
@@ -29,7 +30,7 @@ export function installHudModifierTap({
     // An absent or unreadable preference never grants input monitoring.
   }
 
-  const status = (): HudModifierStatus => ({ enabled, state })
+  const status = (): HudModifierStatus => ({ enabled, state, ...(reason ? { reason } : {}) })
 
   const publish = () => {
     for (const win of BrowserWindow.getAllWindows()) {
@@ -43,11 +44,13 @@ export function installHudModifierTap({
     generation += 1
     monitor.stop()
     state = 'disabled'
+    reason = undefined
   }
 
   const start = (requestPermission = false) => {
     const current = ++generation
     state = 'starting'
+    reason = undefined
     monitor.start(
       () => {
         if (!disposed && enabled && state === 'ready' && current === generation) {
@@ -59,6 +62,7 @@ export function installHudModifierTap({
           return
         }
 
+        reason = result.type === 'error' ? result.reason : undefined
         state =
           result.type === 'error'
             ? result.code === 'permission-required'

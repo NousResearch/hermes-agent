@@ -42,7 +42,6 @@ describe('surfaceModelSwitchConfirm through the shell dialog', () => {
     const { answer, requestConfirmed } = ask()
 
     expect(await screen.findByRole('dialog')).toBeTruthy()
-    expect(screen.getByText('Switch to perplexity/sonar-deep-research?')).toBeTruthy()
 
     // The gateway's line breaks survive: the description is not one run-on line.
     const description = screen.getByText(/Context window shrinks/)

@@ -100,7 +100,7 @@ def test_bounded_git_probe_delegates_same_contract():
     assert bounded_git_probe(["definitely-not-a-real-binary-87134"], timeout=5) == ""
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group check")
+@pytest.mark.platforms("posix")  # POSIX process-group check
 def test_posix_child_gets_own_process_group():
     """POSIX spawns use process_group=0 so timeout cleanup can killpg the
     whole tree (same contract bounded_git_probe had)."""

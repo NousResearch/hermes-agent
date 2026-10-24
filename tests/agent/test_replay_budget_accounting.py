@@ -19,7 +19,6 @@ from agent.context_compressor import (
     _NEWEST_TURN_ONLY_BUDGET_KEYS,
     _REPLAY_BUDGET_KEYS,
     _estimate_msg_budget_tokens,
-    _last_assistant_index,
 )
 from agent.model_metadata import estimate_tokens_rough
 from agent.turn_context import substitute_api_content
@@ -125,22 +124,6 @@ class TestKeyPartition:
     def test_codex_fields_are_always_replayed_class(self):
         assert "codex_reasoning_items" in _ALWAYS_REPLAYED_BUDGET_KEYS
         assert "codex_message_items" in _ALWAYS_REPLAYED_BUDGET_KEYS
-
-
-class TestLastAssistantIndex:
-    def test_finds_newest_assistant(self):
-        msgs = [
-            {"role": "user", "content": "u"},
-            {"role": "assistant", "content": "a1"},
-            {"role": "user", "content": "u2"},
-            {"role": "assistant", "content": "a2"},
-            {"role": "tool", "content": "t"},
-        ]
-        assert _last_assistant_index(msgs) == 3
-
-    def test_no_assistant_returns_minus_one(self):
-        assert _last_assistant_index([{"role": "user", "content": "u"}]) == -1
-        assert _last_assistant_index([]) == -1
 
 
 class TestTailCutBehavior:

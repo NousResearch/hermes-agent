@@ -42,7 +42,7 @@ export class HudModifierMonitor {
     this.stop()
 
     if (!hudModifierMonitorSupported()) {
-      onStatus({ type: 'error', code: 'unavailable' })
+      onStatus({ type: 'error', code: 'unavailable', reason: 'unsupported-session' })
 
       return
     }

@@ -119,7 +119,7 @@ def make_error_response(req_id: Any, code: int, message: str, data: Any = None) 
     return {"jsonrpc": "2.0", "id": req_id, "error": err}
 
 
-def classify_message(msg: dict) -> Tuple[str, Any]:
+def classify_message(msg: dict) -> tuple[str, Any]:
     """Return ``(kind, key)``: kind ∈ request/response/notification/invalid; key is the id (request/response),
     the method (notification) or ``None`` (invalid)."""
     if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0":
@@ -132,16 +132,15 @@ def classify_message(msg: dict) -> Tuple[str, Any]:
 
 
 __all__ = [
-    "ERROR_CONTENT_MODIFIED", "ERROR_METHOD_NOT_FOUND", "LSPProtocolError", "LSPRequestError",
-    "encode_message", "read_message", "make_request", "make_notification", "make_response",
-    "make_error_response", "classify_message",
+    "ERROR_CONTENT_MODIFIED",
+    "ERROR_METHOD_NOT_FOUND",
+    "LSPProtocolError",
+    "LSPRequestError",
+    "classify_message",
+    "encode_message",
+    "make_error_response",
+    "make_notification",
+    "make_request",
+    "make_response",
+    "read_message",
 ]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-ERROR_REQUEST_CANCELLED = -32800
-# ---- END PLUGIN-COMPAT ----

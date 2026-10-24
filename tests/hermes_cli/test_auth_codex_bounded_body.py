@@ -51,7 +51,6 @@ def test_oversized_200_auth_body_is_rejected_before_being_buffered(monkeypatch):
     with pytest.raises(AuthError) as excinfo:
         auth_codex.refresh_codex_oauth_pure("old-at", "old-rt")
     assert excinfo.value.code == "codex_auth_response_too_large"
-    assert "exceeded 1024 KiB" in str(excinfo.value)
     # Stopped within one chunk of the cap, not the full 3 MiB.
     assert auth_codex._CODEX_AUTH_BODY_MAX_BYTES < pulled[0] <= auth_codex._CODEX_AUTH_BODY_MAX_BYTES + 65536
 

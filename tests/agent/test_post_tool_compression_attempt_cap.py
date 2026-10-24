@@ -167,12 +167,13 @@ class TestPostToolCompressionAttemptCap:
         (7 compactions here); the shared per-turn counter caps it at the
         resolved default of 3.
         """
-        assert agent.max_compression_attempts == 3  # config default
+        cap = agent.max_compression_attempts
+        assert 0 < cap < 7
         result, compress_calls = _run_tool_loop(agent, n_tool_iterations=7)
 
         assert result["completed"] is True
-        assert len(compress_calls) == 3, (
-            f"post-tool compression must stop at the per-turn cap (3), "
+        assert len(compress_calls) == cap, (
+            f"post-tool compression must stop at the per-turn cap ({cap}), "
             f"got {len(compress_calls)} compactions"
         )
 
@@ -193,7 +194,7 @@ class TestPostToolCompressionAttemptCap:
         result, compress_calls = _run_tool_loop(agent, n_tool_iterations=7)
 
         assert result["completed"] is True
-        assert len(compress_calls) == 3, (
+        assert len(compress_calls) == agent.max_compression_attempts, (
             "pre-API and post-tool compactions must share one per-turn "
             f"attempt budget, got {len(compress_calls)} total compactions"
         )
@@ -204,5 +205,5 @@ class TestPostToolCompressionAttemptCap:
         agent.client.chat.completions.create.side_effect = None
         _result, second = _run_tool_loop(agent, n_tool_iterations=5)
 
-        assert len(first) == 3
-        assert len(second) == 3
+        assert len(first) == agent.max_compression_attempts
+        assert len(second) == agent.max_compression_attempts

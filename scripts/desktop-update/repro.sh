@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # repro.sh -- reproduce desktop-update paths against a sandboxed HERMES_HOME.
 #
 # Nothing here touches your real ~/.hermes or checkout. Each mode builds (or

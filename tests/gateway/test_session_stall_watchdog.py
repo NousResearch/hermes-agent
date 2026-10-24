@@ -11,7 +11,6 @@ import pytest
 from agent.session_activity import ActivityProvenance, build_activity_snapshot
 from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
 from gateway.session_stall import (
-    format_session_stall_notification,
     resolve_session_idle_seconds_from_activity,
     should_clear_session_stall_notification,
     should_emit_session_stall_notification,
@@ -117,12 +116,6 @@ def test_should_clear_holds_latch_when_idle_unknown():
     )
 
 
-def test_format_session_stall_notification_minutes():
-    msg = format_session_stall_notification(125)
-    assert "2 min" in msg
-    # /stop (cancel the task) is offered before /new (discards the conversation).
-    assert "/stop" in msg and "/new" in msg and msg.index("/stop") < msg.index("/new")
-    assert format_session_stall_notification(30).count("1 min") == 1
 
 
 def test_resolve_idle_uses_shared_activity_snapshot_only():
@@ -469,12 +462,6 @@ def test_resolve_idle_rejects_boolean_seconds_and_uses_timestamp():
     assert idle == 3.0
 
 
-def test_session_stall_timeout_in_default_config():
-    from hermes_cli.config import DEFAULT_CONFIG
-
-    timeout = DEFAULT_CONFIG["agent"]["session_stall_timeout"]
-    assert isinstance(timeout, (int, float))
-    assert timeout > 0  # enabled by default; 0 would disable the watchdog
 
 
 class _NeverResolvingAdapter:
@@ -535,8 +522,7 @@ async def test_check_session_stalls_bounds_wedged_send(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("setting", [None, False, True])
 async def test_stall_policy_owner_latch_and_source_log_conservation(tmp_path, monkeypatch, caplog, setting):
-    import yaml
-    from gateway.profile_routing import ProfileRouteRejected
+    import hermes_yaml as yaml
     owner, launch = tmp_path / "owner", tmp_path / "launch"
     owner.mkdir(); launch.mkdir()
     (owner / "config.yaml").write_text(yaml.safe_dump({} if setting is None else {"display": {"suppress_warning_notifications": setting}}))

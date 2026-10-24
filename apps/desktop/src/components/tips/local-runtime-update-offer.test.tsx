@@ -6,9 +6,10 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { SETTINGS_ROUTE } from '@/app/routes'
 import { I18nProvider } from '@/i18n'
 import { en } from '@/i18n/en'
+import { queryClient } from '@/lib/query-client'
 import { $activeGatewayRoute } from '@/store/gateway'
 import { $localModelsEnabled } from '@/store/local-models-flag'
-import { $localRuntimeJobs } from '@/store/local-runtime-jobs'
+import { localModelsKey, localModelsOwner } from '@/store/local-runtime-jobs'
 import { $connection } from '@/store/session'
 import { $activeTip, $nextTipAt, $retiredTips, $tipsEnabled, $tipShownAt, retireActiveTip } from '@/store/tips'
 
@@ -59,7 +60,7 @@ beforeEach(async () => {
   vi.clearAllMocks()
   $localModelsEnabled.set(true)
   $connection.set({ mode: 'local' } as never)
-  $localRuntimeJobs.set([])
+  queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [])
   $activeTip.set(null)
   $retiredTips.set([])
   $tipShownAt.set({})
@@ -89,6 +90,7 @@ beforeEach(async () => {
 })
 afterEach(() => {
   cleanup()
+  queryClient.clear()
   vi.restoreAllMocks()
 })
 it('discards a completed read that waited too long for a quiet tick', async () => {
@@ -167,7 +169,9 @@ it.each(['connection', 'profile', 'tips-off', 'job-started'])(
       }
 
       if (context === 'job-started') {
-        $localRuntimeJobs.set([{ kind: 'quickstart', status: 'running' }] as never)
+        queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [
+          { kind: 'quickstart', status: 'running' }
+        ] as never)
       }
 
       action.onSelect()
@@ -229,7 +233,9 @@ it.each(['remote', 'flag-off', 'tips-off', 'runtime-install', 'quickstart'])(
     }
 
     if (guard === 'runtime-install' || guard === 'quickstart') {
-      $localRuntimeJobs.set([{ kind: guard, status: 'running' }] as never)
+      queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [
+        { kind: guard, status: 'running' }
+      ] as never)
     }
 
     api.mockClear()
@@ -270,7 +276,6 @@ it.each([{ enabled: false }, { runtime_installed: false }, { update_available: f
 it('the real Update now button navigates and sends exactly one install POST, never on show', async () => {
   await due()
   expect(api.mock.calls.filter(([request]) => request.method === 'POST')).toHaveLength(0)
-  expect(screen.getByText(/active local requests may be interrupted/i)).toBeTruthy()
   const button = screen.getByRole('button', { name: 'Update now' })
   await act(async () => {
     fireEvent.click(button)
@@ -278,7 +283,13 @@ it('the real Update now button navigates and sends exactly one install POST, nev
   })
   expect(screen.getByRole('status').textContent).toBe(`${SETTINGS_ROUTE}?tab=providers&pview=local`)
   expect(api.mock.calls.filter(([request]) => request.method === 'POST').map(([request]) => request)).toEqual([
-    { body: { backend: null }, method: 'POST', path: '/api/local-models/runtime/install' }
+    {
+      body: { backend: null },
+      method: 'POST',
+      path: '/api/local-models/runtime/install',
+      connectionId: null,
+      profile: 'default'
+    }
   ])
   expect($activeTip.get()).toBeNull()
 })

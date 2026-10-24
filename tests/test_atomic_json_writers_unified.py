@@ -85,7 +85,7 @@ def test_surrogate_escaped_strings_round_trip_through_atomic_json_write(tmp_path
     assert _leftovers(target.parent, target.name) == []
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_new_non_secret_file_follows_umask_while_secret_and_existing_modes_hold(tmp_path):
     """The writers this helper replaced created files at process umask; only ``mode=`` tightens."""
     import os
@@ -112,7 +112,7 @@ def test_new_non_secret_file_follows_umask_while_secret_and_existing_modes_hold(
         os.umask(old_umask)
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_mkstemp_heritage_writers_keep_new_files_owner_only(tmp_path):
     """Writers that published through mkstemp on main created NEW files at 0600 regardless of umask
     (bot mailboxes, turn markers); folding them into utils must not loosen that to umask."""

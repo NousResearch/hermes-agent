@@ -15,13 +15,14 @@ import ssl
 import time
 from typing import Any, Dict, Optional
 
+from agent.api_error_summary import is_provider_stream_parse_error
 from agent.error_classifier import RETRYABLE_CLIENT_REASONS, FailoverReason, classify_api_error
 from agent.turn_overflow import recover_from_overflow
 from agent.turn_recovery import (
-    _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, interruptible_backoff_sleep,
-    log_api_error_attempt,
+    _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, free_tier_cooldown_ends_turn,
+    interruptible_backoff_sleep, log_api_error_attempt,
     max_retries_exhausted_result, nonretryable_client_error_result, recover_after_classification,
-    recover_before_classification, route_classified_error,
+    recover_before_classification, route_classified_error, settle_delivered_partial,
 )
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -45,7 +46,7 @@ class ApiErrorVerdict:
     max_retries: Any
     compression_attempts: Any
     _provider_overflow_recovery_pending: Any
-    result: Optional[Dict[str, Any]] = None
+    result: Optional[dict[str, Any]] = None
 
 
 def handle_api_error(
@@ -54,13 +55,14 @@ def handle_api_error(
     conversation_history: Any, approx_tokens: Any, retry_count: Any, max_retries: Any,
     compression_attempts: Any, max_compression_attempts: Any, api_call_count: Any,
     api_request_id: Any, api_start_time: Any, effective_task_id: Any, turn_id: Any,
+    current_turn_user_idx: Any = None,
 ) -> ApiErrorVerdict:
     """Recover from ``api_error`` in the original order. Every fallback activation must leave
     the retry loop with ``restart_with_rebuilt_messages`` armed (``"break"``) so the pre-API
     preflight re-runs against the fallback's context window (#84733)."""
     _provider_overflow_recovery_pending = False
 
-    def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ApiErrorVerdict:
+    def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> ApiErrorVerdict:
         return ApiErrorVerdict(
             action=action, thinking_spinner=thinking_spinner, messages=messages,
             active_system_prompt=active_system_prompt, conversation_history=conversation_history,
@@ -86,6 +88,19 @@ def handle_api_error(
 
     status_code = getattr(api_error, "status_code", None)
     error_context = agent._extract_api_error_context(api_error)
+
+    # A Nous 402/403 carries the same x-nous-credits-* headers as a success, and a usage-window plan's
+    # "ran out for this model" / "payment paused" state is only visible on the blocking response itself
+    # (the stream path captures headers after the stream opens, which a 402 never does). Fail-open.
+    # Usage-window responses only: every other account keeps main's behaviour (no capture here).
+    if status_code in (402, 403) and getattr(agent, "provider", "") == "nous":
+        try:
+            from agent.credits_tracker import response_is_usage_window
+            response = getattr(api_error, "response", None)
+            if response_is_usage_window(response):
+                agent._capture_credits(response, refused=True)
+        except Exception:
+            logger.debug("credits ▸ header capture on %s failed (fail-open)", status_code, exc_info=True)
 
     # Process is exiting mid-flight: retries/rotation/fallbacks are futile and the
     # retry trace spams the shell. One log line.
@@ -211,7 +226,7 @@ def handle_api_error(
         api_messages=api_messages, api_kwargs=api_kwargs, active_system_prompt=active_system_prompt,
         conversation_history=conversation_history, approx_tokens=approx_tokens,
         retry_count=retry_count, max_retries=max_retries, compression_attempts=compression_attempts,
-        api_call_count=api_call_count,
+        api_call_count=api_call_count, current_turn_user_idx=current_turn_user_idx,
     )
     active_system_prompt = _ue.active_system_prompt
     retry_count = _ue.retry_count
@@ -221,7 +236,7 @@ def handle_api_error(
 
 def _is_local_validation_error(api_error: Any) -> bool:
     """ValueError/TypeError are local bugs, except: UnicodeEncodeError (surrogate recovery
-    path), json.JSONDecodeError (transient provider/network failure, must retry),
+    path), json.JSONDecodeError / provider stream-parse ValueErrors (transient provider/network failure, must retry),
     ssl.SSLError (inherits OSError *and* ValueError — a TLS failure is not a local bug)
     and "NoneType is not iterable" TypeErrors (upstream shape mismatches, e.g. Codex
     response.completed.output=null — retryable so the fallback path runs)."""
@@ -230,6 +245,8 @@ def _is_local_validation_error(api_error: Any) -> bool:
     if isinstance(api_error, (UnicodeEncodeError, json.JSONDecodeError, ssl.SSLError)):
         return False
     _text = str(api_error).lower()
+    if is_provider_stream_parse_error(api_error):
+        return False  # corrupted provider SSE chunk (jiter), transient — not a local bug (#65147)
     return not (isinstance(api_error, TypeError) and "nonetype" in _text and "not iterable" in _text)
 
 
@@ -243,7 +260,7 @@ class UnrecoveredErrorVerdict:
     active_system_prompt: Any
     retry_count: Any
     compression_attempts: Any
-    result: Optional[Dict[str, Any]] = None
+    result: Optional[dict[str, Any]] = None
 
 
 def settle_unrecovered_error(
@@ -252,6 +269,7 @@ def settle_unrecovered_error(
     _provider: Any, _base: Any, _model: Any, messages: Any, api_messages: Any, api_kwargs: Any,
     active_system_prompt: Any, conversation_history: Any, approx_tokens: Any, retry_count: Any,
     max_retries: Any, compression_attempts: Any, api_call_count: Any, error_context: Any = None,
+    current_turn_user_idx: Any = None,
 ) -> UnrecoveredErrorVerdict:
     """Decide the fate of an API error that every recovery chain declined: local validation /
     non-retryable client errors (Copilot stale-credential self-heal first, then fallback, then a
@@ -262,7 +280,7 @@ def settle_unrecovered_error(
         _arm_fallback_restart, _is_copilot_provider, _is_stale_copilot_credential_error
     )
 
-    def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> UnrecoveredErrorVerdict:
+    def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> UnrecoveredErrorVerdict:
         return UnrecoveredErrorVerdict(
             action=action, active_system_prompt=active_system_prompt, retry_count=retry_count,
             compression_attempts=compression_attempts, result=result,
@@ -339,13 +357,22 @@ def settle_unrecovered_error(
                 active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
                 retry_count = compression_attempts = 0
                 return _verdict("break")
+        # Terminal from here: collapse the continuation trail once, before the persist.
+        _delivered = settle_delivered_partial(agent, messages, current_turn_user_idx)
         return _verdict("return", nonretryable_client_error_result(
             agent, api_error, classified, status_code=status_code, api_kwargs=api_kwargs,
             api_messages=api_messages, messages=messages, conversation_history=conversation_history,
             api_call_count=api_call_count, approx_tokens=approx_tokens, provider=_provider,
-            base_url=_base, model=_model,
+            base_url=_base, model=_model, delivered=_delivered,
         ))
 
+    # An attended session on the free model does not sit through a long cooldown: end the attempt
+    # cycle now (fallback, else the reset time and the ways forward); the copy counts attempts made.
+    attempts_made = min(retry_count, max_retries)
+    if is_rate_limited and retry_count < max_retries and free_tier_cooldown_ends_turn(agent, api_error, _base):
+        logger.info("%sFree-tier cooldown outlasts the attended wait — ending retries after attempt %s",
+                    agent.log_prefix, retry_count)
+        retry_count = max_retries
     if retry_count >= max_retries:
         # Before fallback, rebuild the primary client once per API call block for
         # transient transport errors (stale pool, TCP reset).
@@ -380,12 +407,13 @@ def settle_unrecovered_error(
             if _ladder["action"] == "continue":
                 retry_count = 0
             return _verdict(_ladder["action"], _ladder.get("result"))
+        _delivered = settle_delivered_partial(agent, messages, current_turn_user_idx)
         return _verdict("return", max_retries_exhausted_result(
-            agent, api_error, classified, max_retries=max_retries, is_rate_limited=is_rate_limited,
+            agent, api_error, classified, attempts=attempts_made, is_rate_limited=is_rate_limited,
             error_msg=error_msg, api_kwargs=api_kwargs, api_messages=api_messages,
             messages=messages, conversation_history=conversation_history,
             api_call_count=api_call_count, approx_tokens=approx_tokens, provider=_provider,
-            base_url=_base, model=_model,
+            base_url=_base, model=_model, delivered=_delivered,
         ))
 
     wait_time = compute_error_backoff(

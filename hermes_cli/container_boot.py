@@ -13,13 +13,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Sequence
 
+from hermes_cli.gateway_multiplex_s6 import AUTOSTART_STATES as _AUTOSTART_STATES, fold_named_slot_intent
+
 log = logging.getLogger(__name__)
 
-# Only this desired state auto-restarts; everything else (startup_failed, starting, stopped,
-# missing) registers the slot down and waits for the user — no crash-loop of a broken gateway
-# across `docker restart`. Older installs only have gateway_state; newer lifecycle commands
-# persist desired_state separately so a transient runtime state can't erase operator intent.
-_AUTOSTART_STATES = frozenset({"running"})
+# Older installs only have gateway_state; newer lifecycle commands persist desired_state separately
+# so a transient runtime state can't erase operator intent.
 # Transient sub-states of a RUNNING gateway (not an operator stop, not a failed boot). A gateway
 # hard-killed in one of them with no `desired_state` would otherwise stay DOWN on every later boot
 # (observed: staging stranded at `draining`); map them to `running`, mirroring gateway/run.py.
@@ -99,8 +98,9 @@ def reconcile_profile_gateways(
     review).
     """
     actions: list[ReconcileAction] = []
-    # ONE gateway per container: named slots are registered (so `hermes -p X gateway start` has a
-    # target and `s6-svstat` can report them) but are NEVER booted from their persisted run intent.
+    # ONE multiplexing gateway per container: named slots are registered (so `hermes -p X gateway
+    # start` has a target and `s6-svstat` can report them) but are never booted from their persisted
+    # run intent, except a `gateway.standalone` profile's (below).
     # This is the s6 leg of the multiplex-only convergence: an image upgraded from a release that
     # booted N per-profile slots comes back up with one multiplexing root gateway and no manual
     # step, instead of N processes fighting over the same profiles.
@@ -109,6 +109,10 @@ def reconcile_profile_gateways(
     # the slots anyway — the container shipped the opt-out topology by accident. The key is retired
     # as a topology switch (hermes_cli/gateway_multiplex_mode.py), so there is nothing to read.
     named = [(name, entry, _read_desired_state(entry)) for name, entry in _named_profile_dirs(hermes_home)]
+    # The exception is a `gateway.standalone` profile: the root multiplexer never serves it
+    # (profiles_to_serve excludes it), so it boots its own slot from its own intent, beside the root.
+    from hermes_cli.profiles import profile_is_standalone
+    standalone = {name for name, entry, _prior in named if profile_is_standalone(entry)}
 
     # A legacy `gateway run` container with no state yet seeds `running` (pre-s6 behavior).
     legacy_default_state = _maybe_migrate_legacy_gateway_run_state(
@@ -119,8 +123,9 @@ def reconcile_profile_gateways(
     # booted with ZERO gateways: it has no root state (or "stopped"), every named slot is now
     # registered down unconditionally, and every action reported "registered" — a container that
     # looks healthy while nothing is listening.
-    folded = [name for name, _dir, prior in named if prior in _AUTOSTART_STATES]
-    default_should_start = default_prior_state in _AUTOSTART_STATES or bool(folded)
+    fold = fold_named_slot_intent(
+        default_prior_state, ((name, prior) for name, _dir, prior in named if name not in standalone))
+    folded, default_should_start = list(fold.folded), fold.root_should_start
     if folded and default_prior_state not in _AUTOSTART_STATES:
         log.warning("%s", boot_notice(folded))
     if not dry_run:
@@ -130,8 +135,8 @@ def reconcile_profile_gateways(
                                 folded_into_root=bool(folded)))
 
     for name, entry, prior_state in named:
-        # Registered down, always: a started named slot IS a second gateway on this host.
-        should_start = False
+        # Registered down unless standalone: any other started named slot IS a second gateway on this host.
+        should_start = name in standalone and prior_state in _AUTOSTART_STATES
         if not dry_run:
             _cleanup_stale_runtime_files(entry)
             _register_service(scandir, name, start=should_start)
@@ -145,7 +150,7 @@ def reconcile_profile_gateways(
 def boot_notice(folded: Sequence[str]) -> str:
     """One line naming the profiles whose autostart intent the root slot took over."""
     return ("reconcile: profile gateway(s) " + ", ".join(sorted(folded)) +
-            " asked to autostart; one gateway per container serves every profile, so the ROOT "
+            " asked to autostart; one gateway per container serves every non-standalone profile, so the ROOT "
             "slot (gateway-default) was started instead and multiplexes them.")
 
 
@@ -239,7 +244,7 @@ def _read_desired_state(profile_dir: Path) -> str | None:
     if not state_file.exists():
         return None
     try:
-        data = json.loads(state_file.read_text(encoding="utf-8"))
+        data = json.loads(state_file.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         log.warning("could not read %s; treating as no prior state", state_file)
         return None

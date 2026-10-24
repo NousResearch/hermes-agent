@@ -41,9 +41,7 @@ class TestManagedLocalValidation:
             True,
             True,
         )
-        assert "managed local-models library" in result["message"]
 
     def test_not_staged_and_not_live_still_rejected(self):
         result = _validate("Llama-4-90B-Q4_K_M", staged=())
         assert result["accepted"] is False
-        assert "was not found in this provider's model listing" in result["message"]

@@ -7,10 +7,7 @@ import { useI18n } from '@/i18n'
 import type { HudModifierStatus } from '../../../electron/hud-modifier-types'
 
 import { ToggleRow } from './primitives'
-import { useDeepLinkHighlight } from './use-deep-link-highlight'
-
-const isHudModifierSetting = (target: string) => target === 'hud-modifier'
-const hudModifierElementId = () => 'setting-hud-modifier'
+import { SETTING_IDS, settingElementId } from './settings-manifest'
 
 export function HudModifierSettings() {
   const { t } = useI18n()
@@ -22,7 +19,6 @@ export function HudModifierSettings() {
   const [error, setError] = useState<string | null>(null)
   const request = useRef(0)
   const revision = useRef(0)
-  useDeepLinkHighlight({ param: 'setting', ready: isHudModifierSetting, elementId: hudModifierElementId })
 
   const refresh = useCallback(
     async (enabled?: boolean) => {
@@ -86,13 +82,17 @@ export function HudModifierSettings() {
     }
   }
 
+  const unavailableNotice = status?.reason
+    ? { 'missing-helper': copy.missingHelper, 'unsupported-session': copy.unsupportedSession }[status.reason]
+    : copy.unavailable
+
   const notice =
     error ??
     (status?.enabled && status.state === 'input-permission' ? copy.permission : null) ??
-    (status?.enabled && status.state === 'unavailable' ? copy.unavailable : null)
+    (status?.enabled && status.state === 'unavailable' ? unavailableNotice : null)
 
   return (
-    <div id={hudModifierElementId()}>
+    <div id={settingElementId(SETTING_IDS.keybinds.hudModifier)}>
       <ToggleRow
         checked={status?.enabled ?? false}
         description={copy.description}

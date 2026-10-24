@@ -1,30 +1,55 @@
 import type { ModelOptionProvider } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import { invalidateAllConnectors } from '@/app/capabilities/connectors/data/keys'
 import {
   cancelOAuthSession,
   getGlobalModelOptions,
   getRecommendedDefaultModel,
   listOAuthProviders,
+  OAUTH_LONG_POLL_SECONDS,
   pollOAuthSession,
+  type ProfileScope,
   setEnvVar,
   startOAuthLogin,
   submitOAuthCode,
   validateProviderCredential
 } from '@/hermes'
 import { translateNow } from '@/i18n'
+import { restOfLongPollGap } from '@/lib/long-poll'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
-import { ackFreeTierNotice, freeTierReadyPending, refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
+import {
+  $freeTierStatus,
+  ackFreeTierNotice,
+  freeTierReadyPending,
+  refreshFreeTierStatus,
+  setFreeTierRoute
+} from '@/store/free-tier'
+import { followHandoff, handoffStillMoving } from '@/store/free-tier-sign-in'
+import { $gatewayBootGeneration } from '@/store/live-sync'
 import { setMainModelAssignment } from '@/store/model-assignment'
-import { notify, notifyError } from '@/store/notifications'
-import { guidedOnboardingActive } from '@/store/onboarding-gate'
-import type { OAuthProvider, OAuthStartResponse } from '@/types/hermes'
+import { dismissNotification, notify, notifyError } from '@/store/notifications'
+import { afterOnboardingSurfaceClear, onboardingSurfaceOpen } from '@/store/onboarding-presence'
+import { captureOnboardingScope, type OnboardingScope } from '@/store/onboarding-scope'
+import type { AppHandoffStatus, OAuthPollResponse, OAuthProvider, OAuthStartResponse } from '@/types/hermes'
 
 type PkceStart = Extract<OAuthStartResponse, { flow: 'pkce' }>
 type DeviceStart = Extract<OAuthStartResponse, { flow: 'device_code' }>
 
 export type OnboardingMode = 'apikey' | 'oauth'
+
+export interface OnboardingSignedIn {
+  email: null | string
+  handoff: AppHandoffStatus | null
+}
+
+function signedInFrom(result: OAuthPollResponse): OnboardingSignedIn | undefined {
+  const email = result.account_email ?? null
+  const handoff = result.handoff_status ?? null
+
+  return email || handoff ? { email, handoff } : undefined
+}
 
 export type OnboardingFlow =
   | { status: 'idle' }
@@ -46,6 +71,8 @@ export type OnboardingFlow =
       label: string
       providerSlug: string
       saving: boolean
+      // A Nous sign-in's account and what the free tier's apps did, shown on the screen it happened on.
+      signedIn?: OnboardingSignedIn
       status: 'confirming_model'
     }
   | { detail?: string; message: string; provider?: OAuthProvider; start?: OAuthStartResponse; status: 'error' }
@@ -72,7 +99,7 @@ export interface DesktopOnboardingState {
    *  picker's "Add provider" button). Forces the overlay to show the picker
    *  even when configured === true, and adds a close affordance. */
   manual: boolean
-  targetProfile?: string
+  targetScope?: OnboardingScope
   /** True when the overlay was opened specifically to configure a local /
    *  custom OpenAI-compatible endpoint (e.g. from Settings → Model's "Set up
    *  custom endpoint"). Forces the API-key form with the local option
@@ -89,12 +116,12 @@ export interface DesktopOnboardingState {
 export interface OnboardingContext {
   onCompleted?: () => void
   profile?: string
+  scope?: OnboardingScope
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
 const CONFIGURED_CACHE_KEY = 'hermes-desktop-onboarded-v1'
 const SKIP_CACHE_KEY = 'hermes-onboarding-skipped-v1'
-const POLL_MS = 2000
 const COPY_FLASH_MS = 1500
 export const DEFAULT_ONBOARDING_REASON = 'No inference provider is configured.'
 export const DEFAULT_MANUAL_ONBOARDING_REASON = 'Add or switch inference provider.'
@@ -171,11 +198,14 @@ const INITIAL: DesktopOnboardingState = {
 export const $desktopOnboarding = atom<DesktopOnboardingState>(INITIAL)
 
 let flowGeneration = 0
-let flowProfile: string | undefined
-let pollTimer: number | null = null
+let flowScope: OnboardingScope | undefined
 let providersRefreshPromise: null | Promise<void> = null
 
 const errMessage = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
+function captureContext(ctx: OnboardingContext): OnboardingContext & { scope: OnboardingScope } {
+  return { ...ctx, scope: captureOnboardingScope(ctx.scope ?? ctx.profile) }
+}
 
 // One plain sentence for every way a provider sign-in can fail (start, poll,
 // code exchange); the raw error text rides along as `detail` (desktop-09).
@@ -192,12 +222,8 @@ const setFlow = (flow: OnboardingFlow) => patch(flow.status === 'idle' ? { flow 
 
 const sessionIdFor = (flow: OnboardingFlow) => ('start' in flow && flow.start ? flow.start.session_id : undefined)
 
+// The poll loop itself ends with its flow (see `pollSession`); only the expiry floor is a timer.
 function clearPoll() {
-  if (pollTimer !== null) {
-    window.clearInterval(pollTimer)
-    pollTimer = null
-  }
-
   clearPollExpiry()
 }
 
@@ -232,9 +258,63 @@ async function checkRuntime(ctx: OnboardingContext, requestedProvider?: string):
 }
 
 function shouldPreserveConfiguredOnFallback(runtime: RuntimeReadinessResult, state: DesktopOnboardingState): boolean {
-  // Non-authoritative transport fallback only — keep a previously verified
-  // configured state instead of forcing the blocking onboarding overlay.
-  return runtime.source === 'fallback' && state.configured === true && !state.requested
+  // Non-authoritative transport fallback only: NEITHER probe answered, so the
+  // round carries no evidence either way and must never be written down as
+  // "unconfigured". This used to require an in-memory `configured === true`,
+  // which on a cold launch can only come from the onboarded cache — the very
+  // cache an earlier fallback had already deleted. One readiness round that
+  // lost the race to a cold/queued backend therefore re-armed the blocking
+  // first-run picker on EVERY launch afterwards, on installs with a perfectly
+  // good provider. `configured === null` (still unknown) now also holds: the
+  // overlay keeps its "starting" header until a probe actually answers.
+  return runtime.source === 'fallback' && state.configured !== false && !state.requested
+}
+
+// How long after the last boot-generation bump a runtime_check ok:false is
+// treated as a boot race rather than a verdict. The backend announces
+// `setup.ready` when its boot bootstrap finishes resolving the inference
+// route; external secret sources (BWS-backed .env) hydrate a few seconds
+// AFTER the port opens, so an answered ok:false inside this window names a
+// hydration gap, not a missing credential (#124939). Sized to comfortably
+// cover the observed ~2-5 s hydration while staying short enough that a real
+// misconfiguration surfaces on the next ambient refresh.
+const BOOT_RACE_GRACE_MS = 15_000
+
+// Timestamp of the last `$gatewayBootGeneration` bump (setup.ready from the
+// active source, or a gateway switch/wipe). Null until the first bump, so a
+// steady-state session long after boot never treats an ok:false as a race.
+let lastBootGenerationAt: number | null = null
+
+$gatewayBootGeneration.listen(() => {
+  lastBootGenerationAt = Date.now()
+})
+
+/** Test/dev seam: forget any witnessed boot, so the next round is judged as
+ *  steady-state. Mirrors how a real session far from boot behaves. */
+export function resetBootRaceWindowForTests(): void {
+  lastBootGenerationAt = null
+}
+
+function isInsideBootRaceWindow(): boolean {
+  return lastBootGenerationAt !== null && Date.now() - lastBootGenerationAt < BOOT_RACE_GRACE_MS
+}
+
+function shouldPreserveConfiguredOnBootRace(runtime: RuntimeReadinessResult, state: DesktopOnboardingState): boolean {
+  // The probes ANSWERED this time, but the round ran inside the backend's boot
+  // window: the runtime_check resolved a route whose external secret source
+  // (BWS) had not hydrated yet and reported ok:false for it. That is a
+  // retryable not-ready, not an auth verdict — downgrading configured:false
+  // here was the flash of "No usable credentials found for openrouter" on
+  // every update restart of a fully configured install (#124939). The state
+  // must already be configured (verified earlier or the durable cache) so a
+  // genuinely unconfigured install still enters onboarding on boot.
+  return (
+    runtime.source === 'runtime_check' &&
+    !runtime.ready &&
+    state.configured === true &&
+    !state.requested &&
+    isInsideBootRaceWindow()
+  )
 }
 
 function notifyReady(provider: string) {
@@ -282,7 +362,7 @@ function notifyGatewayTools(tools: string[] | undefined) {
 // opportunistic polish, not a hard requirement for onboarding.
 async function fetchProviderDefaultModel(
   preferredSlugs: string[],
-  profile?: string
+  profile?: ProfileScope
 ): Promise<null | { providerSlug: string; defaultModel: string }> {
   let options
 
@@ -367,32 +447,50 @@ async function completeWithModelConfirm(
   // When true, a failing runtime check no longer blocks progression — the
   // user is allowed through onboarding regardless. Used by the API-key path,
   // where we intentionally don't validate the key (it blocked too many users).
-  ignoreRuntimeGate = false
+  ignoreRuntimeGate = false,
+  signedIn?: OnboardingSignedIn
 ) {
   const generation = flowGeneration
-  await ctx.requestGateway('reload.env').catch(() => undefined)
+
+  // Scoped readiness reads fresh credentials; reload.env only mutates the
+  // launch process environment and cannot reload another profile safely.
+  if (!ctx.scope?.profile) {
+    await ctx.requestGateway('reload.env').catch(() => undefined)
+  }
+
+  // A sign-in can change the account the apps ride on.
+  invalidateAllConnectors()
 
   if (generation !== flowGeneration) {
     return
   }
 
-  const defaults = await fetchProviderDefaultModel(preferredSlugs, ctx.profile)
+  const defaults = await fetchProviderDefaultModel(preferredSlugs, ctx.scope)
 
   if (generation !== flowGeneration) {
     return
   }
 
-  if (defaults) {
-    // Persist the chosen provider/model before the runtime gate so a stale
-    // config provider (e.g. anthropic from a prior failed setup) cannot make
-    // setup.runtime_check validate the wrong backend after a fresh OAuth login.
+  // Manual connect (Settings / model picker "Add provider" on an already-
+  // configured install): the global default must NOT change until the user
+  // explicitly confirms a model on the confirm card. checkRuntime below
+  // already passes preferredSlugs[0] as requestedProvider, so the runtime
+  // gate can validate the just-connected provider without persisting first.
+  // confirmOnboardingModel persists on Begin instead.
+  const manual = $desktopOnboarding.get().manual
+
+  if (defaults && !manual) {
+    // First-run only: persist the chosen provider/model before the runtime
+    // gate so a stale config provider (e.g. anthropic from a prior failed
+    // setup) cannot make setup.runtime_check validate the wrong backend
+    // after a fresh OAuth login. There's no prior default to protect here.
     try {
       const res = await setMainModelAssignment(
         {
           provider: defaults.providerSlug,
           model: defaults.defaultModel
         },
-        ctx.profile,
+        ctx.scope,
         // Headless automated flow: nothing is mounted to click a guard
         // prompt, so fail with the message instead of hanging.
         { skipConfirmPrompt: true }
@@ -429,7 +527,7 @@ async function completeWithModelConfirm(
   if (!defaults) {
     // Couldn't get a sensible default — proceed without confirm step.
     notifyReady(providerLabel)
-    completeDesktopOnboarding()
+    completeDesktopOnboarding(true)
     ctx.onCompleted?.()
 
     return
@@ -440,8 +538,36 @@ async function completeWithModelConfirm(
     providerSlug: defaults.providerSlug,
     currentModel: defaults.defaultModel,
     label: providerLabel,
-    saving: false
+    saving: false,
+    signedIn
   })
+
+  void followSignedInMove(signedIn, generation, ctx.scope)
+}
+
+// Keep the confirm screen's line about the moving apps current until the move settles or the screen goes.
+async function followSignedInMove(signedIn: OnboardingSignedIn | undefined, generation: number, scope?: ProfileScope) {
+  const moving = signedIn?.handoff
+
+  if (!signedIn || !moving || !handoffStillMoving(moving)) {
+    return
+  }
+
+  const shown = () => {
+    const { flow } = $desktopOnboarding.get()
+
+    return generation === flowGeneration && flow.status === 'confirming_model' ? flow : null
+  }
+
+  const publish = (handoff: AppHandoffStatus) => {
+    const flow = shown()
+
+    if (flow) {
+      setFlow({ ...flow, signedIn: { email: signedIn.email, handoff } })
+    }
+  }
+
+  await followHandoff(moving, () => shown() !== null, publish, scope)
 }
 
 function providerResolutionFailure(reason: null | string) {
@@ -470,7 +596,7 @@ async function refreshProviders() {
   const generation = flowGeneration
   providersRefreshPromise = (async () => {
     try {
-      const { providers } = await listOAuthProviders($desktopOnboarding.get().targetProfile)
+      const { providers } = await listOAuthProviders($desktopOnboarding.get().targetScope)
 
       if (generation !== flowGeneration) {
         return
@@ -494,16 +620,11 @@ async function refreshProviders() {
 }
 
 export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
-  // Not during the guided first launch. The free tier carries inference
-  // there, and a credential probe that fires anyway (a free-tier token mid
-  // refresh, a setup-profile session before its runtime settles) would drop
-  // the provider picker over the guide the user is in the middle of. Sign-in
-  // is offered where the guide chooses to, on its own ready screen.
-  if (guidedOnboardingActive()) {
-    return
-  }
-
-  patch({ reason: reason.trim() || DEFAULT_ONBOARDING_REASON, requested: true })
+  // Not over first-run onboarding. The free account may still be in
+  // the making, and a credential probe that fires meanwhile would drop the
+  // provider picker over it; onboarding hands over to the picker
+  // itself when the account fails.
+  afterOnboardingSurfaceClear(() => patch({ reason: reason.trim() || DEFAULT_ONBOARDING_REASON, requested: true }))
 }
 
 /** Credential warning delivered passively (session create/activate/resume
@@ -520,7 +641,8 @@ let pendingCredentialWarning: null | string = null
 export function requestDesktopOnboardingForCredentialWarning(reason: null | string | undefined) {
   const warning = reason?.trim()
 
-  if (!warning || !isProviderSetupErrorMessage(warning) || guidedOnboardingActive()) {
+  // Stash while the due check is still undecided: submit consumes it later. Drop only under an open onboarding.
+  if (!warning || !isProviderSetupErrorMessage(warning) || onboardingSurfaceOpen()) {
     pendingCredentialWarning = null
 
     return
@@ -545,12 +667,15 @@ export function consumePendingCredentialWarning(): null | string {
 // onboarding flow (OAuth rows, API-key form, model-confirm) instead of
 // duplicating provider UI. Sets manual=true so the overlay shows the picker
 // even though configured===true, and refreshes the provider list.
-export function startManualOnboarding(reason: null | string = DEFAULT_MANUAL_ONBOARDING_REASON, profile?: string) {
+export function startManualOnboarding(
+  reason: null | string = DEFAULT_MANUAL_ONBOARDING_REASON,
+  profile?: ProfileScope
+) {
   cancelOnboardingFlow()
   providersRefreshPromise = null
   patch({
     manual: true,
-    targetProfile: profile,
+    targetScope: captureOnboardingScope(profile),
     providers: null,
     requested: true,
     localEndpoint: false,
@@ -570,12 +695,12 @@ export function startManualOnboarding(reason: null | string = DEFAULT_MANUAL_ONB
 // configure the endpoint instead of dead-ending on the OAuth provider list
 // (`custom` is not an OAuth provider, so the generic manual flow would just
 // re-show the picker — the original "booted back to the first screen" loop).
-export function startManualLocalEndpoint(reason: null | string = null, profile?: string) {
+export function startManualLocalEndpoint(reason: null | string = null, profile?: ProfileScope) {
   cancelOnboardingFlow()
   pendingProviderOAuthId = null
   patch({
     manual: true,
-    targetProfile: profile,
+    targetScope: captureOnboardingScope(profile),
     providers: null,
     requested: true,
     localEndpoint: true,
@@ -593,7 +718,7 @@ export function startManualLocalEndpoint(reason: null | string = null, profile?:
 // overlay render and never needs to persist or re-render anything itself.
 let pendingProviderOAuthId: null | string = null
 
-export function startManualProviderOAuth(providerId: string, profile?: string) {
+export function startManualProviderOAuth(providerId: string, profile?: ProfileScope) {
   pendingProviderOAuthId = providerId
   startManualOnboarding(null, profile)
 }
@@ -619,7 +744,7 @@ export function closeManualOnboarding() {
   pendingProviderOAuthId = null
 
   patch({
-    targetProfile: undefined,
+    targetScope: undefined,
     manual: false,
     requested: false,
     localEndpoint: false,
@@ -628,12 +753,21 @@ export function closeManualOnboarding() {
   })
 }
 
-export function completeDesktopOnboarding() {
+/** `connected` marks the completion paths where a provider sign-in / key save
+ *  in THIS flow is what finished onboarding. Only those make an earlier
+ *  "choose later" moot. A passive readiness round must leave the skip alone:
+ *  clearing it there erased the user's explicit decision, so the next round
+ *  that came back not-ready was free to raise the blocking picker again — the
+ *  set/clear flip-flop behind "the setup screen returns on every launch". */
+export function completeDesktopOnboarding(connected = false) {
   clearPoll()
+  dismissNotification('runtime-not-ready')
   writeCachedConfigured(true)
-  // A real provider is now connected, so any earlier "choose later" skip is
-  // moot — clear it so the flag never lingers in a configured install.
-  writeCachedSkipped(false)
+
+  if (connected) {
+    writeCachedSkipped(false)
+  }
+
   $desktopOnboarding.set({
     configured: true,
     flow: { status: 'idle' },
@@ -641,7 +775,7 @@ export function completeDesktopOnboarding() {
     providers: null,
     reason: null,
     requested: false,
-    firstRunSkipped: false,
+    firstRunSkipped: connected ? false : readCachedSkipped(),
     manual: false,
     localEndpoint: false,
     freeTierReady: false
@@ -688,6 +822,9 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
     return false
   }
 
+  // A boot-race round (see shouldPreserveConfiguredOnBootRace) is recognized
+  // from the module-level boot-generation clock, so there is nothing to
+  // seed here — the round below just reads it.
   const runtime = await checkRuntime(ctx)
 
   if (stillWanted && !stillWanted()) {
@@ -705,22 +842,35 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
   const state = $desktopOnboarding.get()
 
   if (shouldPreserveConfiguredOnFallback(runtime, state)) {
-    // Gateway probes timed out but the user was already configured — don't
-    // downgrade to the blocking onboarding overlay. Surface a non-blocking
-    // notification with a stable id so repeated calls during an outage dedup
-    // instead of stacking toasts.
-    notify({
-      id: 'runtime-not-ready',
-      kind: 'error',
-      title: 'Runtime not ready',
-      message:
-        'Hermes Desktop could not verify the running backend on startup. Some features may be unavailable until the gateway is reachable.'
-    })
+    // Gateway probes timed out — don't downgrade to the blocking onboarding
+    // overlay or claim an error verdict. Only a previously VERIFIED install
+    // losing its backend is worth telling the user about; an unknown state is
+    // just a round that landed before the backend could answer, and a notice
+    // on every cold launch would be noise. Use the temporary informational
+    // notice with a stable id, so repeated calls during an outage dedup and
+    // recovery clears it early.
+    if (state.configured === true) {
+      notify({
+        id: 'runtime-not-ready',
+        kind: 'info',
+        title: 'Runtime not ready',
+        message:
+          'Hermes Desktop could not verify the running backend on startup. Some features may be unavailable until the gateway is reachable.'
+      })
+    }
 
     return false
   }
 
   const reason = runtime.reason || state.reason || DEFAULT_ONBOARDING_REASON
+
+  if (shouldPreserveConfiguredOnBootRace(runtime, state)) {
+    // The backend answered inside its boot window with a not-ready that is
+    // explained by external secrets still hydrating (#124939). Do not write
+    // the downgrade: the durable cache stays configured and the setup.ready
+    // tick (or the next ambient refresh) re-checks once the route is real.
+    return false
+  }
 
   writeCachedConfigured(false)
   patch({ configured: false, reason })
@@ -748,20 +898,16 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
  */
 async function applyFreeTierIntro(ctx: OnboardingContext, runtime: RuntimeReadinessResult) {
   setFreeTierRoute(runtime.freeTier)
-  const status = await refreshFreeTierStatus(ctx.requestGateway)
+  await refreshFreeTierStatus(ctx.requestGateway)
 
-  // The guided first launch IS the introduction. Raising the ready screen on
-  // top of it (a readiness round fires when the layout pick assembles the
-  // window) covered the guide mid-conversation, and dismissing it remounted
-  // the card the user had just answered. The guide acks the notice itself
-  // when it hands off.
-  if (guidedOnboardingActive()) {
-    return
-  }
-
-  if (freeTierReadyPending(status, runtime.freeTier ?? null)) {
-    patch({ freeTierReady: true })
-  }
+  // The onboarding intro is the introduction: opening it acks the notice
+  // (store/onboarding-run.ts). Read the status when the overlay is free, not
+  // now, so that ack is honoured.
+  afterOnboardingSurfaceClear(() => {
+    if (freeTierReadyPending($freeTierStatus.get(), runtime.freeTier ?? null)) {
+      patch({ freeTierReady: true })
+    }
+  })
 }
 
 /** "Begin" / "Sign in instead" / "Other providers" all consume the notice — the
@@ -798,9 +944,9 @@ async function openSignInUrl(url: string) {
 }
 
 export async function startProviderOAuth(provider: OAuthProvider, ctx: OnboardingContext) {
-  ctx = { ...ctx }
+  ctx = captureContext(ctx)
   const generation = flowGeneration
-  flowProfile = ctx.profile
+  flowScope = ctx.scope
   clearPoll()
 
   if (provider.flow === 'external') {
@@ -812,10 +958,10 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
   setFlow({ status: 'starting', provider })
 
   try {
-    const start = await startOAuthLogin(provider.id, ctx.profile)
+    const start = await startOAuthLogin(provider.id, ctx.scope)
 
     if (generation !== flowGeneration) {
-      void cancelOAuthSession(start.session_id, ctx.profile).catch(() => undefined)
+      void cancelOAuthSession(start.session_id, ctx.scope).catch(() => undefined)
 
       return
     }
@@ -824,7 +970,7 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
     await openSignInUrl(browserUrl)
 
     if (generation !== flowGeneration) {
-      void cancelOAuthSession(start.session_id, ctx.profile).catch(() => undefined)
+      void cancelOAuthSession(start.session_id, ctx.scope).catch(() => undefined)
 
       return
     }
@@ -844,7 +990,7 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
         message: translateNow('onboarding.signInExpired')
       })
     )
-    pollTimer = window.setInterval(() => void pollSession(provider, start, ctx, generation), POLL_MS)
+    void pollSession(provider, start, ctx, generation)
   } catch (error) {
     if (generation !== flowGeneration) {
       return
@@ -854,31 +1000,59 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
   }
 }
 
-// Poll a session-backed device-code flow until it resolves.
+// Long-poll a session-backed device-code flow until it resolves. The loop ends with its flow: a
+// cancel, a newer flow, or the local expiry floor all move the flow off this session's `polling`.
 async function pollSession(provider: OAuthProvider, start: DeviceStart, ctx: OnboardingContext, generation: number) {
+  const live = () => {
+    const { flow } = $desktopOnboarding.get()
+
+    return generation === flowGeneration && flow.status === 'polling' && sessionIdFor(flow) === start.session_id
+  }
+
   try {
-    const { error_message, status } = await pollOAuthSession(provider.id, start.session_id, ctx.profile)
+    for (;;) {
+      const askedAt = Date.now()
+      const result = await pollOAuthSession(provider.id, start.session_id, ctx.scope, OAUTH_LONG_POLL_SECONDS)
 
-    if (generation !== flowGeneration) {
-      return
-    }
+      if (!live()) {
+        return
+      }
 
-    if (status === 'approved') {
-      clearPoll()
-      setFlow({ status: 'success', provider })
-      await completeWithModelConfirm(ctx, provider.name, [provider.id], reason =>
+      if (result.status === 'approved') {
+        clearPoll()
+        setFlow({ status: 'success', provider })
+        await completeWithModelConfirm(
+          ctx,
+          provider.name,
+          [provider.id],
+          reason => setFlow({ status: 'error', provider, message: providerResolutionFailure(reason) }),
+          false,
+          signedInFrom(result)
+        )
+
+        return
+      }
+
+      if (result.status !== 'pending') {
+        clearPoll()
         setFlow({
           status: 'error',
           provider,
-          message: providerResolutionFailure(reason)
+          start,
+          ...signInDidNotFinish(provider, result.error_message || result.status)
         })
-      )
-    } else if (status !== 'pending') {
-      clearPoll()
-      setFlow({ status: 'error', provider, start, ...signInDidNotFinish(provider, error_message || status) })
+
+        return
+      }
+
+      await restOfLongPollGap(askedAt)
+
+      if (!live()) {
+        return
+      }
     }
   } catch (error) {
-    if (generation !== flowGeneration) {
+    if (!live()) {
       return
     }
 
@@ -896,9 +1070,9 @@ export function setOnboardingCode(code: string) {
 }
 
 export async function submitOnboardingCode(ctx: OnboardingContext) {
-  ctx = { ...ctx }
+  ctx = captureContext(ctx)
   const generation = flowGeneration
-  flowProfile = ctx.profile
+  flowScope = ctx.scope
   const { flow } = $desktopOnboarding.get()
 
   if (flow.status !== 'awaiting_user' || !flow.code.trim()) {
@@ -909,7 +1083,7 @@ export async function submitOnboardingCode(ctx: OnboardingContext) {
   setFlow({ status: 'submitting', provider, start })
 
   try {
-    const resp = await submitOAuthCode(provider.id, start.session_id, code.trim(), ctx.profile)
+    const resp = await submitOAuthCode(provider.id, start.session_id, code.trim(), ctx.scope)
 
     if (generation !== flowGeneration) {
       return
@@ -942,9 +1116,10 @@ export function cancelOnboardingFlow() {
   const sessionId = sessionIdFor($desktopOnboarding.get().flow)
 
   if (sessionId) {
-    cancelOAuthSession(sessionId, flowProfile ?? $desktopOnboarding.get().targetProfile).catch(() => undefined)
+    cancelOAuthSession(sessionId, flowScope ?? $desktopOnboarding.get().targetScope).catch(() => undefined)
   }
 
+  flowScope = undefined
   setFlow({ status: 'idle' })
 }
 
@@ -994,8 +1169,8 @@ export async function copyExternalCommand() {
 }
 
 export async function recheckExternalSignin(ctx: OnboardingContext) {
-  ctx = { ...ctx }
-  flowProfile = ctx.profile
+  ctx = captureContext(ctx)
+  flowScope = ctx.scope
   const { flow } = $desktopOnboarding.get()
 
   if (flow.status !== 'external_pending') {
@@ -1022,11 +1197,17 @@ export async function saveOnboardingApiKey(
   // Optional endpoint key — only meaningful for the "Local / custom endpoint"
   // option, whose primary `value` is the base URL. Ignored for plain API-key
   // providers (their key IS `value`).
-  endpointApiKey?: string
+  endpointApiKey?: string,
+  // Optional manual model name — only meaningful for the "Local / custom
+  // endpoint" option when /v1/models discovery returns an empty list (e.g.
+  // Cohere's OpenAI-compatible endpoint, which serves no OpenAI-shaped model
+  // catalog). Mirrors the runtime's `discover_models: false` + explicit
+  // `models:` config path. Ignored for plain API-key providers.
+  modelName?: string
 ) {
-  ctx = { ...ctx }
+  ctx = captureContext(ctx)
   const generation = flowGeneration
-  flowProfile = ctx.profile
+  flowScope = ctx.scope
   const trimmed = value.trim()
 
   if (!trimmed) {
@@ -1038,7 +1219,7 @@ export async function saveOnboardingApiKey(
   // base_url + model + api_key), not dropped into .env — runtime resolution
   // ignores OPENAI_BASE_URL.
   if (envKey === 'OPENAI_BASE_URL') {
-    return saveOnboardingLocalEndpoint(trimmed, endpointApiKey?.trim() ?? '', ctx)
+    return saveOnboardingLocalEndpoint(trimmed, endpointApiKey?.trim() ?? '', ctx, modelName)
   }
 
   // No key validation here on purpose: we previously live-probed the key and
@@ -1047,7 +1228,7 @@ export async function saveOnboardingApiKey(
   // provider probes, self-hosted endpoints). We now save the value as-is and
   // let the user proceed; an actually-bad key surfaces later at chat time.
   try {
-    await setEnvVar(envKey, trimmed, ctx.profile)
+    await setEnvVar(envKey, trimmed, ctx.scope, { providerSetup: true })
 
     if (generation !== flowGeneration) {
       return { ok: false }
@@ -1083,16 +1264,34 @@ export async function saveOnboardingApiKey(
 // endpoints that gate /v1/models behind auth still enumerate models) and
 // persisted to model.api_key so the runtime can authenticate.
 //
+// If discovery returns no models — common for OpenAI-compatible SaaS that
+// doesn't expose a /v1/models catalog in the OpenAI shape (Cohere's
+// compatibility endpoint, auth-gated gateways, etc.) — we return
+// `{ ok: false, needsModelInput: true, message }` so the wizard can reveal a
+// manual model-name input. The runtime already supports this case via
+// `discover_models: false` + an explicit `models:` list; the wizard was the
+// only layer still hard-failing. A non-empty `modelName` argument is used
+// verbatim instead of the discovered list.
+//
 // We deliberately don't route through completeWithModelConfirm: that path
 // re-assigns the model from /api/model/options WITHOUT a base_url, which would
 // wipe the base_url we just wrote. We have a concrete model already, so we
 // verify the runtime directly and finish.
-export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: string, ctx: OnboardingContext) {
-  ctx = { ...ctx }
+export async function saveOnboardingLocalEndpoint(
+  baseUrl: string,
+  apiKey: string,
+  ctx: OnboardingContext,
+  // Manual model name from the wizard. When non-empty it is persisted verbatim
+  // — the same semantics as `discover_models: false` + an explicit `models:`
+  // list in config.yaml.
+  modelName?: string
+) {
+  ctx = captureContext(ctx)
   const generation = flowGeneration
-  flowProfile = ctx.profile
+  flowScope = ctx.scope
   const url = baseUrl.trim()
   const key = apiKey.trim()
+  const manualModel = modelName?.trim() ?? ''
 
   if (!url) {
     return { ok: false, message: 'Enter the endpoint URL first.' }
@@ -1108,7 +1307,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
   let resolvedUrl = url
 
   try {
-    const probe = await validateProviderCredential('OPENAI_BASE_URL', url, key)
+    const probe = await validateProviderCredential('OPENAI_BASE_URL', url, key, ctx.scope)
 
     if (generation !== flowGeneration) {
       return { ok: false }
@@ -1128,21 +1327,34 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
     return { ok: false, message: `Could not reach ${url}.` }
   }
 
+  // Prefer the user-supplied model name when present; fall back to discovery.
+  if (manualModel) {
+    model = manualModel
+  }
+
   if (!model) {
+    // Probe succeeded but the endpoint didn't enumerate any models. The
+    // endpoint likely *has* models — we just can't discover them through an
+    // OpenAI-shaped /v1/models response. Signal the wizard to reveal a manual
+    // model-name input rather than hard-failing; `needsModelInput` is the
+    // discriminator the form reads.
     return {
       ok: false,
-      message: `Connected to ${url}, but it advertised no models at /v1/models. Start a model on that endpoint and try again.`
+      needsModelInput: true,
+      message: `Connected to ${url}, but it didn't enumerate any models at /v1/models. Enter a model name below (e.g. command-a-plus-05-2026) to continue.`
     }
   }
 
   try {
-    await setMainModelAssignment({ provider: 'custom', model, base_url: resolvedUrl, api_key: key }, ctx.profile)
+    await setMainModelAssignment({ provider: 'custom', model, base_url: resolvedUrl, api_key: key }, ctx.scope)
 
     if (generation !== flowGeneration) {
       return { ok: false }
     }
 
-    await ctx.requestGateway('reload.env').catch(() => undefined)
+    if (!ctx.scope?.profile) {
+      await ctx.requestGateway('reload.env').catch(() => undefined)
+    }
 
     if (generation !== flowGeneration) {
       return { ok: false }
@@ -1161,7 +1373,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
     }
 
     notifyReady('Local / custom endpoint')
-    completeDesktopOnboarding()
+    completeDesktopOnboarding(true)
     ctx.onCompleted?.()
 
     return { ok: true }
@@ -1204,7 +1416,7 @@ export async function setOnboardingModel(model: string, providerSlug: string, la
         provider: providerSlug,
         model
       },
-      flowProfile ?? $desktopOnboarding.get().targetProfile
+      flowScope ?? $desktopOnboarding.get().targetScope
     )
 
     if (generation !== flowGeneration) {
@@ -1230,20 +1442,39 @@ export async function setOnboardingModel(model: string, providerSlug: string, la
   }
 }
 
-// User clicked "Start chatting" on the confirm card. Finalizes onboarding
-// — the model was already persisted by completeWithModelConfirm (or by
-// setOnboardingModel if they changed it), so all that's left is to mark
-// onboarding done and unblock the rest of the app.
-export function confirmOnboardingModel(ctx: OnboardingContext) {
-  const { flow } = $desktopOnboarding.get()
+// User clicked "Start chatting" on the confirm card. First-run: the model
+// was already persisted by completeWithModelConfirm (or by setOnboardingModel
+// if they changed it), so this only marks onboarding done. Manual connect
+// (Settings / "Add provider"): completeWithModelConfirm deliberately skipped
+// the persist so the previous default survives a dismiss, so this is where
+// the picked model finally gets written — the user just confirmed it.
+export async function confirmOnboardingModel(ctx: OnboardingContext) {
+  const { flow, manual } = $desktopOnboarding.get()
 
   if (flow.status !== 'confirming_model') {
     return
   }
 
+  if (manual) {
+    // Best-effort: the overlay is already on its way out (cinematic exit
+    // choreography in the caller isn't gated on this), so a failure here is
+    // reported and swallowed rather than left blocking — same as the rest of
+    // this file's non-blocking gateway calls. The alternative (silently
+    // keeping the previous default) is still safer than the bug this fixes.
+    try {
+      const res = await setMainModelAssignment({ provider: flow.providerSlug, model: flow.currentModel }, undefined, {
+        skipConfirmPrompt: true
+      })
+
+      notifyGatewayTools(res.gateway_tools)
+    } catch (error) {
+      notifyError(error, 'Could not save the selected model.')
+    }
+  }
+
   // No success toast here: the confirm-model screen already showed "<provider>
   // connected." notifyReady is reserved for completion paths that SKIP this
   // screen (no-default fallthrough, local endpoint) so feedback isn't lost.
-  completeDesktopOnboarding()
+  completeDesktopOnboarding(true)
   ctx.onCompleted?.()
 }

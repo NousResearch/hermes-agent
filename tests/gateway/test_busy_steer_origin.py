@@ -12,7 +12,7 @@ from gateway.session import SessionSource
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("route", ["explicit", "priority", "normal", "redirect", "priority_redirect"])
-@pytest.mark.parametrize("platform", [Platform.TELEGRAM, Platform.SIGNAL, Platform.WHATSAPP, Platform.DISCORD])
+@pytest.mark.parametrize("platform", [Platform.TELEGRAM, Platform.DISCORD])  # hashed vs. unhashed PII path
 @pytest.mark.parametrize("redact_pii", [False, True])
 async def test_busy_injection_preserves_original_routing_fields(route, platform, redact_pii, tmp_path, monkeypatch):
     from dataclasses import asdict

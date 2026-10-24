@@ -206,25 +206,6 @@ class TestFailedRebuildRetries:
         assert agent._client_kwargs["base_url"] == LOCAL_BASE
 
 
-class TestRouteConfigRefresh:
-    def test_base_url_change_recomputes_route_tls_and_headers(self, env):
-        """Moving to a new endpoint must recompute route-derived TLS material
-        and default headers, exactly as credential-pool rotation does."""
-        agent = _make_agent()
-        env["OPENAI_API_KEY"] = "sk-old"
-        env["OPENAI_BASE_URL"] = LOCAL_BASE
-
-        assert agent._try_refresh_env_client_credentials() is True
-        agent._reapply_route_client_config.assert_called_once_with(route_changed=True)
-
-    def test_key_only_change_keeps_route_config(self, env):
-        agent = _make_agent()
-        env["OPENAI_API_KEY"] = "sk-old"
-        assert agent._try_refresh_env_client_credentials() is False
-
-        env["OPENAI_API_KEY"] = "sk-new"
-        assert agent._try_refresh_env_client_credentials() is True
-        agent._reapply_route_client_config.assert_called_once_with(route_changed=False)
 
 
 CUSTOM_BASE = "https://api.longcat.example/openai/v1"

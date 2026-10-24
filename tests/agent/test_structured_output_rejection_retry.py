@@ -76,6 +76,10 @@ class TestIsStructuredOutputRejection:
         # (422, verbatim body from the gateway) -- no unsupported-parameter wording
         'HTTP 422: {"detail":[{"loc":["body","response_format","json_schema"],'
         '"msg":"str type expected","type":"type_error.str"}]}',
+        # Gemini native generationConfig wording (verbatim 400s from generativelanguage)
+        "Gemini HTTP 400 (INVALID_ARGUMENT): Function calling with a response mime type: 'application/json' is unsupported",
+        "Gemini HTTP 400 (INVALID_ARGUMENT): Invalid JSON payload received. Unknown name \"response_json_schema\" at 'generation_config'",
+        "Gemini HTTP 400 (INVALID_ARGUMENT): Invalid value at 'generation_config.response_schema.properties[0].value.type'",
     ])
     def test_matches_real_provider_messages(self, message):
         assert _is_structured_output_rejection(RuntimeError(message)) is True

@@ -16,6 +16,8 @@ import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from hermes_time import safe_strftime
+
 logger = logging.getLogger(__name__)
 
 # Below this TOTAL spendable ($) a paid account is flagged "low" — the alert state
@@ -70,7 +72,7 @@ def format_renews(value: Optional[str]) -> Optional[str]:
         except ValueError:
             return text
     # %-d isn't portable to Windows; build the day without a leading zero.
-    return f"{dt.strftime('%b')} {dt.day}, {dt.year}"
+    return f"{safe_strftime(dt, '%b')} {dt.day}, {dt.year}"
 
 
 @dataclass(frozen=True)
@@ -120,6 +122,12 @@ def usage_model_from_account(account_info: Any) -> UsageModel:
     """Build a :class:`UsageModel` from a ``NousPortalAccountInfo``. Never raises."""
     try:
         if account_info is None or not getattr(account_info, "logged_in", False):
+            return UsageModel(available=False)
+        # Usage-window plans have no monthly credit grant, so the credit bars don't apply;
+        # /usage falls through to the percent-window renderer instead. A partial/empty block is not a
+        # window plan (same completeness rule as the credits seed).
+        from agent.credits_tracker import _window_seed_fields
+        if _window_seed_fields(getattr(account_info, "usage_window", None)) is not None:
             return UsageModel(available=False)
         # Sub-structs are dataclasses or None; getattr(None, ..., None) is None, so no guards needed.
         access = getattr(account_info, "paid_service_access_info", None)

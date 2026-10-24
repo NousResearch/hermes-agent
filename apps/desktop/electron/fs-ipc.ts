@@ -1,12 +1,14 @@
 // IPC surface for local filesystem operations the renderer's project/file
 // surfaces use: directory reads, reveal/open in the OS file manager, plugin
-// roots + git installs, rename/write/trash. Extracted from main.ts; path
-// hardening, HERMES_HOME resolution, and the git binary stay injected.
+// roots + git installs, rename/write/trash, and the plugin SDK's folder-scoped
+// file door. Extracted from main.ts; path hardening, HERMES_HOME resolution,
+// and the git binary stay injected.
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 
+import { platformDefaultHermesHome } from './data-paths'
 import { installDesktopPluginFromGit, probePluginRepo } from './desktop-plugin-install'
 import { removeDesktopPlugin } from './desktop-plugin-remove'
 import {
@@ -15,8 +17,10 @@ import {
   migrateProfileScopedDesktopPlugins,
   reconcileUnifiedDesktopHalves
 } from './desktop-plugins-root'
+import { DESKTOP_PROFILE_NAME_RE } from './desktop-profile'
 import { readDirForIpc } from './fs-read-dir'
 import { gitRootForIpc } from './git-root'
+import { registerPluginFilesIpc } from './plugin-files-ipc'
 
 export interface FsIpcDeps {
   hermesHome: string
@@ -36,6 +40,27 @@ export function registerFsIpc({
   resolveGitBinary
 }: FsIpcDeps) {
   ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => readDirForIpc(dirPath))
+
+  // `ctx.files`: a plugin's own data folder plus folders the user grants it.
+  // The legacy `~/.hermes` stays protected beside the resolved and default homes.
+  registerPluginFilesIpc({
+    ipcMain,
+    dialog,
+    windowFor: event => BrowserWindow.fromWebContents(event.sender),
+    // App windows only: preview guests and webviews never hear about grants.
+    broadcastChange: change => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        window.webContents.send('hermes:pluginFiles:changed', change)
+      }
+    },
+    userDataDir: () => app.getPath('userData'),
+    hermesHomes: () => [
+      hermesHome,
+      platformDefaultHermesHome(app.getPath('home')),
+      path.join(app.getPath('home'), '.hermes')
+    ],
+    trashItem: target => shell.trashItem(target)
+  })
 
   ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => gitRootForIpc(startPath))
 
@@ -98,9 +123,15 @@ export function registerFsIpc({
   // so it stays valid in every connection mode. Created on demand, like openDir.
   // Profile-scoped roots (agent plugins, logs) live under profiles/<name>/ for a
   // named Desktop profile — they belong to THAT agent. 'default'/unset pins the
-  // global root.
-  async function localPluginsRoot(dirName: string): Promise<string> {
-    const profile = readActiveDesktopProfile()
+  // global root. The owner is renderer-supplied (in remote mode it comes from
+  // the remote backend's session record), so only a profile NAME may reach the
+  // join: anything else would escape profiles/ and be created + revealed.
+  async function localPluginsRoot(dirName: string, owner?: unknown): Promise<string> {
+    const named = typeof owner === 'string' ? owner.trim() : ''
+
+    const profile =
+      named && (named === 'default' || DESKTOP_PROFILE_NAME_RE.test(named)) ? named : readActiveDesktopProfile()
+
     const base = profile && profile !== 'default' ? path.join(hermesHome, 'profiles', profile) : hermesHome
 
     return ensureDir(path.join(base, dirName))
@@ -133,8 +164,11 @@ export function registerFsIpc({
   // The LOCAL logs root (`<HERMES_HOME>/logs`, profile-aware) — the error
   // card's "Open Logs" action reveals agent.log/gateway.log without the user
   // knowing where HERMES_HOME lives. Same Electron-local resolution as the
-  // plugin roots: valid in every connection mode, created on demand.
-  ipcMain.handle('hermes:fs:logsRoot', async () => localPluginsRoot('logs'))
+  // plugin roots: valid in every connection mode, created on demand. The
+  // caller names the profile that OWNS the failing session: a pooled backend
+  // serves many profile homes, and the active Desktop profile is the launch
+  // one, not the one whose agent.log holds the failure (#119080).
+  ipcMain.handle('hermes:fs:logsRoot', async (_event, profile) => localPluginsRoot('logs', profile))
 
   ipcMain.handle('hermes:plugin:probe', async (_event, payload) => {
     const identifier = String(payload?.identifier || payload?.repo || '').trim()

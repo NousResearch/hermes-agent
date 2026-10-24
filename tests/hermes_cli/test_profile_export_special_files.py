@@ -17,10 +17,7 @@ import pytest
 
 from hermes_cli.profiles import export_profile
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Unix sockets and FIFOs are not available on Windows",
-)
+pytestmark = pytest.mark.platforms("posix")  # Unix sockets and FIFOs are not available on Windows
 
 
 def _patch_named_profile(monkeypatch, profiles_root, profile_dir):
@@ -45,7 +42,8 @@ def test_named_profile_export_survives_unix_socket(tmp_path, monkeypatch):
     """Sockets and FIFOs in a named profile are skipped, not fatal."""
     profiles_root = tmp_path / "profiles"
     profile_dir = profiles_root / "sockety"
-    browser_dir = profile_dir / "home" / ".agent-browser"
+    # Not home/.agent-browser: a named export never walks home/ (the subprocess HOME's CLI credentials).
+    browser_dir = profile_dir / "workspace" / ".agent-browser"
     browser_dir.mkdir(parents=True)
 
     (profile_dir / "config.yaml").write_text("model: gpt-4\n")

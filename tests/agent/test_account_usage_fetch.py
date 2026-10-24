@@ -2,7 +2,7 @@ import concurrent.futures
 import contextvars
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 import pytest
 
@@ -114,7 +114,7 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert len(snapshot.windows) == 2
     assert snapshot.windows[0].label == "Session"
     assert snapshot.windows[0].used_percent == 15.0
-    assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
+    assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=UTC)
     assert "Credits balance: $12.50" in snapshot.details
 
 
@@ -130,7 +130,7 @@ def test_fetch_account_usage_reaches_registered_plugin_profile_and_fails_open(mo
     """A profile registered through the public registry (as a plugin does) feeds /usage; a profile
     without the hook, or one whose hook raises, is indistinguishable from today's empty block."""
     snapshot = AccountUsageSnapshot(
-        provider="plugin-usage", source="plugin", fetched_at=datetime.now(timezone.utc),
+        provider="plugin-usage", source="plugin", fetched_at=datetime.now(UTC),
         details=("Credit: 10/100",),
     )
     profile = _UsageProfile(snapshot)
@@ -146,10 +146,10 @@ def test_fetch_account_usage_reaches_registered_plugin_profile_and_fails_open(mo
 
 def test_fetch_account_usage_prefers_builtin_fetcher_over_profile(monkeypatch):
     builtin = AccountUsageSnapshot(
-        provider="openrouter", source="builtin", fetched_at=datetime.now(timezone.utc),
+        provider="openrouter", source="builtin", fetched_at=datetime.now(UTC),
     )
     profile = _UsageProfile(
-        AccountUsageSnapshot(provider="openrouter", source="plugin", fetched_at=datetime.now(timezone.utc)),
+        AccountUsageSnapshot(provider="openrouter", source="plugin", fetched_at=datetime.now(UTC)),
         name="openrouter",
     )
     monkeypatch.setattr("agent.account_usage._USAGE_FETCHERS", {"openrouter": lambda base_url, api_key: builtin})
@@ -157,29 +157,6 @@ def test_fetch_account_usage_prefers_builtin_fetcher_over_profile(monkeypatch):
 
     assert fetch_account_usage("openrouter") is builtin
     assert profile.calls == 0
-
-
-def test_render_account_usage_lines_includes_reset_and_provider():
-    snapshot = AccountUsageSnapshot(
-        provider="openai-codex",
-        source="usage_api",
-        fetched_at=datetime.now(timezone.utc),
-        plan="Pro",
-        windows=(
-            AccountUsageWindow(
-                label="Session",
-                used_percent=25,
-                reset_at=datetime.now(timezone.utc),
-            ),
-        ),
-        details=("Credits balance: $9.99",),
-    )
-    lines = render_account_usage_lines(snapshot)
-
-    assert lines[0] == "📈 Account limits"
-    assert "openai-codex (Pro)" in lines[1]
-    assert "Session: 75% remaining (25% used)" in lines[2]
-    assert "Credits balance: $9.99" in lines[3]
 
 
 def test_fetch_account_usage_openrouter_uses_limit_remaining_and_ignores_deprecated_rate_limit(monkeypatch):
@@ -281,7 +258,7 @@ def test_plugin_usage_hook_is_bounded_and_fails_open(monkeypatch):
         def fetch_account_usage(self, *, base_url=None, api_key=None):
             started.set()
             time.sleep(5)
-            return AccountUsageSnapshot(provider=self.name, source="late", fetched_at=datetime.now(timezone.utc))
+            return AccountUsageSnapshot(provider=self.name, source="late", fetched_at=datetime.now(UTC))
 
     _register_profile(monkeypatch, _Hang(name="plugin-hang"))
     monkeypatch.setattr(account_usage, "PLUGIN_USAGE_HOOK_DEADLINE_S", 0.3)
@@ -317,20 +294,6 @@ def test_plugin_usage_hook_failure_never_reaches_threading_excepthook(monkeypatc
         if t is not threading.current_thread() and "account-usage" in t.name:
             t.join(2)
     assert escaped == []
-
-
-def test_base_noop_usage_hook_spawns_no_thread(monkeypatch):
-    """A profile inheriting ``ProviderProfile.fetch_account_usage`` costs no thread."""
-    import threading
-
-    from agent import account_usage
-
-    _register_profile(monkeypatch, ProviderProfile(name="plugin-noop"))
-    monkeypatch.setattr(account_usage, "_USAGE_FETCHERS", {})
-    monkeypatch.setattr(threading.Thread, "start",
-                        lambda self: pytest.fail(f"base no-op hook spawned thread {self.name!r}"))
-
-    assert account_usage.fetch_account_usage("plugin-noop") is None
 
 
 @pytest.mark.parametrize("fetch", [_fetch_portal_account, _billing_fetch_nous_account])

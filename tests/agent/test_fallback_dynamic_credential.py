@@ -36,7 +36,7 @@ def test_fallback_rebuild_preserves_rotating_and_static_credentials(mode, dynami
 
 
 def test_anthropic_fallback_keeps_callable_without_treating_it_as_oauth_text():
-    source = lambda: "fixture-token"  # noqa: E731
+    source = lambda: "fixture-token"
     client = OpenAI(api_key=source, base_url="http://localhost:1234/v1")
     agent = SimpleNamespace()
     try:

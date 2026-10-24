@@ -110,12 +110,24 @@ export const en: Translations = {
       "Your agent's disk is almost full. New messages, memories, and settings may fail to save.",
     diskElevatedBanner:
       "Your agent's disk is filling up. Consider clearing old sessions or expanding its storage.",
+    multiplexStandaloneBanner:
+      "Your gateway serves only one profile. Not served: {profiles}. Why: {reason}. Fix: hermes gateway migrate --multiplex",
     dismiss: "Dismiss",
+    sharedMetricsTitle: "Help improve Hermes?",
+    sharedMetricsBody:
+      "Shared metrics are bounded counters, never prompts, files, paths or error text. Sharing sends them to Nous once a day.",
+    sharedMetricsReaskBody:
+      "Asking once more: an earlier version could save \"No thanks\" before you saw this question.",
+    sharedMetricsShare: "Share with Nous",
+    sharedMetricsOff: "No thanks",
+    sharedMetricsDetails: "Details",
+    sharedMetricsSaveFailed: "Couldn't save your choice",
   },
 
   status: {
     actionFailed: "Action failed",
     actionFinished: "Finished",
+    actionFinishedOwed: "Updated, but still owed (re-run `hermes update` to finish)",
     actions: "Actions",
     agent: "Agent",
     activeSessions: "Active Sessions",
@@ -191,9 +203,15 @@ export const en: Translations = {
     deleteSelectedConfirmMessage:
       "This permanently removes {count} selected sessions and all their messages. This cannot be undone.",
     selectedSessionsDeleted: "{count} sessions deleted",
+    selectedSessionsSkippedActive:
+      "{deleted} deleted; {count} kept because a turn is running",
     failedToDeleteSelected: "Failed to delete selected sessions",
     resumeInChat: "Resume in Chat",
     newChat: "New chat",
+    workspace: "workspace",
+    workspaceDefault: "Default",
+    workspaceRescan: "Rescan repositories",
+    workspaceCustom: "Other path…",
     previousPage: "Previous page",
     nextPage: "Next page",
     roles: {
@@ -398,6 +416,8 @@ export const en: Translations = {
     disableRuntime: "Disable",
     enableAfterInstall: "Enable after install",
     enableRuntime: "Enable",
+    toggleTakesEffectAfterRestart:
+      "Saved — restart the gateway to apply the change.",
     forceReinstall: "Force reinstall (delete existing folder first)",
     headline:
       "Discover, install, enable, and update Hermes plugins (`hermes plugins` parity).",
@@ -428,6 +448,12 @@ export const en: Translations = {
     authRequired: "Auth required",
     authRequiredHint: "Run this command to authenticate:",
     updateGit: "Git pull",
+    updateConsentBody: (name: string, sha: string) =>
+      `The new catalog pin of ${name} (${sha}) adds surfaces the installed version does not have. Apply it only if you trust them:`,
+    updateScanBody: (name: string, count: number) =>
+      `The security scan flagged ${count} finding${count === 1 ? "" : "s"} in the new code of ${name}. Update anyway only if you trust the source:`,
+    updateScanBlocked: (name: string) =>
+      `The security scan rated the new code of ${name} dangerous. The update was not applied.`,
     versionBadge: "Version",
     showInSidebar: "Show in sidebar",
     hideFromSidebar: "Hide from sidebar",

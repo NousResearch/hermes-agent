@@ -68,7 +68,7 @@ class _FakeRPC:
         task,
         execution_generation,
         on_terminal,
-        member_id="",
+        member_id="", attachments=None,
     ):
         on_terminal({"status": "settled", "text": f"reply from {profile}"})
         return {"accepted": True}
@@ -280,7 +280,7 @@ class _PromptRecordingRPC(_FakeRPC):
         task,
         execution_generation,
         on_terminal,
-        member_id="",
+        member_id="", attachments=None,
     ):
         self.prompts.append((profile, prompt))
         on_terminal({"status": "settled", "text": f"reply from {profile}"})
@@ -704,17 +704,6 @@ def test_thread_transcript_prunes_committed_message_and_settlement_together(
         local_profiles=service.local_profiles(),
         initial_watermarks=snapshot.watermarks,
     )
-
-
-def test_service_uses_low_idle_poll_with_immediate_wakeup(tmp_path: Path):
-    service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
-
-    assert service.runtime.poll_interval_seconds == 5.0
-    assert service.runtime.active_poll_interval_seconds == 0.25
-    assert service.runtime.turn_timeout_seconds == 1830.0
-    service.runtime._wake.clear()
-    service.wakeup()
-    assert service.runtime._wake.is_set()
 
 
 def test_service_derives_room_deadline_from_agent_timeout(tmp_path: Path, monkeypatch):

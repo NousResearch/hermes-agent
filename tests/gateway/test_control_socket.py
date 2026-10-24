@@ -1,6 +1,7 @@
 """Tests for the gateway control socket (#92091 migration step 1)."""
 
 import asyncio
+import errno
 import json
 import socket
 import sys
@@ -18,10 +19,7 @@ from gateway.control_socket import (
     windows_pipe_name,
 )
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Unix-socket transport; the named-pipe half is covered on the wine2e lane",
-)
+pytestmark = pytest.mark.platforms("posix")  # Unix-socket transport; the named-pipe half is covered on the wine2e lane
 
 
 def _run(coro):
@@ -216,7 +214,7 @@ def test_stale_socket_file_is_replaced_on_bind(home: Path):
     # Plant the stale file at wherever the server will actually bind
     # (in-home OR the temp-dir fallback, depending on path length).
     bind, _ = resolve_server_socket_path(home)
-    bind.parent.mkdir(parents=True, exist_ok=True)
+    bind.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     bind.touch()  # crashed predecessor's leftover
 
     async def scenario():
@@ -231,6 +229,105 @@ def test_stale_socket_file_is_replaced_on_bind(home: Path):
             await server.stop()
 
     assert _run(scenario()) == {"pid": 7}
+
+
+@pytest.fixture()
+def short_home():
+    """A home short enough that the server binds IN-HOME (no pointer fallback).
+
+    pytest's tmp_path can exceed sun_path on macOS/CI, in which case the
+    server already uses the temp-dir fallback and an in-home bind refusal can
+    never be exercised — so build the home directly under /tmp, like
+    test_short_home_binds_in_home does.
+    """
+    import shutil
+    import tempfile
+    try:
+        root = Path(tempfile.mkdtemp(prefix="hgw-", dir="/tmp"))
+    except OSError:
+        pytest.skip("/tmp not writable on this host")
+    home = root / ".hermes"
+    home.mkdir()
+    if resolve_server_socket_path(home)[1] is not None:
+        shutil.rmtree(root, ignore_errors=True)
+        pytest.skip("even /tmp yields a too-long socket path here")
+    try:
+        yield home
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def _refusing_start_unix_server(monkeypatch, *, refuse_under: Path, err: int):
+    """start_unix_server that refuses paths under ``refuse_under`` with ``err``
+    and otherwise delegates — the behaviour of a Docker Desktop bind mount."""
+    real = asyncio.start_unix_server
+    attempts: list[str] = []
+
+    async def fake(client_connected_cb, path=None, **kwargs):
+        attempts.append(str(path))
+        if Path(path).is_relative_to(refuse_under):
+            raise OSError(err, "Operation not supported" if err == errno.EOPNOTSUPP else "refused")
+        return await real(client_connected_cb, path=path, **kwargs)
+
+    monkeypatch.setattr(asyncio, "start_unix_server", fake)
+    return attempts
+
+
+def test_home_refusing_sockets_listens_on_private_fallback_both_clients_reach(short_home: Path, monkeypatch):
+    """Docker Desktop bind mount (#123761): the in-home path refuses the socket and a socket inode an
+    earlier container left there cannot even be stat'ed. The listener moves to the private temp-dir
+    socket + 0600 pointer, and both the authenticated discovery client and the legacy client reach it."""
+    import os
+    import stat
+
+    from hermes_cli.gateway_runtime_discovery import query_identify
+
+    home = short_home.resolve()  # the server resolves its home; macOS /tmp is a symlink to /private/tmp
+    home.chmod(0o700)
+    stale = home / "gateway.sock"
+    attempts = _refusing_start_unix_server(monkeypatch, refuse_under=home, err=errno.EOPNOTSUPP)
+    for name in ("lstat", "stat"):
+        real = getattr(os, name)
+
+        def unstatable(path, *a, _real=real, **k):
+            if os.fspath(path) == str(stale):
+                raise OSError(errno.EOPNOTSUPP, "Operation not supported", str(stale))
+            return _real(path, *a, **k)
+
+        monkeypatch.setattr(os, name, unstatable)
+
+    async def scenario():
+        server = GatewayControlServer(home, verb_handlers={"identify": lambda: {"pid": 11}})
+        assert await server.start()
+        try:
+            pointer = home / "gateway.sock.path"
+            target = Path(pointer.read_text(encoding="utf-8"))
+            assert server._bind_path == target and target.name == "control.sock"
+            assert stat.S_IMODE(pointer.lstat().st_mode) == 0o600
+            assert stat.S_IMODE(target.parent.lstat().st_mode) == 0o700
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, lambda: (query_identify(home, timeout=3), identify_gateway(home)))
+        finally:
+            await server.stop()
+
+    assert _run(scenario()) == ({"pid": 11}, {"pid": 11})
+    assert attempts[-1].endswith("/control.sock")  # the in-home attempt, if made, was refused
+    assert not (home / "gateway.sock.path").exists()
+
+
+def test_bind_refused_for_other_reasons_still_fails(short_home: Path, monkeypatch):
+    # A live sibling (EADDRINUSE) must keep failing loudly — no silent fallback
+    # that would let two gateways for one home both look healthy.
+    home = short_home.resolve()  # match the server's resolved home (macOS /tmp -> /private/tmp)
+    attempts = _refusing_start_unix_server(monkeypatch, refuse_under=home, err=errno.EADDRINUSE)
+
+    async def scenario():
+        server = GatewayControlServer(home)
+        return await server.start()
+
+    assert _run(scenario()) is False
+    assert attempts == [str(home / "gateway.sock")]
+    assert not (home / "gateway.sock.path").exists()
 
 
 def test_long_home_end_to_end_via_pointer(tmp_path: Path):
@@ -309,7 +406,7 @@ def test_collect_fleet_versions_prefers_socket(tmp_path: Path, monkeypatch):
     home.mkdir()
 
     monkeypatch.setattr(
-        "hermes_cli.build_info.get_code_identity",
+        "hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": "HEADSHA", "version": "1.0"},
     )
     monkeypatch.setattr(
@@ -351,7 +448,7 @@ def test_collect_fleet_versions_falls_back_to_state_file(tmp_path: Path, monkeyp
     home.mkdir()
 
     monkeypatch.setattr(
-        "hermes_cli.build_info.get_code_identity",
+        "hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": "HEADSHA", "version": "1.0"},
     )
     monkeypatch.setattr(
@@ -412,7 +509,7 @@ def test_runtime_inventory_dedupes_same_pid_across_homes(tmp_path: Path, monkeyp
         "hermes_cli.gateway._get_service_pids", lambda all_profiles=False: set()
     )
     monkeypatch.setattr(
-        "hermes_cli.gateway.find_profile_gateway_processes", lambda: []
+        "hermes_cli.gateway.find_profile_gateway_processes", list
     )
     monkeypatch.setattr(
         "gateway.control_socket.identify_gateway",
@@ -441,7 +538,7 @@ def test_runtime_inventory_prefers_socket_supervisor(tmp_path: Path, monkeypatch
         "hermes_cli.gateway._get_service_pids", lambda all_profiles=False: set()
     )
     monkeypatch.setattr(
-        "hermes_cli.gateway.find_profile_gateway_processes", lambda: []
+        "hermes_cli.gateway.find_profile_gateway_processes", list
     )
     monkeypatch.setattr(
         "gateway.control_socket.identify_gateway",
@@ -455,3 +552,25 @@ def test_runtime_inventory_prefers_socket_supervisor(tmp_path: Path, monkeypatch
     # supervisor comes from the gateway's own declaration, not a PID scan
     assert gws[0].supervisor == "systemd"
     assert gws[0].code_sha == "SHA555"
+
+
+def test_windows_pipe_query_is_bounded_when_the_peer_never_answers(home: Path, monkeypatch):
+    """#132547: a pipe handle read cannot time out on its own; the query must still return None at its bound."""
+    import threading
+    import time
+
+    from gateway import control_socket
+
+    released = threading.Event()
+
+    def _silent_native_client(_home, _request, _timeout):  # accepts the request, never answers
+        released.wait(10)
+        return b""
+
+    monkeypatch.setattr("gateway.runtime_bootstrap_windows.query_runtime_control", _silent_native_client)
+    start = time.monotonic()
+    try:
+        assert control_socket._query_windows_pipe(home, b"{}\n", 0.3) is None
+        assert time.monotonic() - start < 2.0
+    finally:
+        released.set()

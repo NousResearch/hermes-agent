@@ -19,6 +19,12 @@ describe('reasoning blocks in streamed markdown', () => {
     expect(preprocessMarkdown('Answer.\n<div')).toBe('Answer.\n<div')
 
     const quoted = 'O texto acima explica o formato do bloco <thinking> sem nunca fechá-lo'
-    expect(preprocessMarkdown(quoted)).toBe(quoted)
+    // The mid-sentence mention is escaped to entities by the #53953 unknown-tag
+    // pass — the renderer would otherwise read it as an unclosed tag — so the
+    // round-trip differs from the source by exactly that escape, and the
+    // escaped form paints identically as literal text.
+    expect(preprocessMarkdown(quoted)).toBe(
+      'O texto acima explica o formato do bloco &lt;thinking&gt; sem nunca fechá-lo'
+    )
   })
 })

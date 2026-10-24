@@ -13,6 +13,12 @@ export interface PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, C
   ensureLocalRuntime: (backend: Backend) => Promise<RuntimeBackend>
   prepareLocalBackend: () => Backend | Promise<Backend>
   resolveRemote: () => Promise<Remote | null>
+  /**
+   * After update clearance and before any local attach/spawn. When launchMode
+   * is primary and the registry primary is non-local, this returns that
+   * remote so a stale pre-update resolve cannot boot an empty local backend.
+   */
+  selectRegistryPrimary?: () => Promise<Remote | null>
   waitForDecision: (backend: Backend) => Promise<FirstRunSetupDecision>
   waitForLocalStart: () => Promise<unknown>
 }
@@ -95,6 +101,7 @@ export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, 
   ensureLocalRuntime,
   prepareLocalBackend,
   resolveRemote,
+  selectRegistryPrimary,
   waitForDecision,
   waitForLocalStart,
   signal
@@ -115,6 +122,17 @@ export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, 
   }
 
   await step(waitForLocalStart)
+
+  // Update clearance can land after the first resolve saw a stale local route
+  // (legacy connection.json, a mid-update registry read). Re-select the
+  // registry primary before attaching to or spawning a local backend.
+  if (selectRegistryPrimary) {
+    const registryPrimary = await step(selectRegistryPrimary)
+
+    if (registryPrimary) {
+      return { kind: 'remote', connection: await step(() => connectRemote(registryPrimary)) }
+    }
+  }
 
   // Multiplex-only: one backend per HOST. Attach before resolving a runtime or
   // entering the first-run gate — a machine with a live backend is, by

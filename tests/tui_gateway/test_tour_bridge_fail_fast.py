@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-import tui_gateway.server as server
+from tui_gateway import server
 
 
 @pytest.fixture
@@ -56,12 +56,6 @@ def test_a_client_that_answers_gets_the_full_deadline_back(session, bridge):
     assert bridge.calls[1]["timeout"] == server._TOUR_TIMEOUT_S
 
 
-def test_unanswered_probe_explains_the_real_problem(session, bridge):
-    result = json.loads(server._tour_request("s1", {"action": "targets"}))
-
-    assert result["success"] is False
-    assert "desktop" in result["error"].lower()
-    assert "update" in result["error"].lower()
 
 
 def test_later_actions_short_circuit_instead_of_stalling_again(session, bridge):

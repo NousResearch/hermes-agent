@@ -1,41 +1,56 @@
 #!/usr/bin/env node
-// Optional, host-native helper. No compiler or development headers at runtime.
+// Host-built helper. Windows uses its in-box .NET Framework compiler; no SDK download.
 import { execFileSync } from 'node:child_process'
-import { chmodSync, mkdirSync, renameSync, rmSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { chmodSync, existsSync, mkdirSync, renameSync, rmdirSync, rmSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { retryHeld } from '../../../scripts/build/frontend-common.mjs'
+import { macosSysroot, xcrunClangArgv } from './macos-sysroot.mjs'
 
 const script = fileURLToPath(import.meta.url)
 const root = resolve(dirname(script), '..')
+
+export function resolveWindowsFrameworkCompiler() {
+  const framework = resolve(process.env.SystemRoot || 'C:\\Windows', 'Microsoft.NET')
+  const compiler = ['Framework64', 'Framework']
+    .map(dir => resolve(framework, dir, 'v4.0.30319', 'csc.exe'))
+    .find(existsSync)
+  if (!compiler) throw new Error('The Windows HUD helper needs the .NET Framework included with Windows.')
+  return compiler
+}
 
 export function hudModifierBinaryRelativePath(platform = process.platform, arch = process.arch) {
   return `native/${platform}-${platform === 'darwin' ? 'universal' : arch}/hud-modifier-monitor${platform === 'win32' ? '.exe' : ''}`
 }
 
 export function buildHudModifierMonitor({
-  distDir = resolve(root, 'dist'),
+  source = resolve(root, '../..'),
+  distDir = resolve(source, 'apps/desktop/dist'),
   platform = process.platform,
-  arch = process.arch
+  arch = process.arch,
+  sysroot
 } = {}) {
   // Cross-packaging must not ship a host binary under the target's name. The
   // capability stays unavailable unless that target was built on its own host.
-  if (platform !== process.platform || (platform !== 'darwin' && arch !== process.arch)) {
+  if (platform !== process.platform || (platform === 'linux' && arch !== process.arch)) {
+    if (platform === 'win32') throw new Error('Build Windows packages on Windows so the HUD helper is included.')
     console.warn(`[hud-modifier] ${platform}-${arch} needs a native build; modifier tap unavailable for this target`)
     return null
   }
   if (!['darwin', 'linux', 'win32'].includes(platform)) return null
   const output = resolve(distDir, hudModifierBinaryRelativePath(platform, arch))
-  const staging = `${output}.${process.pid}.tmp${platform === 'win32' ? '.exe' : ''}`
-  const source = name => resolve(root, 'electron/native', name)
-  mkdirSync(dirname(output), { recursive: true })
+  // The macOS linker signs ad hoc with the output file name as identifier: stage under the final
+  // name in a private directory so rebuilding the same source yields the same bytes.
+  const stagingDir = `${output}.${process.pid}.tmp`
+  const staging = join(stagingDir, basename(output))
+  const nativeSource = name => resolve(source, 'apps/desktop/electron/native', name)
+  mkdirSync(stagingDir, { recursive: true })
   try {
     if (platform === 'darwin') {
       execFileSync(
         'xcrun',
         [
-          '--sdk',
-          'macosx',
-          'clang',
+          ...xcrunClangArgv(sysroot === undefined ? macosSysroot() : sysroot),
           '-arch',
           'arm64',
           '-arch',
@@ -50,42 +65,59 @@ export function buildHudModifierMonitor({
           'Cocoa',
           '-framework',
           'CoreGraphics',
-          source('hud-modifier-monitor.m'),
+          nativeSource('hud-modifier-monitor.m'),
           '-o',
           staging
         ],
         { stdio: 'pipe', timeout: 120_000 }
       )
+    } else if (platform === 'win32') {
+      execFileSync(resolveWindowsFrameworkCompiler(), [
+        '/nologo', '/target:exe', '/platform:anycpu', '/optimize+', '/warnaserror+',
+        '/reference:System.Windows.Forms.dll', `/out:${staging}`,
+        nativeSource('hud-modifier-monitor-win.cs'), nativeSource('hud-modifier-gesture.cs')
+      ], { stdio: 'pipe', timeout: 120_000 })
     } else {
-      const windows = platform === 'win32'
       execFileSync(
-        process.env.CC || (windows ? 'clang' : 'cc'),
+        process.env.CC || 'cc',
         [
           '-std=gnu11',
           '-O2',
           '-Wall',
           '-Wextra',
-          source(windows ? 'hud-modifier-monitor-win.c' : 'hud-modifier-monitor-x11.c'),
+          nativeSource('hud-modifier-monitor-x11.c'),
           '-o',
           staging,
-          ...(windows ? ['-luser32'] : ['-lX11', '-lXi'])
+          '-lX11', '-lXi'
         ],
         { stdio: 'pipe', timeout: 120_000 }
       )
     }
     chmodSync(staging, 0o755)
-    renameSync(staging, output)
+    // A scanner opens the exe the compiler just wrote; wait it out like publication does.
+    retryHeld(() => renameSync(staging, output))
     console.log(`built ${output}`)
     return output
   } catch (error) {
     rmSync(output, { force: true }) // Never keep a stale helper after a failed rebuild.
-    if (platform === 'darwin') throw error // The existing macOS build already requires Xcode.
-    const prerequisite = platform === 'linux' ? 'a C compiler, libx11-dev and libxi-dev' : 'Clang and the Windows SDK'
-    console.warn(`[hud-modifier] unavailable: native build needs ${prerequisite}; desktop packaging continues`)
+    rmSync(stagingDir, { recursive: true, force: true }) // before the empty-ancestor sweep below
+    // Packaged ASAR output omits empty directories. Leaving native/linux-* behind
+    // makes the packaged renderer differ from its compiler receipt, so source
+    // installs report a healthy desktop bundle as stale when X11 headers are
+    // unavailable. Remove only empty ancestors; stop at the product root.
+    for (let directory = dirname(output); directory !== resolve(distDir); directory = dirname(directory)) {
+      try {
+        rmdirSync(directory)
+      } catch {
+        break
+      }
+    }
+    if (platform !== 'linux') throw error
+    console.warn('[hud-modifier] unavailable: native build needs a C compiler, libx11-dev and libxi-dev; desktop packaging continues')
     console.warn(String(error.stderr || error.message))
     return null
   } finally {
-    rmSync(staging, { force: true })
+    rmSync(stagingDir, { recursive: true, force: true })
   }
 }
 

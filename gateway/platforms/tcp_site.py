@@ -1,14 +1,17 @@
 """Bind an aiohttp ``TCPSite`` for the HTTP-serving adapters (webhook, api_server): exclusive on macOS,
 yet able to rebind over a lingering TIME_WAIT socket right after a gateway restart."""
 
+from __future__ import annotations
+
 import asyncio
 import errno
 import logging
 import socket
 import sys
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from aiohttp import web
+if TYPE_CHECKING:
+    from aiohttp import web
 
 from gateway.platforms.shared_ingress import is_wildcard_host
 
@@ -42,6 +45,8 @@ async def start_tcp_site(runner: web.BaseRunner, host: Optional[str], port: int,
     rejects an exact duplicate even with SO_REUSEADDR, and a foreign wildcard listener answers the
     probe), so one retry with reuse_address=True is safe. A wildcard host keeps the strict path: a
     foreign listener on a non-loopback interface could not be probed, so it must keep winning."""
+    from aiohttp import web
+
     exclusive = sys.platform == "darwin"
     site = web.TCPSite(runner, host, port, reuse_address=False if exclusive else None)
     try:

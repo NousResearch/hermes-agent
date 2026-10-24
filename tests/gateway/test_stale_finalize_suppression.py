@@ -159,10 +159,10 @@ def _make_runner(adapter):
 
 
 async def _run_streaming_turn(monkeypatch, tmp_path, agent_cls, session_id):
-    import yaml
+    import hermes_yaml as yaml
 
     (tmp_path / "config.yaml").write_text(
-        yaml.dump(
+        yaml.safe_dump(
             {
                 "display": {"tool_progress": "off", "interim_assistant_messages": False},
                 "streaming": {
@@ -289,10 +289,10 @@ async def test_payload_less_split_does_not_suppress_complete_response(
     monkeypatch, tmp_path
 ):
     """#78541 — payload-less split-delivery flags must not swallow the reply."""
-    import yaml
+    import hermes_yaml as yaml
 
     (tmp_path / "config.yaml").write_text(
-        yaml.dump(
+        yaml.safe_dump(
             {
                 "display": {"tool_progress": "off", "interim_assistant_messages": False},
                 "streaming": {
@@ -519,7 +519,7 @@ async def _drain_split_turn(consumer, lines):
 @pytest.mark.asyncio
 async def test_complete_overflow_split_still_suppresses_duplicate():
     """A fully delivered multi-message reply must NOT be re-sent (#45517)."""
-    adapter, consumer = _split_consumer()
+    _adapter, consumer = _split_consumer()
     lines = [f"line {i} " + "x" * 60 for i in range(12)]
     await _drain_split_turn(consumer, lines)
 
@@ -534,7 +534,7 @@ async def test_complete_overflow_split_still_suppresses_duplicate():
 async def test_split_delivery_missing_tail_does_not_suppress():
     """#78541 — when the completed response exceeds what the split delivered,
     the matcher must report a mismatch so the gateway still sends it."""
-    adapter, consumer = _split_consumer()
+    _adapter, consumer = _split_consumer()
     lines = [f"line {i} " + "x" * 60 for i in range(12)]
     await _drain_split_turn(consumer, lines)
 

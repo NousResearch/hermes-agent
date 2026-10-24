@@ -1,0 +1,28 @@
+{
+  "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Documents auto-extract to readable text: .ipynb, Office (.docx/.xlsx/.pptx and legacy .doc/.ppt/.xls), PDF (text layer), OpenDocument, RTF, EPUB, SQLite (.db/.sqlite: schema, row counts, first rows). Cannot read images/binary — use vision_analyze for images.",
+  "name": "read_file",
+  "parameters": {
+    "properties": {
+      "limit": {
+        "default": 2000,
+        "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation.",
+        "maximum": 2000,
+        "type": "integer"
+      },
+      "offset": {
+        "default": 1,
+        "description": "Line number to start reading from (1-indexed, default: 1)",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "path": {
+        "description": "Path to the file to read (absolute, relative, or ~/path)",
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "type": "object"
+  }
+}

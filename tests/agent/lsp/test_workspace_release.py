@@ -22,7 +22,7 @@ MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
 
 def _git(*args: str, cwd: Path) -> str:
     res = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, encoding="utf-8",
-                         errors="replace", timeout=60)
+                         errors="replace", timeout=60, check=False)
     assert res.returncode == 0, f"git {' '.join(args)} failed: {res.stderr}"
     return res.stdout.strip()
 

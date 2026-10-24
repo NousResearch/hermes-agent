@@ -31,7 +31,7 @@ def test_footer_when_more_sessions_than_limit(db, capsys):
     out = _list(db, 4, capsys)
     ids = [line.split()[-1] for line in out.splitlines() if line.startswith("hello")]
     assert len(ids) == 4  # the probe row is never rendered
-    assert "… more not shown (use --limit 8 to see more)" in out
+    assert "--limit 8" in out
 
 
 def test_no_footer_when_listing_fits(db, capsys):

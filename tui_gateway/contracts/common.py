@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Annotated, Literal
+
 from pydantic import Field
 
 from .base import JsonValue, Params, Payload, Result, WireEnum
@@ -12,6 +14,15 @@ class OpenModel(Result):
     (the closed set is owned elsewhere: hermes_state rows, provider inventories)."""
 
     model_config = Result.model_config | {"extra": "allow"}
+
+
+class PlanGauge(Result):
+    """``gateway/session_usage.py::plan_gauge``: a window plan's allowance for the status bar."""
+
+    id: str
+    label: str
+    used_bp: int
+    resets_at_ms: int | None = None
 
 
 class Usage(OpenModel):
@@ -40,6 +51,7 @@ class Usage(OpenModel):
     dev_credits_spent_micros: int | None = None
     cost_usd: float | None = None
     cost_status: str | None = None
+    plan_gauge: PlanGauge | None = None
 
 
 class ProjectRef(Result):
@@ -126,16 +138,43 @@ class StoredSessionRow(OpenModel):
     handoff_state: str | None = None
     lineage_root_id: str | None = Field(default=None, alias="_lineage_root_id")
     lineage_ids: list[str] | None = Field(default=None, alias="_lineage_ids")
+    # #121148: provenance of a projected continuation tip — 'compression' when the row
+    # continues a sealed segment (automatic rotation), None for plain rows and branches.
+    continuation_kind: str | None = None
+
+
+class ToolLabelKind(WireEnum):
+    """Which surface one inner call of a bridged ``tool_call`` runs on."""
+
+    connector = "connector"
+    mcp = "mcp"
+    tool = "tool"
+
+
+class ToolLabel(Payload):
+    """``tools.tool_labels.ToolLabel`` — what one call executed through the tool_search bridge is,
+    in words. Clients render ``text`` (or ``app``/``action`` in their own columns) and never parse
+    the tool name themselves."""
+
+    kind: ToolLabelKind
+    app: str
+    action: str
+    emoji: str
+    text: str
+    name: str
+    preview: str = ""
 
 
 class TranscriptMessage(OpenModel):
     """One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``):
-    ``text`` (never ``content``), display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the
-    durable ``row_id`` rewind targets, and for tool rows ``name`` + ``context`` preview + full ``args``.
+    ``text``, display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the durable ``row_id``
+    rewind targets, and for tool rows raw ``content``, ``tool_call_id``, ``name``, ``context`` and ``args``.
     Assistant detail sidecars (``reasoning``, …) ride as extra keys."""
 
     role: str
     text: str | None = None
+    content: JsonValue | None = None
+    tool_call_id: str | None = None
     timestamp: float | None = None
     row_id: int | None = None
     display_kind: str | None = None
@@ -143,6 +182,7 @@ class TranscriptMessage(OpenModel):
     name: str | None = None
     context: str | None = None
     args: dict[str, JsonValue] | None = None
+    labels: list[ToolLabel] | None = None
     reasoning: str | None = None
 
 
@@ -204,6 +244,18 @@ class ProfileParams(Params):
     profile: str | None = None
 
 
+class SessionOwner(Params):
+    type: Literal["session"]
+    session_id: str = Field(min_length=1)
+
+
+class AccountOwner(Params):
+    type: Literal["account"]
+
+
+ConnectorOwner = Annotated[SessionOwner | AccountOwner, Field(discriminator="type")]
+
+
 class OkResult(Result):
     ok: bool = True
 
@@ -220,8 +272,37 @@ class EmptyPayload(Payload):
     pass
 
 
+class PlanUsageGauge(Result):
+    """One server allowance on ``ModelOptionProvider.plan_usage``, in the server's order. ``label`` is the
+    server's id (``day`` / ``week`` / ``month`` / ``top_tier`` have client words; any other id shows
+    ``title``). ``scope``: which models a full one stops (``all`` / ``top_tier``)."""
+
+    label: str
+    left_fraction: float
+    style: str
+    resets_at_ms: int | None = None
+    scope: str = "all"
+    title: str = ""
+
+
+class PlanUsage(Result):
+    """``hermes_cli/model_picker_usage.py::PickerUsage.to_payload`` — usage-window plan chrome."""
+
+    kind: str
+    plan: str | None = None
+    gauges: list[PlanUsageGauge] = Field(default_factory=list)
+    # Ids the gateway labels ``top_tier`` (Large).
+    top_tier_model_ids: list[str] = Field(default_factory=list)
+    featured_model_ids: list[str] = Field(default_factory=list)
+    paused_reason: str | None = None
+    # Past a full allowance, top-up credits pay (pay as you go): Keep going on credits on + a balance.
+    # False: the turn stops. None: unknown (older portal).
+    credits_pay: bool | None = None
+
+
 __all__ = [
-    "TERMINAL_SUBAGENT_STATUSES", "EmptyPayload", "EmptyResult", "McpServerStatus", "MessageReaction", "OkResult", "OpenModel", "PendingApproval",
-    "ProfileParams", "ProjectRef", "SessionLiveInfo", "SessionParams", "StatusResult", "StoredSessionRow",
-    "SubagentStatus", "TranscriptMessage", "Usage",
+    "TERMINAL_SUBAGENT_STATUSES", "AccountOwner", "ConnectorOwner", "EmptyPayload", "EmptyResult", "McpServerStatus",
+    "MessageReaction", "OkResult", "OpenModel", "PendingApproval", "PlanUsage", "PlanUsageGauge",
+    "ProfileParams", "ProjectRef", "SessionLiveInfo", "SessionOwner", "SessionParams", "StatusResult", "StoredSessionRow",
+    "SubagentStatus", "ToolLabel", "ToolLabelKind", "TranscriptMessage", "Usage",
 ]

@@ -32,6 +32,17 @@ hermes acp / hermes-acp / python -m acp_adapter
 
 Stdout is reserved for ACP JSON-RPC transport. Human-readable logs go to stderr.
 
+### Gateway terminal projection
+
+`acp_adapter/gateway_server.py` waits for the completion of the exact submitted
+admission. A cancelled admission returns `stopReason: cancelled`; a failed
+admission raises an ACP request error rather than reporting `end_turn`. Ordinary
+completion still returns `end_turn`. Cancellation while waiting for the model
+suppresses the local `Operation interrupted: waiting for model response` status
+message; actual partial assistant text remains visible. Terminal outcomes come
+from the gateway's structured execution result, not from assistant prose or a
+session-wide cancellation flag.
+
 ## Major components
 
 ### `HermesACPAgent`
@@ -119,7 +130,10 @@ Examples:
 ```text
 new_session(cwd)
   -> create SessionState
-  -> create AIAgent(platform="acp", enabled_toolsets=["hermes-acp"])
+  -> create AIAgent(platform="acp", enabled_toolsets=<_get_platform_tools(config, "acp"), as on the
+                   gateway: platform_toolsets.acp (default hermes-acp) plus the resolver's extras
+                   such as plugin toolsets, with its admitted MCP servers keyed mcp-<server>>,
+                   disabled_toolsets=<agent.disabled_toolsets>)
   -> bind task_id/session_id to cwd override
 
 prompt(..., session_id)

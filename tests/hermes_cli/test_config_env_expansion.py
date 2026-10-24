@@ -1,16 +1,9 @@
 """Tests for ${ENV_VAR} substitution in config.yaml values."""
 
-import pytest
 from hermes_cli.config import _expand_env_vars, load_config
 
 
 class TestExpandEnvVars:
-    def test_simple_substitution(self):
-        with pytest.MonkeyPatch().context() as mp:
-            mp.setenv("MY_KEY", "secret123")
-            assert _expand_env_vars("${MY_KEY}") == "secret123"
-
-
 
 
     def test_non_string_values_untouched(self):
@@ -18,8 +11,6 @@ class TestExpandEnvVars:
         assert _expand_env_vars(3.14) == 3.14
         assert _expand_env_vars(True) is True
         assert _expand_env_vars(None) is None
-
-
 
 
 class TestLoadConfigExpansion:

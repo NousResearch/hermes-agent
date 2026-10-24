@@ -215,6 +215,7 @@ def test_in_dir_missing_directory_exits(main_mod, monkeypatch, tmp_path, capsys)
     assert "--in directory not found" in capsys.readouterr().out
 
 
+@pytest.mark.platforms("linux")
 def test_in_dir_expands_user_home(main_mod, launched, monkeypatch, tmp_path):
     import os
 

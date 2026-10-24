@@ -225,17 +225,28 @@ class StatusOutputMixin:
             return
         # Clear before emitting so a (swallowed) callback error can't leave a stale re-emit.
         self._pending_fallback_notice = None
+        live = getattr(self, "_fallback_notices_live", None)
+        if not isinstance(live, set):
+            live = set()
         for item in notice if isinstance(notice, list) else [notice]:
+            # Already sent as a plain status at switch time; repeating it on success
+            # would post the same chat line twice (#141025).
+            if item in live:
+                continue
             try:
                 self._emit_diagnostic_status(item)
             except Exception:
                 # One surface failure must not hide later switches from the same chain.
                 continue
+        live.clear()
 
     def _flush_status_buffer(self) -> None:
         """Emit buffered retry messages — call on terminal failure so the user sees what was tried."""
         # The buffered trace already carries the switch line; drop the one-shot notice.
         self._pending_fallback_notice = None
+        live = getattr(self, "_fallback_notices_live", None)
+        if isinstance(live, set):
+            live.clear()
         buf = getattr(self, "_retry_status_buffer", None)
         if not buf:
             return

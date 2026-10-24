@@ -1,30 +1,35 @@
 name: youtube-dock
 repo: https://github.com/metamindedu/hermes-youtube-dock
-sha: 56f3ddcabf766bc927b4ab9144916f00038c851a
+sha: 4a9f569021ee0740a18b71682587f91d2931edac
 title: YouTube Dock
 description: >-
-  Open your signed-in YouTube Home recommendations and Shorts in the existing
-  Hermes Desktop Browser beside your conversation, without pasting video URLs
-  or launching an external browser. Desktop-only SDK launcher; no agent tools,
-  hooks, middleware or API keys. Disclosure — explicit user clicks load YouTube
-  and its normal service/CDN requests in the native Browser; this plugin does
-  not read credentials, cookies, recommendations or watch history. No telemetry,
-  shell commands, backend service or self-updater. Uses the native preview
-  toggle (Hide for an already-open destination), not a dedicated PIP player.
+  Manual-setup beta for YouTube Home and Shorts in the existing Hermes Desktop
+  Browser. Manual mode defaults ON: copy an address, choose a Browser tab, paste
+  it there and pin it yourself. OFF restores the legacy preview toggle, which
+  can reuse an existing tab or hide its preview. No automatic tab management or
+  dedicated PIP. Disclosure — explicit copy clicks write a fixed YouTube URL to
+  the clipboard via the SDK; one preference boolean uses plugin-scoped storage.
+  User navigation loads YouTube and its normal service/CDN requests. No credential,
+  cookie, recommendation or watch-history reads, agent tools, hooks, middleware,
+  API keys, telemetry, shell commands, backend service or self-updater.
 maintainer: metamindedu
 tier: community
 category: desktop
 requires_hermes: ">=0.22.2"
-version: "1.0.0"
+version: "1.1.0-beta.1"
 docs_url: https://github.com/metamindedu/hermes-youtube-dock
 screenshots:
   - https://raw.githubusercontent.com/metamindedu/hermes-youtube-dock/56f3ddcabf766bc927b4ab9144916f00038c851a/docs/menu.png
 readme: true
 platforms: []
 known_issues:
+  - "Prerelease 1.1.0-beta.1: manual setup defaults ON, not automatic pinning. Stable catalog promotion remains a maintainer decision."
+  - "The plugin cannot verify user tab selection, pinning, navigation or playback; other preview opens can still reuse a pinned Browser."
+  - "Beta native checks cover ON/OFF across rescan and exact Home/Shorts clipboard results on Windows. Full restart, guest playback/split lifecycle, keyboard and cross-platform matrices were not rerun."
+  - "The screenshot is the historical 1.0.0 launcher; see README for the manual-beta workflow."
   - "Dedicated picture-in-picture is not included; uses the existing docked Browser."
   - "Google sign-in and playback restrictions still apply; no browser-cookie import."
-  - "Windows 11/Desktop 0.22.2 manually verified; macOS/Linux playback not manually tested."
+  - "Original 1.0.0 launcher: Windows 11/Desktop 0.22.2 manually verified; macOS/Linux playback not manually tested."
 capabilities:
   provides_tools: []
   provides_hooks: []

@@ -115,10 +115,16 @@ _ENV_DETECT_CACHE: dict[str, bool] = {}
 
 
 def _detect_kanban() -> bool:
-    # Mirror tools/kanban_tools.py: a dispatcher-spawned worker (env vars, but
-    # only when this execution OWNS the task — delegate children / in-process
-    # cron see the worker's vars) or a profile opted into the kanban toolset.
-    if os.getenv("HERMES_KANBAN_TASK") or os.getenv("HERMES_KANBAN_BOARD"):
+    # Mirror tools/kanban_tools.py::_visible: worker identity is
+    # HERMES_KANBAN_TASK (pinned by the dispatcher at spawn), and only when
+    # this execution OWNS the task — delegate children / in-process cron see
+    # the worker's vars. BOARD alone is NOT identity: cmd_chat pins
+    # HERMES_KANBAN_BOARD at every chat boot (#20074) so in-process tools and
+    # shelled-out `hermes kanban` calls agree on the board, so treating its
+    # presence as worker context leaked kanban-gated skills into every
+    # interactive session's index. A kanban toolset opt-in still opens the
+    # gate through the profile check below.
+    if os.getenv("HERMES_KANBAN_TASK"):
         try:
             from agent.delegation_context import is_dispatcher_owned_worker_context
             owned = is_dispatcher_owned_worker_context()

@@ -321,6 +321,46 @@ class TestRenderCommandTtsTemplate:
         )
         assert '"bob\'s voice"' in rendered
 
+    def test_no_second_pass_placeholder_substitution(self):
+        # placeholder value containing another placeholder must not be expanded
+        placeholders = {
+            "voice": "{output_path}",
+            "output_path": "/tmp/out.mp3",
+        }
+        rendered = _render_command_tts_template(
+            "tts --voice {voice} --out {output_path}",
+            placeholders,
+        )
+        assert "{output_path}" in rendered
+        assert "/tmp/out.mp3" in rendered
+
+    def test_sentinel_collision_resilience(self):
+        # sentinel strings in placeholder values must not collide or trigger injection
+        placeholders = {
+            "voice": "__HERMES_CMD_PLACEHOLDER_1__",
+            "output_path": "/tmp/pwned.mp3; echo PWNED",
+        }
+        rendered = _render_command_tts_template(
+            "tts --voice '{voice}' --out {output_path}",
+            placeholders,
+        )
+        assert "__HERMES_CMD_PLACEHOLDER_1__" in rendered
+        if os.name != "nt":
+            assert "echo PWNED" not in rendered.replace("'/tmp/pwned.mp3; echo PWNED'", "")
+
+    def test_substitutes_double_braced_placeholders(self):
+        placeholders = {"voice": "alice", "output_path": "/tmp/out.mp3"}
+        rendered = _render_command_tts_template(
+            "tts --voice {{voice}} --out {output_path}",
+            placeholders,
+        )
+        assert "tts --voice alice " in rendered
+        assert "/tmp/out.mp3" in rendered
+
+    def test_empty_template_and_empty_placeholders(self):
+        assert _render_command_tts_template("", {"voice": "alice"}) == ""
+        assert _render_command_tts_template("echo {{hi}}", {}) == "echo {hi}"
+
 
 # ---------------------------------------------------------------------------
 # _run_command_tts idle/progress timeout behavior

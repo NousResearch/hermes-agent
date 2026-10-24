@@ -57,6 +57,11 @@ def test_is_silence_narration_positive(content):
     assert _is_silence_narration(content) is True
 
 
+@pytest.mark.parametrize("content", NEGATIVE_CASES)
+def test_real_replies_are_not_silence_narration(content):
+    assert _is_silence_narration(content) is False
+
+
 def test_length_guard_rejects_long_strings():
     # Exactly 65 chars of dots — over the 64-char guard, so not treated as narration.
     assert _is_silence_narration("." * 65) is False

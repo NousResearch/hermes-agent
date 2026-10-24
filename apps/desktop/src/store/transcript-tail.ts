@@ -110,12 +110,38 @@ function resolveTailEntry(
   return matches.length === 1 ? matches[0] : undefined
 }
 
-function tailStateFromPage(page: TailPage, profile?: TranscriptProfileScope): TranscriptTailState {
+/**
+ * True when a page PROVES the backend honoured the `order: 'latest'` request.
+ *
+ * The server stamps the order it actually applied back onto
+ * `pagination.order`. A backend built before that param silently drops the
+ * unknown query param (FastAPI ignores it) and pages from the OLDEST row while
+ * still returning a `pagination` object — just without the echo. Adopting such
+ * a page as the tail shows only the transcript's first N rows, and it then arms
+ * `getOlderSessionMessages(N)` to prepend rows counted from the oldest end.
+ *
+ * A MISSING echo counts as "not honoured": a page that simply omits the field
+ * is indistinguishable from the legacy response, and the fallback for both (a
+ * full chronological read) is correct for either.
+ */
+export function pageHonorsLatestOrder(page: TailPage): boolean {
+  return page.pagination?.order === 'latest'
+}
+
+/** Paging state after `page`: the next older offset and whether older rows may exist. */
+export function tailStateFromPage(page: TailPage, profile?: TranscriptProfileScope): TranscriptTailState {
   const pagination = page.pagination
 
   // No pagination metadata is a legacy backend that ignored the paging query
   // and returned the full transcript: nothing is truncated.
   if (!pagination || pagination.limit <= 0) {
+    return { nextOffset: page.messages.length, possiblyTruncated: false, profile }
+  }
+
+  // A page with metadata but no honoured-order echo came from a backend that
+  // dropped `order` and paged from the OLDEST row (#92508). It is not a tail:
+  // arm no backfill, or "Show earlier" prepends the wrong prefix.
+  if (!pageHonorsLatestOrder(page)) {
     return { nextOffset: page.messages.length, possiblyTruncated: false, profile }
   }
 
@@ -177,7 +203,17 @@ export function recordTranscriptTail(
     return
   }
 
-  setTranscriptTailEntry(transcriptTailKey(storedSessionId, owner), tailStateFromPage(page, route))
+  const key = transcriptTailKey(storedSessionId, owner)
+  const existing = $transcriptTailBySessionId.get()[key]
+
+  // This runs before the active refresh decides whether the page is
+  // authoritative (use-background-sync). A transient zero-row read must not
+  // turn a known-truncated tail into "nothing earlier", or "Show earlier"
+  // disarms while the rows are still on the backend. Re-recording the kept
+  // entry (a no-op write) still bumps it to the MRU end.
+  const keepTruncated = page.messages.length === 0 && existing?.possiblyTruncated
+
+  setTranscriptTailEntry(key, keepTruncated ? existing : tailStateFromPage(page, route))
 }
 
 /** Advance the bookkeeping after one older backfill page landed. */

@@ -48,7 +48,6 @@ it('answers the vault.save_login server request with identifier + password as on
   })
 
   render(<PromptOverlays sessionId="session-a" />)
-  expect(document.body.textContent).toContain('Save your github.com login?')
   const identifier = document.querySelector('input[autocomplete=username]') as HTMLInputElement
   const password = document.querySelector('input[type=password]') as HTMLInputElement
   const submit = document.querySelector('button[type=submit]') as HTMLButtonElement

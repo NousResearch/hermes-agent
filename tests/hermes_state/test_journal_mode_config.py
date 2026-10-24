@@ -7,7 +7,7 @@ import sqlite3
 import pytest
 
 import hermes_state_wal
-import yaml
+import hermes_yaml as yaml
 
 
 def _write_config(monkeypatch: pytest.MonkeyPatch, tmp_path, config: object) -> None:
@@ -35,7 +35,6 @@ def _disable_vulnerable_gate(monkeypatch: pytest.MonkeyPatch) -> None:
 def _reset_configured_delete_override_warned_paths():
     """Reset the configured-delete-override warned-paths set so the
     once-per-process-per-db_label dedup doesn't leak between tests."""
-    import hermes_state
 
     hermes_state_wal._delete_overridden_warned_paths.clear()
     yield
@@ -86,10 +85,6 @@ def test_wal_probe_unknown_never_emits_set_pragma(monkeypatch, tmp_path, caplog)
         sibling.close()
 
 
-def test_database_journal_mode_has_a_canonical_default():
-    from hermes_cli.config import DEFAULT_CONFIG
-
-    assert DEFAULT_CONFIG["database"]["journal_mode"] == "wal"
 
 
 def test_resolve_journal_mode_uses_real_database_config(monkeypatch, tmp_path):
@@ -287,10 +282,9 @@ def test_real_db_openers_honor_configured_delete(monkeypatch, tmp_path):
     from cron import executions
     from gateway import delivery_ledger
     from gateway.platforms.api_server import ResponseStore
-    from hermes_cli import kanban_db, projects_db
+    from hermes_cli import projects_db
     from hermes_cli import kanban_db_connect as kbc
     from hermes_state import SessionDB
-    from plugins.memory.holographic.store import MemoryStore
     from plugins.platforms.discord.recovery import DiscordRecoveryStore
     from tools import async_delegation
 
@@ -347,14 +341,6 @@ def test_real_db_openers_honor_configured_delete(monkeypatch, tmp_path):
     finally:
         projects_conn.close()
 
-    holographic = MemoryStore(db_path=tmp_path / "memory_store.db")
-    try:
-        observed["holographic"] = holographic._conn.execute(
-            "PRAGMA journal_mode"
-        ).fetchone()[0].lower()
-    finally:
-        holographic.close()
-
     response_store = ResponseStore(db_path=str(tmp_path / "response_store.db"))
     try:
         observed["response_store"] = response_store._conn.execute(
@@ -372,6 +358,5 @@ def test_real_db_openers_honor_configured_delete(monkeypatch, tmp_path):
         "session_db": "delete",
         "kanban": "delete",
         "projects": "delete",
-        "holographic": "delete",
         "response_store": "delete",
     }

@@ -131,4 +131,47 @@ describe('JsonRpcGatewayClient heartbeat recovery', () => {
 
     expect(methods).toEqual(['client.capabilities'])
   })
+
+  // A hidden window's intensive wake-up throttling fires the 15 s heartbeat
+  // once a minute; the backend answers each ping at once, so the newest pong
+  // is ~60 s old at every tick. Only an UNANSWERED ping is peer silence.
+  it('keeps an answered socket open across throttled 60 s ticks and drops it once a ping goes unanswered', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', { OPEN: FakeSocket.OPEN })
+    const socket = new FakeSocket()
+
+    const client = new JsonRpcGatewayClient({
+      heartbeatDeadlineMs: 45,
+      heartbeatIntervalMs: 15,
+      socketFactory: () => socket as unknown as WebSocket
+    })
+
+    const connected = client.connect('ws://gateway.test/api/ws')
+    socket.emit('open')
+    await connected
+    socket.message({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: { heartbeat: true } } })
+
+    const pings = () =>
+      socket.sent
+        .map(text => JSON.parse(text) as { id: string; method: string })
+        .filter(f => f.method === 'gateway.ping')
+
+    // One throttled tick: the clock moves 60 with only the last interval run.
+    const throttledTick = async () => {
+      vi.setSystemTime(Date.now() + 45)
+      await vi.advanceTimersByTimeAsync(15)
+    }
+
+    for (let i = 0; i < 5; i++) {
+      await throttledTick()
+      socket.message({ id: pings().at(-1)!.id, jsonrpc: '2.0', result: { ok: true } })
+    }
+
+    expect(pings()).toHaveLength(5)
+    expect(client.connectionState).toBe('open')
+
+    await throttledTick()
+    await throttledTick()
+    expect(client.connectionState).toBe('closed')
+  })
 })

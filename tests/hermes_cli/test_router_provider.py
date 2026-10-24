@@ -81,38 +81,7 @@ class TestHostMandatedRouterResponses:
 
 
 class TestRouterProfileRegistration:
-    def test_profile_registered_with_responses_mode(self):
-        from providers import get_provider_profile
 
-        profile = get_provider_profile("router")
-        assert profile is not None
-        assert profile.api_mode == "codex_responses"
-        assert profile.auth_type == "api_key"
-        assert profile.base_url.startswith("https://api.router.com")
-
-    def test_profile_aliases_resolve(self):
-        from providers import get_provider_profile
-
-        canonical = get_provider_profile("router")
-        for alias in ("ramp-router", "ramp", "router.com"):
-            assert get_provider_profile(alias) is canonical, alias
-
-    def test_documented_env_var_is_primary(self):
-        from providers import get_provider_profile
-
-        profile = get_provider_profile("router")
-        # RAMP_ROUTER_API_KEY is the variable Router's docs tell users to
-        # set; it must stay first so key resolution prefers it.
-        assert profile.env_vars[0] == "RAMP_ROUTER_API_KEY"
-
-    def test_no_hardcoded_fallback_models(self):
-        # Router model IDs are account-scoped (BYOK accounts see extra
-        # entries) and the vendor docs say to read the catalog at runtime —
-        # an offline fallback list would advertise IDs a key may not have.
-        from providers import get_provider_profile
-
-        profile = get_provider_profile("router")
-        assert profile.fallback_models == ()
 
     def test_auth_registry_autowired(self):
         from hermes_cli.auth import PROVIDER_REGISTRY

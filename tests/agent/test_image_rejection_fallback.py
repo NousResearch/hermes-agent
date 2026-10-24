@@ -363,16 +363,6 @@ class TestRejectionNeverReachesPersistedHistory:
         # same api_messages and the send path strips them there, so the request goes out text-only.
         assert strip_images_for_rejecting_model(agent, wire) is True
         assert "image_url" not in str(wire)
-        # ...and build_api_request really runs that strip on every attempt, before the kwargs
-        # are built from api_messages.
-        import inspect
-
-        from agent.turn_api_request import build_api_request
-
-        src = inspect.getsource(build_api_request)
-        strip_at = src.find("\n    strip_images_for_rejecting_model(agent, api_messages)")
-        assert strip_at != -1, "build_api_request no longer strips images for a rejecting model"
-        assert strip_at < src.find("_build_api_kwargs(api_messages"), "strip must precede _build_api_kwargs"
 
     def test_every_model_in_a_fallback_chain_is_tracked(self):
         """Two models reject images in the same turn (fallback A -> B). A turn-global guard

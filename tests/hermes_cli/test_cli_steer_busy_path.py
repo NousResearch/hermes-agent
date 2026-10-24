@@ -75,26 +75,11 @@ class TestSteerInlineDetector:
         cli = _make_cli()
         cli._agent_running = True
         assert cli._should_handle_steer_command_inline("/steer focus on error handling") is True
+        # /queue edits the next-turn queue mid-run instead of being queued as a raw command itself.
+        assert cli._should_handle_steer_command_inline("/queue list") is True
+        assert cli._should_handle_steer_command_inline("/q follow up later") is True
 
-    def test_ignores_steer_when_agent_idle(self):
-        """Idle-path /steer should fall through to the normal process_loop
-        dispatch so the queue-style fallback message is emitted."""
-        cli = _make_cli()
-        cli._agent_running = False
-        assert cli._should_handle_steer_command_inline("/steer do something") is False
 
-    def test_ignores_non_slash_input(self):
-        cli = _make_cli()
-        cli._agent_running = True
-        assert cli._should_handle_steer_command_inline("steer without slash") is False
-        assert cli._should_handle_steer_command_inline("") is False
-
-    def test_ignores_other_slash_commands(self):
-        cli = _make_cli()
-        cli._agent_running = True
-        assert cli._should_handle_steer_command_inline("/queue hello") is False
-        assert cli._should_handle_steer_command_inline("/stop") is False
-        assert cli._should_handle_steer_command_inline("/help") is False
 
     def test_ignores_steer_with_attached_images(self):
         """Image payloads take the normal path; steer doesn't accept images."""

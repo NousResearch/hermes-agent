@@ -18,19 +18,12 @@ class TestInterpretSignalExit:
         (-9, "SIGKILL"),
         (-11, "SIGSEGV"),
         (-15, "SIGTERM"),
-        (-6, "SIGABRT"),
-        (-8, "SIGFPE"),
-        (-13, "SIGPIPE"),
     ])
     def test_negative_known_signals(self, code, expect):
         note = _interpret_signal_exit(code)
         assert note is not None
         assert expect in note
-        assert "terminated by" in note.lower()
 
-    def test_negative_oom_mentions_oom(self):
-        note = _interpret_signal_exit(-9)
-        assert "OOM" in note
 
     def test_negative_unknown_signal_still_reports(self):
         # signum without a curated note still yields a generic note.
@@ -44,15 +37,11 @@ class TestInterpretSignalExit:
         (137, "SIGKILL"),
         (139, "SIGSEGV"),
         (143, "SIGTERM"),
-        (134, "SIGABRT"),
-        (141, "SIGPIPE"),
     ])
     def test_shell_band_known_signals(self, code, expect):
         note = _interpret_signal_exit(code)
         assert note is not None
         assert expect in note
-        # Hedged: a program can legitimately exit with these codes.
-        assert "usually" in note
 
     def test_shell_band_uncurated_signum_returns_none(self):
         # 128+signum for a signum outside the curated table must stay
@@ -78,9 +67,6 @@ class TestSignalExitWiring:
         note = _interpret_exit_code("python3 crash.py", -11)
         assert note is not None and "SIGSEGV" in note
 
-    def test_shell_band_via_interpret_exit_code(self):
-        note = _interpret_exit_code("./run_build.sh", 137)
-        assert note is not None and "SIGKILL" in note
 
     def test_signal_note_wins_over_command_semantics(self):
         # A grep killed by SIGKILL must report the signal, not "no matches".

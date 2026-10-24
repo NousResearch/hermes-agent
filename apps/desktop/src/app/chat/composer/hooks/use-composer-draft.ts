@@ -1,11 +1,3 @@
-// Register the built-in draft providers with the suggestion bus (side-effect
-// import — the bus itself is provider-agnostic). The repair provider is
-// event-driven and registers through the gateway stream instead.
-import '@/store/suggestion-providers/cron'
-import '@/store/suggestion-providers/github'
-import '@/store/suggestion-providers/mcp'
-import '@/store/suggestion-providers/skill'
-
 import { useAui, useAuiState, useComposerRuntime } from '@assistant-ui/react'
 import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
@@ -18,14 +10,23 @@ import {
   adoptNewSessionDraft,
   type ComposerAttachment,
   type ComposerDraftSyncMode,
+  freshDraftScope,
+  isFreshDraftScope,
   onComposerDraftSyncRequest,
   reloadPersistedDrafts,
   stashSessionDraft,
   takeSessionDraft
 } from '@/store/composer'
+import {
+  type ComposerDraftRetry,
+  draftRetryTextMatches,
+  matchingDraftRetry,
+  readDraftRetry,
+  writeDraftRetry
+} from '@/store/composer-draft-retry'
 import { isBrowsingHistory } from '@/store/composer-input-history'
 import { $composerPopout } from '@/store/composer-popout'
-import { clearDraftSuggestions, sampleComposerDraft } from '@/store/composer-suggestions'
+import { migrateQueuedPrompts } from '@/store/composer-queue'
 
 import {
   cloneAttachments,
@@ -34,10 +35,12 @@ import {
   type QueueEditState
 } from '../composer-utils'
 import {
+  ackComposerInsert,
   type ComposerInsertMode,
   focusComposerInput,
   getActiveComposer,
   markActiveComposer,
+  onComposerDraftRequests,
   onComposerFocusRequest,
   onComposerInsertRefsRequest,
   onComposerInsertRequest,
@@ -45,8 +48,10 @@ import {
 } from '../focus'
 import { type InlineRefInput, insertInlineRefsIntoEditor } from '../inline-refs'
 import {
+  caretOffsetInEditor,
   composerPlainText,
   normalizeComposerEditorDom,
+  placeCaretAtOffset,
   placeCaretEnd,
   REF_RE,
   renderComposerContents
@@ -116,6 +121,8 @@ export function useComposerDraft({
 
   const editorRef = useRef<HTMLDivElement | null>(null)
   const draftRef = useRef('')
+  // The uncertain send this draft was restored from, while the text is still exactly that send.
+  const draftRetryRef = useRef<ComposerDraftRetry | undefined>(undefined)
   const pendingDraftPersistRef = useRef<{ scope: string | null; text: string } | null>(null)
   const draftPersistTimerRef = useRef<number | undefined>(undefined)
   const activeQueueSessionKeyRef = useRef(activeQueueSessionKey)
@@ -154,21 +161,38 @@ export function useComposerDraft({
   // restores run mid-focus, and the runtime sync only repaints an unfocused
   // editor — so the visible text never lags the store.
   const paintDraft = useCallback(
-    (next: string, focus = true) => {
+    (next: string, focus = true, preserveFocusedCaret = false) => {
       draftRef.current = next
       setComposerText(next)
 
       const editor = editorRef.current
 
       if (editor) {
+        // A durable-scope rekey can repaint the SAME unsent draft while this
+        // editor remains the browser's active element and another composer
+        // temporarily owns the focus-routing bus. Preserve that native caret
+        // across the text-node replacement, but only for an unchanged draft:
+        // programmatic inserts/restores keep their existing "caret to end"
+        // semantics.
+        const caretOffset =
+          preserveFocusedCaret &&
+          visibleRef.current &&
+          document.activeElement === editor &&
+          !isElementInHiddenPane(editor) &&
+          composerPlainText(editor) === next
+            ? caretOffsetInEditor(editor)
+            : null
+
         renderComposerContents(editor, next, { trailingCommitted: true })
 
-        // Selection is document-global: a keep-alive composer in a hidden tab
-        // may repaint when its background session updates, but moving its caret
-        // here steals the selection from the visible composer without changing
-        // document.activeElement. The foreground then still looks focused while
-        // printable keydowns produce no input.
-        if (visibleRef.current && getActiveComposer() === target && !isElementInHiddenPane(editor)) {
+        if (caretOffset !== null) {
+          placeCaretAtOffset(editor, Math.min(caretOffset, composerPlainText(editor).length))
+        } else if (visibleRef.current && getActiveComposer() === target && !isElementInHiddenPane(editor)) {
+          // Selection is document-global: a keep-alive composer in a hidden tab
+          // may repaint when its background session updates, but moving its caret
+          // here steals the selection from the visible composer without changing
+          // document.activeElement. The foreground then still looks focused while
+          // printable keydowns produce no input.
           placeCaretEnd(editor)
         }
       }
@@ -181,27 +205,29 @@ export function useComposerDraft({
   )
 
   const appendExternalText = useCallback(
-    (text: string, mode: ComposerInsertMode) => {
+    (text: string, mode: ComposerInsertMode): boolean => {
       const value = text.trim()
 
       if (!value) {
-        return
+        return false
       }
 
       // 'prefix' puts the value at the START of the draft — slash commands
-      // (the skill-suggestion pill) only route when they lead the message.
+      // only route when they lead the message.
       if (mode === 'prefix') {
         const rest = draftRef.current.trimStart()
 
         paintDraft(`${value} ${rest}`.trimEnd())
 
-        return
+        return true
       }
 
       const base = mode === 'inline' ? draftRef.current.trimEnd() : draftRef.current
       const sep = mode === 'inline' ? (base ? ' ' : '') : base && !base.endsWith('\n') ? '\n\n' : ''
 
       paintDraft(`${base}${sep}${value}`)
+
+      return true
     },
     [paintDraft]
   )
@@ -260,9 +286,11 @@ export function useComposerDraft({
       setFocusRequestId(id => id + 1)
     })
 
-    const offInsert = onComposerInsertRequest(({ mode, target: requested, text }) => {
+    const offInsert = onComposerInsertRequest(({ mode, target: requested, text, token }) => {
       if (requested === target) {
-        appendExternalText(text, mode)
+        // A tokened insert came from the plugin SDK — echo whether the text
+        // actually landed, so its promise never settles on a silent no-op.
+        ackComposerInsert(token, appendExternalText(text, mode))
       }
     })
 
@@ -275,7 +303,81 @@ export function useComposerDraft({
   const stashAt = (scope: string | null, text = draftRef.current, attachments = attachmentScope.$attachments.get()) =>
     stashSessionDraft(scope, text, attachments)
 
-  const loadIntoComposer = (text: string, attachments: ComposerAttachment[]) => {
+  const sameDraftScope = (a: string | null | undefined, b: string | null | undefined) =>
+    (isFreshDraftScope(a) || !a ? null : a) === (isFreshDraftScope(b) || !b ? null : b)
+
+  // A rejected or unconfirmed send is restored with its identity, so Enter on that exact draft is
+  // the explicit retry. Recorded per draft scope (it survives a reload with the draft text).
+  const rememberDraftRetry = (scope: string | null, retry: ComposerDraftRetry) => {
+    writeDraftRetry(scope, retry)
+
+    if (sameDraftScope(scope, draftScopeRef.current)) {
+      draftRetryRef.current = retry
+    }
+  }
+
+  // The identity a send of exactly this draft retries, if any. Spent by the send either way: a
+  // rejection restores it again, and an accepted send leaves nothing to retry.
+  const takeDraftRetry = (text: string, attachments: ComposerAttachment[]) => {
+    const retry = matchingDraftRetry(draftRetryRef.current, text, attachments)
+    draftRetryRef.current = undefined
+
+    if (retry) {
+      writeDraftRetry(draftScopeRef.current, undefined)
+    }
+
+    return retry
+  }
+
+  // Draft read/write bus (plugin SDK `host.composer`): answer for the sessions
+  // this composer owns — the runtime id, the queue/stored key (tiles run with
+  // sessionId = their stored id; the primary's queue key is the resolved
+  // stored id), so a plugin addressing either identity reaches this surface.
+  // Reads answer the live DOM text (the stash lags by the persist debounce);
+  // writes go through paintDraft — the app's own programmatic-draft path, so
+  // `@`-ref / `/` tokens hydrate as chips like official paste.
+  useEffect(() => {
+    if (inputDisabled) {
+      return undefined
+    }
+
+    return onComposerDraftRequests(
+      {
+        getIds: () => {
+          const ids = [sessionIdRef.current, activeQueueSessionKeyRef.current].filter((id): id is string => Boolean(id))
+
+          // A surface with no session yet IS the new-chat draft (the stash keys
+          // it by the fresh-draft key); once one opens, the new-chat draft
+          // belongs elsewhere.
+          return ids.length ? ids : [freshDraftScope()]
+        },
+        isActive: () => getActiveComposer() === target
+      },
+      {
+        read: () => {
+          const editor = editorRef.current
+
+          return editor ? composerPlainText(editor) : draftRef.current
+        },
+        write: text => {
+          const editor = editorRef.current
+
+          // Hidden keep-alive panes still answer: multi-session plugins route
+          // to a specific session's composer, and paintDraft never steals the
+          // caret of a non-visible surface.
+          if (!editor || !editor.isConnected) {
+            return false
+          }
+
+          paintDraft(text)
+
+          return true
+        }
+      }
+    )
+  }, [inputDisabled, paintDraft, target])
+
+  const loadIntoComposer = (text: string, attachments: ComposerAttachment[], preserveFocusedCaret = false) => {
     // Diagnostic breadcrumb for #59305-class reports: identifies WHAT kind of
     // state got restored into the composer (session switch, queue-edit
     // restore, history browse) without logging any raw content. REF_RE has the
@@ -292,7 +394,7 @@ export function useComposerDraft({
     }
 
     attachmentScope.$attachments.set(cloneAttachments(attachments))
-    paintDraft(text, false)
+    paintDraft(text, false, preserveFocusedCaret)
   }
 
   const clearDraft = useCallback(() => {
@@ -348,9 +450,6 @@ export function useComposerDraft({
     const sync = () => {
       const text = composerRuntime.getState().text
       draftRef.current = text
-      // Composer suggestion pills for THIS session's draft (debounced +
-      // change-gated in the bus — this is just a timer reset).
-      sampleComposerDraft(sessionIdRef.current ?? null, text)
 
       const editor = editorRef.current
 
@@ -363,6 +462,13 @@ export function useComposerDraft({
       }
 
       const scope = draftScopeRef.current
+
+      // An edited (or cleared) restored draft is a new message: it no longer retries the old send.
+      if (draftRetryRef.current && !draftRetryTextMatches(draftRetryRef.current, text)) {
+        draftRetryRef.current = undefined
+        writeDraftRetry(scope, undefined)
+      }
+
       const entry = { scope, text }
       pendingDraftPersistRef.current = entry
       window.clearTimeout(draftPersistTimerRef.current)
@@ -456,15 +562,22 @@ export function useComposerDraft({
     window.clearTimeout(draftPersistTimerRef.current)
     pendingDraftPersistRef.current = null
 
-    // A new chat writes to the shared pre-session bucket until its stored id
-    // arrives; the assigning site announces that id (store/composer.ts). Move
-    // the bucket at this handoff — after the outgoing cleanup stashed the live
-    // editor text under it, before the incoming scope is restored — so the
-    // text the user kept typing follows the chat instead of vanishing.
-    // Keyed on the scope alone: the runtime id can land a resume later than
-    // the route flips the scope, so it is not a usable signal here.
-    if (!draftScopeRef.current && activeQueueSessionKey) {
-      adoptNewSessionDraft(activeQueueSessionKey)
+    // A new chat writes to its own pre-session bucket (the per-lifecycle fresh
+    // key) until its stored id arrives; the assigning site announces that id
+    // (store/composer.ts). Move the bucket at this handoff — after the outgoing
+    // cleanup stashed the live editor text under it, before the incoming scope
+    // is restored — so the text the user kept typing follows the chat instead
+    // of vanishing. Keyed on the scope alone: the runtime id can land a resume
+    // later than the route flips the scope, so it is not a usable signal here.
+    if ((isFreshDraftScope(draftScopeRef.current) || !draftScopeRef.current) && activeQueueSessionKey) {
+      const freshKey = draftScopeRef.current || freshDraftScope()
+
+      // A follow-up queued while session.create was in flight sits under the
+      // fresh key; it belongs to this chat too. The queue re-key never moves
+      // fresh → stored (#139190), so only this announced handoff does.
+      if (adoptNewSessionDraft(activeQueueSessionKey)) {
+        migrateQueuedPrompts(freshKey, activeQueueSessionKey)
+      }
     } else if (!activeQueueSessionKey) {
       // The reverse handoff: a session the user was typing into turned out
       // to be gone and the window dropped to a fresh draft (#111868). The
@@ -476,9 +589,10 @@ export function useComposerDraft({
     }
 
     draftScopeRef.current = activeQueueSessionKey
+    draftRetryRef.current = readDraftRetry(activeQueueSessionKey)
 
     const { attachments, text } = takeSessionDraft(activeQueueSessionKey)
-    loadIntoComposer(text, attachments)
+    loadIntoComposer(text, attachments, true)
 
     return () => {
       const latestText = syncDraftFromEditor()
@@ -489,12 +603,6 @@ export function useComposerDraft({
       } else if (!isBrowsingHistory(sessionId)) {
         stashAt(activeQueueSessionKey, latestText)
       }
-
-      // Withdraw the outgoing session's draft suggestions (and any pending
-      // sample timer). The incoming session re-earns its own from the draft
-      // restore above — without this a leaving session's "Add GitHub" pill
-      // lingers in the map and re-appears stale on the way back.
-      clearDraftSuggestions(sessionIdRef.current)
     }
   }, [activeQueueSessionKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -513,6 +621,7 @@ export function useComposerDraft({
     }
 
     reloadPersistedDrafts()
+    draftRetryRef.current = readDraftRetry(draftScopeRef.current)
     const stashed = takeSessionDraft(draftScopeRef.current)
     loadIntoComposer(stashed.text, stashed.attachments)
   }
@@ -558,6 +667,7 @@ export function useComposerDraft({
   return {
     activeQueueSessionKeyRef,
     clearDraft,
+    draftScopeRef,
     draftRef,
     editorRef,
     focusInput,
@@ -567,10 +677,12 @@ export function useComposerDraft({
     isHelpHint,
     isSteerableText,
     loadIntoComposer,
+    rememberDraftRetry,
     requestMainFocus,
     sessionIdRef,
     setComposerText,
     stashAt,
-    syncDraftFromEditor
+    syncDraftFromEditor,
+    takeDraftRetry
   }
 }

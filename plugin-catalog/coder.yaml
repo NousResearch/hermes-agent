@@ -1,0 +1,18 @@
+name: coder
+repo: https://github.com/perqin/hermes-plugin-coder
+sha: 98e023da379961702fb0ce0cf03b983176039321
+version: "0.1.0"
+description: "Run Hermes terminal commands in an existing remote Coder workspace. Disclosure — runs terminal commands inside your Coder workspace at CODER_URL using CODER_API_KEY; starts a stopped workspace automatically; forwards only the env vars you list in TERMINAL_CODER_FORWARD_ENV."
+maintainer: perqin
+tier: community
+category: tools
+docs_url: https://github.com/perqin/hermes-plugin-coder#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - CODER_URL
+    - CODER_API_KEY
+    - CODER_WORKSPACE

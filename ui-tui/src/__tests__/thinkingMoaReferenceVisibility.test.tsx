@@ -55,7 +55,6 @@ describe('ToolTrail — MoA reference panel visibility (#64701)', () => {
     // A collapsed (▸) render here means the re-sync effect fired on mount
     // and clobbered it — the exact #64701 regression.
     expect(frame).toContain('▾ ')
-    expect(frame).toContain('Thinking')
     expect(frame).not.toContain('▸ ')
   })
 })

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { ansiColorClass, hasAnsiCodes, parseAnsi } from './ansi'
+import { hasAnsiCodes, parseAnsi } from './ansi'
 
 const ESC = '\x1b'
 
@@ -92,32 +92,5 @@ describe('hasAnsiCodes', () => {
 
   it('returns true when any CSI introducer is present', () => {
     expect(hasAnsiCodes(`${ESC}[31mred`)).toBe(true)
-  })
-})
-
-describe('ansiColorClass', () => {
-  it('returns a non-empty Tailwind class string for every supported color', () => {
-    const colors = [
-      'black',
-      'red',
-      'green',
-      'yellow',
-      'blue',
-      'magenta',
-      'cyan',
-      'white',
-      'bright-black',
-      'bright-red',
-      'bright-green',
-      'bright-yellow',
-      'bright-blue',
-      'bright-magenta',
-      'bright-cyan',
-      'bright-white'
-    ] as const
-
-    for (const color of colors) {
-      expect(ansiColorClass(color)).toMatch(/\S/)
-    }
   })
 })

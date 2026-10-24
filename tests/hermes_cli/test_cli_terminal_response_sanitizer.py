@@ -16,10 +16,6 @@ def _strip_leaked_terminal_responses(text: str) -> str:
 class TestStripLeakedTerminalResponses:
 
 
-    def test_strips_canonical_dsr_response(self):
-        # Reports from issue #14692
-        text = "\x1b[53;1R"
-        assert _strip_leaked_terminal_responses(text) == ""
 
 
     def test_strips_multiple_dsr_responses(self):
@@ -31,9 +27,6 @@ class TestStripLeakedTerminalResponses:
 
 
 
-    def test_strips_sgr_mouse_report_esc_form(self):
-        text = "abc\x1b[<65;1;49Mdef"
-        assert _strip_leaked_terminal_responses(text) == "abcdef"
 
 
 

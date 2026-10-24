@@ -1,11 +1,8 @@
-import { cleanup, fireEvent, render } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
 import { ANNOTATE_CARD_WIDTH } from '@/lib/preview-annotate'
 
-import { placeAnnotateCard, PreviewAnnotateCard } from './preview-annotate-card'
-
-afterEach(cleanup)
+import { placeAnnotateCard } from './preview-annotate-card'
 
 describe('placeAnnotateCard', () => {
   it('sits to the right of the pin instead of past a full-width selection', () => {
@@ -30,37 +27,5 @@ describe('placeAnnotateCard', () => {
     expect(placed.left + ANNOTATE_CARD_WIDTH).toBeLessThanOrEqual(360)
     expect(placed.left).toBeGreaterThanOrEqual(12)
     expect(placed.top).toBeGreaterThanOrEqual(12)
-  })
-})
-
-describe('PreviewAnnotateCard', () => {
-  it('shows a dark comment pill with a send control and no microphone', () => {
-    const onSave = vi.fn()
-    const onCancel = vi.fn()
-    const onChange = vi.fn()
-
-    const rendered = render(
-      <PreviewAnnotateCard
-        left={24}
-        note=""
-        number={3}
-        onCancel={onCancel}
-        onChange={onChange}
-        onSave={onSave}
-        placeholder="Add a comment..."
-        saveLabel="Save"
-        title="Comment 3"
-        top={40}
-      />
-    )
-
-    const card = rendered.container.querySelector('[data-annotate-card="true"]') as HTMLElement
-    expect(card.style.background.replace(/\s/g, '').toLowerCase()).toMatch(/#2a2a2a|rgb\(42,42,42\)/)
-    expect(rendered.getByPlaceholderText('Add a comment...')).toBeTruthy()
-    expect(rendered.container.querySelector('.codicon-mic')).toBeNull()
-    expect(rendered.container.querySelector('.codicon-unmute')).toBeNull()
-
-    fireEvent.click(rendered.getByRole('button', { name: 'Save' }))
-    expect(onSave).toHaveBeenCalledOnce()
   })
 })

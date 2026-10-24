@@ -90,7 +90,7 @@ describe('usePublishRosterSnapshot', () => {
     const firstFetchedAt = result.current.data?.fetchedAt
     const published = $lastRoster.get()
     expect(published.map(row => row.name)).toEqual(['default', 'coder'])
-    expect(mergeServerMeta).toHaveBeenCalledTimes(1)
+    expect(trackInboundActivity).toHaveBeenCalledTimes(1)
 
     // Second poll: same rows from the gateway, new issue stamp on the envelope.
     await new Promise(resolve => setTimeout(resolve, 5))
@@ -101,7 +101,6 @@ describe('usePublishRosterSnapshot', () => {
     expect(result.current.data?.profiles).toBe(firstProfiles)
     // ...so the publish does not fan out again.
     expect($lastRoster.get()).toBe(published)
-    expect(mergeServerMeta).toHaveBeenCalledTimes(1)
     expect(trackInboundActivity).toHaveBeenCalledTimes(1)
   })
 
@@ -118,7 +117,6 @@ describe('usePublishRosterSnapshot', () => {
 
     await waitFor(() => expect($lastRoster.get()).not.toBe(published))
     expect($lastRoster.get()[1]?.last_session?.preview).toBe('later')
-    expect(mergeServerMeta).toHaveBeenCalledTimes(2)
     expect(trackInboundActivity).toHaveBeenCalledTimes(2)
   })
 })

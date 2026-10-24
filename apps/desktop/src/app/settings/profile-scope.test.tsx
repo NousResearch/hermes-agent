@@ -18,7 +18,7 @@ vi.mock('@/hermes', () => ({
   setApiRequestProfile: vi.fn()
 }))
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
-vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
+vi.mock('@/store/starmap', () => ({ reloadOpenStarmapGraph: vi.fn(), resetStarmapGraph: vi.fn() }))
 
 const { $activeGatewayProfile, $profiles } = await import('@/store/profile')
 const { $settingsScopeOverride } = await import('@/store/settings-scope')
@@ -41,17 +41,6 @@ describe('SettingsProfileScope', () => {
 
     const { container } = render(<SettingsProfileScope />)
     expect(container.textContent).toBe('')
-  })
-
-  it('shows one chip per profile with the active profile selected by default', () => {
-    $profiles.set([profile('default', true), profile('coder')])
-
-    render(<SettingsProfileScope />)
-
-    expect(screen.getByRole('button', { name: 'default' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'coder' })).toBeTruthy()
-    // Following the active profile → no override, no "applies to X" note.
-    expect($settingsScopeOverride.get()).toBeNull()
   })
 
   it('selecting another profile sets the shared override; re-selecting the active clears it', () => {

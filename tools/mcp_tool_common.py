@@ -122,11 +122,11 @@ _FALSE_WORDS = frozenset({"false", "0", "no", "off"})
 
 
 def _parse_boolish(value: Any, default: bool = True) -> bool:
-    """Parse a bool-like config value with safe fallback."""
+    """Parse a bool-like config value with safe fallback (YAML ``0``/``1`` are numbers, not words)."""
     if value is None:
         return default
-    if isinstance(value, bool):
-        return value
+    if isinstance(value, (bool, int, float)):
+        return bool(value)
     if isinstance(value, str):
         lowered = value.strip().lower()
         if lowered in _TRUE_WORDS:
@@ -135,6 +135,13 @@ def _parse_boolish(value: Any, default: bool = True) -> bool:
             return False
     logger.warning("MCP config expected a boolean-ish value, got %r; using default=%s", value, default)
     return default
+
+
+def mcp_server_enabled(cfg: dict) -> bool:
+    """Whether ``mcp_servers.<name>`` is on. The ONE reader of the ``enabled`` key: the MCP client,
+    the toolset resolver, the profile editor, and every list/status surface call it, so a value
+    can never be on for one surface and off for another. Absent, ``null`` or unparseable = on."""
+    return _parse_boolish(cfg.get("enabled", True), default=True)
 
 
 def _get_lifecycle_seconds(config: dict, key: str) -> Optional[float]:

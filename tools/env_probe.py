@@ -34,7 +34,7 @@ _WAIT_ALREADY_TIMED_OUT = False  # after one full wait, later callers only peek
 # Keep in sync with agent/prompt_builder.py:_REMOTE_TERMINAL_BACKENDS.
 # Duplicated rather than imported to avoid a circular import.
 _REMOTE_BACKENDS = frozenset({
-    "docker", "singularity", "modal", "daytona", "ssh", "managed_modal",
+    "docker", "modal", "daytona", "ssh", "managed_modal",
     "vercel_sandbox",
 })
 
@@ -245,11 +245,3 @@ def _reset_cache_for_tests() -> None:
         _PROBE_THREAD = None
         _PROBE_GEN += 1
         _WAIT_ALREADY_TIMED_OUT = False
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import os  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

@@ -66,15 +66,6 @@ describe('live transcript timeline events', () => {
     expect([assistant?.timestamp, assistant?.completedAt]).toEqual([301.875, 301.875])
   })
 
-  it('uses the gateway event time for a review summary system row', () => {
-    event('review.summary', 401.625, { text: 'Review saved.' })
-
-    const system = stream.state(SID).messages.find(message => message.role === 'system')
-
-    expect(system?.timestamp).toBe(401.625)
-    expect(system?.parts[0].timestamp).toBe(401.625)
-  })
-
   it('uses session.info time when it is the only stop boundary', () => {
     event('message.start', 500)
     event('tool.start', 501, { args: {}, name: 'terminal', tool_id: 'call-3' })

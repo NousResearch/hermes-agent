@@ -14,13 +14,15 @@ Sidebar is updated to nest all per-skill pages under Skills → Bundled / Option
 
 from __future__ import annotations
 import re
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 REPO = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(REPO))
+import hermes_yaml as yaml
+
 DOCS = REPO / "website" / "docs"
 SKILLS_PAGES = DOCS / "user-guide" / "skills"
 ZH_HANS_DOCS = REPO / "website" / "i18n" / "zh-Hans" / "docusaurus-plugin-content-docs" / "current"
@@ -245,7 +247,7 @@ def rewrite_relative_links(body: str, meta: dict[str, Any]) -> str:
         if url.startswith("mailto:"):
             return m.group(0)
         # Strip leading ./
-        url_clean = url[2:] if url.startswith("./") else url
+        url_clean = url.removeprefix("./")
         full = f"{base}/{url_clean}"
         return f"[{text}]({full})"
 
@@ -338,7 +340,6 @@ def render_skill_page(
     if len(short_desc) > 160:
         short_desc = short_desc[:157] + "..."
 
-    title = f"{name}"
     # Heuristic nicer title from name
     display_name = name.replace("-", " ").replace("_", " ").title()
 
@@ -467,8 +468,8 @@ def build_catalog_md_bundled(entries: list[tuple[dict[str, Any], dict[str, Any]]
         if meta["source_kind"] != "bundled":
             continue
         by_cat[meta["category"]].append((meta, parsed))
-    for k in by_cat:
-        by_cat[k].sort(key=lambda e: e[0]["slug"])
+    for entries in by_cat.values():
+        entries.sort(key=lambda e: e[0]["slug"])
 
     lines = [
         "---",
@@ -513,8 +514,8 @@ def build_catalog_md_optional(entries: list[tuple[dict[str, Any], dict[str, Any]
         if meta["source_kind"] != "optional":
             continue
         by_cat[meta["category"]].append((meta, parsed))
-    for k in by_cat:
-        by_cat[k].sort(key=lambda e: e[0]["slug"])
+    for entries in by_cat.values():
+        entries.sort(key=lambda e: e[0]["slug"])
 
     lines = [
         "---",
@@ -699,14 +700,6 @@ def write_sidebar(entries):
     sidebar_path = REPO / "website" / "sidebars.ts"
     text = sidebar_path.read_text(encoding="utf-8")
     # Replace the existing Skills block.
-    pattern = re.compile(
-        r"        \{\n"
-        r"          type: 'category',\n"
-        r"          label: 'Skills',\n"
-        r"(?:.*?\n)*?"
-        r"        \},\n",
-        re.DOTALL,
-    )
     # Safer: match the exact current block shape.
     old_block_start = "        {\n          type: 'category',\n          label: 'Skills',\n"
     i = text.find(old_block_start)

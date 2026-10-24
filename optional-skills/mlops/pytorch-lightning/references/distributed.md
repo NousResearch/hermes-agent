@@ -207,7 +207,7 @@ trainer.fit(model, train_loader)
 
 **SLURM job script**:
 ```bash
-#!/bin/bash
+#!/usr/bin/env bash
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=8
 #SBATCH --gres=gpu:8

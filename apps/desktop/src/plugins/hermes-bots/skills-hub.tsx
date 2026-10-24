@@ -6,7 +6,7 @@
  * it reaches back into neither.
  */
 
-import { Button, host, Input } from '@hermes/plugin-sdk'
+import { Button, Codicon, host, Input, useI18n } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
@@ -21,7 +21,17 @@ import type { RosterRow } from './types'
 // checklist above gains the row. Search-box fallback kept for offline use.
 
 const HUB_ORIGIN = 'https://hermes-agent.nousresearch.com'
+const FALLBACK_HUB_ORIGIN = 'https://nousresearch.github.io'
 const HUB_PICKER_URL = HUB_ORIGIN + '/docs/skills?embed=picker'
+const FALLBACK_HUB_PICKER_URL = FALLBACK_HUB_ORIGIN + '/hermes-agent/docs/skills?embed=picker'
+// A WAF-blocked or unreachable docs host must not delay the fallback longer
+// than this — the probe only decides which origin to embed, never blocks it.
+const HUB_PROBE_TIMEOUT_MS = 8_000
+
+function isHubOrigin(origin: string) {
+  return origin === HUB_ORIGIN || origin === FALLBACK_HUB_ORIGIN
+}
+
 /** One `skills.manage action=search` hit. */
 interface HubSkillResult {
   description?: string
@@ -35,14 +45,50 @@ interface HubSkillsSectionProps {
 
 export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
   const b = useBots()
+  const { t } = useI18n()
+  const h = t.skills.hub
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<HubSkillResult[] | null>(null)
   const [searching, setSearching] = useState(false)
   const [installing, setInstalling] = useState<null | string>(null)
   const [installed, setInstalled] = useState<Record<string, boolean>>({})
   const [browseHub, setBrowseHub] = useState(false)
+  const [hubPickerUrl, setHubPickerUrl] = useState(HUB_PICKER_URL)
   const installRef = useRef<((name: string, displayName?: string) => Promise<void>) | null>(null)
   const frameRef = useRef<HTMLIFrameElement | null>(null)
+
+  // Vercel's WAF denies some residential IP ranges for the whole docs domain,
+  // leaving the pane on a block page (#118203). The equivalent GitHub Pages
+  // deployment serves the same picker, so probe the primary before each
+  // browse session and fall back when it is unreachable or refuses us. The
+  // probe carries its own deadline — a hanging connection must not stall the
+  // fallback.
+  useEffect(() => {
+    if (!browseHub) {
+      return undefined
+    }
+
+    let mounted = true
+
+    void fetch(HUB_PICKER_URL, {
+      method: 'HEAD',
+      signal: AbortSignal.timeout(HUB_PROBE_TIMEOUT_MS)
+    })
+      .then(response => {
+        if (mounted && !response.ok) {
+          setHubPickerUrl(FALLBACK_HUB_PICKER_URL)
+        }
+      })
+      .catch(() => {
+        if (mounted) {
+          setHubPickerUrl(FALLBACK_HUB_PICKER_URL)
+        }
+      })
+
+    return () => {
+      mounted = false
+    }
+  }, [browseHub])
 
   // Picker messages from the embedded hub page. Origin- AND source-checked —
   // only OUR frame may ask for an install (the hub origin alone would let any
@@ -54,7 +100,7 @@ export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
     }
 
     const onMessage = (event: MessageEvent) => {
-      if (event.origin !== HUB_ORIGIN) {
+      if (!isHubOrigin(event.origin)) {
         return
       }
 
@@ -136,14 +182,14 @@ export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
       }))
       host.notify({
         kind: 'success',
-        message: `Skill "${label}" installed`
+        message: b.tools.installed(label)
       })
 
       if (typeof onInstalled === 'function') {
         onInstalled(label)
       }
     } catch (err) {
-      host.notifyError(err, `Installing "${label}" failed`)
+      host.notifyError(err, b.tools.installFailed(label))
     } finally {
       setInstalling(null)
     }
@@ -154,14 +200,14 @@ export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
   return (
     <div className="grid gap-1.5 border-t border-(--ui-stroke-secondary) pt-2">
       <div className="flex items-baseline justify-between gap-2">
-        <div className="text-[0.7rem] font-medium text-(--ui-text-secondary)">Skills Hub</div>
+        <div className="text-[0.7rem] font-medium text-(--ui-text-secondary)">{b.tools.skillsHub}</div>
         <Button
           className="text-[0.65rem] text-(--ui-text-quaternary) hover:text-(--ui-text-secondary)"
           onClick={() => setBrowseHub(v => !v)}
           size="inline"
           variant="text"
         >
-          {browseHub ? 'hide the hub browser' : 'browse the full hub ▾'}
+          {browseHub ? h.pickerHide : h.pickerBrowse}
         </Button>
       </div>
       {browseHub ? (
@@ -181,9 +227,19 @@ export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
             }}
           >
             <iframe
+              // The hub page needs three capabilities beyond the bare sandbox
+              // posture (#91612): same-origin so its own routing and storage
+              // work, popups so its external links (docs, GitHub, Discord)
+              // reach the OS browser — pinned by the main-process
+              // window-open-policy delegation, never a popup window — and
+              // clipboard-write for the Copy controls, granted only to the
+              // hub origins by the session permission handlers. The
+              // will-frame-navigate guard in main keeps this frame pinned to
+              // the picker URL.
+              allow="clipboard-write"
               ref={frameRef}
-              sandbox="allow-scripts allow-same-origin"
-              src={HUB_PICKER_URL}
+              sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+              src={hubPickerUrl}
               style={{
                 width: '133.34%',
                 height: '133.34%',
@@ -196,9 +252,7 @@ export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
             />
           </div>
           <div className="px-1 text-[0.65rem] leading-4 text-(--ui-text-quaternary)">
-            {installing
-              ? `Installing "${installing}"…`
-              : 'Hit "+ Add to this Agent" on any skill — it installs and appears in the list above. Drag the corner to resize.'}
+            {installing ? h.installStarted(installing) : `${h.pickerHint} ${b.tools.resizeHint}`}
           </div>
         </div>
       ) : null}
@@ -221,16 +275,12 @@ export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
           value={query}
         />
         <Button disabled={searching || !query.trim()} onClick={() => void search()} size="sm" variant="secondary">
-          {searching ? 'Searching…' : 'Search'}
+          {searching ? h.searching : h.search}
         </Button>
       </div>
-      {searching ? (
-        <div className="px-1 text-[0.65rem] text-(--ui-text-quaternary)">
-          Searching community + well-known sources — can take ~10s…
-        </div>
-      ) : null}
+      {searching ? <div className="px-1 text-[0.65rem] text-(--ui-text-quaternary)">{b.tools.searchHint}</div> : null}
       {results === null ? null : results.length === 0 ? (
-        <div className="px-1 py-1.5 text-[0.7rem] text-(--ui-text-quaternary)">No hub skills matched.</div>
+        <div className="px-1 py-1.5 text-[0.7rem] text-(--ui-text-quaternary)">{h.noResults}</div>
       ) : (
         <div
           className="overflow-y-auto overscroll-contain"
@@ -248,10 +298,13 @@ export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
                   ) : null}
                 </div>
                 {installed[r.name] ? (
-                  <span className="shrink-0 text-[0.65rem] text-(--ui-text-tertiary)">✓ added</span>
+                  <span className="flex shrink-0 items-center gap-0.5 text-[0.65rem] text-(--ui-text-tertiary)">
+                    <Codicon name="check" size="0.65rem" />
+                    {h.installed}
+                  </span>
                 ) : (
                   <Button
-                    aria-label={`Install "${r.name}" and add it to the list above`}
+                    aria-label={b.tools.installHint(r.name)}
                     className="shrink-0 px-2 font-semibold"
                     disabled={installing !== null}
                     onClick={() => void install(r.name)}

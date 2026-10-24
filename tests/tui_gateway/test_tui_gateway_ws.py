@@ -1,11 +1,12 @@
 import asyncio
 import concurrent.futures
+import contextlib
 import datetime
 import json
 import threading
-import time
 
-from hermes_cli import mcp_startup
+import pytest
+
 from tui_gateway import server
 from tui_gateway import ws as ws_mod
 
@@ -123,35 +124,6 @@ def test_ws_disconnect_releases_wake_word_owner(monkeypatch):
 
 
 
-def test_ws_starts_mcp_discovery_before_ready(monkeypatch):
-    import tui_gateway.entry as entry
-
-    calls = []
-    events = []
-
-    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
-    monkeypatch.setattr(entry, "ensure_mcp_discovery_started", lambda: calls.append("mcp"))
-
-    class FakeWS:
-        async def accept(self):
-            events.append("accept")
-
-        async def send_text(self, line):
-            if '"gateway.ready"' in line:
-                events.append(f"ready_after_{len(calls)}")
-
-        async def receive_text(self):
-            raise ws_mod._WebSocketDisconnect()
-
-        async def close(self):
-            pass
-
-    asyncio.run(ws_mod.handle_ws(FakeWS()))
-
-    # Discovery moved to profile-aware agent construction. WebSocket transport
-    # should not start MCP discovery before a profile has been bound.
-    assert calls == []
-    assert events == ["accept", "ready_after_0"]
 
 
 def test_ws_ready_advertises_heartbeat_and_ping_is_inline(monkeypatch):
@@ -196,6 +168,149 @@ def test_ws_ready_advertises_heartbeat_and_ping_is_inline(monkeypatch):
         "result": {"ok": True},
         "id": "heartbeat-1",
     }
+
+
+def _slow_dispatch_harness(monkeypatch):
+    """handle_ws over a scripted FakeWS whose ``slow`` RPC blocks inside dispatch() until released.
+
+    Returns (inbound queue, sent frames, event log, release Event). Push ``None`` to disconnect."""
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+    sent, log, release = [], [], threading.Event()
+
+    def fake_dispatch(req, transport):
+        method = req.get("method")
+        log.append(f"dispatch:{method}")
+        if method in {"slow", "session.context_breakdown"}:
+            release.wait(5)
+        log.append(f"done:{method}")
+        return {"jsonrpc": "2.0", "id": req.get("id"), "result": {"method": method}}
+
+    def fake_close_sessions(transport, end_reason):
+        log.append("teardown")
+        return 0, 0
+
+    monkeypatch.setattr(server, "dispatch", fake_dispatch)
+    monkeypatch.setattr(server, "_close_sessions_for_transport", fake_close_sessions)
+    inbound: asyncio.Queue = asyncio.Queue()
+
+    class FakeWS:
+        async def accept(self):
+            pass
+
+        async def send_text(self, line):
+            sent.append(json.loads(line))
+
+        async def receive_text(self):
+            frame = await inbound.get()
+            if frame is None:
+                raise ws_mod._WebSocketDisconnect()
+            return json.dumps(frame)
+
+        async def close(self):
+            pass
+
+    return FakeWS(), inbound, sent, log, release
+
+
+async def _wait_for(predicate, timeout=2.0):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not predicate():
+        if asyncio.get_running_loop().time() > deadline:
+            return False
+        await asyncio.sleep(0.01)
+    return True
+
+
+def _rpc(req_id, method):
+    return {"jsonrpc": "2.0", "id": req_id, "method": method, "params": {}}
+
+
+def test_ws_ping_is_answered_while_an_earlier_rpc_blocks_dispatch(monkeypatch):
+    """#108325: a handler blocked for minutes (lock wait behind a long compaction, GIL-heavy turn) must not
+    starve gateway.ping — the client's 45s heartbeat deadline would otherwise tear down a busy but healthy
+    backend. Non-ping RPCs keep their serial arrival order."""
+    ws, inbound, sent, log, release = _slow_dispatch_harness(monkeypatch)
+    ids = lambda: [f.get("id") for f in sent if "id" in f]
+
+    async def scenario():
+        task = asyncio.create_task(ws_mod.handle_ws(ws))
+        try:
+            for frame in (_rpc("r1", "slow"), _rpc("r2", "fast"), _rpc("heartbeat-1", "gateway.ping")):
+                inbound.put_nowait(frame)
+            ping_answered = await _wait_for(lambda: "heartbeat-1" in ids(), timeout=1.0)
+            assert ping_answered, f"gateway.ping went unanswered while dispatch was busy; sent ids={ids()}"
+            assert "done:slow" not in log and "dispatch:fast" not in log
+        finally:
+            release.set()
+        assert await _wait_for(lambda: {"r1", "r2"} <= set(ids()))
+        inbound.put_nowait(None)
+        await asyncio.wait_for(task, 5)
+
+    asyncio.run(scenario())
+    assert log.index("done:slow") < log.index("dispatch:fast")
+    assert ids().index("r1") < ids().index("r2")
+
+
+def test_ws_context_breakdown_does_not_block_a_later_control_read(monkeypatch):
+    """Regression for #140667: the expensive read-only context meter may finish after controls."""
+    ws, inbound, sent, log, release = _slow_dispatch_harness(monkeypatch)
+    ids = lambda: [frame.get("id") for frame in sent if "id" in frame]
+
+    async def scenario():
+        task = asyncio.create_task(ws_mod.handle_ws(ws))
+        try:
+            inbound.put_nowait(_rpc("context", "session.context_breakdown"))
+            inbound.put_nowait(_rpc("control", "session.control.read"))
+            assert await _wait_for(lambda: "control" in ids())
+            assert "context" not in ids()
+        finally:
+            release.set()
+        assert await _wait_for(lambda: "context" in ids())
+        inbound.put_nowait(None)
+        await asyncio.wait_for(task, 5)
+
+    asyncio.run(scenario())
+    assert log.index("done:session.context_breakdown") > log.index("done:session.control.read")
+
+
+def test_ws_disconnect_teardown_waits_for_in_flight_dispatch(monkeypatch):
+    """A client that drops while a handler runs must not have its sessions torn down under that handler, and
+    frames it sent before dropping are still dispatched (as the serial read loop did)."""
+    ws, inbound, _sent, log, release = _slow_dispatch_harness(monkeypatch)
+
+    async def scenario():
+        task = asyncio.create_task(ws_mod.handle_ws(ws))
+        inbound.put_nowait(_rpc("r1", "slow"))
+        assert await _wait_for(lambda: "dispatch:slow" in log)
+        inbound.put_nowait(_rpc("r2", "queued"))
+        inbound.put_nowait(None)
+        await asyncio.sleep(0.1)
+        assert "teardown" not in log
+        release.set()
+        await asyncio.wait_for(task, 5)
+
+    asyncio.run(scenario())
+    assert log == ["dispatch:slow", "done:slow", "dispatch:queued", "done:queued", "teardown"]
+
+
+def test_ws_failed_reply_from_dispatcher_ends_the_connection(monkeypatch):
+    """A response the dispatcher cannot send ends the connection even while the reader waits on the socket."""
+    ws, inbound, _sent, log, _release = _slow_dispatch_harness(monkeypatch)
+    real_send = type(ws).send_text
+
+    async def send_text(self, line):
+        if json.loads(line).get("id") == "r1":
+            raise RuntimeError("peer gone")
+        await real_send(self, line)
+
+    monkeypatch.setattr(type(ws), "send_text", send_text)
+
+    async def scenario():
+        inbound.put_nowait(_rpc("r1", "fast"))
+        await asyncio.wait_for(ws_mod.handle_ws(ws), 5)
+
+    asyncio.run(scenario())
+    assert log == ["dispatch:fast", "done:fast", "teardown"]
 
 
 def test_ws_transport_serializes_concurrent_sends():
@@ -309,3 +424,159 @@ def test_ws_transport_preserves_cross_batch_order():
     asyncio.run(scenario())
 
 
+_INTERACTIVE = frozenset({"session:create", "session:read", "session:submit", "session:control",
+                          "session:approve", "session:respond"})
+
+
+def _drive_authority_fallback(monkeypatch, *, capabilities, profile_id, method):
+    """One RPC through handle_ws on an authority connection whose dispatch answers -32601, so the
+    request takes the legacy-fallback branch (R2-M3). Returns the reply frame for id 1."""
+    from gateway import session_controls
+
+    class FakeConnection:
+        def __init__(self, authority, transport, identity, operator=False):
+            self.actor = type("Actor", (), {"capabilities": frozenset(capabilities), "profile_id": profile_id})()
+
+        async def dispatch(self, req):
+            return {"jsonrpc": "2.0", "id": req["id"], "error": {"code": -32601, "message": "unknown method"}}
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(session_controls, "AuthorityConnection", FakeConnection)
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+    sent, inbound = [], [json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": {}})]
+
+    class FakeWS:
+        scope = {"hermes.session_authority": object()}
+
+        async def accept(self, **_kw):
+            pass
+
+        async def send_text(self, line):
+            sent.extend(json.loads(part) for part in line.splitlines() if part.strip())
+
+        async def receive_text(self):
+            if inbound:
+                return inbound.pop()
+            raise ws_mod._WebSocketDisconnect()
+
+        async def close(self, **_kw):
+            pass
+
+    asyncio.run(ws_mod.handle_ws(FakeWS(), auth_identity={"user_id": "u"}))
+    return next(frame for frame in sent if frame.get("id") == 1)
+
+
+def test_ready_frame_advertises_a_session_authority_only_when_one_is_bound(monkeypatch):
+    """An explicit TUI attach (HERMES_TUI_GATEWAY_URL) negotiates the canonical wire from this flag."""
+    from gateway import session_controls
+
+    class FakeConnection:
+        def __init__(self, authority, transport, identity, operator=False):
+            self.actor = type("Actor", (), {"capabilities": frozenset(), "profile_id": "p"})()
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(session_controls, "AuthorityConnection", FakeConnection)
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+
+    def ready(scope):
+        sent = []
+
+        class FakeWS:
+            async def accept(self, **_kw):
+                pass
+
+            async def send_text(self, line):
+                sent.extend(json.loads(part) for part in line.splitlines() if part.strip())
+
+            async def receive_text(self):
+                raise ws_mod._WebSocketDisconnect()
+
+            async def close(self, **_kw):
+                pass
+
+        FakeWS.scope = scope
+        asyncio.run(ws_mod.handle_ws(FakeWS(), auth_identity={"user_id": "u"}))
+        return sent[0]["params"]["payload"]
+
+    assert ready({"hermes.session_authority": object()})["session_authority"] is True
+    assert "session_authority" not in ready({})
+
+
+def test_legacy_fallback_requires_the_interactive_grant(monkeypatch):
+    """A worker-adoption ticket (or any connection without the authority's interactive grant) must
+    not reach general legacy dispatch after an authority -32601; an interactive one still does."""
+    ran = []
+    monkeypatch.setitem(server._methods, "probe.legacy",
+                        lambda rid, params: ran.append(rid) or {"jsonrpc": "2.0", "id": rid, "result": {}})
+    launch = str(server._launch_home())
+    for restricted in ({"worker:adopt"}, set()):
+        reply = _drive_authority_fallback(monkeypatch, capabilities=restricted, profile_id=launch, method="probe.legacy")
+        assert reply["error"]["code"] == -32601 and ran == []
+    reply = _drive_authority_fallback(monkeypatch, capabilities=_INTERACTIVE, profile_id=launch, method="probe.legacy")
+    assert reply["result"] == {} and ran == [1]
+
+
+def test_legacy_fallback_keeps_the_ticket_profile_for_sessionless_scoped_handlers(monkeypatch, tmp_path):
+    """A secondary-profile ticket's sessionless ``@_profile_scoped`` legacy call runs in THAT profile's
+    home, not the launch profile's."""
+    from hermes_constants import get_hermes_home
+
+    secondary = tmp_path / "profiles" / "l106742sec"
+    secondary.mkdir(parents=True)
+    monkeypatch.setitem(server._methods, "probe.scoped", server._profile_scoped(
+        lambda rid, params: {"jsonrpc": "2.0", "id": rid, "result": {"home": str(get_hermes_home())}}))
+    reply = _drive_authority_fallback(monkeypatch, capabilities=_INTERACTIVE, profile_id=str(secondary),
+                                      method="probe.scoped")
+    assert reply["result"]["home"] == str(secondary)
+
+
+@pytest.mark.parametrize("method,params", [
+    ("session.delete", {"session_id": "owned"}),
+    ("session.archive", {"session_id": "owned", "archived": True}),
+])
+def test_legacy_fallback_never_writes_an_authority_owned_session(monkeypatch, tmp_path, method, params):
+    """A session write the authority answers -32601 for must not reach the legacy writer: it would
+    change the authority's state.db behind its receipts and revision fence (and a delete would leave
+    the authority holding a live session whose row is gone)."""
+    from types import SimpleNamespace
+    from gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_state import SessionDB
+    from hermes_state_runtime import begin_runtime_epoch
+
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        db.create_session("owned", source="tui")
+        revision = db.get_session("owned")["runtime_revision"]
+        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id=str(tmp_path),
+                                     instance_id="current", db=db, epoch=begin_runtime_epoch(db, instance_id="current"))
+        authority.sessions["owned"] = LiveSession(None, "route")
+        monkeypatch.setattr(server, "_profile_db", lambda *_a, **_k: contextlib.nullcontext(db))
+        sent, inbound = [], [json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})]
+
+        class FakeWS:
+            scope = {"hermes.session_authority": authority}
+
+            async def accept(self, **_kw):
+                pass
+
+            async def send_text(self, line):
+                sent.extend(json.loads(part) for part in line.splitlines() if part.strip())
+
+            async def receive_text(self):
+                if inbound:
+                    return inbound.pop()
+                raise ws_mod._WebSocketDisconnect()
+
+            async def close(self, **_kw):
+                pass
+
+        asyncio.run(ws_mod.handle_ws(FakeWS(), auth_identity={"user_id": "owner", "instance_id": "current"}))
+        reply = next(frame for frame in sent if frame.get("id") == 1)
+        assert reply["error"]["code"] == -32601, reply
+        row = db.get_session("owned")
+        assert row is not None and not row.get("archived") and row["runtime_revision"] == revision
+        assert "owned" in authority.sessions

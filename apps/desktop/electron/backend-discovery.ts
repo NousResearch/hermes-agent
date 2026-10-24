@@ -29,9 +29,6 @@ export interface HostBackendRecord {
   registeredAt: number
 }
 
-export type SpawnOrAttachDecision =
-  { action: 'attach'; record: HostBackendRecord } | { action: 'spawn'; reason: 'isolated' | 'no-running-backend' }
-
 /** Filename the CLI writes under the machine Hermes root. */
 export const SPAWN_LEDGER_FILENAME = 'spawn-ledger.json'
 
@@ -50,6 +47,10 @@ function asInteger(value: unknown): number | null {
  *
  * A record without a bound port predates the structured detail (or belongs to
  * a purpose that never binds) and is skipped: a port is the whole point.
+ * A record marked `isolated` (`hermes serve --isolated`, e.g. the backend
+ * another machine's Desktop spawned here over SSH) opted out of the host
+ * singleton and belongs to that client, so it is skipped too; the CLI's
+ * `_attach_to_host_backend` honours the same flag.
  * Unreadable/corrupt JSON yields `[]` — discovery degrades to "spawn", never
  * to a wrong attach.
  */
@@ -85,6 +86,7 @@ export function parseSpawnLedger(contents: unknown): HostBackendRecord[] {
       port === null ||
       port <= 0 ||
       port > 65535 ||
+      entry.isolated === true ||
       !ATTACHABLE_PURPOSES.has(purpose) ||
       !LOOPBACK_DIALABLE.has(host.toLowerCase())
     ) {
@@ -103,57 +105,4 @@ export function parseSpawnLedger(contents: unknown): HostBackendRecord[] {
   }
 
   return records
-}
-
-/**
- * The attach-first decision: one running backend on the host means attach and
- * spawn nothing. `isolated` is the deliberate escape hatch (see
- * `HERMES_DESKTOP_ISOLATED_BACKEND` in main.ts) and wins over every record.
- *
- * Newest registration first, so a host that briefly holds a stale record and a
- * fresh one tries the live one before falling back.
- */
-export function spawnOrAttach({
-  isolated = false,
-  records = []
-}: {
-  isolated?: boolean
-  records?: HostBackendRecord[]
-}): SpawnOrAttachDecision {
-  if (isolated) {
-    return { action: 'spawn', reason: 'isolated' }
-  }
-
-  const [newest] = [...records].sort((left, right) => right.registeredAt - left.registeredAt)
-
-  return newest ? { action: 'attach', record: newest } : { action: 'spawn', reason: 'no-running-backend' }
-}
-
-/** The loopback base URL for a discovered record. */
-export function recordBaseUrl(record: HostBackendRecord): string {
-  return `http://127.0.0.1:${record.port}`
-}
-
-export interface HostSpawnGateState {
-  ownerAlive: boolean
-  startedAt: number
-}
-
-/**
- * Cross-process spawn race: two apps starting at once both see an empty ledger
- * and would each spawn a backend. The loser of the gate waits and re-runs
- * discovery instead.
- *
- * A gate whose owner is gone, or one older than `staleAfterMs`, is taken over —
- * a crashed spawner must never wedge every later launch.
- */
-export function classifyHostSpawnGate(
-  state: HostSpawnGateState | null,
-  { now, staleAfterMs }: { now: number; staleAfterMs: number }
-): 'take' | 'wait' {
-  if (!state || !state.ownerAlive || now - state.startedAt >= staleAfterMs) {
-    return 'take'
-  }
-
-  return 'wait'
 }

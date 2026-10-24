@@ -1,0 +1,21 @@
+name: s2docs
+title: s2docs
+repo: https://github.com/c-pompa/s2docs
+sha: 71e3a45474de73e0b50740ee1851307aa5cc448e
+subdir: plugin
+version: "0.1.2"
+description: "Source 2 documentation and mod tooling for CS2 and Deadlock from a local index of Valve's own game data: convars, Hammer entities with their inputs and outputs, schema classes and enums, game events, the cs_script and Pulse APIs and Source2Wiki pages, plus the mod pipeline — scaffold addons, validate scripts and .cfg files, start map builds on a registered Windows host over SSH, deploy and verify hashes, and record evidence, test runs and job state. Needs uv and an index built with s2docs sync; every write-capable call asks for approval. Disclosure — runs its MCP server with uvx from the pinned git commit, resolving its PyPI dependencies on first start as of a fixed 2026-10-10 snapshot; nothing is sent to a third party, but SSH/scp go to any host registered through register_host, build_start runs agent-written shell commands on that host and its builds keep running after the session ends, deploy_push and job_attach copy local files the agent names, and it writes its own index and addon workspace; write tools ask for approval through the package's untrusted server trust."
+maintainer: c-pompa
+tier: community
+category: tools
+requires_hermes: ">=0.22.3"
+docs_url: https://github.com/c-pompa/s2docs/tree/main/plugin
+platforms:
+  - macos
+  - linux
+  - windows
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

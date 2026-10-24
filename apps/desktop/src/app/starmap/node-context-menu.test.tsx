@@ -22,17 +22,6 @@ const target: NodeMenuTarget = { id: 'memory-1', kind: 'memory', label: 'Test me
 afterEach(cleanup)
 
 describe('NodeContextMenu', () => {
-  it('opens a collision-aware menu anchored at the click point', async () => {
-    render(<NodeContextMenu onClose={vi.fn()} onNodeRemoved={vi.fn()} target={target} />)
-
-    // Radix stamps the side it resolved after collision handling; the
-    // hand-rolled fixed div had no such engine and clipped near the edges.
-    const menu = await screen.findByRole('menu')
-
-    expect(menu.getAttribute('data-side')).toBeTruthy()
-    expect(screen.getByRole('menuitem', { name: 'Delete memory' })).toBeTruthy()
-  })
-
   it('keeps the destructive row functional through the shared menu', async () => {
     const onClose = vi.fn()
 

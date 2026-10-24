@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # gateway-command-parity.md); a handler that reads messaging-only state or writes config is not here.
 _READ_COMMANDS = frozenset({'help', 'commands', 'status', 'context', 'version', 'whoami',
                             'usage', 'insights', 'profile', 'diff', 'memory', 'kanban', 'topup',
-                            'suggestions', 'bundles', 'skills'})
+                            'suggestions', 'bundles', 'skills', 'findings'})
 _CONTROL_COMMANDS = frozenset({'title'})
 # Authoring/workflow commands whose messaging handler (``_command_handler_table``) runs as-is for a
 # local session: goal/loop/heartbeat state on the session's row, the review/refine forks of its
@@ -79,6 +79,14 @@ def _first_token(arg):
     return ''
 
 
+def _findings_action(arg):
+    from hermes_cli.connected_assistance import parse_findings_args
+    try:
+        return parse_findings_args(arg).action
+    except ValueError:
+        return None
+
+
 def _first_word(arg):
     """The first whitespace-separated word, as main's CLI and the messaging /memory and /skills
     handlers split it: a quote later in the line belongs to the argument (`/memory pending it's`)."""
@@ -95,6 +103,7 @@ _READ_ARGUMENTS = {
     'memory': lambda arg: _first_word(arg) in {'', 'pending'},
     'suggestions': lambda arg: not arg.strip(),
     'kanban': lambda arg: _first_token(arg) in _KANBAN_READS,
+    'findings': lambda arg: _findings_action(arg) in {'list', 'show', 'help'},
 }
 
 
@@ -102,6 +111,7 @@ _READ_ARGUMENTS = {
 # applied for this session's profile (`/memory` and `/skills` approve|reject their staged queues;
 # `approval` updates their config.yaml switch, as main's CLI wrote it).
 _CONTROL_ARGUMENTS = {
+    'findings': lambda arg: _findings_action(arg) in {'dismiss', 'resolve', 'pause', 'resume'},
     'skills': lambda arg: _first_word(arg) in {'approve', 'apply', 'reject', 'deny', 'drop', 'approval', 'mode'},
     'memory': lambda arg: _first_word(arg) in {'approve', 'apply', 'reject', 'deny', 'drop', 'approval', 'mode'},
 }

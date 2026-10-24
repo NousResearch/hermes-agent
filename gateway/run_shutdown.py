@@ -1826,10 +1826,12 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         self._running = False
         self._clear_plugin_message_injector()
         self._draining = True
+        from gateway.connected_assistance import stop_connected_assistance
+        if not await stop_connected_assistance(self, timeout=0):
+            logger.warning("Connected assistance worker still settling; no further publication is permitted")
         from gateway.run_runtime import drain_gateway_runtime
         await drain_gateway_runtime(self)
         self._mark_api_runs_shutdown_requested()
-        # getattr-guards: shutdown-path test doubles may lack the room worker / systemd watchdog.
         stop_room_worker = getattr(self, "_stop_hosted_room_worker", None)
         if callable(stop_room_worker):
             try:
@@ -1846,14 +1848,12 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         if callable(stop_watchdog):
             await stop_watchdog()
         await self._cancel_secondary_profile_reconnect_tasks()
-        # Notify all chats with active agents BEFORE draining — adapters are still connected here.
         await self._notify_active_sessions_of_shutdown()
         logger.info("Shutdown phase: notify_active_sessions done at +%.2fs", ctx.elapsed())
 
     async def _stop_drain_active_work(self, timeout: float, ctx: GatewayShutdownMixin._StopContext) -> None:
         """Pre-mark resume_pending, drain agents/cron/API work into ``ctx``."""
         from gateway.run import GatewayRunner
-        # Pre-mark resume_pending BEFORE the drain so a mid-drain SIGKILL still leaves a durable marker.
         _pre_drain_keys = await GatewayRunner._mark_running_sessions_resume_pending(
             self, "pre-drain mark_resume_pending"
         )
@@ -2025,26 +2025,17 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             from agent.auxiliary_client import shutdown_cached_clients
             shutdown_cached_clients()
 
-        GatewayShutdownMixin._quiet_step("shutdown_cached_clients error", _reap_aux_clients)
+        from gateway.connected_assistance import assistance_worker_live
+        if not assistance_worker_live(self):
+            GatewayShutdownMixin._quiet_step("shutdown_cached_clients error", _reap_aux_clients)
 
     def _stop_quiesce_and_close_session_dbs(self, timeout: float, ctx: GatewayShutdownMixin._StopContext) -> None:
         """Quiesce the executor, then close SessionDB handles only if no worker is still live."""
         from gateway.run import GatewayRunner, _EXECUTOR_QUIESCE_TIMEOUT
-        # Quiesce the thread pool BEFORE closing session DBs: a late executor write after
-        # SessionDB.close() checkpointed the WAL reopens the handle and splits the WAL generation
-        # (close-time corruption). Clamped to the remaining watchdog leash minus 1s for the close.
-        # This used to run *after* the close block below, which left two holes: (a) `_executor_closing` was
-        # still False during the close, so any coroutine reaching `_run_in_executor_with_context` minted a
-        # brand-new pool and ran more blocking DB work against handles that had just been closed; (b)
-        # cancelling `self._background_tasks` above does not stop a `run_in_executor` future that already
-        # started — the task dies, the worker thread keeps writing. Either way a write lands after
-        # `SessionDB.close()`, which has already checkpointed the WAL and let SQLite unlink the sidecar. The
-        # late write silently reopens the handle (#94736) and mints a fresh WAL generation behind that
-        # checkpoint, so teardown checkpoints the same file a second time from a connection the shutdown log
-        # never accounts for — the close-time page-write damage in #101093 and the split WAL generation in
-        # #101064. The wait is bounded and clamped to what is left of the shutdown watchdog leash (minus a
-        # second for the close itself), so a stuck worker can never cost us the post-close cleanup window
-        # (#82161).
+        from gateway.connected_assistance import assistance_worker_live
+        # Quiesce BEFORE checkpointing: cancelling a waiter does not stop its executor's
+        # live DB write. Fence new pool creation, then join within the watchdog leash;
+        # otherwise a late write reopens a second WAL generation (#101093, #101064).
         _exec_quiesce_budget = max(
             0.0, min(_EXECUTOR_QUIESCE_TIMEOUT, resolve_shutdown_watchdog_delay(timeout) - ctx.elapsed() - 1.0),
         )
@@ -2059,13 +2050,12 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             )
             return
         logger.info("Shutdown phase: executor quiesced at +%.2fs", ctx.elapsed())
-        # Cron jobs (scheduler pool), API-server runs and deferred hygiene workers (both on the loop's
-        # default executor) never touch self._executor, so the join above cannot see them. A writer that
-        # outlived the drain is mid-write for the same #101093 reasons; the drain already spent its
-        # budget, so no second wait — leave the handles open (#102198). The API count is the snapshot
-        # taken before the adapters were released; a run whose handler task was cancelled at disconnect
-        # has already left it, so that term under-counts — the live worker-scoped count below covers
-        # the cancelled-handler case (#116535).
+        if assistance_worker_live(self):
+            logger.warning("Connected assistance still settling; SessionDB handles retained")
+            return
+        # Cron/API/deferred work bypasses self._executor. Its drain budget is spent,
+        # so retain DBs for live writers. The pre-disconnect API snapshot misses
+        # cancelled handlers; the physical-worker count covers them (#102198, #116535).
         _cron_live = self._active_cron_job_count()
         _api_live = ctx.api_live
         _api_worker_live = self._active_api_worker_count()
@@ -2217,6 +2207,10 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                 await GatewayRunner._stop_interrupt_remaining_work(self, ctx)
             from gateway.run_runtime import settle_gateway_runtime  # within what the leash has left
             await settle_gateway_runtime(self, _effective_watchdog_leash(self) - ctx.elapsed(), GatewayRunner._shutdown_interrupt_reason(self))
+            from gateway.connected_assistance import stop_connected_assistance
+            from gateway.run_runtime import STOP_TAIL_RESERVE_SECONDS
+            await stop_connected_assistance(self, timeout=max(
+                0.0, _effective_watchdog_leash(self) - ctx.elapsed() - STOP_TAIL_RESERVE_SECONDS))
             await GatewayRunner._stop_finalize_agents_and_adapters(self, ctx)
             await GatewayRunner._stop_release_runtime_state(self, ctx)
             GatewayRunner._stop_quiesce_and_close_session_dbs(self, timeout, ctx)

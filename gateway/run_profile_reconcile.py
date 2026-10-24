@@ -468,8 +468,16 @@ class GatewayProfileReconcileMixin:
         """
         from gateway.run import _profile_runtime_scope, _write_runtime_status_quiet
         from gateway.run_runtime import release_profile_home, unserve_profile_runtime
-        # Retire before teardown; a False verdict (writer outlived its Stop) is honoured below.
-        retired = getattr(self, 'session_authorities', None) is None or await unserve_profile_runtime(self, home)
+        # A blocking source request cannot be killed: retain ownership until its worker settles.
+        from gateway.connected_assistance import stop_connected_assistance
+        assistance_stopped = await stop_connected_assistance(self, home=home)
+        if not assistance_stopped:
+            from gateway.session_authorities import authority_for_home
+            authority = authority_for_home(self, home)
+            if authority is not None:
+                authority.retiring = True
+        retired = assistance_stopped and (getattr(self, 'session_authorities', None) is None
+                                          or await unserve_profile_runtime(self, home))
         pending = (getattr(self, "_profile_failed_platforms", None) or {}).pop(name, None) or {}
         tasks = [t for t in pending.values() if isinstance(t, asyncio.Task) and not t.done()]
         for task in tasks:

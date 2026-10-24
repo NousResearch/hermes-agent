@@ -1425,10 +1425,16 @@ def _prepare_checkout_for_update(
             _exit_after_failed_branch_switch(
                 git_cmd, branch, track_result, auto_stash_ref, gw_input_fn, _windows_gateway_resume)
 
+    # A gateway-driven update has no terminal, so the restore prompt was forwarded to an
+    # agent that answered "n" by default: the stash was skipped and every local patch
+    # vanished from the tree until the 2h guard re-applied it. updates.non_interactive_
+    # local_changes=stash already means "keep them and re-apply them", so restore without
+    # asking whenever there is no real TTY to answer the question.
     prompt_for_restore = (
         auto_stash_ref is not None
         and not assume_yes
-        and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty())))
+        and not gateway_mode
+        and sys.stdin.isatty() and sys.stdout.isatty())
 
     if release_tag:
         # An ancestor release still needs applying when switching channels.

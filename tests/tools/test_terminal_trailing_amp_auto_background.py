@@ -5,6 +5,7 @@ Refusing it cost a full model turn to resend the same command with background=tr
 servers without `&`) keep the refusal: the caller may expect later commands to run after a check.
 """
 import json
+import shlex
 import shutil
 import subprocess
 import time
@@ -28,6 +29,7 @@ def test_trailing_amp_runs_as_tracked_background_through_the_same_guards(tmp_pat
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hh"))
     marker = tmp_path / "ran"
+    marker_arg = shlex.quote(marker.as_posix())
     seen = []
 
     def guard(command, env_type, **kw):
@@ -37,15 +39,15 @@ def test_trailing_amp_runs_as_tracked_background_through_the_same_guards(tmp_pat
     with patch("tools.terminal_tool._get_env_config", return_value=_env_config(tmp_path)), \
          patch("tools.terminal_tool._start_cleanup_thread"), \
          patch("tools.terminal_tool._check_all_guards", side_effect=guard):
-        result = json.loads(terminal_tool(command=f"echo x >> {marker} && sleep 0.2 &"))
+        result = json.loads(terminal_tool(command=f"echo x >> {marker_arg} && sleep 0.2 &"))
 
     assert result.get("error") is None, result
     assert result["session_id"].startswith("proc_")
     assert "trailing & was converted to background=true" in result["auto_backgrounded"]
     assert "hint" not in result  # the silent-bg hint would tell it to re-launch a second copy
-    assert seen == [f"echo x >> {marker} && sleep 0.2"]
+    assert seen == [f"echo x >> {marker_arg} && sleep 0.2"]
     session = process_registry.get(result["session_id"])
-    assert session.command == f"echo x >> {marker} && sleep 0.2"
+    assert session.command == f"echo x >> {marker_arg} && sleep 0.2"
     deadline = time.time() + 10
     while not marker.exists() and time.time() < deadline:
         time.sleep(0.05)

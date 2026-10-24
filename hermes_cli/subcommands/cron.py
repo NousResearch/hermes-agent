@@ -42,7 +42,8 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help="Path to a script under ~/.hermes/scripts/. Default mode: "
             "script stdout is injected into the agent's prompt each run. "
             "With --no-agent: the script IS the job and its stdout is "
-            "delivered verbatim. .sh/.bash files run via bash, everything "
+            "delivered verbatim. .sh/.bash files run via bash, on Windows "
+            ".bat/.cmd run via cmd and .ps1 via powershell, everything "
             "else via Python.")
     _flag(cron_create, "--no-agent", dest="no_agent", default=False,
         help="Skip the LLM entirely — run --script on schedule and deliver "
@@ -80,7 +81,8 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_create.add_argument("--interpreter",
         help="Absolute or ~ path to a Python in your own venv (e.g. ~/venvs/report/bin/python) "
             "for a .py --script / --monitor-script, so it can import packages Hermes does not "
-            "ship. .sh/.bash still run under bash. Omit to use Hermes' Python.")
+            "ship. .sh/.bash still run under bash, and Windows-native .bat/.cmd/.ps1 keep "
+            "their native interpreters. Omit to use Hermes' Python.")
     cron_create.add_argument(
         "--continuity", dest="continuity", action="store_const", const=True, default=None,
         help="Each run wakes up with the job's own previous output injected "

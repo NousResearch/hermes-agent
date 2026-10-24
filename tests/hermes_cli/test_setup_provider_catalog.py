@@ -170,3 +170,72 @@ def test_setup_keeps_curated_list_when_profile_catalog_is_down_and_declares_no_f
         profile.name, SimpleNamespace(name="Down"), "synthetic-test-key", "", profile.base_url)
 
     assert setup_rows == ["curated-a", "curated-b"]
+
+
+@pytest.mark.parametrize("provider_id", ["opencode-go", "opencode-zen"])
+@pytest.mark.parametrize("registry_available", [True, False])
+def test_setup_prefers_authoritative_live_catalog(monkeypatch, provider_id, registry_available):
+    """New relay models must reach setup even with a large curated floor or stale registry."""
+    import io
+    import json
+    from types import SimpleNamespace
+
+    from agent import models_dev
+    from hermes_cli import auth, model_setup_flows as flows, models, urllib_security
+
+    curated = [f"curated-{index}" for index in range(10)] + ["x-preview-f-free"]
+    live = ["gpt-6-luna", "relay-new-model", curated[0], "x-preview-f-free"]
+    base_url = "https://relay.example.invalid/custom/v1"
+    requests = []
+
+    def catalog_response(request, **_kwargs):
+        requests.append((request.full_url, request.get_header("Authorization")))
+        return io.BytesIO(json.dumps({"data": [{"id": model} for model in live]}).encode())
+
+    monkeypatch.setitem(models._PROVIDER_MODELS, provider_id, curated)
+    monkeypatch.setattr(models_dev, "list_agentic_models", lambda *_: [curated[0]] if registry_available else [])
+    monkeypatch.setattr(urllib_security, "open_credentialed_url", catalog_response)
+    monkeypatch.setattr(auth, "resolve_api_key_provider_credentials", lambda *_: {
+        "api_key": "synthetic-test-key", "base_url": base_url,
+    })
+
+    setup_rows = flows._api_key_provider_model_list(
+        provider_id, SimpleNamespace(name="OpenCode"), "synthetic-test-key", "", base_url,
+    )
+
+    assert setup_rows[:2] == live[:2]
+    assert setup_rows == models.provider_model_ids(provider_id)
+    assert set(curated[:-1]) <= set(setup_rows)
+    assert setup_rows.count(curated[0]) == 1
+    assert "x-preview-f-free" not in setup_rows
+    assert requests == [(base_url + "/models", "Bearer synthetic-test-key")] * 2
+
+
+@pytest.mark.parametrize("provider_id", ["opencode-go", "opencode-zen"])
+@pytest.mark.parametrize("has_key", [True, False])
+def test_setup_authoritative_catalog_fallback_matches_picker(monkeypatch, provider_id, has_key):
+    """No key or a catalog outage preserves usable offline rows without retired relay models."""
+    from types import SimpleNamespace
+
+    from agent import models_dev
+    from hermes_cli import auth, model_setup_flows as flows, models, urllib_security
+
+    curated = [f"curated-{index}" for index in range(10)] + ["x-preview-f-free"]
+    api_key = "synthetic-test-key" if has_key else ""
+    base_url = "https://relay.example.invalid/custom/v1"
+    probe = Mock(side_effect=ConnectionError("catalog down"))
+    monkeypatch.setitem(models._PROVIDER_MODELS, provider_id, curated)
+    monkeypatch.setattr(models_dev, "list_agentic_models", lambda *_: ["x-preview-f-free", "registry-model"])
+    monkeypatch.setattr(urllib_security, "open_credentialed_url", probe)
+    monkeypatch.setattr(auth, "resolve_api_key_provider_credentials", lambda *_: {
+        "api_key": api_key, "base_url": base_url,
+    })
+
+    setup_rows = flows._api_key_provider_model_list(
+        provider_id, SimpleNamespace(name="OpenCode"), api_key, "", base_url,
+    )
+
+    assert setup_rows == models.provider_model_ids(provider_id)
+    assert set(curated[:-1]) | {"registry-model"} == set(setup_rows)
+    assert "x-preview-f-free" not in setup_rows
+    assert probe.call_count == (2 if has_key else 0)

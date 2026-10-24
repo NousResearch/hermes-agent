@@ -80,7 +80,7 @@ import { requestSendDiagnostics } from '@/store/send-diagnostics'
 import { $connection, $currentModel, setModelPickerOpen } from '@/store/session'
 import { sessionTileDelegate } from '@/store/session-states'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
-import { $voicePlayback } from '@/store/voice-playback'
+import { $voicePlayback, voicePlaybackBelongsTo } from '@/store/voice-playback'
 
 // Stable empty identity for the settled-parts selector — a fresh [] per render
 // would re-derive the changed-files card on every message re-render.
@@ -1281,12 +1281,22 @@ const ReadAloudButton: FC<{
   // A Bot chat's session owns its own (connection, profile) → its own TTS voice.
   const { connectionId, profile } = useComposerScope()
 
+  // One renderer can show several sessions (tiles) through one playback slot.
+  // Only the session that started the clip may paint it: a sibling chat's
+  // message button must not turn into a Stop button because a DIFFERENT
+  // session is speaking.
+  const ownsPlayback = voicePlaybackBelongsTo(voicePlayback, sessionId)
+
   const readAloudStatus =
-    voicePlayback.source === 'read-aloud' && voicePlayback.messageId === messageId ? voicePlayback.status : 'idle'
+    ownsPlayback && voicePlayback.source === 'read-aloud' && voicePlayback.messageId === messageId
+      ? voicePlayback.status
+      : 'idle'
 
   const isPreparing = readAloudStatus === 'preparing'
   const isSpeaking = readAloudStatus === 'speaking'
-  const anyPlaybackActive = voicePlayback.status !== 'idle'
+  // Another session's clip is playing: this button stays usable — starting here
+  // takes the speaker over (one sound at a time), which is what the user asked
+  // for by clicking. Only this button's own start blocks it.
   const Icon = isPreparing ? Loader2Icon : isSpeaking ? VolumeXIcon : AudioLines
 
   const tooltip = isPreparing
@@ -1302,13 +1312,18 @@ const ReadAloudButton: FC<{
   const read = useCallback(
     async (full: boolean) => {
       const text = full ? getFullText() : getText()
+      const current = $voicePlayback.get()
 
-      if (!text || $voicePlayback.get().status !== 'idle') {
+      // Ignore a repeat click while THIS session is already speaking (the
+      // button is a Stop button by then). A sibling session's clip must not
+      // swallow the click: taking the speaker over is the user's intent, and
+      // playSpeechText stops whatever was playing.
+      if (!text || (current.status !== 'idle' && voicePlaybackBelongsTo(current, sessionId))) {
         return
       }
 
       try {
-        await playSpeechText(text, { connectionId, messageId, profile, source: 'read-aloud' })
+        await playSpeechText(text, { connectionId, messageId, profile, sessionId, source: 'read-aloud' })
         markAssistantIdSpoken(sessionId, view.$messages.get(), messageId)
       } catch (error) {
         notifyError(error, copy.readAloudFailed)
@@ -1319,7 +1334,7 @@ const ReadAloudButton: FC<{
 
   return (
     <TooltipIconButton
-      disabled={isPreparing || (!isSpeaking && anyPlaybackActive)}
+      disabled={isPreparing}
       onClick={event => {
         triggerHaptic('selection')
         void (isSpeaking ? stopVoicePlayback() : read(event.shiftKey))

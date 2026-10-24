@@ -66,7 +66,7 @@ vi.mock('@/store/notifications', () => ({
 vi.mock('@/store/voice-playback', async () => {
   const { atom } = await import('nanostores')
 
-  return { $voicePlayback: atom({ sequence: 0, status: 'idle' }) }
+  return { $voicePlayback: atom({ sequence: 0, sessionId: null, status: 'idle' }) }
 })
 
 vi.mock('@/store/voice-prefs', async () => {

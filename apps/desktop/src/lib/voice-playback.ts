@@ -7,6 +7,7 @@ import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
   $voicePlayback,
   setVoicePlaybackState,
+  voicePlaybackSessionKey,
   type VoicePlaybackSource,
   type VoicePlaybackState
 } from '@/store/voice-playback'
@@ -70,6 +71,7 @@ function currentState(
     audioElement,
     messageId: options?.messageId ?? null,
     sequence,
+    sessionId: voicePlaybackSessionKey(options?.sessionId),
     source: options?.source ?? null,
     status
   }
@@ -80,6 +82,10 @@ function currentState(
  *  halves → the active (connection, profile). */
 export interface VoicePlaybackOptions extends OwnerScope {
   messageId?: string | null
+  /** Session this clip belongs to. One renderer holds one playback slot; the
+   *  id is what lets each session's surfaces (composer pill, message button,
+   *  typing barge-in) react only to its own clip. Omitted → unknown owner. */
+  sessionId?: string | null
   /** Skip the client-direct/stream rungs and POST straight to /api/audio/speak.
    *  For callers whose stream path (client-direct, else WS relay) already
    *  answered `fallback` this reply; the relay may not have been probed. */
@@ -108,10 +114,14 @@ export function stopVoicePlayback() {
     currentAudio = null
   }
 
+  // Keep the stopped clip's owner on the idle state: a session that watched
+  // `sequence` to know whether ITS clip was cut would otherwise read a
+  // sibling session's stop as its own.
   setVoicePlaybackState({
     audioElement: null,
     messageId: null,
     sequence,
+    sessionId: $voicePlayback.get().sessionId,
     source: null,
     status: 'idle'
   })
@@ -821,8 +831,17 @@ async function startSpeechText(text: string, options: VoicePlaybackOptions): Pro
   }
 }
 
-export function isVoicePlaybackActive() {
-  return $voicePlayback.get().status !== 'idle'
+/** Is a clip playing — and, when `sessionId` is given, is it THIS session's?
+ *  Sessions share one renderer (tiles) and one speaker; a session may only
+ *  react to the clip it started. Omit the id for the renderer-wide answer. */
+export function isVoicePlaybackActive(sessionId?: string | null): boolean {
+  const playback = $voicePlayback.get()
+
+  if (playback.status === 'idle') {
+    return false
+  }
+
+  return sessionId === undefined || playback.sessionId === voicePlaybackSessionKey(sessionId)
 }
 
 // ---------------------------------------------------------------------------

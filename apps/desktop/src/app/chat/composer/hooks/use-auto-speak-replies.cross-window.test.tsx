@@ -10,7 +10,14 @@ import { createAmbientClaimArbiter } from '../../../../../electron/event-dedupe'
 // store, and the only thing they share is the main-process claim arbiter.
 // Adapted from @unsupportedpastels' review probe on #140623.
 
-const IDLE = { audioElement: null, messageId: null, sequence: 0, source: null, status: 'idle' as const }
+const IDLE = {
+  audioElement: null,
+  messageId: null,
+  sequence: 0,
+  sessionId: 's1',
+  source: null,
+  status: 'idle' as const
+}
 
 const message = (id: string, text: string, role: 'assistant' | 'user' = 'assistant'): ChatMessage => ({
   id,

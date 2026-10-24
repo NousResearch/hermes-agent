@@ -329,8 +329,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         return false
       }
 
-      // Typing barge-in: a new send silences any in-flight spoken reply.
-      if (isVoicePlaybackActive()) {
+      // Typing barge-in: a new send silences any in-flight spoken reply — but
+      // only the one THIS session started. With tiles open, a send in one chat
+      // must not cut the clip a sibling chat is speaking.
+      if (isVoicePlaybackActive(guardSessionId)) {
         markVoicePlaybackInterrupted()
         stopVoicePlayback()
       }

@@ -2897,9 +2897,8 @@ def _merge_completion_prose_artifacts(
     discovered: list[str] = []
     for match in re.finditer(prefix + r"(?:[/\\][^\s`\"'<>]+)", text):
         raw = match.group(0).rstrip(".,;:!?)]}")
-        candidate = Path(raw)
-        if candidate.is_file():
-            discovered.append(str(candidate))
+        if (owned := _scratch_owned_prose_path(workspace, raw)) is not None:
+            discovered.append(str(owned))
     if not discovered:
         return metadata
     updated = dict(metadata) if isinstance(metadata, dict) else {}
@@ -4224,6 +4223,7 @@ from hermes_cli.kanban_db_workspace import (
     _cleanup_workspace,
     _is_managed_scratch_path,
     _managed_scratch_path_info,
+    _scratch_owned_prose_path,
     _scratch_workspace,
 )
 from hermes_cli.kanban_db_dispatch import (

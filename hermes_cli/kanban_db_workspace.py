@@ -332,6 +332,27 @@ def _managed_scratch_path_info(p: Path) -> tuple[bool, Optional[str]]:
     return False, None
 
 
+def _scratch_owned_prose_path(workspace: Path, raw: str) -> Optional[Path]:
+    """Resolve *raw* and return it only when it is this workspace's own file.
+
+    A lexical prefix match is not containment: ``<workspace>/../../x`` and a symlink
+    living inside the workspace that points outside both spell the workspace prefix yet
+    name a file the task does not own. Prose-discovered paths become upload
+    authorizations, so ownership is decided on the RESOLVED candidate — the same rule
+    :func:`_managed_scratch_path_info` applies to the workspace itself and
+    ``_persist_scratch_completion_artifacts`` applies when staging copies.
+    """
+    candidate = Path(raw)
+    if not candidate.is_file():
+        return None
+    try:
+        if not candidate.resolve().is_relative_to(workspace.resolve()):
+            return None
+    except OSError:
+        return None
+    return candidate
+
+
 def _scratch_workspace(conn: sqlite3.Connection, task_id: str) -> Optional[Path]:
     """Expanded ``workspace_path`` when the task uses a scratch workspace, else ``None``."""
     row = conn.execute(

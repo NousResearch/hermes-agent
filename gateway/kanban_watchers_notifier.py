@@ -299,6 +299,37 @@ class _Collector:
         except Exception as _gc_exc:
             logger.debug("kanban notifier: stale-sub GC failed for board %s: %s", slug, _gc_exc)
 
+    def _completed_run_summaries(self, conn: Any, sub: dict, events: list) -> dict:
+        """Map ``event.id -> run.summary`` for this task's own finished completed runs.
+
+        The event payload's ``summary`` is a bounded projection written at completion
+        time, while the run row keeps the worker's full handoff (and is the only copy
+        for rows written before the payload carried one). A run that is missing,
+        foreign, unfinished or failed is skipped rather than rendered as this task's
+        result.
+        """
+        run_summaries: dict = {}
+        for event in events:
+            # Legacy rows predate the run_id stamp; ``get_run`` does ``int(run_id)``,
+            # so a None would raise rather than miss. Skip them explicitly.
+            run_id = getattr(event, "run_id", None)
+            if run_id is None or event.kind != "completed":
+                continue
+            try:
+                run = self.kb.get_run(conn, run_id)
+            except Exception as run_exc:  # health: allow BLE001 -- one bad run row must not abort the tick's delivery
+                logger.debug("kanban notifier: run summary lookup failed for %s: %s", sub["task_id"], run_exc)
+                continue
+            if (
+                run is None
+                or run.task_id != sub["task_id"]
+                or run.outcome != "completed"
+                or run.ended_at is None
+            ):
+                continue
+            run_summaries[event.id] = run.summary
+        return run_summaries
+
     def _claim_for_sub(self, conn: Any, slug: str, sub: dict) -> Optional[dict]:
         """Claim one subscription's unseen events; None when skipped or nothing new."""
         owner_profile = sub.get("notifier_profile") or None
@@ -318,9 +349,11 @@ class _Collector:
         if not events:
             return None
         task = self.kb.get_task(conn, sub["task_id"])
+        run_summaries = self._completed_run_summaries(conn, sub, events)
         logger.debug("kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
                      len(events), sub["task_id"], slug, old_cursor, cursor)
-        return {"sub": sub, "old_cursor": old_cursor, "cursor": cursor, "events": events, "task": task, "board": slug}
+        return {"sub": sub, "old_cursor": old_cursor, "cursor": cursor, "events": events,
+                "task": task, "board": slug, "run_summaries": run_summaries}
 
     def collect_board(self, slug: str) -> None:
         """Claim events on one board, appending delivery dicts to ``deliveries``."""
@@ -389,28 +422,145 @@ def _first_line(text: str, limit: int) -> str:
     return lines[0][:limit] if lines else text[:limit]
 
 
+# --- Completion receipt -----------------------------------------------------------
+# A completed run's worker summary is unrestricted prose about work the notifier cannot
+# verify: it may claim a review, a merge, a push or a test result, and it may carry a
+# credential or a private path. This message goes to an external channel, so the receipt
+# publishes only:
+#
+#   * NATIVE facts — the Kanban lifecycle the board itself recorded (the task is done,
+#     and which task), plus the task's own title and assignee;
+#   * TYPED self-reports — a closed set of enum values the worker may set, each rendered
+#     as an explicitly worker-claimed status, never as a verified outcome;
+#   * a FIXED next step telling the reader to open the task for the full text.
+#
+# Free text from the worker (OUTCOME/RESULT/SUMMARY/CHECKS/BLOCKERS/NEXT_STEP/
+# HUMAN_ACTION) is never rendered. The full summary stays on the Kanban run row, so the
+# engineering evidence is intact; only the channel projection narrows.
+_COMPLETION_TYPED_FIELDS = {
+    "REVIEW_RESULT": {"PASS", "PASSED", "CLEAN", "BLOCKED", "UNKNOWN", "NOT_RUN"},
+    "PYTEST_STATUS": {"PASS", "PASSED", "FAILED", "PARTIAL", "UNKNOWN", "NOT_RUN"},
+    "KANBAN_STATUS": {"PASS", "PARTIAL", "BLOCKED", "UNKNOWN"},
+}
+# Rendering table for the typed self-reports. Each label states that the value is the
+# worker's own claim: kanban_db records no review or test evidence that could
+# corroborate one, so a worker writing PASS must never read as a verified pass.
+_COMPLETION_TYPED_RENDER = (
+    ("KANBAN_STATUS", "gateway.kanban.ping.completion.label.kanban_status",
+     {"PASS": "gateway.kanban.ping.completion.state.done",
+      "PARTIAL": "gateway.kanban.ping.completion.state.partial",
+      "BLOCKED": "gateway.kanban.ping.completion.state.blocked",
+      "UNKNOWN": "gateway.kanban.ping.completion.state.unknown"}),
+    ("REVIEW_RESULT", "gateway.kanban.ping.completion.label.review",
+     {"PASS": "gateway.kanban.ping.completion.review.self_pass",
+      "PASSED": "gateway.kanban.ping.completion.review.self_pass",
+      "CLEAN": "gateway.kanban.ping.completion.review.self_pass",
+      "BLOCKED": "gateway.kanban.ping.completion.review.self_blocked",
+      "UNKNOWN": "gateway.kanban.ping.completion.state.unknown",
+      "NOT_RUN": "gateway.kanban.ping.completion.state.not_run"}),
+    ("PYTEST_STATUS", "gateway.kanban.ping.completion.label.tests",
+     {"PASS": "gateway.kanban.ping.completion.tests.self_pass",
+      "PASSED": "gateway.kanban.ping.completion.tests.self_pass",
+      "FAILED": "gateway.kanban.ping.completion.tests.self_failed",
+      "PARTIAL": "gateway.kanban.ping.completion.state.partial",
+      "UNKNOWN": "gateway.kanban.ping.completion.state.unknown",
+      "NOT_RUN": "gateway.kanban.ping.completion.state.not_run"}),
+)
+
+
+def _parse_completion_typed_fields(summary: Any) -> dict:
+    """Read ONLY the typed self-report fields out of a worker summary.
+
+    Free text is never captured, so there is nothing for a prose injection to reach.
+    An unrecognised value, a duplicate that disagrees, or a value outside the field's
+    closed set drops the field entirely.
+    """
+    if not isinstance(summary, str):
+        return {}
+    fields: dict[str, str] = {}
+    invalid: set[str] = set()
+    for raw_line in summary.splitlines():
+        match = re.fullmatch(r"\s*([A-Za-z][A-Za-z0-9_-]{0,31})\s*[:=]\s*(.*?)\s*", raw_line)
+        if not match:
+            continue
+        key = match.group(1).upper()
+        choices = _COMPLETION_TYPED_FIELDS.get(key)
+        if not choices:
+            continue
+        value = match.group(2).strip().upper()
+        if value not in choices:
+            invalid.add(key)
+        elif key in fields and fields[key] != value:
+            # Two disagreeing values for one field: neither can be trusted.
+            invalid.add(key)
+        else:
+            fields[key] = value
+    for key in invalid:
+        fields.pop(key, None)
+    return fields
+
+
+def _completion_typed_status_line(key: str, value: str) -> str:
+    """Render one typed self-report from the single render table."""
+    _render_key, label, labels = next(
+        entry for entry in _COMPLETION_TYPED_RENDER if entry[0] == key
+    )
+    return t("gateway.kanban.ping.completion.line", label=t(label), value=t(labels[value]))
+
+
+def _completed_receipt_lines(summary: Any, task_id: str) -> list[str]:
+    """Build the completion receipt: typed self-reports, then a fixed next step.
+
+    Always non-empty: even a run with no usable summary yields the next-step line, so a
+    finished task never reads as "nothing happened".
+    """
+    fields = _parse_completion_typed_fields(summary)
+    lines = [
+        _completion_typed_status_line(key, fields[key])
+        for key, _label, _labels in _COMPLETION_TYPED_RENDER
+        if fields.get(key)
+    ]
+    lines.append(t("gateway.kanban.ping.completion.open_task", task_id=task_id))
+    return lines
+
+
 def _fmt_completed(ev, n) -> tuple:
-    # Prefer the run summary from the event payload; fall back to task.result for legacy rows.
-    wake_handoff = None
-    payload_summary = _payload(ev, "summary")
-    if payload_summary:
-        wake_handoff = _first_line(str(payload_summary), 200)
-    elif n.task and n.task.result:
-        wake_handoff = _first_line(n.task.result, 160)
-    handoff = f"\n{wake_handoff}" if wake_handoff is not None else ""
+    """Render a completed run as a typed receipt, never from worker free text.
+
+    The summary is read from the exact completed attempt's run row (``run_summaries``)
+    and only its typed fields are projected. ``task.result`` is deliberately not used:
+    it is unrestricted worker prose and this message goes to an external channel.
+    """
+    summary = (
+        n.d.get("run_summaries", {}).get(ev.id)
+        if getattr(ev, "run_id", None) is not None
+        else None
+    )
+    body = "\n".join(_completed_receipt_lines(summary, n.task_id))
+    # The wake turn keeps the run's own summary verbatim: it is agent context, not a
+    # Human-facing publication, and it must not be replaced by the projection.
+    wake_handoff = _first_line(str(summary), 200) if summary else None
+    handoff = f"\n{body}" if body else ""
     return t("gateway.kanban.ping.completed", head=n.head, title=n.title, handoff=handoff), wake_handoff, None
 
 
 def _fmt_review_requested(ev, n) -> tuple:
-    # Implementation done; task moved to the review lane. Carry the handoff
-    # into the wake turn like ``completed`` so the reviewer needn't re-read the board.
-    handoff = ""
-    wake_handoff = None
+    """Announce that review was requested — a lifecycle fact, not a review verdict.
+
+    The event's ``summary`` is worker-authored prose, and it reaches an external channel,
+    so it is never published: it may carry a credential, a private path, or a "merged"
+    claim this notifier cannot verify. Two separate channels are served here:
+
+    * the Human message names the native fact (review was requested) and a fixed pointer
+      to the task — it never asserts a review outcome, because none exists yet;
+    * ``wake_handoff`` still carries the run's own summary into the synthesized wake
+      turn, which is agent context for the reviewer/creator, not a publication.
+    """
     summary = _payload(ev, "summary")
-    if summary:
-        summary = str(summary)
-        handoff = f"\n{summary[:200]}"
-        wake_handoff = _first_line(summary, 200)
+    text = str(summary).strip() if summary is not None else ""
+    wake_handoff = _first_line(text, 200) if text else None
+    body = t("gateway.kanban.ping.completion.open_task", task_id=n.task_id)
+    handoff = f"\n{body}" if body else ""
     return t("gateway.kanban.ping.review_requested", head=n.head, title=n.title, handoff=handoff), wake_handoff, None
 
 
@@ -507,7 +657,13 @@ class _KanbanNotification:
         self.platform_str = (sub["platform"] or "").lower()
         self.task_id = sub["task_id"]
         self.sub_profile = sub.get("notifier_profile") or ""
-        self.title = (task.title if task else sub["task_id"])[:120]
+        # The task title is worker/creator-authored text and rides into the chat body, so it
+        # gets the same scrub as a review reason: credentials redacted, local paths replaced,
+        # length bounded. Without this a task titled with a token or an absolute path
+        # published it to the channel. Empty title falls back to the task id, never to
+        # "None" or an empty parenthesis.
+        raw_title = (task.title if task else "") or ""
+        self.title = _safe_review_reason(raw_title, 120) or sub["task_id"]
         self.board_tag = t("gateway.kanban.ping.board_tag", board=self.board_slug) if self.board_slug else ""
         # Attribute the ping to the worker that did the work.
         tag = t("gateway.kanban.ping.assignee_tag", assignee=task.assignee) if task and task.assignee else ""

@@ -66,6 +66,16 @@ def format_config_parse_failure(config_path: Path, exc: Exception, *, fallback: 
     return f"Your settings file ({config_path}) has a formatting error{at}. {fallback_msg} {repair}"
 
 
+def _config_parse_summary(exc: Exception) -> str:
+    """``"has a formatting error at line 3"`` / ``"could not be read"``: no path, no file content.
+    The raw PyYAML/ruamel text quotes the offending lines (a duplicated ``api_key`` prints both
+    values), so only this summary may leave the host."""
+    if isinstance(exc, OSError):
+        return "could not be read"
+    where = _yaml_error_location(exc)
+    return f"has a formatting error at {where}" if where else "has a formatting error"
+
+
 def _warn_config_parse_failure(
     config_path: Path, exc: Exception, *, fallback: str = "defaults") -> None:
     """Surface a config.yaml parse failure to log and stderr (once per file signature).
@@ -79,7 +89,7 @@ def _warn_config_parse_failure(
         st = config_path.stat()
         sig = file_signature(st)
         key = (str(config_path), *sig)
-        _CONFIG_PARSE_FAILURES[str(config_path)] = (*sig, str(exc))
+        _CONFIG_PARSE_FAILURES[str(config_path)] = (*sig, str(exc), _config_parse_summary(exc))
     except OSError:
         key = (str(config_path), 0, 0, 0, 0)
     if key in _CONFIG_PARSE_WARNED:
@@ -99,16 +109,29 @@ def _warn_config_parse_failure(
         pass
 
 
-def get_active_config_parse_failure() -> Optional[str]:
-    """Return the recorded parse error while the ACTIVE config.yaml is still byte-identical
+def _active_config_parse_record() -> Optional[tuple]:
+    """The recorded failure while the ACTIVE config.yaml is still byte-identical
     (mtime_ns + size + ino + ctime_ns) to the file that failed to parse; else None."""
     from hermes_cli.config import get_config_path
     try:
         record = _CONFIG_PARSE_FAILURES[str(path := get_config_path())]
         st = path.stat()
-        return record[4] if file_signature(st) == record[:4] else None
-    except Exception:
+        return record if file_signature(st) == record[:4] else None
+    except (KeyError, OSError):  # no failure recorded for this path / the file is gone
         return None
+
+
+def get_active_config_parse_failure() -> Optional[str]:
+    """Return the recorded parse error while the ACTIVE config.yaml still fails to parse; else None."""
+    record = _active_config_parse_record()
+    return record[4] if record else None
+
+
+def get_active_config_parse_summary() -> Optional[str]:
+    """Path- and content-free summary of the active parse failure, safe for the public
+    ``/api/status`` probe (see :func:`_config_parse_summary`); None while config.yaml parses."""
+    record = _active_config_parse_record()
+    return record[5] if record else None
 
 
 class FailedConfigRead(dict):

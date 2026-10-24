@@ -20,6 +20,8 @@ export type {
   WhatsAppOnboardingStartResponse,
   WhatsAppOnboardingStatusResponse,
 } from "./api-whatsapp";
+import type { DiskPressureStatus, MemoryPressureStatus } from "./api-status";
+export type { DiskPressureStatus, MemoryPressureStatus } from "./api-status";
 import type {
   ManagedFileReadResponse,
   ManagedFilesResponse,
@@ -2034,6 +2036,9 @@ export interface StatusResponse {
    * ``hermes gateway migrate --multiplex`` runs. null/absent when it multiplexes or only one
    * profile exists. */
   multiplex_standalone_reason?: string | null;
+  /** Set while config.yaml fails to parse and Hermes runs on fallback settings, e.g. "has a
+   * formatting error at line 4"; never a path or file content. null/absent when it parses. */
+  config_parse_error?: string | null;
   /** Every profile installed on this host (multiplex or not). */
   profiles?: string[];
   gateway_health_url: string | null;
@@ -2060,34 +2065,6 @@ export interface StatusResponse {
   disk?: DiskPressureStatus;
   release_date: string;
   version: string;
-}
-
-/** NS-656: coarse memory telemetry served by /api/status. */
-export interface MemoryPressureStatus {
-  pressure: "ok" | "elevated" | "critical" | "unknown";
-  gateway_rss_mb?: number | null;
-  system_total_mb?: number | null;
-  system_available_mb?: number | null;
-  swap_used_mb?: number | null;
-  sampled_at?: string | null;
-  /** Previous gateway life died without running any exit path. */
-  last_boot_unclean?: boolean;
-  /** ...and its final heartbeat showed near-exhausted memory. Heuristic —
-   * strong evidence of an OOM kill, not proof the kernel OOM killer acted. */
-  last_boot_suspected_oom?: boolean;
-  /** Identity of the current gateway life (sentinel started_at). Changes on
-   * every restart; keys per-incident banner dismissal. */
-  boot_id?: string | null;
-}
-
-/** NS-656: coarse disk telemetry served by /api/status. Live statvfs
- * sample of the HERMES_HOME volume — no staleness dimension, so no
- * sampled_at. */
-export interface DiskPressureStatus {
-  pressure: "ok" | "elevated" | "critical" | "unknown";
-  total_mb?: number | null;
-  free_mb?: number | null;
-  used_percent?: number | null;
 }
 
 export interface ChatWorkspaceProject {

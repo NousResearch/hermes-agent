@@ -552,6 +552,10 @@ async def get_status(profile: Optional[str] = None):
         # Advisory only. Expose no paths or process identities on this public probe.
         from hermes_cli.shared_profile_warning import shared_profile_warning
         status["shared_profile_warning"] = bool(await run_in_threadpool(shared_profile_warning))
+        # Unparseable config.yaml = every reader on fallback settings (#93263). check_config_version()
+        # above parsed the active file; the summary carries no path or file content (public probe).
+        from hermes_cli.config_read_errors import get_active_config_parse_summary
+        status["config_parse_error"] = get_active_config_parse_summary()
 
         components = await _component_health(gateway)
         status["components"] = components

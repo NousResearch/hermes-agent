@@ -188,8 +188,14 @@ def _wrap_command_script(
         'export GIT_PAGER="${GIT_PAGER:-cat}" PAGER="${PAGER:-cat}"',
         # ``--`` keeps hyphen-prefixed directory names from being parsed as options.
         f"builtin cd -- {quoted_cwd} || exit 126",
+        # Restore the shell options around the eval: a command that turns on ``set -e``
+        # (e.g. the _atomic_write script) otherwise leaks it into the epilogue, and under
+        # ``bash -l`` a failing ~/.bash_logout (stock Ubuntu clear_console) then replaces
+        # the command's own status — write_file/patch report a successful write as failed (#144060).
+        '__hermes_saved_opts=$(set +o)',
         _eval_capturing_pipestatus(escaped) if capture else f"eval '{escaped}'",
         "__hermes_ec=$?",
+        'eval "$__hermes_saved_opts"',
         "umask 077"]
     if snapshot_ready and persist_env:
         parts.append(

@@ -31,7 +31,7 @@ from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tup
 from urllib.parse import urlparse
 
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
-from agent.credential_persistence import sanitize_borrowed_credential_payload
+from agent.credential_persistence import persistable_pool_row
 from utils import atomic_json_write, env_float, file_signature, is_truthy_value
 from hermes_cli.auth_zai_kimi import (
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
@@ -1112,7 +1112,7 @@ def write_credential_pool(
         auth_store = _load_auth_store()
         pool = _store_section(auth_store, "credential_pool")
         sanitized = [
-            sanitize_borrowed_credential_payload(e, provider_id) if isinstance(e, dict) else e
+            persistable_pool_row(e, provider_id) if isinstance(e, dict) else e
             for e in entries]
         existing_list = pool.get(provider_id)
         existing_list = existing_list if isinstance(existing_list, list) else []
@@ -1130,7 +1130,7 @@ def write_credential_pool(
         for disk_entry in existing_list:
             disk_id = disk_entry.get("id") if isinstance(disk_entry, dict) else None
             if disk_id and disk_id not in new_ids and disk_id not in removed:
-                merged.append(sanitize_borrowed_credential_payload(disk_entry, provider_id))
+                merged.append(persistable_pool_row(disk_entry, provider_id))
         pool[provider_id] = merged
         _save_auth_store(auth_store)
         return merged

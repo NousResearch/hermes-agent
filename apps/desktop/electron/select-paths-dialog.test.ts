@@ -4,10 +4,17 @@ import { selectPathsDialogProperties } from './select-paths-dialog'
 
 describe('selectPathsDialogProperties', () => {
   it('lets a directory picker create a new folder (macOS hides New Folder without createDirectory)', () => {
-    const properties = selectPathsDialogProperties({ directories: true, multiple: false })
+    const properties = selectPathsDialogProperties({ directories: true, multiple: false }, 'darwin')
 
     expect(properties).toContain('openDirectory')
     expect(properties).toContain('createDirectory')
+  })
+
+  it('does not send the macOS-only createDirectory flag to the Windows folder picker', () => {
+    const properties = selectPathsDialogProperties({ directories: true, multiple: false }, 'win32')
+
+    expect(properties).toContain('openDirectory')
+    expect(properties).not.toContain('createDirectory')
   })
 
   it('keeps file pickers file-only and multi-select by default', () => {

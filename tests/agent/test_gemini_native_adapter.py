@@ -273,6 +273,140 @@ def test_translate_native_response_surfaces_reasoning_and_tool_calls():
     assert json.loads(choice.message.tool_calls[0].function.arguments) == {"q": "hermes"}
 
 
+def test_translate_native_response_sanitizes_lone_surrogate_in_tool_args():
+    from agent.gemini_native_adapter import translate_gemini_response
+
+    payload = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "functionCall": {
+                                "id": "call_1",
+                                "name": "cronjob",
+                                "args": {"action": "remove", "job_id": "unicode-boundary: \ud800"},
+                            }
+                        }
+                    ]
+                },
+                "finishReason": "STOP",
+            }
+        ],
+        "usageMetadata": {
+            "promptTokenCount": 10,
+            "candidatesTokenCount": 5,
+            "totalTokenCount": 15,
+        },
+    }
+
+    response = translate_gemini_response(payload, model="gemini-2.5-flash")
+    tc = response.choices[0].message.tool_calls[0].function
+    assert tc.name == "cronjob"
+    args = json.loads(tc.arguments)
+    assert args["job_id"] == "unicode-boundary: �"
+
+
+# ---------------------------------------------------------------------------
+# _dump_call_args edge-case regression tests (suggested by @crazyief)
+# ---------------------------------------------------------------------------
+
+
+def test_dump_call_args_no_args_key():
+    """fc without 'args' key: .get() returns None, or {} -> json.dumps({}) -> '{}'."""
+    from agent.gemini_native_adapter import _dump_call_args
+
+    result = _dump_call_args({"id": "call_1", "name": "test"})
+    assert result == "{}", f"Expected '{{}}', got {result!r}"
+
+
+def test_dump_call_args_args_is_none():
+    """fc['args'] is None: .get() returns None, or {} -> json.dumps({}) -> '{}'."""
+    from agent.gemini_native_adapter import _dump_call_args
+
+    result = _dump_call_args({"id": "call_1", "name": "test", "args": None})
+    assert result == "{}", f"Expected '{{}}', got {result!r}"
+
+
+def test_dump_call_args_single_surrogate():
+    """A lone surrogate in a string value is replaced with U+FFFD."""
+    from agent.gemini_native_adapter import _dump_call_args
+
+    result = _dump_call_args({"id": "call_1", "name": "test", "args": {"msg": "hello \ud800 world"}})
+    parsed = json.loads(result)
+    assert parsed["msg"] == "hello � world", f"Got {parsed['msg']!r}"
+
+
+def test_dump_call_args_multiple_surrogates():
+    """Multiple lone surrogates are all replaced."""
+    from agent.gemini_native_adapter import _dump_call_args
+
+    result = _dump_call_args({"id": "call_1", "name": "test", "args": {"a": "\ud800\ud801\ud802"}})
+    parsed = json.loads(result)
+    assert parsed["a"] == "���", f"Got {parsed['a']!r}"
+
+
+def test_dump_call_args_nested_surrogate():
+    """Surrogate in a nested dict value."""
+    from agent.gemini_native_adapter import _dump_call_args
+
+    result = _dump_call_args({
+        "id": "call_1",
+        "name": "test",
+        "args": {"outer": {"inner": "nested \ud800 value"}},
+    })
+    parsed = json.loads(result)
+    assert parsed["outer"]["inner"] == "nested � value", f"Got {parsed!r}"
+
+
+def test_dump_call_args_surrogate_in_key():
+    """Surrogate in a dict key is sanitized."""
+    from agent.gemini_native_adapter import _dump_call_args
+
+    result = _dump_call_args({
+        "id": "call_1",
+        "name": "test",
+        "args": {"\ud800key": "value"},
+    })
+    parsed = json.loads(result)
+    assert "�key" in parsed, f"Key not sanitized, got keys: {list(parsed.keys())}"
+    assert parsed["�key"] == "value"
+
+
+def test_dump_call_args_unicode_preserved():
+    """Normal Unicode (emoji, CJK) is preserved, not mistaken for surrogates."""
+    from agent.gemini_native_adapter import _dump_call_args
+
+    result = _dump_call_args({
+        "id": "call_1",
+        "name": "test",
+        "args": {"emoji": "\U0001f389", "cjk": "\u4e2d\u6587\u6e2c\u8a66"},
+    })
+    parsed = json.loads(result)
+    assert parsed["emoji"] == "\U0001f389", f"Emoji changed: {parsed['emoji']!r}"
+    assert parsed["cjk"] == "\u4e2d\u6587\u6e2c\u8a66", f"CJK changed: {parsed['cjk']!r}"
+
+
+def test_dump_call_args_non_serializable_fallback():
+    """A non-serializable value in args triggers TypeError -> '{}' fallback."""
+    from agent.gemini_native_adapter import _dump_call_args
+
+    class NonSerializable:
+        pass
+
+    result = _dump_call_args({"id": "call_1", "name": "test", "args": {"x": NonSerializable()}})
+    assert result == "{}", f"Expected '{{}}', got {result!r}"
+
+
+def test_dump_call_args_list_args():
+    """fc['args'] is a list: json.dumps([...]) works fine, no TypeError."""
+    from agent.gemini_native_adapter import _dump_call_args
+
+    result = _dump_call_args({"id": "call_1", "name": "test", "args": [1, 2, 3]})
+    parsed = json.loads(result)
+    assert parsed == [1, 2, 3], f"Expected [1,2,3], got {parsed!r}"
+
+
 def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatch):
     from agent.gemini_native_adapter import GeminiNativeClient
 

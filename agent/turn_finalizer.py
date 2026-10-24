@@ -232,6 +232,12 @@ def _recover_final_from_stream(agent, final_response, interrupted, failed) -> tu
         return final_response, False
     _streamed = getattr(agent, "_current_streamed_assistant_text", "") or ""
     _streamed = _streamed.strip() if isinstance(_streamed, str) else ""
+    if _streamed:
+        # The accumulator is documented to hold only scrubbed, delivered text, but the
+        # suppressed tool-call path is an alternate writer. Never promote a raw reasoning
+        # envelope to the durable assistant row: strip it and fall back to the empty-response
+        # handling rather than freezing chain-of-thought into the transcript.
+        _streamed = (agent._strip_think_blocks(_streamed) or "").strip()
     if not (flatten_message_text(final_response).strip() if final_response else "") and _streamed:
         return _streamed, True
     return final_response, False

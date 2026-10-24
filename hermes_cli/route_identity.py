@@ -44,6 +44,23 @@ def normalize_route_base_url(base_url: Any) -> str:
     return normalized
 
 
+def is_copilot_plan_route(provider: str, base_url: Any) -> bool:
+    """Whether *base_url* is the bare HTTPS root of a GitHub Copilot host.
+
+    The token exchange reports the account's plan host (``api.individual.``, ``api.business.``,
+    ``api.enterprise.githubcopilot.com``) as ``endpoints.api``, so ``model.base_url`` can carry it.
+    That host is Copilot's own, not a relay. A path, query, user info, non-default port or plain
+    HTTP keeps relay handling, so a relay mounted under a Copilot host is still a relay.
+    """
+    from utils import base_url_host_matches
+
+    if provider != "copilot":
+        return False
+    normalized = normalize_route_base_url(str(base_url or "").strip())
+    host = urlsplit(normalized).hostname or ""
+    return normalized == f"https://{host}" and base_url_host_matches(host, "githubcopilot.com")
+
+
 def provider_owns_route(provider: Any, base_url: Any, config: Any = None) -> Optional[bool]:
     """Whether ``model.base_url`` is *provider*'s own endpoint.
 

@@ -24,11 +24,19 @@ import { atom } from 'nanostores'
 import { setSessionUnreadRemote } from '@/hermes'
 
 import { $sessions, setSessions } from './session'
+import { sessionMutationScopeFromRow } from './session-request-router'
 
 export const UNREAD_WRITE_GUARD_MS = 10_000
 
 /** id -> the value we wrote and when. Guarded rows outrank list pages. */
 export const $unreadWriteGuard = atom<Map<string, { at: number; value: boolean }>>(new Map())
+interface UnreadWriteState {
+  confirmed: boolean
+  latest: symbol
+  tail: Promise<void>
+}
+
+const unreadWrites = new Map<string, UnreadWriteState>()
 
 function rowFor(storedId: string) {
   return $sessions.get().find(row => row.id === storedId)
@@ -44,21 +52,51 @@ export async function markSessionUnread(storedId: string, unread: boolean): Prom
     return
   }
 
+  const revision = Symbol(storedId)
+
+  const state =
+    unreadWrites.get(storedId) ??
+    ({ confirmed: row.unread === true, latest: revision, tail: Promise.resolve() } satisfies UnreadWriteState)
+
+  state.latest = revision
+  unreadWrites.set(storedId, state)
+
   const guard = new Map($unreadWriteGuard.get())
   guard.set(storedId, { at: Date.now(), value: unread })
   $unreadWriteGuard.set(guard)
 
   setSessions(rows => rows.map(r => (r.id === storedId ? { ...r, unread } : r)))
 
+  const write = state.tail.then(() =>
+    setSessionUnreadRemote(storedId, unread, sessionMutationScopeFromRow(row) ?? row.profile).then(() => undefined)
+  )
+
+  // Serialize transport per session so late server completions cannot restore
+  // an older value after a newer click. A failed predecessor does not block
+  // the next requested value.
+  state.tail = write.catch(() => undefined)
+
   try {
-    await setSessionUnreadRemote(storedId, unread, row.profile)
+    await write
+
+    state.confirmed = unread
   } catch (err) {
+    // An older rejection must not undo a newer click. The latest rejection
+    // restores the last backend-confirmed value, never another pending edit.
+    if (state.latest !== revision) {
+      throw err
+    }
+
     // Roll back visibly: the backend kept the old value.
     const guard2 = new Map($unreadWriteGuard.get())
     guard2.delete(storedId)
     $unreadWriteGuard.set(guard2)
-    setSessions(rows => rows.map(r => (r.id === storedId ? { ...r, unread: !unread } : r)))
+    setSessions(rows => rows.map(r => (r.id === storedId && r.unread === unread ? { ...r, unread: state.confirmed } : r)))
     throw err
+  } finally {
+    if (state.latest === revision) {
+      unreadWrites.delete(storedId)
+    }
   }
 }
 

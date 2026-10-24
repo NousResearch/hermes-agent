@@ -5,7 +5,7 @@ import { atom } from 'nanostores'
 import { useRef } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
-import type { HermesGateway } from '@/hermes'
+import type { HermesGateway, ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
@@ -46,6 +46,8 @@ export interface ModelMenuHostProps {
   onSelectModel: (selection: ModelSelection) => Promise<boolean> | void
   profile?: string
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  /** Exact REST recovery owner for owner-routed model catalog reads. */
+  scope?: ProfileScope
 }
 
 /**
@@ -60,7 +62,8 @@ export function useModelMenuController({
   onSelectModel,
   ownerConnectionId,
   profile = 'default',
-  requestGateway
+  requestGateway,
+  scope
 }: ModelMenuHostProps) {
   const { t } = useI18n()
   // Bind to THIS surface's SessionView (primary or tile) so each pane's menu
@@ -87,7 +90,7 @@ export function useModelMenuController({
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, activeSessionId, ownerConnectionId),
     queryFn: (): Promise<ModelOptionsResult> =>
-      requestModelOptions({ gateway, profile, request: requestGateway, sessionId: activeSessionId })
+      requestModelOptions({ gateway, profile, request: requestGateway, scope, sessionId: activeSessionId })
   })
 
   const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(

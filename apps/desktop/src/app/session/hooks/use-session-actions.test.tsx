@@ -6762,6 +6762,36 @@ describe('removeSession / archiveSession profile routing (#78836)', () => {
     expect($sessions.get()).toEqual([])
   })
 
+  it('keeps a bound row loaded while delete removes its pin', async () => {
+    const row = storedSession({
+      _desktop_route_binding: 'binding-a',
+      connection_id: 'source-a',
+      id: 'bound-delete',
+      profile: 'winefox',
+      source: 'telegram'
+    })
+
+    let rowAtUnpin: SessionInfo | undefined
+
+    setMessagingSessions([row])
+    $pinnedSessionIds.set(['bound-delete'])
+    mockDeleteSession.mockResolvedValue({ ok: true })
+
+    const unlisten = $pinnedSessionIds.listen(ids => {
+      if (!ids.includes('bound-delete')) {
+        rowAtUnpin = $messagingSessions.get().find(session => session.id === 'bound-delete')
+      }
+    })
+
+    const handle = await readyActions()
+    await act(async () => {
+      await handle.removeSession('bound-delete')
+    })
+    unlisten()
+
+    expect(rowAtUnpin).toMatchObject({ _desktop_route_binding: 'binding-a', connection_id: 'source-a' })
+  })
+
   it('resolves a profile-less messaging DELETE before drop, without leaking into recents', async () => {
     $sessionSeenCounts.set({
       winefox: { 'tg-1': 4 },
@@ -6832,6 +6862,36 @@ describe('removeSession / archiveSession profile routing (#78836)', () => {
 
     expect(mockSetSessionArchived).toHaveBeenCalledWith('tg-arch', true, 'winefox')
     expect($messagingSessions.get()).toEqual([])
+  })
+
+  it('keeps a bound row loaded while archive removes its pin', async () => {
+    const row = storedSession({
+      _desktop_route_binding: 'binding-a',
+      connection_id: 'source-a',
+      id: 'bound-archive',
+      profile: 'winefox',
+      source: 'telegram'
+    })
+
+    let rowAtUnpin: SessionInfo | undefined
+
+    setMessagingSessions([row])
+    $pinnedSessionIds.set(['bound-archive'])
+    mockSetSessionArchived.mockResolvedValue({ ok: true })
+
+    const unlisten = $pinnedSessionIds.listen(ids => {
+      if (!ids.includes('bound-archive')) {
+        rowAtUnpin = $messagingSessions.get().find(session => session.id === 'bound-archive')
+      }
+    })
+
+    const handle = await readyActions()
+    await act(async () => {
+      await handle.archiveSession('bound-archive')
+    })
+    unlisten()
+
+    expect(rowAtUnpin).toMatchObject({ _desktop_route_binding: 'binding-a', connection_id: 'source-a' })
   })
 
   it('restores a failed archive to the messaging slice', async () => {

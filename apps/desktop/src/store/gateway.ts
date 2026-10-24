@@ -11,7 +11,7 @@ import {
 import { atom } from 'nanostores'
 
 import { canonicalOwnerProfile } from '@/api/canonical-protocol'
-import type { HermesConnection } from '@/global'
+import type { ConnectionOwner, HermesConnection } from '@/global'
 import { HermesGateway, setApiRequestConnection } from '@/hermes'
 import { translateNow } from '@/i18n'
 import {
@@ -51,6 +51,12 @@ const normKey = (profile: string | null | undefined): string => (profile ?? '').
 // Settings scopes and session creation pass so an explicit user gesture stays
 // distinguishable from ambient hydration at the call site.
 export type SpawnPriority = 'foreground' | 'background'
+
+interface GatewayRequestOptions {
+  expectedConnectionOwner?: ConnectionOwner
+  expectedOwner?: { profile: string; connectionOwner: ConnectionOwner }
+  spawnPriority?: SpawnPriority
+}
 
 // Read connection state through a call so TS control-flow analysis doesn't
 // narrow the getter to a constant across guards (it genuinely changes).
@@ -1240,7 +1246,10 @@ export async function requestGatewayForProfile<T>(
   params: Record<string, unknown> = {},
   timeoutMs?: number,
   signal?: AbortSignal,
-  { spawnPriority = 'background' }: { spawnPriority?: SpawnPriority } = {}
+  {
+    beforeRequest,
+    spawnPriority = 'background'
+  }: { beforeRequest?: () => Promise<void>; spawnPriority?: SpawnPriority } = {}
 ): Promise<T> {
   const route = await gatewayForProfile(profile, true, spawnPriority)
 
@@ -1248,6 +1257,8 @@ export async function requestGatewayForProfile<T>(
     if (!route.gateway) {
       throw new Error(`Hermes gateway unavailable for profile "${route.key}"`)
     }
+
+    await beforeRequest?.()
 
     const routedParams = route.scopeProfile ? { ...params, profile: route.key } : params
 
@@ -1286,13 +1297,34 @@ export async function requestGatewayForAgent<T>(
   params: Record<string, unknown> = {},
   timeoutMs?: number,
   signal?: AbortSignal,
-  { spawnPriority = 'background' }: { spawnPriority?: SpawnPriority } = {}
+  { expectedConnectionOwner, expectedOwner, spawnPriority = 'background' }: GatewayRequestOptions = {}
 ): Promise<T> {
   const key = normKey(profile)
   const scope = registryBackendScopeKey(connectionId, key)
 
+  const assertExpectedOwner = async () => {
+    if (!expectedOwner) {
+      return
+    }
+
+    if (!window.hermesDesktop?.getConnectionFor) {
+      throw new Error('This Desktop build cannot validate the Settings gateway owner. Update Hermes Desktop.')
+    }
+
+    await window.hermesDesktop.getConnectionFor({
+      connectionId,
+      expectedConnectionOwner,
+      expectedOwner,
+      profile: key,
+      priority: spawnPriority
+    })
+  }
+
   if (scope === key) {
-    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, { spawnPriority })
+    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, {
+      beforeRequest: assertExpectedOwner,
+      spawnPriority
+    })
   }
 
   // A primary remote selected from the connection registry carries its source
@@ -1306,10 +1338,14 @@ export async function requestGatewayForAgent<T>(
   if (isPrimaryRegistryRoute(connectionId, key)) {
     traceAgentRoute(scope, 'primary')
 
-    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, { spawnPriority })
+    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, {
+      beforeRequest: assertExpectedOwner,
+      spawnPriority
+    })
   }
 
   if (await ridesPrimaryBackend(connectionId, key)) {
+    await assertExpectedOwner()
     traceAgentRoute(scope, 'primary-shared')
 
     return requestOnPrimaryGateway<T>(method, { ...params, profile: key }, timeoutMs, signal)
@@ -1337,6 +1373,10 @@ export async function requestGatewayForAgent<T>(
 
   try {
     await openSecondaryForRequest(entry, spawnPriority)
+    // Acquisition can await a cold backend. Revalidate the immutable Settings
+    // owner immediately before the RPC so a same-id registry replacement never
+    // receives a request captured by the previous owner.
+    await assertExpectedOwner()
 
     const result = await (timeoutMs === undefined && signal === undefined
       ? entry.gateway.request<T>(method, params)

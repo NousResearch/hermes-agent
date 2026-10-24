@@ -1,15 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ProfileScope } from '@/hermes'
 import type { SessionInfo } from '@/types/hermes'
 
-const patch = vi.fn<(id: string, unread: boolean, profile?: null | string) => Promise<{ ok: boolean }>>(() =>
+const patch = vi.fn<(id: string, unread: boolean, profile?: ProfileScope) => Promise<{ ok: boolean }>>(() =>
   Promise.resolve({ ok: true })
 )
 
 vi.mock('@/hermes', () => ({
   // The store only needs the REST mutation; keep the mock minimal.
   setApiRequestProfile: () => {},
-  setSessionUnreadRemote: (id: string, unread: boolean, profile?: null | string) => patch(id, unread, profile)
+  setSessionUnreadRemote: (id: string, unread: boolean, profile?: ProfileScope) => patch(id, unread, profile)
 }))
 
 import { $sessions } from '@/store/session'
@@ -22,7 +23,8 @@ const row = (id: string, extra: Partial<SessionInfo> = {}): SessionInfo =>
 beforeEach(() => {
   $sessions.set([])
   $unreadWriteGuard.set(new Map())
-  patch.mockClear()
+  patch.mockReset()
+  patch.mockResolvedValue({ ok: true })
 })
 
 afterEach(() => {
@@ -38,6 +40,26 @@ describe('markSessionUnread', () => {
 
     expect(patch).toHaveBeenCalledWith('a', true, 'work')
     expect($sessions.get().find(s => s.id === 'a')?.unread).toBe(true)
+  })
+
+  it('keeps a registry row route binding on the unread PATCH', async () => {
+    $sessions.set([
+      row('a', {
+        _desktop_route_binding: 'binding-a',
+        connection_id: 'same-id',
+        profile: 'work',
+        unread: false
+      })
+    ])
+
+    await markSessionUnread('a', true)
+
+    expect(patch).toHaveBeenCalledWith('a', true, {
+      connectionId: 'same-id',
+      profile: 'work',
+      sessionRouteBinding: 'binding-a',
+      sessionRouteId: 'a'
+    })
   })
 
   it('no-ops for a runtime-only session with no persisted row', async () => {
@@ -56,6 +78,56 @@ describe('markSessionUnread', () => {
     // the guard is released (nothing to fence a page about).
     expect($sessions.get().find(s => s.id === 'a')?.unread).toBe(false)
     expect($unreadWriteGuard.get().has('a')).toBe(false)
+  })
+
+  it('does not let an older failure roll back a newer successful toggle', async () => {
+    let rejectFirst!: (error: Error) => void
+    patch
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectFirst = reject
+          })
+      )
+      .mockResolvedValueOnce({ ok: true })
+    $sessions.set([row('a', { unread: false })])
+
+    const older = markSessionUnread('a', true)
+    const olderResult = older.catch(error => error)
+    const newer = markSessionUnread('a', false)
+    await vi.waitFor(() => expect(patch).toHaveBeenCalledTimes(1))
+    rejectFirst(new Error('older write failed'))
+
+    expect(await olderResult).toEqual(expect.objectContaining({ message: 'older write failed' }))
+    await newer
+    expect($sessions.get().find(s => s.id === 'a')?.unread).toBe(false)
+  })
+
+  it('restores the last confirmed value when two queued toggles both fail', async () => {
+    patch.mockRejectedValue(new Error('offline'))
+    $sessions.set([row('a', { unread: false })])
+
+    const older = markSessionUnread('a', true)
+    const newer = markSessionUnread('a', false)
+    const olderResult = older.catch(error => error)
+    const newerResult = newer.catch(error => error)
+
+    expect(await olderResult).toEqual(expect.objectContaining({ message: 'offline' }))
+    expect(await newerResult).toEqual(expect.objectContaining({ message: 'offline' }))
+    expect($sessions.get().find(s => s.id === 'a')?.unread).toBe(false)
+  })
+
+  it('rolls a failed newer toggle back to an older confirmed write', async () => {
+    patch.mockResolvedValueOnce({ ok: true }).mockRejectedValueOnce(new Error('offline'))
+    $sessions.set([row('a', { unread: false })])
+
+    const older = markSessionUnread('a', true)
+    const newer = markSessionUnread('a', false)
+    const newerResult = newer.catch(error => error)
+
+    await older
+    expect(await newerResult).toEqual(expect.objectContaining({ message: 'offline' }))
+    expect($sessions.get().find(s => s.id === 'a')?.unread).toBe(true)
   })
 })
 

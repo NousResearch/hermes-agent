@@ -1,8 +1,9 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ProfileScope } from '@/hermes'
 import type { SessionInfo } from '@/types/hermes'
 
-const patch = vi.fn<(id: string, pinned: boolean, profile?: null | string) => Promise<{ ok: boolean }>>(() =>
+const patch = vi.fn<(id: string, pinned: boolean, profile?: ProfileScope) => Promise<{ ok: boolean }>>(() =>
   Promise.resolve({ ok: true })
 )
 
@@ -10,7 +11,7 @@ vi.mock('@/hermes', () => ({
   // The layout store reaches the profile store, which sets the request profile
   // at import time; this suite only cares about the pin call.
   setApiRequestProfile: () => {},
-  setSessionPinnedRemote: (id: string, pinned: boolean, profile?: null | string) => patch(id, pinned, profile)
+  setSessionPinnedRemote: (id: string, pinned: boolean, profile?: ProfileScope) => patch(id, pinned, profile)
 }))
 
 import { $pinnedSessionIds } from '@/store/layout'
@@ -57,6 +58,26 @@ describe('watchSessionPins', () => {
     await flush()
 
     expect(patch).toHaveBeenCalledWith('a', true, 'work')
+  })
+
+  it('keeps a registry row route binding on the pin PATCH', async () => {
+    $sessions.set([
+      row('bound', {
+        _desktop_route_binding: 'binding-a',
+        _lineage_root_id: 'root',
+        connection_id: 'same-id',
+        profile: 'work'
+      })
+    ])
+    $pinnedSessionIds.set(['root'])
+    await flush()
+
+    expect(patch).toHaveBeenCalledWith('root', true, {
+      connectionId: 'same-id',
+      profile: 'work',
+      sessionRouteBinding: 'binding-a',
+      sessionRouteId: 'bound'
+    })
   })
 
   it('mirrors an unpin as pinned=false', async () => {

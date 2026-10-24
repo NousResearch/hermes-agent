@@ -40,7 +40,7 @@ import {
 import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tip, TipHintLabel } from '@/components/ui/tooltip'
-import type { HermesGateway } from '@/hermes'
+import type { HermesGateway, ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { isSubmitEnter } from '@/lib/ime'
@@ -185,6 +185,8 @@ interface ModelCatalogMenuProps {
   /** Owner-routed RPC for catalog reads. Preferred over `gateway.request` so
    *  a tile's menu queries the session owner's backend, not chrome's. */
   request?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  /** Exact REST recovery owner for an owner-routed catalog request. */
+  scope?: ProfileScope
   /** Render the virtual `moa` provider's presets as a selectable section.
    *  Off for override surfaces, where a MoA preset isn't a worker model. */
   includeMoa?: boolean
@@ -250,6 +252,7 @@ export function ModelCatalogMenu({
   ownerConnectionId,
   profile = 'default',
   request,
+  scope,
   sessionId = null
 }: ModelCatalogMenuProps): ReactElement {
   const { t } = useI18n()
@@ -280,7 +283,7 @@ export function ModelCatalogMenu({
     // Gateway-first even with no session: a connected (possibly remote)
     // gateway owns the model catalog, including virtual providers the local
     // REST fallback can't know about (#53817).
-    queryFn: (): Promise<ModelOptionsResult> => requestModelOptions({ gateway, profile, request, sessionId }),
+    queryFn: (): Promise<ModelOptionsResult> => requestModelOptions({ gateway, profile, request, scope, sessionId }),
     refetchOnMount: query => nousRefetchOnMount(query.state.data),
     refetchInterval: query => nousPricingPoll(query.state.data, query.state.dataUpdateCount)
   })

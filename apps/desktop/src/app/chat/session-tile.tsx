@@ -59,7 +59,7 @@ import {
   sessionPinId
 } from '@/store/session'
 import { isSessionRemovalPending } from '@/store/session-removal'
-import { requestForSessionProfile } from '@/store/session-request-router'
+import { profileScopeForSessionOwner, requestForSessionProfile } from '@/store/session-request-router'
 import {
   $botChatScopes,
   $sessionStates,
@@ -361,14 +361,13 @@ function TileChat({
           ownerConnectionId={ownerRoute?.connectionId || undefined}
           profile={ownerRoute?.targetProfile || ownerRoute?.profile || activeGatewayProfile}
           requestGateway={requestTileGateway}
+          scope={profileScopeForSessionOwner(ownerRoute)}
         />
       ) : null,
     [
       activeGatewayProfile,
       gatewayOpen,
-      ownerRoute?.connectionId,
-      ownerRoute?.profile,
-      ownerRoute?.targetProfile,
+      ownerRoute,
       requestTileGateway,
       selectModel
     ]
@@ -382,14 +381,13 @@ function TileChat({
           ownerConnectionId={ownerRoute?.connectionId || undefined}
           profile={ownerRoute?.targetProfile || ownerRoute?.profile || activeGatewayProfile}
           requestGateway={requestTileGateway}
+          scope={profileScopeForSessionOwner(ownerRoute)}
         />
       ) : null,
     [
       activeGatewayProfile,
       gatewayOpen,
-      ownerRoute?.connectionId,
-      ownerRoute?.profile,
-      ownerRoute?.targetProfile,
+      ownerRoute,
       requestTileGateway,
       selectModel
     ]

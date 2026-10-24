@@ -1,5 +1,5 @@
 import { atom } from 'nanostores'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ProfileInfo } from '@/types/hermes'
 
@@ -19,8 +19,10 @@ vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }
 vi.mock('@/store/starmap', () => ({ reloadOpenStarmapGraph: vi.fn(), resetStarmapGraph: vi.fn() }))
 
 const { $activeGatewayProfile, $profiles } = await import('./profile')
+const { $connection } = await import('./session')
 
 const {
+  $settingsOwner,
   $settingsRequestProfile,
   $settingsScopeEditsNonDefault,
   $settingsScopeOverride,
@@ -32,9 +34,74 @@ beforeEach(() => {
   $activeGatewayProfile.set('default')
   $settingsScopeOverride.set(null)
   $profiles.set([])
+  $connection.set(null)
 })
 
+afterEach(() => vi.unstubAllGlobals())
+
 describe('settings scope store', () => {
+  it('captures a selected profile owner from an unregistered legacy gateway', async () => {
+    const foreground = { baseUrl: 'https://foreground.example', mode: 'remote', profile: 'default', token: 'foreground' }
+    const selected = { baseUrl: 'https://selected.example', mode: 'remote', profile: 'worker', token: 'selected' }
+    const getConnectionFor = vi.fn(async () => selected)
+
+    vi.stubGlobal('hermesDesktop', { getConnectionFor })
+    $connection.set(foreground as never)
+    const unlisten = $settingsOwner.subscribe(() => undefined)
+
+    setSettingsScope('worker')
+
+    await vi.waitFor(() =>
+      expect($settingsOwner.get()).toMatchObject({
+        connectionId: null,
+        profile: 'worker',
+        legacyConnection: expect.objectContaining({ baseUrl: selected.baseUrl, token: selected.token }),
+        legacyConnectionProfile: 'worker'
+      })
+    )
+    expect(getConnectionFor).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionId: null, profile: 'worker' })
+    )
+    unlisten()
+  })
+
+  it('captures a new registered owner descriptor when the same id is replaced', () => {
+    const original = {
+      authMode: 'token',
+      baseUrl: 'https://original.example',
+      connectionId: 'same-id',
+      headers: { 'Cf-Access-Client-Id': 'original-client' },
+      mode: 'remote',
+      remoteHost: 'operator@original-host',
+      token: 'original-token'
+    }
+
+    $connection.set(original as never)
+    const captured = $settingsOwner.get()
+
+    expect(captured).toMatchObject({ connectionId: 'same-id' })
+    expect(captured?.connectionOwner).toMatchObject({
+      authMode: original.authMode,
+      baseUrl: original.baseUrl,
+      headers: original.headers,
+      mode: original.mode,
+      remoteHost: original.remoteHost,
+      token: original.token
+    })
+
+    for (const replacement of [
+      { ...original, baseUrl: 'https://replacement.example' },
+      { ...original, token: 'replacement-token' },
+      { ...original, headers: { 'Cf-Access-Client-Id': 'replacement-client' } },
+      { ...original, remoteHost: 'operator@replacement-host' }
+    ]) {
+      $connection.set(original as never)
+      const beforeReplacement = $settingsOwner.get()?.connectionOwner
+      $connection.set(replacement as never)
+      expect($settingsOwner.get()?.connectionOwner).not.toBe(beforeReplacement)
+    }
+  })
+
   it('defaults to following the active gateway profile (no override)', () => {
     expect($settingsScopeOverride.get()).toBeNull()
     expect($settingsScopeProfile.get()).toBe('default')
@@ -107,6 +174,10 @@ describe('settings scope store', () => {
 
     expect($settingsScopeProfile.get()).toBe('custom')
     expect($settingsRequestProfile.get()).toBeUndefined()
+
+    $connection.set({ baseUrl: 'http://127.0.0.1:4000', connectionId: 'local', mode: 'local', profile: 'custom' } as never)
+    expect($settingsOwner.get()).toMatchObject({ connectionId: 'local' })
+    expect($settingsOwner.get()).not.toHaveProperty('profile')
   })
 
   it('flags a non-default edit target whether it comes from the active profile or an override', () => {

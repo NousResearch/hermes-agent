@@ -1,6 +1,6 @@
 import type { ModelCapabilities, ModelOptionProvider, ModelOptionsResult } from '@hermes/shared'
 
-import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
+import { getGlobalModelOptions, type HermesGateway, type ProfileScope } from '@/hermes'
 
 type CatalogProviderIdentity = Partial<Pick<ModelOptionProvider, 'aliases' | 'name'>> &
   Pick<ModelOptionProvider, 'slug'>
@@ -114,6 +114,9 @@ interface ModelOptionsRequest {
    *  secondary tile does not fall back to the launch profile's models. */
   profile?: null | string
   refresh?: boolean
+  /** Captured REST owner for compatibility recovery. Required when `request`
+   * names a non-ambient gateway; profile alone is not a unique owner. */
+  scope?: ProfileScope
   sessionId?: null | string
 }
 
@@ -132,93 +135,84 @@ function hasSelectableModels(options: ModelOptionsResult | null | undefined): bo
   return options?.providers?.some(provider => (provider.models?.length ?? 0) > 0) ?? false
 }
 
-function restModelOptions(
-  explicitOnly: boolean,
-  refresh: boolean,
-  profile?: null | string
-): Promise<ModelOptionsResult> {
+function restModelOptions(explicitOnly: boolean, refresh: boolean, scope?: ProfileScope): Promise<ModelOptionsResult> {
   const opts = { explicitOnly, ...(refresh ? { refresh: true } : {}) }
-  const profileKey = (profile ?? '').trim()
 
-  return profileKey ? getGlobalModelOptions(opts, profileKey) : getGlobalModelOptions(opts)
+  return scope === undefined ? getGlobalModelOptions(opts) : getGlobalModelOptions(opts, scope)
 }
 
-export async function requestModelOptions({
+function modelOptionsParams({
   explicitOnly = true,
-  gateway,
   profile,
   refresh = false,
   request,
   sessionId
-}: ModelOptionsRequest): Promise<ModelOptionsResult> {
+}: ModelOptionsRequest): Record<string, unknown> {
+  const profileKey = (profile ?? '').trim()
+
+  return {
+    ...(sessionId ? { session_id: sessionId } : {}),
+    ...(refresh ? { refresh: true } : {}),
+    ...(explicitOnly ? { explicit_only: true } : {}),
+    ...(profileKey && !(request && sessionId) ? { profile: profileKey } : {})
+  }
+}
+
+async function requestDispatchedModelOptions(
+  options: ModelOptionsRequest,
+  dispatch: NonNullable<ModelOptionsRequest['request']>
+): Promise<ModelOptionsResult> {
+  const { explicitOnly = true, profile, refresh = false, request, scope } = options
+  let gatewayError: unknown
+  let gatewayOptions: ModelOptionsResult | undefined
+
+  try {
+    gatewayOptions = await dispatch<ModelOptionsResult>('model.options', modelOptionsParams(options))
+  } catch (error) {
+    gatewayError = error
+  }
+
+  if (gatewayOptions && hasSelectableModels(gatewayOptions)) {
+    return gatewayOptions
+  }
+
+  // Owner-routed dispatchers may recover through REST only when the caller
+  // supplies the same captured owner. Without it, profile names are not
+  // unique across sources and ambient recovery would cross gateways.
+  if (!request || scope !== undefined) {
+    try {
+      const restScope = scope ?? ((profile ?? '').trim() || undefined)
+      const restOptions = await restModelOptions(explicitOnly, refresh, restScope)
+
+      if (hasSelectableModels(restOptions)) {
+        return {
+          ...restOptions,
+          ...(gatewayOptions?.provider ? { provider: gatewayOptions.provider } : {}),
+          ...(gatewayOptions?.model ? { model: gatewayOptions.model } : {})
+        }
+      }
+    } catch {
+      // Preserve the gateway result (or its original error) when the recovery
+      // path is unavailable.
+    }
+  }
+
+  if (gatewayOptions) {
+    return gatewayOptions
+  }
+
+  throw gatewayError
+}
+
+export async function requestModelOptions(options: ModelOptionsRequest): Promise<ModelOptionsResult> {
+  const { explicitOnly = true, gateway, profile, refresh = false, request, scope } = options
   const dispatch = request ?? (gateway ? gateway.request.bind(gateway) : null)
 
   if (dispatch) {
-    const params: Record<string, unknown> = {}
-
-    if (sessionId) {
-      params.session_id = sessionId
-    }
-
-    if (refresh) {
-      params.refresh = true
-    }
-
-    if (explicitOnly) {
-      params.explicit_only = true
-    }
-
-    const profileKey = (profile ?? '').trim()
-
-    // An owner-routed session read is scoped by its session_id. The backend lets
-    // an explicit `profile` override that, and callers hand in the window's
-    // ambient profile, so sending it built the launch profile's catalog; the
-    // router adds the owner's own profile where its socket needs one.
-    if (profileKey && !(request && sessionId)) {
-      params.profile = profileKey
-    }
-
-    let gatewayError: unknown
-    let gatewayOptions: ModelOptionsResult | undefined
-
-    try {
-      gatewayOptions = await dispatch<ModelOptionsResult>('model.options', params)
-    } catch (error) {
-      gatewayError = error
-    }
-
-    if (gatewayOptions && hasSelectableModels(gatewayOptions)) {
-      return gatewayOptions
-    }
-
-    // An owner-routed dispatcher can name a different registry connection than
-    // the ambient REST client. Never recover that request through ambient REST:
-    // profile names are not unique across sources, so doing so can cache B's
-    // catalog under A's tile. Ambient gateway requests retain the compatibility
-    // recovery used by older backends with incomplete model.options responses.
-    if (!request) {
-      try {
-        const restOptions = await restModelOptions(explicitOnly, refresh, profile)
-
-        if (hasSelectableModels(restOptions)) {
-          return {
-            ...restOptions,
-            ...(gatewayOptions?.provider ? { provider: gatewayOptions.provider } : {}),
-            ...(gatewayOptions?.model ? { model: gatewayOptions.model } : {})
-          }
-        }
-      } catch {
-        // Preserve the gateway result (or its original error) when the recovery
-        // path is unavailable.
-      }
-    }
-
-    if (gatewayOptions) {
-      return gatewayOptions
-    }
-
-    throw gatewayError
+    return requestDispatchedModelOptions(options, dispatch)
   }
 
-  return restModelOptions(explicitOnly, refresh, profile)
+  const restScope = scope ?? ((profile ?? '').trim() || undefined)
+
+  return restModelOptions(explicitOnly, refresh, restScope)
 }

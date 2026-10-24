@@ -26,7 +26,7 @@ import {
 
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
 
-function sessionScoped(scope?: ProfileScope): { connectionId?: string; profile?: string } {
+function sessionScoped(scope?: ProfileScope): ReturnType<typeof capabilityScoped> {
   if (scope === undefined || scope === null) {
     return {}
   }
@@ -55,6 +55,10 @@ function sessionScoped(scope?: ProfileScope): { connectionId?: string; profile?:
  */
 function sessionWriteProfile(profile?: null | string): string | undefined {
   return String(profile ?? '').trim() || getApiRequestProfile() || undefined
+}
+
+function sessionWriteScope(scope?: ProfileScope): ProfileScope | undefined {
+  return scope && typeof scope === 'object' ? scope : sessionWriteProfile(scope)
 }
 
 function sessionScopeQuery(scope?: ProfileScope): string {
@@ -142,7 +146,8 @@ export async function listAllProfileSessions(
   order: 'created' | 'recent' = 'recent',
   profile: 'all' | (string & {}) = 'all',
   filter: SessionSourceFilter = {},
-  offset = 0
+  offset = 0,
+  scope?: ProfileScope
 ): Promise<PaginatedSessions> {
   const sourceParam = filter.source ? `&source=${encodeURIComponent(filter.source)}` : ''
 
@@ -151,7 +156,7 @@ export async function listAllProfileSessions(
     : ''
 
   const result = await hermesApi<PaginatedSessions>({
-    ...profileScoped(),
+    ...capabilityScoped(scope),
     path:
       `/api/profiles/sessions?limit=${limit}&offset=${Math.max(0, offset)}&min_messages=${Math.max(0, minMessages)}` +
       `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}`,
@@ -420,16 +425,16 @@ function mutateSessionHttp<T>(id: string, method: 'PATCH' | 'DELETE', payload: R
   return mutateSessionFenced(key, () => hermesApi<SessionMutationSnapshot>({ ...scope, path: `${path}/mutation-snapshot${suffix}` }), send)
 }
 
-export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  return mutateSessionHttp(id, 'PATCH', { archived, ...(archived ? { pinned: false } : {}) }, sessionWriteProfile(profile))
+export function setSessionArchived(id: string, archived: boolean, profile?: ProfileScope): Promise<{ ok: boolean }> {
+  return mutateSessionHttp(id, 'PATCH', { archived, ...(archived ? { pinned: false } : {}) }, sessionWriteScope(profile))
 }
 
-export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  return mutateSessionHttp(id, 'PATCH', { pinned }, sessionWriteProfile(profile))
+export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: ProfileScope): Promise<{ ok: boolean }> {
+  return mutateSessionHttp(id, 'PATCH', { pinned }, sessionWriteScope(profile))
 }
 
-export function setSessionUnreadRemote(id: string, unread: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  return mutateSessionHttp(id, 'PATCH', { unread }, sessionWriteProfile(profile))
+export function setSessionUnreadRemote(id: string, unread: boolean, profile?: ProfileScope): Promise<{ ok: boolean }> {
+  return mutateSessionHttp(id, 'PATCH', { unread }, sessionWriteScope(profile))
 }
 
 // Full-text search over one profile's sessions. Pass the profile the caller is
@@ -716,6 +721,6 @@ export function deleteSession(id: string, profile?: ProfileScope): Promise<{ ok:
   return mutateSessionHttp(id, 'DELETE', {}, profile)
 }
 
-export function renameSession(id: string, title: string, profile?: string | null): Promise<{ ok: boolean; title: string }> {
-  return mutateSessionHttp(id, 'PATCH', { title }, sessionWriteProfile(profile))
+export function renameSession(id: string, title: string, profile?: ProfileScope): Promise<{ ok: boolean; title: string }> {
+  return mutateSessionHttp(id, 'PATCH', { title }, sessionWriteScope(profile))
 }

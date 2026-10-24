@@ -336,6 +336,32 @@ class GatewayTurnHygieneMixin:
         )
         _record_hygiene_cooldown(self, session_id, _hyg_cooldown, reason)
 
+    def _hmwa_mark_usage_stale(self, *session_keys):
+        """A deferred hygiene compaction committed: zero the stored prompt count now (hygiene then
+        falls back to the fingerprint-checked usage anchor or the estimate) and discard the next
+        end-of-turn reading, which may come from a turn that ran on the replaced transcript."""
+        stale = getattr(self, "_hmwa_stale_usage_keys", None)
+        if stale is None:
+            stale = self._hmwa_stale_usage_keys = set()
+        for key in dict.fromkeys(key for key in session_keys if key):
+            stale.add(key)
+            try:
+                self.session_store.update_session(key, last_prompt_tokens=0, touch_activity=False)
+            except Exception as exc:
+                logger.warning(
+                    "Session hygiene: resetting the stale prompt count for %s failed: %s", key, exc,
+                    exc_info=True,
+                )
+
+    def _hmwa_turn_prompt_tokens(self, agent_result, *session_keys):
+        """End-of-turn prompt count to store: the agent's reading, or 0 once after a deferred
+        compaction replaced the session's transcript (see ``_hmwa_mark_usage_stale``)."""
+        stale = getattr(self, "_hmwa_stale_usage_keys", None)
+        if not stale or not any(key in stale for key in session_keys if key):
+            return agent_result.get("last_prompt_tokens", 0)
+        stale.difference_update(session_keys)
+        return 0
+
     async def _hmwa_hygiene_on_turn_hold(self, attempt, hs, session_entry, session_key, source):
         """``except HygieneTurnHoldExceeded`` body: keep or cancel the worker's commit admission,
         notify the user, and re-raise; returns the compressed transcript only when the worker
@@ -358,8 +384,9 @@ class GatewayTurnHygieneMixin:
             # comes from the durable compression lock. The done-callback records the flat retry-after
             # ONLY if the worker ends without committing anything.
             _sid, _skey, _agent = session_entry.session_id, session_key, attempt.agent
+            _ekey = session_entry.session_key
 
-            def _hyg_adopt_or_space_retry(_fut, _gw=self, _sid=_sid, _skey=_skey, _agent=_agent):
+            def _hyg_adopt_or_space_retry(_fut, _gw=self, _sid=_sid, _skey=_skey, _agent=_agent, _ekey=_ekey):
                 try:
                     _exc = _fut.exception()
                 except (asyncio.CancelledError, Exception):
@@ -379,6 +406,9 @@ class GatewayTurnHygieneMixin:
                         _reset_hygiene_failure_streak(_gw, _skey)
                     except Exception as _rs_err:
                         logger.debug("hygiene streak reset after deferred adoption failed: %s", _rs_err)
+                    # The stored prompt count priced the pre-compaction transcript; the inline
+                    # adoption path zeroes it, this deferred one must too.
+                    _gw._hmwa_mark_usage_stale(_skey, _ekey)
                 else:
                     # Nothing to adopt (summary failed / fence refused / superseded): flat spacing so
                     # sustained traffic doesn't spawn and abandon a compressor every turn.

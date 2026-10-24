@@ -518,7 +518,8 @@ class GatewayTurnPersistenceMixin:
 
         # The agent persists token counts/model itself; keep only last_prompt_tokens for hygiene.
         await store.update_session(
-            session_entry.session_key, last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
+            session_entry.session_key,
+            last_prompt_tokens=self._hmwa_turn_prompt_tokens(agent_result, session_key, session_entry.session_key),
             touch_activity=not bool(getattr(event, "internal", False)),
         )
 

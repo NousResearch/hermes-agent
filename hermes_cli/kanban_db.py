@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from hermes_cli import kanban_db_parked as _parked
 from hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
 from toolsets import get_toolset_names
 
@@ -235,7 +236,7 @@ _TICK_ACTIVITY_FIELDS = (
     "spawned", "reclaimed", "promoted", "reconciled_orphans", "reaped_terminal_workers", "crashed", "stale",
     "timed_out", "auto_blocked", "rate_limited", "auto_assigned_default",
     "respawn_guarded", "skipped_per_profile_capped", "skipped_unassigned",
-    "skipped_nonspawnable",
+    "skipped_nonspawnable", "parked_unassigned",
 )
 
 
@@ -1473,6 +1474,15 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
             )
         else:
             conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
+        # A parked card was waiting for exactly this: a name to route it to.
+        # Assigning one puts it back in the lane it was parked from.
+        if profile and row["status"] == _parked.PARKED:
+            source_status = _parked.source_status(conn, task_id)
+            conn.execute(
+                "UPDATE tasks SET status = ? WHERE id = ? AND status = ?",
+                (source_status, task_id, _parked.PARKED),
+            )
+            _append_event(conn, task_id, "unparked", {"assignee": profile, "status": source_status})
         # ``from`` lets the respawn guard tell a real handoff (dev→closer) from
         # a no-op re-assign or an unassign, which must not lift ``active_pr``.
         _append_event(
@@ -3922,46 +3932,6 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
 
 # --- Stats + SLA helpers ---
 
-def board_stats(conn: sqlite3.Connection) -> dict:
-    """Per-status + per-assignee counts and the oldest ``ready`` age (staleness signal)."""
-    by_status: dict[str, int] = {}
-    for row in conn.execute(
-        "SELECT status, COUNT(*) AS n FROM tasks "
-        "WHERE status != 'archived' GROUP BY status"
-    ):
-        by_status[row["status"]] = int(row["n"])
-
-    by_assignee = _counts_by_assignee(conn)
-
-    oldest_row = conn.execute(
-        "SELECT MIN(created_at) AS ts FROM tasks WHERE status = 'ready'"
-    ).fetchone()
-    now = int(time.time())
-    oldest_ready_age = (
-        (now - int(oldest_row["ts"]))
-        if oldest_row and oldest_row["ts"] is not None else None
-    )
-
-    return {
-        "by_status": by_status,
-        "by_assignee": by_assignee,
-        "oldest_ready_age_seconds": oldest_ready_age,
-        "now": now,
-    }
-
-
-def _counts_by_assignee(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
-    """``{assignee: {status: n}}`` over non-archived tasks."""
-    counts: dict[str, dict[str, int]] = {}
-    for row in conn.execute(
-        "SELECT assignee, status, COUNT(*) AS n FROM tasks "
-        "WHERE status != 'archived' AND assignee IS NOT NULL "
-        "GROUP BY assignee, status"
-    ):
-        counts.setdefault(row["assignee"], {})[row["status"]] = int(row["n"])
-    return counts
-
-
 def _to_epoch(val) -> Optional[int]:
     """Epoch seconds from int/float/numeric string/ISO-8601; None for empty/invalid."""
     if val is None:
@@ -4225,6 +4195,11 @@ from hermes_cli.kanban_db_workspace import (
     _is_managed_scratch_path,
     _managed_scratch_path_info,
     _scratch_workspace,
+)
+from hermes_cli.kanban_db_stats import (
+    board_stats,
+    counts_by_assignee as _counts_by_assignee,
+    ready_runnable_count as _ready_runnable_count,
 )
 from hermes_cli.kanban_db_dispatch import (
     DEFAULT_FAILURE_LIMIT,

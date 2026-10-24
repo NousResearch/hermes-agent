@@ -100,6 +100,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 {"task_id": tid, "assignee": who, "workspace": ws} for (tid, who, ws) in res.spawned
             ],
             "skipped_unassigned": res.skipped_unassigned,
+            "parked_unassigned": res.parked_unassigned,
             "skipped_nonspawnable": res.skipped_nonspawnable,
             "skipped_per_profile_capped": [
                 {"task_id": tid, "assignee": who, "current": current}
@@ -136,6 +137,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(
             f"Auto-assigned to kanban.default_assignee={default_assignee!r}: "
             f"{', '.join(res.auto_assigned_default)}"
+        )
+    if res.parked_unassigned:
+        # Parked cards are operator-actionable: they need a name, not a retry.
+        print(
+            f"Parked (no assignee, needs routing): {', '.join(res.parked_unassigned)}"
         )
     if res.skipped_unassigned:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")

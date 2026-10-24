@@ -30,6 +30,12 @@ def initial_task_state(
 
     Parent order breaks ties in this soft namespace; explicit tenant wins.
     Validate parents even for parked tasks so links never dangle.
+
+    A card created without an assignee still lands in ``ready``: creation is
+    not the defect. The defect is the DISPATCHER treating an unassigned
+    ``ready`` card as runnable work — the dispatcher parks it (see
+    ``hermes_cli.kanban_db_parked``) on its next tick, which is where the
+    card becomes visible as "queued but nobody can run it".
     """
     rows = {}
     if parents:

@@ -1,7 +1,7 @@
 ---
 sidebar_position: 15
 title: "MiniMax OAuth"
-description: "通过浏览器 OAuth 登录 MiniMax，在 Hermes Agent 中使用 MiniMax-M2.7 模型——无需 API 密钥"
+description: "通过浏览器 OAuth 登录 MiniMax，在 Hermes Agent 中使用 MiniMax-M3.1-Flash 和 MiniMax-M3 模型——无需 API 密钥"
 ---
 
 # MiniMax OAuth
@@ -18,7 +18,7 @@ Hermes Agent 通过基于浏览器的 OAuth 登录流程支持 **MiniMax**，使
 | 显示名称 | MiniMax (OAuth) |
 | 认证类型 | 浏览器 OAuth（PKCE 设备码流程） |
 | 传输层 | 兼容 Anthropic Messages（`anthropic_messages`） |
-| 模型 | `MiniMax-M2.7`、`MiniMax-M2.7-highspeed` |
+| 模型 | `MiniMax-M3.1-Flash`、`MiniMax-M3`、`MiniMax-M2.7`、`MiniMax-M2.7-highspeed` |
 | 全球端点 | `https://api.minimax.io/anthropic` |
 | 中国端点 | `https://api.minimaxi.com/anthropic` |
 | 需要环境变量 | 否（`MINIMAX_API_KEY` **不**用于此 provider） |
@@ -38,7 +38,7 @@ hermes model
 # → 从 provider 列表中选择 "MiniMax (OAuth)"
 # → Hermes 在浏览器中打开 MiniMax 授权页面
 # → 在浏览器中批准访问
-# → 选择模型（MiniMax-M2.7 或 MiniMax-M2.7-highspeed）
+# → 选择模型（MiniMax-M3.1-Flash、MiniMax-M3、MiniMax-M2.7 或 MiniMax-M2.7-highspeed）
 # → 开始对话
 
 hermes
@@ -115,7 +115,7 @@ hermes model
 或直接设置模型：
 
 ```bash
-hermes config set model MiniMax-M2.7
+hermes config set model MiniMax-M3.1-Flash
 hermes config set provider minimax-oauth
 ```
 
@@ -125,7 +125,7 @@ hermes config set provider minimax-oauth
 
 ```yaml
 model:
-  default: MiniMax-M2.7
+  default: MiniMax-M3.1-Flash
   provider: minimax-oauth
   base_url: https://api.minimax.io/anthropic
 ```
@@ -167,12 +167,14 @@ hermes --provider minimax-oauth
 
 | 模型 | 最适合 |
 |-------|----------|
-| `MiniMax-M2.7` | 长上下文推理、复杂工具调用 |
-| `MiniMax-M2.7-highspeed` | 低延迟、轻量任务、辅助调用 |
+| `MiniMax-M3.1-Flash` | 快速推理，1M 上下文，复杂工具调用 |
+| `MiniMax-M3` | 长上下文推理、复杂工具调用 |
+| `MiniMax-M2.7` | 上一代模型，长上下文推理 |
+| `MiniMax-M2.7-highspeed` | 低延迟、轻量任务 |
 
-两个模型均支持最多 200,000 个 token 的上下文。
+`MiniMax-M3.1-Flash` 和 `MiniMax-M3` 最多支持 1,000,000 个 token 的上下文；M2.7 系列最多支持 200,000。
 
-当 `minimax-oauth` 为主 provider 时，`MiniMax-M2.7-highspeed` 也会自动用作视觉和委托任务的辅助模型。
+当 `minimax-oauth` 为主 provider 时，`MiniMax-M2.7` 也会自动用作视觉和委托任务的辅助模型。
 
 ## 故障排查
 

@@ -1,7 +1,7 @@
 """MiniMax provider profiles (international, China, OAuth).
 
 Default routes use anthropic_messages (base URLs end in /anthropic). Users can
-opt MiniMax-M3 into the OpenAI-compatible https://api.minimax.io/v1 route,
+opt MiniMax-M3 / M3.1-Flash into the OpenAI-compatible https://api.minimax.io/v1 route,
 which needs MiniMax-specific reasoning controls in extra_body.
 """
 
@@ -20,17 +20,42 @@ def _is_minimax_global_openai_base_url(base_url: str | None) -> bool:
 class MiniMaxProfile(ProviderProfile):
     """MiniMax — M3 OpenAI-compatible reasoning controls."""
 
+    def fetch_models(
+        self, *, api_key: str | None = None, base_url: str | None = None, timeout: float = 8.0,
+    ) -> list[str] | None:
+        """MiniMax's catalog lives under ``<base>/v1/models`` — ``<base>/models`` 404s.
+
+        The Anthropic-compatible route (``https://api.minimax.io/anthropic``) publishes the
+        catalog at ``/anthropic/v1/models``, the OpenAI-compatible route
+        (``https://api.minimax.io/v1``) at ``/v1/models``. The generic ``{base_url}/models``
+        probe therefore never answers, and every catalog surface (the ``/model`` picker, the
+        setup wizard, ``hermes model``) silently degrades to the curated floor — new models
+        never surface and no failure is reported (#142648). Probe the ``/v1`` route first and
+        keep the plain route as the fallback for custom endpoints that serve
+        ``{base_url}/models``.
+        """
+        effective_base = (base_url or self.base_url or "").rstrip("/")
+        if effective_base and not effective_base.endswith("/v1"):
+            models = super().fetch_models(
+                api_key=api_key, base_url=f"{effective_base}/v1", timeout=timeout)
+            if models is not None:
+                return models
+        return super().fetch_models(api_key=api_key, base_url=base_url, timeout=timeout)
+
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None,
         base_url: str | None = None, **context: Any,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """M3 on api.minimax.io/v1 keeps thinking inline unless ``reasoning_split``
         is sent; effort levels only select adaptive vs disabled ``thinking``."""
-        is_m3 = str(model or "").strip().lower() in {"minimax-m3", "minimax/minimax-m3"}
-        if not _is_minimax_global_openai_base_url(base_url) or not is_m3:
+        name = str(model or "").strip().lower()
+        is_m3 = name in {"minimax-m3", "minimax/minimax-m3"}
+        is_m31 = name in {"minimax-m3.1-flash", "minimax/minimax-m3.1-flash"}
+        if not _is_minimax_global_openai_base_url(base_url) or not (is_m3 or is_m31):
             return {}, {}
         extra_body: dict[str, Any] = {"reasoning_split": True}
-        if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
+        # M3.1 thinking cannot be turned off (it 400s), so never send ``disabled`` for it.
+        if is_m3 and isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
             extra_body["thinking"] = {"type": "disabled"}
         elif reasoning_config is not None:
             extra_body["thinking"] = {"type": "adaptive"}

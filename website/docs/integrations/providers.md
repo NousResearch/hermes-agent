@@ -539,7 +539,7 @@ For the mainland-China endpoint (`alibaba-coding-plan-cn`, `https://coding.dashs
 
 ### MiniMax (OAuth)
 
-MiniMax-M2.7 via browser OAuth login — no API key needed. Pick **MiniMax (OAuth)** in `hermes model`, sign in through the browser, and Hermes persists the access + refresh tokens. Uses the Anthropic Messages-compatible endpoint (`/anthropic`) under the hood.
+MiniMax-M3.1-Flash / MiniMax-M3 via browser OAuth login — no API key needed. Pick **MiniMax (OAuth)** in `hermes model`, sign in through the browser, and Hermes persists the access + refresh tokens. Uses the Anthropic Messages-compatible endpoint (`/anthropic`) under the hood.
 
 ```bash
 hermes model
@@ -554,10 +554,10 @@ Or configure `config.yaml`:
 ```yaml
 model:
   provider: "minimax-oauth"
-  default: "MiniMax-M2.7"
+  default: "MiniMax-M3.1-Flash"
 ```
 
-Supported models: `MiniMax-M2.7` (main) and `MiniMax-M2.7-highspeed` (wired as the default auxiliary model). The OAuth path ignores `MINIMAX_API_KEY` / `MINIMAX_BASE_URL`.
+Supported models: `MiniMax-M3.1-Flash` and `MiniMax-M3` (main), `MiniMax-M2.7` and `MiniMax-M2.7-highspeed`. `MiniMax-M2.7` is wired as the default auxiliary model. The OAuth path ignores `MINIMAX_API_KEY` / `MINIMAX_BASE_URL`.
 
 :::tip MiniMax OAuth vs API key
 `minimax-oauth` uses MiniMax's consumer-facing portal with OAuth login — no billing setup required. The `minimax` and `minimax-cn` providers use `MINIMAX_API_KEY` / `MINIMAX_CN_API_KEY` — for programmatic access. See the [MiniMax OAuth guide](../guides/minimax-oauth.md) for a full walkthrough.

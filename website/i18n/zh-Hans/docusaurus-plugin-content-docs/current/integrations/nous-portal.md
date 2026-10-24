@@ -33,7 +33,7 @@ Portal 代理了来自整个生态系统的精选 agentic 模型目录——统�
 | **Qwen** | Qwen3 系列、Qwen Coder |
 | **Kimi / Moonshot** | Kimi-K2、Kimi-Latest |
 | **GLM / Zhipu** | GLM-4.6、GLM-4-Plus |
-| **MiniMax** | M2.7、M1 |
+| **MiniMax** | M3.1 Flash、M3、M2.7、M1 |
 | **xAI** | Grok-4、Grok-3 |
 | **Hermes** | Hermes-4-70B、Hermes-4-405B（对话，见[下方说明](#a-note-on-hermes-4)） |
 | **+ 其他所有模型** | 240+ 额外模型——完整的 agentic 前沿生态 |

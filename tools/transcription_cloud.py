@@ -9,6 +9,7 @@ are read lazily from ``tools.transcription_tools``.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import tempfile
@@ -452,6 +453,31 @@ def _resolve_openai_audio_client_config() -> tuple[str, str]:
     return managed
 
 
+def _unwrap_json_transcript_layers(text: str) -> str:
+    """Unwrap nested ``{ "text": "<json string>" }`` envelopes in a transcript.
+
+    Some OpenAI-compatible gateways (observed on Bifrost) double-encode: the
+    outer response's ``text`` field holds a *stringified* inner
+    ``{ text, usage, ... }`` object, so a single unwrap leaves raw JSON in the
+    user's message. Unwrap while the whole string is a JSON object with a
+    string ``text``; bounded so genuine dictation of JSON code (or a
+    non-``text`` JSON payload) passes through unchanged."""
+    for _ in range(8):
+        candidate = text.strip()
+        if not candidate.startswith("{"):
+            break
+        try:
+            parsed = json.loads(candidate)
+        except (ValueError, TypeError):
+            break
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("text"), str):
+            break
+        text = parsed["text"]
+        if not text.strip():
+            break
+    return text
+
+
 def _extract_transcript_text(transcription: Any) -> str:
     """Normalize text / object / dict transcription responses to a plain string.
 
@@ -475,5 +501,6 @@ def _extract_transcript_text(transcription: Any) -> str:
             raise STTResponseError(str(error) if error else "Transcription response contained no text")
         else:
             text = str(transcription).strip()
+    text = _unwrap_json_transcript_layers(text)
     match = _ASR_TEXT_RE.match(text)
     return match.group("text").strip() if match else text

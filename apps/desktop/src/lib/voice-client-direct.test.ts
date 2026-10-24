@@ -475,4 +475,23 @@ describe('transcriptFromOpenAiMultipartBody', () => {
   it('leaves a non-envelope JSON object intact', () => {
     expect(transcriptFromOpenAiMultipartBody('{"error":"nope"}')).toBe('{"error":"nope"}')
   })
+
+  it('unwraps a double-encoded JSON envelope (Bifrost gateway)', () => {
+    const inner = JSON.stringify({
+      text: 'So I just tried Neufonic, and I\'m genuinely impressed.',
+      usage: { type: 'duration', seconds: 14 }
+    })
+    const body = JSON.stringify({ text: inner, extra_fields: { request_type: 'transcription' } })
+    expect(transcriptFromOpenAiMultipartBody(body)).toBe('So I just tried Neufonic, and I\'m genuinely impressed.')
+  })
+
+  it('unwraps multiple nested JSON layers', () => {
+    const inner = JSON.stringify({ text: 'hello' })
+    const triple = JSON.stringify({ text: JSON.stringify({ text: inner }) })
+    expect(transcriptFromOpenAiMultipartBody(triple)).toBe('hello')
+  })
+
+  it('keeps dictated JSON code without a text field intact', () => {
+    expect(transcriptFromOpenAiMultipartBody('{"a":1}')).toBe('{"a":1}')
+  })
 })

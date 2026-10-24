@@ -1428,12 +1428,13 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         return image_paths, audio_paths, audio_file_paths, video_paths
 
     async def _enrich_inbound_images(
-        self, source: SessionSource, session_key: str, message_text: str, image_paths: list[str]
+        self, source: SessionSource, session_key: str, message_text: str, image_paths: list[str],
+        *, force_text: bool = False,
     ) -> str:
         """Route images natively (attach pixels at run_conversation) or pre-analyze them into text."""
         # See agent/image_routing.py. Offloaded to a thread: the decision does blocking network I/O
         # (models.dev fetch on cache miss, Ollama /api/show probe) that would stall the event loop.
-        _img_mode = await asyncio.to_thread(
+        _img_mode = "text" if force_text else await asyncio.to_thread(
             self._decide_image_input_mode, source=source, session_key=session_key,
         )
         if _img_mode == "native":
@@ -1651,12 +1652,18 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
 
     async def _prepare_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: list[dict[str, Any]],
-        session_key: Optional[str] = None,
+        session_key: Optional[str] = None, for_steer: bool = False,
     ) -> Optional[str]:
         """Prepare inbound event text for the agent. Shared by the normal inbound and queued
         follow-up paths so attribution, image enrichment, STT, document notes, reply context and
         @ references behave the same. Side effect: buffers per-session native image paths when the
-        model supports native vision; the caller consumes that buffer at ``run_conversation``."""
+        model supports native vision; the caller consumes that buffer at ``run_conversation``.
+
+        ``for_steer`` forces image descriptions and leaves the native-image buffer alone.
+        """
+        prepared = getattr(event, "_gateway_busy_steer_prepared_text", None)
+        if prepared is not None:
+            return prepared
         rehome_inbound_media(event)  # before any consumer (vision, STT, document notes) reads media_urls
         _pending_stt_prepared = hasattr(event, "_gateway_pending_stt_text")
         message_text = (event._gateway_pending_stt_text if _pending_stt_prepared else event.text) or ""
@@ -1664,12 +1671,15 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         # run_conversation site; derive it here only for tests and legacy standalone callers.
         session_key = session_key or self._session_key_for_source(source)
         # Reset only this session's per-call buffer; other sessions may be concurrently preparing.
-        self._consume_pending_native_image_paths(session_key)
+        if not for_steer:
+            self._consume_pending_native_image_paths(session_key)
 
         message_text = self._prefix_inbound_sender_context(event, source, message_text)
         image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(event, _pending_stt_prepared)
         if image_paths:
-            message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)
+            message_text = await self._enrich_inbound_images(
+                source, session_key, message_text, image_paths, force_text=for_steer,
+            )
         if audio_paths:
             message_text = await self._enrich_inbound_voice(event, source, message_text, audio_paths)
         message_text = self._prepend_inbound_media_file_notes(message_text, audio_file_paths, video_paths)
@@ -1680,15 +1690,18 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             return None
         # After expansion: the quoted reply is someone else's text and stays literal — an
         # ``@file:`` inside it must never read a local file on the replier's behalf.
-        return self._prepend_inbound_reply_context(event, source, message_text)
+        message_text = self._prepend_inbound_reply_context(event, source, message_text)
+        if for_steer and message_text:
+            event._gateway_busy_steer_prepared_text = message_text
+        return message_text
 
     async def _prepare_profile_scoped_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: list[dict[str, Any]],
-        session_key: Optional[str] = None,
+        session_key: Optional[str] = None, for_steer: bool = False,
     ) -> Optional[str]:
         """Run inbound preprocessing under the routed profile when multiplexed."""
         from gateway.run import _async_profile_runtime_scope
-        kwargs = dict(event=event, source=source, history=history, session_key=session_key)
+        kwargs = dict(event=event, source=source, history=history, session_key=session_key, for_steer=for_steer)
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             async with _async_profile_runtime_scope(self._resolve_profile_home_for_source(source)):
                 return await self._prepare_inbound_message_text(**kwargs)

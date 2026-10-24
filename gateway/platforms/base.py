@@ -1773,9 +1773,9 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
                 existing.message_type = MessageType.PHOTO
             elif existing_type == MessageType.TEXT and event.message_type != MessageType.TEXT:
                 existing.message_type = event.message_type
-            # Drop the *derived* STT cache (event changed); the echo ledger must survive or
-            # notes echo twice.
-            for attr in ("_gateway_pending_stt_text", "_gateway_pending_stt_transcripts"):
+            # Drop derived caches on merge; the echo ledger survives, or notes echo twice.
+            for attr in ("_gateway_pending_stt_text", "_gateway_pending_stt_transcripts",
+                         "_gateway_busy_steer_prepared_text"):
                 if hasattr(existing, attr):
                     delattr(existing, attr)
             return

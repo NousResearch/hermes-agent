@@ -420,6 +420,23 @@ def test_create_if_missing_titles_a_gateway_created_session(store, monkeypatch):
     assert params["title"] == "Fresh Named" and params["source"] and params["cwd"]
 
 
+def test_create_if_missing_creates_the_session_with_the_run_launch_flags(store, monkeypatch):
+    """``chat -c NAME --create-if-missing -t file -m m2``: the CLI resumes the new session next, and a
+    resume carries no creation policy, so ``-t``/``-m`` must be on the ``session.create`` itself or the
+    run gets the profile default (and an explicit ``-t`` on that resume is then refused as a mismatch).
+    Unset flags stay unset, as on a plain create."""
+    db, client = store
+    from hermes_cli import gateway_session_store as gss
+    monkeypatch.setattr(gss, "session_store", lambda: db)
+    run = types.SimpleNamespace(toolsets="file", model="m2")
+    assert gss.create_titled_session("Fresh Named", run) == "local-new"
+    _method, params = [c for c in client.calls if c[0] == "session.create"][-1]
+    assert params["toolsets"] == ["file"] and params["model"] == "m2", params
+    gss.create_titled_session("Other Named", types.SimpleNamespace())
+    _method, params = [c for c in client.calls if c[0] == "session.create"][-1]
+    assert not {"toolsets", "model"} & set(params), params
+
+
 def test_bare_continue_finds_the_last_session_the_cli_created(tmp_path, monkeypatch):
     """Bare ``-c`` (main.py ``_resolve_last_session``) reads main's labels too: a gateway row labelled
     ``local`` that the CLI created is CLI history."""

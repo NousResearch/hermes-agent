@@ -3,12 +3,15 @@ import asyncio
 import contextlib
 from contextlib import closing
 from dataclasses import asdict, replace
+import logging
 import threading
 import json
 from pathlib import Path
 import sqlite3
 
 from hermes_state_runtime import RuntimeStoreError
+
+logger = logging.getLogger(__name__)
 
 
 def build_kanban_policy(connection, params, config):
@@ -351,6 +354,20 @@ def worker_exit_code(path, params):
 def _run_task_turns(agent, frame, history, context):
     from agent.skill_commands import build_preloaded_skills_prompt
     skills, loaded, missing = build_preloaded_skills_prompt(context['skills'], task_id=agent.session_id)
+    if missing:
+        # Card- and lane-listed bundled skills (the review lane always injects sdlc-review) can
+        # be out of the profile: a manual delete stays deleted and the seed sync never re-adds
+        # it. Revive bundled names the connector-catalog way, then re-probe once. The safe worker
+        # reports every listed skill missing and must not mutate the profile, so it skips the
+        # revive. A refusal here died before the first model call and read as "execution unknown".
+        from agent.safe_worker_policy import safe_worker_enabled
+        from tools.skills_sync_bundled_ops import bundled_skill_for_install, ensure_bundled_skill
+        bundled = [] if safe_worker_enabled() else [name for name in map(bundled_skill_for_install, missing) if name]
+        ensured = [ensure_bundled_skill(name)['ok'] for name in bundled]
+        if any(ensured):
+            logger.debug('kanban task %s (session %s): restored bundled skills %s', context['task_id'], agent.session_id,
+                        [name for name, ok in zip(bundled, ensured) if ok])
+            skills, loaded, missing = build_preloaded_skills_prompt(context['skills'], task_id=agent.session_id)
     if missing and not loaded:
         raise ValueError('kanban_skills_unavailable')
     prompt = '\n\n'.join(p for p in (skills, context['context'], frame['text']) if p)

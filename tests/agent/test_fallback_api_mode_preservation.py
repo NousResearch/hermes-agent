@@ -246,3 +246,45 @@ class TestOpenCodeFamilyPerModelWire:
         agent = _make_agent(fallback_model=[entry])
         _activate(agent, resolved_base_url, entry["model"])
         assert agent.api_mode == expected_mode
+
+
+class TestBedrockFallbackWire:
+    """A ``provider: bedrock`` fallback activates on the wire the primary resolver would pick for
+    that model: Mantle-served OpenAI ids keep the Mantle client resolve_provider_client built and
+    run on Responses; everything else binds boto3 on Converse. Before the fix every Bedrock
+    fallback was forced onto Converse, so a Mantle-only id's client was discarded and the bare id
+    reached Converse (ValidationException: on-demand throughput isn't supported)."""
+
+    MANTLE = "https://bedrock-mantle.us-east-1.api.aws/openai/v1"
+    RUNTIME = "https://bedrock-runtime.us-east-1.amazonaws.com"
+
+    @pytest.mark.parametrize("model", ["openai.gpt-6-sol", "openai.gpt-5.6-sol"])
+    def test_mantle_id_keeps_the_mantle_client_on_responses(self, model):
+        agent = _make_agent(fallback_model={"provider": "bedrock", "model": model})
+        mantle_client = _mock_client(base_url=self.MANTLE, api_key="aws-sdk")
+        with (
+            patch("agent.chat_completion_helpers._fallback_entry_unavailable_without_network", return_value=None),
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(mantle_client, model)),
+            patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m),
+            patch("agent.bedrock_adapter.bind_bedrock_runtime") as bind_runtime,
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert (agent.provider, agent.model, agent.api_mode) == ("bedrock", model, "codex_responses")
+        assert agent.client is mantle_client
+        bind_runtime.assert_not_called()
+
+    @pytest.mark.parametrize("model", ["us.openai.gpt-6-sol", "us.amazon.nova-pro-v1:0"])
+    def test_other_bedrock_ids_bind_converse(self, model):
+        agent = _make_agent(fallback_model={"provider": "bedrock", "model": model})
+        with (
+            patch("agent.chat_completion_helpers._fallback_entry_unavailable_without_network", return_value=None),
+            patch("agent.auxiliary_client.resolve_provider_client",
+                  return_value=(_mock_client(base_url=self.RUNTIME, api_key="aws-sdk"), model)),
+            patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m),
+            patch("agent.bedrock_adapter.bind_bedrock_runtime") as bind_runtime,
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.api_mode == "bedrock_converse"
+        bind_runtime.assert_called_once()

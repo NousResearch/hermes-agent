@@ -1038,7 +1038,8 @@ def _openrouter_fallback(requested_provider, explicit_api_key, explicit_base_url
                                             explicit_base_url=explicit_base_url), requested_provider)
 
 
-def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_key: Optional[str] = None,
+def resolve_runtime_provider(*, requested: Optional[str] = None,
+                             explicit_api_key: str | Callable[[], str] | None = None,
                              explicit_base_url: Optional[str] = None, target_model: Optional[str] = None) -> dict[str, Any]:
     """Resolve runtime provider credentials for agent execution. Ladder (order is behavior — each
     rung returns or raises, else falls to the next):

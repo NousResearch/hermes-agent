@@ -215,13 +215,14 @@ class ManagedWorker:
             self._arrived.clear()
         return item
 
-    def drain_stderr(self, path):
+    def drain_stderr(self, path, card_log=None):
         """Route the child's stderr (its tracebacks and redirected prints) into the profile's
-        bounded, redacted, private log instead of discarding it."""
+        bounded, redacted, private log instead of discarding it. A Kanban-bound worker also
+        mirrors the same redacted lines into its card log, the dashboard's "Worker log"."""
         from agent.memory_provider import spawn_context_thread
         from gateway.session_managed_worker_log import drain_worker_stderr
         self.stderr_drain = spawn_context_thread(drain_worker_stderr, name='managed-stderr-drain',
-                                                 args=(self.process.stderr, path, self.process.pid, lambda: self.secrets))
+                                                 args=(self.process.stderr, path, self.process.pid, lambda: self.secrets, card_log))
         self.stderr_drain.start()
 
     def control(self, frame):
@@ -545,7 +546,7 @@ def _stopped_before_spawn(authority, ref, row):
     return True
 
 
-async def _spawn_registered_worker(authority, ref, row):
+async def _spawn_registered_worker(authority, ref, row, policy):
     """Spawn the turn's child and register it for Stops: ``(worker, process)``, or None when the spawn was cancelled (the
     interrupted result is already recorded). The generation stays marked spawning until registration."""
     spawning = _mark_spawning(authority, ref, row)
@@ -554,8 +555,9 @@ async def _spawn_registered_worker(authority, ref, row):
         env = await asyncio.to_thread(_worker_env, authority)
         cwd = (await asyncio.to_thread(Path(__file__).resolve)).parents[1]
         from gateway.session_worker_spawn import acquire_process
-        from gateway.session_managed_worker_log import worker_log_path
+        from gateway.session_managed_worker_log import kanban_card_log_path, worker_log_path
         log_path = worker_log_path(authority.profile_id)
+        card_log = await asyncio.to_thread(kanban_card_log_path, policy)
         process = await acquire_process(subprocess.Popen, [sys.executable, '-m', 'agent.managed_worker'],
             cwd=cwd, stdin=subprocess.PIPE, env=env, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL if log_path is None else subprocess.PIPE, **WORKER_POPEN)
@@ -569,7 +571,7 @@ async def _spawn_registered_worker(authority, ref, row):
         raise
     worker = ManagedWorker(process)
     if log_path is not None:
-        worker.drain_stderr(log_path)
+        worker.drain_stderr(log_path, card_log)
     workers = getattr(authority, '_managed_workers', None)
     if workers is None:
         workers = authority._managed_workers = {}
@@ -607,7 +609,7 @@ async def execute_managed(authority, ref, row, policy):
         return refusal
     if _stopped_before_spawn(authority, ref, row):
         return ''
-    spawned = await _spawn_registered_worker(authority, ref, row)
+    spawned = await _spawn_registered_worker(authority, ref, row, policy)
     if spawned is None:
         return ''
     worker, process = spawned

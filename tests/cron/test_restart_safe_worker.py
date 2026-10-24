@@ -178,6 +178,33 @@ def test_external_worker_adopts_execution_and_runs_payload_once(
     assert not stderr_capture.exists()
 
 
+def test_external_worker_runs_the_handed_over_extra_prompt(tmp_path, monkeypatch):
+    """#140929: the extra_prompt the gateway serialized into the payload must reach
+    ``run_one_job``; before the fix the worker always fired with ``extra_prompt=None``
+    and the agent never saw the rendered event context."""
+    from cron import scheduler
+
+    payload = tmp_path / "payload.json"
+    ack = tmp_path / "exec-1.ready"
+    payload.write_text(
+        json.dumps({
+            "job": {"id": "job-1", "execution_id": "exec-1"},
+            "extra_prompt": "Event says: hello",
+            "profile_home": str(tmp_path / "profile"),
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "cron.executions.adopt_claimed_execution",
+        lambda execution_id: {"id": execution_id, "status": "running"})
+    run = Mock(return_value=True)
+    monkeypatch.setattr(scheduler, "run_one_job", run)
+
+    assert scheduler._run_external_worker_payload(payload, ack) is True
+
+    assert run.call_args.kwargs["extra_prompt"] == "Event says: hello"
+
+
 def test_external_worker_ack_is_never_observable_half_written(tmp_path, monkeypatch):
     """The gateway polls ``ack_path.exists()`` then reads it (#107184, #116164 form 1): the ack
     must appear atomically with its full body, or the parent logs "unreadable acknowledgement"
@@ -360,6 +387,35 @@ def test_launch_external_worker_treats_a_routed_fire_as_multiplexed(tmp_path, mo
     assert "LAUNCH_ONLY_SECRET" not in spawned[0][1]["env"]
     assert not secret_scope.is_multiplex_active()  # enabled for the handoff span only
     assert os.environ["LAUNCH_ONLY_SECRET"] == "launch-secret"  # parent untouched
+
+
+@pytest.mark.parametrize(
+    ("hand_off", "expected"),
+    [
+        ("Event says: hello", "Event says: hello"),
+        (None, None),
+    ],
+)
+def test_launch_external_worker_serializes_the_fire_extra_prompt(
+    tmp_path, monkeypatch, hand_off, expected
+):
+    """The detached worker starts from the payload alone, so the fire's per-run context must
+    ride in it — otherwise the webhook/run ``prompt=`` the gateway resolved is lost before
+    the agent ever runs (#140929)."""
+    from cron import scheduler
+    from tools.process_registry import GatewayChildDispatch
+
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, **_: GatewayChildDispatch("scoped", ["scope", "--", *command]),
+    )
+    _spawned, payloads, _handoff, _get = _stub_external_worker_launch(scheduler, monkeypatch)
+
+    kwargs = {"extra_prompt": hand_off} if hand_off is not None else {}
+    assert scheduler._launch_external_cron_worker(
+        {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}, **kwargs) is True
+    assert payloads[0]["extra_prompt"] == expected
 
 
 def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
@@ -939,7 +995,47 @@ def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):
 
     assert scheduler.run_one_job(job, adapters={"discord": object()}) is True
 
-    launch.assert_called_once_with(job)
+    launch.assert_called_once_with(job, extra_prompt=None)
+    run.assert_not_called()
+
+
+def test_run_one_job_hands_the_fire_extra_prompt_to_the_worker(monkeypatch):
+    """#140929: a webhook/run ``prompt=`` context reaches ``run_one_job`` as
+    ``extra_prompt``; on the managed path the handoff must carry it or the detached
+    worker reruns with none and the agent never sees the rendered event."""
+    from cron import scheduler
+
+    launch = Mock(return_value=True)
+    run = Mock(side_effect=AssertionError("agent ran inside gateway"))
+    monkeypatch.setattr(scheduler, "_launch_external_cron_worker", launch)
+    monkeypatch.setattr(scheduler, "run_job", run)
+    job = {"id": "job-1", "execution_id": "exec-1"}
+
+    assert scheduler.run_one_job(
+        job, adapters={"discord": object()}, extra_prompt="Event says: hello") is True
+
+    launch.assert_called_once_with(job, extra_prompt="Event says: hello")
+    run.assert_not_called()
+
+
+def test_run_one_job_resolves_a_stamped_manual_prompt_before_the_handoff(monkeypatch):
+    """The in-process path reads ``manual_run_prompt`` after the handoff block; the handoff
+    itself must resolve the same stamp, or a gateway-forwarded manual fire loses its prompt
+    on the managed path (#140929)."""
+    from cron import scheduler
+
+    launch = Mock(return_value=True)
+    run = Mock(side_effect=AssertionError("agent ran inside gateway"))
+    monkeypatch.setattr(scheduler, "_launch_external_cron_worker", launch)
+    monkeypatch.setattr(scheduler, "run_job", run)
+    job = {
+        "id": "job-1", "execution_id": "exec-1",
+        "manual_run_prompt": "manual: run now", "manual_run_at": "2026-10-18T00:00:00Z",
+    }
+
+    assert scheduler.run_one_job(job, adapters={"discord": object()}) is True
+
+    launch.assert_called_once_with(job, extra_prompt="manual: run now")
     run.assert_not_called()
 
 
@@ -952,7 +1048,7 @@ def test_dispatch_failure_opens_incident_and_delivers_failure_notice(
     from cron import incidents
     from cron import scheduler
 
-    def _handoff_boom(_job):
+    def _handoff_boom(_job, **_kw):
         raise RuntimeError("worker exited before ownership acknowledgement")
 
     monkeypatch.setattr(scheduler, "_launch_external_cron_worker", _handoff_boom)
@@ -1010,13 +1106,13 @@ def test_dispatch_failure_notice_resolves_the_owning_profiles_home_channel(
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: home)
     monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
 
-    def _handoff_boom(_job):
+    def _handoff_boom(_job, **_kw):
         raise RuntimeError("worker exited before ownership acknowledgement")
 
     if failing_stage == "handoff":
         monkeypatch.setattr(scheduler, "_launch_external_cron_worker", _handoff_boom)
     else:
-        monkeypatch.setattr(scheduler, "_launch_external_cron_worker", lambda _job: False)
+        monkeypatch.setattr(scheduler, "_launch_external_cron_worker", lambda _job, **_kw: False)
         monkeypatch.setattr(scheduler, "claim_dispatch", _handoff_boom)
     monkeypatch.setattr(scheduler, "mark_job_run", lambda *_a, **_k: True)
     resolved = []
@@ -1127,7 +1223,7 @@ def test_gateway_tool_run_without_adapter_objects_hands_off(monkeypatch):
 
     created.assert_called_once_with("tool-job", source="direct", scheduled_instant=None)
     assert job["execution_id"] == "exec-tool"
-    launch.assert_called_once_with(job)
+    launch.assert_called_once_with(job, extra_prompt=None)
     run.assert_not_called()
 
 
@@ -1308,7 +1404,7 @@ def test_post_handoff_waiter_failure_records_bookkeeping_without_alert(
     monkeypatch.setattr(scheduler, "_wait_for_external_cron_worker_body", _body_boom)
     monkeypatch.setattr(
         scheduler, "_launch_external_cron_worker",
-        lambda job: scheduler._wait_for_external_cron_worker(
+        lambda job, **_kw: scheduler._wait_for_external_cron_worker(
             object(), execution_id=job["execution_id"]))
     marks = []
     monkeypatch.setattr(scheduler, "mark_job_run", lambda *a, **k: marks.append((a, k)) or True)

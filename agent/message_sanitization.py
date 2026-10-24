@@ -633,8 +633,7 @@ def uniquify_tool_call_ids(tool_calls: list, taken: Iterable[str] = ()) -> list:
     is the ids already in this session's history: they are never rewritten (prompt cache), so
     the incoming call is renamed instead. Collisions get a deterministic ``<id>_d<n>`` suffix
     (never uuid4 — cache-prefix stability). Mutates entries (SDK models / SimpleNamespace /
-    dicts) in place. Blank ids are left for the deterministic fallback in
-    ``build_assistant_message``.
+    dicts) in place. Blank ids receive the storage fallback before deduplication.
     """
     seen: set = set(taken)
     for index, tc in enumerate(tool_calls or []):
@@ -658,10 +657,7 @@ def uniquify_tool_call_ids(tool_calls: list, taken: Iterable[str] = ()) -> list:
             raw_id = raw_id.strip() if isinstance(raw_id, str) else ""
             if raw_id:
                 cid = raw_id.split("|", 1)[0]
-                try:
-                    _tc_set(tc, "call_id", cid)
-                except Exception:  # health: allow BLE001 -- exotic tool-call shapes raise AttributeError/TypeError; leave the blank for the storage fallback instead of crashing ingest
-                    continue
+                _set_provider_tool_id(tc, "call_id", cid)
             else:
                 fn = _tc_field(tc, "function")
                 fn_name = _tc_field(fn, "name")
@@ -671,12 +667,9 @@ def uniquify_tool_call_ids(tool_calls: list, taken: Iterable[str] = ()) -> list:
                     arguments if isinstance(arguments, str) else "{}",
                     index,
                 )
-                try:
-                    _tc_set(tc, "id", cid)
-                    _tc_set(tc, "call_id", cid)
-                except Exception:  # health: allow BLE001 -- unwritable entry (read-only property, frozen dataclass); leave the blank for the storage-time fallback instead of crashing ingest
-                    # Unwritable entry: leave the blank for the storage-time fallback.
-                    continue
+                _tc_set(tc, "id", cid)
+                if isinstance(tc, dict) or hasattr(tc, "call_id"):
+                    _set_provider_tool_id(tc, "call_id", cid)
         if cid not in seen:
             seen.add(cid)
             continue
@@ -697,7 +690,7 @@ def uniquify_tool_call_ids(tool_calls: list, taken: Iterable[str] = ()) -> list:
                 else new_id,
             )
             if _tc_field(tc, "call_id"):
-                _tc_set(tc, "call_id", new_id)
+                _set_provider_tool_id(tc, "call_id", new_id)
         except Exception:
             logger.warning("Could not uniquify duplicate tool call id %s", cid)
             continue
@@ -756,9 +749,9 @@ def normalize_provider_tool_call_ids(tool_calls: list) -> list:
 def _set_provider_tool_id(tc: Any, key: str, value: str) -> None:
     # transports.types.ToolCall exposes call_id as a read-only view of provider_data;
     # write the backing value so id and call_id stay in agreement.
-    if isinstance(getattr(type(tc), key, None), property) and isinstance(
-        getattr(tc, "provider_data", None), dict
-    ):
+    if isinstance(getattr(type(tc), key, None), property) and hasattr(tc, "provider_data"):
+        if tc.provider_data is None:
+            tc.provider_data = {}
         tc.provider_data[key] = value
     else:
         _tc_set(tc, key, value)

@@ -2660,16 +2660,27 @@ def complete_task(
     auditable event. Approving a card out of ``review`` stays exempt.
     """
     now = int(time.time())
+    # Handoff-field fix (2026-10-12, owner-approved t_4288628d thread): workers
+    # pass the substantive handoff as ``summary`` (kanban_complete schema marks
+    # ``result`` "legacy, use summary instead"), but the tasks-row write in the
+    # txn below stores ONLY ``result`` — leaving tasks.result NULL on every
+    # summary-only completion. That is the root cause of the 129-card "empty
+    # work results" class (work present in task_runs.summary, tasks.result
+    # empty). Fall back to the handoff summary for the tasks row / completed
+    # event when no explicit result was given, so the done card carries its
+    # handoff in BOTH places. Explicit results (CLI --result, review
+    # approvals) are stored verbatim, unchanged.
+    handoff_summary = summary if summary is not None else result
+    stored_result = result if result is not None else handoff_summary
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
-    verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
+    verified_cards = _gate_created_cards(conn, task_id, created_cards, stored_result)
     _gate_empty_completion(conn, task_id, result=result, summary=summary)
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
     )
-    handoff_summary = summary if summary is not None else result
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
         return False
@@ -2703,7 +2714,7 @@ def complete_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked', 'review')
                 """
-        params: tuple = (result, now, task_id)
+        params: tuple = (stored_result, now, task_id)
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
             params = (*params, int(expected_run_id))
@@ -2729,7 +2740,7 @@ def complete_task(
             event_summary = _REVIEW_APPROVED_NOTE
         _append_event(
             conn, task_id, "completed",
-            _completed_event_payload(result, event_summary, verified_cards, metadata),
+            _completed_event_payload(stored_result, event_summary, verified_cards, metadata),
             run_id=run_id,
         )
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)

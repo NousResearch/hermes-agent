@@ -536,6 +536,28 @@ async function mintGroupWritableHome(endpoint: GatewayEndpoint, purpose: Gateway
   }
 }
 
+/**
+ * `Gateway ticket bootstrap failed: <cause>`.
+ *
+ * The prefix is a contract: `isStaleLocalGatewayError` decides "forget the cached owner and
+ * re-ensure" from it, and `mintGroupWritableHome` reads the bridge's `reason` off the same error.
+ * The suffix is the only diagnosis the caller, `desktop.log` and the user ever get — a dead owner
+ * (`ECONNREFUSED`), an owner that answered nothing before the deadline, and a reply we could not
+ * accept are three different repairs. Every site used to reject with the bare message, throwing
+ * away the cause the socket had already computed (`socket.on('error', () => reject(...))` even
+ * discarded its own deadline), so all three read identically and neither the user nor a bug report
+ * could tell them apart.
+ */
+export function ticketFailure(cause?: unknown): Error {
+  const detail = cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : ''
+  const failure: NodeJS.ErrnoException = new Error(`Gateway ticket bootstrap failed${detail ? `: ${detail}` : ''}`)
+  const code = (cause as NodeJS.ErrnoException | undefined)?.code
+
+  if (typeof code === 'string' && code) { failure.code = code }
+
+  return failure
+}
+
 function isMissingNodeError(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException)?.code
 
@@ -650,8 +672,10 @@ export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose:
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath)
     let buffer = ''
-    const deadline = setTimeout(() => socket.destroy(new Error('Gateway ticket deadline')), 5000)
-    socket.on('error', () => reject(new Error('Gateway ticket bootstrap failed')))
+    // The deadline's own error is the one datum that separates "the owner is gone" from "the owner
+    // is too busy to answer" — `ticketFailure` keeps its text instead of flattening it.
+    const deadline = setTimeout(() => socket.destroy(new Error('no reply within 5000ms')), 5000)
+    socket.on('error', error => reject(ticketFailure(error)))
     socket.on('close', () => { clearTimeout(deadline); reject(new Error('Gateway ticket connection closed')) })
     socket.on('connect', () => socket.write(JSON.stringify({ protocol: 1, id: 1, verb: 'session-ticket', params: { profile_id: home, instance_id: endpoint.instance_id, purpose, ...ticketScope(purpose) } }) + '\n'))
     socket.on('data', chunk => {

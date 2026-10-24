@@ -826,6 +826,11 @@ def cron_edit(args):
     if not job:
         print(color(f"Job not found: {args.job_id}", Colors.RED))
         return 1
+    prompt = getattr(args, "prompt", None)
+    if prompt is not None and not prompt.strip():
+        print(color("--prompt cannot be empty or whitespace-only. "
+                    "Omit it to keep the existing prompt.", Colors.RED))
+        return 1
     existing_skills = list(job.get("skills") or ([job["skill"]] if job.get("skill") else []))
     replacement_skills = _normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None))
     add_skills = _normalize_skills(None, getattr(args, "add_skills", None)) or []
@@ -841,7 +846,7 @@ def cron_edit(args):
         final_skills += [skill for skill in add_skills if skill not in final_skills]
     result = _cron_api(action="update", job_id=args.job_id,
                        schedule=getattr(args, "schedule", None),
-                       prompt=getattr(args, "prompt", None), skills=final_skills,
+                       prompt=prompt, skills=final_skills,
                        no_agent=getattr(args, "no_agent", None), **_job_api_kwargs(args))
     if not result.get("success"):
         print(color(f"Failed to update job: {result.get('error', 'unknown error')}", Colors.RED))

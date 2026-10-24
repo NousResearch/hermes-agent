@@ -49,13 +49,20 @@ class ScriptedModel(BaseHTTPRequestHandler):
             called = [c['function']['name'] for m in messages if m['role'] == 'assistant'
                       for c in (m.get('tool_calls') or [])]
             if 'terminal' not in called:
-                return _call('terminal', command='sleep 3; echo FIRST_DONE', background=True, notify_on_complete=True)
+                # Held open until the handoff has landed: a process that exits first cannot be handed off.
+                return _call('terminal', command=f'while [ ! -e {state.release} ]; do sleep 0.2; done; echo FIRST_DONE',
+                             background=True, notify_on_complete=True)
             if 'tool_call' not in called:  # process_manage is a deferred tool for the child
                 started = next(str(m['content']) for m in messages if m['role'] == 'tool')
                 state.first_proc = re.search(r'proc_[0-9a-f]+', started).group(0)
                 return _call('tool_call', calls=[{'name': 'process_manage', 'arguments': {
                     'action': 'handoff', 'session_id': state.first_proc,
                     'data': 'watcher for the parent; report its result'}}])
+            if last['role'] == 'tool' and not state.release.exists():
+                handoff = str(last.get('content') or '')
+                if re.search(r'"error":\s*"', handoff):
+                    state.handoff_error = handoff
+                state.release.touch()
             return 'CHILD_FINISHED'
         text = str(last.get('content') or '')
         if last['role'] == 'user' and 'START' in text and not state.delegated:
@@ -121,6 +128,7 @@ def test_handed_off_completion_turn_runs_as_the_parent(tmp_path):
     peer = ThreadingHTTPServer(('127.0.0.1', 0), ScriptedModel)
     peer.requests, peer.lock = [], threading.Lock()
     peer.first_proc, peer.delegated, peer.second_started = '', False, False
+    peer.release, peer.handoff_error = tmp_path / 'release-first', ''
     thread = threading.Thread(target=peer.serve_forever, daemon=True)
     thread.start()
     url = f'http://127.0.0.1:{peer.server_port}/v1'
@@ -138,6 +146,7 @@ def test_handed_off_completion_turn_runs_as_the_parent(tmp_path):
     out = {}
 
     def second_result():
+        assert not peer.handoff_error, ('the handoff was refused', peer.handoff_error)
         for content in _tool_results(home, out['sid']):
             with contextlib.suppress(ValueError, TypeError):
                 data = json.loads(content)

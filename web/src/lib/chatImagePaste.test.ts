@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   firstImageFromClipboard,
+  handleImagePaste,
   imageFilesFromTransfer,
   transferMayContainImage,
 } from "./chatImagePaste";
@@ -79,6 +80,34 @@ describe("imageFilesFromTransfer", () => {
       files: [png, gif],
     });
     expect(imageFilesFromTransfer(data)).toEqual([png, gif]);
+  });
+});
+
+describe("handleImagePaste", () => {
+  it("prevents native paste and forwards every clipboard image", () => {
+    let prevented = false;
+    let received: File[] = [];
+    const event = {
+      clipboardData: makeData({ files: [png, gif] }),
+      preventDefault: () => { prevented = true; },
+    };
+
+    expect(handleImagePaste(event, files => { received = files; })).toBe(true);
+    expect(prevented).toBe(true);
+    expect(received).toEqual([png, gif]);
+  });
+
+  it("leaves text-only paste untouched", () => {
+    let prevented = false;
+    const event = {
+      clipboardData: makeData({
+        items: [makeItem("string", "text/plain", null)],
+      }),
+      preventDefault: () => { prevented = true; },
+    };
+
+    expect(handleImagePaste(event, () => undefined)).toBe(false);
+    expect(prevented).toBe(false);
   });
 });
 

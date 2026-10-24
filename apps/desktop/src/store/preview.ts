@@ -11,7 +11,7 @@ import { normalize } from '@/lib/text'
 
 import { recordFeatureUse } from './desktop-metrics'
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
-import { clearExplicitPreviewOpen, noteExplicitPreviewOpen, PREVIEW_TILE_PREFIX } from './preview-explicit'
+import { clearExplicitPreviewOpen, noteExplicitPreviewOpen } from './preview-explicit'
 import {
   $pendingRuntimeByTab,
   $rotatedSessionIds,
@@ -23,6 +23,7 @@ import {
   type PreviewOwner,
   setPendingRuntime
 } from './preview-ownership'
+import { PREVIEW_TILE_PREFIX } from './preview-tile-id'
 import { normalizeProfileKey } from './profile'
 import { $activeSessionId } from './session'
 import { $focusedSessionIsTile, $focusedStoredSessionId } from './session-focus'

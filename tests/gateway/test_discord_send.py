@@ -256,6 +256,37 @@ async def test_typing_restartable_after_error():
         "Should restart typing after previous failure"
 
 
+@pytest.mark.asyncio
+async def test_typing_stop_and_restart_in_same_tick_keeps_new_loop_registered():
+    """A stop racing a restart for the same channel must not orphan the new loop.
+
+    stop_typing pops and cancels the old loop; send_typing registers a new one before the
+    old loop's ``finally`` runs. That cleanup must only drop its OWN registry entry, or the
+    new loop keeps POSTing /typing with no entry left for the next stop_typing to cancel.
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._client = MagicMock()
+    adapter._client.http = MagicMock()
+    adapter._client.http.request = AsyncMock()
+    adapter._typing_tasks = {}
+
+    await adapter.send_typing("12345")
+    await asyncio.sleep(0)  # first POST done; the loop is now sleeping between refreshes
+    old_task = adapter._typing_tasks["12345"]
+
+    await asyncio.gather(adapter.stop_typing("12345"), adapter.send_typing("12345"))
+
+    new_task = adapter._typing_tasks.get("12345")
+    assert old_task.done()
+    assert new_task is not None and new_task is not old_task, \
+        "The restarted loop must stay registered so the next stop_typing can cancel it"
+    assert not new_task.done()
+
+    await adapter.stop_typing("12345")
+    assert new_task.done()
+    assert adapter._typing_tasks == {}
+
+
 # ---------------------------------------------------------------------------
 # #66797 — outbound MEDIA video must reach channel.send as a real attachment
 # ---------------------------------------------------------------------------

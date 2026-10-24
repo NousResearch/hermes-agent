@@ -366,7 +366,11 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
                        "next": "Submit the form (many sites auto-submit when the last digit lands)."})
 
 
-def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
+from tools.browser_vault_context import with_backend_fill_context
+
+
+@with_backend_fill_context
+def browser_vault_fill(handle: str, task_id: Optional[str] = None, *, _backend=None) -> str:
     """Fill the current page's password field from a vault handle.
 
     Password-only: the identifier is agent-visible metadata (see
@@ -389,7 +393,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, scrub_secret_from_text
 
     effective_task_id = task_id or "default"
-    backend = backend_for_handle(handle)
+    backend = _backend
     if backend is not None and backend.needs_unlock and not backend.is_unlocked():
         unlocked = json.loads(browser_vault_unlock(backend.name))
         if not unlocked.get("success"):

@@ -2305,14 +2305,14 @@ def _resolve_runtime_agent_kwargs() -> dict:
     from hermes_cli.runtime_provider import (
         resolve_runtime_with_fallback, format_runtime_provider_error, _get_model_config)
 
-    # Capture primary provider/model from config before the try block so we
-    # can include it in the fallback notice if the primary fails (#74349).
+    # Primary provider/model from config, before the try block: the fallback notice names them (#74349) and the resolver
+    # must see the model — `pool.select(model=None)` benches every entry with ANY cooldown, then the env/borrowed rung hands
+    # out a token with no cooldown check: a model spent on every seat 429'd instead of walking the fallback chain.
     _model_cfg = _get_model_config()
     _primary_model = (_model_cfg.get("default") or "").strip()
     _primary_provider = (_model_cfg.get("provider") or "").strip()
-
     try:
-        runtime, fallback_entry = resolve_runtime_with_fallback(_load_gateway_config())
+        runtime, fallback_entry = resolve_runtime_with_fallback(_load_gateway_config(), target_model=_primary_model or None)
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 

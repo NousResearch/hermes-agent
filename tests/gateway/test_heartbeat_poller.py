@@ -8,7 +8,10 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent
-from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND, display_kind_for_event
+from gateway.response_filters import (
+    INTERNAL_NOTIFICATION_DISPLAY_KIND,
+    display_kind_for_event,
+)
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
 from hermes_cli.heartbeat import HeartbeatManager
@@ -38,9 +41,17 @@ def poller(monkeypatch):
     goals._get_session_db()
     clock = SimpleNamespace(now=1000.0)
     monkeypatch.setattr(heartbeat, "time", SimpleNamespace(time=lambda: clock.now))
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id="42", user_id="42", chat_type="dm", message_id="watch-cmd")
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="42",
+        user_id="42",
+        chat_type="dm",
+        message_id="watch-cmd",
+    )
     key = build_session_key(source)
-    adapter = _HeartbeatAdapter(PlatformConfig(enabled=True, typing_indicator=False), Platform.TELEGRAM)
+    adapter = _HeartbeatAdapter(
+        PlatformConfig(enabled=True, typing_indicator=False), Platform.TELEGRAM
+    )
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
     runner._delivery_adapter_for = lambda source: adapter
@@ -70,7 +81,9 @@ async def test_idle_wake_coalesces_intervals_while_adapter_owns_turn(poller):
     try:
         clock.now += 60
         await runner._heartbeat_poll_once(watch)
-        assert key in adapter._active_sessions, "idle poll must start a turn, not park it in FIFO"
+        assert key in adapter._active_sessions, (
+            "idle poll must start a turn, not park it in FIFO"
+        )
         await asyncio.wait_for(started.wait(), 2)
         for _ in range(14):
             clock.now += 60
@@ -104,7 +117,11 @@ async def test_unavailable_or_busy_session_leaves_persisted_tick_due(poller):
         event._heartbeat_execution_started = True  # fake agent execution boundary
 
     adapter.set_message_handler(handler)
-    for state in (runner._running_agents, adapter._active_sessions, adapter._pending_messages):
+    for state in (
+        runner._running_agents,
+        adapter._active_sessions,
+        adapter._pending_messages,
+    ):
         state[key] = user
         await runner._heartbeat_poll_once(watch)
         assert state[key] is user
@@ -118,7 +135,9 @@ async def test_unavailable_or_busy_session_leaves_persisted_tick_due(poller):
 
 
 @pytest.mark.asyncio
-async def test_emergency_stop_holds_due_tick_without_messaging_until_resume(poller, monkeypatch):
+async def test_emergency_stop_holds_due_tick_without_messaging_until_resume(
+    poller, monkeypatch
+):
     """`hermes pause` must not turn a due heartbeat into a chat message on every poll (prod: ~10k
     identical paused notices in 5h); the tick fires normally after `hermes resume`."""
     from agent import estop
@@ -159,7 +178,9 @@ async def test_emergency_stop_holds_due_tick_without_messaging_until_resume(poll
 
 
 @pytest.mark.asyncio
-async def test_emergency_stop_gate_drops_heartbeat_silently_but_tells_real_users(poller, monkeypatch):
+async def test_emergency_stop_gate_drops_heartbeat_silently_but_tells_real_users(
+    poller, monkeypatch
+):
     from agent import estop
 
     runner, adapter, watch, key, _clock = poller
@@ -183,3 +204,50 @@ async def test_emergency_stop_gate_drops_heartbeat_silently_but_tells_real_users
     await adapter.handle_message(MessageEvent(text="are you there?", source=source))
     await asyncio.gather(*adapter._background_tasks)
     assert len(sent) == 1 and estop.paused_reply() in sent[0]
+
+
+@pytest.mark.asyncio
+async def test_local_session_heartbeat_admitted_under_authority(monkeypatch):
+    """A local-session adapter (never wired with a _message_handler) still gets its
+    heartbeat tick admitted when a session authority is active (#144051).
+
+    The poller used to gate the whole tick on ``adapter._message_handler`` — only
+    connected messaging adapters ever get one — so Desktop/local sessions returned
+    on every tick and never reached the authority branch, which commits the
+    heartbeat without needing the handler at all."""
+    from gateway import run_heartbeat_acceptance as acceptance
+
+    admitted = []
+
+    async def _fake_admit(runner, adapter, source, session_id, route):
+        admitted.append((session_id, route))
+
+    monkeypatch.setattr(acceptance, "admit_heartbeat", _fake_admit)
+
+    adapter = _HeartbeatAdapter(
+        PlatformConfig(enabled=True, typing_indicator=False), Platform.TELEGRAM
+    )
+    assert adapter._message_handler is None  # the local-session shape: never wired
+
+    runner = object.__new__(GatewayRunner)
+    runner._running_agents = {}
+    runner._delivery_adapter_for = lambda source: adapter
+    runner.session_store = None
+    runner.session_authority = object()  # the session-authority path is active
+
+    async def _warm(tag):
+        return None
+
+    runner._warm_goals_session_db = _warm
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="7",
+        user_id="7",
+        chat_type="dm",
+        message_id="m",
+    )
+    key = build_session_key(source)
+    await GatewayRunner._heartbeat_poll_watch(runner, {}, key, source, "local-session")
+
+    assert admitted == [("local-session", key)]

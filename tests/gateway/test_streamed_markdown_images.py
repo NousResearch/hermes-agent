@@ -187,21 +187,27 @@ async def _stream_frames(deltas):
     return [f.replace(cursor, "") if cursor else f for f in frames]
 
 
+@pytest.mark.parametrize("deltas, final", [
+    (["Here is the render.\n\n!", "[barrel ren", "der](https://exa", "mple.com/r/b", "arrel.png)",
+      "\n\nWant another ", "angle?"], "Here is the render.\n\nWant another angle?"),
+    # "!" glued to prose: the extractor has no left boundary, so the "!" must not be shown first.
+    (["Here is the chart:!", "[chart](https://example.com/chart.png) More"], "Here is the chart: More"),
+    # The alt text may span lines; the hold covers the whole unfinished tag, not just the last line.
+    (["Look: ![first\nsec", "ond](https://example.com/c.png)", "done"], "Look: done"),
+])
 @pytest.mark.asyncio
-async def test_streamed_image_tag_never_shows_and_frames_stay_prefix_stable():
+async def test_streamed_image_tag_never_shows_and_frames_stay_prefix_stable(deltas, final):
     """No frame shows any part of the tag, and each frame extends the previous one: showing
     ``![barrel](https://ex`` and removing it later would break prefix-stable draft frames."""
-    frames = await _stream_frames([
-        "Here is the render.\n\n!", "[barrel ren", "der](https://exa", "mple.com/r/b",
-        "arrel.png)", "\n\nWant another ", "angle?"])
+    frames = await _stream_frames(deltas)
 
     assert frames, "nothing was streamed"
     for frame in frames:
-        assert "![" not in frame and "example.com" not in frame and "](" not in frame, frame
+        assert "!" not in frame and "example.com" not in frame and "](" not in frame, frame
     interim = [f.rstrip() for f in frames[:-1]]
     for prev, nxt in itertools.pairwise(interim):
         assert nxt.startswith(prev), (prev, nxt)
-    assert frames[-1].strip() == "Here is the render.\n\nWant another angle?"
+    assert frames[-1].strip() == final
 
 
 @pytest.mark.asyncio

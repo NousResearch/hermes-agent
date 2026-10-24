@@ -30,6 +30,7 @@ import { $introSplash, setIntroSplash } from '@/store/intro-splash'
 import { $fileBrowserOpen, setFileBrowserOpen } from '@/store/layout'
 import { $showModelPricing, setShowModelPricing } from '@/store/model-pricing'
 import { notifyError } from '@/store/notifications'
+import { $powerUsage, type PowerUsage, setPowerUsage } from '@/store/power-usage'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
@@ -422,6 +423,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const reasoningCollapsedShadowed = useStore($modeShadowed('reasoningCollapsedByDefault'))
   const interfaceMode = useStore($interfaceMode)
   const sessionListDensity = useStore($sessionListDensity)
+  const powerUsage = useStore($powerUsage)
   const tabStripDefault = useStore($tabStripDefault)
   const titlebarAppActionsSide = useStore($titlebarAppActionsSide)
   const zoomPercent = useStore($zoomPercent)
@@ -508,6 +510,11 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
     { id: 'comfortable', label: a.sessionDensityComfortable },
     { id: 'detailed', label: a.sessionDensityDetailed }
   ] as const satisfies readonly { id: SessionListDensity; label: string }[]
+
+  const powerUsageOptions = [
+    { id: 'normal', label: a.powerUsageNormal },
+    { id: 'low', label: a.powerUsageLow }
+  ] as const satisfies readonly { id: PowerUsage; label: string }[]
 
   const interfaceModeOptions = INTERFACE_MODES.map(id => ({
     id,
@@ -745,6 +752,24 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               description={a.sessionDensityDesc}
               id={settingElementId(ids.sessionDensity)}
               title={a.sessionDensityTitle}
+            />
+          )}
+
+          {show('window-layout') && (
+            <ListRow
+              action={
+                <SegmentedControl
+                  onChange={id => {
+                    triggerHaptic('selection')
+                    setPowerUsage(id)
+                  }}
+                  options={powerUsageOptions}
+                  value={powerUsage}
+                />
+              }
+              description={a.powerUsageDesc}
+              id={settingElementId(ids.powerUsage)}
+              title={a.powerUsageTitle}
             />
           )}
 

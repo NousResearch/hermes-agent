@@ -276,6 +276,31 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
             return relayed
     # Local teammate — folder id, or a friendly name / Desktop @-slug ('Scribe', 'Dr. Foo').
     resolved = _resolve_local_name(raw_target, roster, root)
+    # A renamed-away profile's old directory can still resolve here: `hermes profile rename`
+    # clears the old dir's tombstone right after a successful move (so a FUTURE profile may
+    # reuse the name) — but a later side effect (cron heartbeat, log write, stray delivery)
+    # regenerating an identity marker there makes the exact match above succeed against a name
+    # nobody uses anymore. Consulted only when `resolved` names an actual local stub that isn't
+    # itself a live, bot-managed teammate — a resurrected stub carries no `ui_meta.hermes-bots`
+    # (nothing ever re-registered it as a bot), while a legitimately reused name belongs to a real
+    # teammate profile. `previous_names` records a LOCAL rename only and says nothing about other
+    # machines, so `resolved is None` (no local stub at all — the name may still be live on
+    # another connection) must fall through to the relay fallback below instead of hard-failing
+    # here (#123574-style cross-machine regression: the guard used to pre-empt
+    # `_try_relay_delivery` for any name merely listed in *some* local profile's history). This
+    # keeps existing exact-folder precedence: a genuine live profile that exactly matches
+    # `raw_target` is never blocked by history pointing at the ORIGINAL renamed-away
+    # profile (#123133).
+    from tools.bot_mode_probe import RENAMED_TO_AMBIGUOUS, _is_bot_managed, renamed_to
+    if resolved is not None and not _is_bot_managed(roster_homes[resolved]):
+        new_name = renamed_to(raw_target.lower(), root)
+        if new_name is RENAMED_TO_AMBIGUOUS:
+            return _roster_err(f"'{raw_target}' was renamed away by more than one profile's history "
+                               "and the roster can't tell which one inherited it. Pick the exact "
+                               "current teammate name instead.")
+        if new_name is not None and new_name != resolved:
+            return _roster_err(f"'{raw_target}' was renamed to '{new_name}' — use that name instead. "
+                               "Do not retry with the old name.")
     is_local_shape = bool(_LOCAL_TARGET_RE.match(raw_target))
     if resolved is None and not is_local_shape and "@" not in raw_target:
         return _roster_err(f"Invalid target: {raw_target!r}.")

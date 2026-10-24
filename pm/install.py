@@ -20,7 +20,7 @@ from pm.lock import Facts, Lockfile
 from pm.package import InstallError, Package, Runner, StatePackage, compose_env
 from pm.plugin_inputs import Candidates, Members, PluginInput, Selection, StagedUpdate
 from pm.registry import get_package, walk
-from pm.store import Store, current_target, merge_tree, tree_digest
+from pm.store import Store, artifact_entry_name, current_target, merge_tree, tree_digest
 
 LOG = logging.getLogger(__name__)
 
@@ -289,7 +289,7 @@ def _reclaim_set_aside(store: Store) -> int:
 def _remove_downloads(store: Store, artifacts: list[dict]) -> None:
     """Release this package's archives after publication, under its store lock."""
     for artifact in artifacts:
-        _discard_entry(store, f"fetch-{artifact['sha256']}")
+        _discard_entry(store, artifact_entry_name(artifact["sha256"]))
 
 
 def _entry_verified(package: Package, fact: dict, store: Store, target: str) -> bool:

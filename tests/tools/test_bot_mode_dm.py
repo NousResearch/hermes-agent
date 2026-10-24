@@ -771,7 +771,8 @@ def test_live_dm_wait_reports_reply_after_initial_wait_budget(tmp_path, monkeypa
         settling.join(timeout=2)
     notice = json.loads(capsys.readouterr().out)
     assert exit_code == 0
-    assert (notice["status"], notice["reply"]) == ("settled", "PONG")
+    # The sender sees ENUM B at the boundary: the store keeps "settled", the receipt says "delivered".
+    assert (notice["status"], notice["reply"]) == ("delivered", "PONG")
 
 
 @pytest.mark.parametrize("lookup", ["raises", "holds"])

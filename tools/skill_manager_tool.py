@@ -406,13 +406,16 @@ def _locate_for_write(name: str, action: str, not_found_suffix: str = ""):
 
 def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label: str,
                    content: str) -> Optional[dict[str, Any]]:
-    """Read-before-write guard (existing targets only), atomic write, then the security scan;
-    a blocked scan restores the original (or unlinks a new file). Error dict or None."""
+    """Read-before-write guard (existing targets only), the description budget for the root SKILL.md
+    (whichever action and file_path reach it), atomic write, then the security scan; a blocked scan
+    restores the original (or unlinks a new file). Error dict or None."""
     original = None
     if target.exists():
         if read_guard := _background_review_read_before_write_guard(name, target, action, label):
             return read_guard
         original = target.read_text(encoding="utf-8-sig")
+    if target == skill_dir / "SKILL.md" and (err := _description_budget_error(content, before=original)):
+        return _err(err)
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(target.parent)
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
@@ -464,8 +467,7 @@ def _clip(text: str, n: int, ellipsis: str) -> str:
 
 def _create_skill(name: str, content: str, category: str | None = None) -> dict[str, Any]:
     if err := (_validate_name(name) or _validate_category(category)
-               or _validate_frontmatter(content) or _description_budget_error(content)
-               or _validate_content_size(content)):
+               or _validate_frontmatter(content) or _validate_content_size(content)):
         return _err(err)
     if existing := _find_skill(name):
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
@@ -509,9 +511,6 @@ def _edit_skill(name: str, content: str) -> dict[str, Any]:
     if err := _validate_frontmatter(content) or _validate_content_size(content):
         return _err(err)
     skill_dir, guard = _locate_for_write(name, "edit")
-    if not guard and (err := _description_budget_error(
-            content, before=(skill_dir / "SKILL.md").read_text(encoding="utf-8-sig"))):
-        return _err(err)
     # SKILL.md always exists here (_find_skill requires it), so a blocked scan restores it.
     if guard := guard or _guarded_write(name, skill_dir, skill_dir / "SKILL.md", "edit", "SKILL.md", content):
         return guard
@@ -560,8 +559,6 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | N
         return _err(err)
     if not file_path and (err := _validate_frontmatter(new_content)):
         return _err(f"Patch would break SKILL.md structure: {err}")
-    if not file_path and (err := _description_budget_error(new_content, before=content)):
-        return _err(err)
     if guard := _guarded_write(name, skill_dir, target, "patch", target_label, new_content):
         return guard
     result = {

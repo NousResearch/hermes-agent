@@ -401,7 +401,9 @@ const approval: Handler = ctx => {
     requestId: str(p.request_id) || undefined,
     serverRequestId: request.id,
     sessionId: sessionId || null,
-    smartDenied: p.smart_denied === true
+    smartDenied: p.smart_denied === true,
+    // Present only when the guardian could not run; the reason the backend gives, verbatim.
+    smartUnavailable: str(p.smart_unavailable) || undefined
   }).catch(() => undefined)
   markNeedsInput(ctx)
 

@@ -7,6 +7,7 @@ tag as text and never sent the picture. The post-stream rescan has to deliver th
 and the streamed display must not keep the literal tag on screen.
 """
 
+import itertools
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -148,3 +149,75 @@ def test_display_hides_the_image_tag_and_keeps_the_prose():
 def test_display_leaves_plain_text_untouched():
     text = "No pictures here, just [a link](https://example.com/page)."
     assert GatewayStreamConsumer._clean_for_display(text) == text
+
+
+async def _stream_frames(deltas):
+    """Run a real consumer over *deltas* (every chunk edit-eligible); return the shown frames."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from gateway.stream_consumer import StreamConsumerConfig
+    from tests.waiting import async_wait_until
+
+    adapter = MagicMock()
+    frames = []
+
+    async def _send(**kw):
+        frames.append(kw["content"])
+        return SimpleNamespace(success=True, message_id="m1")
+
+    async def _edit(**kw):
+        frames.append(kw["content"])
+        return SimpleNamespace(success=True)
+
+    adapter.send, adapter.edit_message = _send, _edit
+    adapter.MAX_MESSAGE_LENGTH = 4096
+    consumer = GatewayStreamConsumer(adapter, "chat_1", StreamConsumerConfig(edit_interval=0.0, buffer_threshold=1))
+    task = asyncio.create_task(consumer.run())
+    seen = ""
+    for delta in deltas:
+        consumer.on_delta(delta)
+        seen += delta
+        await async_wait_until(lambda: consumer._accumulated.endswith(seen[-8:]) and consumer._queue.empty())
+        for _ in range(5):
+            await asyncio.sleep(0)
+    consumer.finish()
+    await task
+    cursor = (consumer.cfg.cursor or "").strip()
+    return [f.replace(cursor, "") if cursor else f for f in frames]
+
+
+@pytest.mark.asyncio
+async def test_streamed_image_tag_never_shows_and_frames_stay_prefix_stable():
+    """No frame shows any part of the tag, and each frame extends the previous one: showing
+    ``![barrel](https://ex`` and removing it later would break prefix-stable draft frames."""
+    frames = await _stream_frames([
+        "Here is the render.\n\n!", "[barrel ren", "der](https://exa", "mple.com/r/b",
+        "arrel.png)", "\n\nWant another ", "angle?"])
+
+    assert frames, "nothing was streamed"
+    for frame in frames:
+        assert "![" not in frame and "example.com" not in frame and "](" not in frame, frame
+    interim = [f.rstrip() for f in frames[:-1]]
+    for prev, nxt in itertools.pairwise(interim):
+        assert nxt.startswith(prev), (prev, nxt)
+    assert frames[-1].strip() == "Here is the render.\n\nWant another angle?"
+
+
+@pytest.mark.asyncio
+async def test_queued_lane_sends_the_text_without_the_tag_and_the_image_once():
+    """The queued follow-up lane sends the text itself, then runs the post-stream uploader: the
+    tag it now attaches must not also stay in the text (one picture, no literal tag)."""
+    adapter = _adapter()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="t1"))
+    source = _event().source
+
+    await GatewayRunner._deliver_queued_first_response(
+        object.__new__(GatewayRunner), "Done.\n\n![chart](https://example.com/chart.png)",
+        source=source, adapter=adapter, metadata={}, event_message_id=None,
+        text_already_delivered=False, deliver_media=True)
+
+    adapter.send.assert_awaited_once()
+    assert adapter.send.await_args.args[1] == "Done."
+    adapter.send_multiple_images.assert_awaited_once()
+    assert adapter.send_multiple_images.await_args.kwargs["images"] == [("https://example.com/chart.png", "chart")]

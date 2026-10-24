@@ -1,5 +1,7 @@
 """Standalone-send fallback in cron delivery must never orphan its send coroutine.
 
+Adapted from JinYoon-builds' closed PR #139220.
+
 The thread-pool fallback used to build ``_send()`` as a ``submit()`` argument: when ``submit()``
 itself raised (executor shutdown) or the worker's ``asyncio.run()`` failed, the coroutine was
 left unawaited ("coroutine '_send' was never awaited").
@@ -27,7 +29,7 @@ def _coroutines_in(calls):
 
 def test_rejected_submit_does_not_construct_fallback_coroutine():
     """An executor that rejects submit() must not be handed a pre-built send coroutine."""
-    job = {"id": "rejected-submit-job", "deliver": "email:a@example.com"}
+    job = {"id": "rejected-submit-job", "deliver": "email:recipient"}
 
     with patch("gateway.config.load_gateway_config", return_value=_email_cfg()), \
          patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
@@ -49,7 +51,7 @@ def test_rejected_submit_does_not_construct_fallback_coroutine():
 
 def test_worker_run_failure_closes_fallback_coroutine():
     """A worker-side asyncio.run() failure must close the coroutine it was given."""
-    job = {"id": "worker-run-failure-job", "deliver": "email:a@example.com"}
+    job = {"id": "worker-run-failure-job", "deliver": "email:recipient"}
 
     with patch("gateway.config.load_gateway_config", return_value=_email_cfg()), \
          patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \

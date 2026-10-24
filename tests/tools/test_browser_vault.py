@@ -77,6 +77,7 @@ class TestVaultStore:
         blob = (tmp_path / "vault" / "vault.json.enc").read_bytes()
         assert b"s3cret-pw" not in blob
 
+    @pytest.mark.platforms("posix")  # POSIX mode bits not enforced on Windows
     def test_file_permissions_0600(self, store, tmp_path):
         _add_login(store)
         for name in ("vault.json.enc", "vault.key"):
@@ -630,6 +631,7 @@ class TestVaultHardening:
         assert "vault.key" in _SECRET_FILE_NAMES
         assert "vault.json.enc" in _SECRET_FILE_NAMES
 
+    @pytest.mark.platforms("posix")  # POSIX mode bits and umask not enforced on Windows
     def test_vault_dir_is_owner_only(self, store, tmp_path):
         old_umask = os.umask(0o022)
         try:

@@ -124,6 +124,47 @@ class StreamTransportMixin:
             except Exception as e:
                 logger.debug("%s preview cleanup failed (%s): %s", label, stale_id, e)
 
+    def _is_media_only_edit(self, text: str) -> bool:
+        """Recognize an edit tail with the parser used for final media delivery."""
+        if self._use_native_streaming or self._use_draft_streaming:
+            return False
+        media, visible = _BasePlatformAdapter.extract_media(text)
+        return bool(media) and not visible.strip()
+
+    async def _finalize_media_preview(self) -> bool:
+        """Settle a media-only edit tail without re-sending its partial directive.
+
+        True means this path owns finalization, including a failed cleanup. A
+        failed delete must not enter fallback and claim the stale preview as final.
+        """
+        if (not self._message_id or self._message_id == "__no_edit__"
+                or not self._is_media_only_edit(self._accumulated)):
+            return False
+        self._final_response_sent = self._final_content_delivered = False
+        self._delivered_final_text = None
+        self._delivery_ambiguous = False
+        delete_fn = getattr(self.adapter, "delete_message", None)
+        if delete_fn is None:
+            return True
+        try:
+            deleted = await delete_fn(self.chat_id, self._message_id)
+        except Exception as e:
+            logger.debug("Media-only preview cleanup failed (%s): %s", self._message_id, e,
+                         exc_info=True)
+            return True
+        if deleted is not True:
+            return True
+        # Sealed heads share the segment's tracking set: only the active tail is stale.
+        self._preview_message_ids.discard(str(self._message_id))
+        self._segment_preview_message_ids.discard(str(self._message_id))
+        self._message_id = self._message_created_ts = None
+        self._last_sent_text = ""
+        self._fallback_final_send = False
+        self._fallback_prefix = ""
+        self._fallback_preserve_partial_messages = False
+        self._mark_final_delivered(record=self._accumulated)
+        return True
+
     def _resolve_draft_streaming(self) -> bool:
         """cfg.transport "draft"/"auto" → the adapter's supports_draft_streaming probe
         ("draft" logs the downgrade); "edit"/"off" → False."""

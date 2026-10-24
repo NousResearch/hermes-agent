@@ -703,7 +703,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             return
         if not self._turn_split_delivery:
             final_payload = self._clean_for_display(final_raw)
-            if final_payload and final_payload != self._clean_for_display(self._accumulated):
+            if ((final_payload or self._is_media_only_edit(final_raw))
+                    and final_payload != self._clean_for_display(self._accumulated)):
                 self._accumulated = final_raw
                 self._stream_ledger = final_raw
             return
@@ -877,6 +878,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     async def _finalize_edit_path(self, tick: _Tick) -> None:
         """Edit-transport finalize (the non-native got_done branches, in priority order)."""
+        if await self._finalize_media_preview():
+            return
         if self._fallback_final_send:
             await self._send_fallback_final(self._accumulated)
         elif self._final_response_sent:
@@ -944,6 +947,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         platforms apply formatting; is_turn_final=False because this handler owns the flags.
         Only a successful edit confirms delivery — a partial send may be just "Let me
         search…", not the answer."""
+        if self._is_media_only_edit(self._accumulated):
+            # An empty send/edit is a no-op, not an ACK for a cancelled preview delete.
+            return
         best_effort_ok = False
         if self._accumulated and self._message_id:
             with contextlib.suppress(Exception):

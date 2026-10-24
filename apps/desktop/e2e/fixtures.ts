@@ -83,6 +83,13 @@ function isInheritedHermesRuntimeVar(name: string): boolean {
   return name.startsWith('HERMES_') && !name.startsWith('HERMES_DESKTOP_') && !name.startsWith('HERMES_E2E_')
 }
 
+// Same leak, different host: when the harness is driven from a terminal the
+// Hermes DESKTOP app spawned, ELECTRON_RUN_AS_NODE=1 is inherited and turns
+// our own electron.exe into a bare Node — it rejects --remote-debugging-port
+// and every Electron spec dies at launch with "bad option". The app under test
+// must always boot as Electron, never as the launcher's Node.
+const ELECTRON_NODE_MODE_VARS = new Set(['ELECTRON_RUN_AS_NODE'])
+
 function stripCredentials(env: Record<string, string | undefined>): Record<string, string> {
   const clean: Record<string, string> = {}
 
@@ -91,7 +98,7 @@ function stripCredentials(env: Record<string, string | undefined>): Record<strin
       continue
     }
 
-    if (isCredentialEnvVar(key) || isInheritedHermesRuntimeVar(key)) {
+    if (isCredentialEnvVar(key) || isInheritedHermesRuntimeVar(key) || ELECTRON_NODE_MODE_VARS.has(key)) {
       continue
     }
 

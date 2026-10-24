@@ -1,0 +1,17 @@
+name: pet-wallet
+repo: https://github.com/1240037688/pet-wallet
+sha: "d0e99799c74bc91b67bbcbdd13865587974b4f16"
+description: "Pet Wallet — Dual-track AI usage ledger (estimate vs observed balance), pet desktop bubbles, and live multi-provider quota tracking (Codex 5h/Weekly, DeepSeek) for Hermes."
+maintainer: "1240037688"
+tier: community
+category: desktop
+requires_hermes: ">=0.21"
+platforms: [windows, macos, linux]
+docs_url: "https://github.com/1240037688/pet-wallet#readme"
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_approval_request
+    - post_approval_response
+  provides_middleware: []
+  requires_env: []

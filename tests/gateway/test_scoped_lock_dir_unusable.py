@@ -19,6 +19,7 @@ from gateway import status_lock_dir as scoped_locks
 from gateway.status_scoped_locks import release_scoped_lock
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.restart import is_global_startup_conflict
+from gateway.run_adapters import GatewayAdapterLifecycleMixin
 from gateway.run_startup import GatewayStartupMixin
 
 pytestmark = [pytest.mark.platforms("posix"),
@@ -116,6 +117,8 @@ class _StartupProbe:
     _start_aggregate_connect_results = GatewayStartupMixin._start_aggregate_connect_results
     _start_handle_no_connections = GatewayStartupMixin._start_handle_no_connections
     _startup_retry_entry = GatewayStartupMixin._startup_retry_entry
+    _on_all_adapters_down = GatewayAdapterLifecycleMixin._on_all_adapters_down
+    config = None  # on_all_adapters_down unset → "exit", the historical behaviour
 
     def __init__(self):
         self._failed_platforms, self.status_updates, self.fatal = {}, [], []

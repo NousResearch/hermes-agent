@@ -613,6 +613,13 @@ def skill_view(
         all_dirs = [d for _t, d in roots]
         error, skill_dir, skill_md = locate_skill(name, local_category_name, roots)
         if error is not None:
+            # "area/leaf" as written by a plugin router skill -> its nested leaf under "ns:area"
+            if "/" in name and ":" not in name:
+                from hermes_cli.plugins import discover_plugins, get_plugin_manager
+                discover_plugins()
+                area, leaf = name.split("/", 1)
+                if qualified := get_plugin_manager().find_plugin_skill_leaf(area, leaf):
+                    return skill_view(qualified, file_path or f"{leaf}/SKILL.md", task_id, preprocess)
             return error
         try:  # read once — reused for platform check and main content
             content = _read_skill_text(skill_md)

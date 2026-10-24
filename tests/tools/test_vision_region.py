@@ -186,3 +186,46 @@ class TestSchemaAndHandler:
             )
         )
         assert seen["region"] == [1, 2, 30, 40]
+
+
+# ─── all-zero / empty region means "no region" ───────────────────────────────
+
+
+class TestEffectiveRegion:
+    @pytest.mark.parametrize("region", [None, [], [0, 0, 0, 0], (0, 0, 0, 0), [0.0, 0, 0, 0]])
+    def test_empty_or_all_zero_is_no_region(self, region):
+        from tools.vision_tools import _effective_region
+
+        assert _effective_region(region) is None
+
+    @pytest.mark.parametrize(
+        "region", [[0, 0, 0, 1], [10, 10, 60, 40], [1, 2, 3], "0,0,0,0", [False] * 4])
+    def test_everything_else_passes_through(self, region):
+        from tools.vision_tools import _effective_region
+
+        assert _effective_region(region) is region
+
+
+class TestNativePathZeroRegion:
+    @pytest.mark.parametrize("region", [[0, 0, 0, 0], []])
+    def test_zero_region_returns_the_full_image(self, tmp_path, region):
+        from tools.vision_tools import _vision_analyze_native
+
+        src = _make_png(tmp_path / "img.png", 100, 50)
+        result = asyncio.get_event_loop().run_until_complete(
+            _vision_analyze_native(str(src), "whole image", region=region)
+        )
+        assert isinstance(result, dict) and result.get("_multimodal") is True
+        url = next(p["image_url"]["url"] for p in result["content"] if p.get("type") == "image_url")
+        assert _decoded_size(url) == (100, 50)
+
+    def test_degenerate_but_nonzero_region_still_errors(self, tmp_path):
+        import json
+
+        from tools.vision_tools import _vision_analyze_native
+
+        src = _make_png(tmp_path / "img.png", 100, 50)
+        result = asyncio.get_event_loop().run_until_complete(
+            _vision_analyze_native(str(src), "zoom", region=[0, 0, 0, 1])
+        )
+        assert json.loads(result).get("success") is False

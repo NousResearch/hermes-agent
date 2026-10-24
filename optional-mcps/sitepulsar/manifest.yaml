@@ -1,0 +1,32 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: sitepulsar
+connector_slug: sitepulsar
+description: Run AEO and agent-readiness audits for any website and retrieve scored results.
+source: https://github.com/SitePulsar/mcp-server
+
+# SitePulsar ships a remote MCP server over Streamable HTTP with native
+# OAuth (AuthKit, Dynamic Client Registration). Nothing to install locally.
+transport:
+  type: http
+  url: https://mcp.sitepulsar.ai/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - sitepulsar
+    - aeo
+    - agent readiness
+  hosts:
+    - sitepulsar.ai
+
+post_install: |
+  On first connection, Hermes will open a browser to authenticate with SitePulsar.
+  After auth, restart your Hermes session so the SitePulsar tools are loaded.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure sitepulsar

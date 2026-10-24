@@ -326,6 +326,23 @@ function UpdateActions({ target, u, view }: UpdateActionsProps): ReactElement | 
  * "Update now" opens it and starts the install there.
  */
 export function UpdateStatusCard({
+  version,
+  ...props
+}: {
+  showReleaseNotes?: boolean
+  target: UpdateTarget
+  version?: DesktopVersionInfo | null
+}): ReactElement {
+  // A pending client restart supersedes stale check/retirement status; backend
+  // status remains independent. The child owns an unchanged hook sequence.
+  if (props.target === 'client' && version?.bundleSwapPending) {
+    return <></>
+  }
+
+  return <UpdateStatusCardContent {...props} />
+}
+
+function UpdateStatusCardContent({
   showReleaseNotes = true,
   target
 }: {

@@ -237,14 +237,15 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
     def main_rel(self, target: str) -> str:
         return self.main_bin_rel
 
-    # termux-main (official termux repo) python deb. It lags python-build-
-    # standalone by one patch (3.14.6-1 vs 3.14.7), so the bionic row is a
-    # manual pin -- never derived from the node version, and pm update leaves
-    # it alone (no bionic resolver).
+    # termux-main (official termux repo) python deb. The pool is rolling: a
+    # rebuild deletes the previous archive, so this pin is what the pool
+    # serves TODAY -- it is not derived from the node version, and pm update
+    # leaves it alone (no bionic resolver). When the pool retires it, the
+    # evidence is in `pm update --termux --check`.
     deb_package = "python"
     _BIONIC_URL = (
         "https://packages.termux.dev/apt/termux-main/pool/main/p/python/"
-        "python_3.14.6-1_aarch64.deb"
+        "python_3.14.8_aarch64.deb"
     )
 
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:

@@ -77,10 +77,10 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
     except ValueError:
         return _err(rid, 4090, 'invalid_params', data={'reason': 'invalid_params'})
     from tools.bot_relay import delivery_turn_author, relaying_principal_author
-    from tui_gateway.methods_browser_control import _is_authenticated_identity, _principal_digest
+    from gateway.session_identity import authenticated_principal_digest, is_authenticated_identity
     sender_fields = ("from_profile", "from_handle", "from_connection")
     identity = getattr(current_transport(), "auth_identity", None)
-    if _is_authenticated_identity(identity):
+    if is_authenticated_identity(identity):
         # A logged-in client's sender fields are NOT trusted — but the delivery is not refused
         # either: the Desktop is itself a logged-in client on every gateway that requires sign-in
         # (it mints a ws-ticket carrying the signed-in {user_id, provider} —
@@ -90,7 +90,7 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
         # unattributed turn is the HUMAN's to the recipient's memory, so a bot DM must stay
         # bot-authored. The author is derived from the caller's minted identity instead — stable,
         # unspoofable, and ``is_bot`` — whether or not the client named a sender.
-        author = relaying_principal_author(_principal_digest(identity))
+        author = relaying_principal_author(authenticated_principal_digest(identity))
     else:
         author = delivery_turn_author(*(params.get(key) for key in sender_fields))
     forwarded = {key: value for key, value in params.items() if key not in sender_fields}

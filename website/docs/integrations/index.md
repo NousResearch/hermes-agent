@@ -49,12 +49,14 @@ If `web.backend` is not set, the backend is auto-detected from whichever API key
 
 ## Browser Automation
 
-Hermes includes full browser automation with multiple backend options for navigating websites, filling forms, and extracting information:
+Hermes includes full browser automation through `browser_exec` (Python over CDP) for navigating websites, filling forms, and extracting information, with several places the browser can run:
 
 - **Browser Use Cloud** — Managed Chromium with stealth, residential proxies, CAPTCHA solving, and reusable browser profiles
 - **Browserbase** — Alternative cloud browser provider with managed browsers, anti-bot tooling, CAPTCHA solving, and residential proxies
 - **Local Chromium-family CDP** — Connect to your running Chrome, Brave, Chromium, or Edge browser using `/browser connect`
-- **Local Chromium** — Headless local browser via the `agent-browser` CLI
+- **Local Chromium** — Headless local Chromium that Hermes launches itself (the default)
+
+The Camofox anti-detection browser is a catalog plugin: `hermes plugins install camofox`.
 
 See [Browser Automation](../user-guide/features/browser.md) for setup and usage.
 

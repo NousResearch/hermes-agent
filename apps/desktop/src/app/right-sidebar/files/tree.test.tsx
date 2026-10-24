@@ -98,8 +98,10 @@ describe('ProjectTree context-menu clicks', () => {
     await waitFor(() => {
       expect(row?.getAttribute('aria-selected')).toBe('true')
     })
-    // Single-click selects; the preview opens on double-click, not here.
-    expect(onPreviewFile).not.toHaveBeenCalled()
+    // Fork behaviour (5d6c5f26d0): a single click selects AND opens the preview,
+    // exactly once — upstream opens on double-click only.
+    expect(onPreviewFile).toHaveBeenCalledTimes(1)
+    expect(onPreviewFile).toHaveBeenCalledWith('/w/a.ts')
   })
 
   it('a real double click on a row still previews the file', async () => {

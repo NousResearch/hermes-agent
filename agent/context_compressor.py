@@ -2284,6 +2284,9 @@ class ContextCompressor(
         """Shared per-session reset for /new, /reset and session end."""
         # A handoff may carry role="user" only for alternation, so role alone can't prove a human turn existed.
         self._previous_summary = self._summary_has_user_turn = self._last_summary_error = None
+        # The frozen system prompt published by compress_context() for summary prefix-cache
+        # reuse is per-session; the next attempt re-publishes it.
+        self._summary_system_prompt_source = ""
         self._last_aux_model_failure_error = self._last_aux_model_failure_model = None
         # The model the aux lane actually resolved for the most recent summary call (an ``auto`` route
         # may differ from ``summary_model``/``model``). Recorded so a failed auto-resolved model is
@@ -2816,9 +2819,13 @@ class ContextCompressor(
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
-        custom_providers: list | None = None,
+        custom_providers: list | None = None, reuse_main_system_prompt: bool = False,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
+        # Opt-in prefix-cache reuse for the summary call: when the summary routes to THIS model,
+        # send the session's frozen system prompt as the summary request's system message so
+        # prefix-caching providers serve it from KV cache instead of re-prefilling it.
+        self.reuse_main_system_prompt = bool(reuse_main_system_prompt)
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
         self.tail_mode = tail_mode if tail_mode in ("legacy", "lean") else "lean"
         # Per-model context_length overrides live in custom_providers; without them deferred
@@ -3794,19 +3801,70 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         self.summary_model = ""  # empty = use main model
         self._clear_compression_failure_cooldown()  # no cooldown — retry immediately
 
+    def _should_reuse_main_system_prompt(self) -> bool:
+        """True when the summary call should carry the main system prompt for prefix-cache reuse.
+
+        Gated on the summary actually routing to THIS compressor's model: the cache benefit
+        only exists when the request prefix matches the main conversation's, and a different
+        summarizer model would change summary behaviour for no gain. Conservative by design:
+        any explicitly configured model (pin, ``summary_model``, or an ``auxiliary.compression``
+        task model) disables reuse; ``auto`` routing is treated as main-model because the
+        gate is only beneficial in that case and harmless otherwise (a non-matching route
+        simply misses the cache like today).
+        """
+        if not getattr(self, "reuse_main_system_prompt", False):
+            return False
+        pinned = _pinned_summary_call_kwargs()
+        pinned_model = pinned.get("model") if isinstance(pinned, dict) else None
+        if pinned_model and pinned_model != self.model:
+            return False
+        try:
+            from agent.auxiliary_client import _get_auxiliary_task_config
+            task_cfg = _get_auxiliary_task_config("compression") or {}
+            task_model = task_cfg.get("model") if isinstance(task_cfg, dict) else None
+            if task_model and str(task_model).strip() and str(task_model).strip().lower() != "auto":
+                return False
+        except Exception:
+            return False
+        return True
+
+    def _main_system_prompt_for_summary(self) -> str:
+        """The session's frozen system prompt for summary prefix-cache reuse; '' when unavailable.
+
+        ``_summary_system_prompt_source`` is published by ``compress_context()`` from the
+        agent's ``_cached_system_prompt`` — the exact bytes sent on the main conversation's
+        requests (the loop freezes the system prompt mid-session precisely to keep the
+        provider's prefix cache warm), so the summary request extends the same cached
+        prefix instead of starting a new one.
+        """
+        sp = getattr(self, "_summary_system_prompt_source", None)
+        return sp if isinstance(sp, str) else ""
+
     def _call_summary_llm(self, prompt: str, prompt_started_at: float) -> str:
         """Issue the single aux summary call; return validated content text.
         Raises RuntimeError for empty content or a length-truncated (PARTIAL) summary so the failure
         routes through main-model fallback + cooldown instead of wiping the compacted turns."""
         # call_llm writes the route it actually selected; never pre-resolve a second, stale pair.
         _aux_route: dict[str, str] = {}
+        # Prefix-cache reuse (compression.reuse_main_system_prompt): when the summary routes
+        # to this compressor's model, prepend the session's frozen system prompt as the
+        # system message. The request then shares the main conversation's cached prefix, so
+        # prefix-caching providers serve the (typically 10-20K token) system block from KV
+        # cache instead of re-prefilling it; providers without prefix caching are unaffected.
+        # The summary instruction stays the final user message, and the prompt's preamble
+        # carries a no-tool-call guard for the inherited persona (see _build_summary_prompt).
+        _summary_messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+        if self._should_reuse_main_system_prompt():
+            _sys_prompt = self._main_system_prompt_for_summary()
+            if _sys_prompt:
+                _summary_messages.insert(0, {"role": "system", "content": _sys_prompt})
         call_kwargs: dict[str, Any] = {
             "task": "compression",
             "main_runtime": {
                 "model": self.model, "provider": self.provider, "base_url": self.base_url, "api_key": self.api_key,
                 "api_mode": self.api_mode,
             },
-            "messages": [{"role": "user", "content": prompt}], "route_info": _aux_route,
+            "messages": _summary_messages, "route_info": _aux_route,
             # NO max_tokens: Anthropic/NIM wires forward it and a hard cap truncates summaries
             # (thinking models burn it on reasoning). Timeout comes from call_llm config.
         }
@@ -3969,6 +4027,14 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             "summary — replace any that appear with [REDACTED]. Note that credentials were present, but do "
             "not preserve their values."
         )
+        # When the request inherits the main system prompt for prefix-cache reuse, the persona
+        # describes an interactive tool-calling agent — guard against it answering instead of
+        # summarizing (the call carries no tool schemas, so a tool call would dead-end).
+        if getattr(self, "reuse_main_system_prompt", False):
+            _summarizer_preamble += (
+                " You have NO tools available in this turn — do not attempt to call any tool, "
+                "run any command, or continue the assistant role; emit only the checkpoint text. "
+            )
         # Lean mode folds the session log into this SAME single request (one aux call).
         _session_log_section = _LEAN_SESSION_LOG_SECTION if getattr(self, "tail_mode", "lean") == "lean" else ""
         _template_sections = self._summary_template_sections(_section, summary_budget, _session_log_section)

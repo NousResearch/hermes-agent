@@ -1908,7 +1908,9 @@ def _lower_threshold_to_aux_context(
     agent: Any, *, aux_model: str, aux_context: int, aux_provider: str, aux_base_url: str
 ) -> None:
     """Lower the live threshold to the aux model's window and tell the user how to fix config.
-    The summariser sends one user prompt (no system/tools), so threshold == aux_context is safe.
+    The summariser sends one user prompt (no tools; no system unless the
+    compression.reuse_main_system_prompt opt-in is active AND the summary routes to the main
+    model), so threshold == aux_context is safe.
     Retention is recalibrated through its selected policy: lean is window-relative;
     only legacy follows the lowered threshold."""
     compressor = agent.context_compressor
@@ -4026,6 +4028,18 @@ def compress_context(
         agent, force=force, defer_notification=defer_context_engine_notification, trigger=trigger,
         approx_tokens=approx_tokens, overflow_reason=overflow_reason,
     )
+
+    # Publish the frozen system prompt to the compressor for summary prefix-cache reuse
+    # (compression.reuse_main_system_prompt). Prefer the cached prompt — the exact bytes on
+    # the main conversation's requests — so the summary request extends the same cached
+    # prefix; fall back to the passed system_message.
+    try:
+        _sp = getattr(agent, "_cached_system_prompt", None)
+        if not isinstance(_sp, str) or not _sp:
+            _sp = system_message if isinstance(system_message, str) else ""
+        agent.context_compressor._summary_system_prompt_source = _sp
+    except Exception:
+        pass
 
     # Codex owns the real thread; route compaction to its own compact (config
     # compression.codex_app_server_auto). Memory handoff is Hermes-only: no native

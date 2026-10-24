@@ -128,7 +128,11 @@ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
-_POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+# 99992402 is Feishu's generic param-invalid code, returned for post payloads that
+# fail server-side validation (e.g. empty content, malformed post JSON). Treating it
+# like a format rejection lets the plain-text fallback engage instead of dropping the
+# message after the retry budget is exhausted.
+_POST_CONTENT_INVALID_RE = re.compile(r"(content format of the post type is incorrect|99992402)", re.IGNORECASE)
 # --- Media type sets and upload constants ---
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 _AUDIO_EXTENSIONS = {".ogg", ".mp3", ".wav", ".m4a", ".aac", ".flac", ".opus", ".webm"}

@@ -181,12 +181,15 @@ def kanban_command(args: argparse.Namespace) -> int:
         # KanbanDbCorruptError, which would turn every repair into "could not initialize database".
         if action == "repair":
             return _cmd_repair(args)
-        # init_db is idempotent (one sqlite_master SELECT when tables exist) and prevents
-        # "no such table: tasks" on first use from a fresh HERMES_HOME.
-        try:
-            kb.init_db()
-        except Exception as exc:
-            return _err(f"kanban: could not initialize database: {exc}")
+        # Snapshot is an external-monitor surface: it must never initialize or
+        # migrate a board, because either operation is a write.
+        if action != "snapshot":
+            # init_db is idempotent (one sqlite_master SELECT when tables exist) and prevents
+            # "no such table: tasks" on first use from a fresh HERMES_HOME.
+            try:
+                kb.init_db()
+            except Exception as exc:
+                return _err(f"kanban: could not initialize database: {exc}")
 
         handler = _HANDLERS.get(action)
         if not handler:
@@ -1152,6 +1155,56 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_snapshot(args: argparse.Namespace) -> int:
+    """Emit a monitor-oriented board view from one read-only transaction."""
+    from hermes_cli import kanban_diagnostics as kd
+
+    requested_ids = list(getattr(args, "ids", None) or [])
+    try:
+        with kbc.connect_readonly_closing() as conn:
+            tasks = kb.list_tasks(conn, include_archived=not getattr(args, "open_only", False))
+            if requested_ids:
+                wanted = set(requested_ids)
+                tasks = [task for task in tasks if task.id in wanted]
+
+            cards = []
+            for task in tasks:
+                events = kb.list_events(conn, task.id)
+                runs = kb.list_runs(conn, task.id)
+                graph = kb.task_graph_context(conn, task.id)
+                task_data = _task_to_dict(task)
+                task_data.update({
+                    "consecutive_failures": task.consecutive_failures,
+                    "claim_lock": task.claim_lock,
+                    "claim_expires": task.claim_expires,
+                })
+                cards.append({
+                    "task": task_data,
+                    "latest_summary": kb.latest_summary(conn, task.id),
+                    "parents": kb.parent_ids(conn, task.id),
+                    "children": kb.child_ids(conn, task.id),
+                    "comments": [_obj_dict(comment, ("author", "body", "created_at"))
+                                 for comment in kb.list_comments(conn, task.id)],
+                    "events": [_obj_dict(event, ("kind", "payload", "created_at", "run_id"))
+                               for event in events],
+                    "runs": [_obj_dict(run, _SHOW_RUN_FIELDS) for run in runs],
+                    "respawn_guard": (
+                        kbd.check_respawn_guard(conn, task.id, lane=task.status)
+                        if task.status in {"ready", "review"} else None
+                    ),
+                    "diagnostics": [diagnostic.to_dict() for diagnostic in kd.compute_task_diagnostics(
+                        task, events, runs, graph=graph,
+                    )],
+                })
+            payload = {"tasks": cards, "stats": kb.board_stats(conn), "diagnostics": {
+                card["task"]["id"]: card["diagnostics"] for card in cards if card["diagnostics"]
+            }}
+    except FileNotFoundError as exc:
+        return _err(f"kanban snapshot: {exc}")
+    _print_json(payload)
+    return 0
+
+
 def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
     delivery_metadata = {
         key: value
@@ -1331,7 +1384,7 @@ _HANDLERS = {
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,
     "archive": _cmd_archive, "tail": _cmd_tail, "dispatch": _cmd_dispatch,
-    "daemon": _cmd_daemon, "watch": _cmd_watch, "stats": _cmd_stats,
+    "daemon": _cmd_daemon, "watch": _cmd_watch, "stats": _cmd_stats, "snapshot": _cmd_snapshot,
     "log": _cmd_log, "runs": _cmd_runs, "heartbeat": _cmd_heartbeat,
     "assignees": _cmd_assignees, "notify-subscribe": _cmd_notify_subscribe,
     "notify-list": _cmd_notify_list, "notify-unsubscribe": _cmd_notify_unsubscribe,

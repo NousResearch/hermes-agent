@@ -785,6 +785,30 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
 
 
 @contextlib.contextmanager
+def connect_readonly_closing(db_path: Optional[Path] = None, *, board: Optional[str] = None):
+    """Open an existing board for one read-only SQLite snapshot transaction.
+
+    Unlike :func:`connect_closing`, this never initializes or migrates a board.
+    ``mode=ro`` and ``query_only`` make accidental writes fail before they can
+    reach the database; the explicit transaction keeps all following reads on
+    the same SQLite snapshot.
+    """
+    path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
+    if not path.exists():
+        raise FileNotFoundError(f"kanban board database does not exist: {path}")
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.text_factory = _kb._lossy_text
+    try:
+        conn.execute("PRAGMA query_only = ON")
+        conn.execute("BEGIN")
+        yield conn
+    finally:
+        with contextlib.suppress(Exception):
+            conn.close()
+
+
+@contextlib.contextmanager
 def connect_closing(db_path: Optional[Path] = None, *, board: Optional[str] = None):
     """Open a kanban DB connection and guarantee it is closed on exit. Use
     instead of ``with kb.connect() as conn:`` — sqlite3's context manager only

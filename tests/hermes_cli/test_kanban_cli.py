@@ -58,6 +58,40 @@ def test_kanban_list_json_includes_session_id(kanban_home):
     )
 
 
+def test_kanban_snapshot_json_is_read_only_and_includes_monitoring_fields(kanban_home, monkeypatch):
+    """Snapshot is a one-process monitor view, not the mutating ``list`` path."""
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="monitor me", assignee="alice")
+        archived_id = kb.create_task(conn, title="old monitor")
+        assert kb.archive_task(conn, archived_id)
+        kb.add_comment(conn, task_id, "alice", "watching")
+        conn.execute(
+            "UPDATE tasks SET consecutive_failures = 2, claim_lock = ?, claim_expires = ? WHERE id = ?",
+            ("claim", 123, task_id),
+        )
+        conn.commit()
+
+    def must_not_recompute(*args, **kwargs):
+        raise AssertionError("snapshot must not recompute or promote tasks")
+
+    monkeypatch.setattr(kb, "recompute_ready", must_not_recompute)
+    monkeypatch.setattr(kb, "init_db", must_not_recompute)
+    payload = json.loads(kc.run_slash("snapshot --json"))
+
+    card = next(card for card in payload["tasks"] if card["task"]["id"] == task_id)
+    assert card["task"]["id"] == task_id
+    assert card["task"]["consecutive_failures"] == 2
+    assert card["task"]["claim_lock"] == "claim"
+    assert card["task"]["claim_expires"] == 123
+    assert card["comments"] == [{"author": "alice", "body": "watching", "created_at": card["comments"][0]["created_at"]}]
+    assert card["respawn_guard"] is None
+    assert payload["stats"]["by_status"] == {"ready": 1}
+    assert "diagnostics" in payload
+    assert {card["task"]["id"] for card in payload["tasks"]} == {task_id, archived_id}
+    open_payload = json.loads(kc.run_slash("snapshot --open-only --ids " + task_id + " --json"))
+    assert [card["task"]["id"] for card in open_payload["tasks"]] == [task_id]
+
+
 def test_run_slash_stats_text_includes_review_lane(kanban_home):
     """``stats`` text output must surface the ``review`` lane: board_stats() counts
     every non-archived status, so the ``By status:`` block must list ``review`` too

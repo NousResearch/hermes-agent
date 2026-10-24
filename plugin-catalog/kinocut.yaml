@@ -1,20 +1,26 @@
 name: kinocut
 title: Kinocut
 repo: https://github.com/KyaniteLabs/kinocut
-sha: 32d5696cd8b31f75c3e8076aad04e710790c0f27
+sha: 2bb755d191ea00885a6861d61bb39965b13122f4
 subdir: plugins/kinocut
-version: "1.16.6"
+version: "1.16.7"
 description: >-
   Guardrailed local video editing: Kinocut's MCP server plus two workflow skills
-  (editing and short-form repurposing). Trim, caption, reformat for Shorts and run
-  quality checks with FFmpeg on your own machine. Portable Agent Plugins v1 package
-  (plugin.json + mcp.json + skills/), no plugin code. Requires uv and FFmpeg on PATH;
-  the server launches as uvx kinocut==1.16.3 over stdio. First launch downloads
-  Kinocut and dependencies from PyPI. Local FFmpeg editing needs no account or
-  API key. URL inputs download the requested media; font and model-weight features
-  fetch assets from GitHub; Revideo dependency installation runs npm ci.
-  AI color grading sends a frame to Anthropic only with use_ai enabled and
-  ANTHROPIC_API_KEY set. Optional network use is documented in the plugin README.
+  (editing and short-form repurposing). Trim, caption, reformat and check quality
+  with local FFmpeg. Portable Agent Plugins v1 configuration and skills, no plugin
+  code. Requires uv and FFmpeg on PATH; launches uvx kinocut==1.16.4 over stdio.
+  First launch downloads Kinocut and dependencies from PyPI. URL inputs download
+  the requested media; font and model-weight features fetch assets from GitHub.
+  Explicit Revideo dependency installation runs npm ci and may download renderer
+  dependencies. Local FFmpeg editing and color grading need no account or API key.
+  Kinocut's optional vision calls default off and require explicit configuration:
+  legacy product descriptions use an Anthropic-compatible endpoint, while
+  sampled-frame QC uses Anthropic. The README explains how to use the host's image
+  model instead, including local models. Revideo and Hyperframes telemetry default
+  off. Unverified Hyperframes browser previews and Docker renders require explicit
+  telemetry consent. Hyperframes capture/snapshots disable implicit model analysis.
+  These controls are not a network sandbox; see the plugin README for configuration
+  and remaining network use.
 maintainer: KyaniteLabs
 tier: community
 category: tools

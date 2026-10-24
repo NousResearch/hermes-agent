@@ -428,6 +428,8 @@ gateway:
       provider_usage_plus_estimate: "提供方用量 + 新消息估算"
     source_line: "来源：{source}；各类别计数为本地估算。"
     hint_all: "使用 /context all 查看每个技能和工具集的开销。"
+    cache_warm: "提示词缓存：有效，{remaining} 后过期（保留 {ttl}）。"
+    cache_expired: "提示词缓存：已于 {ago} 前过期（保留 {ttl}）；下一条消息将重新处理完整提示词。"
   status:
     header: "📊 **Hermes 网关状态**"
     matrix_scope_header: "**Matrix 范围：**"

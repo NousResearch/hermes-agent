@@ -428,6 +428,8 @@ gateway:
       provider_usage_plus_estimate: "提供方用量 + 新訊息估算"
     source_line: "來源：{source}；各類別數量為本機估算值。"
     hint_all: "使用 /context all 查看各技能與各工具集的成本。"
+    cache_warm: "提示詞快取：有效，{remaining} 後過期（保留 {ttl}）。"
+    cache_expired: "提示詞快取：已於 {ago} 前過期（保留 {ttl}）；下一則訊息將重新處理完整提示詞。"
   status:
     header: "📊 **Hermes 閘道狀態**"
     matrix_scope_header: "**Matrix 範圍：**"

@@ -428,6 +428,8 @@ gateway:
       provider_usage_plus_estimate: "プロバイダーの使用量 + 新規メッセージの推定"
     source_line: "ソース: {source}。カテゴリ別の値はローカル推定です。"
     hint_all: "スキル別・ツールセット別のコストを見るには /context all を使ってください。"
+    cache_warm: "プロンプトキャッシュ: 有効、残り {remaining} で失効 (保持期間 {ttl})。"
+    cache_expired: "プロンプトキャッシュ: {ago} 前に失効 (保持期間 {ttl})。次のメッセージでプロンプト全体が再処理されます。"
   status:
     header: "📊 **Hermes ゲートウェイ状態**"
     matrix_scope_header: "**Matrix スコープ:**"

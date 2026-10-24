@@ -143,6 +143,7 @@ def context_usage_fields(compressor: Any) -> dict[str, Any]:
 def compute_session_context_breakdown(agent: Any, messages: Optional[list[dict]] = None) -> dict[str, Any]:
     """Return a Cursor-style context usage breakdown for one live agent."""
     from agent.model_metadata import estimate_messages_tokens_rough
+    from agent.prompt_cache_window import prompt_cache_window
     from agent.usage_anchor import anchored_context_tokens
     from agent.system_prompt import build_system_prompt_parts
 
@@ -206,6 +207,7 @@ def compute_session_context_breakdown(agent: Any, messages: Optional[list[dict]]
         "context_estimated": source != "provider_usage",
         "estimated_total": estimated_total,
         "model": getattr(agent, "model", "") or "",
+        "prompt_cache": prompt_cache_window(agent),
     }
 
 
@@ -339,6 +341,9 @@ def render_context_breakdown_lines(
         if source:
             source_label = t(f"gateway.context.source.{source}") if source in _CONTEXT_SOURCES else source
             lines.append(t("gateway.context.source_line", source=source_label))
+    from agent.prompt_cache_window import render_prompt_cache_line
+    if cache_line := render_prompt_cache_line(payload.get("prompt_cache")):
+        lines.append(cache_line)
 
     if details is None:
         lines.extend(["", t("gateway.context.hint_all")])

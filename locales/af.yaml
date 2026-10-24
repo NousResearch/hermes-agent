@@ -428,6 +428,8 @@ gateway:
       provider_usage_plus_estimate: "verskaffer-gebruik + geskatte nuwe boodskappe"
     source_line: "Bron: {source}; kategorietellings is plaaslike skattings."
     hint_all: "Gebruik /context all vir koste per vaardigheid en per gereedskapstel."
+    cache_warm: "Prompt-kas: warm, verval oor {remaining} ({ttl} retensie)."
+    cache_expired: "Prompt-kas: {ago} gelede verval ({ttl} retensie); die volgende boodskap verwerk die volle prompt weer."
   status:
     header: "📊 **Hermes Gateway-status**"
     matrix_scope_header: "**Matrix-omvang:**"

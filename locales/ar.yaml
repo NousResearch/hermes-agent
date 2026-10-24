@@ -428,6 +428,8 @@ gateway:
       provider_usage_plus_estimate: "استخدام المزوّد + تقدير الرسائل الجديدة"
     source_line: "المصدر: {source}؛ أعداد الفئات تقديرات محلية."
     hint_all: "استخدم /context all لتكاليف كل مهارة وكل مجموعة أدوات."
+    cache_warm: "ذاكرة التخزين المؤقت للموجه: نشطة، تنتهي خلال {remaining} (مدة الاحتفاظ {ttl})."
+    cache_expired: "ذاكرة التخزين المؤقت للموجه: انتهت منذ {ago} (مدة الاحتفاظ {ttl})؛ الرسالة التالية ستعيد معالجة الموجه كاملاً."
   status:
     header: "📊 **حالة بوابة Hermes**"
     matrix_scope_header: "**نطاق Matrix:**"

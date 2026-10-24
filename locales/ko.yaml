@@ -428,6 +428,8 @@ gateway:
       provider_usage_plus_estimate: "제공자 사용량 + 새 메시지 추정치"
     source_line: "출처: {source}. 카테고리별 수치는 로컬 추정치예요."
     hint_all: "스킬별·도구 세트별 비용은 /context all로 볼 수 있어요."
+    cache_warm: "프롬프트 캐시: 활성, {remaining} 후 만료 ({ttl} 보존)."
+    cache_expired: "프롬프트 캐시: {ago} 전에 만료됨 ({ttl} 보존). 다음 메시지에서 전체 프롬프트를 다시 처리합니다."
   status:
     header: "📊 **Hermes 게이트웨이 상태**"
     matrix_scope_header: "**Matrix 범위:**"

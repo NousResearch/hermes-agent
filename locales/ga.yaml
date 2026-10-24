@@ -428,6 +428,8 @@ gateway:
       provider_usage_plus_estimate: "úsáid an tsoláthraí + teachtaireachtaí nua measta"
     source_line: "Foinse: {source}; is meastacháin áitiúla iad na comhairimh chatagóire."
     hint_all: "Úsáid /context all le haghaidh costas de réir scile agus de réir tacar uirlisí."
+    cache_warm: "Taisce an phrompta: te, rachaidh in éag i gceann {remaining} (coinneáil {ttl})."
+    cache_expired: "Taisce an phrompta: chuaigh in éag {ago} ó shin (coinneáil {ttl}); athphróiseálfaidh an chéad teachtaireacht eile an prompta iomlán."
   status:
     header: "📊 **Stádas Hermes Gateway**"
     matrix_scope_header: "**Scóip Matrix:**"

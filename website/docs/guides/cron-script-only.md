@@ -158,13 +158,13 @@ Interpreter choice is by file extension:
 | Extension | Interpreter |
 |-----------|-------------|
 | `.sh`, `.bash` | `bash` from `PATH` (fallback `/bin/bash`) |
-| anything else | `sys.executable` (current Python), or a [configured interpreter](#using-your-own-python-environment) |
+| anything else | the profile's dependency-environment Python on a managed install, else `sys.executable`, or a [configured interpreter](#using-your-own-python-environment) |
 
 We intentionally do NOT honour `#!/...` shebangs — keeping the interpreter set explicit and small reduces the surface the scheduler trusts.
 
 ### Using your own Python environment
 
-By default a Python cron script runs under Hermes' own Python environment, which only carries Hermes' own dependencies — so a script that imports `openpyxl`, a database driver, or any other package you installed would fail with `ModuleNotFoundError`.
+By default a Python cron script runs under Hermes' own Python environment, which only carries Hermes' own dependencies — so a script that imports `openpyxl`, a database driver, or any other package you installed fails with `ModuleNotFoundError`. The failure names the missing package and points at `--interpreter`. The list of what ships is Hermes' dependency closure and it changes between versions: `yaml` (PyYAML) left the runtime in v0.21.6 when the YAML stack moved to `ruamel.yaml`, so a script that `import yaml` on an older release needs its own environment on any later one. `ruamel.yaml` itself does ship.
 
 You can point the job at a **user-managed venv** instead with `--interpreter`:
 

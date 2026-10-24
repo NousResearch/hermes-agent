@@ -222,6 +222,11 @@ type KanbanMessages = {
     openKanban: string
     artifacts: (n: number) => string
   }
+  // Settings ▸ Plugins ▸ Kanban
+  settings: {
+    blockedPopups: string
+    blockedPopupsDesc: string
+  }
 }
 
 export const en: KanbanMessages = {
@@ -449,6 +454,11 @@ export const en: KanbanMessages = {
     timedOutTitle: 'Task took too long — Hermes will retry it automatically',
     openKanban: 'Open Kanban',
     artifacts: (n: number) => `${n} artifacts`
+  },
+  settings: {
+    blockedPopups: 'Popups for blocked tasks',
+    blockedPopupsDesc:
+      'Show a popup when a task blocks or is routed back to triage. Turned off, the task still shows in the blocked column.'
   }
 }
 
@@ -676,6 +686,11 @@ const ja: KanbanMessages = {
     timedOutTitle: 'タスクに時間がかかりすぎました — Hermes が自動で再試行します',
     openKanban: 'かんばんを開く',
     artifacts: (n: number) => `成果物 ${n} 件`
+  },
+  settings: {
+    blockedPopups: 'ブロック時のポップアップ',
+    blockedPopupsDesc:
+      'タスクがブロックされたとき、またはトリアージに戻されたときにポップアップを表示します。オフでもタスクはブロック列に表示されます。'
   }
 }
 
@@ -900,6 +915,10 @@ const zh: KanbanMessages = {
     timedOutTitle: '任务耗时过长 — Hermes 将自动重试',
     openKanban: '打开看板',
     artifacts: (n: number) => `${n} 个产物`
+  },
+  settings: {
+    blockedPopups: '任务受阻弹窗',
+    blockedPopupsDesc: '任务受阻或被转回分类时显示弹窗。关闭后任务仍显示在受阻列中。'
   }
 }
 
@@ -1124,6 +1143,10 @@ const zhHant: KanbanMessages = {
     timedOutTitle: '任務耗時過長 — Hermes 將自動重試',
     openKanban: '開啟看板',
     artifacts: (n: number) => `${n} 個產物`
+  },
+  settings: {
+    blockedPopups: '任務受阻彈窗',
+    blockedPopupsDesc: '任務受阻或被轉回分類時顯示彈窗。關閉後任務仍顯示在受阻欄中。'
   }
 }
 

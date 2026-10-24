@@ -10,7 +10,7 @@ import time
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from utils import atomic_write_text
 from tools.threat_patterns import first_threat_message as _first_threat_message
@@ -119,8 +119,14 @@ def _no_match_error(entries: list[str], old_text: str, verb: str, **extra) -> di
     closest = [entries[i] for score, i in scored[:3] if score >= 0.3]
     hint = (" old_text must come from ONE entry ('§' separates entries); use one op per entry."
             if "§" in old_text else "")
+    from hermes_constants import get_hermes_home
+
+    home = Path(get_hermes_home()) / "memories"  # call-time: profiles and tests move this root
     return _error(f"No entry matched '{old_text}'.{hint} Retry the {verb} with old_text copied verbatim "
-                  f"from the intended entry" + (" (closest_entries below)." if closest else "."), "no_match",
+                  f"from the intended entry" + (" (closest_entries below)." if closest else ".") +
+                  f" If you cannot see that exact text, read the store file with the read_file tool "
+                  f"(it lives under {home}{os.sep}) and reuse an EXACT substring of an entry you "
+                  f"can see there; do not reconstruct the wording from the conversation.", "no_match",
                   **({"closest_entries": closest} if closest else {}), **extra)
 
 
@@ -549,6 +555,32 @@ class MemoryStore:
         would; on success ``{"success": True, "matched_entries": [...]}`` — per op, the FULL
         entry its replace/remove selects now (None for add), in batch order."""
         return self._batch(target, operations, commit=False)
+
+    def preview_batch(self, target: str, operations: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+        """Dry run of ``apply_batch`` for a write we are about to STAGE instead of apply: the
+        ``(message, failure_class)`` of the failure it would hit, or None when it would apply.
+        ``/memory approve`` replays a staged payload verbatim with no editing step, so a proposal
+        that cannot apply is refused up front rather than queued to fail on every approve (a
+        failed approve does not consume the item). The rules are ``_batch``'s, not a copy."""
+        token = FAILURE_CLASS.set("none")
+        try:
+            result = self._batch(target, operations, commit=False)
+            failure_class = FAILURE_CLASS.get()
+        finally:
+            FAILURE_CLASS.reset(token)
+        if result.get("success"):
+            return None
+        return {"message": result.get("error") or "", "failure_class": failure_class}
+
+    def preview_single(self, target: str, action: str, content: Optional[str] = None,
+                       old_text: Optional[str] = None) -> Optional[dict[str, Any]]:
+        """Same dry run for the single-op replay path (``/memory approve`` -> ``replace`` /
+        ``patch`` / ``remove``, not ``apply_batch``). A lone ``remove`` only ever shrinks —
+        emptying the store is its deliberate-wipe path — so it is always applicable; the others
+        go through the batch rules, which is why this delegates instead of restating them."""
+        if action not in ("replace", "patch"):
+            return None
+        return self.preview_batch(target, [{"action": action, "content": content, "old_text": old_text}])
 
     def _batch(self, target: str, operations: list[dict[str, Any]], *, commit: bool) -> dict[str, Any]:
         from tools.memory_tool import _memory_target_error

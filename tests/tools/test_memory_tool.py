@@ -986,6 +986,103 @@ class TestBackgroundReviewDeleteGate:
         # Atomic: the batch is only a proposal — its add must not land either.
         assert "fork consolidation" not in store._entries_for("memory")
 
+    def test_over_budget_batch_refused_not_queued(self, store, tmp_path, monkeypatch):
+        """A batch the budget can never fit must not be staged: a pending write is a decision the
+        user can ACCEPT (approve replays the payload verbatim -- there is no editing step), so
+        queueing one that fails on every approve leaves an item the queue can never drain."""
+        from tools.write_approval import MEMORY, list_pending
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert store.add("memory", "filler " * 70)["success"] is True  # ~489/500 chars used
+
+        token = set_current_write_origin("background_review")
+        try:
+            refused = json.loads(memory_tool(operations=[
+                {"action": "remove", "old_text": "filler"},
+                {"action": "add", "content": "x" * 600},
+            ], store=store))
+            staged = json.loads(memory_tool(operations=[
+                {"action": "remove", "old_text": "filler"},
+                {"action": "add", "content": "merged, shorter entry"},
+            ], store=store))
+        finally:
+            reset_current_write_origin(token)
+
+        assert refused["success"] is False
+        assert "free at least" in refused["error"]
+        # The fork gets what it needs to reissue a leaner batch instead of a bare denial.
+        assert refused["current_entries"] and refused["usage"]
+        assert not refused.get("staged")
+        # Same consolidation, content that fits the budget: still staged. The refusal is about the
+        # budget, not a blanket denial of proposals.
+        assert staged["staged"] is True and staged["proposal_staged"] is True
+        assert [r["id"] for r in list_pending(MEMORY)] == [staged["pending_id"]]
+        # Fail-closed on both sides: nothing queued for the refused batch, nothing applied.
+        assert store._entries_for("memory") == ["filler " * 69 + "filler"]
+
+    def test_over_budget_single_replace_refused_not_queued(self, store, tmp_path, monkeypatch):
+        """Single-op path shares the staging budget check: a lone over-budget patch is refused
+        rather than queued as an unapprovable proposal."""
+        from tools.write_approval import MEMORY, pending_count
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert store.add("memory", "seed")["success"] is True
+
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(
+                action="patch", old_text="seed", content="z" * 600, store=store))
+        finally:
+            reset_current_write_origin(token)
+
+        assert result["success"] is False
+        assert "free at least" in result["error"]
+        assert pending_count(MEMORY) == 0
+        assert store._entries_for("memory") == ["seed"]
+
+    def test_staged_refusal_points_a_dead_anchor_at_the_file(self, store, tmp_path, monkeypatch):
+        """A refused batch whose anchor matches nothing must name the file re-read, not the
+        budget: the fix for a stale anchor is reading the file, and the next pass otherwise dies
+        on the same wall."""
+        from tools.write_approval import MEMORY, pending_count
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert store.add("memory", "Never reconstruct an anchor from the conversation")["success"] is True
+
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(operations=[
+                {"action": "remove", "old_text": "reconstruct anchors from chat"},
+            ], store=store))
+        finally:
+            reset_current_write_origin(token)
+
+        assert result["success"] is False
+        assert not result.get("staged")
+        assert "read_file" in result["error"]
+        assert "EXACT substring" in result["error"]
+        assert "fits the limit" not in result["error"]
+        assert pending_count(MEMORY) == 0
+
+    def test_staged_refusal_points_an_over_budget_batch_at_the_budget(self, store, tmp_path, monkeypatch):
+        """A refused batch that cannot fit the budget must name the budget remediation, not the
+        anchor: merging or shortening entries is the fix, and a file re-read cannot help."""
+        from tools.write_approval import MEMORY, pending_count
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert store.add("memory", "seed")["success"] is True
+
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(operations=[
+                {"action": "patch", "old_text": "seed", "content": "z" * 600},
+            ], store=store))
+        finally:
+            reset_current_write_origin(token)
+
+        assert result["success"] is False
+        assert "fits the limit" in result["error"]
+        assert "free at least" in result["error"]
+        assert "EXACT substring" not in result["error"]
+        assert pending_count(MEMORY) == 0
+        assert store._entries_for("memory") == ["seed"]
+
     def test_add_still_allowed_in_background_review(self, store):
         token = set_current_write_origin("background_review")
         try:

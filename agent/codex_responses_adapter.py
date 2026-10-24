@@ -3,6 +3,7 @@ OpenAI Responses API (OpenAI Codex, xAI, GitHub Models and other compatible endp
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -155,7 +156,11 @@ _OUTPUT_TEXT_TYPES = {"output_text", "text"}
 _ASSISTANT_IMAGE_PLACEHOLDER = "[Assistant image omitted during replay]"
 # Inline data-URL subtypes the Responses backends accept as ``input_image``. Anything else
 # (SVG source, BMP, TIFF, ...) 400s the WHOLE request — and, once baked into history, every
-# later turn too — so it is downgraded to a text placeholder at this converging seam (#29711).
+# later turn too — so it is re-encoded to PNG, or downgraded to a text placeholder, at this
+# converging seam (#29711).
+# xAI decodes only JPG/PNG/WebP/ICO: a GIF answers 400 ``invalid_image`` on both wires, and
+# the corrupt-image recovery then strips it, so the model replies as if nothing was attached.
+_XAI_REJECTED_IMAGE_TYPES = frozenset({"image/gif"})
 _INCOMPLETE_STATUSES = {"queued", "in_progress", "incomplete"}
 _RESPONSE_MESSAGE_STATUSES = {"completed", "incomplete", "in_progress"}
 
@@ -275,12 +280,32 @@ def _iter_content_parts(content: list) -> Iterator[tuple[str, Any]]:
                 yield "image", part
 
 
-def _input_image_part(part: dict[str, Any], role: str = "user", *, keep_empty_url: bool) -> Optional[dict[str, Any]]:
+def _png_data_url(url: str, mime: str) -> Optional[str]:
+    """PNG data URL for an inline image the backend rejects: SVG rasterized, other rasters
+    re-encoded by Pillow (first frame of an animation). None when neither is possible."""
+    from tools.vision_tools_image_prep import rasterize_svg_data_url
+    if mime == "image/svg+xml":
+        return rasterize_svg_data_url(url)
+    header, _, payload = url.partition(",")
+    if ";base64" not in header.lower():
+        return None
+    from agent.image_routing import _transcode_to_png
+    try:
+        png = _transcode_to_png(base64.b64decode(payload))
+    except ValueError:
+        return None
+    return None if png is None else "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+
+
+def _input_image_part(
+    part: dict[str, Any], role: str = "user", *, keep_empty_url: bool,
+    rejected_types: frozenset = frozenset(),
+) -> Optional[dict[str, Any]]:
     """Responses image part from a chat/Responses image part (``image_url`` may be a str or
     ``{url, detail}``). Assistant → text placeholder (an assistant ``input_image`` 400s every
-    replay); user → ``input_image``, None for an empty url unless ``keep_empty_url``; an inline
-    SVG is rasterized to PNG when a rasterizer is installed, any other unsupported inline
-    subtype (or an SVG with no rasterizer) → text placeholder."""
+    replay); user → ``input_image``, None for an empty url unless ``keep_empty_url``. An inline
+    subtype the backend rejects (``rejected_types`` adds this backend's own refusals) is
+    re-encoded to PNG; one that cannot be (SVG with no rasterizer, undecodable) → text placeholder."""
     if role == "assistant":
         return {"type": "output_text", "text": _ASSISTANT_IMAGE_PLACEHOLDER}
     url, detail = part.get("image_url"), part.get("detail")
@@ -290,14 +315,10 @@ def _input_image_part(part: dict[str, Any], role: str = "user", *, keep_empty_ur
         return None
     url = str(url or "")
     # Lazy import: the prep module only depends on hermes_constants at import time (no cycle).
-    from tools.vision_tools_image_prep import rasterize_svg_data_url, unsupported_inline_image_media_type
-    mime = unsupported_inline_image_media_type(url)
-    if mime == "image/svg+xml":
-        # Rasterize so the model still sees the drawing; the placeholder is the fallback only
-        # when no rasterizer (cairosvg / svglib / rsvg-convert / inkscape) is available.
-        png_url = rasterize_svg_data_url(url)
-        if png_url is not None:
-            url, mime = png_url, None
+    from tools.vision_tools_image_prep import unsupported_inline_image_media_type
+    mime = unsupported_inline_image_media_type(url, rejected_types)
+    if mime is not None and (png_url := _png_data_url(url, mime)) is not None:
+        url, mime = png_url, None
     if mime is not None:
         return {"type": "input_text", "text": f"[image omitted: {mime} is not a supported image format]"}
     image_part: dict[str, Any] = {"type": "input_image", "image_url": url}
@@ -306,7 +327,9 @@ def _input_image_part(part: dict[str, Any], role: str = "user", *, keep_empty_ur
     return image_part
 
 
-def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> list[dict[str, Any]]:
+def _chat_content_to_responses_parts(
+    content: Any, *, role: str = "user", rejected_image_types: frozenset = frozenset(),
+) -> list[dict[str, Any]]:
     """Chat-style multimodal content → Responses API input parts ([] if not a list). Text is
     ``input_text`` (user) / ``output_text`` (assistant) — the API rejects the wrong type per role;
     ``input_image`` is only legal on user messages (see :func:`_input_image_part`). Unsupported
@@ -321,7 +344,9 @@ def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> lis
     for kind, payload in _iter_content_parts(_as_list(content)):
         if kind == "text":
             converted.append({"type": text_type, "text": payload})
-        elif (part := _input_image_part(payload, role, keep_empty_url=False)) is not None:
+        elif (part := _input_image_part(
+            payload, role, keep_empty_url=False, rejected_types=rejected_image_types,
+        )) is not None:
             converted.append(part)
     return converted
 
@@ -588,7 +613,9 @@ def _replay_tool_call_items(
     return replayed
 
 
-def _tool_output_items(msg: dict[str, Any], *, wire_ids: Optional[_WireCallIds] = None) -> list[dict[str, Any]]:
+def _tool_output_items(
+    msg: dict[str, Any], *, wire_ids: Optional[_WireCallIds] = None, rejected_image_types: frozenset = frozenset(),
+) -> list[dict[str, Any]]:
     """Convert a tool-role message to ``[function_call_output]`` (``[]`` if unpairable)."""
     raw_tool_call_id = msg.get("tool_call_id")
     call_id, tool_response_item_id = _split_responses_tool_id(raw_tool_call_id)
@@ -603,7 +630,10 @@ def _tool_output_items(msg: dict[str, Any], *, wire_ids: Optional[_WireCallIds] 
     # ``output`` may be a string or an ``input_text``/``input_image`` array.
     tool_content = msg.get("content")
     is_parts = isinstance(tool_content, list)
-    output_value: Any = (_chat_content_to_responses_parts(tool_content) or "") if is_parts else str(tool_content or "")
+    output_value: Any = (
+        (_chat_content_to_responses_parts(tool_content, rejected_image_types=rejected_image_types) or "")
+        if is_parts else str(tool_content or "")
+    )
     wire_call_id = wire_ids.for_output(call_id) if wire_ids else _clamp_responses_call_id(call_id)
     return [{"type": "function_call_output", "call_id": wire_call_id, "output": output_value}]
 
@@ -664,6 +694,7 @@ def _chat_messages_to_responses_input(
     # (#51512). It accepts only typed parts, so string text goes out as ``input_text``/``output_text``
     # there; other Responses routes keep the string shorthand they have always received.
     typed_text_only = current_issuer_kind == "codex_backend"
+    rejected_image_types = _XAI_REJECTED_IMAGE_TYPES if current_issuer_kind == "xai_responses" else frozenset()
     def emit(new_items: list[dict[str, Any]], msg: dict[str, Any]) -> None:
         items.extend(new_items)
         item_sources.extend([msg] * len(new_items))
@@ -672,12 +703,14 @@ def _chat_messages_to_responses_input(
             continue
         role = msg.get("role")
         if role == "tool":
-            emit(_tool_output_items(msg, wire_ids=wire_ids), msg)
+            emit(_tool_output_items(msg, wire_ids=wire_ids, rejected_image_types=rejected_image_types), msg)
             continue
         if role not in {"user", "assistant"}:
             continue
         content = msg.get("content", "")
-        content_parts = _chat_content_to_responses_parts(content, role=role)  # [] unless a list
+        content_parts = _chat_content_to_responses_parts(  # [] unless a list
+            content, role=role, rejected_image_types=rejected_image_types,
+        )
         text_type = _text_type_for(role)
         content_text = (
             "".join(p["text"] for p in content_parts if p["type"] == text_type)

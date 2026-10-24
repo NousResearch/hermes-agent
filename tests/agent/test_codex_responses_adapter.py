@@ -129,6 +129,29 @@ def test_unsupported_inline_image_downgrades_to_text_in_message_and_tool_output(
     assert jpg == [{"type": "input_image", "image_url": "data:image/jpg;base64,/9j/4AAQ"}]
 
 
+def test_xai_gif_is_reencoded_to_png_and_other_backends_keep_it():
+    """xAI decodes only JPG/PNG/WebP/ICO: a GIF 400s ``invalid_image``, the corrupt-image recovery
+    strips it, and the model answers as if nothing was attached. On the xAI issuer every GIF carrier
+    (user turn, tool result) goes out as PNG; backends that decode GIF still receive the original."""
+    import base64, io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (4, 4), (0, 0, 255)).save(buf, format="GIF")
+    gif = "data:image/gif;base64," + base64.b64encode(buf.getvalue()).decode()
+    messages = [
+        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": gif}}]},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "call_v1", "type": "function", "function": {"name": "vision_analyze", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_v1", "content": [{"type": "image_url", "image_url": {"url": gif}}]},
+    ]
+    xai = _chat_messages_to_responses_input(messages, current_issuer_kind="xai_responses")
+    sent = [xai[0]["content"][0]["image_url"], xai[-1]["output"][0]["image_url"]]
+    assert all(url.startswith("data:image/png;base64,") for url in sent), sent
+    assert Image.open(io.BytesIO(base64.b64decode(sent[0].partition(",")[2]))).convert("RGB").getpixel((0, 0)) == (0, 0, 255)
+    other = _chat_messages_to_responses_input(messages, current_issuer_kind="codex_backend")
+    assert other[0]["content"][0]["image_url"] == gif
+
+
 def test_inline_svg_is_rasterized_to_png_when_a_rasterizer_exists(monkeypatch):
     """#29711 follow-up: with a rasterizer installed the model still sees the drawing — the SVG part
     goes out as a PNG input_image instead of the text placeholder; the SVG itself is never sent."""

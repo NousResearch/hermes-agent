@@ -1274,7 +1274,13 @@ class GatewayStartupMixin:
                 p.value, platform_state="connecting", error_code=None, error_message=None,
             )
             try:
-                ok = await self._connect_initial_adapter_with_timeout(adp, p)
+                if self._multiplex_on():
+                    from gateway.run import _profile_runtime_scope
+                    from hermes_constants import get_default_hermes_root
+                    with _profile_runtime_scope(get_default_hermes_root()):
+                        ok = await self._connect_initial_adapter_with_timeout(adp, p)
+                else:
+                    ok = await self._connect_initial_adapter_with_timeout(adp, p)
             except Exception as _exc:
                 return (p, adp, p_cfg, "exception", _exc)
             return (p, adp, p_cfg, "ok" if ok else "failed", None)

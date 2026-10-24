@@ -119,6 +119,13 @@ hermes gateway install      # Install as a user service
 sudo hermes gateway install --system   # Linux only: boot-time system service
 ```
 
+Silent reaction awareness is a separate, opt-in feature. Enable it in `~/.hermes/config.yaml`:
+
+```yaml
+signal:
+  reaction_awareness: true
+```
+
 ---
 
 ## Access Control
@@ -144,6 +151,24 @@ Group access is controlled by the `SIGNAL_GROUP_ALLOWED_USERS` env var:
 ---
 
 ## Features
+
+### Silent reaction awareness (private DMs)
+
+Signal reactions in DMs are processed in a separate background lane rather than as
+message turns. This feature is disabled by default. Set `signal.reaction_awareness: true`
+in `~/.hermes/config.yaml` to opt in. The single explicit identity in
+`SIGNAL_ALLOWED_USERS` must still be configured; `*` and multiple identities do not
+enable the lane. Hermes silently interprets that person's reaction using the
+configured model and attaches a short, explicitly untrusted note to later DM context.
+Only successfully acknowledged textual messages with a bounded body are indexed as
+targets; unresolved targets are ignored. Each reaction can incur one model request.
+The bounded local outbox and notes are profile-scoped, expire after 30 days, and are
+stored with owner-only permissions where supported. Expired rows are purged at startup
+and periodically while the gateway is running; a stopped process cannot purge files,
+so an expired on-disk record may remain until the next startup. Reactions do not send a reply,
+start typing, or expose tools to the model. Notes are context only and never grant
+authority or confirm an action's outcome. Group reactions are not processed by this
+immediate lane.
 
 ### Attachments
 

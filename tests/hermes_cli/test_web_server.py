@@ -1062,6 +1062,44 @@ CONFIG_SCHEMA = ProviderConfigSchema(
 
     # ── POST /api/chat/image-upload (browser clipboard/drop images) ─────
 
+    def test_chat_image_extension_sniffs_iso_bmff_heic(self):
+        # Real header from an iPhone HEIC photo: box size 0x2c, 'ftyp', major
+        # brand 'heic'. Previously fell through the magic table to None and the
+        # endpoint rejected the upload with 400 "Unsupported image type".
+        from hermes_cli.web_routers.files import (
+            _CHAT_IMAGE_ALLOWED_EXTENSIONS,
+            _chat_image_extension,
+        )
+
+        heic = b"\x00\x00\x00\x2cftypheic\x00\x00\x00\x00"
+        assert _chat_image_extension(heic) == ".heic"
+        assert ".heic" in _CHAT_IMAGE_ALLOWED_EXTENSIONS
+
+    def test_chat_image_extension_sniffs_iso_bmff_heif_and_avif(self):
+        from hermes_cli.web_routers.files import (
+            _CHAT_IMAGE_ALLOWED_EXTENSIONS,
+            _chat_image_extension,
+        )
+
+        # heix/mif1 are HEIF still-image brands, avif/avis are AV1 still/sequence.
+        assert _chat_image_extension(b"\x00\x00\x00\x18ftypheix\x00\x00\x00\x00") == ".heic"
+        assert _chat_image_extension(b"\x00\x00\x00\x18ftypmif1\x00\x00\x00\x00") == ".heic"
+        assert _chat_image_extension(b"\x00\x00\x00\x18ftypavif\x00\x00\x00\x00") == ".avif"
+        assert _chat_image_extension(b"\x00\x00\x00\x18ftypavis\x00\x00\x00\x00") == ".avif"
+        assert {".heic", ".avif"} <= _CHAT_IMAGE_ALLOWED_EXTENSIONS
+
+    def test_chat_image_extension_rejects_non_image_iso_bmft_and_rasters(self):
+        from hermes_cli.web_routers.files import _chat_image_extension
+
+        # 'mp42' is an MP4 video container — must stay rejected.
+        assert _chat_image_extension(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00") is None
+        # 'isom' is a generic media brand (MOV/MP4 family) — also rejected.
+        assert _chat_image_extension(b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x00") is None
+        # Existing raster sniffing is unchanged.
+        assert _chat_image_extension(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8) == ".png"
+        assert _chat_image_extension(b"\xff\xd8\xff" + b"\x00" * 13) == ".jpg"
+        assert _chat_image_extension(b"not an image at all") is None
+
 
     # ── Dashboard font override ─────────────────────────────────────────
 

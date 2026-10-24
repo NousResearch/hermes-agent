@@ -406,6 +406,8 @@ class GatewayAgent:
         self._apply_info(state.info)
         if state.usage:
             self.apply_session_usage(state.usage)
+        # Main keeps its reasoning sink across the switch, so the setter is not re-run: send the flag here.
+        self.reasoning_callback = self._reasoning_callback
 
     # -- reasoning display -------------------------------------------------------------------
     @property

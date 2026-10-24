@@ -1615,13 +1615,34 @@ def _hermes_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
 
 
 def _agents_md_directory_chain(cwd_path: Path) -> list[Path]:
-    """Directories to check for AGENTS.md: git root first, cwd last (deeper = precedence); cwd only without a root."""
+    """Directories to check for AGENTS.md: git root first, cwd last (deeper = precedence); cwd only without a root.
+
+    Outside a git repository, walk ancestors up to (and including) the nearest directory containing a
+    ``.hermes-root`` marker file, so non-git workspace trees can still provide ancestor AGENTS.md files.
+    Without either a git root or a marker, only cwd is checked (unchanged legacy behaviour).
+    """
     current = cwd_path.resolve()
     root = _find_git_root(current)
-    if root is None or root == current or not current.is_relative_to(root):
+    if root is not None and root != current and current.is_relative_to(root):
+        parts = current.relative_to(root).parts
+        return [root] + [root.joinpath(*parts[: i + 1]) for i in range(len(parts))]
+    return _agents_md_marker_chain(current)
+
+
+_AGENTS_MD_ROOT_MARKER = ".hermes-root"
+_AGENTS_MD_MARKER_CHAIN_MAX_DEPTH = 32
+
+
+def _agents_md_marker_chain(current: Path) -> list[Path]:
+    """Ancestor chain cwd→marker root for non-git directories; ``[current]`` when no marker is in scope."""
+    if _exists_or_denied(current / _AGENTS_MD_ROOT_MARKER):
         return [current]
-    parts = current.relative_to(root).parts
-    return [root] + [root.joinpath(*parts[: i + 1]) for i in range(len(parts))]
+    chain = [current]
+    for parent in current.parents[: _AGENTS_MD_MARKER_CHAIN_MAX_DEPTH]:
+        chain.append(parent)
+        if _exists_or_denied(parent / _AGENTS_MD_ROOT_MARKER):
+            return list(reversed(chain))
+    return [current]
 
 
 def _agents_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:

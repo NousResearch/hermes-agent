@@ -77,4 +77,18 @@ def bypass_chat_sdk_request_transform(request_kwargs: dict, client: Any) -> dict
     completions = getattr(getattr(client, "chat", None), "completions", None)
     if completions is None or not type(completions).__module__.startswith("openai."):
         return request_kwargs
+    request_kwargs = normalize_openai_chat_completion_kwargs(request_kwargs)
     return bypass_sdk_request_transform(request_kwargs, CHAT_COMPLETIONS_BYPASS_FIELDS, keep_slots=True)
+
+
+def normalize_openai_chat_completion_kwargs(request_kwargs: dict) -> dict:
+    """Move SDK-unknown ``enable_thinking`` into ``extra_body`` without changing its value."""
+    if "enable_thinking" not in request_kwargs:
+        return request_kwargs
+    normalized = dict(request_kwargs)
+    enabled = normalized.pop("enable_thinking")
+    extra_body = normalized.get("extra_body")
+    merged = dict(extra_body) if isinstance(extra_body, dict) else {}
+    merged.setdefault("enable_thinking", enabled)
+    normalized["extra_body"] = merged
+    return normalized

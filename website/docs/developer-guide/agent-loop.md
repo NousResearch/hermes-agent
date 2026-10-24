@@ -197,6 +197,15 @@ When the primary model fails (429 rate limit, 5xx server error, 401/403 auth err
 
 The fallback system also covers auxiliary tasks independently — vision, compression, and web extraction each have their own fallback chain configurable via the `auxiliary.*` config section.
 
+### Local completion status
+
+The loopback AI Server route asks the model to end each finished reply with a private
+`[[HERMES_TURN_COMPLETE]]` line. Tool calls already signal that work continues. A local text reply
+without the marker gets at most two short follow-ups, including in resumed sessions whose saved
+system prompt predates this instruction. If the model still does not confirm the end, Hermes returns
+the last text as a partial result instead of reporting the turn as complete. The marker is removed
+from saved replies and filtered from streamed text.
+
 ## Compression and Persistence
 
 ### When Compression Triggers

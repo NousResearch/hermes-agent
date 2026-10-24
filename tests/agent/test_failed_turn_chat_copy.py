@@ -149,6 +149,28 @@ def test_exhausted_plan_quota_429_names_the_reset_window_not_wait_a_minute():
     assert "Wait a minute" in plain["final_response"] and "resets in" not in plain["final_response"]
 
 
+def test_exhausted_known_short_cooldown_names_the_reset_deadline(monkeypatch):
+    """A classified 61-second deadline must survive terminal retry exhaustion (#140737)."""
+    import agent.turn_recovery as recovery
+
+    now = 1_700_000_000.0
+    reset_at = now + 61
+    monkeypatch.setattr(recovery.time, "time", lambda: now)
+    error = _Http(429, "HTTP 429: Rate limit exceeded")
+    classified = classify_api_error(error, provider="openrouter", model="m")
+    classified.error_context["reset_at"] = reset_at
+
+    result = max_retries_exhausted_result(
+        _Agent(), error, classified, attempts=3, is_rate_limited=True, error_msg=str(error).lower(),
+        api_kwargs=None, api_messages=[], messages=[], conversation_history=None, api_call_count=3,
+        approx_tokens=10, provider="openrouter", base_url="https://openrouter.ai/api/v1", model="m",
+    )
+
+    assert "Limit resets at" in result["final_response"]
+    assert "(in 2m). Try again after that" in result["final_response"]
+    assert "Wait a minute" not in result["final_response"]
+
+
 def test_invalid_response_stamps_reason_from_embedded_provider_code():
     """An HTTP-200 body carrying a 429 is rate limiting for the UI, not 'unknown'."""
     agent = _Agent()

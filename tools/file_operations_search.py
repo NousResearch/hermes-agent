@@ -181,6 +181,27 @@ def _pattern_has_regex_newline(pattern: str) -> bool:
     return "\n" in pattern or bool(_REGEX_NEWLINE_ESCAPE_RE.search(pattern))
 
 
+_RG_NAME_FILTER_TYPE = "hermesglob"
+
+
+def _rg_name_filter_words(glob: str, quote) -> list[str]:
+    """rg words restricting a walk to file names matching ``glob`` WITHOUT
+    un-ignoring anything. ``--glob <pat>`` is an rg *override*: overrides beat
+    .gitignore, so ``-g '*.py'`` returned gitignored ``.py`` files and ``-g '*'``
+    walked ``node_modules``/``.git``/hidden dirs wholesale. A file *type* is a
+    basename filter applied after ignore rules, so the walk stays the same as a bare
+    ``rg`` (hidden files that match are still listed, as before). Types match
+    basenames only, so a leading ``**/`` is dropped; path-scoped (``src/*.py``),
+    negated, or colon-bearing globs (``:`` is the type-definition separator) keep
+    the override form."""
+    name = glob
+    while name.startswith("**/"):
+        name = name[3:]
+    if not name or "/" in name or ":" in name or name.startswith("!"):
+        return ["--glob", quote(glob)]
+    return ["--type-add", quote(f"{_RG_NAME_FILTER_TYPE}:{name}"), "-t", _RG_NAME_FILTER_TYPE]
+
+
 def _is_line_oriented_newline_error(error: Optional[str]) -> bool:
     """Return True for rg's hard error when multiline mode is required."""
     return bool(error) and "literal \"\\n\" is not allowed" in error and "--multiline" in error
@@ -631,7 +652,7 @@ class SearchMixin:
             return None
         rg = self._quote_executable(rg_executable)
         has_meta = bool(re.search(r"[.\[\](){}?*+^$\\|]", pattern))
-        glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
+        glob_expr = (" " + " ".join(_rg_name_filter_words(file_glob, self._escape_shell_arg))) if file_glob else ""
         for flags, template in self._ZERO_MATCH_PROBES:
             if flags == "-F" and not has_meta:
                 continue
@@ -962,7 +983,8 @@ class SearchMixin:
         root_args = " ".join(self._escape_native_tool_arg(root) for root in command_roots)
         cd_prefix = f"cd {self._escape_shell_arg(scoped_common)} && " if scoped_common else ""
         # ``--`` terminates options so a dash-prefixed root is never parsed as a flag.
-        rg_cmd = (f"{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
+        name_filter = " ".join(_rg_name_filter_words(glob_pattern, self._escape_shell_arg))
+        rg_cmd = (f"{rg} --files{sort_arg} {name_filter}"
                   f"{exclusion_args} -- {root_args}")
         result = self._run_rg_bounded([rg_cmd], fetch_limit, timeout=60, native_ok=not scoped_common,
                                       shell_prefix=f"set -o pipefail; {cd_prefix}")
@@ -1069,7 +1091,7 @@ class SearchMixin:
             cmd_parts.extend(["-C", str(context)])
         cmd_parts.extend(self._rg_exclusion_globs(path))
         if file_glob:
-            cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
+            cmd_parts.extend(_rg_name_filter_words(file_glob, self._escape_shell_arg))
         if output_mode in _OUTPUT_MODE_FLAGS:
             cmd_parts.append(_OUTPUT_MODE_FLAGS[output_mode])
         cmd_parts.append(self._escape_shell_arg(pattern, translate_path=False))

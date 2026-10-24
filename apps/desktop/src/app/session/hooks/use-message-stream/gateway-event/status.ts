@@ -55,7 +55,6 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       compactedTurnRef.current.add(sessionId)
     } else if (sessionId && (payload?.kind === 'compacted' || payload?.kind === 'ready')) {
       reconcileSessionCompacting(sessionId, 'terminal')
-      compactedTurnRef.current.delete(sessionId)
 
       // That same `pending` reply returned before the compress handler could
       // render the summary or flip its "still running in the background"
@@ -106,9 +105,19 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       // still defers to the turn's own settle path. The notice is appended
       // only after that hydrate resolves: it replaces the transcript wholesale
       // and would otherwise drop the line we just added.
+      //
+      // Keep compactedTurnRef while the turn is still live so message.complete
+      // can skip post-turn hydrate and preserve in-memory scrollback. Clearing
+      // the flag on the compacted edge made every auto-compaction rehydrate
+      // from storage at turn end and could drop earlier turns from the live view.
       const state = sessionStateByRuntimeIdRef.current.get(sessionId)
+      const midTurn = Boolean(state && (state.busy || state.awaitingResponse || state.streamId))
 
-      if (isActiveEvent && state && !state.busy && !state.awaitingResponse && !state.streamId) {
+      if (!midTurn) {
+        compactedTurnRef.current.delete(sessionId)
+      }
+
+      if (isActiveEvent && state && !midTurn) {
         void hydrateFromStoredSession(3, state.storedSessionId, sessionId).then(announceDeferredCompress)
       } else {
         announceDeferredCompress()

@@ -53,9 +53,29 @@ def external_worker_exited_reason(returncode: int | None) -> str:
     attempt to the external worker and then saw that worker exit with this status.
     The run is still ``unknown`` rather than ``failed`` (whether side effects ran is
     still unknown); only the cause becomes truthful (#128509).
+
+    Loki Q157 (Oct 16 2026): disambiguate negative returncodes. Per Python
+    multiprocessing conventions, ``returncode < 0`` means the process was killed
+    by signal ``abs(returncode)`` (POSIX). The misleading "Restart-safe cron
+    worker" string was previously hiding the fact that the SIGTERM came from
+    outside the gateway — empirically a WSL VM reboot cascading through
+    systemd-logind, not a Hermes bug. Appending the signal kind + likely
+    external-cause label so operator triage doesn't waste cycles looking inside
+    the scheduler for a failure that was actually a host event.
     """
-    return (
+    base = (
         f"Restart-safe cron worker exited with status {returncode} after adopting this "
         "execution, without writing a durable terminal state; whether side effects ran "
         "is unknown."
     )
+    if returncode is not None and returncode < 0:
+        sig = -returncode
+        sig_label = {
+            15: "SIGTERM (likely host-initiated shutdown — WSL VM reboot / systemd-logind cascade)",
+            9: "SIGKILL (likely OOM-killer or manual kill)",
+            1: "SIGHUP",
+            2: "SIGINT",
+            13: "SIGPIPE (subprocess writing to a closed pipe — usually a parent gone)",
+        }.get(sig, f"signal {sig}")
+        return f"{base} Worker was terminated by {sig_label} from outside the gateway."
+    return base

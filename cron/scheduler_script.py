@@ -508,6 +508,36 @@ def _run_job_script(
                 return False, f"Script timed out after {script_timeout}s: {path}"
             try:
                 stdout_raw, stderr_raw = proc.communicate(timeout=min(0.1, remaining))
+                # Sidecar exit-code capture (#Q157 — Loki 27B verdict on 2026-10-16):
+                # the gateway/host may SIGTERM this worker AFTER the script subprocess
+                # completes but BEFORE _run_external_worker_payload's normal terminal-state
+                # write lands. Writing the exit code IMMEDIATELY after subprocess return
+                # preserves the script's success/failure even when the worker dies before
+                # its own bookkeeping finishes. The death-recovery path at scheduler.py
+                # (Q157 §D.2) reads this sidecar to set the correct status instead of
+                # falling through to the generic "unknown" terminalization. Cancel/timeout
+                # paths above terminate the subprocess with a signal — they don't reach
+                # here, so we correctly distinguish a cleanly-completed script from a
+                # killed one.
+                _exec_id = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER")
+                if _exec_id:
+                    try:
+                        _sidecar = _sched._get_hermes_home() / "cron" / "external-workers" / f"{_exec_id}.exit_code"
+                        # Atomic write: tmp + rename, so a reader either sees the file
+                        # absent or fully written — never partial. fsync so a host-level
+                        # SIGTERM after the rename but before the page cache flush still
+                        # leaves durable content for the waiter to recover.
+                        _sidecar_tmp = _sidecar.with_name(f"{_sidecar.name}.tmp{os.getpid()}")
+                        with open(_sidecar_tmp, "w", encoding="utf-8") as _sf:
+                            _sf.write(str(proc.returncode))
+                            _sf.flush()
+                            os.fsync(_sf.fileno())
+                        os.replace(_sidecar_tmp, _sidecar)
+                    except Exception as _e:  # noqa: BLE001 — best-effort observability, never block the run
+                        logger.debug(
+                            "Could not write cron-script exit-code sidecar for %s: %s",
+                            _exec_id, _e,
+                        )
                 break
             except subprocess.TimeoutExpired:
                 continue

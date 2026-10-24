@@ -212,11 +212,9 @@ def spawn_background_process(
                 proc_session.completion_output_chars = int(completion_output_chars)
             if proc_session.watcher_platform:
                 _register_completion_watcher(process_registry, proc_session, session_key)
+            result_data.update(_completion_notification_receipt(proc_session))
             from agent.delegation_context import is_delegated_child_context
-            if is_delegated_child_context():
-                result_data["notify_on_complete"] = False
-                result_data["subagent_note"] = _SUBAGENT_NOTIFY_NOTE
-            elif heartbeat_seconds:
+            if not is_delegated_child_context() and heartbeat_seconds:
                 # Heartbeats ride the same delivery path as the completion notice, so they are
                 # only armed where that notice can actually reach the agent.
                 result_data["heartbeat_seconds"] = process_registry.arm_heartbeat(proc_session, heartbeat_seconds)
@@ -234,7 +232,7 @@ def spawn_background_process(
 
 
 _SUBAGENT_NOTIFY_NOTE = (
-    "You are a subagent: this process's completion notice will NOT reach your parent, and the process is killed when "
+    "The completion watcher remains armed. You are a subagent: this process is killed when "
     "you finish. Before you finish, either wait for it (process_manage wait), kill it, or hand it to your parent with "
     "process_manage(action='handoff', session_id=..., data='<purpose>') so the parent receives its completion. For CI "
     "watchers prefer returning the fact (PR number, SHA) and letting the parent watch."
@@ -242,11 +240,28 @@ _SUBAGENT_NOTIFY_NOTE = (
 
 _YIELDED_NOTE = (
     "The user sent a message while this command was running, so it was moved to the "
-    "background WITHOUT being killed and is still running. You will be notified when it "
-    "exits (notify_on_complete). Read the user's message and respond to it now; use "
+    "background WITHOUT being killed and is still running. Completion notification settings are "
+    "reported separately below. Read the user's message and respond to it now; use "
     "process(action='poll'|'wait'|'log', session_id=...) to check on this command."
 )
 
+
+def _completion_notification_receipt(session) -> dict:
+    """Report armed intent independently of the current owner's delivery policy."""
+    from agent.delegation_context import is_delegated_child_context
+    from tools.process_registry_notifications import should_surface_notification
+
+    receipt = {"notify_on_complete": bool(session.notify_on_complete)}
+    if not session.notify_on_complete:
+        receipt["notify_unsupported"] = _ASYNC_UNSUPPORTED_NOTE
+    elif is_delegated_child_context():
+        suppressed = not should_surface_notification({"owner_task_id": session.owner_task_id})
+        receipt["notification_suppressed"] = suppressed
+        receipt["subagent_note"] = (
+            "Completion delivery is currently suppressed by child-process policy. " if suppressed else
+            "Completion delivery is currently enabled by child-process policy. "
+        ) + _SUBAGENT_NOTIFY_NOTE
+    return receipt
 
 def yield_to_background_handler(
     *, command: str, env_type: str, cwd: Optional[str], effective_task_id: str,
@@ -270,6 +285,7 @@ def yield_to_background_handler(
         logger.info("foreground command yielded to background as %s (pid %s)", session.id, session.pid)
         return {
             "output": output_so_far, "returncode": None, "yielded_session_id": session.id, "pid": session.pid,
+            "notification_receipt": _completion_notification_receipt(session),
         }
     return _handler
 

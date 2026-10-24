@@ -1251,6 +1251,12 @@ def _with_promoted_note(result_json: str, requested_timeout: int) -> str:
     if not isinstance(data, dict) or data.get("error"):
         return result_json
     template = _PROMOTED_NOTE if data.get("notify_on_complete") else _PROMOTED_NOTE_POLL_ONLY
+    if data.get("notification_suppressed"):
+        template = (
+            "Requested foreground timeout {requested}s exceeds the {cap}s cap, so this command was started "
+            "as a tracked background process. Do NOT re-run it. Its completion watcher is armed, but delivery "
+            "is currently suppressed by child-process policy. Wait for it or hand it off before finishing."
+        )
     data["promoted_from_foreground"] = template.format(requested=requested_timeout, cap=FOREGROUND_MAX_TIMEOUT)
     return json.dumps(data, ensure_ascii=False)
 
@@ -1362,7 +1368,8 @@ def _run_foreground(
         return json.dumps({
             "output": result.get("output", ""), "exit_code": None, "error": None,
             "status": "yielded_to_background", "session_id": result["yielded_session_id"],
-            "pid": result.get("pid"), "notify_on_complete": True, "note": _YIELDED_NOTE,
+            "pid": result.get("pid"), "note": _YIELDED_NOTE,
+            **result.get("notification_receipt", {"notify_on_complete": False}),
         }, ensure_ascii=False)
     if metered:
         record_terminal_outcome(command, env_type, result)

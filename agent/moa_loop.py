@@ -1213,6 +1213,12 @@ class MoAChatCompletions:
                 stream_kwargs["timeout"] = api_kwargs["timeout"]
         # Pop the runtime's extra_body so the explicit kwarg never collides with **agg_runtime.
         agg_extra_body = _merge_slot_extra_body(agg_runtime.pop("extra_body", None), api_kwargs.get("extra_body"))
+        # Per-request attribution headers (Copilot x-initiator, OpenRouter cache bypass, plugin/relay
+        # tags — see agent/turn_api_request.py) ride api_kwargs and must reach the acting model.
+        # Forward a copy: the same-role-alternation retry below reuses `send`, and the caller owns
+        # api_kwargs; neither may observe mutation.
+        caller_headers = api_kwargs.get("extra_headers")
+        agg_extra_headers = dict(caller_headers) if isinstance(caller_headers, dict) and caller_headers else None
         destination = destination_key(agg_runtime)
         # Facades built via __new__ (tests, swaps) have no __init__ state.
         remembered = getattr(self, "_merge_same_role_destinations", None)
@@ -1224,6 +1230,7 @@ class MoAChatCompletions:
         send = functools.partial(
             call_llm, task="moa_aggregator", temperature=prepared["aggregator_temperature"],
             max_tokens=api_kwargs.get("max_tokens"), tools=tools, extra_body=agg_extra_body,
+            extra_headers=agg_extra_headers,
             reasoning_config=_aggregator_reasoning_config(aggregator),  # same policy as direct create()
             **stream_kwargs, **agg_runtime,
         )

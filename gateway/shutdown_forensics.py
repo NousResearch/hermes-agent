@@ -200,49 +200,72 @@ def context_as_json(ctx: dict[str, Any]) -> str:
 def check_systemd_timing_alignment(
     drain_timeout: float, cron_drain_timeout: float = DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT
 ) -> Optional[dict[str, Any]]:
-    """At startup, sanity-check that systemd's TimeoutStopSec covers stop. A stale unit file
-    (upgraded without re-running ``hermes setup``) can have ``TimeoutStopSec`` below the stop
-    budget, so systemd SIGKILLs the cgroup mid-drain (a phantom ``code=killed status=9`` in the
-    journal). ``None`` when aligned OR undeterminable (not under systemd, no ``systemctl``);
-    otherwise a dict with ``timeout_stop_sec``/``drain_timeout``/``expected_min``/``mismatch``.
+    """Check the stop budget against the systemd unit that owns this process.
+
+    A stale unit can make systemd SIGKILL the gateway mid-drain. Since ``systemctl show`` can return
+    manager defaults for an absent unit, trust a timeout only when the loaded unit's ``ControlGroup``
+    matches this process's cgroup. ``None`` means aligned or undeterminable.
     """
     if not os.environ.get("INVOCATION_ID"):
         return None  # Not running under systemd (or at least not directly)
-    # /proc/self/cgroup: "0::/user.slice/.../hermes-gateway.service"
     unit_name: Optional[str] = None
+    unit_cgroup: Optional[str] = None
     with contextlib.suppress(OSError), open("/proc/self/cgroup", encoding="utf-8") as fh:
         for line in fh:
-            parts = reversed(line.strip().split("/"))
-            unit_name = next((p for p in parts if p.endswith(".service")), None)
-            if unit_name:
-                break
-    if (timeout_us := _systemd_timeout_stop_us(unit_name) if unit_name else None) is None:
+            fields = line.strip().split(":", 2)
+            if len(fields) != 3:
+                continue
+            components = [part for part in fields[2].split("/") if part]
+            service_index = next(
+                (index for index in range(len(components) - 1, -1, -1)
+                 if components[index].endswith(".service")),
+                None,
+            )
+            if service_index is None:
+                continue
+            unit_name = components[service_index]
+            unit_cgroup = "/" + "/".join(components[:service_index + 1])
+            break
+    if unit_name is None or unit_cgroup is None:
         return None
+    unit_timing = _systemd_unit_timeout_and_scope(unit_name, unit_cgroup)
+    if unit_timing is None:
+        return None
+    timeout_us, scope = unit_timing
     timeout_stop_sec = timeout_us / 1_000_000.0
     expected = float(resolve_systemd_timeout_stop_sec(drain_timeout, cron_drain_timeout))
-    return {"unit": unit_name, "timeout_stop_sec": timeout_stop_sec, "drain_timeout": drain_timeout,
-            "cron_drain_timeout": cron_drain_timeout, "expected_min": expected,
-            "mismatch": timeout_stop_sec < expected}
+    return {"unit": unit_name, "scope": scope, "timeout_stop_sec": timeout_stop_sec,
+            "drain_timeout": drain_timeout, "cron_drain_timeout": cron_drain_timeout,
+            "expected_min": expected, "mismatch": timeout_stop_sec < expected}
 
 
-def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
-    """``TimeoutStopUSec`` of ``unit_name`` in microseconds; ``--user`` first (hermes' usual)."""
+def _systemd_unit_timeout_and_scope(
+    unit_name: str, unit_cgroup: str
+) -> Optional[tuple[int, str]]:
+    """Return the timeout and manager scope only when its loaded unit owns ``unit_cgroup``."""
     for flag in (["--user"], []):
         try:
             result = subprocess.run(
-                ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
+                ["systemctl", *flag, "show", unit_name,
+                 "--property=LoadState", "--property=ControlGroup", "--property=TimeoutStopUSec"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2.0,
                 check=False,
             )
         except (subprocess.TimeoutExpired, OSError):
             continue
-        # Output: "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
+        properties = {}
         for line in result.stdout.splitlines() if result.returncode == 0 else ():
-            if line.startswith("TimeoutStopUSec="):
-                value = line.split("=", 1)[1].strip()
-                timeout_us = int(value) if value.isdigit() else parse_systemd_duration_to_us(value)
-                if timeout_us is not None:
-                    return timeout_us
+            key, separator, value = line.partition("=")
+            if separator:
+                properties[key] = value.strip()
+        if properties.get("LoadState") != "loaded":
+            continue
+        if properties.get("ControlGroup", "").rstrip("/") != unit_cgroup.rstrip("/"):
+            continue
+        value = properties.get("TimeoutStopUSec", "")
+        timeout_us = int(value) if value.isdigit() else parse_systemd_duration_to_us(value)
+        if timeout_us is not None:
+            return timeout_us, "user" if flag else "system"
     return None
 
 

@@ -28,6 +28,7 @@ from hermes_cli.web_routers._common import (
     CORRUPT_STORE_DETAIL, corrupt_store_as_status, log as _log, destructive_profile, http_failure,
 )
 from hermes_state import is_malformed_db_error
+from hermes_state_common import session_provenance_flags
 from hermes_state_errors import SessionActiveWriteGuardError, StateDbReplacedError, is_transient_sqlite_error
 from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
 
@@ -233,6 +234,10 @@ def get_sessions(
                 # SQLite stores the flags as 0/1; expose real JSON booleans.
                 s["archived"] = bool(s.get("archived"))
                 s["pinned"] = bool(s.get("pinned"))
+                # A /new reset keeps parent_session_id for lineage but is a new
+                # conversation, not a fork; model_config is stripped below, so
+                # the derived flag and the raw markers land on the row first.
+                s.update(session_provenance_flags(s.get("model_config")))
             if not full:
                 _strip_session_list_rows(sessions)
             # ``storage`` tells an empty page apart from an unreadable store (#72046); same

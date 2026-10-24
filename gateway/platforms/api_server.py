@@ -131,6 +131,7 @@ from gateway.readiness import collect_runtime_readiness
 from gateway.parked_route_refusal import ParkedRouteRefused
 from gateway.platforms._shared import coerce_port as _coerce_port, get_scoped_secret as _get_scoped_secret
 from gateway.platforms.tcp_site import start_tcp_site
+from hermes_state_common import session_provenance_flags
 from hermes_state_errors import SessionActiveWriteGuardError
 
 
@@ -2477,12 +2478,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             model_config = None
         # Exact-id consumers may inspect/resume delegate children even though
         # list endpoints intentionally omit them. Project only the provenance
-        # bit the client needs so it cannot accidentally promote such a row
-        # into an ordinary session list; never expose the model snapshot.
-        payload["is_internal_child"] = bool(
-            isinstance(model_config, dict)
-            and model_config.get("_delegate_from") is not None
-        )
+        # fields the client needs so it cannot accidentally promote such a row
+        # into an ordinary session list, nor read a /new reset as a fork: the
+        # two bits plus the raw session-id markers, never the model snapshot.
+        payload.update(session_provenance_flags(model_config))
         return payload
 
     @staticmethod

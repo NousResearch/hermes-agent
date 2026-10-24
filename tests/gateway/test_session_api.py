@@ -96,18 +96,40 @@ async def test_get_session_projects_delegate_provenance_without_model_config(
         parent_session_id="parent",
         model_config={"_branched_from": "parent"},
     )
+    reset_id = session_db.create_session(
+        "reset-child",
+        "desktop",
+        parent_session_id="parent",
+        model_config={"_reset_from": "parent"},
+    )
 
     app = _create_session_app(adapter)
     async with TestClient(TestServer(app)) as cli:
         child_resp = await cli.get(f"/api/sessions/{child_id}")
         branch_resp = await cli.get(f"/api/sessions/{branch_id}")
+        reset_resp = await cli.get(f"/api/sessions/{reset_id}")
         assert child_resp.status == 200
         assert branch_resp.status == 200
+        assert reset_resp.status == 200
         child = (await child_resp.json())["session"]
         branch = (await branch_resp.json())["session"]
+        reset = (await reset_resp.json())["session"]
 
     assert child["is_internal_child"] is True
     assert branch["is_internal_child"] is False
+    # A /new reset keeps parent_session_id for lineage but starts a new
+    # conversation: clients must not nest it as a fork (#142064).
+    assert reset["is_internal_child"] is False
+    assert reset["is_reset_child"] is True
+    assert child["is_reset_child"] is False
+    assert branch["is_reset_child"] is False
+    # The raw markers ride with the booleans: a client that predates
+    # ``is_reset_child`` (the Android one reads exactly this pair) resolves the
+    # parent edge from them, and ``_branched_from`` is an independent source.
+    assert reset["_reset_from"] == "parent"
+    assert branch["_branched_from"] == "parent"
+    assert "_branched_from" not in reset
+    assert "_reset_from" not in child
     assert "model_config" not in child
     assert "must-not-leak" not in str(child)
 

@@ -38,13 +38,13 @@ def _native_plugin(root: Path, name: str, tool: str, extra: str = "") -> None:
     (plugin / "__init__.py").write_text(_NATIVE % {"name": name, "tool": tool, "extra": extra % {"name": name}})
 
 
-def _portable_plugin(root: Path) -> None:
+def _portable_plugin(root: Path, args: list[str] | None = None) -> None:
     from hermes_cli.agent_plugins import MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1
     plugin = root / "meshy-ish"
     plugin.mkdir(parents=True)
     (plugin / "plugin.json").write_text(json.dumps({"$schema": PLUGIN_SCHEMA_V1, "name": "meshy-ish"}))
     (plugin / "mcp.json").write_text(json.dumps({
-        "$schema": MCP_SCHEMA_V1, "mcpServers": {"meshy-3d": {"type": "stdio", "command": "python"}}}))
+        "$schema": MCP_SCHEMA_V1, "mcpServers": {"meshy-3d": {"type": "stdio", "command": "python", **({"args": args} if args else {})}}}))
 
 
 def test_list_reports_only_tools_the_package_itself_registered():
@@ -81,10 +81,10 @@ def test_list_reports_only_tools_the_package_itself_registered():
 
 
 def _list_meshy_tools(live: list[str] | None = None, lazy: list[str] | None = None,
-                      native: dict | None = None) -> list[str]:
+                      native: dict | None = None, args: list[str] | None = None) -> list[str]:
     root = Path(os.environ["HERMES_HOME"]) / "plugins"
     if not (root / "meshy-ish").exists():
-        _portable_plugin(root)
+        _portable_plugin(root, args)
     cfg = load_config()
     cfg["plugins"] = {"enabled": ["meshy-ish"]}
     cfg["mcp_servers"] = native or {}
@@ -114,3 +114,14 @@ def test_a_native_server_of_the_same_name_credits_the_package_only_when_it_runs_
     assert _list_meshy_tools(live, native={"meshy-3d": {"command": "my-own-server"}}) == []
     # The same server re-declared natively (the way a user widens its trust) stays the package's.
     assert _list_meshy_tools(live, native={"meshy-3d": {"command": "python", "trust": "high"}}) == live
+
+
+def test_a_native_redeclaration_with_env_backed_args_still_credits_the_package(monkeypatch):
+    # load_config() expands ${VAR} in the native entry while the package's declaration keeps the
+    # placeholder until connect: the same server must still compare equal.
+    monkeypatch.setenv("MESHY_PROBE_TOKEN", "tok-123")
+    live = ["mcp__meshy_3d__download"]
+    args = ["-m", "meshy", "--key", "${MESHY_PROBE_TOKEN}"]
+    native = {"meshy-3d": {"command": "python", "args": args, "trust": "high"}}
+    assert _list_meshy_tools(live, native=native, args=args) == live
+

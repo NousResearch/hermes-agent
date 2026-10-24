@@ -38,6 +38,13 @@ _PROFILE_KEY_CACHE: dict[str, str] = {}
 # lost span, never a blocked agent.
 SCOPE_OP_TIMEOUT = 10.0
 
+# Bound for the Relay plugin lifecycle bridge (plugin initialize/close, subscriber flush): these
+# APIs are async while their host is constructed synchronously. Generous against a healthy
+# initialize (milliseconds) and tight enough that a wedged native call costs half a minute rather
+# than the session: unbounded, a native initialize() that never returned parked the calling
+# thread - the CLI conversation thread, before its first turn - forever (#140999).
+PLUGIN_LIFECYCLE_TIMEOUT = 30.0
+
 
 
 class _Lazy:
@@ -1415,16 +1422,26 @@ def _is_relay_host_conflict(exc: BaseException) -> bool:
 
 
 def _resolve_plugin_awaitable(value: Any) -> Any:
-    """Resolve Relay's async plugin API from synchronous host construction."""
+    """Resolve Relay's async plugin API from synchronous host construction, bounded.
+
+    The awaitable always runs on a daemon worker (never on the caller's thread, so a running loop
+    can never be re-entered) and is abandoned at PLUGIN_LIFECYCLE_TIMEOUT. The caller's context
+    rides along, so profile scope still applies inside the plugin. A timeout raises, and every
+    caller's handler degrades to FAILED/DISABLED: the agent runs without Relay middleware instead
+    of not running at all (#140999).
+    """
     if not inspect.isawaitable(value):
         return value
-    # Only the "no running loop" probe is guarded: a RuntimeError raised by the awaitable itself
-    # (re-raised from the daemon thread) must propagate, not fall through to a second asyncio.run.
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(value)
-    return _run_on_daemon_thread(lambda: asyncio.run(value), name="hermes-nemo-relay-plugin-lifecycle")
+    context = contextvars.copy_context()
+    return _run_on_daemon_thread(
+        lambda: context.run(asyncio.run, value),
+        name="hermes-nemo-relay-plugin-lifecycle",
+        timeout=PLUGIN_LIFECYCLE_TIMEOUT,
+        timeout_message=(
+            f"Relay plugin lifecycle call did not settle within {PLUGIN_LIFECYCLE_TIMEOUT:g}s; "
+            "abandoning it so the agent can continue without Relay middleware"
+        ),
+    )
 
 
 def _session_id(event: dict[str, Any]) -> str:

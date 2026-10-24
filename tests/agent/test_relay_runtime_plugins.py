@@ -1364,3 +1364,57 @@ agent_version = "test"
         assert {"agent", "llm", "tool"} <= observed_categories
 
     assert observed_runtime_ids == set(runtime_ids.values())
+
+
+def _run_with_join(fn, timeout: float = 5.0) -> tuple[bool, list[Any]]:
+    """Run fn on a thread; (returned_within_timeout, results).
+
+    A bridge that parks its caller must fail as "did not return" instead of hanging this test
+    file, so the bound is asserted from outside the parked thread.
+    """
+    result: list[Any] = []
+
+    def _target() -> None:
+        result.append(fn())
+
+    worker = threading.Thread(target=_target, daemon=True)
+    worker.start()
+    worker.join(timeout)
+    return (not worker.is_alive(), result)
+
+
+def test_never_settling_plugin_initialize_does_not_park_the_caller(
+    explicit_static_config, monkeypatch
+):
+    """#140999: the plugin lifecycle bridge is bounded.
+
+    A native initialize() that never returns used to park the calling thread - the CLI
+    conversation thread, before its first turn - with no bound at all. The bound costs the
+    configuration (the lifecycle host reports FAILED and runs without Relay middleware), never
+    the caller. The wedge is released before asserting so no worker outlives this file.
+    """
+    monkeypatch.setattr(relay_runtime, "PLUGIN_LIFECYCLE_TIMEOUT", 0.05, raising=False)
+    release = threading.Event()
+
+    class _WedgedRelay(_FakeRelay):
+        async def _initialize_plugins(self, config, additional_plugins_toml=None):
+            release.wait(30.0)  # bounded stand-in for a native call that never returns
+            return await super()._initialize_plugins(config, additional_plugins_toml)
+
+    config = relay_runtime._ProcessRelayPluginConfiguration()
+    returned, states = _run_with_join(
+        lambda: config.acquire(object(), _WedgedRelay()), timeout=5.0
+    )
+    release.set()
+
+    assert returned, "the Relay plugin lifecycle bridge parked the calling thread"
+    assert states == [relay_runtime._RelayPluginConfigurationState.FAILED]
+
+
+def test_settled_plugin_awaitable_still_returns_its_result():
+    """The bound never rewrites a settled lifecycle call's result."""
+
+    async def settled() -> str:
+        return "activation-handle"
+
+    assert relay_runtime._resolve_plugin_awaitable(settled()) == "activation-handle"

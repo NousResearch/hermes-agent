@@ -3291,7 +3291,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     _JOB_ID_RE = re.compile(r"[a-f0-9]{12}")
     # Update whitelist — prevents clients injecting arbitrary keys.
-    _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled"}
+    _UPDATE_ALLOWED_FIELDS = {
+        "name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled",
+        "script", "no_agent", "workdir",
+    }
     _MAX_NAME_LENGTH = 200
     _MAX_PROMPT_LENGTH = 5000
 
@@ -3329,6 +3332,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             scan_error = _scan_cron_prompt(prompt)
             if scan_error:
                 return web.json_response({"error": scan_error}, status=400)
+        return None
+
+    @staticmethod
+    def _validate_cron_script_fields(fields: dict) -> Optional[web.Response]:
+        """Script-job field types shared by create/update; cron.jobs validates the combination."""
+        if not isinstance(fields.get("no_agent", False), bool):
+            return web.json_response({"error": "no_agent must be a boolean"}, status=400)
+        for key in ("script", "workdir"):
+            if not isinstance(fields.get(key), (str, type(None))):
+                return web.json_response({"error": f"{key} must be a string"}, status=400)
         return None
 
     def _job_response(self, fn, job_id: str, *, notify: bool) -> web.Response:
@@ -3381,13 +3394,20 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 return prompt_err
             if repeat is not None and (not isinstance(repeat, int) or repeat < 1):
                 return web.json_response({"error": "Repeat must be a positive integer"}, status=400)
+            script_err = self._validate_cron_script_fields(body)
+            if script_err:
+                return script_err
             kwargs = {
                 "prompt": prompt, "schedule": schedule, "name": name,
                 "deliver": body.get("deliver", "local"),
                 "origin": self._cron_origin_from_request(request)}
-            for key in ("paused", "paused_reason"):
+            # Script jobs as `hermes cron create --script [--no-agent]` makes them; create_job
+            # validates the combination (a no_agent job needs its script).
+            for key in ("paused", "paused_reason", "script", "workdir"):
                 if key in body:
                     kwargs[key] = body[key]
+            if body.get("no_agent"):
+                kwargs["no_agent"] = True
             if skills:
                 kwargs["skills"] = skills
             if repeat is not None:
@@ -3421,6 +3441,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 prompt_err = self._validate_cron_prompt(sanitized["prompt"])
                 if prompt_err:
                     return prompt_err
+            script_err = self._validate_cron_script_fields(sanitized)
+            if script_err:
+                return script_err
         except Exception as e:
             return self._cron_error_response(e)
         return self._job_response(lambda jid: _cron_update(jid, sanitized), job_id, notify=True)

@@ -312,6 +312,43 @@ async def test_input_queued_while_a_model_receipt_commits_still_runs(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_a_following_session_with_config_secrets_changes_model(tmp_path, monkeypatch):
+    """A following session (``follow_profile_config``) that carries private config secrets can
+    /model-switch: the profile-following branch must not shadow the secrets path-remap ``moved``
+    dict with its tuple of route-bound key names (regression: AttributeError 'tuple' object has
+    no attribute 'get' — every gateway /model pick on such a session failed)."""
+    from dataclasses import asdict
+    from types import SimpleNamespace
+    from gateway.session_mutation_model import prepare_model
+    from gateway.session_policy import bind_launch_key, build_policy, restore_policy
+    from hermes_state import SessionDB
+    from hermes_cli import model_switch
+    monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
+        success=True, new_model='b', target_provider='anthropic', provider_changed=True,
+        base_url='https://api.anthropic.com'))
+    with SessionDB(tmp_path / 'state.db') as db:
+        # A profile config beside the db keeps the managed-overlay reader off the real install.
+        (tmp_path / 'config.yaml').write_text('model:\n  provider: openrouter\n  default: a\n',
+                                              encoding='utf-8')
+        authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=db, runner=SimpleNamespace(
+            _resolve_session_agent_runtime=lambda **k: (None, {'api_key': 'sk-launch'})))
+        private = {}
+        config = {'model': {'provider': 'openrouter', 'default': 'a'},
+                  'tts': {'elevenlabs': {'api_key': 'e-tts'}},
+                  'providers': {'mine': {'api_key': '***', 'base_url': 'http://127.0.0.1:9/v1'}}}
+        policy = build_policy({'cwd': str(tmp_path), 'model': 'a', 'api_key': 'sk-launch',
+                               'follow_profile_config': True}, config, private_secrets=private)
+        policy = bind_launch_key(authority, 'sid', policy, 'sk-launch', config_secrets=private)
+        assert policy.config_secret_ref and policy.follows_profile
+        prepared = {'snapshot': {'receipt': {'session_id': 'sid', 'policy': asdict(policy)}}}
+        switched = restore_policy((await prepare_model(authority, SimpleNamespace(source=None, route='r'),
+                                                       {'model': 'b', 'provider': 'anthropic'}, prepared))['policy'])
+        assert switched.follows_profile
+        assert switched.config_secret_ref, 'the frozen config secrets were dropped by the switch'
+        assert switched.config(authority)['tts']['elevenlabs']['api_key'] == 'e-tts'
+
+
+@pytest.mark.asyncio
 async def test_provider_change_drops_the_launch_key_and_keeps_config_secrets(tmp_path, monkeypatch):
     """A session created with an explicit --api-key AND secret-bearing config can change provider:
     the launch key must not cross providers, the frozen config secrets stay bound."""

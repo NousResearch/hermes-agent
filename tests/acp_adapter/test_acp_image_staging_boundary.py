@@ -27,19 +27,20 @@ def test_hardlink_in_staging_to_outside_file_is_refused(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("mime", ["image/png/../../../../escape", "image/svg+xml", "text/html", "image/gif"])
-def test_acp_image_mime_never_chooses_the_staged_extension(tmp_path, monkeypatch, mime):
+@pytest.mark.asyncio
+async def test_acp_image_mime_never_chooses_the_staged_extension(tmp_path, monkeypatch, mime):
     """The extension and admitted type come from the sniffed bytes (png/jpeg/gif/webp), never the
     client's declared text: PNG bytes declared as anything stage as ``.png`` / ``image/png``."""
     from acp.schema import ImageContentBlock
     from acp_adapter.content import _content_blocks_to_openai_user_content
-    import asyncio
     from acp_adapter.gateway_media import stage_user_content
     from gateway.platforms import base
     staging = tmp_path / "home" / "cache" / "images"
     staging.mkdir(parents=True)
     monkeypatch.setattr(base, "get_image_cache_dir", lambda: staging)
     block = ImageContentBlock(type="image", data=base64.b64encode(PNG).decode(), mime_type=mime)
-    _, (attachment,) = asyncio.run(stage_user_content(_content_blocks_to_openai_user_content([block])))
+    content = await _content_blocks_to_openai_user_content([block])
+    _, (attachment,) = await stage_user_content(content)
     assert attachment["mime"] == "image/png"
     assert [p.suffix for p in staging.iterdir()] == [".png"]
     assert Path(attachment["path"]).parent == staging

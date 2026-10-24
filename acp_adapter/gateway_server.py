@@ -628,7 +628,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             # Only a text-only /discard passes a lost turn, recognised BEFORE staging: a refused
             # prompt must not write its media or retire the editor's retained retry identity.
             from acp_adapter.content import _content_blocks_to_openai_user_content
-            content = _content_blocks_to_openai_user_content(prompt)
+            content = await _content_blocks_to_openai_user_content(prompt)
             if not isinstance(content, str) or _slash_command(content) != 'discard':
                 raise GatewayClientError(self._unknown_recovery(session_id, submitted=False))
         prepared = await self._prepare_submit(session_id, prompt)
@@ -748,7 +748,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         arrived while it was staged."""
         from acp_adapter.content import _content_blocks_to_openai_user_content
         from acp_adapter.gateway_media import stage_user_content, submit_fingerprint
-        content = _content_blocks_to_openai_user_content(prompt)
+        content = await _content_blocks_to_openai_user_content(prompt)
         retry_key = submit_fingerprint(session_id, content)
         # Only this session's very next prompt may be the editor's retry of an un-acked submit; any
         # prompt (slash work included) retires the retained identity, so a later repeat is new work.

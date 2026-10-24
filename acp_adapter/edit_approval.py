@@ -66,6 +66,22 @@ def _read_text_if_exists(path: str) -> str | None:
         return p.read_text(encoding="utf-8-sig", errors="replace")
     if p.exists():
         raise OSError(f"Cannot edit non-file path: {path}")
+    # The path may live on the editor's machine (containerized agent): it is
+    # absent here but the IDE client can serve it. Fetching the real old
+    # content is what makes the approval diff meaningful — without this,
+    # host edits would show as whole-file "new file".
+    try:
+        from acp_adapter.client_fs import (
+            bridge_read_text,
+            get_client_fs_bridge,
+            is_host_side_path,
+        )
+
+        bridge = get_client_fs_bridge()
+        if bridge is not None and is_host_side_path(str(p)):
+            return bridge_read_text(bridge, str(p))
+    except Exception:
+        logger.debug("client-fs old-text fetch failed for %s", path, exc_info=True)
     return None
 
 

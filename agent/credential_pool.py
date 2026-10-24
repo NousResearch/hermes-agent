@@ -1488,7 +1488,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
     # ---- refresh -----------------------------------------------------------
 
     def _refresh_entry(self, entry: PooledCredential, *, force: bool) -> Optional[PooledCredential]:
-        if entry.auth_type != AUTH_TYPE_OAUTH or not entry.refresh_token:
+        if (entry.auth_type != AUTH_TYPE_OAUTH or not entry.refresh_token) and plugin_refresh_hook(self.provider) is None:
             if force:
                 self._mark_exhausted(entry, None)
             return None

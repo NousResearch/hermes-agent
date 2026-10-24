@@ -106,7 +106,7 @@ Full definition in `providers/base.py`. The most useful ones:
 | `supports_streaming` | `bool \| None` | `None` (default) preserves transport defaults; `True` opts streaming-capable `external_process` clients into host streaming; `False` disables provider streaming. ACP URLs and session-level streaming disables still take precedence. Only opt in when the client implements the selected API mode's streaming contract, including cancellation and cleanup. |
 | `auth_type` | str | `api_key` \| `oauth_device_code` \| `oauth_external` \| `copilot` \| `aws_sdk` \| `external_process` |
 | `auth_handler` | `Callable \| None` | Provider-owned `hermes auth add/status/logout/refresh <name>` — see [Provider-owned auth](#provider-owned-auth-auth_handler-refresh_credential) |
-| `refresh_credential` | `Callable \| None` | Provider-owned rotation of a pooled OAuth row — same section |
+| `refresh_credential` | `Callable \| None` | Provider-owned rotation of a pooled row, OAuth or API key — same section |
 | `classify_api_error` | `Callable \| None` | Provider-scoped error-classification override — see [Recovery and error classification](#recovery-and-error-classification) |
 | `fallback_models` | `tuple[str, ...]` | Curated list shown when live catalog fetch fails — in the `/model` picker AND the first-time `hermes setup` / `hermes model` API-key flow, which resolve the catalog the same way (`fetch_models()` merged curated-first with `fallback_models`; `fallback_models` alone when the fetch returns `None` or raises) |
 | `supports_vision` | bool | Declares the provider's API accepts image content inside **tool-result** messages (a provider-wide wire capability). Per-model user-image routing comes from `model_capabilities` / models.dev, not from this flag |
@@ -388,7 +388,8 @@ silently doing nothing.
 **acquires** it — its own device-code / OIDC / IdC flow inside the existing `hermes auth` command family
 (model-provider manifests are skipped by the generic command-plugin loader, so `register(ctx)` is not the
 way to add commands). `refresh_credential` is how the credential pool **rotates** a pooled token the plugin
-stored.
+stored, whatever its `auth_type`: an API key the provider's own service replaces is renewed through the hook
+when a request is refused, instead of the row being benched with the stale key.
 
 ```python
 import uuid

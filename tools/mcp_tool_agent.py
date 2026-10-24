@@ -57,8 +57,13 @@ def _tool_defs_content_changed(agent, new_defs: list) -> bool:
 
 
 def _drop_session_tools(agent, new_defs: list, new_names: set) -> tuple:
-    from toolsets import agent_tool_drops, agent_tool_surface
-    return agent_tool_surface(agent, new_defs), new_names - agent_tool_drops(agent)
+    # Drops only: runs after a merge, where a carried or pinned entry keeps the bytes already sent. The one-shot
+    # schema variants (``toolsets.agent_tool_surface``) shape fresh definitions, before any merge.
+    from toolsets import agent_tool_drops
+    drops = agent_tool_drops(agent)
+    if not drops:
+        return new_defs, new_names
+    return [entry for entry in new_defs if _def_name(entry) not in drops], new_names - drops
 
 
 def _publish_tool_snapshot(
@@ -124,7 +129,9 @@ def refresh_agent_mcp_tools(
     snapshot_generation = registry._generation
     from agent.delegation_backends import adopt_built_backend, saved_backend
     built_backend = saved_backend()
-    new_defs = list(get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=quiet_mode) or [])
+    from toolsets import agent_tool_surface
+    new_defs = agent_tool_surface(agent, list(
+        get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=quiet_mode) or []))
     new_names = {_def_name(t) for t in new_defs}
     # Post-build families re-appended on LOCALS only; live attributes untouched until publish.
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
@@ -196,12 +203,16 @@ def _config_permitted_names(agent) -> set:
     """Tool names this agent's toolset selection allows before ``check_fn``: all a pin may carry
     forward. A client-surface toolset counts as allowed (only its client can add it, so its absence
     here is no config choice); ``disabled_toolsets`` still strips it."""
+    from agent.oneshot_footprint import ONESHOT_DISABLED_TOOLSETS, agent_is_oneshot
     from model_tools import _select_tool_names
     from toolsets import CLIENT_SURFACE_TOOLSETS
     enabled = getattr(agent, "enabled_toolsets", None)
     if enabled is not None:
         enabled = [*enabled, *CLIENT_SURFACE_TOOLSETS]
-    return _select_tool_names(enabled, getattr(agent, "disabled_toolsets", None), True)
+    disabled = getattr(agent, "disabled_toolsets", None)
+    if disabled and agent_is_oneshot(agent):  # the one-shot gate is no config choice either: a pinned clarify stays
+        disabled = [name for name in disabled if name not in ONESHOT_DISABLED_TOOLSETS]
+    return _select_tool_names(enabled, disabled, True)
 
 
 def _drop_gated_carried_tools(merged: list, carried: set) -> list:

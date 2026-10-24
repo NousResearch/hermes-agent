@@ -51,6 +51,18 @@ def test_oneshot_tool_build_drops_clarify_and_delegate_live_control(monkeypatch)
     assert "steer" not in delegate["description"] and "BETWEEN your turns" not in delegate["description"]
 
 
+def test_oneshot_resume_keeps_the_pinned_interactive_tool_bytes(monkeypatch):
+    # `hermes -z --resume <interactive session>`: the same-code pin's bytes head every request (prompt cache), so
+    # neither the one-shot delegate_task variant nor the one-shot clarify gate may rewrite or drop a pinned tool.
+    from tools.mcp_tool_agent import restore_agent_tool_prefix, tool_pin_version
+
+    interactive = _built_agent(monkeypatch, oneshot=False)
+    oneshot = _built_agent(monkeypatch, oneshot=True)
+    restore_agent_tool_prefix(oneshot, {"version": tool_pin_version(), "tools": interactive.tools})
+
+    assert oneshot.tools == interactive.tools
+
+
 def test_gateway_oneshot_inventory_drops_clarify(tmp_path, monkeypatch):
     from gateway.session_local_inventory import _policy_tools
     from gateway.session_policy import build_policy, policy_scope

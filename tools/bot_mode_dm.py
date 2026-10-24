@@ -548,7 +548,9 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
 
 def _wait_live_dm(home: str, delivery_id: str, *, dm_file: str | os.PathLike | None = None) -> int:
     from tools.bot_failure_reasons import RUNTIME_OFFLINE
-    from tools.bot_live_delivery import await_delivery, cancel_queued_delivery, owner_holds_delivery
+    from tools.bot_live_delivery import (
+        await_delivery, cancel_queued_delivery, owner_holds_delivery, public_delivery_status,
+    )
 
     deadline = time.monotonic() + _LIVE_WAIT_MAX_SECONDS
     missed = 0
@@ -581,7 +583,10 @@ def _wait_live_dm(home: str, delivery_id: str, *, dm_file: str | os.PathLike | N
             break
     status = record["status"] if record else "ambiguous"
     payload = {key: record[key] for key in ("reply", "error", "reason") if record and record.get(key)}
-    payload.update(status=status, delivery_id=delivery_id)
+    # §4.8/P11: translate the transport's storage words at the BOUNDARY only — the sender sees
+    # ENUM B ("claimed" -> "running", "settled" -> "delivered"). Exit codes below stay keyed on
+    # the internal word; the storage layer keeps queued/claimed/settled.
+    payload.update(status=public_delivery_status(status), delivery_id=delivery_id)
     if status in ("queued", "claimed", "ambiguous"):
         payload["detail"] = "Delivery remains pending or its outcome is unknown. Do not resend; receipt is retained."
     elif status == "settled" and dm_file is not None:
@@ -690,6 +695,8 @@ def _start_delivery(argv: list[str], content: str, label: str, *, stdin_file: bo
                     task_id: Optional[str], agent: Any, profile_home: Path | None = None,
                     author: Optional[dict] = None) -> str:
     """Create a DM file and transfer its cleanup ownership to the runner."""
+    from tools.bot_live_delivery import public_delivery_status
+
     dm_file = _write_dm_file(content)
     if profile_home is not None:
         try:
@@ -703,7 +710,10 @@ def _start_delivery(argv: list[str], content: str, label: str, *, stdin_file: bo
         if record is not None:
             command = _delivery_command(argv, dm_file, stdin_file=False, profile_home=profile_home, author=author)
             notification = json.loads(_spawn_delivery(command, label, task_id=task_id, agent=agent))
-            result = dict(status=record["status"], delivery_id=record["delivery_id"], to=label,
+            # §4.8: the queue notice is sender-facing, so it carries ENUM B, not the mailbox's
+            # storage word ("queued" is the one word both vocabularies share).
+            result = dict(status=public_delivery_status(record["status"]),
+                          delivery_id=record["delivery_id"], to=label,
                           detail="Durably queued for the live Bot Chat owner. Do NOT wait or resend; finish your turn.")
             if notification.get("error"):
                 result["notification_error"] = notification["error"]

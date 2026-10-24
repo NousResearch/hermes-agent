@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -22,6 +23,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, replace
@@ -428,6 +430,68 @@ def _detect_docker_bridge_ip() -> Optional[str]:
         logger.warning("Refusing suspicious docker bridge IP %s reported by `ip`; skipping bridge bind.", candidate)
         return None
     return str(addr)
+
+
+# iron-proxy's allowlist globs the PORT-STRIPPED host of each request (``hostmatch.StripPort`` +
+# ``MatchGlob``, v0.39.0), so a URL, ``host:port`` or ``host/path`` entry can never match: every
+# request from the sandbox 403s and nothing names the misconfigured entry. Labels may carry
+# ``*``/``?`` (``path.Match`` semantics: ``api-*.example.com``); a bare ``*`` allows every host.
+_ALLOWED_HOST_GLOB_RE = re.compile(r"^\*$|^(?:[a-z0-9*?-]+\.)*[a-z0-9*?-]+\.?$")
+_HOST_PORT_RE = re.compile(r"^(.*[^:]):\d+$")
+
+
+def _bare_host_hint(candidate: str) -> str:
+    host = candidate.strip().strip("[]").lower()
+    if host and (_ALLOWED_HOST_GLOB_RE.match(host) or _is_ip_literal(host)):
+        return f'use the bare host name "{host}"'
+    return "use a host name such as api.example.com or *.example.com"
+
+
+def _is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
+def allowed_host_problem(raw) -> Optional[str]:
+    """Why ``raw`` cannot be an iron-proxy allowlist entry, with the fix; None when it can."""
+    if not isinstance(raw, str):
+        return "entries must be strings"
+    host = raw.strip().lower()
+    if not host:
+        return "the entry is empty; remove it"
+    if _ALLOWED_HOST_GLOB_RE.match(host) or _is_ip_literal(host.strip("[]")):
+        return None
+    if "://" in host:
+        hostname = ""
+        with suppress(ValueError):
+            hostname = urllib.parse.urlsplit(host).hostname or ""
+        return f"allowed hosts are host names, not URLs; {_bare_host_hint(hostname)}"
+    if "/" in host:
+        return f"allowed hosts cannot contain a path; {_bare_host_hint(host.split('/', 1)[0].rsplit(':', 1)[0])}"
+    if (m := _HOST_PORT_RE.match(host)):
+        return f"the allowlist matches host names without a port; {_bare_host_hint(m.group(1))}"
+    return _bare_host_hint("")
+
+
+def normalize_allowed_hosts(entries, *, warn, source: str = "proxy.extra_allowed_hosts") -> List[str]:
+    """Lower-cased, de-duplicated allowlist entries; each invalid one is dropped with ONE ``warn``
+    naming ``source``, the entry and the fix. Dropping only narrows egress (the entry could never
+    match anyway), so the rest of setup proceeds instead of shipping a silently dead allowlist."""
+    out: List[str] = []
+    for entry in entries or []:
+        problem = allowed_host_problem(entry)
+        if problem:
+            warn(f"skipping allowed host {entry!r} in {source}: {problem}.")
+            continue
+        host = entry.strip().lower()
+        if host.startswith("[") and host.endswith("]"):
+            host = host[1:-1]  # iron-proxy strips IPv6 brackets before matching
+        if host not in out:
+            out.append(host)
+    return out
 
 
 def build_proxy_config(
@@ -951,9 +1015,9 @@ def _reset_for_tests() -> None:
 
 
 __all__ = [
-    "ProxyStatus", "TokenMapping", "allowlisted_env", "build_proxy_config", "discover_provider_mappings",
+    "ProxyStatus", "TokenMapping", "allowed_host_problem", "allowlisted_env", "build_proxy_config", "discover_provider_mappings",
     "discover_uncovered_providers", "ensure_audit_log", "ensure_ca_cert", "ensure_management_token",
     "find_iron_proxy", "get_status", "install_iron_proxy", "iron_proxy_version", "load_mappings",
-    "merge_mappings", "mint_proxy_token", "reload_proxy", "start_proxy", "stop_proxy",
+    "merge_mappings", "mint_proxy_token", "normalize_allowed_hosts", "reload_proxy", "start_proxy", "stop_proxy",
     "write_mappings", "write_proxy_config",
 ]

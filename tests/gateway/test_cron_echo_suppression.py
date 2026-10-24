@@ -565,3 +565,68 @@ def test_a_state_dir_given_as_a_plain_string_path_works(tmp_path):
     verdict = suppressor.verdict(_envelope())
     assert verdict.suppress is False
     assert (tmp_path / "cron-echo").exists()
+
+
+# --- the acceptance case, in the form the gateway actually receives ---------
+#
+# The tests above use the multi-line envelope the delivery layer WRITES. These
+# use the FLATTENED envelope the gateway RECEIVES (Telegram cannot carry a raw
+# newline in a caption), driven through the same real `_hm_admit_event` seam.
+
+
+@pytest.mark.asyncio
+async def test_a_flattened_cron_ping_produces_no_turn_and_no_reply(suppressor):
+    """The acceptance case, in production form: no turn, no reply."""
+    from gateway.platforms.event import MessageEvent
+
+    runner = _runner(suppressor)
+    event = MessageEvent(text=_flat_envelope(), message_id="m1", source=_bot_source())
+
+    assert await runner._hm_admit_event(event) is None
+
+
+@pytest.mark.asyncio
+async def test_a_flattened_escalation_still_reaches_the_agent(suppressor):
+    """A blocked-card escalation must survive in the production form too."""
+    from gateway.platforms.event import MessageEvent
+
+    runner = _runner(suppressor)
+    event = MessageEvent(
+        text=_flat_envelope(payload="I need help with **Patroni disk usage** -- volume full"),
+        message_id="m1", source=_bot_source(),
+    )
+    assert (await runner._hm_admit_event(event))[0] is event
+
+
+@pytest.mark.asyncio
+async def test_a_flattened_ping_still_honours_the_change_rule(tmp_path):
+    """In change-driven mode the flattened form must detect a changed payload."""
+    from gateway.platforms.event import MessageEvent
+
+    runner = _runner(_change_suppressor(tmp_path))
+    first = MessageEvent(text=_flat_envelope(payload="probe OK for mac-mini"),
+                         message_id="m1", source=_bot_source())
+    assert (await runner._hm_admit_event(first))[0] is first
+
+    same = MessageEvent(text=_flat_envelope(payload="probe OK for mac-mini"),
+                         message_id="m2", source=_bot_source())
+    assert await runner._hm_admit_event(same) is None
+
+    changed = MessageEvent(
+        text=_flat_envelope(payload="probe FAILED for mac-mini: host key mismatch"),
+        message_id="m3", source=_bot_source(),
+    )
+    assert (await runner._hm_admit_event(changed))[0] is changed
+
+
+@pytest.mark.asyncio
+async def test_a_flattened_ping_from_a_human_still_reaches_the_agent(suppressor):
+    """Only a bot sender is silenced, in the production form too."""
+    from gateway.platforms.event import MessageEvent
+
+    runner = _runner(suppressor)
+    event = MessageEvent(
+        text=_flat_envelope(payload="why is this firing every four hours?"),
+        message_id="m1", source=_human_source(),
+    )
+    assert (await runner._hm_admit_event(event))[0] is event

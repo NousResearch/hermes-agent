@@ -813,6 +813,72 @@ def _lock_in_submit_turn(
 from gateway.session_surface import SURFACES as _CLIENT_SURFACES
 
 
+def _replayed_submit(rid, sid, submission_id):
+    """The answer a retried submit already received, or a refusal for an unusable id.
+
+    A client that lost the reply to a submit (an app relaunch, a network drop, a reconnect mid-turn)
+    resends the same words; its ``submission_id`` is what tells that retry apart from a second
+    intent, so the original acceptance is answered again instead of admitting a second turn.
+    """
+    from tui_gateway import prompt_submission_id
+
+    if not isinstance(submission_id, str) or not submission_id.strip():
+        return _err(rid, 4000, "submission_id must be a non-empty string")
+    replayed = prompt_submission_id.replay(sid, submission_id)
+    return _ok(rid, replayed) if replayed is not None else None
+
+
+def _remembered_reply(params: dict, reply: dict) -> dict:
+    """Record an accepted submit's body under its id, so its retry answers that body."""
+    from tui_gateway import prompt_submission_id
+
+    submission_id = params.get("submission_id")
+    if isinstance(submission_id, str) and isinstance(reply.get("result"), dict):
+        prompt_submission_id.remember(params.get("session_id", ""), submission_id, reply["result"])
+    return reply
+
+
+def _submit_to_isolated_host(
+    rid, sid, session, text, display_kind, display_metadata, turn_author, survivor_fields
+):
+    """Dispatch an admitted turn to its compute host; None means "run it here instead".
+
+    The isolated dispatch returns BEFORE the inline persist, so the reopen cannot live only in
+    _persist_session_row_for_submit: the turn is already admitted here (running, in flight,
+    active-slot lease claimed, truncation applied inline), and the child's transcript writes must
+    land in a live row (#85303 review: the early return made _reopen_if_finalized unreachable on this
+    path). Best-effort like the helper: a failed read never blocks the send.
+    """
+    if turn_author:
+        logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
+                     turn_author.get("id"))
+    try:
+        with _session_db(session) as db:
+            if db is not None:
+                _reopen_if_finalized(db, str(session.get("session_key") or ""))
+    except Exception:
+        logger.debug("finalized-session reopen before isolated dispatch failed for %s",
+                     sid, exc_info=True)
+    isolated_response = _submit_prompt_to_compute_host(
+        rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
+    if not isolated_response.get("error"):
+        # The truncation already happened inline above (memory + DB).
+        isolated_response["result"].update(survivor_fields)
+        return isolated_response
+    # An ordinal/id alone is not consent. A client that carries a leftover ordinal into an ORDINARY
+    # submit sends a request that is indistinguishable, field by field, from a real rewind — same
+    # method, same shape, an in-range target — and the cut it asks for is a destructive
+    # replace_messages() the user never requested (#80763: 296 -> 52 messages, 244 durable rows gone).
+    # Only the client knows whether this submit is a rewind/edit/regenerate, so it has to say so; refuse
+    # the cut when it doesn't. Consent is checked BEFORE target resolution: an unconfirmed
+    # (leaked-state) request must refuse with 4029 without paying the durable transcript read or
+    # heal-stamping live history dicts that row-id resolution performs.
+    logger.warning(
+        "compute-host dispatch failed for session %s; falling back inline: %s", sid,
+        isolated_response["error"].get("message", "unknown error"))
+    return None
+
+
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
     from hermes_cli.input_sanitize import sanitize_user_prompt_text
@@ -830,6 +896,11 @@ def _(rid, params: dict) -> dict:
     )
     if (stopped := _typed_stop_phrase_response(rid, text, sid)) is not None:
         return stopped
+    submission_id = params.get("submission_id")
+    if submission_id is not None:
+        retried = _replayed_submit(rid, sid, submission_id)
+        if retried is not None:
+            return retried
     if params.get("interrupted"):
         # Client-side barge-in: latch so this turn's model message carries the note.
         from tools.tts_streaming import mark_speech_interrupted
@@ -904,7 +975,7 @@ def _(rid, params: dict) -> dict:
             rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author,
             display_kind=display_kind)
         if busy_response is not None:
-            return busy_response
+            return _remembered_reply(params, busy_response)
     raw_rebind_ids = params.get("rebind_survivor_row_ids")
     requested_rebind_ids = (
         {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
@@ -914,39 +985,10 @@ def _(rid, params: dict) -> dict:
     if err is not None:
         return err
     if turn_isolation:
-        if turn_author:
-            logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
-                         turn_author.get("id"))
-        # The isolated dispatch returns BELOW before the inline persist, so the reopen
-        # cannot live only in _persist_session_row_for_submit: the turn is already
-        # admitted here (running, in flight, active-slot lease claimed, truncation
-        # applied inline), and the child's transcript writes must land in a live row
-        # (#85303 review: the early return made _reopen_if_finalized unreachable on
-        # this path). Best-effort like the helper: a failed read never blocks the send.
-        try:
-            with _session_db(session) as db:
-                if db is not None:
-                    _reopen_if_finalized(db, str(session.get("session_key") or ""))
-        except Exception:
-            logger.debug("finalized-session reopen before isolated dispatch failed for %s",
-                         sid, exc_info=True)
-        isolated_response = _submit_prompt_to_compute_host(
-            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
-        if not isolated_response.get("error"):
-            # The truncation already happened inline above (memory + DB).
-            isolated_response["result"].update(survivor_fields)
-            return isolated_response
-        # An ordinal/id alone is not consent. A client that carries a leftover ordinal into an ORDINARY
-        # submit sends a request that is indistinguishable, field by field, from a real rewind — same
-        # method, same shape, an in-range target — and the cut it asks for is a destructive
-        # replace_messages() the user never requested (#80763: 296 -> 52 messages, 244 durable rows gone).
-        # Only the client knows whether this submit is a rewind/edit/regenerate, so it has to say so; refuse
-        # the cut when it doesn't. Consent is checked BEFORE target resolution: an unconfirmed
-        # (leaked-state) request must refuse with 4029 without paying the durable transcript read or
-        # heal-stamping live history dicts that row-id resolution performs.
-        logger.warning(
-            "compute-host dispatch failed for session %s; falling back inline: %s", sid,
-            isolated_response["error"].get("message", "unknown error"))
+        isolated_response = _submit_to_isolated_host(
+            rid, sid, session, text, display_kind, display_metadata, turn_author, survivor_fields)
+        if isolated_response is not None:
+            return _remembered_reply(params, isolated_response)
     if (err := _persist_session_row_for_submit(rid, session, text, display_kind)) is not None:
         return err
     # Capture before starting the worker: it consumes the staging dict and may finish before the RPC returns.
@@ -963,7 +1005,7 @@ def _(rid, params: dict) -> dict:
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread
     run_thread.start()
-    return _ok(rid, {"status": "streaming", **survivor_fields})
+    return _remembered_reply(params, _ok(rid, {"status": "streaming", **survivor_fields}))
 
 
 @method("clipboard.paste")

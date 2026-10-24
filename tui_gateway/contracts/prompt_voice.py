@@ -45,6 +45,10 @@ class PromptSubmitParams(SessionParams):
     confirm_empty_truncate: bool | None = None
     confirm_deep_truncate: bool | None = None  # send when the cut archives >1 user turn (enforced next release)
     rebind_survivor_row_ids: list[int] | None = None
+    # Client-generated retry key. A resend carrying the same value for the same session answers the
+    # original acceptance (``duplicate: true``) instead of admitting a second turn — the guarantee the
+    # canonical surface already gives through ``CanonicalSubmitParams.submission_id``.
+    submission_id: str | None = None
     # In-process only: injected by the hosted-room / bot-relay handlers, never accepted from a
     # client (a client dict for ``_turn_author`` answers 4124). Excluded from the rendered wire.
     hosted_task: JsonValue | None = Field(default=None, exclude=True, alias="_hosted_task")
@@ -77,6 +81,9 @@ class PromptSubmitResult(Result):
     # the OWNER's FIFO (``status: queued``) and runs there after the current turn; nothing runs here.
     admission_id: str | None = None
     forwarded: bool | None = None
+    # The submit carried a ``submission_id`` this gateway had already accepted: ``status`` and the row
+    # ids are the ORIGINAL turn's, and nothing ran here. Present only on a retry.
+    duplicate: bool | None = None
 
 
 method("prompt.submit", params=PromptSubmitParams, result=PromptSubmitResult,

@@ -2747,6 +2747,7 @@ export interface PromptSubmitParams {
   confirm_empty_truncate?: boolean | null
   confirm_deep_truncate?: boolean | null
   rebind_survivor_row_ids?: number[] | null
+  submission_id?: string | null
 }
 /** ``status`` is absent only on the typed-stop-phrase reply (``voice_stopped``). After a truncation the survivor row ids let the client rebind its cached ``rowId``s (``None`` map entries: drop the cached id). ``turn_isolation`` marks a compute-host dispatch. */
 export interface PromptSubmitResult {
@@ -2758,6 +2759,7 @@ export interface PromptSubmitResult {
   turn_isolation?: boolean | null
   admission_id?: string | null
   forwarded?: boolean | null
+  duplicate?: boolean | null
 }
 export type PromptSubmitStatus = 'streaming' | 'queued' | 'steered' | 'redirected'
 export interface ClipboardPasteParams {

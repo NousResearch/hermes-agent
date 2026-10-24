@@ -14,6 +14,7 @@
  *                             composer.attachments   (ComposerAttachmentProvider)
  *                             composer.microActions  (ComposerMicroActionProvider)
  *                             composer.contextMenu   (ComposerContextMenuProvider)
+ *                             composer.nonProse      (ComposerNonProseProvider)
  *
  * Core keeps ownership of the transcript, input, and submit engine — these
  * seams AUGMENT the composer, they never replace it. Middleware runs as an
@@ -40,7 +41,8 @@ export const COMPOSER_AREAS = {
   microActions: 'composer.microActions',
   atCompletions: 'composer.atCompletions',
   modelPill: 'composer.modelPill',
-  contextMenu: 'composer.contextMenu'
+  contextMenu: 'composer.contextMenu',
+  nonProse: 'composer.nonProse'
 } as const
 
 /** What a `composer.contextMenu` provider sees when the user right-clicks the
@@ -77,6 +79,43 @@ export interface ComposerContextMenuItem {
  *  at most six rows each) between its own spell-check rows and the edit verbs. */
 export interface ComposerContextMenuProvider {
   items: (context: ComposerContextMenuContext) => ComposerContextMenuItem[]
+}
+
+/** What a `composer.nonProse` provider sees: the draft text the app is about
+ *  to paint for this surface, and which surface it is. Nothing else — no
+ *  element, no `Range`, no selection. Every field is a standing compatibility
+ *  promise to the plugins reading it. */
+export interface ComposerNonProseContext {
+  /** The draft exactly as the app serializes it — what submit would send. */
+  readonly text: string
+  /** The session this surface paints ('' for a fresh draft, or a surface with
+   *  no session of its own). */
+  readonly sessionId: string
+}
+
+/** One half-open `[start, end)` range over `text`. `kind` is a styling/debug
+ *  hint painted on the wrapper's data attribute; the app treats every kind
+ *  identically (never spell-checked). An absent or unknown kind paints `code`. */
+export interface ComposerNonProseRange {
+  readonly start: number
+  readonly end: number
+  readonly kind?: 'code' | 'path' | 'other'
+}
+
+/** Payload of a `composer.nonProse` data contribution: declare the spans of
+ *  the draft that are not prose — a code span, a path, a flag — so the app can
+ *  paint them as elements Chromium's spell checker skips.
+ *
+ *  The app calls `ranges` from its own render and reconcile passes, with the
+ *  text that pass is about to write, and owns every node the answer produces:
+ *  a provider never receives the editor, a `Range` or a selection, and never
+ *  writes DOM itself. `ranges` must be pure and fast (it runs per paint, not
+ *  per keystroke); a throw contributes no ranges and leaves every other
+ *  provider's ranges standing. Ranges are clamped to the text, split at every
+ *  line break, merged where they overlap, and capped (64 per provider, 256 in
+ *  total per pass). */
+export interface ComposerNonProseProvider {
+  ranges: (context: ComposerNonProseContext) => readonly ComposerNonProseRange[]
 }
 
 export interface ComposerDraft {

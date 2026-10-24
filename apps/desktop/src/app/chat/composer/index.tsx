@@ -19,6 +19,7 @@ import { composerFloatingStrip, composerInputBacking } from '@/components/chat/c
 import { useSetupChatView } from '@/components/onboarding/first-run/assembly'
 import { OnboardingSkip } from '@/components/onboarding/skip-setup'
 import { Slot as ContribSlot } from '@/contrib/react/slot'
+import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
@@ -161,6 +162,10 @@ export function ChatBar({
   // Which live composer this instance IS (main | tile) — its attachment set,
   // focus-bus key, and awaiting-input edge. Main scope = the legacy globals.
   const scope = useComposerScope()
+  // The `composer.nonProse` seam needs this surface's session address only once
+  // a provider exists — stamping it unconditionally would put an attribute on
+  // every composer for every user (the area's "no provider, no diff" rule).
+  const nonProseRegistered = useContributions(COMPOSER_AREAS.nonProse).length > 0
   const attachments = useStore(scope.attachments.$attachments)
   const compacting = useStore(useMemo(() => sessionCompacting(sessionId ?? null), [sessionId]))
   const surfaceId = useComposerSurfaceId()
@@ -1173,6 +1178,7 @@ export function ChatBar({
           hudNativeDrag && '[-webkit-app-region:no-drag]'
         )}
         contentEditable={!inputDisabled}
+        data-composer-session={nonProseRegistered ? (sessionId ?? '') : undefined}
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
         dir={textDirection}

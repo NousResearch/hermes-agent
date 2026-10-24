@@ -17,6 +17,11 @@ import {
 } from '@/components/assistant-ui/directive-text'
 import { referenceKind, referenceRe, unwrapReferenceValue } from '@/components/assistant-ui/reference-kinds'
 
+import {
+  COMPOSER_NON_PROSE_ATTR,
+  composerNonProseSpans,
+  composerNonProseSurfaceRanges
+} from './non-prose'
 import { slashCommandMatches, type SlashCommandScanOptions } from './slash-refs'
 
 export const RICH_INPUT_SLOT = 'composer-rich-input'
@@ -84,15 +89,26 @@ export function markEditorEmptiness(editor: HTMLElement) {
   }
 }
 
+/** Editors with an IME composition in flight — see `beginComposerComposition`. */
+const composingEditors = new WeakSet<HTMLElement>()
+
 /** Drop the marker as IME composition starts, before any preedit text lands.
  *
  *  Input events during composition are deliberately skipped (they carry
  *  uncommitted preedit text), so nothing else clears the marker until
  *  `compositionend` — and the hint would otherwise sit behind the hiragana the
  *  user is composing. `normalizeComposerEditorDom` restores it if composition
- *  ends with nothing committed. */
+ *  ends with nothing committed.
+ *
+ *  Composition also defers non-prose re-decoration (see `reconcileNonProse`):
+ *  during it the DOM holds preedit text that is not the draft yet, so the
+ *  ranges a provider would resolve describe text the user has not committed.
+ *  The flag clears on Chromium's own `compositionend`, which always fires
+ *  before the composer's React handler flushes. */
 export function beginComposerComposition(editor: HTMLElement) {
   delete editor.dataset.empty
+  composingEditors.add(editor)
+  editor.addEventListener('compositionend', () => composingEditors.delete(editor), { once: true })
 }
 
 /** @see referenceRe — the shared pattern every surface recognises a reference
@@ -204,15 +220,23 @@ function chipSpans(text: string, options: SlashCommandScanOptions) {
 /** Build the chip/text DOM for `text`. Directives hydrate back to their pills —
  *  `@kind:value` refs and `/command` invocations both — so text that arrives
  *  whole (a paste, a restored draft, an undo step, a rebuilt line) carries the
- *  same chips the typed path would have committed. */
+ *  same chips the typed path would have committed.
+ *
+ *  `composer.nonProse` ranges are painted here too: this is the one place text
+ *  becomes DOM, so it is the one place a wrapper can be emitted — and the only
+ *  one that knows which chip spans a wrapper must leave alone. */
 export function appendComposerContents(
   target: DocumentFragment | HTMLElement,
   text: string,
   options: SlashCommandScanOptions = {}
 ) {
+  const chips = chipSpans(text, options)
+  const regions = composerNonProseSpans(target, text, chips)
+
   let cursor = 0
 
-  for (const span of chipSpans(text, options)) {
+  // Chips first on a tie: `sort` is stable, and a wrapper never swallows one.
+  for (const span of [...chips, ...regions].sort((a, b) => a.start - b.start)) {
     // A `@` ref wins an overlap: a command token can't contain an `@`, so the
     // only way spans collide is a slash inside a quoted ref value
     // (`` @url:`a /clean` ``), which belongs to that value.
@@ -831,6 +855,81 @@ function isBlankNode(node: ChildNode | null): boolean {
   return false
 }
 
+/** Swap a non-prose wrapper for its children in place, keeping the selection.
+ *
+ *  Moving nodes out resets Chromium's selection to the editor's start, so this
+ *  saves the DOM endpoints (and direction) first and re-applies them after —
+ *  the same reason the block unwrap below does. An endpoint ON the wrapper maps
+ *  to the wrapper's own index in the editor, which is where its children now
+ *  begin. */
+function unwrapNonProse(editor: HTMLElement, wrapper: HTMLElement) {
+  const selection = editor.ownerDocument.getSelection()
+  const anchorNode = selection?.anchorNode ?? null
+  const focusNode = selection?.focusNode ?? null
+  const anchorOffset = selection?.anchorOffset ?? 0
+  const focusOffset = selection?.focusOffset ?? 0
+  const boundary = Array.from(editor.childNodes).indexOf(wrapper)
+
+  const ownsSelection = Boolean(
+    (anchorNode && wrapper.contains(anchorNode)) || (focusNode && wrapper.contains(focusNode))
+  )
+
+  wrapper.replaceWith(...Array.from(wrapper.childNodes))
+
+  if (!ownsSelection || !editor.isConnected) {
+    return
+  }
+
+  // A node the move dropped is no longer a valid endpoint; fall back to where
+  // the wrapper's content starts.
+  const restore = (node: Node | null, offset: number): [Node, number] =>
+    node && node !== wrapper && editor.contains(node) ? [node, offset] : [editor, boundary]
+
+  selection?.setBaseAndExtent(...restore(anchorNode, anchorOffset), ...restore(focusNode, focusOffset))
+}
+
+/** Own the non-prose wrappers: a `[data-composer-nonprose]` element is a node
+ *  core emits, so no rule above may drop it as junk — but it is only valid
+ *  while a resolved range still covers it. Re-resolve for the text this pass
+ *  leaves behind and unwrap the rest in place.
+ *
+ *  Two kinds of stale wrapper: one no range covers any more (the user edited
+ *  the span out of shape, the provider changed its answer, or the plugin
+ *  unloaded), and one core would never emit — holding a chip, a `<br>` or a
+ *  block, which a wrapper cannot legally straddle. */
+function reconcileNonProse(editor: HTMLElement) {
+  const wrappers = Array.from(editor.children).filter(child => child.hasAttribute(COMPOSER_NON_PROSE_ATTR))
+
+  // Painting NEW wrappers is the render pass's job (`renderComposerContents`);
+  // the reconciler only ever takes them away, so with none on screen there is
+  // nothing to do. An IME composition defers even that (see
+  // `beginComposerComposition`): the DOM is preedit text, not the draft.
+  if (wrappers.length === 0 || composingEditors.has(editor)) {
+    return
+  }
+
+  const ranges = composerNonProseSurfaceRanges(editor, composerPlainText(editor))
+  let offset = 0
+
+  for (const child of Array.from(editor.childNodes)) {
+    const length = composerPlainText(child).length
+
+    if (child.nodeType === Node.ELEMENT_NODE && (child as HTMLElement).hasAttribute(COMPOSER_NON_PROSE_ATTR)) {
+      const wrapper = child as HTMLElement
+
+      const covered =
+        wrapper.children.length === 0 &&
+        ranges.some(range => range.start <= offset && range.end >= offset + length)
+
+      if (!covered) {
+        unwrapNonProse(editor, wrapper)
+      }
+    }
+
+    offset += length
+  }
+}
+
 /** Drop contenteditable junk that serializes as `\n` and falsely expands the
  *  composer. Editing around a contenteditable=false chip makes Chromium wrap the
  *  remainder in stray block <div>s / trailing <br>s — none of which our own
@@ -901,6 +1000,11 @@ export function normalizeComposerEditorDom(editor: HTMLElement) {
       removeComposerJunk(editor, last)
     }
   }
+
+  // A `[data-composer-nonprose]` wrapper is a node core emits, so every rule
+  // above leaves it alone — this is the one pass that owns it. Runs after the
+  // block rules so it measures the text this normalization actually leaves.
+  reconcileNonProse(editor)
 
   // ContentEditable elements with no children can visually collapse to
   // near-zero height in some browsers (especially Chromium), causing the

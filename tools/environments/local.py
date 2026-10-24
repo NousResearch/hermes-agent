@@ -245,7 +245,10 @@ def _inject_session_context_env(env: dict) -> None:
     Cross-session leak guard: the vars' last-writer-wins ``os.environ`` mirror may
     belong to another turn on a concurrent multi-session host, so once the session
     context is engaged ContextVars are authoritative — a bound value (incl. "") wins
-    and an _UNSET var is STRIPPED, not inherited. An unengaged CLI keeps the mirror."""
+    and an _UNSET var is STRIPPED, not inherited. An unengaged CLI keeps the mirror.
+    Then the plugins' values for the child's own session (``ctx.register_session_env``), minus
+    every name :func:`_scrub_credentials` strips (Tier 1, incl. backend ``strip_env_keys``, and
+    Tier 2), so a value never puts back a credential the scrub removed; ``None`` unsets a name."""
     try:
         from gateway.session_context import _UNSET, _VAR_MAP, session_context_engaged
     except Exception:
@@ -257,6 +260,13 @@ def _inject_session_context_env(env: dict) -> None:
             env[var_name] = "" if value is None else str(value)
         elif _engaged:
             env.pop(var_name, None)
+    from hermes_cli.plugins_session_env import resolve_session_env
+    if plugin_env := resolve_session_env(env.get("HERMES_SESSION_ID", "")):
+        for name, value in _scrub_credentials(plugin_env, inherit_credentials=False).items():
+            if value is None:
+                env.pop(name, None)
+            else:
+                env[name] = value
 
 
 def _filter_secret_env(
@@ -1026,6 +1036,11 @@ class LocalEnvironment(BaseEnvironment):
         return tuple(sorted(
             name for name in merged
             if isinstance(name, str) and _matches_terminal_first_party_prefix(name)))
+
+    def _snapshot_excluded_passthrough_names(self) -> tuple[str, ...]:
+        """Plus the plugins' session env names: each command gets its own session's values."""
+        from hermes_cli.plugins_session_env import session_env_names
+        return tuple(sorted({*super()._snapshot_excluded_passthrough_names(), *session_env_names()}))
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict | None = None, persistent: bool = True):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env, persist_env=persistent)

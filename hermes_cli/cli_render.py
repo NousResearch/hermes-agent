@@ -733,6 +733,34 @@ def _paint_held(seq: int, paint, app=None) -> bool:
         return True
 
 
+@contextmanager
+def _coalesced_output(output):
+    """One terminal write for a whole paint sequence, so no intermediate frame is shown.
+
+    ``renderer.erase()`` + ``paint_now()`` + ``renderer.reset()`` + ``app._redraw()`` each end
+    in an ``Output.flush()``. ``flush()`` is the only place prompt_toolkit drains its buffer
+    (``Vt100_Output.flush``, ``Win32Output.flush``), so each of them ships its own write: the
+    erase one shows the chrome already blanked, before the repaint lands. A terminal that
+    coalesces its own writes hides it; ConPTY (Windows Terminal) and ssh/tmux passthrough do
+    not, so the blank frame gets a paint of its own on every streamed line (#24137).
+
+    Deferring the flush leaves every write in the output's own buffer; the single flush on the
+    way out ships the composed state as one write. Nothing is dropped when the block raises:
+    the real flush always runs in the ``finally``.
+    """
+
+    def _deferred_flush() -> None:
+        """Swallow the intermediate flush; the real one runs once, below."""
+
+    flush = output.flush
+    output.flush = _deferred_flush
+    try:
+        yield
+    finally:
+        output.flush = flush
+        flush()
+
+
 def _cprint(text: str):
     """Print ANSI text through prompt_toolkit's renderer (patch_stdout swallows raw ANSI).
 
@@ -820,16 +848,19 @@ def _cprint(text: str):
                 screen = renderer._last_screen
                 floor = max(floor, renderer._min_available_height, screen.height if screen else 0)
             columns = app.output.get_size().columns
-            renderer.erase()
-            paint_now()
-            renderer.reset()
-            printed = sum(_line_rows(line, columns) for line in text.split("\n"))
-            if app.output.get_size().columns != columns:
-                _add_suspect_rows(printed)
-            if floor is not None:
-                _set_chrome_floor(max(0, floor - printed))
-            app._request_absolute_cursor_position()
-            app._redraw()
+            # Erase, print and repaint as ONE terminal write: split, the erase leaves the
+            # chrome blank for the frame in between, which reads as a flicker over ssh (#24137).
+            with _coalesced_output(app.output):
+                renderer.erase()
+                paint_now()
+                renderer.reset()
+                printed = sum(_line_rows(line, columns) for line in text.split("\n"))
+                if app.output.get_size().columns != columns:
+                    _add_suspect_rows(printed)
+                if floor is not None:
+                    _set_chrome_floor(max(0, floor - printed))
+                app._request_absolute_cursor_position()
+                app._redraw()
 
     try:
         loop.call_soon_threadsafe(_schedule)

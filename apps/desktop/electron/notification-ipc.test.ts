@@ -130,3 +130,48 @@ it('delivers plugin callbacks to their source and falls back only for navigation
     })
   )
 })
+
+// #89111: an approval toast's body click must resolve the approval, matching the
+// in-app Run/Reject bar. Without this the prompt is only focused and then times
+// out, stranding the agent.
+it('resolves an approval from a toast body click, not only from a button', async () => {
+  const primary = windowStub()
+  const source = windowStub()
+  host.fromWebContents.mockReturnValue(source)
+  const focusWindow = vi.fn()
+  registerNativeNotifications({
+    getMainWindow: () => primary as unknown as BrowserWindow,
+    focusWindow,
+    platform: 'darwin'
+  })
+
+  const notify = host.handle.mock.calls[0][1] as (
+    event: IpcMainInvokeEvent,
+    payload: HermesNotification
+  ) => Promise<boolean>
+
+  const payload = {
+    kind: 'approval',
+    sessionId: 'runtime-source',
+    focusSessionId: 'stored-source',
+    title: 'Approval',
+    actions: [
+      { id: 'approve:req-1', text: 'Approve' },
+      { id: 'reject:req-1', text: 'Reject' }
+    ]
+  }
+
+  await notify({ sender: source.webContents } as unknown as IpcMainInvokeEvent, payload)
+  source.webContents.send.mockClear()
+
+  host.shown[0].emit('click')
+
+  expect(source.webContents.send).toHaveBeenCalledWith('hermes:notification-action', {
+    sessionId: payload.sessionId,
+    actionId: 'approve:req-1'
+  })
+  // Still focuses the owning window so the in-app bar reflects the resolution.
+  expect(focusWindow).toHaveBeenCalledWith(source)
+  expect(source.webContents.send).toHaveBeenCalledWith('hermes:focus-session', payload.focusSessionId)
+  expect(primary.webContents.send).not.toHaveBeenCalled()
+})

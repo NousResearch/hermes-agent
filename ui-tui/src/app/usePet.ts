@@ -77,6 +77,7 @@ interface PetCellsResult {
 
 type CacheEntry =
   | { kind: 'cells'; frameMs: number; frames: PetGrid[] }
+  | { kind: 'escape'; frameMs: number; frames: string[] }
   | { kind: 'kitty'; frameMs: number; frames: string[]; placeholder: string[]; color: string }
 
 const FRAME_MS = 160
@@ -101,6 +102,8 @@ export interface PetRender {
  *   per-frame transmit escapes. We paint the placeholder with Ink and write the
  *   current frame's escape to the terminal out-of-band, so the image animates
  *   underneath without Ink ever repainting.
+ * - **sixel** (explicitly configured): frames are written directly to the
+ *   terminal, since Ink cannot paint sixel payloads itself.
  * - **cells** (everywhere else): truecolor half-block grids painted by Ink.
  *
  * A steady poll keeps it reactive to config changes made elsewhere (`/pet`, the
@@ -276,6 +279,12 @@ export function usePet(): PetRender {
             kind: 'kitty',
             placeholder: res.placeholder
           })
+        } else if (res.graphics === 'sixel' && res.frames?.length) {
+          cache.current.set(`${slug}:${state}`, {
+            frameMs: res.frameMs ?? FRAME_MS,
+            frames: res.frames as string[],
+            kind: 'escape'
+          })
         } else if (res.frames?.length) {
           cache.current.set(`${slug}:${state}`, {
             frameMs: res.frameMs ?? FRAME_MS,
@@ -337,6 +346,20 @@ export function usePet(): PetRender {
 
         return
       }
+
+        if (entry.kind === 'escape') {
+          try {
+            write(entry.frames[idx] ?? '')
+          } catch {
+            // A terminal that rejects an explicitly requested graphics protocol
+            // must not interrupt the text UI.
+          }
+
+          setGrid(null)
+          setKitty(null)
+
+          return
+        }
 
       setKitty(null)
       setGrid(entry.frames[idx] ?? null)

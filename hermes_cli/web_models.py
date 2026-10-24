@@ -62,6 +62,8 @@ class MessagingPlatformUpdate(BaseModel):
     enabled: Optional[bool] = None
     env: dict[str, str] = {}
     clear_env: list[str] = []
+    # Non-secret platform settings belong in config.yaml, not .env.
+    config: dict[str, list[str]] = {}
     # Explicit body profile beats the switcher's query param (same as other scoped writes).
     profile: Optional[str] = None
 

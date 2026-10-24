@@ -99,6 +99,24 @@ class TestProfileScopedMessagingReads:
         assert (token["is_list"], token["value"]) == (False, None)
         assert _VALID_WORKER_BOT_TOKEN not in str(token)
 
+    def test_admin_list_is_readable_from_platform_config(self, client, isolated_profiles):
+        """The Channels form must show the slash-command admins saved in config.yaml."""
+        (isolated_profiles["worker_alpha"] / "config.yaml").write_text(
+            "platforms:\n  telegram:\n    allow_admin_from: [111]\n"
+            "telegram:\n  allow_admin_from: ['222']\n",
+            encoding="utf-8",
+        )
+
+        telegram = _telegram(
+            client.get("/api/messaging/platforms", params={"profile": "worker_alpha"}).json()
+        )
+        admins = next(field for field in telegram["config_fields"] if field["key"] == "allow_admin_from")
+
+        assert admins["is_list"] is True
+        # gateway.config_loader gives the legacy top-level platform section
+        # precedence, so the form must show the policy the runtime enforces.
+        assert admins["value"] == ["222"]
+
     def test_unknown_profile_returns_404(self, client, isolated_profiles):
         resp = client.get(
             "/api/messaging/platforms", params={"profile": "no_such_profile"}
@@ -187,6 +205,23 @@ class TestProfileScopedMessagingWrites:
         root_cfg = yaml.safe_load(
             (isolated_profiles["default"] / "config.yaml").read_text(encoding="utf-8")
         ) or {}
+        assert "telegram" not in (root_cfg.get("platforms") or {})
+
+    def test_scoped_admin_write_lands_in_target_platform_config(self, client, isolated_profiles):
+        resp = client.put(
+            "/api/messaging/platforms/telegram",
+            params={"profile": "worker_alpha"},
+            json={"config": {"allow_admin_from": ["111", "222"]}},
+        )
+
+        assert resp.status_code == 200
+        worker_cfg = yaml.safe_load(
+            (isolated_profiles["worker_alpha"] / "config.yaml").read_text(encoding="utf-8")
+        ) or {}
+        root_cfg = yaml.safe_load(
+            (isolated_profiles["default"] / "config.yaml").read_text(encoding="utf-8")
+        ) or {}
+        assert worker_cfg["platforms"]["telegram"]["allow_admin_from"] == ["111", "222"]
         assert "telegram" not in (root_cfg.get("platforms") or {})
 
 

@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   createKeepAwake,
+  KEEP_AWAKE_RELEASE_GRACE_MS,
+  keepAwakeHeld,
   keepAwakeWanted,
   parseKeepAwakeMode,
   type PowerSaveBlockerLike,
@@ -106,5 +108,32 @@ describe('keep-awake mode', () => {
     apply(false)
     expect(blocker.stop).toHaveBeenCalledTimes(1)
     expect(keepAwake.isActive()).toBe(false)
+  })
+})
+
+describe('release grace (#134434)', () => {
+  it('is a hold long enough to bridge a cold follow-up turn accept', () => {
+    // The gap it bridges: turn end -> process_complete prompt -> model request
+    // -> message.start re-arm. Five minutes dwarfs the observed 1-2 s release
+    // windows and the tens of seconds a cold model request can take.
+    expect(KEEP_AWAKE_RELEASE_GRACE_MS).toBeGreaterThanOrEqual(5 * 60_000)
+  })
+
+  it('keeps the blocker held through the grace window after the picture goes idle', () => {
+    // The regression: a bare working=false used to release immediately.
+    expect(keepAwakeHeld('while-working', false, false)).toBe(false)
+    expect(keepAwakeHeld('while-working', false, true)).toBe(true)
+  })
+
+  it('holds during live work regardless of the grace state', () => {
+    expect(keepAwakeHeld('while-working', true, false)).toBe(true)
+    expect(keepAwakeHeld('while-working', true, true)).toBe(true)
+  })
+
+  it('never applies to off or always', () => {
+    expect(keepAwakeHeld('off', false, true)).toBe(false)
+    expect(keepAwakeHeld('off', true, true)).toBe(false)
+    expect(keepAwakeHeld('always', false, false)).toBe(true)
+    expect(keepAwakeHeld('always', false, true)).toBe(true)
   })
 })

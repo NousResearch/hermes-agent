@@ -76,6 +76,20 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     runner._clear_session_env(tokens)
 
 
+def test_set_session_env_without_a_session_id_ignores_the_process_env(monkeypatch):
+    """A turn whose context has no session id must read "", never a stale process-wide HERMES_SESSION_ID (#126115)."""
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(platform=Platform.LOCAL, chat_id="local-abc", chat_type="dm", user_id="uid:1")
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+    monkeypatch.setenv("HERMES_SESSION_ID", "stale-process-env")
+
+    tokens = runner._set_session_env(context)
+    try:
+        assert get_session_env("HERMES_SESSION_ID") == ""
+    finally:
+        runner._clear_session_env(tokens)
+
+
 def test_clear_session_env_restores_previous_state(monkeypatch):
     """_clear_session_env should restore contextvars to their pre-handler values."""
     runner = object.__new__(GatewayRunner)

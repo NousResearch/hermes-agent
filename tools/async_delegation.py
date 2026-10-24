@@ -845,7 +845,8 @@ def _dispatch_admitted(
         # a forced finalization runs under the dispatcher's so it settles the same state.db.
         "_context": contextvars.copy_context(),
         # Stale-monitor bookkeeping (see _stale_monitor_loop).
-        "_progress_token": None, "_progress_ts": dispatched_at, "_interrupted_at": None}
+        "_progress_token": None, "_progress_ts": dispatched_at, "_interrupted_at": None,
+        "_approval_cancelled": threading.Event()}
     with _records_lock:
         if any((field, record[field]) in _refused_by for field in _FENCED_FIELDS):
             return {"status": "rejected", "error": "This session was closed (exit or /new): no new background work."}
@@ -859,6 +860,21 @@ def _dispatch_admitted(
     # unit queues behind a full pool and the stale monitor kills it before its child ever starts.
     executor = _get_executor(max(max_async_children, live_units))
 
+    from tools.approval_notify_lease import acquire, run as run_with_notify_lease
+    try:
+        lease = acquire(session_key, delegation_id, cancelled=record["_approval_cancelled"])
+    except Exception as exc:
+        status = "interrupted" if record["_approval_cancelled"].is_set() else "error"
+        _finalize(delegation_id, crash_result(f"Approval owner unavailable: {type(exc).__name__}", 0), status)
+        return {"status": "rejected", "error": "Approval owner unavailable; background task was not started."}
+    with _records_lock:
+        record["_approval_lease"] = lease
+        cancelled = record["_approval_cancelled"].is_set()
+    if cancelled or not lease.active:
+        lease.release()
+        _finalize(delegation_id, crash_result("Interrupted before approval handoff", 0), "interrupted")
+        return {"status": "rejected", "error": "Background task interrupted before start."}
+
     def _worker() -> None:
         result: dict[str, Any] = {}
         status = "error"
@@ -868,7 +884,7 @@ def _dispatch_admitted(
                 # The stall clock starts when the runner starts; a unit queued behind a full pool is not stalled.
                 rec.update(_started=True, _progress_ts=time.time())
         try:
-            result = runner() or {}
+            result = run_with_notify_lease(lease, runner) or {}
             status = classify(result)
         except Exception as exc:
             logger.exception(f"Async delegation{label} %s crashed", delegation_id)
@@ -882,10 +898,28 @@ def _dispatch_admitted(
     # reservation too: the stall monitor may finalize its registry record before it really exits.
     retirement.acquire()
     try:
-        future = executor.submit(propagate_context_to_thread(_worker))
-        future.add_done_callback(lambda _: retirement.release())
+        # Submission and the interrupt latch share the records lock, but minting
+        # (stream lock) and lease release (tools lock) never run under it.
+        with _records_lock:
+            future = (None if record["_approval_cancelled"].is_set() else
+                      executor.submit(propagate_context_to_thread(_worker)))
+        if future is None:
+            retirement.release()
+            lease.release()
+            _finalize(delegation_id, crash_result("Interrupted before submission", 0), "interrupted")
+            return {"status": "rejected", "error": "Background task interrupted before start."}
+        def worker_done(completed):
+            try:
+                lease.release()
+                if completed.cancelled():
+                    _finalize(delegation_id, crash_result("Worker cancelled before start", 0), "interrupted")
+            finally:
+                retirement.release()
+
+        future.add_done_callback(worker_done)
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
         retirement.release()
+        lease.release()
         with _records_lock:
             _records.pop(delegation_id, None)
         if remote := worker_ledger():
@@ -979,6 +1013,9 @@ def _finalize(delegation_id: str, result: Any, status: str) -> None:
         record["interrupt_fn"] = None  # drop the closure; child is done
         record["progress_fn"] = None  # stop stale-monitor sampling
         snapshot = dict(record)
+    lease = snapshot.get("_approval_lease")
+    if lease is not None:
+        lease.release()
     _push_completion_event(snapshot, result(snapshot) if callable(result) else result, status)
     with _records_lock:
         if delegation_id in _records:
@@ -1262,6 +1299,15 @@ def list_async_delegations() -> list[dict[str, Any]]:
 
 def _interrupt_records(targets: list[dict[str, Any]], caller: str, reason: str, msg: str) -> int:
     """Call ``interrupt_fn`` on each record; log ``msg`` once; returns how many succeeded."""
+    with _records_lock:
+        for record in targets:
+            cancelled = record.get("_approval_cancelled")
+            if cancelled is not None:
+                cancelled.set()
+        leases = [record.get("_approval_lease") for record in targets]
+    for lease in leases:
+        if lease is not None:
+            lease.release()
     count = sum(
         _call_interrupt(r.get("interrupt_fn"), "%s: %s interrupt failed: %s", caller, r.get("delegation_id"))
         for r in targets)

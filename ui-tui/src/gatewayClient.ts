@@ -205,9 +205,10 @@ export class GatewayClient extends EventEmitter {
       // An idle frame (session.info from _publish_pending) carries its stamp in the payload only
       // (B2-18): fall back to it, and never stamp an absent value over it.
       const shared = ev as AnyGatewayEvent & { authority_epoch?: number; execution_generation?: number }
-      const payload = (canonicalEvent(ev).payload ?? {}) as { authority_epoch?: number; execution_generation?: number }
+      const payload = (canonicalEvent(ev).payload ?? {}) as { authority_epoch?: number; execution_generation?: number; dispatch_owner?: unknown }
       const epoch = shared.authority_epoch ?? payload.authority_epoch
-      const generation = shared.execution_generation ?? payload.execution_generation
+      // Dispatch controls deliberately carry no foreground execution stamp.
+      const generation = 'dispatch_owner' in payload ? undefined : shared.execution_generation ?? payload.execution_generation
       ev.payload = { ...payload, ...(epoch !== undefined ? { execution_epoch: String(epoch) } : {}),
         ...(generation !== undefined ? { execution_generation: generation } : {}) } as never
 

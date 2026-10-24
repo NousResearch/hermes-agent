@@ -2,8 +2,19 @@ import { randomUUID } from 'node:crypto'
 
 import { t } from './i18n/runtime.js'
 
-export interface SharedControl { session_id: string; execution_generation: number; prompt_id: string }
+export type SharedControl = { session_id: string; prompt_id: string } & (
+  { execution_generation: number; dispatch_owner?: never } | { dispatch_owner: string; execution_generation?: never }
+)
 export const sharedControlParams = (prompt?: { sharedControl?: SharedControl } | null) => prompt?.sharedControl ?? {}
+
+export function approvalOwnership(value: { execution_generation?: unknown; dispatch_owner?: unknown }) {
+  if ('dispatch_owner' in value) {
+    if ('execution_generation' in value || typeof value.dispatch_owner !== 'string' || !value.dispatch_owner) { return null }
+    return { dispatch_owner: value.dispatch_owner }
+  }
+  return typeof value.execution_generation === 'number' && Number.isSafeInteger(value.execution_generation)
+    ? { execution_generation: value.execution_generation } : null
+}
 
 export interface CreationContract { sources: string[]; parameters: string[] }
 

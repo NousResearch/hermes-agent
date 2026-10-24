@@ -18,7 +18,7 @@ import threading
 from collections import OrderedDict
 from contextvars import ContextVar, Token
 from pathlib import Path
-from typing import Callable, Dict, Mapping, NamedTuple, Optional, Tuple
+from typing import Callable, Dict, Mapping, Optional, Tuple
 
 
 # Process-global (describes the deployment mode, not a per-task value): set once
@@ -78,16 +78,6 @@ def is_multiplex_active() -> bool:
     return _MULTIPLEX_ACTIVE or _MULTIPLEX_CONTEXT.get()
 
 
-class _BoundScope(NamedTuple):
-    """An installed secret scope plus the home it was built for, when the binder
-    declared one — the provenance ``serves_routed_profile`` needs when the binding
-    deliberately skips the HERMES_HOME override (kanban spawn-env builds, MCP
-    owner scopes)."""
-
-    mapping: Mapping[str, str]
-    profile_home: Optional[str]
-
-
 def serves_routed_profile() -> bool:
     """True when the current task runs for a profile other than the process's own: always under
     multiplexing, else when a HERMES_HOME override names another home (dashboard/desktop backend,
@@ -100,14 +90,19 @@ def serves_routed_profile() -> bool:
         return True
     from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home, hermes_home_key
     own = hermes_home_key(get_routing_process_hermes_home())
-    bound = _SECRET_SCOPE.get()
+    bound = _bound_secrets()
     if bound is not None and bound.profile_home and hermes_home_key(bound.profile_home) != own:
         return True
     override = get_hermes_home_override()
     return override is not None and hermes_home_key(override) != own
 
 
-_SECRET_SCOPE: ContextVar[Optional[_BoundScope]] = ContextVar("_SECRET_SCOPE", default=None)
+def _bound_secrets():
+    """The installed secret scope: the ``secrets`` field of the runtime scope state."""
+    from hermes_scope import current_state
+    return current_state().secrets
+
+
 # A launch-profile body that entered before this process started multiplexing (no scope bound,
 # single-profile semantics): the launch profile's own mapping to read once fail-closed is armed
 # mid-body. Set only by ``tui_gateway.launch_profile_policy.launch_body``; never ``os.environ``.
@@ -151,30 +146,49 @@ class UnscopedSecretError(RuntimeError):
             self.add_note(developer_detail)
 
 
-def set_secret_scope(secrets: Optional[Mapping[str, str]], *, profile_home: Optional[str] = None) -> Token:
-    """Install the active profile's secret mapping; ``None`` clears. Returns a reset token.
+def set_secret_scope(secrets: Optional[Mapping[str, str]], *, profile_home: Optional[str] = None):
+    """Install the active profile's secret mapping; ``None`` clears. Returns a token for
+    :func:`reset_secret_scope`.
 
     ``profile_home`` stamps the home the mapping was built for so
     ``serves_routed_profile`` detects a foreign-home scope even when the binder
-    deliberately skips the HERMES_HOME override."""
-    if secrets is None:
-        return _SECRET_SCOPE.set(None)
-    return _SECRET_SCOPE.set(_BoundScope(secrets, str(profile_home) if profile_home else None))
+    deliberately skips the HERMES_HOME override.
+
+    Legacy setter: new code binds a scope (``agent.runtime_scope.bind_profile_scope``). With a
+    scope bound, a mapping for another profile (``profile_home``; unstamped means the process
+    home) moves the whole scope to that profile with *secrets* as its secret scope (local) or
+    raises ``ScopeSwitchRefused`` (hosted); clearing raises ``ScopeSwitchRefused`` too, since the
+    scope's home and terminal policy would stay behind."""
+    from hermes_scope import BoundSecrets, ScopeSwitchRefused, current_scope, push_state
+    scope = current_scope()
+    if scope is not None:
+        if secrets is None:
+            raise ScopeSwitchRefused(
+                "set_secret_scope(None) inside a bound scope would leave its home and terminal "
+                "policy without their secrets; bind a scope at the activity's entry point")
+        from agent.runtime_scope import legacy_switch
+        from hermes_constants import get_routing_process_hermes_home
+        # Unstamped marks the launch profile, by the same identity serves_routed_profile uses.
+        switched = legacy_switch(profile_home or get_routing_process_hermes_home(), secrets=secrets)
+        if switched is not None:
+            return switched
+    bound = None if secrets is None else BoundSecrets(secrets, str(profile_home) if profile_home else None)
+    return push_state(secrets=bound)
 
 
-def reset_secret_scope(token: Token) -> None:
-    _SECRET_SCOPE.reset(token)
+def reset_secret_scope(token) -> None:
+    token.reset()
 
 
 def current_secret_scope() -> Optional[Mapping[str, str]]:
     """The active secret mapping, or None when no scope is installed."""
-    bound = _SECRET_SCOPE.get()
+    bound = _bound_secrets()
     return bound.mapping if bound is not None else None
 
 
 def current_secret_scope_home() -> Optional[str]:
     """The home the active scope was stamped with, or None when unstamped/unbound."""
-    bound = _SECRET_SCOPE.get()
+    bound = _bound_secrets()
     return bound.profile_home if bound is not None else None
 
 
@@ -239,7 +253,7 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
     """
     if _is_global_env(name):
         return _environ_or(name, default)
-    bound = _SECRET_SCOPE.get()
+    bound = _bound_secrets()
     if bound is not None:
         val = bound.mapping.get(name)
         if val is not None:
@@ -446,7 +460,7 @@ def refresh_installed_secret_scope(hermes_home: Path) -> bool:
     reload that follows is hydrate-only (never ``os.environ``), so nothing else would carry those
     values into the scope this fire already holds. The caller names the home the installed scope
     was built for. True when a scope was updated; False when none is installed."""
-    bound = _SECRET_SCOPE.get()
+    bound = _bound_secrets()
     scope = bound.mapping if bound is not None else None
     if not isinstance(scope, dict):
         return False

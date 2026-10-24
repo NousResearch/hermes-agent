@@ -2,8 +2,8 @@
 
 Multiplexed surfaces (gateway, dashboard/TUI, cron) serve several profiles from one process;
 mirroring terminal settings into ``os.environ`` let the first profile pin its backend onto
-everyone else (sandbox escape). Like ``agent/secret_scope.py``, a ContextVar holds the active
-profile's COMPLETE ``TERMINAL_*`` policy; while bound, ``terminal_env`` resolves ONLY from it
+everyone else (sandbox escape). The ``terminal`` field of the runtime scope state
+(``hermes_scope``) holds the active profile's COMPLETE ``TERMINAL_*`` policy; while bound, ``terminal_env`` resolves ONLY from it
 (omitted keys -> defined default, never ambient env). If the policy cannot be resolved a
 *refusal* scope is installed and terminal execution raises :class:`TerminalPolicyUnavailable`.
 """
@@ -13,14 +13,13 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import contextmanager
-from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
+# The policy is the ``terminal`` field of the runtime scope state (``hermes_scope``):
 # None = no scope bound (process-env behavior); dict = complete policy; Refusal = resolution failed.
-_terminal_scope_var: ContextVar = ContextVar("hermes_terminal_scope", default=None)
 
 # Keys whose default lives in terminal_tool.py, not DEFAULT_CONFIG (which wins on overlap);
 # without them the projection is not total.
@@ -44,18 +43,36 @@ class TerminalPolicyRefusal(dict[str, str]):
         self.reason = reason
 
 
-def set_terminal_scope(mapping: Optional[dict[str, str]]) -> Token:
-    """Install *mapping* as the current context's terminal policy."""
-    return _terminal_scope_var.set(mapping)
+def set_terminal_scope(mapping: Optional[dict[str, str]], *, profile_home: Any = None):
+    """Install *mapping* as the current context's terminal policy; returns a token for
+    :func:`reset_terminal_scope`.
+
+    *profile_home* declares whose policy it is (a session's frozen policy belongs to the profile
+    that owns the session). With no scope bound it is not needed. Inside a bound scope the mapping
+    must belong to the bound agent (a local scope whose agent is *profile_home*); anything else,
+    including clearing the policy, raises ``ScopeSwitchRefused``, since the scope's home and secrets
+    would stay with a policy that is not theirs. To run under another profile's policy, bind that
+    profile (``agent.runtime_scope.bind_profile_scope``)."""
+    from hermes_scope import ScopeSwitchRefused, current_scope, push_state
+    scope = current_scope()
+    if scope is not None:
+        from agent.runtime_scope import owns_bound_scope
+        if mapping is None or not owns_bound_scope(profile_home):
+            raise ScopeSwitchRefused(
+                f"set_terminal_scope inside scope (tenant={scope.tenant!r}, agent={scope.agent!r}) needs "
+                f"a policy owned by that agent, got profile_home={profile_home!r}"
+                + (" and no policy" if mapping is None else ""))
+    return push_state(terminal=mapping)
 
 
-def reset_terminal_scope(token: Token) -> None:
-    _terminal_scope_var.reset(token)
+def reset_terminal_scope(token) -> None:
+    token.reset()
 
 
 def get_terminal_scope() -> Optional[dict[str, str]]:
     """The active scope mapping/refusal, or ``None`` when no scope is bound."""
-    return _terminal_scope_var.get()
+    from hermes_scope import current_state
+    return current_state().terminal
 
 
 def enforce_no_refusal() -> None:
@@ -66,7 +83,7 @@ def enforce_no_refusal() -> None:
     policy is exactly the authority leak this module closes (#68559 requires refusal, not fallback).
     Non-scoped and policy-scoped contexts pass silently.
     """
-    scope = _terminal_scope_var.get()
+    scope = get_terminal_scope()
     if isinstance(scope, TerminalPolicyRefusal):
         raise TerminalPolicyUnavailable(
             f"terminal policy unavailable for this profile: {scope.reason}")
@@ -78,7 +95,7 @@ def terminal_env(name: str, default: str = "") -> str:
     No scope: process env, then *default*. Refusal scope: raise. Policy scope: ONLY the
     policy; a missing key yields *default*, never os.environ.
     """
-    scope = _terminal_scope_var.get()
+    scope = get_terminal_scope()
     if scope is None:
         return os.environ.get(name, default)
     enforce_no_refusal()
@@ -201,14 +218,28 @@ def _resolve_scope_cwd_placeholder(scope: dict[str, str]) -> None:
         scope["TERMINAL_CWD"] = resolved
 
 
-def install_profile_terminal_scope(
-    hermes_home: Any, *, env_overlay: Optional[dict[str, str]] = None) -> Token:
-    """Build AND install a profile's policy; on failure install the refusal scope. Never raises."""
+def profile_terminal_policy(hermes_home: Any, *, env_overlay: Optional[dict[str, str]] = None) -> dict[str, str]:
+    """A profile's complete policy, or the refusal scope when it cannot be resolved. Never raises."""
     try:
-        return set_terminal_scope(build_profile_terminal_scope(hermes_home, env_overlay=env_overlay))
+        return build_profile_terminal_scope(hermes_home, env_overlay=env_overlay)
     except TerminalPolicyUnavailable as exc:
         logger.warning("terminal policy unavailable: %s", exc)
-        return _terminal_scope_var.set(TerminalPolicyRefusal(str(exc)))
+        return TerminalPolicyRefusal(str(exc))
+
+
+def install_profile_terminal_scope(hermes_home: Any, *, env_overlay: Optional[dict[str, str]] = None):
+    """Build AND install a profile's policy (the refusal scope on failure); returns a token.
+
+    Legacy setter: new code binds a scope (``agent.runtime_scope.bind_profile_scope``). With a
+    scope bound, a call for another profile moves the whole scope to it (local) or raises
+    ``ScopeSwitchRefused`` (hosted)."""
+    from hermes_scope import current_scope, push_state
+    if current_scope() is not None:
+        from agent.runtime_scope import legacy_switch
+        switched = legacy_switch(hermes_home, env_overlay=env_overlay)
+        if switched is not None:
+            return switched
+    return push_state(terminal=profile_terminal_policy(hermes_home, env_overlay=env_overlay))
 
 
 @contextmanager

@@ -4,7 +4,7 @@ import hashlib
 from contextlib import nullcontext
 from pathlib import Path
 
-from gateway.session_contract import Principal
+from gateway.session_contract import SessionActor
 from gateway.session_authorities import active_authority, all_authorities, owner_scope, serving_authorities
 from gateway.session_hosted_controls import HostedControls
 from hermes_state_runtime import RuntimeStoreError, _epoch
@@ -191,7 +191,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                 if not authorized(conn, 'submit', identity, generation):
                     raise RuntimeStoreError('permission_denied')
                 return True
-            principal = Principal(owner, self.authority.profile_id,
+            principal = SessionActor(owner, self.authority.profile_id,
                 frozenset({'session:create', 'session:read', 'session:submit', 'session:control', 'session:approve'}),
                 'hosted:' + binding.room_id + ':' + member)
             self.member_rpcs[key] = HostedRoomAuthorityRPC(self.authority, self.loop,

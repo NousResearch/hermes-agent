@@ -624,10 +624,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 # The chat's first input, and a command's turn, not committed yet never commit.
                 authority.fence_route(_quick_key)
             return
-        from gateway.session_contract import Principal, SessionRef
+        from gateway.session_contract import SessionActor, SessionRef
         from hermes_state_runtime import RuntimeStoreError, list_session_admissions
         ref = SessionRef(authority.profile_id, sid)
-        actor = Principal('messaging-control', authority.profile_id,
+        actor = SessionActor('messaging-control', authority.profile_id,
                           frozenset({'session:submit', 'session:control'}), 'busy-command')
         rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=sid)
         # A FIFO paused on a lost (``unknown``) turn is the operator's to resume: its pause notice

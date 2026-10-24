@@ -1,7 +1,7 @@
 """API run controls resolve durable claims, never adapter agent/task ownership."""
 from dataclasses import asdict
 
-from gateway.session_contract import Principal, SessionRef
+from gateway.session_contract import SessionActor, SessionRef
 from gateway.session_results import admission_result
 from hermes_state_runtime import RuntimeStoreError, _row
 
@@ -124,7 +124,7 @@ async def respond_run(adapter, run_id, body, *, kind):
     if row['status'] != 'started' or type(generation) is not int or generation != row['generation']:
         raise RuntimeStoreError('stale_generation')
     ref = SessionRef(authority.profile_id, row['target_session_id'])
-    actor = Principal('api', authority.profile_id,
+    actor = SessionActor('api', authority.profile_id,
         frozenset({'session:read', 'session:approve', 'session:respond'}), 'api-control:' + uuid.uuid4().hex)
     snapshot = await authority.attach(actor, ref)
     try:
@@ -141,7 +141,7 @@ async def stop_run(adapter, run_id):
         raise RuntimeStoreError('not_found')
     authority, row = owned
     ref = SessionRef(authority.profile_id, row['target_session_id'])
-    actor = Principal('api', authority.profile_id,
+    actor = SessionActor('api', authority.profile_id,
                       frozenset({'session:submit', 'session:control'}), 'api-run:' + run_id)
     if row['status'] == 'queued':
         try:
@@ -180,7 +180,7 @@ async def resolve_unknown_run(adapter, run_id, body):
     generation = body['execution_generation']
     # Status/generation are the store's decision (``resolve_unknown_session_input``): it also replays the
     # committed receipt to an exact retry whose acknowledgement was lost, which a pre-check here refused.
-    actor = Principal(
+    actor = SessionActor(
         'api', authority.profile_id, frozenset({'session:submit', 'session:control'}),
         'api-run:' + run_id)
     receipt = await authority.resolve_unknown(

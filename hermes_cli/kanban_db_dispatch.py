@@ -2595,9 +2595,9 @@ def _worker_terminal_timeout_env(
 
 
 @contextlib.contextmanager
-def _worker_profile_scope(hermes_home: str, *, bind_home: bool = True):
-    """Bind an assigned profile's runtime scope (secrets + terminal policy, optionally home) for
-    one dispatch-side read or spawn-env build.
+def _worker_profile_scope(hermes_home: str):
+    """Bind an assigned profile's whole runtime scope (home, secrets, terminal policy) for one
+    dispatch-side read or spawn-env build.
 
     The dispatcher runs detached from any turn, so nothing binds a profile for it: ``load_config``,
     the toolset probes' ``get_secret`` reads and ``build_subprocess_env``'s passthrough resolution
@@ -2605,39 +2605,18 @@ def _worker_profile_scope(hermes_home: str, *, bind_home: bool = True):
     previously conditional on ``is_multiplex_active()``, so on a single-profile host a worker for
     profile B was built entirely from the dispatcher's own environment.
 
-    ``bind_home=False`` for the spawn-env build: which variables may cross into a child is the
-    DISPATCHER's ``terminal.env_passthrough`` policy (#109494, read through the home override) —
-    only their VALUES come from the assignee's scope, so that branch binds the secret scope alone.
-    Toolset resolution binds the home and the terminal policy, as it always has.
+    Home, secrets and terminal policy always move together: the spawned child only submits the
+    claim to the assignee's own gateway, which runs the turn (and, if the child starts it, gets
+    the assignee's own secrets from ``served_profile_child_env``).
 
     The secret mapping is never widened: a profile that is not this process's own home gets its own
     ``.env`` + external sources ONLY, while the launch home keeps its established
     env-over-``.env`` precedence (``launch_secret_scope``) so systemd / ``op run`` injection still
     resolves for a standalone dispatcher.
     """
-    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
-    from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
-    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
-    from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
-
-    home = Path(hermes_home)
-    is_launch_home = str(home.resolve()) == str(Path(get_process_hermes_home()).resolve())
-    home_token = secret_token = terminal_token = None
-    try:
-        home_token = set_hermes_home_override(str(home)) if bind_home else None
-        secret_token = set_secret_scope(
-            launch_secret_scope(home) if is_launch_home else build_profile_secret_scope(home),
-            profile_home=None if is_launch_home else str(home))
-        terminal_token = install_profile_terminal_scope(
-            home, env_overlay=launch_terminal_env() if is_launch_home else None) if bind_home else None
+    from agent.runtime_scope import bind_profile_scope
+    with bind_profile_scope(hermes_home, hydrate_secrets=False):
         yield
-    finally:
-        if terminal_token is not None:
-            reset_terminal_scope(terminal_token)
-        if secret_token is not None:
-            reset_secret_scope(secret_token)
-        if home_token is not None:
-            reset_hermes_home_override(home_token)
 
 
 def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[str]]:
@@ -2753,7 +2732,7 @@ def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
 
 
 def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -> Optional[int]:
-    """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
+    """Fire-and-forget worker client (``-m hermes_cli.kanban_worker_client``) for the claim.
 
     Returns the child's PID so the dispatcher can detect crashes before the
     claim TTL expires; completion is still observed via the worker's own
@@ -2769,7 +2748,8 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     profile_arg = normalize_profile_name(task.assignee)
 
     from agent.secret_scope import is_multiplex_active
-    from tools.environments.local import _is_routed_home, build_subprocess_env, strip_launch_profile_env
+    from hermes_cli.kanban_worker_env import worker_client_env
+    from tools.environments.local import _is_routed_home, build_subprocess_env
 
     try:
         profile_home = resolve_profile_env(profile_arg)
@@ -2785,13 +2765,17 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     routed = bool(profile_home) and _is_routed_home(profile_home)
     # build_subprocess_env's secret scrub resolves terminal.env_passthrough vars through get_secret(),
     # which without a bound scope reads the LAUNCH profile's ambient environment for a worker spawned
-    # on B's behalf (and raises under multiplex) — so bind B's secret scope around the build.
-    with (_worker_profile_scope(profile_home, bind_home=False) if profile_home
+    # on B's behalf (and raises under multiplex) — so bind B's whole scope around the build.
+    with (_worker_profile_scope(profile_home) if profile_home
           else contextlib.nullcontext()):
         env = build_subprocess_env(
             scrub_secrets=is_multiplex_active() or routed,
             inherit_profile_home=True,
         )
+    # For another profile, host plumbing only: a gateway the client cold-starts gets this env plus the
+    # assignee's secrets, which replace values but never remove one (kanban_worker_env).
+    if routed:
+        env = worker_client_env(env, profile_home)
     # The dispatcher is detached from every conversation; its worker must never
     # inherit routing mirrored by a previous gateway turn.
     from gateway.session_context import _VAR_MAP
@@ -2804,9 +2788,6 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # hermes_constants is imported.
     if profile_home:
         env["HERMES_HOME"] = profile_home
-        # A multiplexer dispatching for another profile must not hand it the launch
-        # profile's .env settings / TERMINAL_* policy — a standalone dispatcher never would.
-        strip_launch_profile_env(env, profile_home)
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
@@ -2853,11 +2834,10 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # kanban_comment reads HERMES_PROFILE for its default author; `-p` alone
     # doesn't set the env var.
     env["HERMES_PROFILE"] = profile_arg
-    # This is the grant boundary: the dispatcher assigned this new worker's task.
+    # This is the grant boundary: the dispatcher assigned this new worker's task. HERMES_TUI: older
+    # hermes builds on PATH predate `--cli`'s precedence.
     from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
     env.pop(DELEGATED_CHILD_ENV_MARKER, None)
-    # `--cli` is the highest-precedence TUI override; dropping HERMES_TUI covers
-    # older hermes builds on PATH that predate the flag's precedence.
     env.pop("HERMES_TUI", None)
 
     cmd = _worker_argv(task, profile_arg, env.get("HERMES_HOME"))

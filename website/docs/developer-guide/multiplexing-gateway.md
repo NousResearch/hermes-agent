@@ -118,6 +118,41 @@ Both scopes are `contextvars`, so they propagate into executor worker threads
 via `copy_context()` and unwind deterministically — nothing is written to
 `os.environ`, ever.
 
+### One scope value
+
+The scope, the home override, the secret scope and the terminal policy are one
+immutable value, `hermes_scope.ScopeState`, in a single contextvar. The scope is
+`hermes_scope.Scope(tenant, agent, actor)`: `actor` is `Principal(id)` (a
+person) or `System(reason)` (cron, kanban, housekeeping), and a `TurnScope` adds
+`session_id` and `turn_id`. `agent/runtime_scope.py` is the only module that
+turns a scope into profile state:
+
+- `bind_profile_scope(home, turn=None)` binds the scope plus all three pieces as
+  one change and removes it on exit. The process's own home keeps its launch
+  semantics; any other home is hydrated from that profile's sources and stamped
+  as routed. It refuses inside a hosted scope.
+- `bind_state(scope, ...)` returns the change's token, for a host that holds it
+  across calls (the TUI turn, the managed worker) or deliberately binds less.
+- `bind_turn(session_id, turn_id)` marks a turn inside a bound scope.
+
+A reset removes its own change and replays the later ones, except those made
+inside a scope the result no longer has. A reset that is stale, repeated, out of
+order or made from a copied context therefore lands on a state that whole binds
+produce, never one profile's home beside another's secrets. Leaving a hosted
+agent by any reset other than the bind that entered it raises
+`ScopeSwitchRefused`.
+
+The legacy setters (`set_hermes_home_override`, `set_secret_scope`,
+`set_terminal_scope`, `install_profile_terminal_scope`) keep working. Inside a
+bound scope, a call naming another profile moves the whole scope in a local
+install and raises `ScopeSwitchRefused` in a hosted one. Clearing one piece of a
+bound scope (`set_secret_scope(None)`, `set_terminal_scope(None)`) refuses. A
+raw terminal policy (a session's frozen policy) goes through
+`bind_terminal_policy(policy, profile_home=...)`, which inside a bound scope
+accepts only a policy owned by the bound agent. The code-health rule HX014 blocks new direct calls, including
+through relative imports; existing ones migrate when their function is next
+edited.
+
 ## Workstream A: context-local secret scope
 
 `agent/secret_scope.py` exists because the obvious implementation — union all

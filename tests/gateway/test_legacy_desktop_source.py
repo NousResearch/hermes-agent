@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from gateway.session_contract import Principal
+from gateway.session_contract import SessionActor
 from hermes_state import SessionDB
 from hermes_state_local_migration import validate_legacy_row
 from hermes_state_mutation_binding import authorize_history, same_history_owner
@@ -30,7 +30,7 @@ def test_rows_the_resume_adopts_take_sidebar_edits(tmp_path):
                                      ('old-desktop-foreign', 'desktop', 'telegram:42'),
                                      ('old-cli-nous', 'cli', 'nous:account'), ('api-row', 'api_server', None)):
             db.create_session(sid, source=source, user_id=user_id)
-        actor = Principal('uid:1', str(tmp_path), frozenset({'session:read', 'session:create'}), 'native-http:x')
+        actor = SessionActor('uid:1', str(tmp_path), frozenset({'session:read', 'session:create'}), 'native-http:x')
         with db._read_ctx() as conn:
             for sid in ('old-desktop', 'old-oneshot', 'old-desktop-nous'):
                 validate_legacy_row(db, db.get_session(sid))  # the resume adopts it ...
@@ -58,9 +58,9 @@ def test_a_login_labelled_desktop_row_belongs_to_that_login_only(tmp_path):
         db.create_session('alice-row', source='desktop', user_id='basic:alice')
         db.create_session('oidc-row', source='desktop', user_id='oidc:alice')
         caps = frozenset({'session:read', 'session:create'})
-        alice, bob = (Principal(_login(u), str(tmp_path), caps, 'native-http:x') for u in ('alice', 'bob'))
-        issuer_alice = Principal(_login('alice', 'https://idp.example'), str(tmp_path), caps, 'native-http:x')
-        host = Principal('uid:1', str(tmp_path), caps, 'native-http:x')
+        alice, bob = (SessionActor(_login(u), str(tmp_path), caps, 'native-http:x') for u in ('alice', 'bob'))
+        issuer_alice = SessionActor(_login('alice', 'https://idp.example'), str(tmp_path), caps, 'native-http:x')
+        host = SessionActor('uid:1', str(tmp_path), caps, 'native-http:x')
         row = db.get_session('alice-row')
         validate_legacy_row(db, row, subject=alice.subject)
         for stranger in (bob, issuer_alice, host):

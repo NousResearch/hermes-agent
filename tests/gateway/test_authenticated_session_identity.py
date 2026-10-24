@@ -59,7 +59,7 @@ def connection(authority, session, monkeypatch):
     from hermes_cli.dashboard_auth.routes import api_auth_ws_ticket
     from hermes_cli.web_server_chat import _ws_auth_reason
     from gateway.session_controls import AuthorityConnection
-    # Exercise the production ticket endpoint and upgrade stamp, not a made-up Principal.
+    # Exercise the production ticket endpoint and upgrade stamp, not a made-up SessionActor.
     monkeypatch.setattr(web.app.state, 'auth_required', True, raising=False)
     request = Request({'type': 'http', 'app': web.app, 'state': {'session': session},
                        'headers': [], 'method': 'POST', 'path': '/api/auth/ws-ticket'})
@@ -73,7 +73,7 @@ async def test_bundled_provider_issuer_subject_owns_durable_receipts(tmp_path, m
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
     from gateway.session_local import create_local_session
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from hermes_cli.web_server_sessions import _session_mutation_context
     from hermes_state_runtime import RuntimeStoreError
     from plugins.dashboard_auth.basic import BasicAuthProvider, hash_password
@@ -125,7 +125,7 @@ async def test_bundled_provider_issuer_subject_owns_durable_receipts(tmp_path, m
     assert await mutate_session(cold, reconnect, ref, edit) == receipt
     assert (await cold.resolve(reconnect, ref)).ref == ref
     # Pre-cutover remote records have no issuer provenance: never adopt on first request.
-    old = create_local_session(cold, Principal('user-a', owner.profile_id, owner.capabilities, 'old'),
+    old = create_local_session(cold, SessionActor('user-a', owner.profile_id, owner.capabilities, 'old'),
                                {**params, 'request_id': 'old-ambiguous'})
     for current in (reconnect, same_sub):
         with pytest.raises(RuntimeStoreError, match='permission_denied'):
@@ -139,7 +139,7 @@ async def test_private_native_subject_preserves_existing_creation_and_mutation_r
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
     from gateway.session_controls import AuthorityConnection
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway.session_mutations import mutate_session
     from hermes_state_runtime import RuntimeStoreError
@@ -149,7 +149,7 @@ async def test_private_native_subject_preserves_existing_creation_and_mutation_r
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False)
     authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='first')
     caps = frozenset({'session:create', 'session:read', 'session:control'})
-    old = Principal('uid:1000', 'fixture', caps, 'old')
+    old = SessionActor('uid:1000', 'fixture', caps, 'old')
     params = {'request_id': 'original', 'source': 'cli', 'cwd': str(tmp_path), 'model': 'fixture', 'toolsets': []}
     ref = create_local_session(authority, old, params)
     native = AuthorityConnection(authority, object(), {'provider': 'local', 'user_id': old.subject,

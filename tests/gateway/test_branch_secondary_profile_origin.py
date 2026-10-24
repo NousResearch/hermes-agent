@@ -10,7 +10,7 @@ async def test_branch_restart_resume_keeps_source_and_route_for_default_and_seco
     from gateway.run import _profile_runtime_scope
     from gateway.run_runtime import initialize_gateway_runtime
     from gateway.runtime_ownership import process_ownership
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway.session_local_recovery import restore_local_session
     from gateway.session_mutations import mutate_session
@@ -27,7 +27,7 @@ async def test_branch_restart_resume_keeps_source_and_route_for_default_and_seco
         branched = {}
         for name, home in homes:
             authority = first.session_authorities.for_home(home)
-            actor = Principal('owner', authority.profile_id,
+            actor = SessionActor('owner', authority.profile_id,
                               frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
             with _profile_runtime_scope(home, {}):
                 ref = create_local_session(authority, actor, {'request_id': 'r', 'source': 'gui', 'cwd': str(tmp_path),

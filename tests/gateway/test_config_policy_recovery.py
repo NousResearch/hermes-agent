@@ -47,7 +47,7 @@ async def test_config_creation_retry_does_not_rebind_current_credentials(tmp_pat
     from gateway.config import GatewayConfig, Platform
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from gateway import run
     config = {'model': {'api_key': 'original-private'}, 'platform_toolsets': {'cli': []}}
@@ -56,7 +56,7 @@ async def test_config_creation_retry_does_not_rebind_current_credentials(tmp_pat
         store = SessionStore(tmp_path / 'sessions', GatewayConfig())
         return SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False)
     first = await initialize_session_authority(runner(), profile_id='fixture', instance_id='first')
-    actor = Principal('owner', 'fixture', frozenset({'session:create'}), 'socket')
+    actor = SessionActor('owner', 'fixture', frozenset({'session:create'}), 'socket')
     params = dict(request_id='retry', cwd=str(tmp_path), model='frozen')
     ref = create_local_session(first, actor, params)
     original = first.runner.adapters[Platform.LOCAL].policies[ref.session_id]

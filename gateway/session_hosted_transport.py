@@ -16,7 +16,7 @@ import threading
 import time
 
 from gateway.hosted_room_driver import TaskIdentity
-from gateway.session_contract import Principal
+from gateway.session_contract import SessionActor
 from gateway.session_authorities import owner_scope
 from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
 from hermes_state_runtime import RuntimeStoreError, _epoch
@@ -168,10 +168,10 @@ def _attachment_data(binding, attested, params):
 
 def _principal(authority, binding):
     # Source-profile namespace prevents equal room owner strings on other owners
-    # from aliasing a target's principal. Never widen Principal.profile_id.
+    # from aliasing a target's principal. Never widen SessionActor.profile_id.
     identity = json.dumps([binding['source_home'], binding['owner']], separators=(',', ':'))
     subject = 'hosted-owner:' + hashlib.sha256(identity.encode()).hexdigest()
-    return Principal(subject, authority.profile_id, _CAPS, 'hosted-owner-transport')
+    return SessionActor(subject, authority.profile_id, _CAPS, 'hosted-owner-transport')
 
 
 def install_hosted_transport(server, authority, loop, *, attest):

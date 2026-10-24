@@ -4,7 +4,7 @@ import contextlib
 
 import pytest
 
-from gateway.session_contract import Principal, SessionRef
+from gateway.session_contract import SessionActor, SessionRef
 from hermes_state_runtime import (ADMISSION_QUEUE_MAX, RuntimeStoreError, admit_session_input,
                                   list_session_admissions)
 
@@ -25,7 +25,7 @@ async def test_queue_full_refusal_withdraws_the_pin_and_the_retry_admits(bot):
     with pytest.raises(RuntimeStoreError, match='queue_full'):
         await deliver(bot.connection, dict(id=KEY, profile='default', message='ping'))
     assert read_delivery_result(bot.home, KEY) is None
-    control = Principal('uid:1000', 'default', frozenset({'session:submit', 'session:read', 'session:control'}), 'native')
+    control = SessionActor('uid:1000', 'default', frozenset({'session:submit', 'session:read', 'session:control'}), 'native')
     for row in fillers:
         with contextlib.suppress(RuntimeStoreError):
             await authority.cancel_queued(control, SessionRef('default', bot.chat), row['admission_id'])

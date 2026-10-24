@@ -95,6 +95,22 @@ CASES = {
         _lanes(python=True, frontend=True, e2e_upgrade=True, e2e_desktop_update=True),
     ),
     "root JS tests → frontend": (["tests-js/product-builders.test.mjs"], _lanes(python=True, frontend=True)),
+    "photon patcher → frontend and python": (
+        ["plugins/platforms/photon/sidecar/patch-spectrum-mixed-attachments.mjs"],
+        _lanes(python=True, frontend=True),
+    ),
+    "photon package → frontend and python": (
+        ["plugins/platforms/photon/sidecar/package.json"],
+        _lanes(python=True, frontend=True),
+    ),
+    "photon lockfile → frontend, python and npm_lock": (
+        ["plugins/platforms/photon/sidecar/package-lock.json"],
+        _lanes(python=True, frontend=True, npm_lock=True),
+    ),
+    "photon native regression → frontend and test-only python": (
+        ["tests/plugins/platforms/photon/spectrum-poll.test.mjs"],
+        _lanes(python=True, frontend=True, python_prod=False),
+    ),
     "docs-only → nothing heavy": (["README.md", "docs/guide.md"], _lanes()),
     "python source → python": (["run_agent.py"], _lanes(python=True, scan=True)),
     # pyproject.toml declares the pytest markers the OS lanes select on, so it

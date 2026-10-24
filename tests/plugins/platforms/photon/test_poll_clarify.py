@@ -84,6 +84,27 @@ async def test_poll_vote_dispatched_as_choice_text(
     assert ev.source.chat_id == "+155****4567"
 
 
+@pytest.mark.asyncio
+async def test_poll_vote_and_later_text_remain_distinct(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+
+    await adapter._dispatch_inbound(_poll_option_event(title="Route"))
+    await adapter._dispatch_inbound(
+        _poll_option_event(title="Route", selected=False, msg_id="spc-msg-unvote")
+    )
+    later = _poll_option_event(title="", msg_id="spc-msg-text")
+    later["content"] = {"type": "text", "text": "Did you get my choice?"}
+    await adapter._dispatch_inbound(later)
+
+    assert [(event.message_id, event.text) for event in captured] == [
+        ("spc-msg-vote", "Route"),
+        ("spc-msg-text", "Did you get my choice?"),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Outbound: send_clarify renders a native poll for choices.
 
@@ -146,5 +167,4 @@ async def test_send_clarify_with_choices_sends_native_poll(
     assert options == ["A", "B", "C"]
     # The vote returns as text, so text-capture must be enabled.
     assert marked == ["clar-1"]
-
 

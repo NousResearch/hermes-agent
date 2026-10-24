@@ -2,6 +2,7 @@
 
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 
@@ -656,3 +657,67 @@ class TestProjectVenvDirOutOfTree:
         assert hermes_constants.project_venv_dir(other) is None
         (checkout / ".venv").mkdir()
         assert hermes_constants.project_venv_dir(checkout) == checkout / ".venv"
+
+
+class TestSharedDirectoryPolicy:
+    """A HERMES_HOME two identities share: group rw + setgid (or the operator's flags).
+
+    Tightening that tree to 0700/0600 clips the ACL mask too, so the peer loses not one file
+    but every file in the home; the mode of a shared file must keep the group in.
+    """
+
+    def _shared(self, tmp_path):
+        shared = tmp_path / "home"
+        shared.mkdir()
+        os.chmod(shared, 0o2770)
+        return shared
+
+    def test_group_writable_setgid_directory_is_shared(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_SKIP_CHMOD", raising=False)
+        monkeypatch.delenv("HERMES_CONTAINER", raising=False)
+        shared = self._shared(tmp_path)
+        assert hermes_constants.directory_is_shared(shared) is True
+        assert hermes_constants.shared_file_mode(shared / "jobs.json") == 0o660
+
+    def test_plain_group_writable_directory_is_not_shared(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_SKIP_CHMOD", raising=False)
+        monkeypatch.delenv("HERMES_CONTAINER", raising=False)
+        loose = tmp_path / "tmpdir"
+        loose.mkdir()
+        os.chmod(loose, 0o775)
+        assert hermes_constants.directory_is_shared(loose) is False
+        assert hermes_constants.shared_file_mode(loose / "jobs.json") == 0o600
+
+    def test_operator_flags_declare_sharing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_SKIP_CHMOD", "1")
+        private = tmp_path / "private"
+        private.mkdir()
+        assert hermes_constants.directory_is_shared(private) is True
+        assert hermes_constants.shared_file_mode(private / "jobs.json") == 0o660
+
+    def test_secure_parent_dir_leaves_a_shared_home_alone(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_SKIP_CHMOD", raising=False)
+        monkeypatch.delenv("HERMES_CONTAINER", raising=False)
+        shared = self._shared(tmp_path)
+        target = shared / "auth.json"
+        target.touch()
+        called_with = []
+        monkeypatch.setattr(os, "chmod", lambda p, m: called_with.append((str(p), m)))
+
+        hermes_constants.secure_parent_dir(target)
+
+        assert called_with == []
+        assert stat.S_IMODE(shared.stat().st_mode) == 0o2770
+
+    def test_apply_secure_dir_policy_keeps_a_shared_home_open(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_SKIP_CHMOD", raising=False)
+        monkeypatch.delenv("HERMES_CONTAINER", raising=False)
+        monkeypatch.delenv("HERMES_HOME_MODE", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        shared = self._shared(tmp_path)
+        called_with = []
+        monkeypatch.setattr(os, "chmod", lambda p, m: called_with.append((str(p), m)))
+
+        hermes_constants.apply_secure_dir_policy(shared)
+
+        assert called_with == []

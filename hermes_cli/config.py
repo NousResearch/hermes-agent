@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- shared-home permissions fix at the existing _secure_file chokepoint: a directory two UIDs share needs 0660 for the peer, and relocating the helper would touch every caller in the tree
 """Configuration management for Hermes Agent: config.yaml / .env loading, saving,
 validation, migration, and the ``hermes config`` command."""
 
@@ -43,7 +44,7 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 from hermes_constants import (
     _IGNORED_MANAGED_VALUES, _LEGACY_MANAGED_SYSTEM, _MANAGED_FALSE_VALUES, _MANAGED_TRUE_VALUES,
     _chown_to_hermes_uid, _container_or_chmod_skipped, _resolve_hermes_uid_gid,
-    apply_secure_dir_policy, get_managed_system)
+    apply_secure_dir_policy, get_managed_system, shared_file_mode)
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home
 from utils import atomic_replace, fast_safe_load, file_signature, mkstemp_beside
@@ -497,12 +498,17 @@ def _secure_dir(path):
 
 def _secure_file(path):
     """chmod a file 0600. Skipped when managed (activation sets 0640 group-readable) or in a
-    container (mounts often need broader permissions)."""
+    container (mounts often need broader permissions).
+
+    In a directory two identities share the tightening is 0660: mode bits also clip the
+    ACL mask, so 0600 here leaves the peer with no access to a state file it must read and
+    write (a cron store, a marker), even though the directory invites it in.
+    """
     if is_managed() or _container_or_chmod_skipped():
         return
     try:
         if os.path.exists(str(path)):
-            os.chmod(path, 0o600)
+            os.chmod(path, shared_file_mode(path))
     except (OSError, NotImplementedError):
         pass
 

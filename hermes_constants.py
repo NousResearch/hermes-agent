@@ -679,6 +679,8 @@ def secure_parent_dir(path: Path) -> None:
             "normally stored under the hermes home directory instead.", parent, _INSTALL_ROOT,
         )
         return
+    if directory_is_shared(parent):
+        return
     with contextlib.suppress(OSError):
         os.chmod(parent, 0o700)
 
@@ -938,6 +940,14 @@ def apply_secure_dir_policy(path, *, home: str | Path | None = None) -> None:
     """
     if get_managed_system(home) is not None:
         return
+    if directory_is_shared(path):
+        # Already the shape a shared home needs. Tightening it to 0700 here is what locks
+        # the peer out on a launch that did not inherit the operator's env vars (a bare
+        # systemd unit, ``sudo -u``): every file in the home becomes unreachable at once.
+        # An exported HERMES_HOME_MODE still re-applies below, as the operator asked.
+        _chown_to_hermes_uid(path)
+        if not os.environ.get("HERMES_HOME_MODE", "").strip():
+            return
     explicit_mode = os.environ.get("HERMES_HOME_MODE", "").strip()
     if _container_or_chmod_skipped() and not explicit_mode:
         _chown_to_hermes_uid(path)
@@ -951,6 +961,38 @@ def apply_secure_dir_policy(path, *, home: str | Path | None = None) -> None:
     except (OSError, NotImplementedError):
         pass
     _chown_to_hermes_uid(path)
+
+
+def directory_is_shared(path: str | Path) -> bool:
+    """Whether *path* is a directory two identities deliberately share.
+
+    A shared HERMES_HOME (a gateway running as one UID and the desktop app/CLI as another,
+    both through a common group) is group-writable **and** setgid: the setgid bit is what
+    keeps the peer's new files in the shared group. The operator's own flags
+    (``HERMES_CONTAINER``, ``HERMES_SKIP_CHMOD``) also declare it, which covers filesystems
+    that drop the special bit. An ordinary ``0775`` temporary directory is not one, so this
+    cannot mistake it for a shared home and loosen a credential file.
+    """
+    if os.environ.get("HERMES_CONTAINER") or os.environ.get("HERMES_SKIP_CHMOD"):
+        return True
+    try:
+        mode = os.stat(path).st_mode
+    except OSError:
+        return False
+    return bool(mode & stat.S_IWGRP and mode & stat.S_ISGID)
+
+
+def shared_file_mode(path: str | Path) -> int:
+    """Mode for a state file every identity sharing *path*'s directory must read **and** write.
+
+    ``0o600`` is the owner-only default, but it is wrong inside a directory two UIDs share:
+    mode bits also clip the ACL mask, so an owner-only file leaves the peer with no access
+    at all and the peer fails ``open`` with EACCES before any advisory lock can decide
+    anything — a hard failure at import time, not a skipped lock. ``0o660`` keeps "other"
+    out and lets both identities in, the same answer :func:`apply_secure_dir_policy` gives
+    the directories. A private directory keeps ``0o600``.
+    """
+    return 0o660 if directory_is_shared(Path(path).parent) else 0o600
 
 
 def get_scratch_dir(home: str | Path | None = None, *, prune: bool = True) -> Path:

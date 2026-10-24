@@ -58,6 +58,32 @@ def _relay_seal(transport, source, provenance):
                     hashlib.sha256).hexdigest()
 
 
+def reseal_relay_provenance(provenance, source, adapter):
+    """Re-bind a relay provenance seal to the source the envelope actually stores.
+
+    The relay seal binds the whole source dict, so a source that changed after it was
+    sealed needs its own seal: the stored one would never re-verify, and
+    ``restore_provenance`` answers an unverifiable row with ``profile_mismatch``.
+    ``snapshot_automation`` drops the platform reply anchor from the human source it
+    borrows (#52694, #123097), and that automation row is the FIFO HEAD — its refusal
+    pauses the session for good, so every later message queues behind it and the chat
+    goes deaf until someone rotates the session by hand.
+
+    Only the seal is recomputed: the base proof (transport home, runtime home, platform,
+    connector) is the connector's own verdict and is carried over untouched.
+    """
+    transport = getattr(adapter, '_transport', None)
+    if transport is None:
+        return provenance
+    from gateway.session import SessionSource
+    restored = SessionSource.from_dict(source)
+    restored.is_bot = bool(source.get('is_bot'))
+    base = {k: v for k, v in provenance.items() if k != 'relay'}
+    resealed = dict(base)
+    resealed['relay'] = _relay_seal(transport, restored, base)
+    return resealed
+
+
 def register_transport_home(runner, profile, home):
     """Called when the server creates a callback, never from event home fields."""
     homes = getattr(runner, '_native_transport_homes', None)

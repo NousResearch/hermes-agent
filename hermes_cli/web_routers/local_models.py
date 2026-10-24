@@ -32,8 +32,8 @@ from starlette.concurrency import run_in_threadpool
 from hermes_cli import config as config_mod, web_deps
 from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, _config_profile_scope
 from hermes_cli.local_runtime import (
-    binaries, bootstrap, catalog, context_policy, estimator, growth, hardware, hf_browse,
-    load_progress, presets, supervisor,
+    binaries, bootstrap, catalog, context_policy, engines as engine_registry, estimator,
+    growth, hardware, hf_browse, load_progress, presets, supervisor,
 )
 from agent.memory_provider import spawn_context_thread
 from pm.downloader import Download, DownloadPaused, Source
@@ -555,6 +555,11 @@ def local_models_status():
         "enabled": bool(section.get("enabled")), "tag": tag, "configured_tag": configured_tag,
         "update_available": bool(section.get("enabled") and engine is not None and current is None),
         "runtime_installed": runtime_backend is not None, "runtime_backend": runtime_backend,
+        # The engine the runtime boots with: the managed build or a user-registered binary
+        # (Settings → Local models → Local engine).
+        "active_engine_id": engine_registry.active_id(section),
+        "active_engine_name": engine_registry.active_engine(section)["name"],
+        "engine_kind": engine_registry.active_engine(section)["kind"],
         "server_running": running is not None, "server_base_url": (running or {}).get("base_url"),
         "active_model_id": _active_llamacpp_model_id(), "loaded_models": loaded,
         # Live load progress per model (SSE-fed): {model_id: {stage, value, percent}}.
@@ -1057,3 +1062,170 @@ async def local_models_sideload(body: SideloadBody):
             await run_in_threadpool(shutil.copyfile, src, dest)
     _refresh_runtime("post-sideload runtime refresh skipped")
     return {"ok": True, "model_id": dest.stem}
+
+
+# ── engine registry (Settings → Local models → Local engine) ─────────────────
+
+
+class EngineBody(BaseModel):
+    name: str = ""
+    path: str = ""
+    # Backend hint for budgets/policy. "auto" on a registered binary means "Hermes does
+    # not know": the child serves whatever the binary was compiled for.
+    backend: str = "auto"
+    # Launch arguments, verbatim (list-args, never a shell), appended to the server cmd.
+    args: list[str] = []
+    # Extra environment for the engine child, merged after the credential scrub.
+    env: dict[str, str] = {}
+
+
+class EngineSelectBody(BaseModel):
+    engine_id: str = ""
+    # Probe convenience: test an unsaved path (the edit form probes BEFORE
+    # registering). Takes precedence over engine_id when set.
+    path: str = ""
+
+
+def _mutate_engines(build: Callable[[dict], dict], *, restart: bool) -> dict:
+    """One RMW on ``local_runtime.engines`` under the config mutation lock; optionally
+    bounce the runtime so the boot picks the registry up (same job pattern as enable)."""
+    with _CONFIG_MUTATION_LOCK:
+        config = config_mod.load_config()
+        section = config.setdefault("local_runtime", {})
+        result = build(section)
+        config_mod.save_config(config)
+    if restart:
+        spawn_context_thread(_restart_for_engines, name="engine-mutation-restart").start()
+    return result
+
+
+def _restart_for_engines() -> None:
+    restarted = False
+    try:
+        restarted = bool(bootstrap.refresh_local_runtime())
+    except Exception:
+        logger.debug("post-engine-edit runtime restart failed", exc_info=True)
+    _announce_engine_change(restarted)
+
+
+def _announce_engine_change(restarted: bool) -> None:
+    """Re-broadcast ``setup.ready`` after an engine registry mutation.
+
+    The dashboard's status surfaces (the desktop's bottom-left backend
+    indicator above all) refresh their verdict from ``setup.status`` +
+    ``setup.runtime_check`` only when a ``setup.ready`` event lands. A
+    silent runtime bounce would leave every open client painting the
+    previous engine's verdict until the next ambient tick; this announce
+    makes an engine switch visible immediately, including the failure
+    case (``runtime_restarted: false`` means the bounce itself errored).
+    """
+    try:
+        from tui_gateway.server import _broadcast_global_event
+
+        from hermes_cli.free_tier_bootstrap import SETUP_READY_EVENT
+        _broadcast_global_event(SETUP_READY_EVENT, {
+            "reason": "engine_mutation", "runtime_restarted": restarted})
+    except Exception:
+        logger.debug("engine-change announce failed", exc_info=True)
+
+
+@router.get("/api/local-models/engines")
+async def local_models_engines_list():
+    """Selectable engines: the built-in managed entry plus every registered binary,
+    each with active/installed state. Reads only — nothing here launches anything."""
+    return await run_in_threadpool(
+        lambda: {"engines": engine_registry.list_for_view(_runtime_section())})
+
+
+@router.post("/api/local-models/engines")
+async def local_models_engines_add(body: EngineBody):
+    """Register a new engine binary. Validated, never launched (use probe/test)."""
+    def _build(section: dict) -> dict:
+        record = engine_registry.build_new(section, body.model_dump())
+        section["engines"] = [*engine_registry.user_engines(section),
+                              {k: v for k, v in record.items() if k != "kind"}]
+        return {"ok": True, "engine": record}
+    try:
+        return await run_in_threadpool(_mutate_engines, _build, restart=False)
+    except engine_registry.EngineError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+
+def _engine_or_422(section: dict, engine_id: str) -> dict:
+    engine = engine_registry.get(section, engine_id)
+    if engine is None:
+        raise HTTPException(status_code=404, detail=f"No engine with id {engine_id!r}.")
+    return engine
+
+
+@router.put("/api/local-models/engines/{engine_id}")
+async def local_models_engines_update(engine_id: str, body: EngineBody):
+    """Edit a registered engine (name, path, backend, launch args/env). The running
+    server keeps its old binary until the next bounce, same as every other runtime edit."""
+    def _build(section: dict) -> dict:
+        record = engine_registry.build_update(section, engine_id, body.model_dump())
+        section["engines"] = [
+            {k: v for k, v in (record if e["id"] == engine_id else e).items() if k != "kind"}
+            for e in engine_registry.user_engines(section)]
+        return {"ok": True, "engine": record}
+    try:
+        return await run_in_threadpool(_mutate_engines, _build, restart=False)
+    except engine_registry.EngineError as exc:
+        detail = str(exc)
+        raise HTTPException(status_code=404 if detail.startswith("No engine") else 422,
+                            detail=detail) from None
+
+
+@router.delete("/api/local-models/engines/{engine_id}")
+async def local_models_engines_delete(engine_id: str):
+    """Remove a registered engine. The built-in managed entry cannot be deleted; if the
+    deleted engine was active, the managed entry takes over and the runtime is bounced."""
+    def _build(section: dict) -> dict:
+        engine = _engine_or_422(section, engine_id)
+        if engine["kind"] == "managed":
+            raise HTTPException(status_code=409,
+                                detail="The built-in managed engine cannot be deleted.")
+        # Was it the active one? Must be asked BEFORE the entry is filtered out —
+        # active_id() falls back to managed once the id is gone from the list.
+        was_active = engine_registry.active_id(section) == engine_id
+        section["engines"] = [e for e in engine_registry.user_engines(section)
+                              if e["id"] != engine_id]
+        if was_active:
+            section["engine"] = engine_registry.MANAGED_ID
+        return {"ok": True, "was_active": was_active}
+    result = await run_in_threadpool(_mutate_engines, _build, restart=True)
+    return result
+
+
+@router.post("/api/local-models/engines/{engine_id}/select")
+async def local_models_engines_select(engine_id: str, body: EngineSelectBody):
+    """Make an engine the active one and bounce the local runtime onto it (job pattern,
+    like enable): the response is {started}, the pane follows status until it settles."""
+    def _build(section: dict) -> dict:
+        _engine_or_422(section, engine_id)
+        section["engine"] = engine_id
+        return {"ok": True, "engine_id": engine_id}
+    return await run_in_threadpool(_mutate_engines, _build, restart=True)
+
+
+@router.post("/api/local-models/engines/probe")
+async def local_models_engines_probe(body: EngineSelectBody):
+    """Run ``<binary> --version`` for the engine named by ``engine_id``, by unsaved
+    ``path`` (the edit form tests a binary before registering it), or the installed
+    managed engine when ``engine_id`` is 'managed'. Never loads a model."""
+    def _probe() -> dict:
+        section = _runtime_section()
+        if str(body.path or "").strip():
+            return {"ok": True, "version": engine_registry.probe(body.path)}
+        if body.engine_id == engine_registry.MANAGED_ID:
+            installed = binaries.installed_engine(section.get("backend", "auto"))
+            if installed is None:
+                raise HTTPException(status_code=422,
+                                    detail="The managed engine is not installed yet.")
+            return {"ok": True, "version": installed.tag, "path": str(installed.binary)}
+        engine = _engine_or_422(section, body.engine_id)
+        return {"ok": True, "version": engine_registry.probe(engine["path"])}
+    try:
+        return await run_in_threadpool(_probe)
+    except engine_registry.EngineError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None

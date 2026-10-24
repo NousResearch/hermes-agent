@@ -120,17 +120,20 @@ class LlamaServerSupervisor:
     def __init__(self, binary: Path, models_dir: Path, *,
                  models_max: int = 4, port: int | None = None,
                  extra_args: list[str] | None = None,
+                 extra_env: dict[str, str] | None = None,
                  log_path: Path | None = None,
                  preset_path: Path | None = None):
-        # The exact engine binary (PM store path, backend-selected), handed
-        # in by boot — the supervisor never discovers binaries itself: a
-        # legacy-directory scan could resurrect bytes pm did not pin.
+        # The exact engine binary (PM store path, backend-selected, or a user-registered
+        # engine from the local_runtime registry), handed in by boot — the supervisor never
+        # discovers binaries itself: a legacy-directory scan could resurrect bytes pm did
+        # not pin. extra_args/extra_env carry the per-engine launch knobs (registry).
         self.binary = Path(binary)
         self.models_dir = Path(models_dir)
         self.models_max = models_max
         self.port = port or _stable_port()
         self.api_key = _stable_api_key()
         self.extra_args = list(extra_args or [])
+        self.extra_env = {str(k): str(v) for k, v in (extra_env or {}).items()}
         self.log_path = log_path or (self.models_dir.parent / "logs" / "llama-server.log")
         self.preset_path = preset_path
         self.proc: subprocess.Popen | None = None
@@ -204,8 +207,12 @@ class LlamaServerSupervisor:
         self._log_handle.write(f"\n# spawn: {cmd}\n")
         self._log_handle.flush()
         # list-args, never a shell: spaced paths (user homes) must survive.
+        # The credential scrub runs on the ambient env first; the engine's own env from the
+        # registry is applied after it — the user put those there on purpose for this child.
+        child_env = server_child_env(os.environ)
+        child_env.update(self.extra_env)
         self.proc, self._job = spawn_server(cmd, stdout=self._log_handle, stderr=subprocess.STDOUT,
-                                             cwd=str(exe.parent), env=server_child_env(os.environ))
+                                             cwd=str(exe.parent), env=child_env)
         logger.info("llama-server router spawned pid=%s port=%s", self.proc.pid, self.port)
         # State goes down at SPAWN, not after health: endpoint resolution treats a
         # live-pid-but-not-yet-healthy server as "starting" rather than "unconfigured", so a

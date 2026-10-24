@@ -420,12 +420,13 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
         return _err(scan_error)
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(target.parent)
-    atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
+    # Skills are portable source files: never translate supplied LF to host-native CRLF.
+    atomic_write_text(target, content, preserve_mode=True, create_mode=0o644, newline="")
     scan_error = _security_scan_skill(skill_dir, baseline, scope)
     if not scan_error:
         return None
     if original is not None:
-        atomic_write_text(target, original, preserve_mode=True)
+        atomic_write_text(target, original, preserve_mode=True, newline="")
     else:  # a dangling symlink's write created its destination: remove that, keep the link
         target.resolve().unlink(missing_ok=True)
     return _err(scan_error)

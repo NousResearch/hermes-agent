@@ -40,7 +40,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   getEmbedHostOrigin: () => ipcRenderer.invoke('hermes:embed-host:origin'),
   // Registry-scoped backend resolution: { connectionId, profile } → descriptor.
   getConnectionFor: payload => ipcRenderer.invoke('hermes:connection:for', payload),
-  getProfileRoutes: profiles => ipcRenderer.invoke('hermes:plugin-profile-routes', profiles),
+  getProfileRoutes: (profiles, connectionId) =>
+    ipcRenderer.invoke('hermes:plugin-profile-routes', profiles, connectionId),
   revalidateConnection: () => ipcRenderer.invoke('hermes:connection:revalidate'),
   getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
   // Registry-scoped fresh WS URL: { connectionId, profile } → result shape of

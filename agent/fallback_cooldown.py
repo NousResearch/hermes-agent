@@ -4,7 +4,7 @@ import logging
 import math
 import time
 
-from agent.error_classifier import FailoverReason
+from agent.error_classifier import _MAX_RESET_SECONDS, FailoverReason
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +19,16 @@ def _provider_reset_delay(reset_at) -> float | None:
     if delay is not None and math.isfinite(delay) and delay > 0:
         return delay
     return None
+
+
+def effective_reset_at(error_context, classified):
+    """The extracted ``reset_at`` when it is a plausible future instant, else the classifier's, which also
+    reads body reset fields, ``Retry-After`` and the message in every timestamp form."""
+    reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
+    delay = _provider_reset_delay(reset_at)
+    if delay is None or delay > _MAX_RESET_SECONDS:  # a sentinel (.NET DateTime.MaxValue), not a window
+        reset_at = (getattr(classified, "error_context", None) or {}).get("reset_at")
+    return reset_at
 
 
 def switch_deferred_by_reset(agent, reason: FailoverReason | None, reset_at) -> bool:

@@ -10,6 +10,7 @@ from __future__ import annotations
 import enum
 import json
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -1125,6 +1126,38 @@ def _status_429(c: _Ctx) -> Verdict:
     return _V_RATE_LIMIT
 
 
+# Explicit exhaustion wording for a 503/529. Narrower than _USAGE_LIMIT_PATTERNS on purpose: a bare
+# "quota" or "limit exceeded" on a 5xx is usually capacity ("concurrency limit exceeded").
+_5XX_QUOTA_WALL_PATTERNS = (
+    "usage_limit_reached", "usage limit", "key limit exceeded", "quota exceeded", "quota_exceeded",
+    "quota exhausted", "exceeded your current quota", "insufficient_quota",
+)
+
+
+def _status_503_529(c: _Ctx) -> Verdict:
+    overflow = _first_match(c.msg, _OVERFLOW_AS_5XX_RULES)
+    if overflow is not None:
+        return overflow
+    if any(p in c.msg for p in _OVERLOADED_PATTERNS):
+        return _V_OVERLOADED
+    # Credential-pooling gateways (e.g. CLIProxyAPI) answer 503 once every upstream credential for the
+    # model is spent: "auth_unavailable: no auth available (...; last upstream error:
+    # usage_limit_reached ...)". Retrying the same model cannot succeed, but our key to the gateway is
+    # healthy (it serves other models), so fall back without benching it, like the aggregator 429 path.
+    # A direct provider's own key/billing wall on a 5xx also lands here: falling back still beats
+    # backing off, at the cost of the pool rotation a 4xx billing verdict would get.
+    if (
+        c.code == "usage_limit_reached" or c.code in _BILLING_ERROR_CODES
+        or any(p in c.msg for p in _5XX_QUOTA_WALL_PATTERNS)
+    ):
+        reset = _rate_limit_reset_seconds(c.msg, c.body, c.headers)
+        ctx = {"reset_at": time.time() + reset} if reset else {}
+        if _is_openrouter_upstream_error(c.body, c.provider_slug) and (upstream := _extract_upstream_provider_name(c.body)):
+            ctx["upstream_provider"] = upstream
+        return _v(_R.upstream_rate_limit, should_fallback=True, error_context=ctx)
+    return _V_OVERLOADED
+
+
 def _status_5xx(c: _Ctx) -> Verdict:
     # Request-validation errors as 5xx (codex.nekos.me) fail fast instead of
     # retry-flooding — unless the parameter was injected server-side.
@@ -1301,14 +1334,17 @@ _STATUS_HANDLERS: dict[int, Callable[[_Ctx], Verdict]] = {
     403: _status_403, 404: _status_404, 408: lambda c: _V_TIMEOUT, 413: lambda c: _V_PAYLOAD_TOO_LARGE,
     422: lambda c: _classify_image_tool_422(c),
     429: _status_429, 500: _status_5xx, 502: _status_5xx,
-    503: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,
-    529: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,
+    503: _status_503_529,
+    529: _status_503_529,
 }
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────
 
 _RESET_FIELDS = ("resets_in_seconds", "resets_at", "reset_at", "retry_after")
+# Longest real quota window (monthly). A reset further out is a sentinel (.NET ``DateTime.MaxValue``)
+# or garbage, and would bench the primary for centuries.
+_MAX_RESET_SECONDS = 31 * 86400
 _RESET_HEADERS = ("retry-after", "Retry-After", "x-ratelimit-reset", "X-RateLimit-Reset")
 
 
@@ -1325,21 +1361,38 @@ def _has_usage_limit_transient_signal(error_msg: str, body: dict, response_heade
 
 
 def _rate_limit_reset_seconds(error_msg: str, body: dict, response_headers) -> Optional[float]:
-    """Seconds until a 429's window reopens, from the body's reset fields, ``Retry-After`` or the
-    message grammar (``retry after Ns`` / ``resets in 4hr``); None when the response names none."""
+    """Seconds until a rate-limit/quota window reopens, from the body's reset fields, ``Retry-After`` or the
+    message grammar (``retry after Ns`` / ``resets in 4hr``); None when the response names none. A value
+    that is non-finite ("inf") or beyond ``_MAX_RESET_SECONDS`` is skipped: it would bench the primary for
+    good and crash the reset copy."""
+    from agent.credential_pool_timestamps import _parse_absolute_timestamp
     from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
     for payload in (p for p in (body, _error_obj(body)) if isinstance(p, dict)):
         for name in _RESET_FIELDS:
             value = payload.get(name)
             if value in (None, ""):
                 continue
-            if name.endswith("_at") and isinstance(value, (int, float)):
-                return max(0.0, float(value) - time.time())
-            if (seconds := parse_retry_after_seconds(value)) is not None:
+            if name.endswith("_at"):
+                # Absolute: epoch seconds/ms or ISO-8601, numeric or string (never a duration), else an
+                # HTTP-date. One already past says nothing about the next window: try the other signals.
+                at = _parse_absolute_timestamp(value)
+                if at is not None:
+                    seconds = at - time.time()
+                else:
+                    seconds = parse_retry_after_seconds(value) if isinstance(value, str) else None
+                if _plausible_reset(seconds) and seconds > 0:
+                    return seconds
+                continue
+            if _plausible_reset(seconds := parse_retry_after_seconds(value)):
                 return seconds
-    if (seconds := parse_retry_after_seconds(response_headers)) is not None:
+    if _plausible_reset(seconds := parse_retry_after_seconds(response_headers)):
         return seconds
-    return reset_delay_from_message(error_msg)
+    seconds = reset_delay_from_message(error_msg)
+    return seconds if _plausible_reset(seconds) else None
+
+
+def _plausible_reset(seconds: Optional[float]) -> bool:
+    return seconds is not None and math.isfinite(seconds) and seconds <= _MAX_RESET_SECONDS
 
 
 def _model_id_missing_known_prefix(model: str, provider: str) -> bool:

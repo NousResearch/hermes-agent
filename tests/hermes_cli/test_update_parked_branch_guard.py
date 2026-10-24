@@ -31,6 +31,7 @@ from hermes_cli import main as hermes_main
 from hermes_cli import main_web_build
 from hermes_cli import main_install_repair
 from hermes_cli import update_cmd
+from hermes_cli import update_cmd_git
 
 
 GIT = ["git"]
@@ -709,3 +710,281 @@ def test_update_on_main_fast_path_unchanged(repo_pair, monkeypatch, capsys):
     head = _git(repo_pair, "rev-parse", "HEAD").stdout.strip()
     remote = _git(repo_pair, "rev-parse", "origin/main").stdout.strip()
     assert head == remote
+
+
+# ---------------------------------------------------------------------------
+# The printed skip remedy must be non-destructive
+# ---------------------------------------------------------------------------
+
+
+def _printed_remedy_steps(out):
+    """Every runnable step of the printed block: the ``git -C ...`` lines AND any
+    ``hermes ...`` line.
+
+    The `hermes` steps matter as much as the git ones. A remedy whose last line
+    re-enters `hermes update` is not safe just because its git lines are — the
+    update resolves its own branch target (`args.branch or "main"`), switches off
+    the branch the remedy just created, and resets a diverged local target to
+    origin/<target>. The commit then survives only under a rescue ref that
+    expires, so a helper that filtered to `git -C` lines would report the block
+    as safe while skipping the one step that destroys work.
+    """
+    steps = []
+    for line in out.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("git -C"):
+            steps.append(("git", stripped[len("git -C"):].strip()))
+        elif stripped.startswith("hermes "):
+            steps.append(("hermes", stripped))
+    return steps
+
+
+def _run_real_update_flow(monkeypatch, repo, capsys):
+    """Run the REAL `hermes update` git phase against *repo*, then stop.
+
+    Uses the same in-process entry point the CLI reaches, so the parked-branch
+    guard, `merge --ff-only` and `_reconcile_diverged_checkout` all really run.
+    """
+    class _StopFlow(Exception):
+        pass
+
+    _patch_update_flow(monkeypatch, repo)
+    monkeypatch.setattr(
+        update_cmd, "_complete_source_update",
+        lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
+    )
+    args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
+    try:
+        hermes_main.cmd_update(args)
+    except _StopFlow:
+        pass
+    except SystemExit:
+        pass
+    if capsys is not None:
+        capsys.readouterr()  # discard the update's own output
+
+
+def _run_printed_remedy(repo_pair, out, monkeypatch=None, capsys=None):
+    """Execute EVERY printed step for real, in order, as a user would."""
+    steps = _printed_remedy_steps(out)
+    assert steps, f"no runnable steps printed:\n{out}"
+    assert not any(
+        kind == "git" and "&&" in payload for kind, payload in steps
+    ), "a trailing shell chain cannot be executed step-by-step by the user"
+    for kind, payload in steps:
+        if kind == "git":
+            _git(repo_pair, *payload.split()[1:])  # drop the leading 'git'
+        else:
+            assert monkeypatch is not None, (
+                "the printed remedy runs `hermes update`; pass monkeypatch so the "
+                "test can execute that step too instead of skipping it"
+            )
+            _run_real_update_flow(monkeypatch, repo_pair, capsys)
+    return steps
+
+
+def test_skip_advice_reaches_current_upstream_when_followed(
+    repo_pair, monkeypatch, capsys
+):
+    """The printed remedy must actually work — executed, not asserted on text.
+
+    A local target that is stale is exactly the situation this warning is
+    printed in, so the remedy has to leave the user on current upstream code.
+
+    Note on the original defect: it was NOT that `git checkout <target>` moved
+    the checkout further behind. On a stale-but-fast-forwardable target the
+    trailing `hermes update` fetches and fast-forwards, so the old advice did
+    reach upstream in that cell (verified: behind_before=1 -> behind_after=0).
+    The real hazard was that the same trailing update RESETS a *diverged*
+    target, dropping unpushed commits off it — see
+    `test_printed_remedy_never_resets_a_diverged_target`.
+    """
+    # The hazard: rewind the clone's local `main` so it is behind origin/main.
+    _git(repo_pair, "checkout", "-q", "main")
+    _git(repo_pair, "reset", "-q", "--hard", "origin/main~1")
+    stale_main = _git(repo_pair, "rev-parse", "HEAD", check=False).stdout.strip()
+    assert _git(repo_pair, "rev-parse", "origin/main", check=False).stdout.strip() != stale_main
+    _git(repo_pair, "checkout", "-q", "old-feature")
+
+    update_cmd_git._print_parked_branch_skip_warning(
+        GIT, repo_pair, "old-feature", "main", "unverifiable"
+    )
+    out = capsys.readouterr().out
+
+    _run_printed_remedy(repo_pair, out, monkeypatch, capsys)
+
+    # Following the printed remedy must land on the current upstream tip.
+    head = _git(repo_pair, "rev-parse", "HEAD", check=False).stdout.strip()
+    assert head == _git(repo_pair, "rev-parse", "origin/main", check=False).stdout.strip()
+
+
+def test_printed_remedy_never_resets_a_diverged_target(
+    repo_pair, monkeypatch, capsys
+):
+    """THE load-bearing regression: no printed remedy may run `hermes update`.
+
+    This is the bug an earlier version of this block shipped. It printed
+    `switch -c <target>-at-upstream origin/<target>` and promised the local
+    target was "left untouched", then ended with `hermes update` — which undoes
+    exactly that promise:
+
+      * the update resolves its branch to `main` (`args.branch or "main"`), so
+        `<target>-at-upstream` counts as a parked branch;
+      * `_assess_parked_branch_switch` sees that branch as "fully merged"
+        (`git cherry origin/main` is empty, since it IS origin/main), so the
+        guard passes;
+      * the flow checks out `main`, whose unpushed commit makes `merge --ff-only`
+        fail, and `_reconcile_diverged_checkout` takes the same-branch
+        non-ancestor path: `reset --hard origin/main`;
+      * the commit falls off `main`, held only by
+        `refs/hermes-update-backups/diverged-main-<ts>-<sha>`, which expires
+        after `_ORPHAN_RESCUE_REF_MAX_AGE_DAYS` days.
+
+    The remedy's own tests could not see this: they filtered the printed block
+    down to lines starting with `git -C`, so the `hermes update` step never ran
+    and the destructive step went untested.
+
+    So this test executes the WHOLE printed block — every step, in order —
+    against a target holding an unpushed commit, and requires that the commit
+    survive. Re-adding `hermes update` to the block fails it.
+    """
+    _git(repo_pair, "checkout", "-q", "main")
+    (repo_pair / "unpushed.txt").write_text("work in progress\n")
+    _git(repo_pair, "add", "unpushed.txt")
+    _git(repo_pair, "commit", "-q", "-m", "unpushed work on main")
+    unpushed = _git(repo_pair, "rev-parse", "HEAD", check=False).stdout.strip()
+    _git(repo_pair, "checkout", "-q", "old-feature")
+
+    update_cmd_git._print_parked_branch_skip_warning(
+        GIT, repo_pair, "old-feature", "main", "unverifiable"
+    )
+    out = capsys.readouterr().out
+
+    # No printed step may re-enter the updater: it targets <target> by default
+    # and resets a diverged <target>, whatever the git lines did.
+    assert not any(kind == "hermes" for kind, _ in _printed_remedy_steps(out)), (
+        "the printed remedy must not run `hermes update`: it switches off the "
+        "branch the remedy just created and resets a diverged target, dropping "
+        "unpushed commits into an expiring rescue ref"
+    )
+
+    steps = _run_printed_remedy(repo_pair, out, monkeypatch, capsys)
+    assert steps, "the remedy printed no steps at all"
+
+    # The commit must still exist and still be reachable from `main`.
+    assert _git(repo_pair, "cat-file", "-e", unpushed, check=False).returncode == 0, (
+        "the printed remedy destroyed an unpushed commit"
+    )
+    assert unpushed in _git(repo_pair, "rev-list", "main", check=False).stdout, (
+        "the unpushed commit is no longer reachable from the target branch"
+    )
+
+
+def test_skip_advice_preserves_unpushed_target_commits(
+    repo_pair, monkeypatch, capsys
+):
+    """The remedy must not destroy commits on the TARGET branch.
+
+    This is the test whose absence let a previous attempt ship a data-loss bug:
+    that attempt used `git checkout -B <target> origin/<target>`, which
+    force-resets the local target. The guard only runs when the checkout is
+    parked on a DIFFERENT branch, so "parked on a feature branch holding
+    unpushed commits on main" is exactly reachable — and `-B` deletes them.
+
+    So: commit to the target, park elsewhere, run the printed remedy, and
+    assert the commit is still reachable. Executed, not asserted on text.
+    """
+    _git(repo_pair, "checkout", "-q", "main")
+    (repo_pair / "unpushed.txt").write_text("work in progress\n")
+    _git(repo_pair, "add", "unpushed.txt")
+    _git(repo_pair, "commit", "-q", "-m", "unpushed work on main")
+    unpushed = _git(repo_pair, "rev-parse", "HEAD", check=False).stdout.strip()
+    _git(repo_pair, "checkout", "-q", "old-feature")
+
+    update_cmd_git._print_parked_branch_skip_warning(
+        GIT, repo_pair, "old-feature", "main", "unverifiable"
+    )
+    out = capsys.readouterr().out
+    _run_printed_remedy(repo_pair, out, monkeypatch, capsys)
+
+    # The unpushed commit must still exist and still be reachable from `main`.
+    assert _git(repo_pair, "cat-file", "-e", unpushed, check=False).returncode == 0, (
+        "the printed remedy destroyed an unpushed commit on the target branch"
+    )
+    assert unpushed in _git(repo_pair, "rev-list", "main", check=False).stdout, (
+        "the unpushed commit is no longer reachable from the target branch"
+    )
+
+
+def test_skip_advice_preserves_unpushed_commits_when_target_is_ahead(
+    repo_pair, monkeypatch, capsys
+):
+    """The diverged case: local `main` holds commits that origin/main lacks.
+
+    A local main that is AHEAD of its remote is not a fast-forward, so any
+    remedy built on `merge --ff-only` would refuse here and never advance.
+    The remedy must still preserve the work while moving the user onto
+    current upstream code.
+    """
+    _git(repo_pair, "checkout", "-q", "main")
+    (repo_pair / "ahead.txt").write_text("local only\n")
+    _git(repo_pair, "add", "ahead.txt")
+    _git(repo_pair, "commit", "-q", "-m", "local commit ahead of origin")
+    ahead = _git(repo_pair, "rev-parse", "HEAD", check=False).stdout.strip()
+    assert ahead not in _git(repo_pair, "rev-list", "origin/main", check=False).stdout
+    _git(repo_pair, "checkout", "-q", "old-feature")
+
+    update_cmd_git._print_parked_branch_skip_warning(
+        GIT, repo_pair, "old-feature", "main", "unverifiable"
+    )
+    out = capsys.readouterr().out
+    _run_printed_remedy(repo_pair, out, monkeypatch, capsys)
+
+    assert _git(repo_pair, "cat-file", "-e", ahead, check=False).returncode == 0
+    assert ahead in _git(repo_pair, "rev-list", "main", check=False).stdout
+    # And the user is now on current upstream code.
+    head = _git(repo_pair, "rev-parse", "HEAD", check=False).stdout.strip()
+    assert head == _git(repo_pair, "rev-parse", "origin/main", check=False).stdout.strip()
+
+
+def test_skip_advice_refuses_when_upstream_branch_name_is_taken(repo_pair, capsys):
+    """The remedy must REFUSE, not overwrite, when its branch name is taken.
+
+    `switch -c` is chosen precisely because it fails closed: if a branch named
+    `{target}-at-upstream` already exists, git errors out and touches nothing.
+    A future edit to `switch -C` (force-create) would silently re-point that
+    branch instead — the same destruction class as the `checkout -B` remedy
+    that was withdrawn, one word away. This test is the guard against that.
+
+    The recommendation came from the independent review of this PR.
+    """
+    _git(repo_pair, "checkout", "-q", "main")
+    (repo_pair / "precious.txt").write_text("do not lose me\n")
+    _git(repo_pair, "add", "precious.txt")
+    _git(repo_pair, "commit", "-q", "-m", "work that must survive")
+    precious = _git(repo_pair, "rev-parse", "HEAD", check=False).stdout.strip()
+    # Pre-create the branch the remedy intends to create, holding something.
+    _git(repo_pair, "branch", "-q", "main-at-upstream", "origin/main~1")
+    preexisting = _git(repo_pair, "rev-parse", "main-at-upstream", check=False).stdout.strip()
+    _git(repo_pair, "checkout", "-q", "old-feature")
+
+    update_cmd_git._print_parked_branch_skip_warning(
+        GIT, repo_pair, "old-feature", "main", "unverifiable"
+    )
+    out = capsys.readouterr().out
+
+    # Execute the remedy exactly as printed; the switch must FAIL.
+    ran = [payload for kind, payload in _printed_remedy_steps(out) if kind == "git"]
+    switch_idx = [i for i, c in enumerate(ran) if " switch " in f" {c} "]
+    assert switch_idx, f"no switch command printed:\n{out}"
+    for i in switch_idx:
+        result = _git(repo_pair, *ran[i].split()[1:], check=False)
+        assert result.returncode != 0, (
+            f"the remedy force-created over an existing branch instead of "
+            f"refusing: {ran[i]}"
+        )
+
+    # Nothing moved: the pre-existing branch and the local work are both intact.
+    assert _git(repo_pair, "rev-parse", "main-at-upstream", check=False).stdout.strip() == preexisting
+    assert _git(repo_pair, "cat-file", "-e", precious, check=False).returncode == 0
+    assert precious in _git(repo_pair, "rev-list", "main", check=False).stdout

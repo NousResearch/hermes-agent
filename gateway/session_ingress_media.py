@@ -124,6 +124,80 @@ _ATTACHMENT_LIMIT = 10
 _IMAGE_EXT = {'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif', 'image/webp': '.webp'}
 
 
+def _validated_native_reference(reference, root=None):
+    """Validate the exact content-addressed reference shape and return its path.
+
+    ``restore_native_media`` is the existing authority for retained native paths.  The retry
+    manifest validator uses this same path check before deciding whether a missing retained file
+    may be recaptured from a still-staged source; it must never repair a malformed reference by
+    recapturing it.
+    """
+    if (not isinstance(reference, dict) or set(reference) != {'path', 'sha256', 'size'}
+            or not isinstance(reference.get('path'), str)
+            or not isinstance(reference.get('sha256'), str)
+            or not _SHA256_NAME.fullmatch(reference['sha256'])
+            or not isinstance(reference.get('size'), int)
+            or isinstance(reference['size'], bool) or reference['size'] < 0):
+        raise ValueError('invalid media reference')
+    root = _media_root() if root is None else root
+    path = Path(reference['path'])
+    if (path.parent.parent != root or path.resolve() != path
+            or path.parent.name != reference['sha256']):
+        raise ValueError('foreign media reference')
+    return path
+
+
+def validate_committed_attachment_payload(committed, *, media_types=None):
+    """Validate a committed Bot attachment manifest without requiring bytes to remain on disk."""
+    if (not isinstance(committed, dict) or set(committed) != {'media', 'media_types'}
+            or not isinstance(committed.get('media'), list)
+            or not committed['media'] or len(committed['media']) > _ATTACHMENT_LIMIT
+            or not isinstance(committed.get('media_types'), list)
+            or len(committed['media_types']) != len(committed['media'])
+            or any(not isinstance(mime, str) or mime not in _ATTACHMENT_MIMES
+                   for mime in committed['media_types'])):
+        raise RuntimeStoreError('admission_conflict')
+    if media_types is not None and committed['media_types'] != media_types:
+        raise RuntimeStoreError('admission_conflict')
+    try:
+        for reference in committed['media']:
+            _validated_native_reference(reference)
+    except (TypeError, ValueError, OSError, RuntimeError) as exc:
+        raise RuntimeStoreError('admission_conflict') from exc
+    return committed
+
+
+def verify_attachment_identity(attachments, row):
+    """Check a Bot receipt's still-staged references against its committed media digest.
+
+    A replay may arrive after the disposable staging file was collected, so a missing staged path
+    is not a changed attachment. If a path still exists, however, its bytes must remain the exact
+    bytes that the durable admission captured; a replacement at the same path is a conflict.
+    """
+    if not attachments:
+        return
+    payload = row.get('payload') if isinstance(row, dict) else None
+    committed = payload.get('attachments_v1') if isinstance(payload, dict) else None
+    validate_committed_attachment_payload(
+        committed, media_types=[item.get('mime') for item in attachments])
+    from gateway.platforms.base import get_image_cache_dir
+    try:
+        staging = get_image_cache_dir().resolve()
+        paths = [Path(item['path']) for item in attachments]
+        if any(not path.is_absolute() or path.resolve().parent != staging for path in paths):
+            raise RuntimeStoreError('admission_conflict')
+        hashes = _attachment_hashes(paths)
+        if any(digest is not None and digest != reference['sha256']
+               for digest, reference in zip(hashes, committed['media'])):
+            raise RuntimeStoreError('admission_conflict')
+    except RuntimeStoreError as exc:
+        if exc.reason == 'admission_conflict':
+            raise
+        raise RuntimeStoreError('admission_conflict') from exc
+    except (KeyError, OSError, ValueError) as exc:
+        raise RuntimeStoreError('admission_conflict') from exc
+
+
 def sniff_image_mime(data):
     """The admission image type the bytes really are (png/jpeg/gif/webp), else ``None``."""
     if data.startswith(b'\x89PNG\r\n\x1a\n'):
@@ -137,7 +211,7 @@ def sniff_image_mime(data):
     return None
 
 
-def admit_attachments(attachments, *, admitted=None):
+def admit_attachments(attachments, *, admitted=None, restore_committed=False):
     """Wire ``attachments: [{path, mime}]`` -> committed payload fields (``{}`` when absent).
 
     ``admitted()`` returns the durable admission already holding this request's identity (or
@@ -161,9 +235,19 @@ def admit_attachments(attachments, *, admitted=None):
         hashes = _attachment_hashes(paths)
     except (OSError, ValueError) as exc:
         raise RuntimeStoreError('invalid_params') from exc
-    if None in hashes:
-        if (committed is None or [Path(r['path']).name for r in committed['media']] != [p.name for p in paths]
-                or committed['media_types'] != mimes):
+    if restore_committed:
+        # A derived Bot retry is bound to the original committed media references.  It may
+        # recapture the same staged bytes after native cleanup, but it may never turn a changed
+        # pathname into a new retry admission (or proceed with a malformed committed manifest).
+        validate_committed_attachment_payload(committed, media_types=mimes)
+        if any(digest is not None and digest != reference['sha256']
+               for digest, reference in zip(hashes, committed['media'])):
+            raise RuntimeStoreError('admission_conflict')
+        retry = True
+    elif None in hashes:
+        if (committed is None or committed['media_types'] != mimes
+                or (not restore_committed
+                    and [Path(r['path']).name for r in committed['media']] != [p.name for p in paths])):
             raise RuntimeStoreError('invalid_params')
         if any(digest is not None and digest != reference['sha256']
                for digest, reference in zip(hashes, committed['media'])):
@@ -174,10 +258,24 @@ def admit_attachments(attachments, *, admitted=None):
         retry = (committed is not None and committed['media_types'] == mimes
                  and [r['sha256'] for r in committed['media']] == hashes)
     if retry:
-        # A live row still executes these bytes, so they must verify; a terminal row is
-        # exact-retry evidence by digest only. ``admit_session_input`` still checks the digest.
-        if row['status'] != 'terminal':
-            restore_native_media(committed['media'])
+        # A live row still executes these bytes, so they must verify; a terminal row is normally
+        # exact-retry evidence by digest only. A trusted producer's new retry is different: it needs
+        # executable bytes. Reuse the committed copy when it still exists, and recapture the exact
+        # digest from the staged file when terminal cleanup already released that copy. A changed
+        # staged file was rejected above, before either path can enter a new admission.
+        if row['status'] != 'terminal' or restore_committed:
+            try:
+                restore_native_media(committed['media'])
+            except RuntimeStoreError as exc:
+                if any(digest is None for digest in hashes):
+                    # Direct/nonterminal admissions retain the existing owner-wide storage refusal.
+                    # Only a derived Bot retry with no staged digest has a delivery-specific
+                    # identity conflict: its exact bytes cannot be executed or recaptured.
+                    if restore_committed and exc.reason == 'storage_unavailable':
+                        raise RuntimeStoreError('admission_conflict') from exc
+                    raise
+                return {'attachments_v1': {'media': capture_native_media(
+                    paths, expected_references=committed['media']), 'media_types': mimes}}
         return {'attachments_v1': committed}
     return {'attachments_v1': {'media': capture_native_media(paths), 'media_types': mimes}}
 
@@ -271,8 +369,11 @@ def _open_regular(path):
     return os.fdopen(fd, 'rb')
 
 
-def capture_native_media(paths):
+def capture_native_media(paths, *, expected_references=None):
     from gateway.platforms.base import get_inbound_media_max_bytes, validate_inbound_media_size
+    if (expected_references is not None
+            and (not isinstance(expected_references, list) or len(expected_references) != len(paths))):
+        raise RuntimeStoreError('admission_conflict')
     references = []
     limit = max(0, get_inbound_media_max_bytes())
     # ``gateway.max_inbound_media_bytes`` bounds the whole admission, not each file: with
@@ -282,8 +383,9 @@ def capture_native_media(paths):
     # can be reused by another capture before either admission is committed.
     staged = []
     try:
-        for value in paths:
-            _capture_file(Path(value), limit, total, references, staged)
+        for index, value in enumerate(paths):
+            expected = expected_references[index] if expected_references is not None else None
+            _capture_file(Path(value), limit, total, references, staged, expected=expected)
             total = sum(reference['size'] for reference in references)
         for temporary, reference in zip(staged, references):
             target = Path(reference['path'])
@@ -309,7 +411,7 @@ def capture_native_media(paths):
     return references
 
 
-def _capture_file(path, limit, total, references, staged):
+def _capture_file(path, limit, total, references, staged, *, expected=None):
     from gateway.platforms.base import validate_inbound_media_size
     try:
         source = _open_regular(path)
@@ -335,10 +437,13 @@ def _capture_file(path, limit, total, references, staged):
                 output.write(chunk)
             output.flush()
             os.fsync(output.fileno())
-        target = root / digest.hexdigest() / path.name
+        digest_hex = digest.hexdigest()
+        if expected is not None and (digest_hex != expected.get('sha256') or size != expected.get('size')):
+            raise RuntimeStoreError('admission_conflict')
+        target = root / digest_hex / path.name
         if target.parent.resolve() != target.parent:
             raise RuntimeStoreError('invalid_params')
-        reference = {'path': str(target), 'sha256': digest.hexdigest(), 'size': size}
+        reference = {'path': str(target), 'sha256': digest_hex, 'size': size}
         if target.exists() or target.is_symlink():
             restore_native_media([reference])
         references.append(reference)
@@ -599,12 +704,7 @@ def restore_native_media(references):
     paths = []
     try:
         for reference in references:
-            if set(reference) != {'path', 'sha256', 'size'}:
-                raise ValueError('invalid media reference')
-            path = Path(reference['path'])
-            if (path.parent.parent != root or path.resolve() != path
-                    or path.parent.name != reference['sha256']):
-                raise ValueError('foreign media reference')
+            path = _validated_native_reference(reference, root)
             with _open_regular(path) as source:
                 if os.fstat(source.fileno()).st_size != reference['size']:
                     raise ValueError('changed media size')

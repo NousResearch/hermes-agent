@@ -5,7 +5,7 @@ from pydantic import model_validator
 
 from .base import JsonValue, Params, Result
 from .common import ProfileParams
-from .canonical_sessions import CanonicalSessionParams
+from .canonical_sessions import CanonicalAttachment, CanonicalSessionParams
 from .config_free_tier_control import ConfigGetParams, ConfigGetResult, ConfigSetResult
 from .groups_bot_relay import GroupsApproveResult, GroupsCreateResult, GroupsRetryResult, RoomMemberInput, RoomParams
 from .prompt_voice import AttachedImageResult, ImageAttachBytesParams
@@ -72,6 +72,7 @@ class CanonicalBotDeliverParams(Params):
     session_id: str | None = None
     author: dict[str, JsonValue] | None = None
     notification_category: str | None = None
+    attachments: list[CanonicalAttachment] | None = None
 
 
 class CanonicalBotDeliverResult(Result):

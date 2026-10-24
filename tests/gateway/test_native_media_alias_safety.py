@@ -21,9 +21,9 @@ def test_rejected_batch_keeps_an_alias_another_capture_reused(tmp_path, monkeypa
         reused = []
         inside = False
 
-        def other_capture(path, *args):
+        def other_capture(path, *args, **kwargs):
             nonlocal inside
-            capture_one(path, *args)
+            capture_one(path, *args, **kwargs)
             if path != paths[0] or inside:
                 return
             inside = True

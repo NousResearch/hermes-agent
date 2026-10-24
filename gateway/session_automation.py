@@ -7,6 +7,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 import json
 import logging
+from pathlib import Path
 
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
@@ -342,18 +343,22 @@ def committed_route_envelope(authority, entry):
     return envelope if envelope is not None and 'provenance' in envelope else None
 
 
-def snapshot_automation(authority, adapter, event, identity):
+def snapshot_automation(authority, adapter, event, identity, *, attachment_row=None,
+                         restore_committed=False):
     runner = authority.runner
     if (not event.internal or event.message_type != MessageType.TEXT or event.is_command()
             or not isinstance(event.text, str) or not identity
-            or event.media_urls or event.prompt_response or event.source.platform == Platform.API_SERVER
+            or (event.media_urls or event.media_types) and event.source.platform != Platform.LOCAL
+            or event.prompt_response or event.source.platform == Platform.API_SERVER
             or set(event.metadata) - _AUTOMATION_METADATA):
         raise RuntimeStoreError('invalid_params')
     notification = (automation_notification_metadata(event.metadata) | automation_display_metadata(event.metadata)
                     | _tick_metadata(event.metadata))
     entry = _owner(runner, event, authority)
     if event.source.platform == Platform.LOCAL:
-        return snapshot_local_automation(authority, adapter, event, identity, entry)
+        return snapshot_local_automation(authority, adapter, event, identity, entry,
+                                          attachment_row=attachment_row,
+                                          restore_committed=restore_committed)
     from gateway.session_envelope import restore_native
     owner = authority.logical_owner(entry.session_id)
     envelope = committed_route_envelope(authority, entry)
@@ -405,7 +410,18 @@ def check_automation_route(runner, payload, session_id, available_source, adapte
     return event.source, entry.session_key
 
 
-def snapshot_local_automation(authority, adapter, event, identity, entry):
+def _local_attachment_inputs(event):
+    urls = list(event.media_urls or [])
+    mimes = list(event.media_types or [])
+    if not urls and not mimes:
+        return None
+    if len(urls) != len(mimes):
+        raise RuntimeStoreError('invalid_params')
+    return [{'path': path, 'mime': mime} for path, mime in zip(urls, mimes)]
+
+
+def snapshot_local_automation(authority, adapter, event, identity, entry, *, attachment_row=None,
+                              restore_committed=False):
     from gateway.session_local_recovery import restore_local_session
     ref = restore_local_session(authority, event.source.chat_id)
     live = authority.sessions[ref.session_id]
@@ -426,19 +442,44 @@ def snapshot_local_automation(authority, adapter, event, identity, entry):
         descriptor['identities'] = sorted(set(event.metadata['automation_identities']))
     if getattr(event, '_heartbeat_session_id', None):
         descriptor['heartbeat'] = event._heartbeat_session_id
-    return {'text': event.text, 'local_automation_v1': descriptor}, entry
+    attachments = _local_attachment_inputs(event)
+    attachment_payload = {}
+    if attachments:
+        from gateway.session_ingress_media import admit_attachments
+        attachment_payload = admit_attachments(
+            attachments,
+            admitted=(lambda: attachment_row) if attachment_row is not None else None,
+            restore_committed=restore_committed,
+        )
+    return {'text': event.text, **attachment_payload, 'local_automation_v1': descriptor}, entry
 
 
 def check_local_automation(authority, ref, row, *, route=None):
     live = authority.sessions.get(ref.session_id)
     route = route or (live.route if live is not None else None)
     payload = row['payload']
-    descriptor = payload['local_automation_v1']
-    if (not route or set(payload) != {'text', 'local_automation_v1'}
+    descriptor = payload.get('local_automation_v1') if isinstance(payload, dict) else None
+    if (not isinstance(payload, dict) or not isinstance(descriptor, dict)
+            or not route or not set(payload) <= {'text', 'local_automation_v1', 'attachments_v1'}
+            or set(payload) < {'text', 'local_automation_v1'}
+            or not isinstance(payload.get('text'), str)
             or row['principal_id'] != 'automation:' + route
-            or descriptor['owner'] != ref.session_id or descriptor['route'] != route
-            or descriptor['identity'] != row['request_id']):
+            or descriptor.get('owner') != ref.session_id or descriptor.get('route') != route
+            or descriptor.get('identity') != row['request_id']):
         raise RuntimeStoreError('permission_denied')
+    if 'attachments_v1' in payload:
+        from gateway.session_ingress_media import restore_attachments
+        attachments = payload['attachments_v1']
+        if (not isinstance(attachments, dict) or set(attachments) != {'media', 'media_types'}
+                or not isinstance(attachments['media'], list)
+                or not isinstance(attachments['media_types'], list)):
+            raise RuntimeStoreError('permission_denied')
+        try:
+            restore_attachments(payload)
+        except RuntimeStoreError:
+            raise
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeStoreError('permission_denied') from exc
     entry = authority.runner.session_store.lookup_by_session_key(route)
     if (entry is None or entry.suspended or (entry.session_id != descriptor['target']
             and authority.db.get_compression_tip(descriptor['target']) != entry.session_id)):
@@ -453,6 +494,10 @@ def restore_local_automation(authority, ref, row):
     event = MessageEvent(text=row['payload']['text'], source=live.source, internal=True,
         message_id=descriptor['identity'], metadata={'gateway_session_key': live.route,
             'gateway_session_id': entry.session_id})
+    from gateway.session_ingress_media import restore_attachments
+    attachments = restore_attachments(row['payload'])
+    event.media_urls = attachments.get('media_urls', [])
+    event.media_types = attachments.get('media_types', [])
     event.metadata.update(automation_notification_metadata(descriptor))
     event.metadata.update(automation_display_metadata(descriptor))
     if descriptor.get('turn_author') is not None:
@@ -462,29 +507,57 @@ def restore_local_automation(authority, ref, row):
     return event
 
 
-async def admit_automation(authority, adapter, event, identity, replaces=None):
+async def admit_automation(authority, adapter, event, identity, replaces=None, attachment_row=None):
     """``replaces``: a queued automation row of the same session this input supersedes (a liveness
     tick carrying the output of the one still waiting). Its cancellation commits in this admission's
     own transaction, so neither lands without the other."""
     authority._require_admission_open()
-    payload, entry = snapshot_automation(authority, adapter, event, identity)
-    from gateway.session_authority import LiveSession
-    sid = (payload.get('local_automation_v1') or payload['native_text_v1']['automation'])['owner']
-    ref = SessionRef(authority.profile_id, sid)
-    authority.sessions.setdefault(ref.session_id, LiveSession(event.source, entry.session_key))
-    from functools import partial
-    from gateway.session_runtime_workers import tracked_write
-    admitted, replaced = partial(authority._admitted, ref, event), []
-    if replaces is not None:
-        def admitted(row, admitted=admitted):
-            if replaced:  # the guard ran in the committed write; an exact replay runs no guard
-                authority._settle_cancelled(ref, replaces)
-            return admitted(row)
-    return await tracked_write(authority, partial(
-        admit_session_input, authority.db, epoch=authority.epoch, principal_id='automation:' + entry.session_key,
-        session_id=ref.session_id, request_id=identity, payload=deepcopy(payload),
-        _authorize_write=authority._admission_gate(replaces and _replace_queued(replaces, ref.session_id, replaced))),
-        then=admitted, ordered=True, after=partial(authority._schedule_admitted, ref))
+    import asyncio
+    from gateway.session_ingress_media import capture_lease, drop_capture_lease, release_unheld_media
+    payload = None
+    prior_record_payload = (attachment_row or {}).get('payload') if attachment_row is not None else {}
+    prior_payload = (prior_record_payload or {}).get('attachments_v1') or {}
+    prior_media = {
+        reference['path']
+        for reference in prior_payload.get('media', ())
+        if isinstance(reference, dict) and isinstance(reference.get('path'), str)
+    }
+    prior_existing_media = await asyncio.to_thread(
+        lambda: {path for path in prior_media if Path(path).is_file()})
+    with capture_lease():
+        payload, entry = snapshot_automation(
+            authority, adapter, event, identity,
+            attachment_row=attachment_row,
+            restore_committed=attachment_row is not None,
+        )
+        from gateway.session_authority import LiveSession
+        sid = (payload.get('local_automation_v1') or payload['native_text_v1']['automation'])['owner']
+        ref = SessionRef(authority.profile_id, sid)
+        authority.sessions.setdefault(ref.session_id, LiveSession(event.source, entry.session_key))
+        from functools import partial
+        from gateway.session_runtime_workers import tracked_write
+        admitted, replaced = partial(authority._admitted, ref, event), []
+        if replaces is not None:
+            def admitted(row, admitted=admitted):
+                if replaced:  # the guard ran in the committed write; an exact replay runs no guard
+                    authority._settle_cancelled(ref, replaces)
+                return admitted(row)
+        try:
+            return await tracked_write(authority, partial(
+                admit_session_input, authority.db, epoch=authority.epoch,
+                principal_id='automation:' + entry.session_key, session_id=ref.session_id,
+                request_id=identity, payload=deepcopy(payload),
+                _authorize_write=authority._admission_gate(
+                    replaces and _replace_queued(replaces, ref.session_id, replaced))),
+                then=admitted, ordered=True, after=partial(authority._schedule_admitted, ref))
+        except Exception:
+            media = payload.get('attachments_v1', {}).get('media', [])
+            if prior_existing_media:
+                media = [reference for reference in media if reference.get('path') not in prior_existing_media]
+            if media:
+                drop_capture_lease()
+                release_unheld_media(authority.db, media, retain_history=False)
+            raise
 
 
 _ROUTE_WAKE_PRODUCERS = frozenset({'kanban-wake', 'loop-tick'})

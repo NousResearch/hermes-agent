@@ -317,8 +317,8 @@ const applyGlassSurfaces = ({ intensity, mode, scope }: TranslucencyState): void
   // Clear mode fades the whole window uniformly, so overlay text and the
   // covered transcript blend; styles.css strengthens the overlay scrim while
   // this attribute is present. Native opacity applies in every window kind, so
-  // no chat-window gate.
-  const clearOn = mode === 'clear' && intensity > 0
+  // no chat-window gate — but only where the platform can actually fade.
+  const clearOn = TRANSLUCENCY_SUPPORTED && mode === 'clear' && intensity > 0
 
   root.toggleAttribute('data-hermes-glass-on', glassLive)
   root.toggleAttribute('data-hermes-glass', glassOn)

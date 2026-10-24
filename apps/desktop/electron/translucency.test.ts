@@ -513,6 +513,16 @@ describe('windowOpacityOptions', () => {
       expect(windowOpacityOptions(state), appearance).toStrictEqual({})
     }
   })
+
+  // Linux: translucency is dead (setOpacity is a documented no-op and there is
+  // no native material), yet the resolved default intensity is still 29 — so
+  // every Linux window was born at 0.94 opacity, permanently see-through, with
+  // no Settings row to undo it.
+  it('never fades on a platform that cannot do translucency', () => {
+    for (const state of [clear(29), clear(100), glass(60)]) {
+      expect(windowOpacityOptions(state, false)).toStrictEqual({})
+    }
+  })
 })
 
 describe('opacityNeedsSetting', () => {

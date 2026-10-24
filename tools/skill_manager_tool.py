@@ -265,9 +265,8 @@ def _find_skill(name: str) -> Optional[dict[str, Any]]:
             local_root = _skills_dir()
     display_matches: list[Path] = []
     seen_display: set = set()
-    for skills_dir in get_all_skills_dirs():
-        if not skills_dir.exists():
-            continue
+    roots = [skills_dir for skills_dir in get_all_skills_dirs() if skills_dir.exists()]
+    for skills_dir in roots:
         for skill_dir in _iter_skill_dirs(skills_dir):
             if skill_dir.name == name:
                 return {"path": skill_dir}
@@ -276,6 +275,8 @@ def _find_skill(name: str) -> Optional[dict[str, Any]]:
                 if (resolved.is_relative_to(local_root)
                         and resolved.relative_to(local_root).as_posix() == name):  # POSIX form
                     return {"path": skill_dir}
+    for skills_dir in roots:
+        for skill_dir in _iter_skill_dirs(skills_dir):
             if _read_frontmatter_name(skill_dir / "SKILL.md") == name:
                 key = skill_dir / "SKILL.md"
                 with suppress(Exception):

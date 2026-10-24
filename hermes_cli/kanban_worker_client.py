@@ -21,6 +21,15 @@ OWNER_WAIT_S = 180.0
 _TRANSIENT_OWNER_STATES = frozenset({'draining', 'starting'})
 # Past the board lock wait: the owner's session setup and receipt before and after the write.
 ADMISSION_ANSWER_MARGIN_S = 60.0
+# A dial that dies on the host's transport (an owner thrashing at the host's RAM ceiling refuses or
+# stalls the websocket handshake) reports one of these; the condition is the host's, not the card's.
+_TRANSPORT_FAILURE_PREFIXES = ('Gateway connection failed', 'Gateway connection timed out')
+
+
+def _is_transport_failure(exc):
+    """A refused or stalled dial: the ``OSError`` family (``TimeoutError`` included) or a
+    transport-class client error. Owner refusals and received RPC answers are never this."""
+    return isinstance(exc, OSError) or str(exc).startswith(_TRANSPORT_FAILURE_PREFIXES)
 
 
 def admission_answer_budget():
@@ -37,9 +46,13 @@ async def run(params, board_db):
     if os.environ.get('HERMES_TUI_GATEWAY_URL'):
         raise GatewayClientError('Kanban requires the assigned local profile owner')
     deadline = time.monotonic() + OWNER_WAIT_S
+    # Once a connection attempt yields a client, the claim can already be on the wire: nothing past
+    # this point is ever retried, so one worker run can never send the work twice.
+    submitted = False
     while True:
         try:
             async with connect_gateway() as client:
+                submitted = True
                 # kanban.run subscribes this socket to the card's session, but only receipts matter
                 # here: discard the turn's events, or they fill the client's bounded queue and its
                 # reader stops, with the next receipt behind it.
@@ -50,6 +63,15 @@ async def run(params, board_db):
                     drain.cancel()
         except GatewayUnavailableError as exc:
             if exc.state not in _TRANSIENT_OWNER_STATES or time.monotonic() >= deadline:
+                raise
+            await asyncio.sleep(1)
+        except (GatewayClientError, OSError) as exc:
+            # A refused or stalled dial before any submission is the host's condition, not the
+            # card's: redial within the same OWNER_WAIT_S budget instead of spending the card's
+            # failure budget on it. Past the connection — or past the budget — it still raises: the
+            # owner may already hold the claim ('execution unknown; retained by owner') and the
+            # work must never be sent again.
+            if submitted or not _is_transport_failure(exc) or time.monotonic() >= deadline:
                 raise
             await asyncio.sleep(1)
 

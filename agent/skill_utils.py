@@ -15,6 +15,7 @@ from hermes_constants import (
     get_config_path,
     get_skills_dir,
     get_subprocess_home,
+    is_termux,
 )
 
 logger = logging.getLogger(__name__)
@@ -87,19 +88,28 @@ def parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
     return frontmatter, body
 
 
-def skill_matches_platform_list(platforms: Any) -> bool:
-    """Return True when *platforms* is compatible with the current OS."""
+def _skill_platform_list_matches(
+    platforms: Any, *, current_platform: str, running_in_termux: bool
+) -> bool:
+    """Return True when *platforms* matches the supplied host facts."""
     if not platforms:
         return True
     if not isinstance(platforms, list):
         platforms = [platforms]
-    current = sys.platform
+    current = "linux" if running_in_termux and current_platform == "android" else current_platform
     for platform in platforms:
         normalized = str(platform).lower().strip()
         mapped = PLATFORM_MAP.get(normalized, normalized)
         if current.startswith(mapped):
             return True
     return False
+
+
+def skill_matches_platform_list(platforms: Any) -> bool:
+    """Return True when *platforms* is compatible with the current OS."""
+    return _skill_platform_list_matches(
+        platforms, current_platform=sys.platform, running_in_termux=is_termux()
+    )
 
 
 def skill_matches_platform(frontmatter: dict[str, Any]) -> bool:

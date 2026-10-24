@@ -35041,6 +35041,18 @@
             "default": null,
             "title": "Count"
           },
+          "through_message_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Through Message Id"
+          },
           "idempotency_key": {
             "anyOf": [
               {
@@ -35092,6 +35104,11 @@
           },
           "info": {
             "$ref": "#/components/schemas/SessionLiveInfo"
+          },
+          "mid_turn": {
+            "default": false,
+            "title": "Mid Turn",
+            "type": "boolean"
           }
         },
         "required": [
@@ -35293,6 +35310,11 @@
           },
           "info": {
             "$ref": "#/components/schemas/SessionLiveInfo"
+          },
+          "mid_turn": {
+            "default": false,
+            "title": "Mid Turn",
+            "type": "boolean"
           }
         },
         "required": [
@@ -36393,6 +36415,11 @@
             "default": null,
             "title": "Turn Started At"
           },
+          "turn_in_progress": {
+            "default": false,
+            "title": "Turn In Progress",
+            "type": "boolean"
+          },
           "title": {
             "default": "",
             "title": "Title",
@@ -37400,6 +37427,11 @@
             ],
             "default": null,
             "title": "Turn Started At"
+          },
+          "turn_in_progress": {
+            "default": false,
+            "title": "Turn In Progress",
+            "type": "boolean"
           },
           "title": {
             "default": "",

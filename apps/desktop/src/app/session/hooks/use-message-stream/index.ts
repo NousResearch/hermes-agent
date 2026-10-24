@@ -764,7 +764,8 @@ export function useMessageStream({
             pendingBranchGroup: null,
             streamId: null,
             turnStartedAt: null,
-            turnLive: false
+            turnLive: false,
+            turnInFlight: false
           }
         }
 
@@ -1106,7 +1107,8 @@ export function useMessageStream({
           needsInput: false,
           interimBoundaryPending: false,
           turnStartedAt: null,
-          turnLive: false
+          turnLive: false,
+          turnInFlight: false
         }
       })
 
@@ -1222,7 +1224,8 @@ export function useMessageStream({
           needsInput: false,
           interimBoundaryPending: false,
           turnStartedAt: null,
-          turnLive: false
+          turnLive: false,
+          turnInFlight: false
         }
       })
     },

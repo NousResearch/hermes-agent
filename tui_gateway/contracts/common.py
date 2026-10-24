@@ -93,6 +93,11 @@ class SessionLiveInfo(OpenModel):
     personality: str = ""
     running: bool = False
     turn_started_at: float | None = None
+    # A turn is actively in flight (``session["inflight_turn"] is not None``).
+    # ``running`` alone cannot tell a live model turn from a manual-compaction hold
+    # (which sets running=True with NO inflight turn and re-anchors the session key
+    # mid-flight); clients gate "branch while busy" on this, not on running.
+    turn_in_progress: bool = False
     title: str = ""
     stored_session_id: str = ""
     desktop_contract: int | str | None = None

@@ -202,6 +202,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
         // Backend accepted the turn — the no-payload settle gate below may
         // now treat a running=false heartbeat as a real turn end.
         turnLive: true,
+
+        turnInFlight: true,
         // A new turn is a new occurrence: the previous turn's late terminal
         // frame (#119569) can no longer claim its heartbeat-settled bubble.
         heartbeatSettledStreamId: null,

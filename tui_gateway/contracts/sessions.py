@@ -403,6 +403,13 @@ method("session.close", params=SessionCloseParams, result=SessionCloseResult,
 class SessionBranchParams(SessionParams):
     name: str | None = None
     count: int | None = None  # keep only the first N rows of the source history
+    # Durable row id the branch keeps THROUGH: the exact cut for a message-level branch.
+    # Row-anchored, unlike ``count``: the renderer's local list can be a COMPACTED model
+    # projection whose visible-message count is shorter than the authoritative display
+    # projection, so a count-based prefix lands on an EARLIER message (the "branch at the
+    # bottom of the last message ends at an earlier message" defect). When both are given,
+    # the row boundary wins and ``count`` is only a legacy fallback.
+    through_message_id: int | None = None
     # #65410: the desktop's mid-chat branch retry reuses the SAME key so a
     # lost-response retry returns the SAME child instead of a duplicate.
     idempotency_key: str | None = None
@@ -416,6 +423,11 @@ class SessionBranchResult(Result):
     message_count: int
     messages: list[TranscriptMessage]
     info: SessionLiveInfo
+    # True when the parent's turn was still in flight: the child was cut at the
+    # turn-start boundary, so it holds the settled transcript WITHOUT the in-flight
+    # prompt (``message_count`` already reflects that shorter cut). Clients can say
+    # so instead of implying the whole conversation was copied.
+    mid_turn: bool = False
 
 
 method("session.branch", params=SessionBranchParams, result=SessionBranchResult,
@@ -436,6 +448,9 @@ class SessionBranchWholeResult(Result):
     message_count: int
     messages_omitted: bool
     info: SessionLiveInfo
+    # True when the parent's turn was still in flight: the child was cut at the
+    # turn-start boundary (see SessionBranchResult.mid_turn).
+    mid_turn: bool = False
 
 
 method("session.branch_whole", params=SessionBranchWholeParams, result=SessionBranchWholeResult,

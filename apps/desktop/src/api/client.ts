@@ -63,11 +63,14 @@ const PARENT_ATTACH_REQUIRED = new Set(['session.branch_stored', 'session.branch
 // version skew (4000), so they are stripped on a non-canonical dial. `prompt.submit` keeps its
 // `submission_id` on purpose: the submit path retries identityless on that exact refusal and
 // records the send as legacy-attempted, which a silent strip here would hide. A message-level
-// `session.branch` keeps its legacy `count` prefix; only the canonical row boundary is dropped.
+// `session.branch` KEEPS its canonical row boundary (`through_message_id`) on the legacy dial too:
+// the renderer's local list can be a compacted model projection shorter than the authoritative
+// display, so the `count` alone cuts the child at an EARLIER message. An older backend that
+// predates the field refuses it (4000 "out of sync"); `forkBranch` catches that and falls back to
+// the legacy `count`-only prefix rather than failing the branch.
 const LEGACY_STRIP: Record<string, string[]> = {
   'session.create': ['request_id'],
-  'session.branch_stored': ['request_id'],
-  'session.branch': ['through_message_id']
+  'session.branch_stored': ['request_id']
 }
 
 function legacyParams(method: string, params: Record<string, unknown>): Record<string, unknown> {

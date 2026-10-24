@@ -451,6 +451,8 @@ export const zhHantChat = {
     branchNeedsChat: '分支前請先開始或繼續一個聊天。',
     sessionBusy: '工作階段忙碌中',
     branchStopCurrent: '分支此聊天前請先停止目前回合。',
+    branchSettledTitle: '從最後一條已確認訊息分支',
+    branchSettledBody: '目前回合仍在執行中，因此新工作階段保留到最後一條已確認訊息為止——執行中的提示不會被複製。',
     branchNoText: '此訊息沒有可用於分支的文字。',
     branchTitle: n => `草稿：分支 #${n}`,
     branchFailed: '分支失敗',

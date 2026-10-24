@@ -880,6 +880,11 @@ export interface SessionRuntimeInfo {
   /** What the route actually sends for `reasoning_effort` (empty when unset; equal when verbatim). */
   reasoning_effort_wire?: string
   running?: boolean
+  /** True while a model turn is actually in flight (`inflight_turn is not None`).
+   *  A manual-compaction hold reports `running: true` WITHOUT an inflight turn, so
+   *  this is false during a hold — the desktop gates the mid-turn branch on it, not
+   *  on `running`. Absent on pre-v9 backends. */
+  turn_in_progress?: boolean
   service_tier?: string
   skills?: Record<string, string[]> | string[]
   tools?: Record<string, string[]>

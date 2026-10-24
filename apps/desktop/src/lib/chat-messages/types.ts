@@ -119,6 +119,9 @@ export type GatewayEventPayload = {
   approval_mode?: string
   yolo?: boolean
   running?: boolean
+  /** True while a model turn is actually in flight (`inflight_turn is not None`);
+   *  false during a manual-compaction hold and on pre-v9 backends. */
+  turn_in_progress?: boolean
   turn_started_at?: number | null
   cwd?: string
   branch?: string

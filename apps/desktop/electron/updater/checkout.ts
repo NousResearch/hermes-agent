@@ -306,13 +306,35 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): CheckoutStra
 
     // A checkout without the source probe predates source channels, so it can
     // only be on the git line: move it to main. Its update pulls the probe in.
-    const status: UpdaterStatusWire = (await deps.readSourceUpdate(root, opts)) ?? {
-      supported: true,
-      updateAvailable: true,
-      behind: null,
-      branch: deps.defaultUpdateBranch,
-      hermesRoot: root
-    }
+    //
+    // But "the probe answered nothing" is not the same claim as "there is an
+    // update". A host whose runtime tree is a COPY (no .git — a client-only
+    // Mac that merely connects to a remote backend) also has no probe to
+    // answer, and reporting updateAvailable: true for it pinned the statusbar
+    // to "client v<ver> (update)" forever: every check said an update was
+    // waiting, and every update ran a git hand-off that could never clear it.
+    // Only a real git checkout gets the optimistic fallback.
+    const probed = await deps.readSourceUpdate(root, opts)
+    const isCheckout = existsSync(path.join(root, '.git'))
+
+    const status: UpdaterStatusWire =
+      probed ??
+      (isCheckout
+        ? {
+            supported: true,
+            updateAvailable: true,
+            behind: null,
+            branch: deps.defaultUpdateBranch,
+            hermesRoot: root
+          }
+        : {
+            supported: false,
+            updateAvailable: false,
+            behind: null,
+            reason: 'not-a-checkout',
+            message: 'This machine has no source checkout to update — the runtime here is a copy, not a git tree.',
+            hermesRoot: root
+          })
 
     status.mechanism = mechanism
 

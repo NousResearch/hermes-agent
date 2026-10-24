@@ -3610,7 +3610,7 @@ def _commit_compaction(
             # The engine's session-end reset nulls the in-flight attempt telemetry the success emit
             # still needs (#118580), so hold it across the call.
             with _hold_attempt_telemetry(agent.context_compressor):
-                agent.commit_memory_session(original_messages)
+                agent.commit_memory_session(original_messages, notify_context_engine=not in_place)
             from agent.context_compressor import PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, stamp_db_persisted_markers
             from hermes_cli.partial_compress import rejoin_compressed_head_and_tail
             if in_place:

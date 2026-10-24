@@ -145,6 +145,9 @@ if (!existsSync(extractScript)) {
 // 2) llms.txt + llms-full.txt — agent-friendly docs entrypoints. Non-fatal.
 runPython(llmsScript, "generate-llms-txt.py");
 
+// MCP catalog pages from optional-mcps manifests. Non-fatal for local builds.
+runPython(join(scriptDir, "generate-mcp-catalog-docs.py"), "generate-mcp-catalog-docs.py");
+
 // 3) automation-blueprints-index.json — Automation Blueprints catalog page. Non-fatal; the page
 //    renders an empty state if the generator can't run.
 runPython(cronBlueprintsScript, "extract-automation-blueprints.py");

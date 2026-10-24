@@ -30,7 +30,12 @@ class NoSuch(Exception):
 
 
 def install_stubs(child_env, plist_home, child_cmdline=None):
-    """child_env: dict the wrapper's *child* exposes (wrapper itself: {})."""
+    """child_env: dict the wrapper's *child* exposes (wrapper itself: {}).
+
+    plist_home: one plist when a string, or one launchd job per list entry —
+    every job's ``ProgramArguments`` equal ``WRAPPER_ARGV`` (the JXA is what
+    the plist leg matches on), each pinning its own ``HERMES_HOME``.
+    """
     from hermes_cli import dashboard_procs as dp
 
     fake_psutil = types.ModuleType("psutil")
@@ -84,7 +89,12 @@ def install_stubs(child_env, plist_home, child_cmdline=None):
                 # honor the pattern's stem so mutant globs (zz-nonexistent-*) match nothing
                 stem = pattern.split("/")[-1].split("*")[0]
                 if "ai.hermes.gateway".startswith(stem) or stem == "":
-                    return [FakePath(str(self) + "/" + "ai.hermes.gateway.plist")]
+                    # One fake LaunchAgent per matching label (label -> plist file name),
+                    # so dedupe cases can pin several jobs with the same JXA.
+                    labels = ["ai.hermes.gateway"]
+                    if "ai.hermes.gateway-legacy".startswith(stem) or stem == "":
+                        labels.append("ai.hermes.gateway-legacy")
+                    return [FakePath(str(self) + "/" + label + ".plist") for label in labels]
                 return []
 
         gateway_mod.get_launchd_plist_path = lambda: FakePath(
@@ -97,17 +107,27 @@ def install_stubs(child_env, plist_home, child_cmdline=None):
         real_open = open
 
         def fake_open(file, *a, **kw):
-            if str(file).endswith("ai.hermes.gateway.plist"):
+            if str(file).endswith(".plist"):
                 import io
-                return io.BytesIO(b"<plist><dict/></plist>")
+                # The label marker rides in the bytes so fake_load can tell
+                # which LaunchAgent the resolver is reading (path is gone by then).
+                marker = "gateway-legacy" if str(file).endswith("gateway-legacy.plist") else ""
+                return io.BytesIO(f"<plist><dict/><!--{marker}--></plist>".encode())
             return real_open(file, *a, **kw)
 
         builtins_mod = __import__("builtins")
         builtins_mod.open = fake_open
 
-        def fake_load(fp, *a, **kw):
+        # Real plistlib.loads parses the fake bytes: the label selects which
+        # job the resolver is reading, so each label can pin its own home.
+        def fake_load(fh, *a, **kw):
+            raw = fh.read().decode("utf-8")
+            plist_homes = plist_home if isinstance(plist_home, list) else [plist_home]
+            if "gateway-legacy" in raw:
+                return {"ProgramArguments": list(WRAPPER_ARGV),
+                        "EnvironmentVariables": {"HERMES_HOME": plist_homes[-1]}}
             return {"ProgramArguments": list(WRAPPER_ARGV),
-                    "EnvironmentVariables": {"HERMES_HOME": plist_home}}
+                    "EnvironmentVariables": {"HERMES_HOME": plist_homes[0]}}
 
         plistlib.load = fake_load
     return dp
@@ -150,6 +170,18 @@ def main():
                        child_cmdline=["/usr/bin/osascript", "-l", "JavaScript",
                                       "-e", 'ObjC.import("cocoa"); 1'])
     results.append(run_case(dp, "D.non_hermes_child_not_adopted",
+                            os.path.expanduser("~/.hermes")))
+    # Case E: legacy label migration leaves TWO plists with the same JXA and
+    # the same HERMES_HOME; the dedupe must still resolve instead of treating
+    # the repeat as ambiguity. (Red with the dedupe dropped: homes == [h, h].)
+    dp = install_stubs(None, ["/Users/dev/.hermes"])
+    results.append(run_case(dp, "E.duplicate_same_home_plists_resolve",
+                            "/Users/dev/.hermes"))
+    # Case F: two labels pinning DIFFERENT homes with one JXA is genuine
+    # ambiguity — the leg must stay silent rather than guess; the resolver
+    # falls back to the root home exactly like the no-proof guard case A.
+    dp = install_stubs(None, ["/Users/dev/.hermes", "/Users/dev/.hermes/profiles/other"])
+    results.append(run_case(dp, "F.conflicting_homes_stay_rejected",
                             os.path.expanduser("~/.hermes")))
     # Case C (RED on main): neither wrapper nor child proves it; plist decides.
     dp = install_stubs(None, "/Users/dev/.hermes")

@@ -265,6 +265,22 @@ def _skip(seen: set, excluded: set, *keys: str) -> bool:
     return any(k in seen for k in lowered) or any(k in excluded for k in lowered)
 
 
+def _exclusion_key(value) -> str:
+    """Normalize a provider identity for ``excluded_providers`` matching.
+
+    User-defined providers surface under a ``custom:<name>`` slug while users
+    configure the bare ``providers:`` key (``back1``), so strip the prefix on
+    both sides or the two spellings never match (#142961). Built-in slugs have
+    no ``custom:`` prefix and pass through unchanged apart from case/space."""
+    key = str(value or "").strip().lower()
+    return key.split(":", 1)[1] if key.startswith("custom:") else key
+
+
+def _is_excluded(excluded: set, *keys) -> bool:
+    """True when any of *keys* matches the (``_exclusion_key``-normalized) set."""
+    return bool(excluded) and any(_exclusion_key(k) in excluded for k in keys if k)
+
+
 def _iter_builtin_candidates(models_dev_data: dict, excluded: set, seen: set):
     """Yield ``(hermes_id, mdev_id, pconfig, env_vars)`` for section-1 rows.
 
@@ -1002,6 +1018,10 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
         if not isinstance(ep_cfg, dict) or not is_provider_enabled(ep_cfg) or ep_name.lower() in b.seen_slugs:
             continue
         display_name = coerce_provider_id(ep_cfg.get("name")) or ep_name
+        # Honour model_catalog.excluded_providers (#142961): gated per entry (not
+        # per grouped row) so an excluded member cannot ride in on a sibling's row.
+        if _is_excluded(b.excluded, ep_name, display_name):
+            continue
         api_url = _entry_base_url(ep_cfg, ("base_url", "api", "url"))
         inline_api_key, key_env, cred_identity = _entry_credentials(ep_cfg, "key_env", "api_key_env")
         headers = _extra_headers_from_config(ep_cfg)
@@ -1125,6 +1145,10 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
         entry_extra_headers = _extra_headers_from_config(entry)
         prefix = _display_prefix(raw_name)
         provider_key = str(entry.get("provider_key") or "").strip()
+        # Rows surface as ``custom:<name>``; match exclusions against every
+        # identity spelling (bare name, provider_key, grouped prefix) (#142961).
+        if _is_excluded(b.excluded, raw_name, provider_key, prefix):
+            continue
         group_key = (api_url, cred_identity, api_mode, tuple(sorted(entry_extra_headers.items())), prefix.lower())
         display_name = prefix or raw_name
         grp = groups.setdefault(group_key, {
@@ -1280,7 +1304,7 @@ def list_authenticated_providers(
         current_provider=current_provider, current_base_url=current_base_url, current_model=current_model,
         max_models=max_models, for_picker=for_picker, force_fresh_nous_tier=force_fresh_nous_tier,
         probe_custom_providers=probe_custom_providers, probe_current_custom_provider=probe_current_custom_provider,
-        refresh=refresh, excluded={str(p).strip().lower() for p in (excluded_providers or []) if p},
+        refresh=refresh, excluded={_exclusion_key(p) for p in (excluded_providers or []) if _exclusion_key(p)},
         non_blocking_catalogs=non_blocking_catalogs, fast_custom_probe=fast_custom_probe,
         curated=_build_curated_lists(current_provider, current_base_url, current_model,
                                      non_blocking=non_blocking_catalogs))
@@ -1308,11 +1332,20 @@ def list_authenticated_providers(
     if custom_providers and isinstance(custom_providers, list):
         _lap_custom_provider_rows(b, custom_providers)
 
-    return _finalize_picker_rows(b.results, user_providers, current_model)
+    return _finalize_picker_rows(b.results, user_providers, current_model, excluded=b.excluded)
 
 
-def _finalize_picker_rows(results: list, user_providers, current_model: str) -> list:
-    """Post-passes: drop ``providers.<name>.enabled: false`` rows, inject the current model, sort."""
+def _finalize_picker_rows(results: list, user_providers, current_model: str,
+                          excluded: set | None = None) -> list:
+    """Post-passes: drop excluded / ``providers.<name>.enabled: false`` rows, inject the
+    current model, sort."""
+    # Single-exit exclusion sweep (#142961): covers every row builder (including the
+    # bare-``custom`` row) under every identity spelling, so a section that forgets
+    # its own gate cannot leak an excluded provider back into the picker.
+    if excluded:
+        results = [
+            r for r in results
+            if not _is_excluded(excluded, r.get("slug"), r.get("provider_id"))]
     # The enabled post-filter covers built-in rows (sections 1-2) that bypass the per-section
     # gate; matched by slug and ``provider_id``.
     try:

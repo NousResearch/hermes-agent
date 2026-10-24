@@ -773,6 +773,8 @@ class ClientLifecycleMixin:
         route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(base_url)
         prior_api_key, prior_base_url = self.api_key, self.base_url
         prior_client_kwargs = dict(self._client_kwargs)
+        from agent.route_verdicts import apply_route_verdicts, snapshot_route_verdicts
+        prior_verdicts = snapshot_route_verdicts(self)
         self.api_key, self.base_url = api_key, base_url
         self._sync_client_kwargs_credentials()
         # A base-url change moves the route: recompute TLS material and default headers.
@@ -782,6 +784,7 @@ class ClientLifecycleMixin:
             self.api_key, self.base_url = prior_api_key, prior_base_url
             self._client_kwargs.clear()
             self._client_kwargs.update(prior_client_kwargs)
+            apply_route_verdicts(self, prior_verdicts)
             return False
         # Rebind the pool entry id to the adopted key, or the next 429 quarantines the wrong credential.
         try:
@@ -957,6 +960,9 @@ class ClientLifecycleMixin:
             self._anthropic_client = self._build_direct_anthropic_client(runtime_key, self._anthropic_base_url)
             self._is_anthropic_oauth = self._anthropic_oauth_flag(runtime_key)
             self.api_key, self.base_url = runtime_key, stripped_base
+            if route_changed:
+                from agent.route_verdicts import reset_route_verdicts
+                reset_route_verdicts(self)
             return True
         self.api_key, self.base_url = runtime_key, stripped_base
         # Inlined (not _sync_client_kwargs_credentials): tests call this unbound on a SimpleNamespace agent.
@@ -969,8 +975,12 @@ class ClientLifecycleMixin:
     def _reapply_route_client_config(self, *, route_changed: bool) -> None:
         """Recompute route-derived client kwargs (TLS material, default headers) for ``self.base_url``.
 
-        Any rebuild that may have moved ``base_url`` must call this or the new endpoint inherits the old config.
+        Any rebuild that may have moved ``base_url`` must call this or the new endpoint inherits the old config
+        (including the old endpoint's rejection verdicts).
         """
+        if route_changed:
+            from agent.route_verdicts import reset_route_verdicts
+            reset_route_verdicts(self)
         self._client_kwargs.pop("ssl_verify", None)
         self._client_kwargs.pop("ssl_ca_cert", None)
         try:

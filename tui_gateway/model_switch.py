@@ -17,9 +17,10 @@ _RUNTIME_KEYS = ("model", "provider", "api_key", "base_url", "api_mode")
 
 def _snapshot_agent_model_runtime(agent) -> dict:
     """Capture the current agent model runtime for a one-turn restore."""
+    from agent.route_verdicts import primary_runtime_for_restore
     return {**{k: getattr(agent, k, "") for k in _RUNTIME_KEYS},
             "reasoning_config": copy.deepcopy(getattr(agent, "reasoning_config", None)),
-            "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None))}
+            "primary_runtime": primary_runtime_for_restore(agent)}
 
 
 def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:

@@ -1332,12 +1332,24 @@ class GatewayBusySessionMixin:
             return await self._handle_loop_command(event)
         return t("gateway.busy.reject_loop")
 
+    def _check_channel_command_access(self, source: SessionSource, canonical_cmd: str) -> Optional[str]:
+        """Denial message when a source's exact channel is outside its configured command cap."""
+        from gateway.slash_access import channel_command_denial_for_runner_source
+        return channel_command_denial_for_runner_source(self, source, canonical_cmd)
+
     def _check_slash_access(self, source: SessionSource, canonical_cmd: str) -> Optional[str]:
         """Denial message if ``source`` cannot run ``canonical_cmd``, else None (both dispatch paths
-        use it so an in-flight agent can't bypass admin gating; no ``allow_admin_from`` → None)."""
-        from gateway.slash_access import policy_for_runner_source
+        use it so an in-flight agent can't bypass either the channel cap or admin gating)."""
         if not canonical_cmd:
             return None
+        channel_denial = self._check_channel_command_access(source, canonical_cmd)
+        if channel_denial is not None:
+            logger.info(
+                "Slash command /%s denied by channel command access on %s",
+                canonical_cmd, source.platform.value if source.platform else "?",
+            )
+            return channel_denial
+        from gateway.slash_access import policy_for_runner_source
         policy = policy_for_runner_source(self, source)
         if not policy.enabled or policy.can_run(source.user_id, canonical_cmd):
             return None

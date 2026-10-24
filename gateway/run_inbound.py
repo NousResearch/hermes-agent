@@ -843,6 +843,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         if new_command is not None:
             command = new_command
             _cmd_def, canonical = _canon(command)
+            _denied = self._check_slash_access(source, canonical)
+            if _denied is not None:
+                return True, _denied, command, canonical
         return False, None, command, canonical
 
     async def _hm_confirm_destructive(self, event, command: str, detail: str, handler) -> tuple[bool, Optional[str]]:
@@ -1247,6 +1250,21 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         if _admitted is None:
             return None
         event, source, is_internal = _admitted
+        # Enforce exact channel command caps before pending-reply interception, busy routing, command
+        # hooks, quick/plugin handlers, or skill/bundle rewrites can observe slash-command payloads.
+        # The later shared access checks remain necessary for aliases and hook rewrites.
+        if not is_internal:
+            _ingress_command = event.get_command()
+            if _ingress_command:
+                from hermes_cli.commands import resolve_command as _resolve_ingress_command
+                _ingress_def = _resolve_ingress_command(_ingress_command)
+                _ingress_canonical = (
+                    _ingress_def.name if _ingress_def
+                    else _ingress_command.strip().lstrip("/").lower().replace("_", "-")
+                )
+                _channel_denial = self._check_channel_command_access(source, _ingress_canonical)
+                if _channel_denial is not None:
+                    return _channel_denial
         if not is_internal:
             from hermes_cli.observability.shared_metrics_events import record_gateway_slash_command
             record_gateway_slash_command(event)

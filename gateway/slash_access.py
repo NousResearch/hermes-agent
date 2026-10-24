@@ -130,7 +130,81 @@ def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
     return dm_policy if dm_policy.enabled and not group_policy.enabled else group_policy
 
 
-__all__ = ["SlashAccessPolicy", "policy_for_source", "policy_from_extra"]
+def channel_command_denial(gateway_config: Any, source: Any, canonical_cmd: str) -> Optional[str]:
+    """Return a channel-cap denial, if an exact (platform, chat ID) rule applies.
+
+    The cap is deliberately restrictive: it never grants around ``allow_admin_from`` or
+    ``group_allow_admin_from``. Only authenticated transport IDs are used; display names,
+    usernames, threads, and wildcard selectors are not authority. A malformed platform rule,
+    missing source chat ID, or malformed matched rule fails closed.
+    """
+    rules = getattr(gateway_config, "channel_command_access", None)
+    if rules is None or rules == {}:
+        return None
+    if not isinstance(rules, dict):
+        return "This command is not enabled in this channel."
+
+    platform = getattr(source, "platform", None)
+    platform_name = getattr(platform, "value", None)
+    if not isinstance(platform_name, str):
+        return None
+    if platform_name not in rules:
+        return None
+    platform_rules = rules[platform_name]
+    if not isinstance(platform_rules, dict):
+        return "This command is not enabled in this channel."
+
+    chat_id = getattr(source, "chat_id", None)
+    if not isinstance(chat_id, str) or not chat_id:
+        return "This command is not enabled in this channel."
+    if chat_id not in platform_rules:
+        return None
+
+    rule = platform_rules[chat_id]
+    default_message = "This command is not enabled in this channel."
+    if not isinstance(rule, dict):
+        return default_message
+    deny_message = rule.get("deny_message", default_message)
+    if not isinstance(deny_message, str) or not deny_message.strip():
+        deny_message = default_message
+    raw_commands = rule.get("allowed_slash_commands")
+    if not isinstance(raw_commands, list) or any(
+        not isinstance(item, str) or not item.strip() for item in raw_commands
+    ):
+        return deny_message
+    allowed = {item.strip().lstrip("/").lower().replace("_", "-") for item in raw_commands}
+    command = str(canonical_cmd or "").strip().lstrip("/").lower().replace("_", "-")
+    return None if command and command in allowed else deny_message
+
+
+def channel_command_denial_for_runner_source(runner: Any, source: Any, canonical_cmd: str) -> Optional[str]:
+    """Resolve channel caps from the bot-owning profile in a multiplexed gateway."""
+    config = getattr(runner, "config", None)
+    if not getattr(config, "multiplex_profiles", False) or source is None:
+        return channel_command_denial(config, source, canonical_cmd)
+    from gateway.session_identity import identity_of
+
+    identity = identity_of(source)
+    owner = identity.transport_profile if identity is not None else getattr(source, "profile", None)
+    primary = getattr(runner, "_primary_profile_name", None) or "default"
+    if owner and owner != primary:
+        config = (getattr(runner, "_profile_configs", None) or {}).get(owner)
+        if config is None:
+            # Keep the pre-existing fail-closed admin policy responsible for a missing profile
+            # unless channel caps were opted into somewhere in the launch config. Never inherit
+            # another profile's cap as an allow rule.
+            launch_rules = getattr(getattr(runner, "config", None), "channel_command_access", None)
+            return "This command is not enabled in this channel." if launch_rules not in (None, {}) else None
+    return channel_command_denial(config, source, canonical_cmd)
+
+
+__all__ = [
+    "SlashAccessPolicy",
+    "channel_command_denial",
+    "channel_command_denial_for_runner_source",
+    "policy_for_source",
+    "policy_from_extra",
+]
 
 
 

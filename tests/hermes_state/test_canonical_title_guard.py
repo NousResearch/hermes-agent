@@ -62,9 +62,18 @@ def test_visible_session_titled_bot_chat_stays_renameable(db):
 
 
 def test_deliberately_archived_canonical_chat_releases_name_for_replacement(db):
-    """Retiring a Bot Chat must not leave its registry name permanently locked."""
+    """Retiring a Bot Chat must not leave its registry name permanently locked.
+
+    Title is NULLed inside ``set_session_archived`` itself — Desktop never calls
+    ``set_session_title`` on a replacement while lookup still hits the retired row.
+    """
     retired = _make_canonical(db, "retired")
     assert db.set_session_archived(retired, True)
+
+    assert db.get_session(retired)["archived"]
+    assert db.get_session(retired)["title"] is None
+    assert db.get_session_by_title(SessionDB.CANONICAL_BOT_CHAT_TITLE) is None
+    assert db.resolve_session_by_title(SessionDB.CANONICAL_BOT_CHAT_TITLE) is None
 
     db.create_session("replacement", source="desktop")
     assert db.set_session_title("replacement", SessionDB.CANONICAL_BOT_CHAT_TITLE)
@@ -174,3 +183,82 @@ def test_numbered_continuation_still_wins_for_ordinary_titles(db):
     assert db.set_session_title("plain2", "My session #2")
 
     assert db.resolve_session_by_title("My session") == "plain2"
+
+
+def _stamp_legacy_archive(db, session_id, *, end_reason=None):
+    """Pre-#139779 archive: ``archived=1`` while the row still holds its title."""
+    if end_reason is None:
+        db._write_sql(
+            "UPDATE sessions SET archived = 1, auto_archived = 0 WHERE id = ?",
+            (session_id,),
+        )
+        return
+    db._write_sql(
+        "UPDATE sessions SET archived = 1, auto_archived = 0, end_reason = ? WHERE id = ?",
+        (end_reason, session_id),
+    )
+
+
+def test_title_lookup_skips_legacy_deliberately_archived_hidden_bot_chat(db):
+    """Live evidence: retired rows still hold title='Bot Chat'. Lookup must skip them."""
+    retired = _make_canonical(db, "retired")
+    _stamp_legacy_archive(db, retired)
+    assert db.get_session(retired)["title"] == SessionDB.CANONICAL_BOT_CHAT_TITLE
+    assert db.get_session(retired)["archived"]
+    assert db.get_session_by_title(SessionDB.CANONICAL_BOT_CHAT_TITLE) is None
+    assert db.resolve_session_by_title(SessionDB.CANONICAL_BOT_CHAT_TITLE) is None
+
+
+def test_archived_canonical_does_not_fall_through_to_numbered_sibling(db):
+    canonical = _make_canonical(db, "forever")
+    db.create_session("branch", source="desktop", parent_session_id=canonical)
+    assert db._set_session_title(
+        "branch",
+        f"{SessionDB.CANONICAL_BOT_CHAT_TITLE} #2",
+        source=SessionDB.TITLE_SOURCE_DERIVED,
+    )
+    assert db.set_session_hidden("branch", False)
+    _stamp_legacy_archive(db, canonical)
+    assert db.resolve_session_by_title(SessionDB.CANONICAL_BOT_CHAT_TITLE) is None
+
+
+@pytest.mark.parametrize("reason", ["ws_orphan_reap", "agent_close"])
+def test_recoverable_auto_archive_keeps_title_and_resurrects(db, reason):
+    """#92687: orphan-reaper archives must stay findable and unarchive_recoverable."""
+    sid = _make_canonical(db, "reaped")
+    db.end_session(sid, reason)
+    assert db.set_session_archived(sid, True)
+    assert db.get_session(sid)["title"] == SessionDB.CANONICAL_BOT_CHAT_TITLE
+    row = db.get_session_by_title(SessionDB.CANONICAL_BOT_CHAT_TITLE)
+    assert row and row["id"] == sid
+    assert db.resolve_session_by_title(SessionDB.CANONICAL_BOT_CHAT_TITLE) == sid
+    assert db.unarchive_recoverable_session(sid)
+    fresh = db.get_session(sid)
+    assert not fresh["archived"]
+    assert db.get_session_by_title(SessionDB.CANONICAL_BOT_CHAT_TITLE)["id"] == sid
+
+
+def test_legacy_recoverable_archive_still_found_by_title(db):
+    """REST resurrection uses get_session_by_title to find the archived row."""
+    sid = _make_canonical(db, "reaped")
+    _stamp_legacy_archive(db, sid, end_reason="ws_orphan_reap")
+    row = db.get_session_by_title(SessionDB.CANONICAL_BOT_CHAT_TITLE)
+    assert row and row["id"] == sid and row["archived"]
+    assert db.unarchive_recoverable_session(sid)
+    assert not db.get_session(sid)["archived"]
+
+
+def test_title_lookup_finds_recoverable_compressed_bot_chat(db):
+    """Title lives on the compression root; recoverability is on the tip (#92687)."""
+    db.create_session("root1", source="desktop")
+    assert db.set_session_title("root1", SessionDB.CANONICAL_BOT_CHAT_TITLE)
+    assert db.set_session_hidden("root1", True)
+    db.end_session("root1", "compression")
+    db.create_session("tip1", source="desktop", parent_session_id="root1")
+    db.end_session("tip1", "ws_orphan_reap")
+    db._write_sql("UPDATE sessions SET archived = 1 WHERE id IN ('root1', 'tip1')")
+    row = db.get_session_by_title(SessionDB.CANONICAL_BOT_CHAT_TITLE)
+    assert row and row["id"] == "root1"
+    assert db.unarchive_recoverable_session(row["id"])
+    assert not db.get_session("root1")["archived"]
+    assert not db.get_session("tip1")["archived"]

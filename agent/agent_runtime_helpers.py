@@ -2363,9 +2363,9 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
             agent.model, base_url=agent.base_url, api_key=ctx_api_key, provider=agent.provider,
             config_context_length=effective_context_length, custom_providers=custom_providers,
         )
-        agent.context_compressor.update_model(
-            model=agent.model,
-            context_length=new_context_length,
+        from agent.context_engine_budget import update_runtime_context_compressor
+        update_runtime_context_compressor(
+            agent, new_context_length, reason="model_switch", model=agent.model,
             base_url=agent.base_url,
             api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
             provider=agent.provider,

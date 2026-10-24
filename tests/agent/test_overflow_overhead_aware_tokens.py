@@ -124,6 +124,37 @@ def _make_long_context_tier_error():
     return err
 
 
+def test_long_context_tier_refreshes_an_opted_in_engine_budget(agent):
+    """Conversation recovery (not just the tier helper) delivers the 200K budget."""
+    from tests.agent.test_context_engine_compression_budget import BudgetEngine
+    # The loop consumes the normal ContextEngine observation/selection API too.
+    from agent.context_engine import ContextEngine
+    class LoopEngine(BudgetEngine, ContextEngine):
+        name = "budget-loop"
+        def update_from_response(self, usage):
+            pass
+        def should_compress(self, prompt_tokens=None):
+            return False
+        def compress(self, messages, current_tokens=None):
+            return messages
+    engine = LoopEngine()
+    agent.context_compressor = engine
+    agent.max_tokens = None
+    agent._compression_threshold_percent = 0.50
+    agent._compression_model_thresholds = {}
+    agent._compression_threshold_tokens_cap = None
+    agent.client.chat.completions.create.side_effect = [_make_long_context_tier_error(), _mock_response(content="Recovered")]
+    with (
+        patch.object(agent, "_compress_context", return_value=([{"role": "user", "content": "compressed"}], "compressed prompt")),
+        patch.object(agent, "_persist_session"), patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("hello", conversation_history=_prefill())
+    assert result["final_response"] == "Recovered"
+    assert engine.budgets == [(200_000, 150_000, "long_context_tier")]
+    assert engine.threshold_tokens == engine.private_trigger == 150_000
+
+
 @pytest.mark.parametrize("muted", [False, True])
 def test_long_context_retry_carrier_survives_failure_flush(agent, muted, monkeypatch):
     from gateway.warning_notifications import DiagnosticText

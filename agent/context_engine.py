@@ -178,6 +178,17 @@ class ContextEngine(ABC):
         compress yet" without an LLM call (e.g. transcript entirely protected)."""
         return True
 
+    def set_compression_budget(self, context_capacity: int, trigger_tokens: int, *, reason: str) -> bool:
+        """Optionally accept Hermes' reservation-aware input capacity and compaction trigger.
+
+        Only singleton True accepts this delivery (including auxiliary feasibility updates).
+        False, any other return, or an exception relinquishes host threshold ownership until
+        a later delivery is explicitly accepted. Engines may keep private policy on rejection;
+        accepting engines must install both values atomically before returning True.
+        The default leaves legacy engine policy untouched. Selection/observation are independent.
+        """
+        return False
+
     def on_session_start(self, session_id: str, **kwargs) -> None:
         """Session begins: load persisted state. kwargs may include hermes_home, platform, model."""
 

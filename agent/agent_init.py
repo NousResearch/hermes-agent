@@ -1956,7 +1956,7 @@ def _compressor_max_tokens(agent):
     """``agent.max_tokens``, or the native-Gemini adapter default when unset: generateContent
     still sends maxOutputTokens=65,535 and the threshold is pct×(window − max_tokens), so
     reserving 0 let the provider 400 before compaction fired."""
-    if agent.max_tokens is not None:
+    if getattr(agent, "max_tokens", None) is not None:
         return agent.max_tokens
     with suppress(Exception):
         from agent.gemini_native_adapter import (
@@ -1971,15 +1971,12 @@ def _compressor_max_tokens(agent):
 
 
 def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db):
+    agent._compression_threshold_percent = cs.threshold
+    agent._compression_model_thresholds = cs.model_thresholds
+    agent._compression_threshold_tokens_cap = cs.threshold_tokens
     _selected_engine = _select_context_engine(_agent_cfg)
     if _selected_engine is not None:
         agent.context_compressor = _selected_engine
-        # External engines own compaction policy — the host threshold (and its Codex
-        # autoraise) never reaches the plugin, so drop the notice.
-        agent._compression_threshold_autoraised = None
-        # External engines own compaction policy: the host compression threshold (including the Codex
-        # gpt-5.5 autoraise above) only configures the built-in ContextCompressor and never reaches the
-        # plugin, so the autoraise notice would announce a change that does not apply. (#44439)
         from agent.model_metadata import get_model_context_length
         _plugin_ctx_len = get_model_context_length(
             agent.model, base_url=agent.base_url, api_key=getattr(agent, "api_key", ""),
@@ -1994,6 +1991,10 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             model=agent.model, context_length=_plugin_ctx_len, base_url=agent.base_url,
             api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
         )
+        from agent.context_engine_budget import apply_context_engine_compression_budget
+        if not apply_context_engine_compression_budget(agent, _plugin_ctx_len, reason="model_init"):
+            # Do not announce a host threshold that a legacy engine never accepted.
+            agent._compression_threshold_autoraised = None
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
     else:

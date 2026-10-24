@@ -1913,10 +1913,10 @@ def _lower_threshold_to_aux_context(
     only legacy follows the lowered threshold."""
     compressor = agent.context_compressor
     old_threshold = compressor.threshold_tokens
-    new_threshold = compressor.threshold_tokens = aux_context
-    # Durable ceiling: update_model() recomputes threshold_tokens from the main model on every window
-    # correction and re-applies this through _apply_threshold_tokens_cap() (#114707).
-    compressor._aux_context_ceiling = aux_context
+    from agent.context_engine_budget import apply_auxiliary_context_ceiling
+    if not apply_auxiliary_context_ceiling(agent, aux_context):
+        return
+    new_threshold = compressor.threshold_tokens
     summary_target_ratio = getattr(compressor, "summary_target_ratio", None)
     if getattr(compressor, "tail_mode", None) == "lean":
         # Keep the window-relative policy owned by the compressor property.
@@ -1927,8 +1927,6 @@ def _lower_threshold_to_aux_context(
     if main_ctx:
         compressor.threshold_percent = new_threshold / main_ctx
     safe_pct = int((aux_context / main_ctx) * 100) if main_ctx else 50
-    # Mirror the compressor's threshold math (percent floor, output reservation, 64K floor): a suggestion it
-    # would override is silently ignored and this warning reappears every session. External engines: keep it plain.
     # The "lower the threshold" suggestion must survive the built-in trigger recomputation (#67422):
     # _effective_threshold_percent() raises sub-75% values back up for main windows under 512K, and
     # _compute_threshold_tokens() further applies the output-token reservation, the 64K floor, and the
@@ -2066,7 +2064,11 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 f"auxiliary.compression.context_length to override the "
                 f"detected value if it is wrong."
             )
-        if aux_context < agent.context_compressor.threshold_tokens:
+        from agent.context_compressor import ContextCompressor
+        host_owns_threshold = isinstance(agent.context_compressor, ContextCompressor) or (
+            getattr(agent, "_context_engine_compression_budget_accepted", False) is True
+        )
+        if aux_context < agent.context_compressor.threshold_tokens and host_owns_threshold:
             _lower_threshold_to_aux_context(
                 agent, aux_model=aux_model, aux_context=aux_context, aux_provider=_aux_cfg_provider,
                 aux_base_url=aux_base_url,

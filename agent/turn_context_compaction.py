@@ -88,8 +88,9 @@ def _blocked_compress_reason(
 
 def _apply_grown_window(agent: Any, compressor: Any, grown: int) -> None:
     """A managed local runtime granted a bigger window: recalibrate the compressor."""
-    compressor.update_model(
-        agent.model, grown, base_url=getattr(agent, "base_url", "") or "",
+    from agent.context_engine_budget import update_runtime_context_compressor
+    update_runtime_context_compressor(
+        agent, grown, reason="local_window_growth", model=agent.model, base_url=getattr(agent, "base_url", "") or "",
         api_key=getattr(agent, "api_key", "") or "",
         provider=getattr(agent, "provider", "") or "",
         api_mode=getattr(agent, "api_mode", "") or "",

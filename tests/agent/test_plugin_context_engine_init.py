@@ -6,7 +6,33 @@ context_length, causing the CLI status bar to show 'ctx --'.
 
 from unittest.mock import patch
 
+import pytest
+
 from agent.context_engine import ContextEngine
+
+
+@pytest.mark.parametrize("threshold", [float("nan"), float("inf"), float("-inf")])
+def test_legacy_plugin_startup_ignores_underivable_optional_host_policy(threshold):
+    engine = _StubEngine()  # inherits the default singleton-False hook
+    cfg = {"context": {"engine": "stub"}, "compression": {"threshold": threshold}, "agent": {}}
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch("plugins.context_engine.load_context_engine", return_value=engine),
+        patch("agent.model_metadata.get_model_context_length", return_value=1_000_000),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        from run_agent import AIAgent
+        agent = AIAgent(model="offline-model", provider="openai", api_key="offline-placeholder",
+                        base_url="https://offline.invalid/v1", quiet_mode=True,
+                        skip_context_files=True, skip_memory=True)
+    assert agent.context_compressor is engine
+    assert engine.context_length == 1_000_000
+    assert engine.threshold_percent == 0.75
+    assert engine.threshold_tokens == 750_000
+    assert agent._context_engine_compression_budget_accepted is False
 
 
 class _StubEngine(ContextEngine):
@@ -35,6 +61,29 @@ class _ToolEngine(_StubEngine):
                 "parameters": {"type": "object", "properties": {}},
             }
         ]
+
+
+def test_budget_aware_plugin_receives_codex_autoraised_reserved_budget_on_init():
+    class Accepting(_StubEngine):
+        def set_compression_budget(self, capacity, trigger, *, reason):
+            self.private_budget = (capacity, trigger, reason)
+            return True
+    engine = Accepting()
+    cfg = {"context": {"engine": "stub"}, "compression": {"threshold": 0.50}, "agent": {}}
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch("plugins.context_engine.load_context_engine", return_value=engine),
+        patch("agent.model_metadata.get_model_context_length", return_value=1_000_000),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        from run_agent import AIAgent
+        agent = AIAgent(**_codex_agent_kwargs(), max_tokens=200_000)
+    assert engine.private_budget == (800_000, 680_000, "model_init")
+    assert engine.threshold_tokens == 680_000
+    assert agent._compression_threshold_autoraised == {"model": "gpt-5.5", "from": 0.50, "to": 0.85}
 
 
 def test_plugin_engine_gets_context_length_on_init():

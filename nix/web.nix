@@ -1,5 +1,5 @@
 # Dashboard compilation consumes prepared icons; no npm lifecycle preparation.
-{ hermesNpmLib, generatedIcons, ... }:
+{ hermesNpmLib, generatedIcons, lib, rev ? null, branch ? null, dirty ? false, ... }:
 hermesNpmLib.buildNpmPackage {
   dirs = [
     "web"
@@ -13,6 +13,12 @@ hermesNpmLib.buildNpmPackage {
 
   buildPhase = ''
     runHook preBuild
+    ${lib.optionalString (rev != null) ''
+      # Filtered sources have no .git; preserve the flake's actual dirty state.
+      export HERMES_REVISION=${lib.escapeShellArg rev}
+      export BUILD_SOURCE_BRANCH=${lib.escapeShellArg (if branch != null then branch else "")}
+      export BUILD_SOURCE_DIRTY=${if dirty then "true" else "false"}
+    ''}
     node scripts/build/web.mjs --source "$PWD" --icons ${generatedIcons} --out "$TMPDIR/web-product"
     runHook postBuild
   '';

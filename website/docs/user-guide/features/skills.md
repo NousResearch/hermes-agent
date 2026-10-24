@@ -802,6 +802,7 @@ Default taps (browsable without any setup):
 - [huggingface/skills](https://github.com/huggingface/skills)
 - [NVIDIA/skills](https://github.com/NVIDIA/skills) — NVIDIA-verified skills (signed `skill.oms.sig` + governance `skill-card.md`)
 - [garrytan/gstack](https://github.com/garrytan/gstack)
+- [justinjohnson25600/hermes_skills](https://github.com/justinjohnson25600/hermes_skills) — author-published agent-workflow skills (dev-pair cross-model second opinions, verify-results post-hoc critique, quality-guard pre-delivery verification gate, senior-dev-prompt briefs, llm-council multi-model deliberation). MIT, community trust: every install is security-scanned.
 - [K-Dense-AI/scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills) and [synthetic-sciences/openscience](https://github.com/synthetic-sciences/openscience) — ~480 scientific research skills (bioinformatics, chemistry, physics, ML training, scholarly tooling), grouped under one `science` category. Community trust: every install is security-scanned. Many wrap third-party tools with their own licenses (some GPL; KEGG requires a commercial license for non-academic use) — check each skill's prerequisites.
 
 - Example:

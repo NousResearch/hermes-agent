@@ -15,6 +15,22 @@ def journal_path(job_id, request_id):
     return get_hermes_home() / 'cron' / 'admissions' / (key + '.json')
 
 
+def _journal_params(record):
+    params = dict(record['params'])
+    if record.get('protocol', 1) == 2:
+        params.pop('_monitor_protocol', None)
+    return params
+
+
+def _journal_record(record):
+    # Old schedulers ignore top-level extensions. Their exact params validator
+    # must reject a v2 fire rather than mistake a sessionless result for missing.
+    params = _journal_params(record)
+    if record.get('protocol', 1) == 2:
+        params['_monitor_protocol'] = 2
+    return dict(record, params=params)
+
+
 def _pause_identity(paused):
     """The exact pause this recovery uncertainty caused, so only that pause is ever lifted."""
     return {'paused_at': paused.get('paused_at'), 'reason': paused.get('paused_reason')} if paused else True
@@ -65,22 +81,48 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
               'extra_prompt': extra_prompt}
     root = get_hermes_home() / 'cron' / 'admissions'
     journal = journal_path(params['job_id'], params['request_id'])
-    record = {'params': params, 'receipt': None}
+    from cron.monitor import job_has_monitor
+    record = {'params': params, 'receipt': None, 'protocol': 2 if job_has_monitor(job) else 1}
     if journal.exists():
         record = json.loads(journal.read_text(encoding='utf-8-sig'))
-        if record['params'] != params:
+        if _journal_params(record) != params:
             raise CronExecutionUnknown('cron admission identity conflict')
     attempted = journal.exists()
     owner = owner_for_home(get_hermes_home())
 
     def save():
         root.mkdir(parents=True, exist_ok=True)
-        atomic_json_write(journal, record, mode=0o600, fsync_dir=True)
+        atomic_json_write(journal, _journal_record(record), mode=0o600, fsync_dir=True)
 
     async def observe(call):
         nonlocal attempted
+        fresh = not attempted
         attempted = True
         save()
+        if record.get('protocol', 1) == 2:
+            from hermes_cli.gateway_client import GatewayRPCError
+            try:
+                state = await call('submit_v2' if fresh else 'recover_v2', params)
+            except GatewayRPCError as exc:
+                if not fresh or exc.code != -32601:
+                    raise
+                # Only an explicit unknown-method response proves v2 did not run.
+                record['protocol'] = 1
+                save()
+            else:
+                delay = .1
+                while state['status'] == 'preparing':
+                    if cancel_event is not None and cancel_event.is_set():
+                        await call('cancel_v2', params)
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 2.0)
+                    state = await call('recover_v2', params)
+                if state['status'] == 'terminal':
+                    job.update(state.get('job_flags') or {})
+                    return tuple(state['result'])
+                if state['status'] not in {'queued', 'started'}:
+                    raise CronExecutionUnknown('unknown_execution: monitor admission not confirmed')
+                return await poll(call, {'session_id': state['session_id'], 'admission_id': state['admission_id']})
         try:
             receipt = await call('submit', params)
         except Exception as exc:
@@ -102,6 +144,9 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
                 receipt = {'session_id': state['session_id'], 'admission_id': state['admission_id']}
             else:
                 raise
+        return await poll(call, receipt)
+
+    async def poll(call, receipt):
         record['receipt'] = receipt
         save()
         delay, progress = .1, None
@@ -167,7 +212,7 @@ def reconcile_pending(*, allow_connect=True):
     for journal in sorted(root.glob('*.json')):
         try:
             record = json.loads(journal.read_text(encoding='utf-8-sig'))
-            params = record['params']
+            params = _journal_params(record)
             if journal != journal_path(params['job_id'], params['request_id']):
                 raise ValueError('cron journal identity conflict')
             if execution_owner_live(params['request_id'], params['job_id']):
@@ -187,10 +232,11 @@ def reconcile_pending(*, allow_connect=True):
                 if owner is None and not allow_connect:
                     continue
                 async def observe():
+                    recover = 'recover_v2' if record.get('protocol', 1) == 2 else 'recover'
                     if owner is not None:
-                        return await operation(owner[0], 'recover', params)
+                        return await operation(owner[0], recover, params)
                     async with connect_gateway() as client:
-                        return await client.rpc('cron.recover', **params)
+                        return await client.rpc('cron.' + recover, **params)
                 if owner is not None:
                     state = asyncio.run_coroutine_threadsafe(observe(), owner[1]).result(timeout=20)
                 else:

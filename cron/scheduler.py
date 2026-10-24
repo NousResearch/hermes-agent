@@ -1583,7 +1583,11 @@ def _apply_monitor_gate(
     user-authored ``extra_prompt`` so the prompt scanner keeps its strict user-input boundary.
     """
     from cron.monitor import check_monitor, job_has_monitor
+    from gateway.session_cron_monitor import prepared_context
 
+    prepared = prepared_context(job)
+    if prepared is not None:
+        return None, extra_prompt, prepared['context']
     if not job_has_monitor(job):
         return None, extra_prompt, None
     _mon = check_monitor(job)

@@ -133,6 +133,10 @@ def test_the_preset_reads_the_table_on_demand_wherever_it_prices_it_that_way(tmp
 
     assert lazy.keys["lazy-mode"] == "on"
     assert "lazy-mode" not in eager.keys
+    lazy_ini, eager_ini = tmp_path / "lazy.ini", tmp_path / "eager.ini"
+    presets.write_presets([lazy], lazy_ini)
+    presets.write_presets([eager], eager_ini)
     window = min(lazy.window, eager.window)
-    assert (presets.resident_footprint(gguf, _unified(lazy_reads=False), window)
-            - presets.resident_footprint(gguf, _unified(lazy_reads=True), window)) == OVER_4_GIB * 4
+    assert (presets.resident_footprint(gguf, _unified(lazy_reads=False), window, preset_path=eager_ini)
+            - presets.resident_footprint(gguf, _unified(lazy_reads=True), window,
+                                         preset_path=lazy_ini)) == OVER_4_GIB * 4

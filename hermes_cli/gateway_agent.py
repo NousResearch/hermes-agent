@@ -99,7 +99,8 @@ class GatewayAgent:
                  tool_gen_callback=None, notice_callback=None, notice_clear_callback=None,
                  reaction_callback=None, interim_assistant_callback=None, connection=None,
                  push_reasoning=False, model_confirm_callback=None, modal_withdraw_callback=None,
-                 one_turn=False, one_turn_reasoning=None, one_turn_alias="", **_ignored):
+                 inline_diff_callback=None, one_turn=False, one_turn_reasoning=None,
+                 one_turn_alias="", **_ignored):
         conn = connection or getattr(session_db, "connection", None)
         if conn is None:
             raise GatewayClientError("Gateway session unavailable; no local fallback")
@@ -123,6 +124,7 @@ class GatewayAgent:
         self._show_reasoning_sent = None
         self.thinking_callback = thinking_callback
         self.tool_progress_callback = tool_progress_callback
+        self.inline_diff_callback = inline_diff_callback  # (tool_name, rendered diff); None = print as is
         self.tool_start_callback = tool_start_callback
         self.tool_complete_callback = tool_complete_callback
         self.stream_delta_callback = stream_delta_callback
@@ -951,7 +953,13 @@ class GatewayAgent:
         if self.interim_assistant_callback is not None:
             self.interim_assistant_callback(text, already_streamed=bool(payload.get("already_streamed")))
         elif text and str(text).strip():
-            self._emit_print(text)
+            from hermes_cli import cli_modern_layout as layout
+            if layout._ACTIVE:  # the glyph layout: a ☤-led block, spaced off the tool rows around it
+                for line in layout.text_block_lines(str(text)):
+                    self._emit_print(line)
+                layout.close_text_block()
+            else:
+                self._emit_print(text)
 
     def _on_tool_generating(self, payload, stream_callback, starts):
         if self.tool_gen_callback is not None:
@@ -969,6 +977,8 @@ class GatewayAgent:
         args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
         call_id = payload.get("tool_id") or payload.get("tool_call_id") or ""
         starts[call_id] = time.monotonic()
+        from hermes_cli.gateway_tools import note_tool
+        note_tool(name, started=True)  # the live dock lists a delegation's children while it runs
         if self._usage_stale:
             # Main's counters move right after each API call, before its tools run (the spinner's
             # `↓ N tok` beside a tool or approval); the gateway's next session.usage frame comes only
@@ -994,17 +1004,21 @@ class GatewayAgent:
             self.tool_progress_callback("tool.completed", name, None, None, duration=duration,
                                         is_error=bool(payload.get("is_error")), result=result)
         self._usage_stale = True
-        from hermes_cli.gateway_tools import mark_dirty
+        from hermes_cli.gateway_tools import mark_dirty, note_tool
         mark_dirty()  # a terminal/process call may have started or stopped a background process
+        note_tool(name, started=False)
         if name == "todo":
             self._todo_from_result(result)
         diff = payload.get("inline_diff")
         if isinstance(diff, str) and diff:
-            from cli import _cprint
-            from hermes_cli.cli_modern_layout import diff_printer
-            emit = diff_printer(_cprint)
-            for line in diff.rstrip("\n").splitlines():
-                emit(line)
+            if self.inline_diff_callback is not None:
+                self.inline_diff_callback(name, diff)
+            else:
+                from cli import _cprint
+                from hermes_cli.cli_modern_layout import diff_printer
+                emit = diff_printer(_cprint)
+                for line in diff.rstrip("\n").splitlines():
+                    emit(line)
             if name == "delegate_task" and self.tool_complete_callback is not None:
                 self.tool_complete_callback(call_id, name, args, result)
         elif self.tool_complete_callback is not None:

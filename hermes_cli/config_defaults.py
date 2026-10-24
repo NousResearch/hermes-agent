@@ -852,9 +852,8 @@ DEFAULT_CONFIG = {
         # Stream reasoning live before the response; otherwise thinking models show only a spinner
         # for tens of seconds.
         "show_reasoning": True,
-        # Post-response "Reasoning" recap collapses to 10 lines; true prints it all (live streaming
-        # is always full).
-        "reasoning_full": False,
+        "reasoning_full": False,  # true: post-response recap not clamped to 10 lines (live is full)
+        "cli_reasoning_style": "full",  # full box | collapsed ("✻ Thought for 8s · <heading>"; Ctrl+O)
         # Background self-improvement notices in chat: "off" (review still runs) | "on" (generic "💾
         # Memory updated") | "verbose" (content preview). Per-platform via
         # display.platforms.<platform>.memory_notifications.
@@ -877,6 +876,7 @@ DEFAULT_CONFIG = {
         # Print a one-line summary of resolved modal prompts (approval/clarify) to scrollback.
         "persist_prompts": True,
         "inline_diffs": True,     # inline diff previews for write_file/patch/skill_manage
+        "tool_output_preview": 3,  # CLI: dim result lines under each tool row (0 = off; verbose 4x)
         # Append a one-line advisory to the final response when a write_file/patch failed this turn
         # and was never superseded by a successful write to the same path (catches "half the
         # parallel patches failed, model claims success").
@@ -906,9 +906,9 @@ DEFAULT_CONFIG = {
         # fights terminal auto-scroll in non-fullscreen mode.
         # See #45592.
         "cli_refresh_interval": 1.0,
-        # Vi/vim keybindings in the CLI input composer (config-only, no slash command).
-        # Off by default, preserving prompt_toolkit's standard emacs bindings.
-        "vim_mode": False,
+        "vim_mode": False,  # vi keybindings in the CLI composer (config-only); off = emacs bindings
+        "cli_mouse": False,  # classic CLI footer clicks; off: mouse tracking takes wheel + text select
+        "cli_footer_tips": True,  # classic CLI: rotating dim "✦ Tip:" line while the footer is empty
         "user_message_preview": {  # CLI: submitted user-message lines echoed to scrollback
             "first_lines": 2,
             "last_lines": 2,

@@ -205,6 +205,16 @@ class SubdirectoryHintTracker:
         cmd = args.get("command", "") if tool_name in _COMMAND_TOOLS else None
         if isinstance(cmd, str):
             self._extract_paths_from_command(cmd, candidates)
+        # V4A mode (the edit dialect OpenAI-family mains get) names its files only in
+        # `*** Update/Add/Delete/Move File:` headers, never in `path`: without this an edit
+        # into a subdirectory never surfaced that directory's AGENTS.md.
+        v4a = args.get("patch") if tool_name == "patch" else None
+        if isinstance(v4a, str) and v4a.strip():
+            from tools.file_tools import _collect_v4a_header_paths
+
+            collected = _collect_v4a_header_paths(v4a)
+            for raw in collected[0] if isinstance(collected, tuple) else ():
+                self._add_path_candidate(raw, candidates)
         return list(candidates)
 
     def _add_path_candidate(self, raw_path: str, candidates: set[Path]):

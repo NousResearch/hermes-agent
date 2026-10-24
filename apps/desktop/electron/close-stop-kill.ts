@@ -7,6 +7,9 @@
  * are inventoried, and only locks with no live holder are cleared.
  */
 
+import fs from 'node:fs'
+import path from 'node:path'
+
 export interface RuntimeLock {
   path: string
   /** PIDs named by the lock file, if any. */
@@ -122,4 +125,63 @@ export function closeStopFailureMessage(result: CloseStopKillResult): string {
   const retained = result.retainedLocks.length ? `locks still held: ${result.retainedLocks.join(', ')}` : ''
 
   return ['Windows close/stop did not finish cleanly.', kills, remaining, retained].filter(Boolean).join(' ')
+}
+
+export function holderPidsFromLockFile(lockPath: string): Pick<RuntimeLock, 'holderPids' | 'held'> {
+  try {
+    const raw = fs.readFileSync(lockPath, 'utf8').trim()
+
+    if (!raw) {
+      return { holderPids: [] }
+    }
+
+    let pid = Number(raw)
+
+    if (!Number.isInteger(pid)) {
+      const parsed = JSON.parse(raw) as { pid?: unknown }
+      pid = Number(typeof parsed === 'object' && parsed ? parsed.pid : parsed)
+    }
+
+    return Number.isInteger(pid) && pid > 0 ? { holderPids: [pid] } : { holderPids: [] }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null)?.code
+
+    // Can't read the file: a live holder may be why. Do not clear it.
+    if (code === 'EBUSY' || code === 'EPERM' || code === 'EACCES') {
+      return { holderPids: [], held: true }
+    }
+
+    return { holderPids: [] }
+  }
+}
+
+export function collectCloseStopLocks(hermesHome: string): RuntimeLock[] {
+  const roots = [hermesHome]
+  const profilesRoot = path.join(hermesHome, 'profiles')
+
+  try {
+    for (const name of fs.readdirSync(profilesRoot)) {
+      roots.push(path.join(profilesRoot, name))
+    }
+  } catch {
+    // No profiles directory — the default home lock is enough.
+  }
+
+  const locks: RuntimeLock[] = []
+
+  for (const root of roots) {
+    const lockPath = path.join(root, 'gateway.lock')
+
+    try {
+      if (!fs.statSync(lockPath).isFile()) {
+        continue
+      }
+    } catch {
+      continue
+    }
+
+    locks.push({ path: lockPath, ...holderPidsFromLockFile(lockPath) })
+  }
+
+  return locks
 }

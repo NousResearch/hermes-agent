@@ -32,6 +32,7 @@ from utils import env_var_enabled
 from hermes_cli.config import load_config_readonly
 from hermes_cli.middleware import VALID_MIDDLEWARE
 from hermes_cli.plugin_capabilities import plugin_capability_granted
+from hermes_cli.plugins_origin import PluginOriginContextMixin, PluginOriginManagerMixin
 from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV, legacy_relay_plugin_keys
 # Sibling modules' names are re-exported here (origin) so plugins and tests keep one import path.
 from hermes_cli.plugins_manifest import (
@@ -226,7 +227,7 @@ class LoadedPlugin:
     deferred: bool = False
 
 
-class PluginContext:
+class PluginContext(PluginOriginContextMixin):
     """Facade given to plugins so they can register tools and hooks."""
 
     def __init__(self, manifest: PluginManifest, manager: PluginManager):
@@ -1108,7 +1109,7 @@ def _resolve_hook_callback_timeout() -> float:
     return timeout
 
 
-class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
+class PluginManager(PluginOriginManagerMixin, PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     """Central manager that discovers, loads, and invokes plugins."""
 
     def __init__(self, scope_key: Optional[str] = None) -> None:
@@ -1130,10 +1131,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # messaging gateway and a TUI in one process would otherwise clobber each other.
         self._tui_message_injector: tuple[object, Callable] | None = None
         self._context_engine = None  # Set by a plugin via register_context_engine()
-        # Manager-local registries keyed by name (see the matching ``PluginContext.register_*``):
-        # plugins, hooks, middleware, CLI + slash commands, prompt sections, skills (qualified name ->
-        # metadata), portable MCP servers, auxiliary tasks, approval transports, Slack action handlers
-        # (matcher, callback, plugin_name), platform handler factories (lowercase platform -> list).
+        # Manager-local registries: plugins, hooks, commands, prompts, skills, MCP
+        # servers, tasks, approvals, Slack actions and platform factories. Origin
+        # projectors are a lazy profile-local registry on the manager mixin.
         self._plugins: dict[str, LoadedPlugin] = {}
         self._hooks: dict[str, list[Callable]] = {}
         # Fallback hooks registered by a memory provider before general discovery.

@@ -431,7 +431,20 @@ def _construct_agent(frame, factory, policy, **kwargs):
     """Agent construction resolves the provider credentials; a Kanban attempt that fails here
     still books the one-shot exit mapping (quota wall 75, re-login 78) before the crash."""
     try:
-        if kwargs['api_key'] is None:
+        if kwargs.get('api_mode') is None:
+            # One shared ``route_runtime`` resolution covers both: the in-process turn's api_mode and
+            # key (opencode-go Responses models stay ``codex_responses`` instead of falling through to
+            # chat_completions, #141861). A fallback entry's key, provider and model belong to another
+            # route, so neither is carried; the agent's own fallback chain switches all three
+            # together (#139155).
+            from gateway.session_worker_construct import worker_runtime
+            runtime, fallback_entry = worker_runtime(policy, kwargs)
+            if fallback_entry is None:
+                if kwargs.get('api_key') is None:
+                    kwargs['api_key'] = runtime.get('api_key')
+                kwargs['api_mode'] = runtime.get('api_mode')
+        elif kwargs.get('api_key') is None:
+            # Defensive: no current caller presets api_mode, so this only resolves the missing key.
             from gateway.session_worker_construct import worker_api_key
             kwargs['api_key'] = worker_api_key(policy, kwargs)
         return factory(**kwargs)

@@ -189,11 +189,14 @@ def route_runtime(policy, frozen, model, key, *, fallback=True):
             explicit_api_key=key, explicit_base_url=launch_url, target_model=model)
 
 
-def worker_api_key(policy, construct):
-    """Child side, for a worker launched without a key (every Kanban run): the route's own credential,
+def worker_runtime(policy, construct):
+    """``(runtime, fallback_entry)`` a managed worker builds its agent from: the route's own runtime,
     resolved as the in-process turn resolves it, from this process's profile home (its HERMES_HOME and
-    ``.env``). A fallback entry's key belongs to another provider and model, so the primary never
-    carries it; the agent's own fallback chain switches all three together (#139155).
+    ``.env``). The one resolver the key-less credential lookup (``worker_api_key``) and the worker's
+    ``api_mode`` threading share, so an opencode-go Responses model keeps ``codex_responses`` instead of
+    falling through to chat_completions (#141861). A fallback entry's key belongs to another provider
+    and model, so the primary never carries it; the agent's own fallback chain switches all three
+    together (#139155).
 
     A primary AuthError walks the chain the agent will actually get: the owner's per-turn
     ``construct_v1`` chain (an ordinary session's refreshed profile fallbacks) when it was sent,
@@ -201,7 +204,19 @@ def worker_api_key(policy, construct):
     frozen, model = policy.effective()
     if 'fallback_model' in construct:
         frozen = {**frozen, 'fallback_providers': construct['fallback_model'] or [], 'fallback_model': None}
-    runtime, fallback_entry = route_runtime(policy, frozen, model, None)
+    key = construct.get('api_key')
+    # Defensive: no current caller passes a non-str key; a resolved transport is never a launch key.
+    if key is not None and not isinstance(key, str):
+        # ``_construct_agent`` passes the whole AIAgent kwargs: a resolved transport (Entra bearer
+        # factories, credential pools) is not a launch key — the frozen config's own credentials apply.
+        key = None
+    return route_runtime(policy, frozen, model, key)
+
+
+def worker_api_key(policy, construct):
+    """Child side, for a worker launched without a key (every Kanban run): the route's own credential,
+    via ``worker_runtime`` (the in-process turn's resolution)."""
+    runtime, fallback_entry = worker_runtime(policy, construct)
     return runtime.get('api_key') if fallback_entry is None else None
 
 

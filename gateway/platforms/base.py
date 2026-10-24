@@ -4618,6 +4618,15 @@ class BasePlatformAdapter(ABC):
             await self._flush_text_debounce_now(session_key)
             if session_key in self._pending_messages:
                 pending_event = self._pending_messages[session_key]
+                same_event = (pending_event.message_id == event.message_id
+                              and (bool(pending_event.message_id)
+                                   or pending_event.timestamp == event.timestamp))
+                if getattr(self.gateway_runner, "_draining", False) and same_event:
+                    # The runner accepted this event for post-restart handling and put it back in
+                    # the pending slot. Do not immediately dispatch it again: that re-enters the
+                    # drain branch, requeues the same event, and sends another drain notice.
+                    logger.debug("[%s] Parking queued event during restart drain for %s", self.name, session_key)
+                    return
                 delay = self._requeue_backoff_delay(session_key, pending_event, event)
                 if not delay:  # a backed-off event stays queued until the drain task wakes
                     self._pending_messages.pop(session_key)

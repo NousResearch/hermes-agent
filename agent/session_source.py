@@ -35,6 +35,28 @@ def session_source_for(platform: Optional[str]) -> str:
     return source or platform or "cli"
 
 
+# The ``session.create`` wire vocabulary: the labels the create RPC can store — the gateway's
+# ``session_policy.SURFACES`` keys, mirrored by the canonical create contract's ``source`` Literal.
+# Automation labels (``kanban``, ``cron``, ``bot_room``, ...) name worker executions and
+# direct-store rows, but cannot travel through the create wire.
+CREATE_SOURCES = frozenset({"cli", "tui", "gui", "acp", "tool", ONESHOT_SOURCE})
+
+
+def create_wire_source_for(platform: Optional[str]) -> str:
+    """``session_source_for`` bounded to ``CREATE_SOURCES``: the row label ``session.create``
+    can actually store. An inherited automation label the wire cannot express (a finite
+    ``hermes chat -q`` child of a kanban worker session inherits ``kanban``, ...) falls back to
+    the finite run's designed ``oneshot`` label — or ``platform``/``cli`` when attended — instead
+    of failing the whole launch with ``invalid_params``. An explicit ``--source`` is kept
+    verbatim: the gateway refuses what it cannot store, and that refusal is the user's to see."""
+    source = session_source_for(platform)
+    if source in CREATE_SOURCES or get_session_env("HERMES_SESSION_SOURCE_EXPLICIT", "") == "1":
+        return source
+    if get_session_env("HERMES_SINGLE_QUERY_SESSION", "") == "1":
+        return ONESHOT_SOURCE
+    return platform or "cli"
+
+
 def is_attended(agent: Any) -> bool:
     """A delegated child answers its parent, not a person, though its copied context still carries
     the parent's source; a library caller (no platform) has no one reading either."""

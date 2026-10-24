@@ -273,7 +273,8 @@ def _copilot_runtime_api_mode(model_cfg: dict[str, Any], api_key: str, *, target
         # legitimate ``codex_responses`` for GPT-5 variants like gpt-5.4-mini is still honored.
         model_name = str(_effective_model(model_cfg, target_model)).strip()
         if (configured_mode == "codex_responses" and model_name
-                and not _models._should_use_copilot_responses_api(model_name)):
+                and not _models._should_use_copilot_responses_api(
+                    model_name, catalog=_models.fetch_github_model_catalog(api_key=api_key))):
             return "chat_completions"
         return configured_mode
     # Use the model being resolved, not the persisted default: a Claude MoA slot inheriting

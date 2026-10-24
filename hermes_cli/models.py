@@ -2479,11 +2479,7 @@ def _github_reasoning_efforts_for_model_id(model_id: str) -> list[str]:
     return []
 
 
-def _should_use_copilot_responses_api(model_id: str) -> bool:
-    """opencode's ``shouldUseCopilotResponsesApi``: GPT-5+ uses the Responses API except
-    ``gpt-5-mini``; non-GPT models (Claude, Gemini, ...) use Chat Completions."""
-    match = re.match(r"^gpt-(\d+)", model_id)
-    return bool(match) and int(match.group(1)) >= 5 and not model_id.startswith("gpt-5-mini")
+from hermes_cli.models_copilot_endpoints import should_use_copilot_responses_api as _should_use_copilot_responses_api
 
 
 def copilot_model_api_mode(
@@ -2495,7 +2491,7 @@ def copilot_model_api_mode(
     if catalog is None and api_key:  # fetch once so normalize + endpoint check share it
         catalog = fetch_github_model_catalog(api_key=api_key)
     normalized = normalize_copilot_model_id(model_id, catalog=catalog, api_key=api_key)
-    if normalized and _should_use_copilot_responses_api(normalized):
+    if normalized and _should_use_copilot_responses_api(normalized, catalog=catalog):
         return "codex_responses"
     return "chat_completions"
 

@@ -1843,9 +1843,10 @@ class _BedrockCompletionsAdapter:
         self._model = model
 
     def create(self, **kwargs) -> Any:
-        from agent.bedrock_adapter import call_converse
+        from agent.bedrock_adapter import bedrock_max_output_tokens, call_converse
         model = kwargs.get("model", self._model)
-        max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens")
+        # Omitted maxTokens is NOT the Converse model maximum (Claude gets 4,096): Claude gets a cap.
+        max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens") or bedrock_max_output_tokens(model)
         # OpenAI accepts ``stop`` as str or list; Converse requires a list.
         stop = kwargs.get("stop")
         if isinstance(stop, str):
@@ -1865,8 +1866,7 @@ class _BedrockCompletionsAdapter:
             )
         response = call_converse(
             region=self._region, model=model, messages=kwargs.get("messages", []), tools=kwargs.get("tools"),
-            # Converse specifically defaults to the model maximum when omitted.
-            # Truthiness mirrors the Anthropic shim: explicit 0 means omit.
+            # Explicit 0 / None means "no caller cap": the line above picks a Claude cap or omits.
             max_tokens=int(max_tokens) if max_tokens else None, temperature=kwargs.get("temperature"),
             top_p=kwargs.get("top_p"), stop_sequences=stop,
         )

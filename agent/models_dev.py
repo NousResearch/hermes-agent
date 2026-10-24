@@ -117,7 +117,7 @@ PROVIDER_TO_MODELS_DEV: dict[str, str] = {
     "alibaba": "alibaba", "qwen-oauth": "alibaba", "copilot": "github-copilot",
     "ai-gateway": "vercel", "opencode-zen": "opencode",
     "opencode-go": "opencode-go",
-    "kilocode": "kilo", "fireworks": "fireworks-ai",
+    "kilocode": "kilo", "fireworks": "fireworks-ai", "baseten": "baseten",
     "huggingface": "huggingface", "gemini": "google", "google": "google",
     "xai": "xai",
     "xai-oauth": "xai",  # OAuth is a transport path for the same xAI catalog

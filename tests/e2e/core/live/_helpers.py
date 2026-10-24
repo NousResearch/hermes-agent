@@ -19,6 +19,7 @@ credential-shaped env var per test) and are never printed, logged or written.
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 from dataclasses import dataclass, field
@@ -194,7 +195,10 @@ def install_wire_recorder(monkeypatch: pytest.MonkeyPatch, secret: str) -> WireL
         if request.method != "POST":
             return None
         try:
-            return json.loads(request.content or b"null")
+            body = request.content
+            if request.headers.get("content-encoding", "").lower() == "gzip":
+                body = gzip.decompress(body)
+            return json.loads(body or b"null")
         except Exception:
             return None
 

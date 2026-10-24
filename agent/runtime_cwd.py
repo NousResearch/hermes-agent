@@ -19,6 +19,13 @@ _UNSET: Any = object()
 
 _SESSION_CWD: ContextVar = ContextVar("HERMES_SESSION_CWD", default=_UNSET)
 
+# Backends whose cwd lives on a different filesystem than this process — keep in sync with
+# agent/prompt_builder.py:_REMOTE_TERMINAL_BACKENDS (duplicated rather than imported to avoid a
+# circular import; the parity is pinned by test).
+_REMOTE_TERMINAL_BACKENDS = frozenset({
+    "docker", "singularity", "modal", "daytona", "ssh", "vercel_sandbox", "managed_modal",
+})
+
 # The package/source root (<root>/agent/runtime_cwd.py). A backend launched from or
 # self-spawned into this tree (desktop default) must never let an os.getcwd() fallback
 # inject this repo's contributor AGENTS.md as project context.
@@ -73,7 +80,29 @@ def scope_terminal_cwd() -> str:
     return terminal_env("TERMINAL_CWD", "")
 
 
+def _active_backend() -> str:
+    """The active terminal backend, scope-aware like every TERMINAL_* consumer here
+    (:func:`scope_terminal_cwd`): under gateway multiplexing the per-turn scope carries the
+    ACTIVE profile's backend while the process-global env may hold the launch profile's."""
+    try:
+        from tools.terminal_scope import terminal_env
+    except ImportError:
+        return (os.environ.get("TERMINAL_ENV") or "").strip().lower()
+    return (terminal_env("TERMINAL_ENV") or "").strip().lower()
+
+
+def _backend_is_remote() -> bool:
+    """Whether the active backend runs its filesystem elsewhere (ssh, container, sandbox): a
+    local ``Path.is_dir`` can never vouch for its cwd, and ``~`` in it names the REMOTE user's
+    home (``tui_gateway`` keeps the same split: ``_terminal_task_cwd`` is NOT host-validated)."""
+    return _active_backend() in _REMOTE_TERMINAL_BACKENDS
+
+
 def _existing_dir(raw: str, label: str) -> Path | None:
+    if _backend_is_remote():
+        # Remote cwd: honor verbatim — no host is_dir check, no host expanduser (``~`` is the
+        # remote home, and expanding it here would silently point at THIS host's #83515).
+        return Path(raw)
     p = Path(raw).expanduser()
     if p.is_dir():
         return p

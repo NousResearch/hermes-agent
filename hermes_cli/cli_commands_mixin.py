@@ -33,7 +33,7 @@ from agent.message_metadata import message_identity
 from agent.turn_context import extract_api_content_sidecar
 from hermes_cli.cli_agent_setup_mixin import _gateway_open, _retire_agent
 from hermes_cli.cli_commands_session_tools import (
-    CLICommandsSessionToolsMixin, _TTYBuf, _accent, _accent_line, _command_arg, _cp, _dim,
+    CLICommandsSessionToolsMixin, _TTYBuf, _accent, _accent_line, _command_arg, _cp, _dim, queue_slash_turn,
     _dim_line, _gt, _lines, _pr, _probe, _rollback_kept, _save, _say_block, _shlex_args, _t, _tn)
 from hermes_cli.cli_session_switch import (
     _end_current_session, _sync_agent_to_session)
@@ -1303,7 +1303,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         if ack:
             __import__("cli")._cli_visible_print("\n" + ack)
         if hasattr(self, "_pending_input"):
-            self._pending_input.put(msg)
+            queue_slash_turn(self, msg)
         else:  # pragma: no cover - defensive (no live input loop)
             print(f"  {_t('shared.needs_active_session', command=command)}")
 
@@ -1721,7 +1721,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
     def _kick_goal(self, prompt: str) -> bool:
         """Queue the next turn without mutating cached conversation history."""
         try:
-            self._pending_input.put(prompt)
+            queue_slash_turn(self, prompt)
             return True
         except Exception:
             return False

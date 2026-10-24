@@ -140,8 +140,18 @@ class CLITuiRuntimeMixin:
                 if self.handle_bang_shell(user_input):
                     return
                 if _looks_like_slash_command(user_input):
-                    user_input = self._tui_run_slash_input(user_input)
+                    # A turn-queuing command (/goal, /plan, a skill) takes the composer images via
+                    # queue_slash_turn; a returned seed carries what is left; otherwise they go
+                    # back on the composer instead of vanishing with the command (#126379).
+                    self._slash_submit_images = list(submit_images) or None
+                    try:
+                        user_input = self._tui_run_slash_input(user_input)
+                    finally:
+                        submit_images, self._slash_submit_images = list(self._slash_submit_images or ()), None
                     if user_input is None:
+                        if submit_images:
+                            self._attached_images[:0] = submit_images
+                            self._app.invalidate()
                         return
 
         if isinstance(user_input, str) and _PASTE_REF_RE.search(user_input):

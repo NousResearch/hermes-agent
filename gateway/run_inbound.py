@@ -809,7 +809,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         def _canon(cmd):
             # Aliases resolve to the canonical name so dispatch and hook names don't depend on them.
             _def = _resolve_cmd(cmd) if cmd else None
-            return _def, (_def.name if _def else cmd)
+            return _def, (self._hm_command_key(cmd)[1] if cmd else None)
 
         command = event.get_command()
         _cmd_def, canonical = _canon(command)
@@ -831,7 +831,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         # Per-platform slash access control: only active when the operator set ``allow_admin_from``
         # for the source's scope; then non-admins get ``user_allowed_commands`` plus the
         # /help, /whoami floor. Plain chat is never gated.
-        _denied = self._check_slash_access(source, canonical)
+        _denied = self._check_slash_access(source, command)
         if _denied is not None:
             return True, _denied, command, canonical
 
@@ -1008,6 +1008,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             self._gateway_plain_command_handlers().get(canonical)
             or self._gateway_idle_command_handlers().get(canonical)
         )
+        if plain_handler is not None or canonical in self._HM_CANONICAL_COMMANDS:
+            denied = self._check_slash_access(source, canonical)
+            if denied is not None:
+                return True, denied
         if plain_handler is not None:
             async with self._async_profile_scope_for_source(source):
                 return True, await plain_handler(event)

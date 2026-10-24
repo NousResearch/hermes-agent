@@ -30,6 +30,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Arcee AI** | `ARCEEAI_API_KEY` in `~/.hermes/.env` (provider: `arcee`; aliases: `arcee-ai`, `arceeai`) |
 | **GMI Cloud** | `GMI_API_KEY` in `~/.hermes/.env` (provider: `gmi`; aliases: `gmi-cloud`, `gmicloud`) |
 | **Nebius Token Factory** | `NEBIUS_API_KEY` in `~/.hermes/.env` (provider: `nebius-token-factory`; aliases: `nebius`, `nebius-tf`, `tokenfactory`) |
+| **TokenRhythm** | `TOKENRHYTHM_API_KEY` in `~/.hermes/.env` (provider: `tokenrhythm`; alias: `token-rhythm`; OpenAI-compatible gateway to DeepSeek, GLM, Kimi, Qwen, MiniMax, Seed) |
 | **Actual Computer** | `ACTUAL_API_KEY` in `~/.hermes/.env` for the hosted relay; set `model.base_url` in `config.yaml` for a local daemon (no key needed on loopback). Provider: `actual`; aliases: `actual-computer`, `actualcomputer`, `aci`. |
 | **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
 | **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
@@ -341,6 +342,10 @@ hermes chat --provider gmi --model zai-org/GLM-5.1-FP8
 # Nebius Token Factory
 hermes chat --provider nebius --model deepseek-ai/DeepSeek-V4-Pro
 # Requires: NEBIUS_API_KEY in ~/.hermes/.env
+
+# TokenRhythm (bare model IDs from its catalog)
+hermes chat --provider tokenrhythm --model deepseek-v4-pro-0813
+# Requires: TOKENRHYTHM_API_KEY in ~/.hermes/.env
 ```
 
 Fireworks uses its native slash-form catalog IDs, such as `accounts/fireworks/models/kimi-k2p6`. Run `hermes model`, choose **Fireworks AI**, and select from the live catalog or enter another Fireworks model ID. The default endpoint is `https://api.fireworks.ai/inference/v1`; configure a different endpoint through `model.base_url` in `config.yaml`, not `.env`.
@@ -352,7 +357,7 @@ model:
   default: "zai-org/GLM-5.1-FP8"
 ```
 
-Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, `META_BASE_URL`, or `TOKENHUB_BASE_URL` environment variables.
+Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, `META_BASE_URL`, `TOKENHUB_BASE_URL`, or `TOKENRHYTHM_BASE_URL` environment variables.
 
 :::note Meta contributor tier
 `muse-spark-1.2-contributor` and `muse-spark-1.3-contributor` are Meta's contributor tiers — Meta may train on your prompts and completions, so [interactive model selection asks for confirmation](../user-guide/configuring-models.md) before using either. For current pricing and rate limits, see [Meta Model API pricing and rate limits](https://dev.meta.ai/docs/pricing-rate-limits/). Use the standard `muse-spark-1.2` / `muse-spark-1.3` (no training) for confidential work.
@@ -405,6 +410,24 @@ model:
 ```
 
 Get your API key at [novita.ai/settings/key-management](https://novita.ai/settings/key-management). The base URL can be overridden with `NOVITA_BASE_URL`.
+
+### TokenRhythm
+
+[TokenRhythm](https://tokenrhythm.studio) is an OpenAI-compatible gateway to open frontier models (DeepSeek, GLM, Kimi, Qwen, MiniMax, MiMo, Doubao Seed, LongCat). Hermes talks to it over Chat Completions at `https://tokenrhythm.studio/v1`; every listed model supports tool calling. Model IDs are bare (`deepseek-v4-pro-0813`, `kimi-k2.6`), and `hermes model` merges the built-in list with your account's live `/v1/models`.
+
+```bash
+hermes chat --provider tokenrhythm --model deepseek-v4-pro-0813
+# Requires: TOKENRHYTHM_API_KEY in ~/.hermes/.env
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "tokenrhythm"
+  default: "deepseek-v4-pro-0813"
+```
+
+Get your API key at [tokenrhythm.studio/account/keys](https://tokenrhythm.studio/account/keys). Auxiliary tasks default to `deepseek-v4-flash-0731`. The base URL can be overridden with `TOKENRHYTHM_BASE_URL`; see the [API docs](https://tokenrhythm.studio/docs/api-integration).
 
 ### Ollama Cloud — Managed Ollama Models, OAuth + API Key
 
@@ -1725,7 +1748,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. The chain is tried entry-by-entry; activation is one-shot per session.
 
-Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `actual`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `tencent-tokenplan`, `nebius-token-factory`, `router`, `custom`.
+Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `commandcode`, `commandcode-anthropic`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `actual`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `tencent-tokenplan`, `nebius-token-factory`, `tokenrhythm`, `router`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — or interactively via `hermes fallback`. For full details on when it triggers, how the chain advances, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](../user-guide/features/fallback-providers.md).

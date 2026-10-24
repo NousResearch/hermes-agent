@@ -11279,6 +11279,202 @@
    ]
   }
  },
+ "tokenrhythm": {
+  "api_mode": "chat_completions",
+  "base_url": "https://tokenrhythm.studio/v1",
+  "high": {
+   "extra_body": {
+    "thinking": {
+     "type": "enabled"
+    }
+   },
+   "messages": [
+    {
+     "content": "You are a test agent.",
+     "role": "system"
+    },
+    {
+     "content": "list files",
+     "role": "user"
+    },
+    {
+     "content": "",
+     "reasoning_content": " ",
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "function": {
+        "arguments": "{\"command\": \"ls\"}",
+        "name": "terminal"
+       },
+       "id": "call_1",
+       "type": "function"
+      }
+     ]
+    },
+    {
+     "content": "a.txt\nb.txt",
+     "role": "tool",
+     "tool_call_id": "call_1"
+    },
+    {
+     "content": "thanks, now summarize",
+     "role": "user"
+    }
+   ],
+   "model": "deepseek-v4-pro-0813",
+   "reasoning_effort": "high",
+   "timeout": 1800.0,
+   "tools": [
+    {
+     "function": {
+      "description": "Run a shell command.",
+      "name": "terminal",
+      "parameters": {
+       "properties": {
+        "command": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "command"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ]
+  },
+  "model": "deepseek-v4-pro-0813",
+  "off": {
+   "extra_body": {
+    "thinking": {
+     "type": "disabled"
+    }
+   },
+   "messages": [
+    {
+     "content": "You are a test agent.",
+     "role": "system"
+    },
+    {
+     "content": "list files",
+     "role": "user"
+    },
+    {
+     "content": "",
+     "reasoning_content": " ",
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "function": {
+        "arguments": "{\"command\": \"ls\"}",
+        "name": "terminal"
+       },
+       "id": "call_1",
+       "type": "function"
+      }
+     ]
+    },
+    {
+     "content": "a.txt\nb.txt",
+     "role": "tool",
+     "tool_call_id": "call_1"
+    },
+    {
+     "content": "thanks, now summarize",
+     "role": "user"
+    }
+   ],
+   "model": "deepseek-v4-pro-0813",
+   "timeout": 1800.0,
+   "tools": [
+    {
+     "function": {
+      "description": "Run a shell command.",
+      "name": "terminal",
+      "parameters": {
+       "properties": {
+        "command": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "command"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ]
+  },
+  "unset": {
+   "extra_body": {
+    "thinking": {
+     "type": "enabled"
+    }
+   },
+   "messages": [
+    {
+     "content": "You are a test agent.",
+     "role": "system"
+    },
+    {
+     "content": "list files",
+     "role": "user"
+    },
+    {
+     "content": "",
+     "reasoning_content": " ",
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "function": {
+        "arguments": "{\"command\": \"ls\"}",
+        "name": "terminal"
+       },
+       "id": "call_1",
+       "type": "function"
+      }
+     ]
+    },
+    {
+     "content": "a.txt\nb.txt",
+     "role": "tool",
+     "tool_call_id": "call_1"
+    },
+    {
+     "content": "thanks, now summarize",
+     "role": "user"
+    }
+   ],
+   "model": "deepseek-v4-pro-0813",
+   "reasoning_effort": "high",
+   "timeout": 1800.0,
+   "tools": [
+    {
+     "function": {
+      "description": "Run a shell command.",
+      "name": "terminal",
+      "parameters": {
+       "properties": {
+        "command": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "command"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ]
+  }
+ },
  "upstage": {
   "api_mode": "chat_completions",
   "base_url": "https://api.upstage.ai/v1",

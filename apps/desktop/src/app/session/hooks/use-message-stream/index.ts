@@ -49,6 +49,7 @@ import {
 } from './collapse-duplicate-final'
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
+import { isToolOnlyInterimReplay } from './interim-replay'
 import { extendInterruptedReply } from './interrupted-reply'
 import { bindReceiptUserRows } from './receipt-user-rows'
 import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
@@ -658,6 +659,10 @@ export function useMessageStream({
 
         let nextMessages = state.messages
 
+        if (isToolOnlyInterimReplay(nextMessages, streamId, authoritativeText, state.interimBoundaryPending)) {
+          return state
+        }
+
         if (streamId && nextMessages.some(m => m.id === streamId)) {
           // Seal the streaming bubble in place, marked interim so it renders
           // without an action footer (see ChatMessage.interim).
@@ -682,6 +687,27 @@ export function useMessageStream({
           // duplicate landing after the turn settled — refresh it in place.
           const lastUserIndex = nextMessages.findLastIndex(message => message.role === 'user')
           const normalizedText = authoritativeText.replace(/\s+/g, ' ').trim()
+
+          // Hydration folds several persisted commentary rows into one bubble.
+          // A replayed seal names one source text part, not the whole fold; do
+          // not append it again or replace the fold's other text and tool parts.
+          const coveredByHistory = nextMessages.some(
+            (message, index) =>
+              index > lastUserIndex &&
+              message.role === 'assistant' &&
+              message.durableComplete === false &&
+              !message.hidden &&
+              message.parts.some(
+                part =>
+                  part.type === 'text' &&
+                  part.sourceRowId !== undefined &&
+                  part.text.replace(/\s+/g, ' ').trim() === normalizedText
+              )
+          )
+
+          if (coveredByHistory) {
+            return streamId ? { ...state, streamId: null } : state
+          }
 
           const prevSameText = nextMessages.findLast(
             (message, index) =>

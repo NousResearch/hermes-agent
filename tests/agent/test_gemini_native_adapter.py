@@ -977,3 +977,47 @@ def test_long_decode_continues_across_hops_and_reports_first_hop_prompt(monkeypa
     assert [c.choices[0].finish_reason for c in finishes] == ["stop"]  # CONTINUATION is not the end
     assert "".join(c.choices[0].delta.content or "" for c in chunks) == "part one part two"
     assert (finishes[0].usage.prompt_tokens, finishes[0].usage.initial_prompt_tokens) == (32968, 100)
+
+
+_VERTEX_NATIVE_BASE = "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/publishers/google"
+
+
+@pytest.mark.parametrize("api_key,base_url,bearer", [
+    ("ya29.token", _VERTEX_NATIVE_BASE, True),
+    ("opaque-oauth-token", _VERTEX_NATIVE_BASE, True),
+    ("AIzaExpressKey", "https://aiplatform.googleapis.com/v1/projects/p/locations/global", False),
+    ("AQ.ExpressKey", "https://aiplatform.googleapis.com/v1/projects/p/locations/global", False),
+    ("AIzaStudioKey", "https://generativelanguage.googleapis.com/v1beta", False),
+])
+def test_vertex_oauth_token_sent_as_bearer_but_api_keys_are_not(api_key, base_url, bearer):
+    from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+
+    assert is_native_gemini_base_url(base_url)
+    headers = GeminiNativeClient(api_key=api_key, base_url=base_url)._headers()
+    if bearer:
+        assert headers["Authorization"] == f"Bearer {api_key}"
+        assert "x-goog-api-key" not in headers
+    else:
+        assert headers["x-goog-api-key"] == api_key
+        assert "Authorization" not in headers
+
+
+@pytest.mark.parametrize(
+    ("model", "thinking_config", "expected"),
+    [
+        # Gemini 3+ always thinks: no thinking_config must not leave a small cap for thoughts to eat.
+        ("google/gemini-4-argon", None, "ceiling"),
+        ("gemini-3.8-flash", None, "ceiling"),
+        # Explicitly hidden thoughts keep the caller's small cap (title generation's budget).
+        ("gemini-4-argon", {"includeThoughts": False, "thinkingLevel": "low"}, 100),
+        # Pre-3 models without thinking_config keep the cap.
+        ("gemini-2.0-flash", None, 100),
+    ],
+)
+def test_small_cap_gets_thinking_headroom_on_always_thinking_models(model, thinking_config, expected):
+    from agent.gemini_native_adapter import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS, build_gemini_request
+
+    req = build_gemini_request(model=model, messages=[{"role": "user", "content": "hi"}],
+                               max_tokens=100, thinking_config=thinking_config)
+    want = GEMINI_DEFAULT_MAX_OUTPUT_TOKENS if expected == "ceiling" else expected
+    assert req["generationConfig"]["maxOutputTokens"] == want

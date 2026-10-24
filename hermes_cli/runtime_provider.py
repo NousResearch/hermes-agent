@@ -959,13 +959,14 @@ def _raise_if_local_alias_missing_endpoint(requested_provider: str, explicit_bas
     )
 
 
-def _resolve_vertex_runtime(requested_provider: str) -> dict[str, Any]:
+def _resolve_vertex_runtime(requested_provider: str, target_model: Optional[str] = None) -> dict[str, Any]:
     """Vertex AI (OAuth2). The credential *path* (GOOGLE_APPLICATION_CREDENTIALS) must never be
     treated as a static API key; a short-lived token is minted per call, and mid-session expiry is
     recovered on 401 by run_agent._try_refresh_vertex_client_credentials(). Under
     :func:`deferred_token_mint` the credentials are loaded (same failure copy) but the token is a
     callable minted on first use, so a process that only routes never exchanges a JWT."""
-    from agent.vertex_adapter import get_vertex_base_url, get_vertex_config, vertex_access_token
+    from agent.vertex_adapter import get_vertex_base_url, get_vertex_config, vertex_access_token, vertex_base_url_for_model
+    _model_default = str(target_model or _get_model_config().get("default") or "").strip()
     if _DEFER_TOKEN_MINT.get():
         token, base_url = vertex_access_token, get_vertex_base_url()
     else:
@@ -975,7 +976,8 @@ def _resolve_vertex_runtime(requested_provider: str) -> dict[str, Any]:
                         "service-account JSON via GOOGLE_APPLICATION_CREDENTIALS (or VERTEX_CREDENTIALS_PATH) in ~/.hermes/.env, "
                         "or run 'gcloud auth application-default login' for ADC. Set the GCP project/region under vertex: in "
                         "config.yaml if they aren't embedded in the credentials. Run `hermes setup` to install Vertex support.")
-    return _runtime("vertex", "chat_completions", base_url.rstrip("/"), token, source="vertex-oauth", requested_provider=requested_provider)
+    base_url = vertex_base_url_for_model(base_url, _model_default)
+    return _runtime("vertex", "chat_completions", base_url, token, source="vertex-oauth", requested_provider=requested_provider)
 
 
 def _resolve_requested_shortcuts(requested_provider, explicit_api_key, explicit_base_url, target_model) -> Optional[dict[str, Any]]:
@@ -997,7 +999,7 @@ def _resolve_requested_shortcuts(requested_provider, explicit_api_key, explicit_
                                               explicit_api_key=explicit_api_key, explicit_base_url=explicit_base_url,
                                               target_model=target_model)
     if requested_provider in _VERTEX_NAMES:
-        return _resolve_vertex_runtime(requested_provider)
+        return _resolve_vertex_runtime(requested_provider, target_model=target_model)
     return None
 
 

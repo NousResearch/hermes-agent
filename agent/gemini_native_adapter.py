@@ -141,12 +141,24 @@ _API_VERSION_SEGMENT = re.compile(r"^v\d+(?:alpha|beta)?\d*$", re.IGNORECASE)
 
 
 def is_vertex_express_base_url(base_url: str) -> bool:
-    """An aiplatform host speaking the native API with an API key: the bare express surface, or its
-    ``…/projects/{p}/locations/{l}`` form, which reaches models served only in ``global`` (Gemini 4).
-    The OAuth Vertex provider's ``…/endpoints/openapi`` base is OpenAI-compatible and must stay off
-    the native adapter."""
+    """An aiplatform host speaking the native API: the bare express surface, or its
+    ``…/projects/{p}/locations/{l}`` form (express keys reaching ``global``-only models such as
+    Gemini 4, and the OAuth Vertex provider's ``…/publishers/google`` base). An explicit
+    ``…/endpoints/openapi`` base is OpenAI-compatible and must stay off the native adapter."""
     normalized = str(base_url or "").strip().lower()
     return "aiplatform.googleapis.com" in normalized and "/endpoints/" not in normalized
+
+
+def uses_vertex_oauth_bearer(base_url: str, api_key: str) -> bool:
+    """True when the credential is a Google OAuth2 access token (Vertex provider), sent as
+    ``Authorization: Bearer``. A ``/projects/`` aiplatform base alone is not proof: express keys
+    (``AIza``/``AQ.``) use that form too and Vertex rejects them as bearers."""
+    key = str(api_key or "").strip()
+    if key.startswith("ya29."):
+        return True
+    normalized = str(base_url or "").strip().lower()
+    return ("aiplatform.googleapis.com" in normalized and "/projects/" in normalized
+            and not key.startswith(("AIza", "AQ.")))
 
 
 def normalize_gemini_base_url(base_url: Optional[str]) -> str:
@@ -188,9 +200,13 @@ def is_native_gemini_base_url(base_url: str) -> bool:
 
 def gemini_accepts_parameters_json_schema(base_url: str) -> bool:
     """``FunctionDeclaration.parametersJsonSchema`` exists only in the ``v1beta`` surface of
-    generativelanguage (absent from ``v1`` / ``v1alpha`` content.proto); other versions and
-    unknown proxies get the legacy ``parameters`` subset."""
-    return str(base_url or "").strip().rstrip("/").lower().endswith("/v1beta")
+    generativelanguage (absent from ``v1`` / ``v1alpha`` content.proto) and in the Vertex AI
+    Express ``v1beta1`` publishers/google surface it mirrors; other versions (including Vertex's
+    own ``v1``) and unknown proxies get the legacy ``parameters`` subset."""
+    normalized = str(base_url or "").strip().rstrip("/").lower()
+    if normalized.endswith("/v1beta"):
+        return True
+    return is_vertex_express_base_url(normalized) and "/v1beta1/" in normalized and normalized.endswith("/publishers/google")
 
 
 def probe_gemini_tier(
@@ -521,15 +537,18 @@ def _thinking_requests_output_headroom(thinking_config: Any) -> bool:
     return bool(normalized) and not (isinstance(budget, int) and budget <= 0 and not has_level)
 
 
-def _effective_gemini_max_output_tokens(max_tokens: Optional[int], thinking_config: Any) -> int:
+def _effective_gemini_max_output_tokens(max_tokens: Optional[int], thinking_config: Any, model: str = "") -> int:
     """Native ``maxOutputTokens``: an omitted/invalid cap becomes the published ceiling (Gemini
     truncates on its low internal default); an explicit cap is raised to the ceiling when
-    thinking is enabled so thoughts don't starve the answer."""
+    thinking is enabled so thoughts don't starve the answer. Gemini 3+ always thinks, so a
+    request with no thinking_config at all is treated as thinking: a small aux cap (100) is
+    otherwise spent entirely on thoughts and the answer comes back empty."""
     try:
         requested = int(max_tokens)
     except (TypeError, ValueError):
         requested = 0
-    if requested <= 0 or _thinking_requests_output_headroom(thinking_config):
+    always_thinks = not _normalize_thinking_config(thinking_config) and _gemini_version(model) >= (3, 0)
+    if requested <= 0 or always_thinks or _thinking_requests_output_headroom(thinking_config):
         return max(requested, GEMINI_DEFAULT_MAX_OUTPUT_TOKENS)
     return requested
 
@@ -538,8 +557,9 @@ def _translate_response_format(response_format: Any, *, json_schema: bool = Fals
     """OpenAI ``response_format`` → Gemini ``generationConfig`` JSON-output keys.
 
     Full-JSON-Schema ``responseJsonSchema`` exists only on the generativelanguage ``v1beta``
-    surface (same gate as ``parametersJsonSchema``); ``v1`` / ``v1alpha``, Vertex express
-    ``v1beta1`` and unknown proxies take the OpenAPI-subset ``responseSchema`` path.
+    surface and the Vertex AI Express ``v1beta1`` publishers/google surface it mirrors (same gate
+    as ``parametersJsonSchema``); ``v1`` / ``v1alpha``, Vertex's own ``v1`` and unknown proxies
+    take the OpenAPI-subset ``responseSchema`` path.
     """
     if not isinstance(response_format, dict) or response_format.get("type") not in ("json_object", "json_schema"):
         return {}
@@ -567,7 +587,7 @@ def build_gemini_request(
     request: dict[str, Any] = {"contents": contents, **{k: v for k, v in optional if v}}
     # Key order is part of the wire format (prompt-cache parity): temperature, maxOutputTokens, topP, stop, thinking.
     generation = (
-        ("temperature", temperature), ("maxOutputTokens", _effective_gemini_max_output_tokens(max_tokens, thinking_config)),
+        ("temperature", temperature), ("maxOutputTokens", _effective_gemini_max_output_tokens(max_tokens, thinking_config, model)),
         ("topP", top_p), ("stopSequences", (stop if isinstance(stop, list) else [str(stop)]) if stop else None),
         ("thinkingConfig", _normalize_thinking_config(thinking_config)),
     )
@@ -899,6 +919,8 @@ class GeminiNativeClient:
         self.close()
 
     def _auth_headers(self) -> dict[str, str]:
+        if uses_vertex_oauth_bearer(self.base_url, self.api_key):
+            return {"Authorization": f"Bearer {self.api_key}"}
         return {"x-goog-api-key": self.api_key}
 
     def _headers(self) -> dict[str, str]:
@@ -906,7 +928,8 @@ class GeminiNativeClient:
                 "User-Agent": f"{_API_CLIENT} (gemini-native)", "X-Goog-Api-Client": _API_CLIENT, **self._default_headers}
 
     def _http_error(self, response: httpx.Response, body_text: Optional[str] = None) -> GeminiAPIError:
-        return gemini_http_error(response, body_text=body_text, api_key=self.api_key, base_url=self.base_url)
+        return gemini_http_error(response, body_text=body_text, api_key=self.api_key, base_url=self.base_url,
+                                 key_guidance=not uses_vertex_oauth_bearer(self.base_url, self.api_key))
 
     @staticmethod
     def _advance_stream_iterator(iterator: Iterator[_GeminiStreamChunk]) -> tuple[bool, Optional[_GeminiStreamChunk]]:

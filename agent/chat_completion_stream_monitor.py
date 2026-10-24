@@ -84,13 +84,20 @@ class StreamingWaitMonitor:
         logger.info("Computer slept for %.0fs during a model request; the stall timer skips that time.", slept)
         self.agent._touch_activity(f"resumed after the computer slept for {int(slept)}s")
 
+    def _effective_stale_timeout(self) -> float:
+        """The first-chunk deadline until the first real chunk lands, then the stale timeout."""
+        diag = getattr(getattr(self, "clients", None), "diag", None)
+        if isinstance(diag, dict) and diag.get("first_chunk_at"):
+            return self._stream_stale_timeout
+        return getattr(self, "_first_chunk_stale_timeout", None) or self._stream_stale_timeout
+
     def _heartbeat(self, waiting_secs: int) -> None:
         """Gateway inactivity heartbeat: the start-to-first-chunk gap (thinking,
         local prefill) can exceed the gateway timeout."""
         if waiting_secs >= 60.0:
             # No chunks for 60s+: say WHAT the wait is and WHEN recovery kicks in —
             # once per silence, not every heartbeat (#92550).
-            stale = self._stream_stale_timeout
+            stale = self._effective_stale_timeout()
             watchdog = ("stream stale", stale - waiting_secs) if stale is not None and stale != float("inf") else None
             diag = getattr(getattr(self, "clients", None), "diag", None)
             phase = "post_chunk" if isinstance(diag, dict) and diag.get("first_chunk_at") else "first_chunk"
@@ -133,10 +140,11 @@ class StreamingWaitMonitor:
                 self._mon.last_heartbeat = _hb_now
                 self._heartbeat(int(_hb_now - self.last_chunk_time["t"]))
             _stale_elapsed = time.time() - self.last_chunk_time["t"]
-            if _stale_elapsed > self._stream_stale_timeout:
+            _effective_stale_timeout = self._effective_stale_timeout()
+            if _stale_elapsed > _effective_stale_timeout:
                 self._mon.wait_notice_started_ts = None  # Reconnect status has its own owner.
                 self._mon.wait_notice.reset()
-                self._kill_stale_stream(_stale_elapsed)
+                self._kill_stale_stream(_stale_elapsed, threshold=_effective_stale_timeout)
             if self.agent._interrupt_requested:
                 self._abort_for_interrupt(_stale_elapsed)
                 return

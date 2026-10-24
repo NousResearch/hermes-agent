@@ -4844,9 +4844,9 @@ def _build_bedrock_client(provider: str, model: Optional[str], *, raw_codex: boo
 
 
 def _build_vertex_client(provider: str, model: Optional[str]) -> tuple[Optional[Any], Optional[str]]:
-    """Google Vertex AI: Gemini via the OpenAI-compatible endpoint with an OAuth2 bearer (standard OpenAI client)."""
+    """Google Vertex AI: Gemini → native ``generateContent`` (GeminiNativeClient) with an OAuth2 bearer; anything else → OpenAI-compat."""
     try:
-        from agent.vertex_adapter import get_vertex_config, has_vertex_credentials
+        from agent.vertex_adapter import get_vertex_config, has_vertex_credentials, vertex_base_url_for_model
     except ImportError:
         logger.warning("resolve_provider_client: vertex requested but google-auth not installed")
         return None, None
@@ -4858,6 +4858,11 @@ def _build_vertex_client(provider: str, model: Optional[str]) -> tuple[Optional[
         logger.warning("resolve_provider_client: vertex requested but could not mint token / resolve project")
         return None, None
     final_model = _normalize_resolved_model(model or "google/gemini-3-flash-preview", provider)
+    base_url = vertex_base_url_for_model(base_url, final_model)
+    from agent.gemini_native_adapter import GeminiNativeClient, bare_gemini_model_id, is_native_gemini_base_url
+    if is_native_gemini_base_url(base_url) and bare_gemini_model_id(final_model).lower().startswith("gemini"):
+        logger.debug("resolve_provider_client: vertex gemini native (%s)", final_model)
+        return GeminiNativeClient(api_key=token, base_url=base_url), final_model
     try:
         # Aliased import: a bare `from openai import OpenAI` would shadow the module-level lazy proxy.
         from openai import OpenAI as _VertexOpenAI
@@ -7271,15 +7276,17 @@ class _ChatStreamAccumulator:
             return False
         made_progress = False
         from agent.message_content import flatten_message_text
+        from agent.reasoning_carriers import delta_is_google_thought
 
         piece = flatten_message_text(getattr(delta, "content", None), sep="")
-        if piece:
+        thought = delta_is_google_thought(delta)
+        if piece and not thought:
             self.content_parts.append(piece)
             made_progress = True
         reasoning_piece = getattr(delta, "reasoning", None) or getattr(delta, "reasoning_content", None)
         if reasoning_piece is None and isinstance(getattr(delta, "model_extra", None), dict):
             reasoning_piece = delta.model_extra.get("reasoning") or delta.model_extra.get("reasoning_content")
-        reasoning_piece = flatten_message_text(reasoning_piece, sep="")
+        reasoning_piece = flatten_message_text(reasoning_piece, sep="") or (piece if thought else "")
         if reasoning_piece:
             self.reasoning_parts.append(reasoning_piece)
             made_progress = True

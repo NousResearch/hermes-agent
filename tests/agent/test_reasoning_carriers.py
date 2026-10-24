@@ -81,3 +81,114 @@ def test_copilot_reasoning_and_function_signature_reach_only_copilot():
         assert "thought_signature" not in other["tool_calls"][0]["function"]
         assert all(d.get("type") != "hermes.native_assistant" for d in other.get("reasoning_details") or ())
     assert stored == snapshot
+
+
+def test_vertex_openai_compat_streamed_google_thought_routes_to_reasoning_not_content():
+    from openai.types.chat import ChatCompletionChunk
+
+    from agent.auxiliary_client import _ChatStreamAccumulator
+    from agent.chat_completion_helpers_relay import RelayChatAccumulator
+    from agent.reasoning_carriers import StreamCarriers, delta_is_google_thought
+
+    raw_chunks = [
+        {
+            "id": "c1", "object": "chat.completion.chunk", "created": 1, "model": "google/gemini-4-argon",
+            "choices": [{
+                "index": 0, "finish_reason": None,
+                "delta": {
+                    "role": "assistant",
+                    "content": "**Responding with Pong**\n\nMy current thinking is to reply concisely.\n\n",
+                    "extra_content": {"google": {"thought": True}},
+                },
+            }],
+        },
+        {
+            "id": "c1", "object": "chat.completion.chunk", "created": 1, "model": "google/gemini-4-argon",
+            "choices": [{"index": 0, "finish_reason": None, "delta": {"role": "assistant", "content": "pong"}}],
+        },
+        {
+            "id": "c1", "object": "chat.completion.chunk", "created": 1, "model": "google/gemini-4-argon",
+            "choices": [{
+                "index": 0, "finish_reason": "stop",
+                "delta": {"content": "", "extra_content": {"google": {"thought_signature": "SIG_VERTEX"}}},
+            }],
+        },
+    ]
+    sdk_chunks = [ChatCompletionChunk.model_validate(c) for c in raw_chunks]
+
+    # 1. StreamCarriers + delta_is_google_thought
+    carriers = StreamCarriers()
+    content_parts, reasoning_parts = [], []
+    for chunk in sdk_chunks:
+        delta = chunk.choices[0].delta
+        r_text = carriers.feed(delta, None)
+        if r_text:
+            reasoning_parts.append(r_text)
+        c_text = "" if delta_is_google_thought(delta) else (delta.content or "")
+        if c_text:
+            content_parts.append(c_text)
+    assert "".join(content_parts) == "pong"
+    assert "".join(reasoning_parts) == "**Responding with Pong**\n\nMy current thinking is to reply concisely.\n\n"
+    assert carriers.signature == "SIG_VERTEX"
+    assert carriers.text_parts == []
+
+    # 2. RelayChatAccumulator
+    relay = RelayChatAccumulator()
+    for raw in raw_chunks:
+        relay.observe(raw)
+    finalized = relay.finalize()["choices"][0]["message"]
+    assert finalized["content"] == "pong"
+    assert finalized["reasoning_content"] == "**Responding with Pong**\n\nMy current thinking is to reply concisely.\n\n"
+
+    # 3. Auxiliary _ChatStreamAccumulator
+    aux = _ChatStreamAccumulator(model="google/gemini-4-argon")
+    for chunk in sdk_chunks:
+        aux.feed(chunk)
+    aux_msg = aux.finish().choices[0].message
+    assert aux_msg.content == "pong"
+    assert aux_msg.reasoning == "**Responding with Pong**\n\nMy current thinking is to reply concisely.\n\n"
+
+    # 4. Full interruptible_streaming_api_call + build_assistant_message end-to-end
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from agent.chat_completion_helpers import interruptible_streaming_api_call
+    from run_agent import AIAgent
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_POST(self):
+            _ = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            for raw in raw_chunks:
+                self.wfile.write(f"data: {json.dumps(raw)}\n\n".encode())
+                self.wfile.flush()
+            self.wfile.write(b"data: [DONE]\n\n")
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        agent = AIAgent(
+            api_key="local-test", base_url=f"http://127.0.0.1:{server.server_port}/v1",
+            provider="vertex", model="google/gemini-4-argon",
+            platform="subagent", quiet_mode=True, skip_memory=True, skip_context_files=True,
+            enabled_toolsets=[], save_trajectories=False,
+        )
+        streamed_deltas = []
+        agent.stream_delta_callback = streamed_deltas.append
+        response = interruptible_streaming_api_call(
+            agent, {"model": "google/gemini-4-argon", "messages": [{"role": "user", "content": "ping"}]},
+        )
+        stored_msg = _stored(response)
+        assert "".join(streamed_deltas) == "pong"
+        assert stored_msg["content"] == "pong"
+        assert stored_msg["reasoning"] == "**Responding with Pong**\n\nMy current thinking is to reply concisely.\n\n"
+        assert stored_msg["reasoning_content"] == "**Responding with Pong**\n\nMy current thinking is to reply concisely.\n\n"
+        assert stored_msg["extra_content"] == {"google": {"thought_signature": "SIG_VERTEX"}}
+    finally:
+        server.shutdown()

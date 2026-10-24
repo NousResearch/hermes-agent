@@ -794,8 +794,10 @@ class ClientLifecycleMixin:
         if self.api_mode != "chat_completions" or self.provider != "vertex":
             return False
         try:
-            from agent.vertex_adapter import get_vertex_config
+            from agent.vertex_adapter import get_vertex_config, vertex_base_url_for_model
             token, base_url = get_vertex_config()
+            # Re-derive per model, or a non-Gemini session snaps back to the Gemini-only native base.
+            base_url = vertex_base_url_for_model(base_url, self.model) if base_url else base_url
         except Exception as exc:
             logger.debug("Vertex credential refresh failed: %s", exc)
             return False

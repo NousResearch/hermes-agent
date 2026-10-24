@@ -315,7 +315,9 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
     keepalive/liveness live in the three mixins."""
 
     __slots__ = (
+        "_attempt_credentials",
         "_auth_park",
+        "_auth_park_credentials",
         "_auth_type",
         "_config",
         "_elicitation",
@@ -399,6 +401,10 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         self._last_park_line: Optional[str] = None  # last park WARNING text; identical re-parks log at DEBUG
         # (token storage, credential stamp) while parked on an OAuth failure; see _arm_auth_park.
         self._auth_park: Optional[tuple] = None
+        # Credential snapshot taken when an OAuth server parks on an auth failure; the unattended
+        # self-probe stays asleep until it differs (None = not an auth park, probe on schedule).
+        self._auth_park_credentials: Optional[tuple] = None
+        self._attempt_credentials: Optional[tuple] = None  # same snapshot, taken as each attempt starts
         # Digest of the resolved inputs the transport last connected with; a cross-profile adopter
         # must resolve the same digest in its own scope. None until the transport publishes it.
         self._resolved_identity: Optional[str] = None

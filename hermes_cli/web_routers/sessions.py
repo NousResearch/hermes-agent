@@ -37,7 +37,7 @@ manage_router = APIRouter()
 
 
 @list_router.get("/api/session-observations")
-def api_session_observations(session_id: List[str] = Query(default=[]), profile: Optional[str] = None):
+def api_session_observations(session_id: list[str] = Query(default=[]), profile: Optional[str] = None):
     """Authenticated metadata-only snapshot; no schema heal, resume or session creation."""
     from fastapi.responses import JSONResponse
     from hermes_state_observations import read_session_observations_at_path, validate_observation_ids

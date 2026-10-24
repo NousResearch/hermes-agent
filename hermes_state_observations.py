@@ -6,7 +6,7 @@ A dead running record is uncertainty, never an invented terminal result.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 import hashlib
 import json
 import re
@@ -32,7 +32,7 @@ def validate_observation_ids(session_ids):
 
 
 def _iso(at):
-    return datetime.fromtimestamp(at, timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.fromtimestamp(at, UTC).isoformat().replace("+00:00", "Z")
 
 
 def unknown_session_observation(session_id, profile, *, observed_at=None):

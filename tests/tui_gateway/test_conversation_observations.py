@@ -18,7 +18,7 @@ def owner(tmp_path):
 
 
 def test_human_wait_closes_at_response_timeout_cancel_and_late_answer(owner):
-    db, sid, turn, holder = owner
+    db, sid, _turn, _holder = owner
     assert "observation_owner" in __import__("inspect").signature(requests.bind_sinks).parameters, "request producer not wired"
     frames = []
     def write(frame):
@@ -40,7 +40,7 @@ def test_human_wait_closes_at_response_timeout_cancel_and_late_answer(owner):
 
 
 def test_long_question_is_not_technical_bridge_or_stale_generation(owner):
-    db, sid, turn, holder = owner
+    db, sid, _turn, _holder = owner
     assert "observation_owner" in __import__("inspect").signature(requests.bind_sinks).parameters, "request producer not wired"
     frames = []
     requests.bind_sinks(frames.append, lambda *a: None, lambda sid: True, observation_owner=lambda sid: owner)

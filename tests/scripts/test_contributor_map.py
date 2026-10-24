@@ -18,8 +18,8 @@ SCRIPTS_DIR = REPO_ROOT / "scripts"
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from scripts.releases import authors, authors_legacy  # noqa: E402
-from add_contributor import add_contributor, read_mapping_file  # noqa: E402
+from scripts.releases import authors, authors_legacy
+from add_contributor import add_contributor, read_mapping_file
 
 
 # ── directory loader behavior ─────────────────────────────────────────
@@ -102,6 +102,7 @@ def test_cli_entrypoint_end_to_end(tmp_path):
         [sys.executable, str(scripts / "add_contributor.py"),
          "cli@example.com", "cliperson", "via subprocess"],
         cwd=tmp_path, capture_output=True, text=True,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     out = (tmp_path / "contributors" / "emails" / "cli@example.com").read_text(encoding="utf-8")

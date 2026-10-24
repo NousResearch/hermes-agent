@@ -50,7 +50,7 @@ def _shim(path: Path) -> None:
     """Quote in posix form: a /bin/sh script treats backslashes in an unquoted
     word as escapes (same pattern as tests/pm/activation_support.py)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("#!/bin/sh\nexec '%s' \"$@\"\n" % posix(Path(sys.executable)), encoding="utf-8")
+    path.write_text(f"#!/bin/sh\nexec '{posix(Path(sys.executable))}' \"$@\"\n", encoding="utf-8")
     path.chmod(0o755)
 
 
@@ -104,6 +104,7 @@ def _run_in(root: Path, *command: str, sentinel: str | None = "{root}/state/fact
     return subprocess.run(
         [bash(), posix(root / "scripts" / RUNNER.name), *command],
         capture_output=True, text=True, cwd=posix(root), env=env, timeout=60,
+        check=False,
     )
 
 

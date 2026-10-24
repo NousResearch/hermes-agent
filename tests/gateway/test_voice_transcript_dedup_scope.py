@@ -13,6 +13,7 @@ import pytest
 
 import gateway.run as gateway_run
 from gateway.config import Platform
+from gateway.session import SessionSource
 
 _GUILD, _USER = 1, 42
 
@@ -25,6 +26,9 @@ class _Bot:
         self._voice_text_channels, self._voice_sources = {_GUILD: 700}, {}
         self._client = SimpleNamespace(get_channel=lambda _id: None, get_guild=lambda _id: None)
         self.handle_message = AsyncMock()
+
+    def build_source(self, **fields) -> SessionSource:
+        return SessionSource(platform=Platform.DISCORD, profile=self._owner_profile, **fields)
 
 
 @pytest.mark.asyncio

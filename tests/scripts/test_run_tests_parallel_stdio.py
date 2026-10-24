@@ -53,7 +53,7 @@ def test_glyph_safe_stdio_survives_cp1252(monkeypatch) -> None:
     sys.stdout.flush()
 
     out = raw.getvalue()
-    assert "✓".encode("utf-8") in out, "stream should now carry UTF-8 glyphs"
+    assert "✓".encode() in out, "stream should now carry UTF-8 glyphs"
     assert b"tests/foo.py (3 tests, 1.2s)" in out, "line content must survive"
 
 

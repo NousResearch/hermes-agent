@@ -13,7 +13,7 @@ from argparse import Namespace
 
 import pytest
 
-import hermes_cli.sessions_cmd as sessions_cmd
+from hermes_cli import sessions_cmd
 
 pytestmark = pytest.mark.platforms("posix")  # holder scan is unavailable on Windows
 
@@ -29,11 +29,12 @@ _HOLDER = (
 
 @pytest.fixture
 def state_db(monkeypatch, tmp_path):
-    import hermes_state
     from hermes_state import SessionDB
 
     db_path = tmp_path / "state.db"
-    monkeypatch.setattr(hermes_state, "_default_db_path", lambda: db_path)
+    # cmd_sessions opens the ACTIVE home's store by explicit path (a served-profile process has
+    # no single default store), so the home is the seam, not hermes_state's default resolver.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     seed = SessionDB(db_path=db_path)
     seed.create_session("seed", "cli")
     seed.append_message("seed", "user", "hello")
@@ -72,9 +73,9 @@ def _sessions_subparsers():
     from hermes_cli.subcommands.sessions import build_sessions_parser
 
     build_sessions_parser(parser.add_subparsers(dest="command"), cmd_sessions=sessions_cmd.cmd_sessions)
-    subparsers = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)][0]
+    subparsers = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
     sessions = subparsers.choices["sessions"]
-    nested = [a for a in sessions._actions if isinstance(a, argparse._SubParsersAction)][0]
+    nested = next(a for a in sessions._actions if isinstance(a, argparse._SubParsersAction))
     return nested.choices
 
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from hermes_cli.dashboard_procs import _REAP_MIN_AGE_SECONDS, read_valid_backend_lock
+from hermes_cli.dashboard_procs import _REAP_MIN_AGE_SECONDS, _lock_owned_serve_pids, read_valid_backend_lock
 from hermes_cli.web_server_owner_exit import should_retire_superseded, start_owner_watchdog
 
 OID, ME, NEW = "f" * 32, "a" * 16, "b" * 16
@@ -80,3 +80,25 @@ def test_superseded_backend_retires_through_the_fence_only_when_idle():
     busy = _Fence(idle=False)
     assert _run(busy, [NEW, NEW, NEW]).should_exit is False  # an in-flight turn keeps it up
     assert busy.committed is False
+
+
+def test_lock_written_by_the_windows_ssh_runtime_lets_the_superseded_backend_retire(tmp_path, monkeypatch):
+    """A Windows SSH host's lock comes from windows_ssh_runtime.write_lock, fed the Desktop's record
+    (no logPath). The owner watchdog must accept it, or Windows hosts keep stacking backends."""
+    from pathlib import PureWindowsPath
+
+    from hermes_cli import windows_ssh_runtime
+
+    # The runtime's root is a WindowsPath on that host; pass it as data instead of faking the OS.
+    monkeypatch.setattr(windows_ssh_runtime, "_root",
+                        lambda: PureWindowsPath(r"C:\Users\u\.hermes\desktop-ssh"))
+    desktop_record = {k: v for k, v in _lock(NEW).items() if k != "logPath"}
+    desktop_record.update(creationTimeNs="133700000000000000", hermesPath=r"C:\Hermes\hermes.exe")
+    lock_path = tmp_path / "desktop-ssh" / OID / "backend.lock.json"
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_bytes(windows_ssh_runtime._lock_record(OID, desktop_record))
+
+    assert should_retire_superseded(lock=read_valid_backend_lock(lock_path), my_nonce=ME, age_s=600.0)
+    # The same valid lock makes the backend lock-owned, so `hermes update`'s restart_managed sweep
+    # leaves it to the code-skew watchdog instead of terminating it, as on POSIX.
+    assert desktop_record["pid"] in _lock_owned_serve_pids(lock_path.parent.parent)

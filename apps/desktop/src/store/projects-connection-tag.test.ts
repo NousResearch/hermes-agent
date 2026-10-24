@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import { hermesApi } from '@/hermes'
 import { $gateway, activeGateway, activeGatewayConnectionId, isActivePrimary } from '@/store/gateway'
-import { $activeGatewayProfile, setShowAllProfiles } from '@/store/profile'
+import { $activeGatewayProfile, $profiles, setShowAllProfiles } from '@/store/profile'
 import { $sessions } from '@/store/session'
 import { sessionOwnerRouteFromRow } from '@/store/session-request-router'
 import { deferred } from '@/test/deferred'
@@ -73,6 +73,9 @@ function connect(request = vi.fn()) {
 beforeEach(() => {
   vi.clearAllMocks()
   $activeGatewayProfile.set('default')
+  // A real all-profiles window: the hidden single-profile preference never
+  // counts as the effective scope (see projects.test.ts).
+  $profiles.set([{ is_default: true, name: 'default' } as never, { is_default: false, name: 'coder' } as never])
   setShowAllProfiles(false)
   $sessions.set([])
   $projectTree.set([])

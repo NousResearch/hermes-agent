@@ -4,6 +4,7 @@ name: clixrx
 description: Compare US prescription discount prices with a free reusable savings card.
 source: https://clixrx.com/connect
 trust: untrusted
+approval_policy: per_call
 
 # Vendor-hosted Streamable HTTP MCP; no local process or credentials required.
 transport:
@@ -36,8 +37,9 @@ post_install: |
   and ZIP details; do not infer them from a profile or unrelated memory.
 
   A price lookup returns participating-pharmacy estimates and a free reusable
-  savings card, issuing a card when needed. Installed as untrusted: Hermes
-  requests approval for tools not explicitly annotated as read-only.
+  savings card, issuing a card when needed. Hermes requests approval for every
+  tool call, including tools annotated as read-only. Session/Always grants and
+  approval bypass modes do not cover these calls; each consent covers one call.
   It does not purchase medication, select a pharmacy, or send a message.
 
   ClixRx is a prescription discount plan, not insurance, a pharmacy, or medical

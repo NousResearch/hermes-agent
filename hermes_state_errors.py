@@ -40,7 +40,7 @@ _TRANSIENT_SQLITE_MARKERS = (
 _SQLITE_LOCK_CODES = (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
 
 
-def _sqlite_primary_code(exc_or_str) -> "int | None":
+def _sqlite_primary_code(exc_or_str) -> int | None:
     """Primary result code (extended codes keep it in the low byte); None when unknown."""
     code = getattr(exc_or_str, "sqlite_errorcode", None)
     return code & 0xFF if isinstance(code, int) else None
@@ -164,6 +164,27 @@ class SessionCompressionInProgressError(CompressionSessionBusyError):
     (the compressor publishes in seconds; ``_execute_write`` waits), unlike the
     parent class's other case (a compressor whose own lease is gone: permanent,
     fail fast). Subclassing keeps every existing handler working."""
+
+
+class PruneRowUnresolvedError(RuntimeError):
+    """An in-place prune rewrite could not name the exact live row of a changed message. Raised before
+    any write, so the caller commits through ``archive_and_compact`` instead."""
+
+
+class PruneRowStaleError(PruneRowUnresolvedError):
+    """The named live row no longer holds the body the pruner is pruning: another writer already
+    rewrote this generation. Unlike plain ambiguity this must NOT fall back to the full writer —
+    that writer archives rows it never compared and would republish the stale held text over the
+    newer one. Subclassing keeps callers that only know the parent failing closed-enough (they stop
+    the in-place path); the prune caller tells the two apart and skips the pass entirely."""
+
+
+class HeldRowRewrittenError(RuntimeError):
+    """A full-writer commit found one of the held rows it was about to archive already rewritten in
+    place by another writer. Raised INSIDE the commit's write transaction, after the caller's
+    precheck but before any row is archived: a write that lands in that window is exactly the lost
+    race the precheck cannot see (#124102). Callers treat it like ``StaleHeldHistory`` — nothing
+    written, the pass is a no-op and the newer generation keeps the session."""
 
 
 class SessionTurnLeaseLostError(RuntimeError):

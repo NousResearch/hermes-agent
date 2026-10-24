@@ -54,8 +54,7 @@ def test_offset_past_monster_returns_normal_lines(tmp_path, ops):
     monster = tmp_path / "monster.txt"
     with open(monster, "w") as f:
         f.write("y" * 1_000_000 + "\n")
-        for i in range(5):
-            f.write(f"normal line {i}\n")
+        f.writelines(f"normal line {i}\n" for i in range(5))
 
     result = ops.read_file(str(monster), offset=2)
     assert result.error is None

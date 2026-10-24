@@ -27,9 +27,9 @@ logger = logging.getLogger("agent.turn_context")
 class CompactionOutcome:
     """Locals rebuilt by turn-start compaction (``build_turn_context`` reads them back)."""
 
-    messages: List[Dict[str, Any]]
+    messages: list[dict[str, Any]]
     active_system_prompt: Optional[str]
-    conversation_history: Optional[List[Dict[str, Any]]]
+    conversation_history: Optional[list[dict[str, Any]]]
     current_turn_user_idx: int
     # A preflight pass (threshold or engine-driven) actually rebuilt ``messages``.
     compressed: bool = False
@@ -113,7 +113,7 @@ def _refund_api_call(agent: Any, api_call_count: int) -> int:
     return api_call_count
 
 
-def _reanchor(agent: Any, messages: List[Any], user_message: Any) -> int:
+def _reanchor(agent: Any, messages: list[Any], user_message: Any) -> int:
     """Compaction rebuilt ``messages``: re-anchor this turn's user index so the
     api_content stamp, injection site and persist-override row hit the same dict."""
     from agent.turn_context import reanchor_current_turn_user_idx
@@ -127,8 +127,8 @@ def _reanchor(agent: Any, messages: List[Any], user_message: Any) -> int:
 
 
 def run_turn_start_compaction(
-    agent: Any, *, messages: List[Dict[str, Any]], system_message: Optional[str],
-    active_system_prompt: Optional[str], conversation_history: Optional[List[Dict[str, Any]]],
+    agent: Any, *, messages: list[dict[str, Any]], system_message: Optional[str],
+    active_system_prompt: Optional[str], conversation_history: Optional[list[dict[str, Any]]],
     current_turn_user_idx: int, user_message: Any, effective_task_id: str,
 ) -> CompactionOutcome:
     """Idle compaction, then preflight compression (or the uncompressed guard)."""
@@ -203,7 +203,7 @@ def _idle_compaction(
     if _idle_status:
         agent._emit_status(_idle_status)
     out.messages, out.active_system_prompt = agent._compress_context(
-        messages, system_message, approx_tokens=_idle_tokens, task_id=effective_task_id
+        messages, system_message, approx_tokens=_idle_tokens, task_id=effective_task_id, trigger="idle",
     )
     # ``_compress_context`` returns the INPUT list object when it skips; only
     # re-baseline and re-anchor after a real compaction.
@@ -241,6 +241,11 @@ def _preflight_compression(
         _rearm_uncompressed_overflow_warn(agent, out.messages, out.active_system_prompt)
         return
     _compressor = agent.context_compressor
+    # A structural no-op ("nothing eligible among N messages") is a verdict about that transcript;
+    # the gateway daemon keeps this compressor across turns, so a grown transcript re-arms it.
+    _lift = getattr(_compressor, "lift_structural_backoff_if_grown", None)
+    if callable(_lift):
+        _lift(len(out.messages))
     if _tc._review_fork_first_request_pending(agent) or not _tc._should_run_preflight_estimate(
         out.messages, _compressor.protect_first_n, _compressor.protect_last_n,
         _compressor.threshold_tokens,
@@ -381,7 +386,7 @@ def _run_preflight_passes(
         _orig_tokens = _preflight_tokens
         out.messages, out.active_system_prompt = agent._compress_context(
             _preflight_input, system_message, approx_tokens=_preflight_tokens,
-            task_id=effective_task_id,
+            task_id=effective_task_id, trigger="turn_start_threshold",
         )
         if out.messages is _preflight_input and compression_skipped_due_to_lock(agent):
             # Lock-skip: another path holds the lock, so this is a DEFER, not proof of
@@ -458,7 +463,8 @@ def _engine_preflight_maintenance(
     )
     _engine_input = out.messages
     out.messages, out.active_system_prompt = agent._compress_context(
-        _engine_input, system_message, approx_tokens=_preflight_tokens, task_id=effective_task_id
+        _engine_input, system_message, approx_tokens=_preflight_tokens, task_id=effective_task_id,
+        trigger="engine_preflight",
     )
     # ``_compress_context`` returns the INPUT list on every skip path and an engine
     # may no-op; re-baseline/re-anchor only after a REAL compaction.
@@ -471,7 +477,7 @@ def _engine_preflight_maintenance(
 
 
 def _rearm_uncompressed_overflow_warn(
-    agent: Any, messages: List[Any], active_system_prompt: Optional[str]
+    agent: Any, messages: list[Any], active_system_prompt: Optional[str]
 ) -> None:
     """Uncompressed session guard: the warning fires from the loop's pre-API site;
     here we only RE-ARM the dedup once back under the window."""

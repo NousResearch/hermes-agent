@@ -22,6 +22,17 @@ def _write_plugin(root, rel, name, extra=""):
     return d
 
 
+def _write_tool_plugin(root, name):
+    """User plugin registering one tool in its own toolset, WITHOUT ``provides_tools`` in plugin.yaml."""
+    d = _write_plugin(root, name, name)
+    (d / "__init__.py").write_text(
+        "def register(ctx):\n"
+        f"    ctx.register_tool(name='{name}_tool', toolset='{name}_ts', handler=lambda args, **kw: '{{}}',\n"
+        f"                      schema={{'name': '{name}_tool', 'description': 'probe', 'parameters': {{'type': 'object', 'properties': {{}}}}}})\n",
+        encoding="utf-8")
+    return d
+
+
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes-home"
@@ -83,6 +94,84 @@ def test_dashboard_toggle_writes_canonical_key_and_clears_stale_aliases(home):
     # Same state requested again by manifest name: nothing to write, no restart to announce.
     again = plugins_cmd.dashboard_set_agent_plugin_enabled("zz-probe-manifest", enabled=True)
     assert again["unchanged"] is True and again["restart_required"] is False
+
+
+def test_dashboard_enable_on_a_fresh_config_keeps_the_core_tools(home):
+    """Desktop/TUI/dashboard enable with no saved ``platform_toolsets`` must not write one: the old
+    seed ``platform_toolsets.cli: [<plugin_ts>]`` replaced the ``hermes-cli`` composite, so the model
+    lost every built-in tool (27 -> 2, no ``terminal``). The plugin toolset is on by default anyway."""
+    from hermes_cli.tools_config import _get_platform_tools
+    from tools.registry import registry
+
+    _write_tool_plugin(home / "plugins", "zzseed")
+    try:
+        assert plugins_cmd.dashboard_set_agent_plugin_enabled("zzseed", enabled=True)["ok"] is True
+        cfg = load_config()
+        assert not cfg.get("platform_toolsets")
+        assert {"terminal", "file", "zzseed_ts"} <= _get_platform_tools(cfg, "cli")
+    finally:
+        registry.deregister("zzseed_tool")
+
+
+def _restart_backend():
+    """A new process: no plugin manager has scanned yet and no plugin tool is registered."""
+    from hermes_cli.plugins import _reset_plugin_managers_for_tests
+    from tools.registry import registry
+
+    _reset_plugin_managers_for_tests()
+    registry.deregister("zzre_tool")
+
+
+def _saved_cli_list():
+    return load_config()["platform_toolsets"]["cli"]
+
+
+@pytest.fixture
+def saved_list_plugin(home):
+    """An enabled tool plugin on a config whose tool picker was saved (explicit ``platform_toolsets``)."""
+    _write_tool_plugin(home / "plugins", "zzre")
+    cfg = load_config()
+    cfg["plugins"]["enabled"] = ["zzre"]
+    cfg["platform_toolsets"] = {"cli": ["hermes-cli", "zzre_ts"]}
+    save_config(cfg)
+    yield
+    _restart_backend()
+
+
+def test_dashboard_reenable_restores_the_toolset_in_a_saved_list(saved_list_plugin):
+    """Desktop/TUI/dashboard disable drops the plugin toolset from a saved list; re-enabling from a
+    backend that scanned while the plugin was off must add it back. The toggle ran before the plugin
+    loaded, found no registered tool, and left the plugin enabled with its tools off."""
+    from hermes_cli.plugins import discover_plugins
+
+    discover_plugins()  # long-lived backend: scanned while the plugin was on
+    assert plugins_cmd.dashboard_set_agent_plugin_enabled("zzre", enabled=False)["ok"] is True
+    assert _saved_cli_list() == ["hermes-cli"]
+
+    _restart_backend()
+    discover_plugins()  # the backend now holds only a placeholder for the disabled plugin
+    assert plugins_cmd.dashboard_set_agent_plugin_enabled("zzre", enabled=True)["ok"] is True
+    assert _saved_cli_list() == ["hermes-cli", "zzre_ts"]
+
+
+def test_cli_disable_and_enable_round_trip_the_toolset_in_a_saved_list(saved_list_plugin):
+    """``hermes plugins disable`` / ``enable`` edit a saved list the same way the dashboard does, each
+    in its own process; they never touched it, so a toolset the dashboard dropped stayed off."""
+    plugins_cmd.cmd_disable("zzre")
+    assert _saved_cli_list() == ["hermes-cli"]
+
+    _restart_backend()
+    plugins_cmd.cmd_enable("zzre")
+    assert _saved_cli_list() == ["hermes-cli", "zzre_ts"]
+
+
+def test_cli_enable_on_a_fresh_config_writes_no_toolset_list(home):
+    """No saved ``platform_toolsets``: enable must not seed one (it would replace the core composite)."""
+    _write_tool_plugin(home / "plugins", "zzre")
+    plugins_cmd.cmd_enable("zzre")
+    plugins_cmd.cmd_disable("zzre")
+    assert not load_config().get("platform_toolsets")
+    _restart_backend()
 
 
 def test_status_reports_bundled_defaults_and_the_live_memory_provider(home):

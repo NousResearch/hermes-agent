@@ -14,13 +14,10 @@ from pathlib import Path
 from typing import List, Tuple
 
 # (rule, regex) applied to comment-stripped source; every hit fails the "desktop surface" check.
-_FORBIDDEN: Tuple[Tuple[str, "re.Pattern[str]"], ...] = (
-    ("prototype patching",
-     re.compile(r"\b[A-Za-z_$][\w$]*\.prototype\.[\w$]+\s*=[^=]")),
-    ("prototype patching",
-     re.compile(r"\bObject\.definePropert(?:y|ies)\(\s*[\w$.]+\.prototype\b")),
-    ("prototype patching",
-     re.compile(r"\b(?:Reflect|Object)\.setPrototypeOf\(|\.__proto__\s*=")),
+# Prototype writes are not linted: bundled libraries (three.js) set fields on their own classes, and
+# no regex could tell those from patching a renderer global without misfiring on minified names.
+# Catalog review reads them by hand.
+_FORBIDDEN: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("dynamic code evaluation",
      re.compile(r"(?<![\w$.])eval\(|\bnew\s+Function\(")),
     ("dynamic import outside the SDK",
@@ -41,6 +38,11 @@ _FORBIDDEN: Tuple[Tuple[str, "re.Pattern[str]"], ...] = (
                 r"\[data-(?:slot|tour|sidebar|testid)\b")),
     ("app DOM reach",
      re.compile(r"\.observe\(\s*document\.body\s*,\s*\{[^}]*\b(?:childList|subtree)\b")),
+    # The preview Browser can hold pages the user is signed in to. Script reaches it only through
+    # ``ctx.preview.executeJavaScript``: a declared capability plus the user's per-origin consent.
+    # Grabbing the app's ``<webview>`` (or minting one on the preview partition) skips both.
+    ("preview guest reach",
+     re.compile(r"\b(?:querySelector(?:All)?|closest|getElementsByTagName|createElement)\(\s*[`'\"]webview\b")),
 )
 
 # String literals are matched first and kept, so a ``/*`` or ``//`` INSIDE a string (a glob such as
@@ -49,7 +51,7 @@ _FORBIDDEN: Tuple[Tuple[str, "re.Pattern[str]"], ...] = (
 _COMMENT = re.compile(
     r"(\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)"
     r"|/\*.*?\*/|(?<![:\w])//[^\n]*",
-    re.S,
+    re.DOTALL,
 )
 
 
@@ -79,11 +81,11 @@ def _mask_regex_literals(source: str) -> str:
     return _REGEXP_CTOR_MATCHER.sub(lambda m: " " * len(m.group(0)), masked)
 
 
-def desktop_surface_findings(source: str) -> List[Tuple[str, int]]:
+def desktop_surface_findings(source: str) -> list[tuple[str, int]]:
     """Return ``[(rule, line)]`` for every forbidden construct in a plugin.js source."""
     stripped = _strip_comments(source)
     no_regex = _mask_regex_literals(stripped)
-    findings: List[Tuple[str, int]] = []
+    findings: list[tuple[str, int]] = []
     for rule, pattern in _FORBIDDEN:
         haystack = no_regex if rule in _MARKUP_RULES else stripped
         for match in pattern.finditer(haystack):
@@ -122,7 +124,7 @@ def is_desktop_surface(rel_path: str, root_entry: bool = False) -> bool:
     return parts[0] == _DESKTOP_DIR
 
 
-def _desktop_surface_files(plugin_dir: Path) -> List[Path]:
+def _desktop_surface_files(plugin_dir: Path) -> list[Path]:
     root_entry = _has_root_entry(plugin_dir)
     candidates = list(plugin_dir.glob("*.js"))
     desktop = plugin_dir / _DESKTOP_DIR
@@ -134,10 +136,10 @@ def _desktop_surface_files(plugin_dir: Path) -> List[Path]:
     )
 
 
-def desktop_surface_hits(plugin_dir: Path) -> List[str]:
+def desktop_surface_hits(plugin_dir: Path) -> list[str]:
     """``["<rule> (<rel>:<line>)", ...]`` over the plugin's Desktop surface files only."""
     plugin_dir = Path(plugin_dir)
-    hits: List[str] = []
+    hits: list[str] = []
     for js in _desktop_surface_files(plugin_dir):
         rel = js.relative_to(plugin_dir).as_posix()
         try:

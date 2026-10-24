@@ -48,7 +48,9 @@ describe('PluginSettingsForm (#46600, #87934)', () => {
   afterEach(cleanup)
 
   it('renders one control per schema type from the table, secrets masked with no value echoed', () => {
-    render(<PluginSettingsForm disabled={false} fields={FIELDS} idPrefix="p" onSave={vi.fn(async () => true)} title="Demo" />)
+    render(
+      <PluginSettingsForm disabled={false} fields={FIELDS} idPrefix="p" onSave={vi.fn(async () => true)} title="Demo" />
+    )
 
     expect((screen.getByLabelText('API URL') as HTMLInputElement).value).toBe('https://a')
     expect((screen.getByLabelText(/^Retries/) as HTMLInputElement).type).toBe('number')
@@ -84,7 +86,14 @@ describe('PluginSettingsForm (#46600, #87934)', () => {
 
   it('labels raw keys like native rows and joins helper sentences with punctuation', () => {
     const fields: PluginSettingField[] = [
-      { description: 'Per-day budget', key: 'daily_budget', label: 'daily_budget', required: false, type: 'number', value: 1 },
+      {
+        description: 'Per-day budget',
+        key: 'daily_budget',
+        label: 'daily_budget',
+        required: false,
+        type: 'number',
+        value: 1
+      },
       {
         description: 'Optional maps key for travel-time estimates',
         env: 'TRIP_NOTES_MAPS_API_KEY',
@@ -96,7 +105,9 @@ describe('PluginSettingsForm (#46600, #87934)', () => {
       }
     ]
 
-    render(<PluginSettingsForm disabled={false} fields={fields} idPrefix="t" onSave={vi.fn(async () => true)} title="Trip" />)
+    render(
+      <PluginSettingsForm disabled={false} fields={fields} idPrefix="t" onSave={vi.fn(async () => true)} title="Trip" />
+    )
 
     expect(screen.getByLabelText('Daily budget')).toBeTruthy()
     expect(screen.getByLabelText('Maps API key')).toBeTruthy()

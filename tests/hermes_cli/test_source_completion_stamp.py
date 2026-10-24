@@ -52,10 +52,28 @@ def test_successful_source_completion_writes_checkout_identity(tmp_path, monkeyp
 
 def test_failed_source_completion_does_not_publish_identity(tmp_path, monkeypatch):
     root = _repo(tmp_path)
-    _completion_dependencies(monkeypatch, lambda **_kwargs: False)
+    _completion_dependencies(monkeypatch, lambda **_kwargs: True)
 
-    assert not complete_source_checkout(root, desktop=False, assume_yes=True)
+    def broken_build(root, *, desktop):
+        raise RuntimeError("web UI build: npm exited 1")
+
+    monkeypatch.setattr("hermes_cli.source_build.build_update_products", broken_build)
+    owed: list = []
+    assert not complete_source_checkout(root, desktop=False, assume_yes=True, followups=owed)
+    # The tail is owed, so the checkout identity is not published.
+    assert [step for step, _ in owed] == ["build"]
     assert not (root / "install-stamp.json").exists()
+
+
+def test_unsafe_sqlite_withholds_success_but_not_the_finished_tail(tmp_path, monkeypatch):
+    # Was: an unsafe SQLite verdict also withheld the stamp, so the tail stayed owed forever
+    # (re-running it cannot fix the interpreter, codemap §8 V1). The install still reports failure.
+    root = _repo(tmp_path)
+    _completion_dependencies(monkeypatch, lambda **_kwargs: False)
+    owed: list = []
+    assert not complete_source_checkout(root, desktop=False, assume_yes=True, followups=owed)
+    assert owed == []
+    assert (root / "install-stamp.json").is_file()
 
 
 def _sandboxed_marker(tmp_path, monkeypatch):
@@ -112,16 +130,36 @@ def test_completion_refuses_to_stack_on_a_live_update(tmp_path, monkeypatch, for
         complete_source_checkout(root, desktop=False, assume_yes=True)
 
 
-def test_completion_runs_under_a_parents_claim_without_releasing_it(tmp_path, monkeypatch):
+def test_completion_runs_under_a_parents_claim_without_releasing_it(tmp_path):
     """A tail spawned by an orchestrator that holds the lock (venv_sync's
     interrupted-update finish, the updater's own completion child) runs under
-    its parent's claim and leaves the parent's marker untouched."""
-    root = _repo(tmp_path)
-    marker = _sandboxed_marker(tmp_path, monkeypatch)
-    marker.write_text(f"{os.getppid()}\n{int(time.time())}\n", encoding="utf-8")
-    _completion_dependencies(monkeypatch, lambda **_kwargs: True)
+    its parent's claim and leaves the parent's marker untouched.
 
-    assert complete_source_checkout(root, desktop=False, assume_yes=True)
+    Real topology: a parent process claims, then runs the tail as its child. The test
+    process's own parent can be invisible (a pid-namespaced runner), so it is never used."""
+    root = _repo(tmp_path)
+    marker = tmp_path / ".hermes-update-in-progress"
+    tail = (
+        "import json, sys\n"
+        f"sys.path.insert(0, {str(Path(__file__).resolve().parents[2])!r})\n"
+        "from pathlib import Path\n"
+        "import hermes_cli.source_build, hermes_cli.update_cmd_maint, hermes_cli.update_lock, hermes_cli.venv_sync\n"
+        "from hermes_cli.source_completion import complete_source_checkout\n"
+        "hermes_cli.venv_sync.publish_launchers = lambda root: None\n"
+        "hermes_cli.source_build.build_update_products = lambda root, *, desktop: None\n"
+        "hermes_cli.update_cmd_maint._run_post_update_maintenance = lambda **_kwargs: True\n"
+        f"hermes_cli.update_lock.update_marker_path = lambda: Path({str(marker)!r})\n"
+        f"print(json.dumps(complete_source_checkout(Path({str(root)!r}), desktop=False, assume_yes=True)))\n"
+    )
+    parent = (
+        "import os, subprocess, sys, time\n"
+        f"open({str(marker)!r}, 'w', encoding='utf-8').write(f'{{os.getpid()}}\\n{{int(time.time())}}\\n')\n"  # windows-footgun: ok — a write
+        "sys.exit(subprocess.call([sys.executable, '-c', sys.argv[1]]))\n"
+    )
+    run = subprocess.run([sys.executable, "-c", parent, tail], capture_output=True, timeout=120,
+                         text=True, encoding="utf-8", errors="replace", check=False)
+
+    assert run.returncode == 0 and run.stdout.strip().splitlines()[-1:] == ["true"], run.stdout + run.stderr
     assert marker.exists(), "the parent still owns its claim after our tail"
 
 
@@ -129,7 +167,7 @@ def _verify_bootstrap_receipt(root: Path) -> subprocess.CompletedProcess:
     """The same verifier the Windows install/update E2E runs after an update."""
     script = Path(__file__).resolve().parents[2] / "scripts" / "verify-bootstrap-version-stamp.py"
     return subprocess.run([sys.executable, "-B", str(script), "--stamp", str(root / ".hermes-bootstrap-complete"),
-                           "--repo", str(root)], capture_output=True, text=True, encoding="utf-8")
+                           "--repo", str(root)], capture_output=True, text=True, encoding="utf-8", check=False)
 
 
 def test_publishing_checkout_identity_moves_an_installer_receipt_to_head(tmp_path):

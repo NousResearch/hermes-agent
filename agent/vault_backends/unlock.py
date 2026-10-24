@@ -22,13 +22,13 @@ from typing import Callable, Dict, Optional
 _IDLE_TTL_S = 30 * 60
 
 _lock = threading.Lock()
-_sessions: Dict[tuple[str, str], tuple[str, float]] = {}   # (profile home, backend) → (token, last_used)
+_sessions: dict[tuple[str, str], tuple[str, float]] = {}   # (profile home, backend) → (token, last_used)
 _callback_tls = threading.local()
 
 UnlockPrompt = Callable[[str, str], str]  # (backend_name, display_name) -> master password ("" = cancelled)
 # (origin, site label) -> {"identifier": str, "password": str} or None when the user declines. The
 # surface owns the masked fields; the tool stores the answer in the local vault and fills at once.
-SaveLoginPrompt = Callable[[str, str], Optional[Dict[str, str]]]
+SaveLoginPrompt = Callable[[str, str], Optional[dict[str, str]]]
 
 
 def set_unlock_prompt_callback(cb: Optional[UnlockPrompt]) -> None:
@@ -72,16 +72,21 @@ def _key(backend: str) -> tuple[str, str]:
 # Lock generation per key: ``lock()`` bumps it, and an unlock that started before the bump must
 # not commit its token afterwards (a slow `bw unlock` child would otherwise silently undo an
 # acknowledged Lock).
-_generation: Dict[tuple[str, str], int] = {}
+_generation: dict[tuple[str, str], int] = {}
 # Which gateway session performed the unlock; the token is released when THAT session ends,
 # not when any sibling session in the profile is torn down.
-_owner_session: Dict[tuple[str, str], Optional[str]] = {}
+_owner_session: dict[tuple[str, str], Optional[str]] = {}
 _current_session_tls = threading.local()
 
 
 def set_current_session_id(session_id: Optional[str]) -> None:
     """Gateway surfaces bind the session running on this thread so an unlock records its owner."""
     _current_session_tls.sid = session_id
+
+
+def get_current_session_id() -> Optional[str]:
+    """The session bound on this thread (``tools.thread_context`` carries it to tool workers)."""
+    return getattr(_current_session_tls, "sid", None)
 
 
 def _live(backend: str, *, touch: bool) -> Optional[str]:
@@ -117,7 +122,7 @@ def store_session_token(backend: str, token: str, generation: Optional[int] = No
         if generation is not None and generation != _generation.get(key, 0):
             return False
         _sessions[key] = (token, time.monotonic())
-        _owner_session[key] = getattr(_current_session_tls, "sid", None)
+        _owner_session[key] = get_current_session_id()
         return True
 
 

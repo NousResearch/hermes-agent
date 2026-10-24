@@ -7,7 +7,7 @@ from __future__ import annotations
 # Only as ``python -m``: tests import this module, and the bootstrap's TMPDIR/scratch exports
 # must not fire in a library importer.
 if __name__ == "__main__":
-    import hermes_bootstrap  # noqa: F401
+    import hermes_bootstrap
 
 import argparse
 import concurrent.futures
@@ -66,7 +66,7 @@ class ComputeHost:
 
     def __init__(
         self, *, stdout: Any = None, max_workers: int | None = None,
-        heartbeat_secs: int | float | None = None) -> None:
+        heartbeat_secs: float | None = None) -> None:
         self._stdout = stdout or sys.stdout
         self._write_lock = threading.Lock()
         self._executor = concurrent.futures.ThreadPoolExecutor(
@@ -203,7 +203,8 @@ class ComputeHost:
     def _handle_respond(self, frame: dict[str, Any]) -> None:
         """Resolve a server→client request this host owns: ``params.frame`` is the client's JSON-RPC response
         frame relayed by the parent; ``params.lock`` is one batch-clarify lock (answered with ``clarify.lock``'s
-        result so the parent can ack the client)."""
+        result so the parent can ack the client); ``params.cancel`` withdraws this session's open requests of
+        one ``method`` (the parent's own cancel never reaches a wait owned here)."""
         def body(server: Any, sid: str, request_id: Any) -> None:
             params = frame.get("params")
             error = ("session not found" if sid not in server._sessions
@@ -214,6 +215,9 @@ class ComputeHost:
             from tui_gateway import server_requests
             if isinstance(params.get("lock"), dict):
                 response = server._methods["clarify.lock"](request_id, params["lock"])
+            elif isinstance(cancel := params.get("cancel"), dict):
+                withdrawn = server_requests.cancel(sid, str(cancel.get("reason") or "resolved"), method=str(cancel["method"]))
+                response = {"jsonrpc": "2.0", "id": request_id, "result": {"cancelled": withdrawn}}
             else:
                 response_frame = params.get("frame") if isinstance(params.get("frame"), dict) else params
                 resolved = server_requests.resolve_response(response_frame)
@@ -321,6 +325,8 @@ class ComputeHost:
             for key in ("cwd", "profile_home"):
                 if frame.get(key):
                     session[key] = str(frame[key])
+            if "explicit_cwd" in frame:
+                session["explicit_cwd"] = bool(frame["explicit_cwd"])
         else:
             session = self._build_server_session(server, frame, sid)
         if isinstance(frame.get("attached_images"), list):
@@ -387,7 +393,7 @@ class ComputeHost:
                 server._init_session(
                     sid, key, agent, list(history), cols=int(frame.get("cols") or 80),
                     cwd=str(frame.get("cwd") or "") or None, session_db=session_db,
-                    source=frame.get("source"))
+                    source=frame.get("source"), explicit_cwd=bool(frame.get("explicit_cwd")))
             finally:
                 reset_transport(token)
         except Exception:
@@ -400,10 +406,11 @@ class ComputeHost:
                 "created_at": time.time(), "last_active": time.time(), "running": False,
                 "attached_images": [], "image_counter": 0,
                 "cwd": str(frame.get("cwd") or os.getcwd()), "cols": int(frame.get("cols") or 80),
+                "explicit_cwd": bool(frame.get("explicit_cwd")),
                 "slash_worker": None, "show_reasoning": server._load_show_reasoning(),
                 "tool_progress_mode": server._load_tool_progress_mode(), "edit_snapshots": {},
                 "tool_started_at": {}, "model_override": frame.get("model_override"),
-                "source": server._sanitize_client_source(frame.get("source")),
+                "source": server._resolve_session_source(frame.get("source")),
                 "transport": self._transport}
         session = server._sessions[sid]
         session["transport"] = self._transport

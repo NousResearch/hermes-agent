@@ -102,6 +102,54 @@ describe('reconcileUnifiedDesktopHalves', () => {
     expect(fs.existsSync(path.join(appRoot, 'media'))).toBe(false)
   })
 
+  it.skipIf(process.platform === 'win32')(
+    'materializes a SYMLINKED dev package and re-syncs on any byte change, even with an older mtime',
+    async () => {
+      // `ln -s ~/src/my-plugin ~/.hermes/plugins/` is how a plugin is developed in
+      // place; the Python loader follows it, but the reconcile skipped the link
+      // (Dirent.isDirectory() is false for a symlink) — the desktop half never loaded.
+      const home = makeHome()
+      const appRoot = path.join(home, 'desktop-plugins')
+      const checkout = path.join(home, 'src', 'media')
+      const source = path.join(checkout, 'desktop', 'plugin.js')
+      write(source, 'v1')
+      fs.mkdirSync(path.join(home, 'plugins'), { recursive: true })
+      fs.symlinkSync(checkout, path.join(home, 'plugins', 'media'))
+
+      expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([path.join(appRoot, 'media')])
+      expect(fs.readFileSync(path.join(appRoot, 'media', 'plugin.js'), 'utf8')).toBe('v1')
+      const marker = JSON.parse(fs.readFileSync(path.join(appRoot, 'media', PACKAGE_MARKER), 'utf8'))
+      expect(marker).toMatchObject({
+        linked: true,
+        package: 'media',
+        source: path.join(home, 'plugins', 'media', 'desktop')
+      })
+      expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
+
+      // An edit that lands an OLDER mtime (git stash pop, cp -p) still re-syncs.
+      write(source, 'v2')
+      const past = new Date(Date.now() - 3_600_000)
+      fs.utimesSync(source, past, past)
+      expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([path.join(appRoot, 'media')])
+      expect(fs.readFileSync(path.join(appRoot, 'media', 'plugin.js'), 'utf8')).toBe('v2')
+    }
+  )
+
+  it('keeps the mtime gate for an installed (non-linked) package', async () => {
+    const home = makeHome()
+    const appRoot = path.join(home, 'desktop-plugins')
+    const source = path.join(home, 'plugins', 'media', 'desktop', 'plugin.js')
+    write(source, 'v1')
+    await reconcileUnifiedDesktopHalves(home, appRoot)
+    const marker = JSON.parse(fs.readFileSync(path.join(appRoot, 'media', PACKAGE_MARKER), 'utf8'))
+    expect(marker.linked).toBeUndefined()
+
+    write(source, 'v2')
+    const past = new Date(Date.now() - 3_600_000)
+    fs.utimesSync(source, past, past)
+    expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
+  })
+
   it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
     'skips a package the app cannot read and still materializes its siblings',
     async () => {
@@ -213,6 +261,31 @@ describe('reconcileUnifiedDesktopHalves', () => {
     expect(fs.readFileSync(path.join(appRoot, 'media', 'plugin.js'), 'utf8')).toBe('package half')
     expect(fs.existsSync(path.join(appRoot, 'media', 'partial.js'))).toBe(false)
     expect(fs.existsSync(path.join(appRoot, 'media', PACKAGE_MARKER))).toBe(true)
+    expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
+  })
+
+  it('overlapping passes publish a half once, from the first home that has it', async () => {
+    // Every window's disk poll and the Plugins page each run a pass through IPC,
+    // so passes overlap at boot. Unserialized, both copied, one rename hit the
+    // other's fresh folder (ENOTEMPTY) and that pass then took the profile's
+    // same-named package instead of the default home's.
+    const home = makeHome()
+    const appRoot = path.join(home, 'desktop-plugins')
+    write(path.join(home, 'plugins', 'media', 'desktop', 'plugin.js'), 'default home copy')
+    write(path.join(home, 'profiles', 'workbot', 'plugins', 'media', 'desktop', 'plugin.js'), 'profile copy')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    let passes: string[][]
+
+    try {
+      passes = await Promise.all([1, 2, 3].map(() => reconcileUnifiedDesktopHalves(home, appRoot)))
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
+
+    expect(passes.flat()).toEqual([path.join(appRoot, 'media')])
+    expect(fs.readFileSync(path.join(appRoot, 'media', 'plugin.js'), 'utf8')).toBe('default home copy')
+    expect(fs.readdirSync(appRoot)).toEqual(['media'])
     expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
   })
 

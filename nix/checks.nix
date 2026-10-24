@@ -155,15 +155,49 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           ''
         );
 
-        # pm/lock.json pins provenance sidecars (checksums.txt, .sig/.pem/.asc)
+        # pm/lock.json pins provenance sidecars (checksums.txt, .sig/.asc)
         # next to these archives. `nix flake check` otherwise only evaluates
         # the pm derivations, so a sidecar leaking into srcs ("do not know
-        # how to unpack") stayed green; build the two sidecar-bearing pins.
+        # how to unpack") stayed green; build the sidecar-bearing pin.
         pm-packages-unpack = pkgs.runCommand "hermes-pm-packages-unpack" { } ''
-          test -x ${self'.packages.pm-tirith}/tirith
           test -x ${self'.packages.pm-iron-proxy}/iron-proxy
           mkdir -p $out
           echo "ok" > $out/result
+        '';
+
+        # The pm artifacts are upstream glibc binaries. autoPatchelf rewrites
+        # their interpreter at build time, and this sandbox has no
+        # /lib64/ld-linux-x86-64.so.2 (that is host nix-ld), so exec'ing them
+        # here is the proof they run on a host that never enabled nix-ld.
+        pm-packages-exec = pkgs.runCommand "hermes-pm-packages-exec" { } ''
+          mkdir -p $out
+          if [ -e /lib64/ld-linux-x86-64.so.2 ]; then
+            echo "sandbox unexpectedly carries a host loader; this proves nothing" >&2
+            exit 1
+          fi
+          ${self'.packages.pm-uv}/bin/uv --version > $out/uv
+          ${self'.packages.pm-node}/bin/node --version > $out/node
+          ${self'.packages.pm-ffmpeg}/bin/ffmpeg -version > $out/ffmpeg
+          ${self'.packages.pm-ripgrep}/bin/rg --version > $out/rg
+          ${self'.packages.pm-python}/bin/python3 -c 'import ssl, sqlite3' > $out/python
+          cat $out/*
+        '';
+
+        # The dev shell's HERMES_PYTHON must carry its own dependencies: the
+        # TUI and the test runner launch it with PYTHONPATH replaced or cleared.
+        dev-venv-self-contained = pkgs.runCommand "hermes-dev-venv-self-contained" { } ''
+          venv=${hermes-agent.devVenv}
+          env -i "$venv/bin/python3" -c '
+          import sys, ruamel.yaml, openai, httpx, pytest
+          assert sys.prefix == "'"$venv"'", sys.prefix
+          assert sys.base_prefix == "${hermes-agent.pmPython}", sys.base_prefix
+          '
+          env -i "$venv/bin/pytest" --version
+          # Native dev commands survive alongside the re-shebanged scripts.
+          env -i "$venv/bin/ruff" --version
+          env -i "$venv/bin/ty" --version
+          mkdir -p $out
+          echo ok > $out/result
         '';
 
         # Verify the default package builds successfully (cross-platform).
@@ -1201,6 +1235,14 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
 
           test -f ${hermes-agent}/ui-tui/dist/entry.js || (echo "FAIL: compiled entry.js missing"; exit 1)
           echo "PASS: compiled entry.js present"
+
+          # The compiled TUI runs these on HERMES_PYTHON; the Python package lives in another
+          # store path, so they must ship beside entry.js (#139208).
+          for helper in gateway_bootstrap.py clipboard_image.py; do
+            test -f ${hermes-agent}/ui-tui/dist/scripts/$helper || \
+              (echo "FAIL: TUI helper $helper missing"; exit 1)
+          done
+          echo "PASS: TUI Python helpers present"
 
           # self-contained bundle; no runtime node_modules expected
 

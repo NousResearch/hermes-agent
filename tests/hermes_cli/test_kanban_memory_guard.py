@@ -79,7 +79,7 @@ def test_resolve_max_in_progress_derives_when_unset(monkeypatch):
 
 
 def test_resolve_max_in_progress_unset_and_unknown_memory_is_uncapped(monkeypatch):
-    monkeypatch.setattr(kbd, "_system_memory_sample", lambda: {})
+    monkeypatch.setattr(kbd, "_system_memory_sample", dict)
     assert kbd.resolve_max_in_progress(None) is None
 
 
@@ -201,7 +201,7 @@ def test_dispatch_elevated_pressure_does_not_widen_tighter_budget(
 def test_dispatch_unknown_pressure_imposes_no_restriction(
     kanban_home, all_assignees_spawnable, monkeypatch,
 ):
-    monkeypatch.setattr(kbd, "_system_memory_sample", lambda: {})
+    monkeypatch.setattr(kbd, "_system_memory_sample", dict)
     spawns = []
 
     def fake_spawn(task, workspace, board=None):

@@ -75,7 +75,10 @@ def _build_server() -> Any:
     except ImportError as exc:  # pragma: no cover - install hint
         raise ImportError(f"hermes-tools MCP server requires the 'mcp' package: {exc}") from exc
 
-    from model_tools import get_tool_definitions, handle_function_call
+    # Schema assembly stays on model_tools so plugin overrides, check_fn
+    # availability gates, dynamic schemas, and sanitization match what the
+    # Hermes model sees. handle_function_call is imported lazily in _dispatch.
+    from model_tools import get_tool_definitions
 
     mcp = MCPServer(
         HERMES_TOOLS_MCP_SERVER_NAME,
@@ -101,6 +104,9 @@ def _build_server() -> Any:
 
         def _dispatch(**kwargs: Any) -> str:
             try:
+                # Resolve the dispatcher on the first tool call, not at MCP startup.
+                from model_tools import handle_function_call
+
                 # Drop None so unset optionals aren't forwarded to the handler.
                 return handle_function_call(tool_name, {k: v for k, v in kwargs.items() if v is not None})
             except Exception as exc:

@@ -103,6 +103,90 @@ class TestModuleSurface:
         assert not missing, f"EXPOSED_TOOLS names no core tool registers: {sorted(missing)}"
 
 
+class _FakeMCPServer:
+    """Records add_tool calls in place of mcp.server.MCPServer."""
+
+    def __init__(self, *args, **kwargs):
+        self.tools = []
+        self.handlers = {}
+
+    def add_tool(self, handler, *, name, description):
+        self.tools.append((name, description))
+        self.handlers[name] = handler
+
+
+def _install_fake_mcp_server(monkeypatch):
+    """Point ``from mcp.server import MCPServer`` at _FakeMCPServer."""
+    import sys
+    import types
+
+    try:
+        import mcp.server as mcp_server
+    except ImportError:
+        mcp_server = types.ModuleType("mcp.server")
+        mcp_pkg = types.ModuleType("mcp")
+        mcp_pkg.server = mcp_server
+        monkeypatch.setitem(sys.modules, "mcp", mcp_pkg)
+        monkeypatch.setitem(sys.modules, "mcp.server", mcp_server)
+    monkeypatch.setattr(mcp_server, "MCPServer", _FakeMCPServer, raising=False)
+
+
+def _web_search_def():
+    return {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the web.",
+            "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
+        },
+    }
+
+
+class TestBuildServer:
+
+    def test_schemas_come_from_model_tools_and_dispatch_is_lazy(self, monkeypatch):
+        """Schemas use model_tools.get_tool_definitions (plugin overrides,
+        check_fn gates, dynamic schemas, sanitization); handle_function_call
+        is resolved on the first tool call, not while the server is built."""
+        import sys
+        import types
+
+        import agent.transports.hermes_tools_mcp_server as m
+
+        _install_fake_mcp_server(monkeypatch)
+        fake_model_tools = types.ModuleType("model_tools")
+        fake_model_tools.get_tool_definitions = lambda quiet_mode=False: [_web_search_def()]
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        server = m._build_server()
+
+        assert server.tools == [("web_search", "Search the web.")]
+        assert not hasattr(fake_model_tools, "handle_function_call")
+
+        fake_model_tools.handle_function_call = lambda tool_name, args: f"called:{tool_name}:{args}"
+        assert server.handlers["web_search"](query="hello") == "called:web_search:{'query': 'hello'}"
+
+    def test_tool_with_failing_check_fn_is_not_listed(self, monkeypatch):
+        """An unavailable tool (check_fn False) must not be advertised to the MCP client."""
+        import agent.transports.hermes_tools_mcp_server as m
+        import model_tools
+        from tools.registry import registry
+
+        _install_fake_mcp_server(monkeypatch)
+        entry = registry.get_entry("web_search")
+        assert entry is not None
+        monkeypatch.setattr(entry, "check_fn", lambda: False)
+        model_tools._clear_tool_defs_cache()
+        try:
+            server = m._build_server()
+        finally:
+            model_tools._clear_tool_defs_cache()
+
+        names = [name for name, _ in server.tools]
+        assert "web_search" not in names
+        assert set(names) <= set(m.EXPOSED_TOOLS)
+
+
 class TestMain:
     def test_main_returns_2_when_mcp_unavailable(self, monkeypatch):
         """When the mcp package isn't installed, main() should exit

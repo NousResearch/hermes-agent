@@ -62,6 +62,28 @@ def _is_under(resolved: str | Path, base: str | Path) -> bool:
     return resolved == base or resolved.startswith(str(base) + os.sep)
 
 
+def fold_path(path: str | Path) -> str:
+    """Case-folded spelling of an already-resolved path, for DENY-list comparison only.
+
+    ``resolve()`` / ``realpath()`` keep the case the caller typed, while a case-insensitive
+    filesystem (default macOS APFS, Windows, case-folding mounts) opens ``AUTH.JSON`` as
+    ``auth.json``. Deny lists match on folded paths; on a case-sensitive filesystem that only
+    over-denies a differently cased sibling (fails closed). Allow lists (``HERMES_WRITE_SAFE_ROOT``,
+    workspace roots) and the ``~/.ssh/config`` approval gate keep the exact comparison: folding them
+    would widen what is allowed."""
+    return os.path.normcase(str(path)).casefold()
+
+
+def is_under_folded(resolved: str | Path, base: str | Path) -> bool:
+    """:func:`_is_under` on folded paths (see :func:`fold_path`): deny-list containment."""
+    path, root = fold_path(resolved), fold_path(base).rstrip(os.sep)
+    return path == root or path.startswith(root + os.sep)
+
+
+def _folded(paths) -> set[str]:
+    return {fold_path(p) for p in paths}
+
+
 def _resolve_target(path: str) -> Optional[Path]:
     """``Path(expanduser(path)).resolve()``, or None when resolution fails."""
     with suppress(OSError, RuntimeError):
@@ -281,12 +303,16 @@ def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[
     """Credential / protected-subpath / safe-root verdict for an already-resolved path."""
     # Approval-gated paths are allowed at this layer so interactive tools can
     # prompt; checked first so the ``.ssh/`` prefix deny doesn't swallow them.
+    # Exact on purpose: a folded match here would return before the safe-root check. A re-cased
+    # ~/.SSH/config falls through to the folded ``.ssh/`` prefix deny instead (fails closed).
     if any(resolved in build_write_approval_paths(home) for home in homes):
         return None
 
+    folded = fold_path(resolved)
+
     if any(
-        resolved in build_write_denied_paths(home)
-        or any(resolved.startswith(prefix) for prefix in build_write_denied_prefixes(home))
+        folded in _folded(build_write_denied_paths(home))
+        or any(folded.startswith(fold_path(prefix)) for prefix in build_write_denied_prefixes(home))
         for home in homes
     ):
         return "credential"
@@ -294,7 +320,7 @@ def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[
     for base in _hermes_dirs():
         for sub in _HERMES_PROTECTED_SUBPATHS:
             with suppress(Exception):
-                if _is_under(resolved, os.path.realpath(os.path.join(str(base), sub))):
+                if is_under_folded(resolved, os.path.realpath(os.path.join(str(base), sub))):
                     return "credential"
 
     safe_roots = get_safe_write_roots()
@@ -388,12 +414,13 @@ def get_read_block_error(path: str) -> Optional[str]:
     resolved = Path(path).expanduser().resolve()
     hermes_dirs = _hermes_dirs()
     reason = None
-    if any(_is_under(resolved, hd / "skills" / ".hub") for hd in hermes_dirs):
+    folded = fold_path(resolved)
+    if any(is_under_folded(resolved, hd / "skills" / ".hub") for hd in hermes_dirs):
         reason = (
             "is an internal Hermes cache file and cannot be read directly to prevent "
             "prompt injection. Use the skills_list or skill_view tools instead."
         )
-    elif any(resolved in _resolve_each(hd / name for hd in hermes_dirs) for name in _CREDENTIAL_FILE_NAMES):
+    elif folded in _folded(_resolve_each(hd / name for hd in hermes_dirs for name in _CREDENTIAL_FILE_NAMES)):
         reason = (
             "is a Hermes credential store and cannot be read directly. Provider tools "
             "consume these credentials through internal channels." + _DID_SUFFIX
@@ -401,8 +428,8 @@ def get_read_block_error(path: str) -> Optional[str]:
     else:
         for subdir, dir_msg, file_msg in _READ_DENIED_DIRS:
             for blocked_dir in _resolve_each(hd / subdir for hd in hermes_dirs):
-                if _is_under(resolved, blocked_dir):
-                    reason = (dir_msg if resolved == blocked_dir else file_msg) + _DID_SUFFIX
+                if is_under_folded(resolved, blocked_dir):
+                    reason = (dir_msg if folded == fold_path(blocked_dir) else file_msg) + _DID_SUFFIX
                     break
             if reason:
                 break

@@ -1618,3 +1618,49 @@ class TestSanePathIncludesHomebrew:
             result = _make_run_env({})
         assert result["Path"] == windows_env["Path"]
         assert "PATH" not in result
+
+
+def test_rotated_generation_venv_paths_are_stripped(monkeypatch, tmp_path):
+    """Regression (mac8 2026-10-16): dependency rebuilds rotate the generation hash
+    under installs/<key>/environments/. The exact-match ownership check only knew
+    the currently-committed generation, so site-packages paths of STALE generations
+    (still inherited by every child env) leaked through as "user paths" — pip then
+    reported satisfied-by-venv false positives and children resolved a bare
+    ``python3`` to the stale venv. The environments tree is Hermes-private, so its
+    venv artifact dirs are owned regardless of generation."""
+    tree = tmp_path / "installs" / "key1" / "environments"
+    for gen in ("old-gen", "committed-gen"):
+        (tree / gen / "venv" / "lib" / "python3.14" / "site-packages").mkdir(parents=True)
+        (tree / gen / "venv" / "bin").mkdir(parents=True)
+    stale_site = tree / "old-gen" / "venv" / "lib" / "python3.14" / "site-packages"
+    user_path = tmp_path / "user-libs"
+
+    monkeypatch.setattr(pp, "_hermes_environments_roots", lambda env: [tree])
+    env = {"PYTHONPATH": os.pathsep.join([str(stale_site), str(user_path)])}
+    pp._strip_hermes_owned_pythonpath(env)
+    assert env.get("PYTHONPATH") == str(user_path)
+
+    # Descendants of a generation dir that are NOT the venv's own site-packages
+    # stay user-owned (documented descendant policy holds under the tree too).
+    odd = tree / "old-gen" / "user-drop-in"
+    env = {"PYTHONPATH": str(odd)}
+    pp._strip_hermes_owned_pythonpath(env)
+    assert env.get("PYTHONPATH") == str(odd)
+
+
+def test_stale_generation_venv_bins_are_stripped_from_path(monkeypatch, tmp_path):
+    """PATH counterpart: bare ``python3`` in children must not resolve to a
+    rotated-out generation's venv interpreter."""
+    from tools.environments import local as local_mod
+
+    tree = tmp_path / "installs" / "key1" / "environments"
+    stale_bin = tree / "old-gen" / "venv" / "bin"
+    stale_bin.mkdir(parents=True)
+    user_bin = tmp_path / "user-tools" / "bin"
+    user_bin.mkdir(parents=True)
+
+    import tools.environments.local_pythonpath as pp_mod
+    monkeypatch.setattr(pp_mod, "_hermes_environments_roots", lambda env: [tree])
+    env = {"PATH": os.pathsep.join([str(stale_bin), "/usr/bin", str(user_bin)])}
+    local_mod._strip_hermes_venv_bins_from_path(env)
+    assert env["PATH"].split(os.pathsep) == ["/usr/bin", str(user_bin)]

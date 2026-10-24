@@ -585,6 +585,7 @@ slack:
 | 机器人可以聊天但无法读取上传的图片/文件 | 添加 `files:read`，然后**重新安装**应用。当 Slack 返回权限范围/认证/权限失败时，Hermes 现在会在聊天中显示附件访问诊断信息。 |
 | `missing_scope` 错误 | 在 OAuth & Permissions 中添加所需权限范围，然后**重新安装**应用 |
 | Socket 频繁断开 | 检查你的网络；Bolt 会自动重连，但不稳定的连接会导致延迟 |
+| 机器人保持连接，但收不到消息（常见于 Slack 故障之后） | Slack 可能让 Socket Mode 会话保持打开，却不向它投递事件。Hermes 会重启 Slack 从未注册的会话（`gateway.log` 中的 `Socket Mode unhealthy (no hello from Slack ...)`），并续订 30 分钟没有任何帧的会话（`Socket Mode renewed ...`）；可用 `SLACK_SOCKET_HELLO_TIMEOUT_SECONDS` / `SLACK_SOCKET_SILENCE_RENEW_SECONDS` 调整。发往失聪会话的消息不会补发，请让用户重新发送。出现 `Slack counts N Socket Mode connections` 警告表示另一个进程在使用同一个 app token，并分走了部分事件。 |
 | 更改了权限范围/事件但没有任何变化 | 更改任何权限范围或事件订阅后，**必须重新安装**应用到工作区 |
 
 ### 快速检查清单

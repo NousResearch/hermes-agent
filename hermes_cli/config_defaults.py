@@ -1226,6 +1226,12 @@ DEFAULT_CONFIG = {
         },
         "record_key": "ctrl+b",
         "submit_mode": "direct",  # TUI: direct submits immediately; draft = editable transcript
+        # Desktop: show the composer's voice/dictation controls. False hides the
+        # mic hub (and, on a narrow row, the folded voice menu) without disabling
+        # voice — dictation stays reachable through `record_key`, and every other
+        # voice setting keeps working. For anyone who keeps hitting the mic
+        # instead of Send.
+        "show_controls": True,
         "max_recording_seconds": 120,
         "auto_tts": False,
         # Desktop remote clients call STT/TTS providers DIRECTLY (config + key fetched over

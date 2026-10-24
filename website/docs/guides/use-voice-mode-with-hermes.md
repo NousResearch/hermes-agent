@@ -208,6 +208,21 @@ voice:
   submit_mode: "draft"
 ```
 
+### Hiding the mic in the desktop composer
+
+The desktop composer shows a voice/dictation hub next to Send. If you never
+dictate and keep hitting it by mistake, hide it without disabling voice:
+
+```yaml
+voice:
+  show_controls: false
+```
+
+The mic hub — and the folded voice menu that replaces it on a narrow row —
+disappears; Send, the model pills and the input are untouched. Dictation is
+still available through `voice.record_key`, and every other voice setting keeps
+working. Defaults to `true`.
+
 If you want local TTS instead, switch the `tts` block to:
 
 ```yaml

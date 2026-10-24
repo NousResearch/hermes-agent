@@ -346,7 +346,10 @@ cadence, or run a "cron librarian" job that reconciles the whole table
   its `cron/output/<job_id>/` directory are gone afterwards and the final run
   is not written there. Deleting the record from *outside* the run (another
   process, or a replacement job reusing the id) still discards the stale
-  run's output, as before.
+  run's output, as before. A CLI child of a restart-safe worker cannot share
+  the run-local delivery permission, so removing its own active job is refused
+  before deleting the record or output. Pause the job to stop future runs,
+  then remove it from an independent session after the current run finishes.
 
 Prefer prompts that update existing jobs (list first, then update by ID)
 over ones that create new jobs each run.

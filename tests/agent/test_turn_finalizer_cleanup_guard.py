@@ -207,3 +207,45 @@ def test_persist_disabled_turn_skips_session_end_hook(
     assert ("on_session_end" in calls) == ("on_session_end" in expected_calls)
 
 
+def _capture_session_end_kwargs(agent):
+    """Run a clean turn and return the kwargs the on_session_end hook received."""
+    captured = {}
+
+    def capture(name, _logger, **kwargs):
+        if name == "on_session_end":
+            captured.update(kwargs)
+        return []
+
+    with patch("agent.turn_finalizer._invoke_hook_safely", side_effect=capture):
+        _run(agent, final_response="done", api_call_count=1,
+             turn_exit_reason="text_response(stop)")
+    return captured
+
+
+def test_session_end_hook_carries_usage_snapshot_and_context_length():
+    """Push watchers gauge the context from these fields; the payload contract
+    is canonical token integers + the compressor's resolved window."""
+    agent = _StubAgent(raise_in=())
+    agent._last_turn_usage = {
+        "prompt_tokens": 5000, "completion_tokens": 200, "total_tokens": 5200,
+        "input_tokens": 1000, "output_tokens": 200, "cache_read_tokens": 4000,
+        "cache_write_tokens": 0, "reasoning_tokens": 50,
+    }
+    agent.context_compressor.context_length = 131072
+
+    kwargs = _capture_session_end_kwargs(agent)
+
+    assert kwargs["usage"] == agent._last_turn_usage
+    assert kwargs["usage"] is not agent._last_turn_usage  # snapshot, not alias
+    assert kwargs["context_length"] == 131072
+
+
+def test_session_end_hook_usage_none_when_turn_never_reached_a_response():
+    """A turn with no API call says nothing about context: fields stay absent
+    (None), never a fabricated zero a gauge would read as an empty window."""
+    agent = _StubAgent(raise_in=())
+
+    kwargs = _capture_session_end_kwargs(agent)
+
+    assert kwargs["usage"] is None
+    assert kwargs["context_length"] is None

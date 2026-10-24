@@ -173,6 +173,41 @@ def test_load_website_blocklist_no_warning_for_known_keys(tmp_path, caplog):
     )
 
 
+def test_load_website_blocklist_warns_on_mixed_scalar_unknown_keys(tmp_path, caplog):
+    """Mixed-scalar unknown keys (strings and ints) must be formatted safely without raising TypeError."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "security": {
+                    "website_blocklist": {
+                        "enabled": True,
+                        "domains": ["example.com"],
+                        "typo_str": "val",
+                        12345: "numeric_key",
+                    }
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with caplog.at_level("WARNING", logger="tools.website_policy"):
+        policy = load_website_blocklist(config_path)
+
+    assert policy["enabled"] is True
+    assert {rule["pattern"] for rule in policy["rules"]} == {"example.com"}
+
+    warning = next(
+        (rec.message for rec in caplog.records if "Unknown security.website_blocklist keys" in rec.message),
+        None,
+    )
+    assert warning is not None
+    assert "12345" in warning and "typo_str" in warning
+
+
+
 def test_check_website_access_blocks_scheme_less_urls(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

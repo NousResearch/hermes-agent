@@ -204,8 +204,12 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
             from gateway.run import _multiplex_profile_homes
             served = {name for name, _home in _multiplex_profile_homes(config)}
             return primary if profile in served else None
+        # Only Discord uses the thread/post id as chat_id. Telegram already stores
+        # its containing group there; a synthetic parent would let an unrelated
+        # DM route shadow the actual group. Keep the missing-sender guard below.
+        probe_parent = parent or (route.chat_id if platform.value == "discord" and thread_like else None)
         if route.matches(platform.value, guild_id=guild or route.guild_id, chat_id=chat,
-                         thread_id=thread, parent_chat_id=parent or (route.chat_id if thread_like else None),
+                         thread_id=thread, parent_chat_id=probe_parent,
                          user_id=user_id or route.user_id):
             return None
     # A stateless (api_server) subscription carries a RAW session id, not a routable chat, so no

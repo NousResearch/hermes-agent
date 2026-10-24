@@ -143,9 +143,10 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
     return (evt.get("session_id", ""), evt_type, *(evt.get(f, 0 if f == "suppressed" else "") for f in extra))
 
 
-# Mirror gateway/kanban_watchers.py TERMINAL_KINDS: claim silent kinds (archived/unblocked) too so the cursor advances
+# Mirror gateway/kanban_watchers_notifier.py TERMINAL_KINDS: claim silent kinds (archived/unblocked) too so the cursor advances
 # past them and they can't wedge a later completed/blocked event behind an unclaimed row.
-_KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked")
+_KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked",
+                        "block_loop_detected", "review_requested", "changes_requested")
 # kanban, /loop + /heartbeat and the bot mailbox share one idle-poll cadence; probing the lease registry on
 # every 0.5s queue timeout cost ~a core at 11 sessions (#108005).
 _KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = 5.0
@@ -399,6 +400,13 @@ def _kb_timed_out(task, payload: dict, title: str) -> str:
 _KANBAN_EVENT_FORMATTERS = {
     "completed": ("✔", _kb_completed),
     "blocked": ("⏸", lambda t, p, title: " blocked" + (f": {str(p.get('reason'))[:160]}" if p.get("reason") else "")),
+    "block_loop_detected": ("⚠", lambda t, p, title: " routed to triage after repeated blocks; "
+                            "orchestration attention required, no automatic retry"
+                            + _kb_first_line(p.get("reason") or "", 160)),
+    "review_requested": ("🔎", lambda t, p, title: f" review requested - {title}"
+                         + _kb_first_line(p.get("summary") or "", 200)),
+    "changes_requested": ("↩", lambda t, p, title: " changes requested"
+                          + _kb_first_line(p.get("reason") or "", 160)),
     "gave_up": ("✖", lambda t, p, title: " gave up after repeated spawn failures"
                 + (f"\n{str(p.get('error'))[:200]}" if p.get("error") else "")),
     "crashed": ("✖", lambda t, p, title: " worker crashed (pid gone); dispatcher will retry"),

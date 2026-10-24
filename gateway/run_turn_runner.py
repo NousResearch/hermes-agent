@@ -959,7 +959,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         register_gateway_notify(session_key, self._approval_notify_sync)
         try:
             api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
-            kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id}
+            kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id, **ctx.origin_kwargs()}
             from gateway.session_api_turn import api_execution
             api = api_execution.get()
             if api is not None and api.get('relay_metadata') and _accepts_keyword(agent.run_conversation, "relay_metadata"):

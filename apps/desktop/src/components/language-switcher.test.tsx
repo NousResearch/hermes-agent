@@ -104,4 +104,24 @@ describe('LanguageSwitcher', () => {
       dispose()
     }
   })
+
+  it('says where the languages that are not bundled come from', async () => {
+    const hint = 'More languages ship as packs — search the catalog: hermes plugins search language'
+
+    render(
+      <I18nProvider configClient={null}>
+        <LanguageSwitcher />
+      </I18nProvider>
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch language' }))
+    // The bundled list is short and reads as complete, so the hint is visible while browsing.
+    expect(screen.getByText(hint)).toBeTruthy()
+
+    // A search that matches nothing keeps the hint, next to the empty state this time.
+    fireEvent.change(screen.getByPlaceholderText('Search languages…'), { target: { value: 'português' } })
+
+    expect(screen.getByText('No languages found')).toBeTruthy()
+    expect(screen.getByText(hint)).toBeTruthy()
+  })
 })

@@ -2519,7 +2519,9 @@ export const ruOverrides = {
     },
     statusDivider: {
       working: 'Работает',
-      done: 'Готово'
+      blocked: 'Ожидает ответа',
+      ready: 'Готово',
+      inactive: 'Неактивно'
     },
     markAllRead: 'Отметить все как прочитанные'
   },

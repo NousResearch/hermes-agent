@@ -2,6 +2,7 @@ import type { ModelOptionProvider } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { persistString, storedString } from '@/lib/storage'
+import { $activeGatewayRoute, $gateway, activeGatewayProfileKey, requestGatewayForProfile } from '@/store/gateway'
 
 const STORAGE_KEY = 'hermes.desktop.visible-models'
 
@@ -113,11 +114,126 @@ function allFamilyKeys(providers: readonly ModelOptionProvider[]): Set<string> {
   return keys
 }
 
+/** Push the roster to the gateway so OTHER surfaces (phone, a second client,
+ *  a TUI on the same backend) show the models this operator actually chose.
+ *  Kept local-first: localStorage stays the instant read so the picker never
+ *  waits on a round-trip, and a disconnected gateway is not an error — the next
+ *  edit and the next connect both retry. */
+function pushVisibleModels(keys: null | Set<string> | readonly string[]): void {
+  if (!$gateway.get()) {
+    return
+  }
+
+  void requestGatewayForProfile(activeGatewayProfileKey(), 'config.set', {
+    key: 'visible_models',
+    value: keys === null ? null : [...keys]
+  }).catch(() => {
+    // Not connected, or a gateway too old to know the key.
+  })
+}
+
+/** Adopt the roster the backend holds. Called on connect: a gateway that already
+ *  has an answer wins over this renderer's cache, otherwise two surfaces on one
+ *  backend drift apart and the phone keeps showing models hidden on the Mac. */
+export function adoptVisibleModels(keys: null | readonly string[]): void {
+  if (keys === null) {
+    $visibleModels.set(null)
+    persistString(STORAGE_KEY, null)
+
+    return
+  }
+
+  $visibleModels.set(new Set(keys))
+  persistString(STORAGE_KEY, JSON.stringify([...keys]))
+}
+
+/** Listen for the gateway pushing an updated roster (from another surface
+ *  editing its settings or the daemon adopting a config change) and apply it
+ *  without a reload. Unsubscribe on disconnect. */
+export function initVisibleModelsGatewaySync(): () => void {
+  let offEvent: (() => void) | undefined
+  let generation = 0
+  const bind = () => {
+    offEvent?.()
+    offEvent = undefined
+    const currentGeneration = ++generation
+    const gateway = $gateway.get()
+    const profile = activeGatewayProfileKey()
+    const isCurrent = () =>
+      generation === currentGeneration && $gateway.get() === gateway && activeGatewayProfileKey() === profile
+    let receivedUpdate = false
+
+    if (!gateway) {
+      return
+    }
+
+    // Live updates win over an in-flight initial read.
+    offEvent = gateway.onEvent(event => {
+      if (!isCurrent() || (event.profile && event.profile !== profile)) {
+        return
+      }
+      if ((event.type as string) === 'visible_models.changed') {
+        const payload = event.payload as { value?: null | readonly string[] } | undefined
+        if (payload && 'value' in payload) {
+          receivedUpdate = true
+          adoptVisibleModels(payload.value ?? null)
+        }
+      }
+    })
+
+    void requestGatewayForProfile<{ value?: null | readonly string[] }>(profile, 'config.get', {
+      key: 'visible_models'
+    })
+      .then(result => {
+        if (!isCurrent() || receivedUpdate) {
+          return
+        }
+        const value = result?.value
+
+        if (value === undefined) {
+          return
+        }
+
+        if (value === null) {
+          // Seed an uncustomised backend from the renderer's existing roster.
+          const local = $visibleModels.get()
+          if (local !== null) {
+            pushVisibleModels(local)
+          }
+          return
+        }
+
+        adoptVisibleModels(value)
+      })
+      .catch(() => {
+        // Older gateway: keep the renderer-local list.
+      })
+  }
+
+  // nanostores ignores cleanup returned from subscribe callbacks. Own both
+  // subscriptions and the socket listener explicitly; profiles can share a socket.
+  const offGateway = $gateway.listen(bind)
+  const offProfile = $activeGatewayRoute.listen(bind)
+  bind()
+  return () => {
+    ++generation
+    offGateway()
+    offProfile()
+    offEvent?.()
+    offEvent = undefined
+  }
+}
+
+if (typeof window !== 'undefined') {
+  initVisibleModelsGatewaySync()
+}
+
 /** Persist the visible set and, when the current catalog is supplied, mark every
  *  model in it as judged so only models that appear later count as new. */
 export function setVisibleModels(keys: Set<string>, providers: readonly ModelOptionProvider[] = []): void {
   $visibleModels.set(new Set(keys))
   persistString(STORAGE_KEY, JSON.stringify([...keys]))
+  pushVisibleModels(keys)
 
   if (providers.length === 0) {
     return
@@ -183,6 +299,7 @@ export function resetModelVisibility(): void {
   persistString(STORAGE_KEY, null)
   $knownModels.set(null)
   persistString(KNOWN_STORAGE_KEY, null)
+  pushVisibleModels(null)
 }
 
 export function setModelVisibilityOpen(open: boolean): void {

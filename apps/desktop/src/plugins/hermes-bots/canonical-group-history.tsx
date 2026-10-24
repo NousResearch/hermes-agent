@@ -1,6 +1,7 @@
 import * as sdk from '@hermes/plugin-sdk'
+import { useEffect, useRef, useState } from 'react'
 
-import { type CanonicalGroupAttachment, CanonicalGroupAttachments } from './canonical-group-attachments'
+import { type CanonicalGroupAttachment, CanonicalGroupAttachments, fetchCanonicalGroupAttachment } from './canonical-group-attachments'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import type { CanonicalGroupBinding, CanonicalRoomMember } from './canonical-groups'
 
@@ -65,6 +66,48 @@ function EventBody({ event, notice }: { event: CanonicalGroupEvent; notice?: str
   </div>
 }
 
+// Previews download the whole file over RPC; larger or unsized images keep only Download.
+const IMAGE_PREVIEW_MAX_BYTES = 5 * 1024 * 1024
+
+function ImagePreview({ binding, eventId, attachment, disabled }: {
+  binding: CanonicalGroupBinding; eventId: string; attachment: CanonicalGroupAttachment; disabled: boolean
+}) {
+  const [src, setSrc] = useState('')
+  const [near, setNear] = useState(false)
+  const box = useRef<HTMLDivElement>(null)
+  const { attachment_id: attachmentId, size } = attachment
+  const { connectionId, profile, roomId } = binding
+  const previewable = !!attachmentId && size !== undefined && size <= IMAGE_PREVIEW_MAX_BYTES
+
+  // History loads the whole room: fetch only near the viewport, which also bounds concurrent downloads.
+  useEffect(() => {
+    const el = box.current
+
+    if (near || disabled || !el) {return}
+    const observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) {setNear(true)} }, { rootMargin: '200px' })
+    observer.observe(el)
+
+    return () => observer.disconnect()
+  }, [near, disabled])
+
+  useEffect(() => {
+    if (disabled || !near || !attachmentId || !previewable) {return}
+    let cancelled = false
+    let url = ''
+    // A failed preview leaves the Download button as the way to the file.
+    void fetchCanonicalGroupAttachment({ connectionId, profile, roomId }, eventId, attachmentId).then(({ bytes, mime }) => {
+      if (cancelled) {return}
+      url = URL.createObjectURL(new Blob([bytes], { type: mime }))
+      setSrc(url)
+    }, () => undefined)
+
+    // Dropping `near` makes a re-shown room wait on the observer again, not refetch every preview seen so far at once.
+    return () => { cancelled = true; URL.revokeObjectURL(url); setSrc(''); setNear(false) }
+  }, [connectionId, profile, roomId, eventId, attachmentId, disabled, near, previewable])
+
+  return previewable ? <div ref={box}>{src && <img alt={attachment.name} className="max-h-64 max-w-full rounded object-contain" src={src} />}</div> : null
+}
+
 export function CanonicalGroupHistory({ binding, events, members = [], disabled = false }: CanonicalGroupHistoryProps) {
   const labels = useCanonicalGroupLabels()
   const roster = new Map(members.map(member => [member.member_id, member]))
@@ -87,6 +130,7 @@ export function CanonicalGroupHistory({ binding, events, members = [], disabled 
 
     if (!notice && !isMessage) {return null}
     const author = eventAuthor(event, roster, isMessage)
+    const previewEventId = event.room_id === binding.roomId ? event.event_id : undefined
 
     return <div className="grid grid-cols-[minmax(0,1fr)] gap-1 px-2 py-1.5" key={event.seq}>
     <div className="flex items-center gap-2">
@@ -94,6 +138,8 @@ export function CanonicalGroupHistory({ binding, events, members = [], disabled 
       <EventTime timestamp={event.created_at} />
     </div>
     <EventBody event={event} notice={notice} />
+    {previewEventId && event.payload.attachments?.filter(a => a.kind === 'image').map(a =>
+      <ImagePreview attachment={a} binding={binding} disabled={disabled} eventId={previewEventId} key={a.attachment_id ?? a.name} />)}
     {!!event.payload.attachments?.length && <CanonicalGroupAttachments
       attachments={event.payload.attachments.map(attachment => ({ ...attachment, event_id: event.event_id }))}
       binding={binding} disabled={disabled || !event.event_id || event.room_id !== binding.roomId} readOnly />}

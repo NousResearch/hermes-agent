@@ -6,6 +6,15 @@ import { captureCanonicalGroupRoute, discoverCanonicalGroups } from './canonical
 import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom } from './canonical-groups'
 
 export const $canonicalGroupBindings = atom<Record<string, CanonicalGroupBinding>>({})
+// Bumped when a room leaves outside the list's own Refresh, so the sidebar re-reads `groups.list`.
+const $canonicalGroupListRevision = atom(0)
+
+/** Drop a disbanded room's key and every alias to it, then re-read the sidebar list. */
+export function forgetCanonicalGroup({ connectionId, profile, roomId }: CanonicalGroupBinding): void {
+  $canonicalGroupBindings.set(Object.fromEntries(Object.entries($canonicalGroupBindings.get()).filter(([, binding]) =>
+    binding.connectionId !== connectionId || binding.profile !== profile || binding.roomId !== roomId)))
+  $canonicalGroupListRevision.set($canonicalGroupListRevision.get() + 1)
+}
 
 export function registerCanonicalGroup(route: CanonicalGroupRoute, room: CanonicalRoom): string {
   const key = `canonical:${encodeURIComponent(route.connectionId)}:${encodeURIComponent(route.profile)}:${room.room_id}`
@@ -104,6 +113,7 @@ export function CanonicalGroupList({ onOpen }: { onOpen: (key: string, origin: C
   const [rooms, setRooms] = useState<Array<{ key: string; name: string }>>([])
   const [error, setError] = useState('')
   const [refresh, setRefresh] = useState(0)
+  const revision = useValue($canonicalGroupListRevision)
   useEffect(() => {
     let cancelled = false
     setRooms([])
@@ -116,7 +126,7 @@ export function CanonicalGroupList({ onOpen }: { onOpen: (key: string, origin: C
     })().catch(e => { if (!cancelled) {setError(e instanceof Error ? e.message : String(e))} })
 
     return () => { cancelled = true }
-  }, [connectionId, profile, refresh])
+  }, [connectionId, profile, refresh, revision])
 
   return <div className="grid gap-1 px-2">
     <Button onClick={() => setRefresh(value => value + 1)} variant="ghost">{labels.refreshGroups}</Button>

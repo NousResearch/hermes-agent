@@ -722,4 +722,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception:
+        import traceback
+        print(f"\n✗ Unhandled error in release.py:\n{traceback.format_exc()}", file=sys.stderr)
+        sys.exit(1)

@@ -82,7 +82,7 @@ import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './ro
 import { startScreenAutoRaise } from './screen-autoraise'
 import { ProfileGroupScreenPortal } from './screen-portal'
 import { startHideSweepScheduler } from './session-sweep'
-import { bumpBotOpenGeneration, getBotOpenGeneration, ID, setPluginCtx } from './shared'
+import { getBotOpenGeneration, ID, setPluginCtx } from './shared'
 import type { GroupChat, RosterRow } from './types'
 import { loadBotSections } from './user-sections'
 
@@ -597,13 +597,6 @@ export default {
           } else if (selected) {
             setBotsWorkspaceOwner(botWorkspaceOwnerKey(selected), selected)
           }
-        } else {
-          // Strand any owner wake still dialing. Its SDK open will fail the
-          // workspace token too; this plugin generation prevents that expected
-          // cancellation from showing an error after the user deliberately
-          // returned to Sessions.
-          bumpBotOpenGeneration()
-          host.setWorkspaceScope?.('sessions')
         }
 
         syncRoutinesPane()

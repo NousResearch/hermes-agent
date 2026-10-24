@@ -666,7 +666,7 @@ def _parse_context(data: dict[str, Any]) -> Optional[dict[str, Any]]:
     return {"context": context} if isinstance(context, str) and context.strip() else None
 
 
-_RESPONSE_PARSERS: dict[str, Callable[[dict[str, Any]], Optional[dict[str, Any]]]] = {"pre_tool_call": _parse_pre_tool_call, "pre_verify": _parse_pre_verify}
+_RESPONSE_PARSERS: dict[str, Callable[[dict[str, Any]], Optional[dict[str, Any]]]] = {"pre_tool_call": _parse_pre_tool_call, "pre_verify": _parse_pre_verify, "pre_finish": _parse_pre_verify}
 
 
 def _parse_response(event: str, stdout: str) -> Optional[dict[str, Any]]:

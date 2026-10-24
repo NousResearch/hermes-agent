@@ -3,7 +3,8 @@
 When the model stops with a text answer, four gates may instead append the answer as an
 interim row plus a user-role nudge and continue the turn: late language-server verdicts on this
 turn's edits (a durable row, see ``_late_lsp_verdicts``), verify-on-stop (#65919),
-the ``pre_verify`` plugin hook after code edits, and the kanban worker terminal-tool guard.
+the ``pre_verify`` (after code edits) and ``pre_finish`` (any text finish) plugin hooks, and the
+kanban worker terminal-tool guard.
 Each keeps the candidate answer as a budget-exhaustion fallback
 (``pending_verification_response``) and clears ``final_response`` so the finalizer can tell
 this gate from error exits (#61631). Nothing here imports ``agent.conversation_loop`` at
@@ -51,27 +52,31 @@ def _verify_on_stop_nudge(agent) -> Optional[str]:
 
 
 def _pre_verify_nudge(agent, final_response, attempt: int) -> Optional[str]:
-    """After code edits a registered ``pre_verify`` hook may keep the agent going one
-    more turn; no default continuation cost."""
+    """A registered ``pre_verify`` hook (turns that edited files) or ``pre_finish`` hook (every
+    text finish) may keep the agent going one more turn; no default continuation cost."""
     _edited = sorted(getattr(agent, "_turn_file_mutation_paths", set()) or [])
     try:
         from agent.verify_hooks import max_verify_nudges
         from hermes_cli.lifecycle import has_hook
         from hermes_cli.plugins import get_pre_verify_continue_message
 
-        if _edited and has_hook("pre_verify") and attempt < max_verify_nudges():
+        hooks = [h for h in ("pre_verify", "pre_finish") if (_edited or h == "pre_finish") and has_hook(h)]
+        if hooks and attempt < max_verify_nudges():
             # Posture is fixed for the session — resolve once + cache.
             coding = getattr(agent, "_resolved_is_coding", None)
             if coding is None:
                 from agent.coding_context import is_coding_context
                 coding = bool(is_coding_context(platform=getattr(agent, "platform", "") or ""))
                 agent._resolved_is_coding = coding
-            return get_pre_verify_continue_message(
-                session_id=getattr(agent, "session_id", None) or "",
-                platform=getattr(agent, "platform", "") or "",
-                model=getattr(agent, "model", "") or "", coding=coding, attempt=attempt,
-                final_response=final_response, changed_paths=_edited,
-            )
+            for hook in hooks:
+                message = get_pre_verify_continue_message(
+                    hook=hook, session_id=getattr(agent, "session_id", None) or "",
+                    platform=getattr(agent, "platform", "") or "",
+                    model=getattr(agent, "model", "") or "", coding=coding, attempt=attempt,
+                    final_response=final_response, changed_paths=_edited,
+                )
+                if message:
+                    return message
     except Exception:
         logger.debug("pre_verify hook check failed", exc_info=True)
     return None
@@ -133,7 +138,7 @@ def apply_stop_gates(
     conversation_history: Any, pending_verification_response: Any,
     pending_verification_response_previewed: Any,
 ) -> StopGateVerdict:
-    """Run verify-on-stop → pre_verify hook → kanban stop guard, in that order. Nudges
+    """Run verify-on-stop → pre_verify/pre_finish hooks → kanban stop guard, in that order. Nudges
     are user-role rows appended only after the assistant answer row, so role alternation
     holds. Hook lookups are imported lazily from their origin modules (tests patch them
     there)."""

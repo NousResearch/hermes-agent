@@ -78,6 +78,23 @@ def test_unset_allowlist_keeps_default_claimable(kanban_home, all_assignees_spaw
     assert res.skipped_nonspawnable == []
 
 
+def test_auto_decompose_exclusion_does_not_block_explicitly_assigned_cards(
+    kanban_home, all_assignees_spawnable,
+):
+    """The decomposition roster policy does not alter dispatcher eligibility."""
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n"
+        "  dispatch_profiles: [sage]\n"
+        "  auto_decompose_excluded_profiles: [sage]\n",
+        encoding="utf-8",
+    )
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="explicit assignment", assignee="sage")
+        res = kbd.dispatch_once(conn, dry_run=True)
+    assert [task_id for task_id, _assignee, _workspace in res.spawned] == [tid]
+    assert res.skipped_nonspawnable == []
+
+
 @pytest.mark.parametrize("value", ["", None], ids=["empty_string", "bare_key"])
 def test_present_blank_or_null_allowlist_skips_all_cards(
     kanban_home, all_assignees_spawnable, value, caplog,

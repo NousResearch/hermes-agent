@@ -153,9 +153,13 @@ def _resolve_profile_from_cfg(cfg: dict, key: str, *, fallback: Optional[str] = 
         return "default"
 
 
-def _build_roster() -> tuple[list[dict], set[str]]:
+def _build_roster(
+    *, allowed_profiles: Optional[frozenset[str]] = None,
+    excluded_profiles: frozenset[str] = frozenset(),
+) -> tuple[list[dict], set[str]]:
     """``(roster_for_prompt, valid_assignee_names)``; entries are
-    ``{name, description, has_description}``."""
+    ``{name, description, has_description}``. The prompt and validator use
+    the same eligible set so the model cannot route work outside it."""
     try:
         all_profiles = profiles_mod.list_profiles()
     except Exception as exc:
@@ -163,13 +167,40 @@ def _build_roster() -> tuple[list[dict], set[str]]:
         return [], set()
     roster = []
     for p in all_profiles:
+        if (allowed_profiles is not None and p.name not in allowed_profiles) or p.name in excluded_profiles:
+            continue
         desc = (p.description or "").strip()
         roster.append({
             "name": p.name,
             "description": desc or f"(no description; profile named {p.name!r})",
             "has_description": bool(desc),
         })
-    return roster, {p.name for p in all_profiles}
+    return roster, {entry["name"] for entry in roster}
+
+
+def _parse_excluded_profiles(raw: object) -> tuple[frozenset[str], str]:
+    """Validate and canonicalize ``kanban.auto_decompose_excluded_profiles``."""
+    if not isinstance(raw, (list, tuple)):
+        return frozenset(), "kanban.auto_decompose_excluded_profiles must be a list of profile names"
+    excluded = set()
+    for item in raw:
+        try:
+            name = profiles_mod.normalize_profile_name(item)
+            profiles_mod.validate_profile_name(name)
+        except ValueError:
+            return frozenset(), "kanban.auto_decompose_excluded_profiles contains an invalid profile name"
+        try:
+            if not profiles_mod.profile_exists(name):
+                return frozenset(), (
+                    "kanban.auto_decompose_excluded_profiles references an uninstalled profile "
+                    f"{name!r}"
+                )
+        except OSError:
+            return frozenset(), (
+                "could not validate kanban.auto_decompose_excluded_profiles against installed profiles"
+            )
+        excluded.add(name)
+    return frozenset(excluded), ""
 
 
 def _format_roster(roster: list[dict]) -> str:
@@ -199,6 +230,7 @@ class _Routing:
     auto_promote: bool
     roster: list[dict]
     valid_names: set[str]
+    configuration_error: str = ""
 
 
 def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
@@ -208,14 +240,61 @@ def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
     except Exception:  # decompose_task promises ok=False, never a raise, on config trouble
         cfg = {}
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-    roster, valid_names = _build_roster()
+    excluded_profiles, exclusion_error = _parse_excluded_profiles(
+        kanban_cfg.get("auto_decompose_excluded_profiles", []),
+    )
+    from hermes_cli.kanban_db_dispatch import _dispatch_profile_allowlist
+
+    dispatch_profiles = _dispatch_profile_allowlist(profiles_mod.normalize_profile_name)
+    roster, valid_names = _build_roster(
+        allowed_profiles=dispatch_profiles,
+        excluded_profiles=excluded_profiles,
+    )
+    orchestrator = _resolve_profile_from_cfg(cfg, "orchestrator_profile", fallback=root_assignee)
+    default_assignee = _resolve_profile_from_cfg(cfg, "default_assignee", fallback=root_assignee)
+    configuration_error = exclusion_error
+    if not configuration_error and not valid_names:
+        configuration_error = (
+            "no eligible profiles remain after applying kanban.dispatch_profiles and "
+            "kanban.auto_decompose_excluded_profiles"
+        )
+    if not configuration_error and default_assignee not in valid_names:
+        configuration_error = f"default_assignee profile {default_assignee!r} is not eligible for decomposition"
+    if not configuration_error and orchestrator not in valid_names:
+        configuration_error = f"orchestrator profile {orchestrator!r} is not eligible for decomposition"
+    if not configuration_error and root_assignee:
+        try:
+            root_profile = profiles_mod.normalize_profile_name(root_assignee)
+            root_exists = profiles_mod.profile_exists(root_profile)
+        except ValueError:
+            root_profile = root_assignee
+            root_exists = False
+        if not root_exists:
+            configuration_error = f"root assignee profile {root_assignee!r} is not installed"
     return _Routing(
-        orchestrator=_resolve_profile_from_cfg(cfg, "orchestrator_profile", fallback=root_assignee),
-        default_assignee=_resolve_profile_from_cfg(cfg, "default_assignee", fallback=root_assignee),
+        orchestrator=orchestrator,
+        default_assignee=default_assignee,
         auto_promote=bool(kanban_cfg.get("auto_promote_children", True)),
         roster=roster,
         valid_names=valid_names,
+        configuration_error=configuration_error,
     )
+
+
+def _record_configuration_error(task_id: str, reason: str) -> None:
+    """Record a stable configuration error once per task and distinct reason."""
+    with kbc.connect_closing() as conn:
+        with kb.write_txn(conn):
+            task = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            if task is None or task["status"] != "triage":
+                return
+            rows = conn.execute(
+                "SELECT payload FROM task_events WHERE task_id = ? AND kind = ?",
+                (task_id, "decompose_config_error"),
+            ).fetchall()
+            if any(kb._json_dict(row["payload"]).get("reason") == reason for row in rows):
+                return
+            kb._append_event(conn, task_id, "decompose_config_error", {"reason": reason})
 
 
 def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -> DecomposeOutcome:
@@ -314,6 +393,9 @@ def decompose_task(
         return DecomposeOutcome(task_id, False, reason)
 
     routing = _load_routing(root_assignee=task.assignee)
+    if routing.configuration_error:
+        _record_configuration_error(task_id, routing.configuration_error)
+        return DecomposeOutcome(task_id, False, routing.configuration_error)
     raw, reason = _call_aux(
         "decompose", task_id, aux_task="kanban_decomposer", system=_SYSTEM_PROMPT,
         user=_USER_TEMPLATE.format(

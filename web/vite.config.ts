@@ -14,6 +14,7 @@ function compilerPreset() {
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 import { fileURLToPath } from "node:url";
+import { renderDashboardBuiltUrl } from "./src/lib/built-asset-url";
 
 const configDir: string = fileURLToPath(new URL(".", import.meta.url));
 
@@ -106,6 +107,12 @@ export default defineConfig({
       "leva",
       "gsap",
     ],
+  },
+  experimental: {
+    // Lazy route chunks (and their CSS) are listed in JS; resolve those URLs
+    // against the runtime base path so they load under a reverse-proxy prefix.
+    // See src/lib/built-asset-url.ts.
+    renderBuiltUrl: (filename, { hostType }) => renderDashboardBuiltUrl(filename, hostType),
   },
   build: {
     outDir: "../hermes_cli/web_dist",

@@ -1060,6 +1060,29 @@ Validation rejects values without `http://` / `https://` scheme, without a host,
 
 > **Note:** `public_url` overrides the OAuth callback URL only. The `Secure` cookie flag is still controlled by `request.url.scheme`, using `X-Forwarded-Proto` only when the connecting peer is loopback or listed in `trusted_proxies`. Pair an HTTPS `public_url` with TLS termination and a bounded trusted-proxy entry when the proxy is not on loopback.
 
+### Serving under a path prefix
+
+To mount the dashboard below a path such as `https://example.com/hermes/`, the reverse proxy must:
+
+1. strip the prefix before forwarding (the dashboard serves its routes at `/`), and
+2. send `X-Forwarded-Prefix: /hermes`.
+
+The dashboard then builds every URL it emits from that header: asset URLs in `index.html` and CSS, the SPA's API, WebSocket and lazy-route chunk URLs (through `window.__HERMES_BASE_PATH__`), redirect `Location` headers and the session-cookie `Path`. No rebuild is needed for a different prefix.
+
+```nginx
+location /hermes/ {
+    proxy_pass http://127.0.0.1:9119/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Prefix /hermes;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_http_version 1.1;
+}
+```
+
+Because the dashboard already prefixes its redirects and cookie paths, the proxy must not prefix them a second time. nginx's default `proxy_redirect` leaves the dashboard's relative `Location` headers alone, and `proxy_cookie_path` is not needed. Proxies that reverse-map response paths (for example lighttpd `mod_proxy` with `map-urlpath`) produce `/hermes/hermes/...` and break sign-in.
+
 ### OAuth flow
 
 The provider implements the [Nous Portal OAuth contract v1](https://github.com/NousResearch/nous-account-service/blob/main/docs/agent-dashboard-oauth-contract.md) — authorization-code grant with PKCE (S256):

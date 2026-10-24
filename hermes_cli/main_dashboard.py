@@ -36,7 +36,7 @@ def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,
         _scan_dashboard_processes,
     )
     pids = [pid for pid, _cmd in _scan_dashboard_processes(exclude_pids=exclude_pids)]
-    # The scan also selects the caller's own wrapper shell (``bash -c 'hermes dashboard --stop'``);
+    # The scan can still select the caller's own wrapper (a ``hermes dashboard --stop`` ancestor);
     # killing it takes down the invoking terminal.
     ancestors = _caller_ancestor_pids()
     pids = [pid for pid in pids if not _is_caller_wrapper_shell(pid, ancestors)]

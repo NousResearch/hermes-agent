@@ -20,7 +20,11 @@ from pathlib import Path
 import pytest
 
 from gateway import status
-from gateway.status import looks_like_gateway_command_line, looks_like_gateway_runtime_command_line
+from gateway.status import (
+    gateway_spawn_intent_subcommand,
+    looks_like_gateway_command_line,
+    looks_like_gateway_runtime_command_line,
+)
 from gateway.status_inline_source import inline_bootstrap_argv
 from hermes_cli import _launchers, venv_sync
 from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
@@ -29,6 +33,31 @@ ROOT = Path("/opt/Hermes Agent/hermes-agent")
 PY = "/opt/venv/bin/python3"
 _SCRIPT = _launchers._launcher_script("hermes", ROOT, None)
 _JOINS = {"space-joined": " ".join, "windows": subprocess.list2cmdline}
+
+
+@pytest.mark.parametrize("module_option", ["-mhermes_cli.main", "-umhermes_cli.main"])
+@pytest.mark.parametrize("subcommand", ["serve", "gateway"])
+def test_attached_module_owns_its_remaining_arguments(module_option: str, subcommand: str) -> None:
+    argv = [PY, module_option, subcommand, "run", "-c", "module-data"]
+    command_line = " ".join(argv)
+
+    assert _hermes_holder_subcommand(command_line) == subcommand
+    assert looks_like_gateway_command_line(command_line) is (subcommand == "gateway")
+    assert gateway_spawn_intent_subcommand(command_line) == ("run" if subcommand == "gateway" else None)
+
+
+def test_unrelated_module_cannot_supply_bootstrap_or_spawn_identity() -> None:
+    argv = [PY, "-mother_cli.main", _SCRIPT, "serve"]
+    assert _hermes_holder_subcommand(subprocess.list2cmdline(argv)) is None
+    assert gateway_spawn_intent_subcommand(f"{PY} -mcustom --profile gateway run hermes") is None
+
+
+def test_unrelated_python_script_cannot_claim_gateway_from_its_arguments() -> None:
+    command = f"{PY} worker.py hermes_cli.main gateway run"
+
+    assert not looks_like_gateway_command_line(command)
+    assert not looks_like_gateway_runtime_command_line(command)
+    assert gateway_spawn_intent_subcommand(command) is None
 
 
 def _payload_launcher(argv: list[str]) -> list[str]:

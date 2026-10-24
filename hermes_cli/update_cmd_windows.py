@@ -118,7 +118,7 @@ def _self_and_non_gateway_ancestor_pids(psutil) -> set[int]:
 def _cmdline_or_empty(proc) -> str:
     """Joined argv of a psutil process, ``""`` when it can't be read."""
     try:
-        return " ".join(proc.cmdline() or [])
+        return subprocess.list2cmdline(proc.cmdline() or [])
     except Exception:
         return ""
 
@@ -241,15 +241,64 @@ def _holder_value_flags() -> frozenset:
     return _holder_value_flags_cache
 
 
+def _hermes_entry_index(tokens: list[str], *, case_insensitive_paths: bool | None = None) -> int | None:
+    """Index of the token that NAMES the Hermes entry point in *tokens*, or None if this argv isn't Hermes.
+
+    Positional, never a substring scan: the entry point must be ``argv[0]`` itself (the ``hermes``
+    console script, or a shebang-launched ``.../hermes_cli/main.py``), or the module/script a Python
+    interpreter in ``argv[0]`` actually selects. An incidental ``hermes`` token further along the argv
+    proves nothing — ``herdr --session hermes serve`` is a terminal multiplexer, not a backend to kill
+    (#121156) — and ``python -c <src> … -m hermes_cli.main serve`` is an interpreter running inline
+    source whose trailing argv belongs to a LATER spawn, not to this process (#107002).
+
+    The interpreter-option walk is the canonical ``hermes_state_holders._python_execution_target_at``;
+    this module must not hand-roll a second copy of CPython's flag sets (root AGENTS.md). Pure function
+    of data — *case_insensitive_paths* takes the host convention as an argument so the logic is
+    testable off Windows instead of being read off ``os.name`` at the call site.
+    """
+    from hermes_state_holders import _looks_like_python_executable, _python_execution_target_at
+
+    if case_insensitive_paths is None:
+        case_insensitive_paths = os.name == "nt"
+
+    def _is_hermes_script(value: str) -> bool:
+        parts = [part for part in value.replace("\\", "/").split("/") if part]
+        if not parts:
+            return False
+        if parts[-1].lower() in ("hermes", "hermes.exe"):
+            return True
+        tail = [part.lower() for part in parts[-2:]] if case_insensitive_paths else parts[-2:]
+        return tail == ["hermes_cli", "main.py"]
+
+    if not tokens:
+        return None
+    if _is_hermes_script(tokens[0]):
+        return 0
+    if not _looks_like_python_executable(tokens[0].replace("\\", "/")):
+        return None
+    located = _python_execution_target_at(tokens)  # None for ``-c`` inline source, by construction
+    if located is None:
+        return None
+    kind, value, index = located
+    if kind == "module":
+        return index if value == "hermes_cli.main" else None
+    return index if _is_hermes_script(value) else None
+
+
 def _hermes_holder_subcommand(cmdline: str) -> str | None:
     """The actual Hermes SUBCOMMAND a venv-holder argv runs, or None (callers must NOT guess a label).
 
-    Token-based, never substring (``kanban --preserve-cache`` contains "serve"): find the ``hermes_cli.main`` /
-    ``hermes(.exe)`` entry token, return the first following token that isn't a flag or a flag's value.
+    Token-based, never substring (``kanban --preserve-cache`` contains "serve"): the entry point must be
+    argv[0] itself (the ``hermes`` console script or a ``.../hermes_cli/main.py`` shebang launch) or a
+    Python interpreter reaching it via ``-m hermes_cli.main`` / that script path. An incidental ``hermes``
+    token after an unrelated script is not proof that the process runs Hermes — ``herdr --session hermes
+    server`` is a terminal multiplexer, not a backend to kill (#121156).
 
     Profile selectors (``--profile X``, ``-p X``) are skipped like the canonical gateway matcher does. See
     #90778.
     """
+    from hermes_state_holders import _python_execution_target_at
+
     try:
         tokens = shlex.split(cmdline, posix=False)
     except Exception:
@@ -259,17 +308,15 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
     # Hermes bootstrap running the entry point in this process (#124318).
     from gateway.status_inline_source import command_line_runs_inline_source, inline_bootstrap_argv
     normalized = [t.strip("\"'").replace("\\", "/") for t in tokens]
-    if command_line_runs_inline_source(normalized):
+    # Once Python selects a module/script, its remaining flags are not interpreter options.
+    if _python_execution_target_at(normalized) is None and command_line_runs_inline_source(normalized):
         tokens = inline_bootstrap_argv(normalized)
         if tokens is None:
             return None
 
-    def _is_entry(i: int, token: str) -> bool:
-        low = token.lower().strip("\"'").replace("\\", "/")
-        return (low.endswith("hermes_cli.main") and i > 0 and tokens[i - 1] == "-m") or (
-            low.rsplit("/", 1)[-1] in ("hermes", "hermes.exe")) or low.endswith("hermes_cli/main.py")
-
-    entry_idx = next((i for i, token in enumerate(tokens) if _is_entry(i, token)), None)
+    if not tokens:
+        return None
+    entry_idx = _hermes_entry_index([t.strip().strip("\"'") for t in tokens])
     if entry_idx is None:
         return None
     value_flags = _holder_value_flags()
@@ -346,7 +393,7 @@ def list_venv_holders() -> list[dict]:
             with suppress(Exception):
                 proc = psutil.Process(int(pid))
                 exe = proc.exe() or name
-                argv = " ".join(proc.cmdline()) or cmdline
+                argv = _cmdline_or_empty(proc) or cmdline
         holders.append({"pid": int(pid), "exe": exe, "argv": argv, "kind": _venv_holder_kind(argv)})
     return holders
 
@@ -364,7 +411,7 @@ def _leftover_pausable_gateway_pids(matches: list[tuple[int, str, str]]) -> list
         argv = cmdline
         if psutil is not None:
             with suppress(Exception):
-                argv = " ".join(psutil.Process(int(pid)).cmdline()) or cmdline
+                argv = _cmdline_or_empty(psutil.Process(int(pid))) or cmdline
         if not _is_pausable_gateway(argv):
             return None
         pids.append(int(pid))
@@ -462,7 +509,7 @@ def _relaunch_stopped_serves(token: dict) -> None:
     )
 
 
-def _is_backend_argv(argv_low: str) -> bool:
+def _is_backend_argv(argv: str) -> bool:
     """Whether an argv is a DESKTOP backend — feeds ``taskkill /T`` via ``_orphaned_desktop_backend_pids``.
 
     Same predicate as ``_looks_like_desktop_control_plane``: ``-m hermes_cli.main`` entry shape (the
@@ -470,19 +517,25 @@ def _is_backend_argv(argv_low: str) -> bool:
     ``serve``/``dashboard``. A user-launched ``hermes.exe serve`` / ``hermes dashboard`` is NOT the
     Desktop's: the guard refuses on it, never reaps it.
     """
-    return _looks_like_desktop_control_plane(argv_low)
+    return _looks_like_desktop_control_plane(argv)
 
 
-def _live_argv_low(psutil, pid, cmdline: str) -> str | None:
-    """Current lower-cased argv of *pid* (falls back to the scanned *cmdline*); ``None`` if it exited."""
+def _live_argv(psutil, pid, cmdline: str) -> str | None:
+    """Current argv of *pid* (falls back to the scanned *cmdline*); ``None`` if it exited.
+
+    Returned VERBATIM, never case-folded: ``_hermes_holder_subcommand`` matches the ``-m
+    hermes_cli.main`` entry token case-sensitively (a POSIX module name is case-sensitive), so
+    lowering here would let ``-m HERMES_CLI.MAIN`` — not a Hermes process — be classified as a
+    Desktop backend and fed to ``taskkill /T``. The classifier lowers what it must itself (#121156).
+    """
     argv = cmdline
     try:
-        argv = " ".join(psutil.Process(int(pid)).cmdline()) or cmdline
+        argv = subprocess.list2cmdline(psutil.Process(int(pid)).cmdline()) or cmdline
     except psutil.NoSuchProcess:
         return None
     except Exception:
-        pass
-    return argv.lower()
+        logger.debug("Could not read live argv for PID %s; retaining scanned command", pid, exc_info=True)
+    return argv
 
 
 def _orphaned_desktop_backend_pids(matches: list[tuple[int, str, str]]) -> list[tuple[int, int]] | None:
@@ -511,10 +564,10 @@ def _orphaned_desktop_backend_pids(matches: list[tuple[int, str, str]]) -> list[
     roots: list[tuple[int, int]] = []
     remaining: list[int] = []  # holders still to justify
     for pid, _name, cmdline in matches:
-        low = _live_argv_low(psutil, pid, cmdline)
-        if low is None:
+        argv = _live_argv(psutil, pid, cmdline)
+        if argv is None:
             continue  # exited between scan and classification — nothing to reap
-        if not _is_backend_argv(low):
+        if not _is_backend_argv(argv):
             remaining.append(int(pid))
             continue
         try:
@@ -588,10 +641,10 @@ def _handoff_reapable_backend_pids(matches: list[tuple[int, str, str]]) -> list[
         return None
     roots: list[int] = []
     for pid, _name, cmdline in matches:
-        low = _live_argv_low(psutil, pid, cmdline)
-        if low is None:
+        argv = _live_argv(psutil, pid, cmdline)
+        if argv is None:
             continue  # exited — nothing to reap
-        if not _is_backend_argv(low):
+        if not _is_backend_argv(argv):
             return None  # unexpected non-backend holder: refuse the whole set
         roots.append(int(pid))
     return roots or None

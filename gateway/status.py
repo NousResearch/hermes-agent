@@ -559,7 +559,27 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # ``python -c <src> … -m hermes_cli.main gateway run``: the trailing argv belongs to the program
     # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
     # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
-    if command_line_runs_inline_source(cased_tokens):
+    from hermes_state_holders import _looks_like_python_executable, _python_execution_target_at
+    python_target = None
+    if _looks_like_python_executable(cased_tokens[0]):
+        python_target = _python_execution_target_at(cased_tokens)
+    if python_target is not None:
+        kind, value, _index = python_target
+        if kind == "module" and value == "gateway.run":
+            return "run"
+        if kind == "script":
+            selected_path = value.replace("\\", "/").rstrip("/")
+            selected_parts = selected_path.split("/")
+            if os.name == "nt":
+                selected_parts = [part.lower() for part in selected_parts]
+            if selected_parts[-2:] == ["gateway", "run.py"] or selected_parts[-1] in {
+                "desktop-gateway.py", "hermes-gateway", "hermes-gateway.exe",
+            }:
+                return "run"
+        from hermes_cli.update_cmd_windows import _hermes_entry_index
+        if _hermes_entry_index(cased_tokens) is None:
+            return None
+    if python_target is None and command_line_runs_inline_source(cased_tokens):
         # …unless the source is a Hermes bootstrap running the entry point in THIS process (store
         # launcher, launcher script, venv_sync re-entry): then its argv is this process's (#124318).
         cased_tokens = inline_bootstrap_argv(cased_tokens)
@@ -612,15 +632,11 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
 def gateway_spawn_intent_subcommand(command: str | None) -> str | None:
     """Gateway lifecycle subcommand a command line would EVENTUALLY launch, or None.
 
-    The identity matcher (``_gateway_command_subcommand``) deliberately refuses ``python -c <src>
-    …``: the trailing argv is the inline program's data, not that process's own identity (#107002).
-    Callers that inspect a command line as SPAWN INTENT — "if I launch this, does a gateway runtime
-    eventually appear?" — need the opposite answer, because
-    ``gateway._spawn_gateway_restart_watcher`` hides a real ``… -m hermes_cli.main gateway run``
-    behind exactly that wrapper. ``tests/_fixtures/live_system_guard.py`` is the canonical caller.
-
-    Still no substring matching: the wrapper is peeled token-wise and each remaining suffix is
-    handed to the same canonical matcher.
+    Unlike process identity, spawn intent follows ``gateway._spawn_gateway_restart_watcher``'s
+    inline-source argv to the gateway it will launch later (#107002). A selected Python module/script
+    owns its remaining arguments; only inline-source wrappers are peeled. Each suffix goes to the
+    canonical matcher, never substring matching. ``tests/_fixtures/live_system_guard.py`` is the
+    canonical caller.
     """
     direct = _gateway_command_subcommand(command)
     if direct is not None or not command:
@@ -630,6 +646,9 @@ def gateway_spawn_intent_subcommand(command: str | None) -> str | None:
     except ValueError:
         raw_tokens = command.split()
     cased_tokens = [t.strip("\"'").replace("\\", "/") for t in raw_tokens]
+    from hermes_state_holders import _python_execution_target_at
+    if _python_execution_target_at(cased_tokens) is not None:
+        return None
     flag_index = inline_source_flag_index(cased_tokens)
     if flag_index is None:
         return None

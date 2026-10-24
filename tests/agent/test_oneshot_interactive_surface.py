@@ -132,3 +132,41 @@ def test_skill_safety_rule_rides_the_compaction_handoff_not_the_system_prompt(pr
                         if pruned else _transcript("terminal", "ok"))
     assert ("## Skill Safety Rule\nA skill placeholder containing `[SKILL_PRUNED]`" in summary) is pruned
     assert summary.count("## Skill Safety Rule") == int(pruned)
+
+
+def test_skill_safety_rule_survives_prune_only_and_salvage_rewrites():
+    from agent.context_compressor import (
+        COMPRESSED_SUMMARY_METADATA_KEY, SKILL_PRUNED_MARKER_PREFIX, ContextCompressor, _SUMMARY_END_MARKER,
+        _skill_pruned_marker, salvage_grown_transcript,
+    )
+    from agent.context_compressor_tail import SKILL_SAFETY_RULE
+
+    def texts(messages):
+        return "\n".join(str(m.get("content") or "") for m in messages)
+
+    # Prune-only: no handoff exists, so the row the prune turns into a marker carries the rule itself.
+    with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+        c = ContextCompressor(model="test", quiet_mode=True, threshold_percent=0.5, protect_first_n=2,
+                              protect_last_n=4, proactive_prune_tokens=48_000, proactive_prune_min_result_chars=8_000)
+    calls = [("skill_view", '{"name":"pdf"}', "P" * 9000)] + [("terminal", '{"cmd":"ls"}', ch * 9000) for ch in "AB"]
+    calls += [("terminal", '{"cmd":"ls"}', "ok")] * 5
+    messages = [{"role": "system", "content": "sys"}]
+    for i, (tool, args, content) in enumerate(calls):
+        messages += [{"role": "assistant", "content": "", "tool_calls": [{
+            "id": f"c{i}", "type": "function", "function": {"name": tool, "arguments": args}}]},
+            {"role": "tool", "tool_call_id": f"c{i}", "content": content}]
+    pruned, count = c.prune_tool_results_only(messages, current_tokens=120_000)
+    assert count and SKILL_PRUNED_MARKER_PREFIX in texts(pruned) and texts(pruned).count(SKILL_SAFETY_RULE) == 1
+    assert c._prune_old_tool_results(pruned, protect_tail_count=4)[1] == 0  # the ruled stub is still a stub
+
+    # Salvage elides an oversized handoff; the rule must outlive the cut while marked rows remain.
+    summary = "## Goal\n" + "x" * 20_000 + "\n\n" + SKILL_SAFETY_RULE + "\n\n" + _SUMMARY_END_MARKER
+    grown = [{"role": "user", "content": summary, COMPRESSED_SUMMARY_METADATA_KEY: True},
+             {"role": "assistant", "content": "", "tool_calls": [{
+                 "id": "s", "type": "function", "function": {"name": "skill_view", "arguments": '{"name":"pdf"}'}}]},
+             {"role": "tool", "tool_call_id": "s", "content": "[skill_view] name=pdf (9,000 chars) "
+                                                                + _skill_pruned_marker("pdf")},
+             {"role": "user", "content": "latest ask"}]
+    salvaged = salvage_grown_transcript([{"role": "user", "content": "y" * 40_000}], grown)
+    assert salvaged is not None and len(salvaged[0]["content"]) < len(summary)
+    assert SKILL_SAFETY_RULE in salvaged[0]["content"]

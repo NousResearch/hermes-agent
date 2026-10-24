@@ -112,4 +112,34 @@ def with_skill_safety_rule(summary: str, kept_messages: list[dict[str, Any]]) ->
     texts = (summary, *(_content_text_for_contains(m.get("content")) for m in kept_messages if isinstance(m, dict)))
     if not any(SKILL_PRUNED_MARKER_PREFIX in text for text in texts):
         return summary
-    return f"{summary}\n\n{SKILL_SAFETY_RULE}"
+    return f"{summary}{_SKILL_SAFETY_SUFFIX}"
+
+
+_SKILL_SAFETY_SUFFIX = f"\n\n{SKILL_SAFETY_RULE}"
+
+
+def without_skill_safety_rule(content: str) -> str:
+    """*content* minus an attached :data:`SKILL_SAFETY_RULE` (a ruled prune stub is still a stub)."""
+    return content.replace(_SKILL_SAFETY_SUFFIX, "")
+
+
+def elide_keeping_skill_safety_rule(content: str, limit: int) -> str:
+    """``elide(content, limit)`` that keeps an attached rule: the head-only cut would drop it from a long handoff
+    while marker rows beside it survive (anti-growth salvage)."""
+    from agent.compression_marker import elide
+    if SKILL_SAFETY_RULE not in content:
+        return elide(content, limit)
+    return elide(without_skill_safety_rule(content), limit - len(_SKILL_SAFETY_SUFFIX)) + _SKILL_SAFETY_SUFFIX
+
+
+def with_pruned_row_skill_safety_rule(original: list[dict[str, Any]], pruned: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """*pruned* (a prune-only rewrite of *original*) with the rule on the first row it turned into a prune marker,
+    when no row carries the rule yet: prune-only has no handoff for :func:`with_skill_safety_rule` to ride."""
+    from agent.context_compressor import SKILL_PRUNED_MARKER_PREFIX, _content_text_for_contains
+    if any(SKILL_SAFETY_RULE in _content_text_for_contains(m.get("content")) for m in pruned if isinstance(m, dict)):
+        return pruned
+    for i, (before, after) in enumerate(zip(original, pruned)):
+        content = after.get("content") if isinstance(after, dict) else None
+        if isinstance(content, str) and SKILL_PRUNED_MARKER_PREFIX in content and content != before.get("content"):
+            return [*pruned[:i], {**after, "content": content + _SKILL_SAFETY_SUFFIX}, *pruned[i + 1:]]
+    return pruned

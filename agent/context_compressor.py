@@ -37,7 +37,7 @@ from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_retry import retryable_user_text
 from agent.context_compressor_tail import (
     TAIL_MAX_THRESHOLD_FRACTION, demote_stale_tail_tools, is_demoted_stub, skill_view_names_by_call_id,
-    with_skill_safety_rule,
+    elide_keeping_skill_safety_rule, with_skill_safety_rule, without_skill_safety_rule,
 )
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -589,7 +589,7 @@ def salvage_grown_transcript(
             and len(content) > _SALVAGE_SUMMARY_MAX_CHARS
             and _looks_like_compaction_summary(msg, content)
         ):
-            msg["content"] = elide(content, _SALVAGE_SUMMARY_MAX_CHARS) + "\n\n" + _SUMMARY_END_MARKER
+            msg["content"] = elide_keeping_skill_safety_rule(content, _SALVAGE_SUMMARY_MAX_CHARS) + "\n\n" + _SUMMARY_END_MARKER
     _prune_stale_reasoning_replay(out)
     if estimate_messages_tokens_rough(out) >= budget:
         _salvage_reduce_todo_snapshot(out)
@@ -836,8 +836,8 @@ _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
 
 def _is_summary_stub(content: str) -> bool:
-    """True for a tool result already replaced by a 1-line ``[tool] ... (N chars)`` summary or a lean-tail demotion stub."""
-    return content.startswith("[") and " chars)" in content and len(content) < 400 or is_demoted_stub(content)
+    """True for a ``[tool] ... (N chars)`` summary (a prune-only one may carry the rule) or a lean-tail demotion stub."""
+    return (s := without_skill_safety_rule(content)).startswith("[") and " chars)" in s and len(s) < 400 or is_demoted_stub(s)
 
 
 # Shared floor; the clarify summary cap must stay strictly BELOW it so a preserved

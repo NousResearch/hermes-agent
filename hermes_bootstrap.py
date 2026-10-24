@@ -52,6 +52,19 @@ def _quiet_unregister(selector, sock) -> None:
         pass
 
 
+def _require_connected(sock, error_code: int = 0) -> None:
+    """Raise ``OSError`` unless ``sock`` finished connecting to a peer.
+
+    ``connect_ex() == 0`` and ``SO_ERROR == 0`` are not proof: a VPN that black-holes
+    IPv6 (Cisco AnyConnect) can fail ``connect()`` with errno 0, which ``connect_ex``
+    reports as success. The stock serial walker raises there and tries the next address;
+    returning the socket instead hands TLS an unconnected socket.
+    """
+    if error_code:
+        raise OSError(error_code, os.strerror(error_code))
+    sock.getpeername()  # OSError(ENOTCONN) when there is no peer
+
+
 def _happy_eyeballs_create_connection(address: tuple[str, int], timeout: float | None,
                                       source_address: tuple[str, int] | None = None, socket_options=()):
     """RFC 8305-style connect: staggered non-blocking attempts across families.
@@ -85,6 +98,7 @@ def _happy_eyeballs_create_connection(address: tuple[str, int], timeout: float |
             candidate.setblocking(False)
             result = candidate.connect_ex(sockaddr)
             if result in (0, errno.EISCONN):
+                _require_connected(candidate)
                 return candidate
             if result not in in_progress:
                 raise OSError(result, os.strerror(result))
@@ -120,11 +134,14 @@ def _happy_eyeballs_create_connection(address: tuple[str, int], timeout: float |
                 error_code = candidate.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
                 selector.unregister(candidate)
                 active.discard(candidate)
-                if error_code == 0:
-                    winner = candidate
-                    break
-                candidate.close()
-                last_error = OSError(error_code, os.strerror(error_code))
+                try:
+                    _require_connected(candidate, error_code)
+                except OSError as exc:
+                    candidate.close()
+                    last_error = exc
+                    continue
+                winner = candidate
+                break
             if winner is not None:
                 break
             if not active and pending:

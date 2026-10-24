@@ -265,22 +265,30 @@ def _require_ids(args: argparse.Namespace) -> tuple[list[str], int]:
 
 def _parse_duration(val) -> Optional[int]:
     """``30s`` / ``5m`` / ``2h`` / ``1d`` or a raw integer → seconds; None for empty input;
-    ValueError on malformed input."""
+    ValueError on malformed input.
+
+    A non-positive duration is malformed input, not a cap: ``enforce_max_runtime`` measures
+    ``elapsed < limit``, so ``--max-runtime 0`` (or ``-5``) SIGTERMs the worker on its first
+    tick and records a ``limit_seconds`` no notice can name honestly. Refusing it here is
+    what keeps such a cap out of the store in the first place.
+    """
     if val is None or val == "":
         return None
     s = str(val).strip().lower()
-    try:
-        return int(s)  # bare integer → seconds
-    except ValueError:
-        pass
     units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-    if not (s and s[-1] in units):
-        raise ValueError(f"malformed duration {val!r} (expected 30s, 5m, 2h, 1d, or a number)")
     try:
-        n = float(s[:-1])
-    except ValueError as exc:
-        raise ValueError(f"malformed duration {val!r}") from exc
-    return int(n * units[s[-1]])
+        seconds = int(s)  # bare integer → seconds
+    except ValueError:
+        if not (s and s[-1] in units):
+            raise ValueError(f"malformed duration {val!r} (expected 30s, 5m, 2h, 1d, or a number)")
+        try:
+            n = float(s[:-1])
+        except ValueError as exc:
+            raise ValueError(f"malformed duration {val!r}") from exc
+        seconds = int(n * units[s[-1]])
+    if seconds < 1:
+        raise ValueError(f"duration must be at least 1 second (got {val!r})")
+    return seconds
 
 
 def _cmd_init(args: argparse.Namespace) -> int:

@@ -466,6 +466,7 @@ import {
 } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { PrimaryProfilePin, resolveLaunchProfile } from './primary-profile-pin'
+import { processCommandLine } from './process-command-line'
 import { applyDesktopIdentity, PRODUCT_IDENTITY } from './product-identity'
 import {
   assertLocalProfileCanStart,
@@ -9209,24 +9210,14 @@ function isHermesProcess(pid) {
     return false
   }
 
-  // On macOS / Linux, check the command line to avoid PID recycling false positives.
-  try {
-    const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8')
+  // Check the command line to avoid PID recycling false positives. The probe
+  // is platform-native: /proc on Linux, Get-CimInstance on Windows, ps
+  // elsewhere. The old code read /proc and fell back to POSIX `ps`, so on
+  // Windows -- where neither exists -- the fallback always failed and the
+  // shell's "not recognized" error leaked into the user's console.
+  const cmdline = processCommandLine(pid)
 
-    return cmdline.includes('hermes')
-  } catch {
-    // /proc not available (macOS) — fall back to ps. Use -o args= to inspect
-    // the full command line, not just the process name.  -o comm= would return
-    // "python3" for any Python process, creating false positives.
-    try {
-      const { execSync } = require('child_process')
-      const out = execSync(`ps -p ${pid} -o args=`, { encoding: 'utf8', timeout: 2000 })
-
-      return out.includes('hermes')
-    } catch {
-      return false
-    }
-  }
+  return cmdline !== null && cmdline.includes('hermes')
 }
 
 // Seed active-profile.json from the best available signal when the file does
@@ -12472,7 +12463,12 @@ function reapInstallRootedStragglers(excludePids: number[]): void {
           (file, args, options) =>
             execFileSync(file, args, {
               ...hiddenWindowsChildOptions({ encoding: 'utf8', timeout: options.timeout }),
-              windowsHide: options.windowsHide
+              windowsHide: options.windowsHide,
+              // Capture stderr: execFileSync's default forwards the child's
+              // stderr to the parent's stderr, so a probe of a process that
+              // is already gone printed the shell's complaint into the
+              // user's console.
+              stdio: ['ignore', 'pipe', 'pipe']
             }) as unknown as string
         ),
       killProcess: pid => process.kill(pid, 'SIGKILL'),

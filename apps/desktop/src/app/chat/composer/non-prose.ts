@@ -19,7 +19,11 @@
  * Nothing here runs unless a provider is registered AND the surface has opted
  * into spell checking: a surface Chromium isn't checking has nothing for a
  * wrapper to suppress, and with no provider there is no call, no attribute and
- * no DOM diff.
+ * no DOM diff. That gate is also the seam's dependency: both desktop composers
+ * hard-code `spellcheck="false"` today (#44415), so only
+ * `host.composer.setSpellcheck` — plugin-sdk #143057 — can open it. Until that
+ * lands a provider is registered and never asked for a range, which is why the
+ * public docs call the seam inert on a shell without it.
  */
 import { registry } from '@/contrib/registry'
 import type { Contribution } from '@/contrib/types'
@@ -41,10 +45,14 @@ export const COMPOSER_NON_PROSE_ATTR = 'data-composer-nonprose'
  *  differently between the two and its wrappers would thrash. */
 export const COMPOSER_SESSION_ATTR = 'data-composer-session'
 
-/** Ranges one provider may declare per pass; the rest are dropped. */
+/** Pieces (not declarations) one provider may contribute per pass. A single
+ *  declaration spanning N lines is N wrappers, and each one is a node in the
+ *  same budget, so the count is taken as the pieces are produced. */
 export const COMPOSER_NON_PROSE_PER_PROVIDER = 64
 
-/** Ranges core paints per pass across every provider, after merging. */
+/** Ranges core paints per pass across every provider, after merging. Filled
+ *  round-robin (see `composerNonProseRanges`) so one provider cannot spend it
+ *  all. */
 export const COMPOSER_NON_PROSE_TOTAL = 256
 
 export type ComposerNonProseKind = NonNullable<ComposerNonProseRange['kind']>
@@ -95,11 +103,28 @@ function kindOf(raw: unknown): ComposerNonProseKind {
   return typeof raw === 'string' && KINDS.includes(raw) ? (raw as ComposerNonProseKind) : 'code'
 }
 
+/** True when `offset` sits between the halves of a surrogate pair. */
+function splitsSurrogatePair(text: string, offset: number): boolean {
+  if (offset <= 0 || offset >= text.length) {
+    return false
+  }
+
+  const high = text.charCodeAt(offset - 1)
+  const low = text.charCodeAt(offset)
+
+  return high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff
+}
+
 /**
  * One declared range → the pieces of it a wrapper can actually cover: clamped
  * to `text`, split at every `\n` (a wrapper cannot straddle a `<br>`), with
  * whitespace-only pieces dropped (they'd paint an element around nothing and
  * read as content to the placeholder marker).
+ *
+ * Both ends snap OUTWARD off a surrogate pair: a DOM node cannot hold half an
+ * emoji, so `[1, 2)` of `a😀b` covers the whole pair rather than leaving an
+ * unpaired high surrogate in the text node (which serializes back to the same
+ * string, but mangles any innerHTML path).
  */
 function splitRange(raw: unknown, text: string): NormalizedComposerNonProseRange[] {
   if (!raw || typeof raw !== 'object') {
@@ -115,8 +140,10 @@ function splitRange(raw: unknown, text: string): NormalizedComposerNonProseRange
     return []
   }
 
-  const from = Math.max(0, Math.min(start as number, text.length))
-  const to = Math.max(from, Math.min(end as number, text.length))
+  const declaredFrom = Math.max(0, Math.min(start as number, text.length))
+  const declaredTo = Math.max(declaredFrom, Math.min(end as number, text.length))
+  const from = splitsSurrogatePair(text, declaredFrom) ? declaredFrom - 1 : declaredFrom
+  const to = splitsSurrogatePair(text, declaredTo) ? Math.min(declaredTo + 1, text.length) : declaredTo
   const pieces: NormalizedComposerNonProseRange[] = []
   let cursor = from
 
@@ -164,8 +191,11 @@ function mergeRanges(
  * single range set core paints (or reconciles against).
  *
  * Per provider: rows are read in the order returned, invalid rows are skipped,
- * and at most `COMPOSER_NON_PROSE_PER_PROVIDER` pieces are kept. Across
- * providers: merged, then capped at `COMPOSER_NON_PROSE_TOTAL`. A provider that
+ * and at most `COMPOSER_NON_PROSE_PER_PROVIDER` PIECES are kept — a row that
+ * splits into more pieces than the budget has room for is cut, not added
+ * whole. Across providers: the shared `COMPOSER_NON_PROSE_TOTAL` budget is
+ * handed out round-robin, so one provider's long declaration cannot crowd the
+ * others out of a pass; the result is then merged and capped. A provider that
  * throws, or returns a non-array, contributes nothing and leaves every other
  * provider's ranges standing.
  */
@@ -177,7 +207,7 @@ export function composerNonProseRanges(
     return EMPTY
   }
 
-  const pieces: NormalizedComposerNonProseRange[] = []
+  const perProvider: NormalizedComposerNonProseRange[][] = []
 
   for (const contribution of contributions) {
     const provider = contribution.data as Partial<ComposerNonProseProvider> | undefined
@@ -200,21 +230,60 @@ export function composerNonProseRanges(
       continue
     }
 
-    let kept = 0
+    const pieces: NormalizedComposerNonProseRange[] = []
 
     for (const row of declared) {
-      if (kept >= COMPOSER_NON_PROSE_PER_PROVIDER) {
+      const room = COMPOSER_NON_PROSE_PER_PROVIDER - pieces.length
+
+      if (room <= 0) {
         break
       }
 
       const range = splitRange(row, context.text)
 
-      pieces.push(...range)
-      kept += range.length
+      // Count PIECES against the budget: one declaration over a 400-line draft
+      // is 400 wrappers, and 400 is what it used to add (the cap was consulted
+      // once per declaration, before the split).
+      if (range.length > room) {
+        pieces.push(...range.slice(0, room))
+      } else {
+        pieces.push(...range)
+      }
+    }
+
+    if (pieces.length > 0) {
+      perProvider.push(pieces)
     }
   }
 
-  return mergeRanges(pieces, COMPOSER_NON_PROSE_TOTAL)
+  // Round-robin: every provider's first piece, then every provider's second,
+  // and so on. A provider with fewer pieces than its turn leaves the slack to
+  // the rest, so the full budget is still spent when there is enough to spend,
+  // and no provider is served only after another has taken all 256.
+  const picked: NormalizedComposerNonProseRange[] = []
+
+  for (let turn = 0; picked.length < COMPOSER_NON_PROSE_TOTAL; turn++) {
+    let served = false
+
+    for (const pieces of perProvider) {
+      if (turn >= pieces.length) {
+        continue
+      }
+
+      picked.push(pieces[turn])
+      served = true
+
+      if (picked.length >= COMPOSER_NON_PROSE_TOTAL) {
+        break
+      }
+    }
+
+    if (!served) {
+      break
+    }
+  }
+
+  return mergeRanges(picked, COMPOSER_NON_PROSE_TOTAL)
 }
 
 /**
@@ -269,23 +338,21 @@ function spanOf(text: string, start: number, end: number, kind: ComposerNonProse
 }
 
 /**
- * The render atoms for one pass, with every range clipped against `blocked` —
- * the chip spans already emitted for the same text, sorted by `start`. A chip
- * inside a wrapper would lose its atomic caret and its backspace behaviour, so
- * the chip wins the overlap the same way it wins one against another chip.
+ * Clip every range around `blocked` — the chip spans already emitted for the
+ * same text, sorted by `start`. A chip inside a wrapper would lose its atomic
+ * caret and its backspace behaviour, so the chip wins the overlap the same way
+ * it wins one against another chip.
+ *
+ * Shared by both passes on purpose: the render pass turns the result into
+ * nodes, and the reconcile pass compares it with the nodes already on screen.
+ * If they clipped differently the reconciler would unwrap and re-paint the
+ * same span on every keystroke.
  */
-export function composerNonProseSpans(
-  target: DocumentFragment | HTMLElement,
-  text: string,
+export function clipComposerNonProseRanges(
+  ranges: readonly NormalizedComposerNonProseRange[],
   blocked: readonly { end: number; start: number }[]
-): ComposerNonProseSpan[] {
-  const ranges = composerNonProseSurfaceRanges(target, text)
-
-  if (ranges.length === 0) {
-    return []
-  }
-
-  const spans: ComposerNonProseSpan[] = []
+): NormalizedComposerNonProseRange[] {
+  const clipped: NormalizedComposerNonProseRange[] = []
 
   for (const range of ranges) {
     let cursor = range.start
@@ -300,16 +367,27 @@ export function composerNonProseSpans(
       }
 
       if (block.start > cursor) {
-        spans.push(spanOf(text, cursor, Math.min(block.start, range.end), range.kind))
+        clipped.push({ end: Math.min(block.start, range.end), kind: range.kind, start: cursor })
       }
 
       cursor = Math.max(cursor, block.end)
     }
 
     if (cursor < range.end) {
-      spans.push(spanOf(text, cursor, range.end, range.kind))
+      clipped.push({ end: range.end, kind: range.kind, start: cursor })
     }
   }
 
-  return spans
+  return clipped
+}
+
+/** The render atoms for one pass. */
+export function composerNonProseSpans(
+  target: DocumentFragment | HTMLElement,
+  text: string,
+  blocked: readonly { end: number; start: number }[]
+): ComposerNonProseSpan[] {
+  const ranges = clipComposerNonProseRanges(composerNonProseSurfaceRanges(target, text), blocked)
+
+  return ranges.map(range => spanOf(text, range.start, range.end, range.kind))
 }

@@ -98,6 +98,7 @@ import {
   composerPlainText,
   deleteChipBeforeCaret,
   deleteSelectionInEditor,
+  endComposerComposition,
   insertComposerContentsAtCaret,
   normalizeComposerEditorDom,
   RICH_INPUT_SLOT
@@ -1183,13 +1184,16 @@ export function ChatBar({
         data-slot={RICH_INPUT_SLOT}
         dir={textDirection}
         onBeforeInput={handleEditorBeforeInput}
-        onBlur={() => {
+        onBlur={event => {
           // A composition never survives focus loss (Chromium commits the
           // preedit and fires compositionend on blur) — but if that event is
           // missed, the wedged flag would block the Send button's form-submit
           // guard forever (#44135). Clear unconditionally: by the time blur
-          // runs there is nothing left composing in this editor.
+          // runs there is nothing left composing in this editor. The same
+          // holds for the composer core's own flag, which defers non-prose
+          // re-decoration — left set, it would freeze the wrapper set.
           composingRef.current = false
+          endComposerComposition(event.currentTarget)
 
           if (blurCloseTimer.current !== null) {
             window.clearTimeout(blurCloseTimer.current)

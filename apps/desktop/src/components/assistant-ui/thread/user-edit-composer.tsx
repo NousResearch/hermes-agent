@@ -40,6 +40,7 @@ import { chipTypedPathOnSpace, pathifyRefs } from '@/app/chat/composer/path-refs
 import {
   beginComposerComposition,
   composerPlainText,
+  endComposerComposition,
   insertComposerContentsAtCaret,
   markEditorEmptiness,
   placeCaretEnd,
@@ -897,7 +898,13 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               data-slot={RICH_INPUT_SLOT}
               dir={textDirection}
               onBeforeInput={handleBeforeInput}
-              onBlur={() => scheduleTimeout(closeTrigger, 80)}
+              onBlur={event => {
+                // Same escape as the main composer: a composition never
+                // survives focus loss, and a wedged flag would freeze the
+                // non-prose wrapper set for the rest of the editor's life.
+                endComposerComposition(event.currentTarget)
+                scheduleTimeout(closeTrigger, 80)
+              }}
               onCompositionEnd={event => {
                 composingRef.current = false
                 flushEditorToDraft(event.currentTarget)

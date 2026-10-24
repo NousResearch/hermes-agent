@@ -630,28 +630,49 @@ interface ComposerNonProseProvider {
 **What the app owns.** Everything but the offsets. It calls `ranges` from its
 own render and reconcile passes, clamps each range to the text, drops empty and
 inverted ones, splits any range crossing a line break (a wrapper cannot straddle
-a `<br>`), merges overlaps and neighbours into one span, and caps the result at
-**64 ranges per provider and 256 per pass**. Each surviving range becomes
-`<span data-composer-nonprose="code" spellcheck="false">…</span>` — no styling,
-no monospace, no background: the attribute is the hook, and a plugin that wants
-code to look like code ships its own CSS for `[data-composer-nonprose]`. A chip
-always wins an overlap, so a range never swallows an `@`-ref or `/command` pill.
+a `<br>`), merges overlaps and neighbours into one span, and caps what it keeps:
+**at most 64 wrappers per provider** — counted per PIECE, so a single range over
+a 400-line draft still yields 64 wrappers, not 400 — and **256 per pass**,
+handed out round-robin across providers so one provider's long declaration
+cannot crowd the others out. A range edge that falls inside a surrogate pair
+snaps outward, so a wrapper never holds half an emoji. Each surviving range
+becomes `<span data-composer-nonprose="code" spellcheck="false">…</span>` — no
+styling, no monospace, no background: the attribute is the hook, and a plugin
+that wants code to look like code ships its own CSS for
+`[data-composer-nonprose]`. A chip always wins an overlap, so a range never
+swallows an `@`-ref or `/command` pill.
 
 **What you get for free.** The wrapper is editable and carries no
 `data-ref-text`, so it serializes as its own text: submit, undo, draft restore
 and the `@` / `/` scanners all see exactly the string they see today. The app also
 owns the node afterwards — when the user edits a span out of shape, when your
-`ranges` stops covering it, or when your plugin unloads, the app unwraps it on
-its next reconcile instead of leaving a stale element behind, and the caret
-stays where it was. Nothing is written from the plugin side, so there is no
-second writer on the composer's DOM and no caret jump.
+`ranges` stops covering it, or when your plugin unloads, the app unwraps it
+(immediately for an unload, otherwise on the next reconcile) instead of leaving
+a stale element behind, and the caret stays where it was: the selection is
+mapped across the un-wrap, including the shape it takes when it sits just AFTER
+the span — what `End`, Ctrl+A and a click below the last line leave. Nothing is
+written from the plugin side, so there is no second writer on the composer's DOM
+and no caret jump. When your `ranges` change, the next pass re-paints to match —
+an existing span is clipped, extended or moved rather than dropped — so a code
+span keeps its styling on the keystroke that changed it.
 
-**Gating.** A provider is only consulted on a composer surface that has spell
-checking on (the app's own inputs have it off by default), and only while at
-least one `composer.nonProse` contribution is registered. With none registered
-there is no provider call, no attribute and no DOM change at all; on a surface
-with spelling off, a range changes nothing on screen, so none is painted. An IME
-composition in flight defers re-decoration until it commits.
+**Gating — and a dependency.** A provider is only consulted on a composer
+surface that has spell checking ON — read from the effective `spellcheck`
+attribute, the one Chromium consults (it is inherited, so a `false` anywhere
+above the editor turns the seam off for that surface) — and only while at least
+one `composer.nonProse` contribution is registered. With none registered there
+is no provider call, no attribute and no DOM change at all; on a surface with
+spelling off, a range changes nothing on screen, so none is painted. An IME
+composition in flight defers re-decoration until it commits (or until the
+editor loses focus).
+
+That gate is why **this seam is inert until the composer turns spell checking
+on**, and both desktop composers hard-code `spellcheck="false"` today (`ChatBar`
+and `UserEditComposer`, #44415). The switch is `host.composer.setSpellcheck`,
+added by plugin-sdk PR **#143057**; until that lands, a `composer.nonProse`
+contribution is registered and never asked for a single range. Target a shell
+that ships #143057 or later, and read "nothing is decorated" on an older shell
+as the gate, not as a bug in your offsets.
 
 ### Composer draft API — read and write the live input
 

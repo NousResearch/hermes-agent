@@ -111,9 +111,10 @@ export interface ComposerNonProseRange {
  *  a provider never receives the editor, a `Range` or a selection, and never
  *  writes DOM itself. `ranges` must be pure and fast (it runs per paint, not
  *  per keystroke); a throw contributes no ranges and leaves every other
- *  provider's ranges standing. Ranges are clamped to the text, split at every
- *  line break, merged where they overlap, and capped (64 per provider, 256 in
- *  total per pass). */
+ *  provider's ranges standing. Ranges are clamped to the text, snapped off a
+ *  split surrogate pair, split at every line break, merged where they overlap,
+ *  and capped — at most 64 pieces per provider, and 256 per pass filled
+ *  round-robin across providers. */
 export interface ComposerNonProseProvider {
   ranges: (context: ComposerNonProseContext) => readonly ComposerNonProseRange[]
 }

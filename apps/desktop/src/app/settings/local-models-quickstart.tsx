@@ -3,13 +3,15 @@ import type { ReactElement } from 'react'
 import { Button } from '@/components/ui/button'
 import { CheckCircle2, Cpu, Loader2, Pause, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import type { LocalCatalogModel, LocalRuntimeJob } from '@/types/hermes'
+import type { LocalCatalogModel, LocalHardware, LocalRuntimeJob } from '@/types/hermes'
 
 import { downloadStatusText, LocalModelDownloadActions, ProgressBar } from './local-model-download-progress'
 import { type LocalModelsActionScope, runQuickstart, useLocalModelsActionScope } from './local-models-actions'
+import { LocalModelsHardwareSection } from './local-models-hardware-section'
 import { SettingsContent } from './primitives'
 
 export interface LocalModelsQuickstartProps {
+  hardware: LocalHardware | undefined
   job: LocalRuntimeJob | null
   heroModel: LocalCatalogModel | null
   lastError: LocalRuntimeJob | undefined
@@ -21,6 +23,7 @@ export interface LocalModelsQuickstartProps {
 // leads with a hero that does everything in one click; the full pane
 // stays one 'Let me choose' click away.
 export function LocalModelsQuickstart({
+  hardware,
   job: qJob,
   heroModel,
   lastError,
@@ -37,6 +40,7 @@ export function LocalModelsQuickstart({
 
   return (
     <SettingsContent>
+      <LocalModelsHardwareSection hardware={hardware} />
       <div className="flex min-h-[60dvh] items-center justify-center">
         <div className="w-full max-w-md text-center">
           <div className="mx-auto mb-5 flex size-14 items-center justify-center rounded-2xl bg-primary/10">

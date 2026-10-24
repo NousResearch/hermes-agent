@@ -101,7 +101,17 @@ export const arOverrides = {
   titlebar: arChrome.titlebar,
   keybinds: arChrome.keybinds,
   language: arSettings.language,
-  settings: arSettings.settings,
+  settings: {
+    ...arSettings.settings,
+    localModels: {
+      gpuLabel: 'GPU للنماذج المحلية',
+      gpuAuto: largestName => `تلقائي (${largestName})`,
+      gpuEntry: (index, name, vram) => `${index}: ${name} · ${vram}`,
+      gpuSelectFailed: 'تعذّر تغيير اختيار GPU',
+      gpuSelected: 'تم حفظ اختيار GPU.',
+      gpuServerRestarted: 'تم حفظ اختيار GPU وإعادة تشغيل خادم النماذج.'
+    }
+  },
   skills: arCapabilities.skills,
   agents: arCapabilities.agents,
   commandCenter: arCommandCenter.commandCenter,

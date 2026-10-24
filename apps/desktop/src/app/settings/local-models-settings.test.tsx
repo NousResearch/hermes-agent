@@ -16,14 +16,24 @@ vi.mock('@/store/session', async (): Promise<object> => {
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 
+import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
 import { I18nProvider } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
 import { localModelsKey, localModelsOwner, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
+import { $notifications, clearNotifications } from '@/store/notifications'
+import { $connection } from '@/store/session'
 import type { LocalCatalogModel, LocalHardware, LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
 
 import { LocalModelsSettings } from './local-models-settings'
+
+// Radix Select calls scrollIntoView / pointer-capture APIs jsdom lacks.
+beforeAll(() => {
+  Element.prototype.scrollIntoView = vi.fn()
+  Element.prototype.hasPointerCapture = vi.fn(() => false)
+  Element.prototype.releasePointerCapture = vi.fn()
+})
 
 // Mock the API layer — the pane's contract is what it RENDERS from these
 // payloads, not transport.
@@ -48,6 +58,7 @@ vi.mock('@/hermes', () => ({
   resumeLocalDownload: vi.fn(),
   searchHFModels: vi.fn(),
   setApiRequestProfile: vi.fn(),
+  setLocalGpu: vi.fn(),
   sideloadLocalModel: vi.fn()
 }))
 
@@ -176,6 +187,11 @@ async function renderFullPane(): Promise<ReturnType<typeof renderPane>> {
 }
 
 beforeEach((): void => {
+  setApiRequestConnection(null)
+  setApiRequestProfile(null)
+  $connection.set(null)
+  clearNotifications()
+  mocked.setLocalGpu.mockReset()
   queryClient.clear()
   queryClient.setDefaultOptions({ queries: { ...queryClient.getDefaultOptions().queries, retry: false } })
   mocked.getLocalModelsStatus.mockResolvedValue(BASE_STATUS)
@@ -191,6 +207,7 @@ beforeEach((): void => {
 
 afterEach(async () => {
   cleanup()
+  clearNotifications()
   queryClient.clear()
   mocked.getLocalModelsJobs.mockResolvedValue({ jobs: [] })
   await act(async () => {
@@ -741,5 +758,266 @@ describe('quickstart finalization', (): void => {
     // Stage detail yes; byte counter no — a 100% counter on an install
     // phase would lie about the model leg still ahead.
     expect(screen.queryByText(/of/)).toBeNull()
+  })
+})
+
+describe('GPU selection', () => {
+  const MULTI_GPU_HARDWARE: LocalHardware = {
+    ...BASE_HARDWARE,
+    gpus: [
+      { index: 0, name: 'NVIDIA GeForce RTX 2060', total_bytes: 6 * 2 ** 30, free_bytes: 3 * 2 ** 30 },
+      { index: 1, name: 'NVIDIA GeForce RTX 3070', total_bytes: 8 * 2 ** 30, free_bytes: 8 * 2 ** 30 }
+    ],
+    gpu: 'auto',
+    gpu_selected: 1
+  }
+
+  it('hides the GPU picker on an old server without GPU capabilities', async () => {
+    mocked.getLocalHardware.mockResolvedValue(BASE_HARDWARE)
+    await renderFullPane()
+    expect(screen.queryByTestId('local-models-gpu-picker')).toBeNull()
+  })
+
+  it('hides the GPU picker on a single-GPU machine', async () => {
+    mocked.getLocalHardware.mockResolvedValue({ ...MULTI_GPU_HARDWARE, gpus: MULTI_GPU_HARDWARE.gpus?.slice(0, 1) })
+    await renderFullPane()
+    expect(screen.queryByTestId('local-models-gpu-picker')).toBeNull()
+  })
+
+  it('offers an accessible GPU picker before first-run quickstart', async () => {
+    mocked.getLocalHardware.mockResolvedValue(MULTI_GPU_HARDWARE)
+    renderPane()
+    await screen.findByRole('button', { name: /set up for me/i })
+    expect(screen.getByRole('combobox', { name: 'GPU for local models' })).toBeTruthy()
+  })
+
+  it('lists every GPU and names the actual automatic choice even when a smaller GPU is pinned', async () => {
+    mocked.getLocalHardware.mockResolvedValue({ ...MULTI_GPU_HARDWARE, gpu: '0', gpu_selected: 0 })
+    await renderFullPane()
+    const picker = screen.getByTestId('local-models-gpu-picker')
+    fireEvent.click(picker.querySelector('button') as HTMLElement)
+    expect(await screen.findByRole('option', { name: 'Automatic (NVIDIA GeForce RTX 3070)' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: '0: NVIDIA GeForce RTX 2060 · 6.0 GB' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: '1: NVIDIA GeForce RTX 3070 · 8.0 GB' })).toBeTruthy()
+  })
+
+  async function choose3070(): Promise<void> {
+    fireEvent.click(screen.getByTestId('local-models-gpu-picker').querySelector('button') as HTMLElement)
+    fireEvent.click(await screen.findByRole('option', { name: '1: NVIDIA GeForce RTX 3070 · 8.0 GB' }))
+  }
+
+  it.each([false, true])(
+    'saves the captured owner and refreshes hardware, catalog and status (restarted: %s)',
+    async server_restarted => {
+      setApiRequestConnection('gpu-host')
+      setApiRequestProfile('compute')
+      const owner = localModelsOwner()
+      const scope = { connectionId: 'gpu-host', profile: 'compute' }
+      mocked.getLocalHardware.mockResolvedValue(MULTI_GPU_HARDWARE)
+      mocked.setLocalGpu.mockImplementation(async () => {
+        mocked.getLocalHardware.mockResolvedValue({ ...MULTI_GPU_HARDWARE, gpu: '1' })
+        mocked.getLocalCatalog.mockResolvedValue({
+          models: [{ ...FITTING_MODEL, display_name: 'New GPU recommendation' }]
+        })
+        mocked.getLocalModelsStatus.mockResolvedValue({ ...BASE_STATUS, server_running: server_restarted })
+
+        return { ok: true, gpu: '1', server_restarted }
+      })
+      renderPane()
+      await screen.findByRole('button', { name: /set up for me/i })
+      await choose3070()
+      await waitFor(() => {
+        expect(mocked.setLocalGpu).toHaveBeenCalledWith('1', scope)
+        expect(queryClient.getQueryData<LocalHardware>(localModelsKey(owner, 'hardware'))?.gpu).toBe('1')
+        expect(queryClient.getQueryData<LocalCatalogModel[]>(localModelsKey(owner, 'catalog'))?.[0]?.display_name).toBe(
+          'New GPU recommendation'
+        )
+        expect(queryClient.getQueryData<LocalModelsStatus>(localModelsKey(owner, 'status'))?.server_running).toBe(
+          server_restarted
+        )
+        expect($notifications.get()).toContainEqual(
+          expect.objectContaining({
+            kind: 'success',
+            message: server_restarted ? 'GPU selection saved and model server restarted.' : 'GPU selection saved.'
+          })
+        )
+      })
+      expect(mocked.getLocalHardware).toHaveBeenLastCalledWith(scope)
+      expect(mocked.getLocalCatalog).toHaveBeenLastCalledWith(scope)
+      expect(mocked.getLocalModelsStatus).toHaveBeenLastCalledWith(scope)
+    }
+  )
+
+  it('uses the stable GPU ID when the server supplies one', async () => {
+    mocked.getLocalHardware.mockResolvedValue({
+      ...MULTI_GPU_HARDWARE,
+      gpus: MULTI_GPU_HARDWARE.gpus?.map(gpu => ({ ...gpu, id: `GPU-${gpu.index}` }))
+    })
+    mocked.setLocalGpu.mockResolvedValue({ ok: true, gpu: 'GPU-1', server_restarted: false })
+    await renderFullPane()
+    await choose3070()
+    await waitFor(() =>
+      expect(mocked.setLocalGpu).toHaveBeenCalledWith('GPU-1', { connectionId: null, profile: 'default' })
+    )
+  })
+
+  it('keeps a legacy index pin visibly selected when stable IDs are available', async () => {
+    mocked.getLocalHardware.mockResolvedValue({
+      ...MULTI_GPU_HARDWARE,
+      gpu: '1',
+      gpus: MULTI_GPU_HARDWARE.gpus?.map(gpu => ({ ...gpu, id: `GPU-${gpu.index}` }))
+    })
+    await renderFullPane()
+    expect(screen.getByRole('combobox', { name: 'GPU for local models' }).textContent).toContain(
+      '1: NVIDIA GeForce RTX 3070'
+    )
+  })
+
+  it.each([
+    '422: GPU index is out of range',
+    '409: GPU selection is unavailable',
+    'Model server restart failed: device unavailable'
+  ])('shows a real error toast and restores an enabled picker on %s', async message => {
+    mocked.getLocalHardware.mockResolvedValue(MULTI_GPU_HARDWARE)
+    mocked.setLocalGpu.mockRejectedValue(new Error(message))
+    await renderFullPane()
+    await choose3070()
+    await waitFor(() =>
+      expect($notifications.get()).toContainEqual(
+        expect.objectContaining({
+          kind: 'error',
+          title: 'Could not change the GPU selection',
+          message
+        })
+      )
+    )
+    expect($notifications.get().some(notice => notice.kind === 'success')).toBe(false)
+    const trigger = screen.getByRole('combobox', { name: 'GPU for local models' })
+    expect(trigger.hasAttribute('disabled')).toBe(false)
+    expect(trigger.textContent).toContain('Automatic (NVIDIA GeForce RTX 3070)')
+  })
+
+  it('refreshes persisted selection and runtime status after a restart error', async () => {
+    mocked.getLocalHardware.mockResolvedValue(MULTI_GPU_HARDWARE)
+    mocked.getLocalModelsStatus.mockResolvedValue({ ...BASE_STATUS, server_running: true })
+    mocked.setLocalGpu.mockImplementation(async () => {
+      mocked.getLocalHardware.mockResolvedValue({ ...MULTI_GPU_HARDWARE, gpu: '1' })
+      mocked.getLocalModelsStatus.mockResolvedValue({ ...BASE_STATUS, server_running: false })
+      throw new Error('Model server restart failed')
+    })
+    await renderFullPane()
+    await choose3070()
+    await waitFor(() => {
+      expect(queryClient.getQueryData<LocalHardware>(localModelsKey(localModelsOwner(), 'hardware'))?.gpu).toBe('1')
+      expect(
+        queryClient.getQueryData<LocalModelsStatus>(localModelsKey(localModelsOwner(), 'status'))?.server_running
+      ).toBe(false)
+    })
+    expect($notifications.get()).toContainEqual(
+      expect.objectContaining({ kind: 'error', message: 'Model server restart failed' })
+    )
+  })
+
+  it('does not report a false backend verdict as success', async () => {
+    mocked.getLocalHardware.mockResolvedValue(MULTI_GPU_HARDWARE)
+    mocked.setLocalGpu.mockResolvedValue({ ok: false, gpu: 'auto', server_restarted: false })
+    await renderFullPane()
+    await choose3070()
+    await waitFor(() => expect($notifications.get()).toContainEqual(expect.objectContaining({ kind: 'error' })))
+    expect($notifications.get().some(notice => notice.kind === 'success')).toBe(false)
+  })
+
+  it('shows the server hardware selection error instead of silently implying a valid pin', async () => {
+    mocked.getLocalHardware.mockResolvedValue({
+      ...MULTI_GPU_HARDWARE,
+      gpu: 'GPU-missing',
+      gpu_selected: null,
+      gpu_error: 'Selected GPU is no longer available'
+    })
+    await renderFullPane()
+    expect(screen.getByRole('alert').textContent).toBe('Selected GPU is no longer available')
+  })
+
+  it('disables selection while a save is pending and permits another choice after failure', async () => {
+    let reject!: (reason: Error) => void
+    mocked.getLocalHardware.mockResolvedValue(MULTI_GPU_HARDWARE)
+    mocked.setLocalGpu.mockImplementation(
+      () =>
+        new Promise((_resolve, fail) => {
+          reject = fail
+        })
+    )
+    await renderFullPane()
+    await choose3070()
+    const trigger = screen.getByRole('combobox', { name: 'GPU for local models' })
+    expect(trigger.hasAttribute('disabled')).toBe(true)
+    expect(trigger.textContent).toContain('1: NVIDIA GeForce RTX 3070')
+    await act(async () => {
+      reject(new Error('try again'))
+    })
+    expect(trigger.textContent).toContain('Automatic (NVIDIA GeForce RTX 3070)')
+    await waitFor(() =>
+      expect(screen.getByTestId('local-models-gpu-picker').querySelector('button')?.hasAttribute('disabled')).toBe(
+        false
+      )
+    )
+  })
+
+  it.each(['profile', 'connection', 'legacy endpoint'])(
+    'suppresses a late error after the %s changes',
+    async changed => {
+      let reject!: (reason: Error) => void
+      mocked.getLocalHardware.mockResolvedValue(MULTI_GPU_HARDWARE)
+      mocked.setLocalGpu.mockImplementation(
+        () =>
+          new Promise((_resolve, fail) => {
+            reject = fail
+          })
+      )
+      await renderFullPane()
+      await choose3070()
+      const scope = { connectionId: null, profile: 'default' }
+      act(() => {
+        if (changed === 'profile') {
+          setApiRequestProfile('other-profile')
+        } else if (changed === 'connection') {
+          setApiRequestConnection('other-host')
+        } else {
+          $connection.set({ baseUrl: 'https://other-host' } as never)
+        }
+      })
+      await act(async () => {
+        reject(new Error('late GPU failure'))
+      })
+      expect(mocked.setLocalGpu).toHaveBeenCalledWith('1', scope)
+      expect($notifications.get()).toEqual([])
+    }
+  )
+
+  it('refreshes only the captured owner without a late success toast after switching connections', async () => {
+    let resolve!: (result: { ok: boolean; gpu: string; server_restarted: boolean }) => void
+    setApiRequestConnection('first-host')
+    setApiRequestProfile('compute')
+    const firstOwner = localModelsOwner()
+    mocked.getLocalHardware.mockResolvedValue(MULTI_GPU_HARDWARE)
+    mocked.setLocalGpu.mockImplementation(
+      () =>
+        new Promise(done => {
+          resolve = done
+        })
+    )
+    await renderFullPane()
+    await choose3070()
+    act(() => {
+      setApiRequestConnection('next-host')
+    })
+    await screen.findByRole('button', { name: /set up for me/i })
+    const nextOwner = localModelsOwner()
+    await act(async () => {
+      resolve({ ok: true, gpu: '1', server_restarted: true })
+    })
+    expect(queryClient.getQueryState(localModelsKey(firstOwner, 'hardware'))?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(localModelsKey(nextOwner, 'hardware'))?.isInvalidated).toBe(false)
+    expect($notifications.get()).toEqual([])
   })
 })

@@ -22,6 +22,12 @@ export const jaLocalModels: TranslationOverride<Translations['settings']['localM
   vram: label => `GPU メモリ ${label}`,
   ram: label => `RAM ${label}`,
   unifiedMemory: 'ユニファイドメモリ',
+  gpuLabel: 'ローカルモデルに使うGPU',
+  gpuAuto: largestName => `自動 (${largestName})`,
+  gpuEntry: (index, name, vram) => `${index}: ${name} · ${vram}`,
+  gpuSelectFailed: 'GPU選択を変更できませんでした',
+  gpuSelected: 'GPU選択を保存しました。',
+  gpuServerRestarted: 'GPU選択を保存し、モデルサーバーを再起動しました。',
   modelsTitle: 'モデル',
   recommended: 'おすすめ',
   recommendedReason: {

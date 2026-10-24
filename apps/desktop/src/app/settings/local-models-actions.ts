@@ -6,6 +6,7 @@ import {
   downloadLocalModel,
   ejectLocalModel,
   quickstartLocalModels,
+  setLocalGpu,
   setLocalServer
 } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -128,6 +129,32 @@ export async function setServerRunning(
     if (isCurrentLocalModelsOwner(owner)) {
       notifyError(err, action === 'stop' ? copy.serverStopFailed : copy.serverStartFailed)
     }
+  }
+}
+
+export async function selectGpu({ owner, client, copy }: LocalModelsActionScope, gpu: string): Promise<void> {
+  try {
+    const result = await setLocalGpu(gpu, localModelsRequestScope(owner))
+
+    if (!result.ok) {
+      throw new Error(copy.gpuSelectFailed)
+    }
+
+    if (isCurrentLocalModelsOwner(owner)) {
+      notify({
+        durationMs: 3_500,
+        kind: 'success',
+        message: result.server_restarted ? copy.gpuServerRestarted : copy.gpuSelected,
+        title: localModelsNotificationTitle(owner)
+      })
+    }
+  } catch (err) {
+    if (isCurrentLocalModelsOwner(owner)) {
+      notifyError(err, copy.gpuSelectFailed)
+    }
+  } finally {
+    // A restart can fail after the setting was saved and the old server stopped.
+    refreshLocalModels(owner, client)
   }
 }
 

@@ -23,6 +23,7 @@ def test_auto_backend_uses_only_compatible_pins(target, vendor, expected):
         binaries.resolve_backend("cuda", target="darwin-arm64")
 
 
+@pytest.mark.platforms("linux")
 def test_linux_cuda_runtime_libraries_land_beside_the_server(tmp_path):
     """The engine's RUNPATH is $ORIGIN and its archive carries neither the CUDA
     runtime nor OpenMP, so the cudart tarball's top-level dir and the libgomp

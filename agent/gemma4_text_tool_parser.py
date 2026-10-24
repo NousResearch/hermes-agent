@@ -38,6 +38,18 @@ _GEMMA4_THINK_RE = re.compile(
 
 _GEMMA4_MODEL_SUBSTRINGS = ("gemma-4", "gemma4", "gemma_4")
 
+# Python string prefixes; a quote after any other word character is an apostrophe.
+_STRING_PREFIXES = frozenset({"", "b", "f", "r", "u", "br", "rb", "fr", "rf"})
+
+# Markdown regions where a ``call:`` is an illustration, never a real call:
+# fenced blocks (an unclosed fence runs to the end), inline code, blockquote lines.
+_EXAMPLE_SPAN_RE = re.compile(
+    r"^[ \t]*(`{3,}|~{3,})[^\n]*\n.*?(?:^[ \t]*\1[ \t]*$|\Z)"
+    r"|`[^`\n]+`"
+    r"|^[ \t]*>[^\n]*$",
+    re.DOTALL | re.MULTILINE,
+)
+
 
 def is_gemma4_model(model: str | None) -> bool:
     return any(g in (model or "").lower() for g in _GEMMA4_MODEL_SUBSTRINGS)
@@ -57,38 +69,66 @@ def _find_balanced_calls(text: str) -> list[tuple[str, str, int, int]]:
         m = re.search(r"(?:^|(?<=\s))call:(\w+)\{", text[i:])
         if not m:
             break
-        name = m.group(1)
         brace_start = i + m.end() - 1
-        depth = 0
-        j = brace_start
-        while j < len(text):
-            ch = text[j]
-            if ch in ('"', "'"):
-                # Skip quoted strings so braces inside them don't affect depth.
-                quote = ch
-                j += 1
-                while j < len(text):
-                    if text[j] == "\\" and j + 1 < len(text):
-                        j += 2
-                        continue
-                    if text[j] == quote:
-                        break
-                    j += 1
-            elif ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    args_body = text[brace_start + 1 : j]
-                    results.append((name, args_body, i + m.start(), j + 1))
-                    break
-            j += 1
-        if depth != 0:
-            # Unbalanced braces — skip this call entirely.
+        close = _match_brace(text, brace_start)
+        if close is None:
+            # Truncated call: never dispatch a partial argument body.
             i = brace_start + 1
             continue
-        i = j + 1 if j < len(text) else len(text)
+        results.append((m.group(1), text[brace_start + 1 : close], i + m.start(), close + 1))
+        i = close + 1
     return results
+
+
+def _opens_string(text: str, j: int) -> bool:
+    """A quote opens a string unless it is an apostrophe inside a word (``don't``)."""
+    k = j
+    while k > 0 and (text[k - 1].isalnum() or text[k - 1] == "_"):
+        k -= 1
+    return text[k:j].lower() in _STRING_PREFIXES
+
+
+def _string_end(text: str, j: int) -> int | None:
+    """Index of the quote closing the string opened at *j*, or None if unterminated."""
+    quote = text[j]
+    k = j + 1
+    while k < len(text):
+        if text[k] == "\\":
+            k += 2
+            continue
+        if text[k] == quote:
+            return k
+        k += 1
+    return None
+
+
+def _match_brace(text: str, brace_start: int) -> int | None:
+    """Index of the ``}`` closing the ``{`` at *brace_start*, or None if unbalanced.
+
+    Braces inside quoted strings don't count. A quote with no closing partner
+    (``'tis``) is a literal character, not a string delimiter.
+    """
+    depth = 0
+    j = brace_start
+    while j < len(text):
+        ch = text[j]
+        if ch in "\"'" and _opens_string(text, j):
+            end = _string_end(text, j)
+            if end is not None:
+                j = end + 1
+                continue
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return j
+        j += 1
+    return None
+
+
+def _example_spans(text: str) -> list[tuple[int, int]]:
+    return [m.span() for m in _EXAMPLE_SPAN_RE.finditer(text)]
 
 
 def _schema_aware_split(args_body: str, param_names: list[str]) -> dict[str, str]:
@@ -211,7 +251,11 @@ def extract_gemma4_tool_calls(
     if not content or "call:" not in content:
         return [], content or ""
 
-    calls = _find_balanced_calls(content)
+    spans = _example_spans(content)
+    calls = [
+        c for c in _find_balanced_calls(content)
+        if not any(s <= c[2] < e for s, e in spans)
+    ]
     if not calls:
         return [], content
 

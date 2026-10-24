@@ -77,7 +77,34 @@ class TestFindBalancedCalls:
     def test_escaped_quote_in_string(self):
         calls = _find_balanced_calls(r'call:fn{code:print("he said \"}\"")}')
         assert len(calls) == 1
-        assert "print" in calls[0][1]
+        assert calls[0][1] == r'code:print("he said \"}\"")'
+
+    def test_apostrophe_in_bare_value(self):
+        calls = _find_balanced_calls("call:web_search{query:what's new in Python,limit:5}")
+        assert len(calls) == 1
+        assert calls[0][1] == "query:what's new in Python,limit:5"
+
+    def test_apostrophe_in_code_comment(self):
+        calls = _find_balanced_calls("call:execute_code{code:x = {1: 2}  # don't}")
+        assert len(calls) == 1
+        assert calls[0][1] == "code:x = {1: 2}  # don't"
+
+    def test_unterminated_quote_is_literal(self):
+        calls = _find_balanced_calls("call:fn{q:'tis the season}")
+        assert len(calls) == 1
+        assert calls[0][1] == "q:'tis the season"
+
+    def test_apostrophes_do_not_swallow_next_call(self):
+        calls = _find_balanced_calls("call:a{q:what's up}\ncall:b{q:it's}")
+        assert [c[0] for c in calls] == ["a", "b"]
+
+    def test_string_prefix_quote(self):
+        calls = _find_balanced_calls('call:fn{code:print(f"{x}}")}')
+        assert len(calls) == 1
+        assert calls[0][1] == 'code:print(f"{x}}")'
+
+    def test_truncated_call_with_quoted_brace_rejected(self):
+        assert _find_balanced_calls('call:fn{code:print("}")') == []
 
 
 # ── Schema-aware splitting ───────────────────────────────────────
@@ -323,3 +350,69 @@ class TestExtractGemma4ToolCalls:
         assert len(tcs) == 1
         args = json.loads(tcs[0].arguments)
         assert 'print("}")' == args["code"]
+
+    def test_apostrophe_query_with_schema(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string"},
+                            "limit": {"type": "integer"},
+                        },
+                    },
+                },
+            }
+        ]
+        tcs, _ = extract_gemma4_tool_calls(
+            "call:web_search{query:what's new in Python,limit:5}",
+            agent_tools=tools,
+        )
+        assert len(tcs) == 1
+        assert json.loads(tcs[0].arguments) == {"query": "what's new in Python", "limit": "5"}
+
+
+class TestExampleCallsNotExecuted:
+    def test_fenced_example(self):
+        text = "Example:\n```\ncall:terminal{command:echo demo}\n```"
+        tcs, cleaned = extract_gemma4_tool_calls(text)
+        assert tcs == []
+        assert cleaned == text
+
+    def test_fenced_example_with_language_tag(self):
+        text = "Example:\n```text\ncall:terminal{command:echo demo}\n```"
+        tcs, _ = extract_gemma4_tool_calls(text)
+        assert tcs == []
+
+    def test_unclosed_fence(self):
+        tcs, _ = extract_gemma4_tool_calls("Example:\n```\ncall:terminal{command:echo demo}")
+        assert tcs == []
+
+    def test_tilde_fence(self):
+        tcs, _ = extract_gemma4_tool_calls("~~~\ncall:terminal{command:echo demo}\n~~~")
+        assert tcs == []
+
+    def test_inline_code(self):
+        tcs, _ = extract_gemma4_tool_calls("`run call:terminal{command:echo demo}`")
+        assert tcs == []
+
+    def test_blockquote(self):
+        tcs, _ = extract_gemma4_tool_calls("> call:terminal{command:echo demo}")
+        assert tcs == []
+
+    def test_real_call_after_fenced_example(self):
+        text = (
+            "```\ncall:a{x:1}\n```\n"
+            "call:terminal{command:echo hello world from the hermes agent}"
+        )
+        tcs, cleaned = extract_gemma4_tool_calls(text)
+        assert [tc.name for tc in tcs] == ["terminal"]
+        assert cleaned == "```\ncall:a{x:1}\n```"
+
+    def test_fence_inside_call_args_still_extracts(self):
+        text = "call:write_file{path:a.md,content:# T\n```py\nprint(1)\n```\n}"
+        tcs, _ = extract_gemma4_tool_calls(text)
+        assert [tc.name for tc in tcs] == ["write_file"]

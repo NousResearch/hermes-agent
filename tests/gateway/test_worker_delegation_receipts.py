@@ -35,6 +35,7 @@ def test_lost_ack_reopens_owner_and_replays_same_ledger_receipt(tmp_path):
             raise TimeoutError('lost_ack')
         return result
     store = RuntimeSessionStore(rpc, scope, tmp_path / 'outbox')
+    store.owner_patience_s = 0  # exercise the manual replay, not the automatic resend
     try:
         payload = dict(delegation_id='deleg_owned', task={'goal': 'inert'}, dispatched_at=time.time(),
                        parent_session_id='parent', session_key='', origin_ui_session_id='', origin_session_id='')

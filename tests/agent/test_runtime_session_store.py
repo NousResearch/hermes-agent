@@ -13,6 +13,7 @@ def test_outbox_freezes_failed_payload_and_reopens_exclusively(tmp_path):
         rows[0]['content'] = 'caller changed'
         raise TimeoutError('offline')
     store = RuntimeSessionStore(unavailable, scope, tmp_path / 'private')
+    store.owner_patience_s = 0  # the owner never answers: no resend window
     try:
         with pytest.raises(TimeoutError):
             store.append_messages_batch('s', rows)

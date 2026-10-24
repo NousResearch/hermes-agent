@@ -30,6 +30,7 @@ def test_worker_context_preserves_authority_identity_and_prompt_receipts(tmp_pat
                 original(method, **params)
                 raise TimeoutError('lost-ack')
             store.rpc = lost_ack
+            store.owner_patience_s = 0  # every reply is lost: no resend window
             with pytest.raises(TimeoutError, match='lost-ack'):
                 store.update_system_prompt('owned', 'durable-prefix')
             store.rpc = original

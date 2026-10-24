@@ -78,7 +78,9 @@ class Resampler:
             frac = pos - i
             out.append(int(data[i] + (data[i + 1] - data[i]) * frac))
             pos += ratio
-        keep = int(pos)
+        # pos can advance past the available data (up to one ratio step beyond
+        # last); cap keep so _pos stays relative to the actual carry (#139121).
+        keep = min(int(pos), len(data))
         self._carry = data[keep:]
         self._pos = pos - keep
         return out.tobytes()

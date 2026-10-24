@@ -26,7 +26,7 @@ LIVE_RETENTION_DAYS = 7
 
 # Per-line truncation budgets (chars): the .log is a compact operational view;
 # the child's SessionDB transcript and summary spill files carry full text.
-_ASSISTANT_MAX = 600
+_ASSISTANT_MAX = 2000
 _THINKING_MAX = 300
 _ARGS_MAX = 220
 _RESULT_MAX = 400
@@ -66,6 +66,50 @@ def _one_line(text: Any, limit: int) -> str:
     if len(s) > limit:
         s = s[:limit] + f" …(+{len(s) - limit} chars)"
     return s
+
+
+def _write_result_sidecar(path: Optional[Path], text: Any) -> None:
+    """Write a child's complete final answer next to its transcript.
+
+    Transcript lines are elided to keep the live view readable, which loses the
+    one payload a reader usually wants afterwards: the child's actual answer. The
+    sidecar holds it whole, redacted the same way, at ``task-N.result.md``.
+    """
+    if path is None or not text:
+        return
+    try:
+        sidecar = path.with_suffix(".result.md")
+        sidecar.write_text(_redact(str(text)), encoding="utf-8")
+    except Exception as exc:
+        logger.debug("Live transcript result sidecar failed (%s): %s", path, exc)
+
+
+def _full_summary_text(entry: Any) -> Any:
+    """The child's whole answer, for the result sidecar.
+
+    ``_apply_summary_budget`` (``delegate_tool_results``) replaces ``entry["summary"]`` with a
+    head/tail window once the answer outgrows the parent's budget, and leaves the untrimmed text
+    in ``summary_full_path``. Read that first: writing ``summary`` alone freezes the window into
+    the sidecar, which is the one outcome the sidecar exists to prevent.
+    """
+    if not isinstance(entry, dict):
+        return None
+    spill = entry.get("summary_full_path")
+    if spill:
+        # The spill path is stored backend-translated (``to_agent_visible_cache_path``); finalize
+        # runs host-side, so map it back or a Docker child's path would simply not resolve.
+        try:
+            from tools.credential_files import from_agent_visible_cache_path
+            host_spill = from_agent_visible_cache_path(str(spill))
+        except Exception:
+            host_spill = str(spill)
+        try:
+            text = Path(host_spill).read_text(encoding="utf-8", errors="replace")
+            if text:
+                return text
+        except OSError as exc:
+            logger.debug("Live transcript sidecar spill unreadable (%s): %s", host_spill, exc)
+    return entry.get("summary") or entry.get("result")
 
 
 def _redact(text: str) -> str:
@@ -175,6 +219,10 @@ class LiveTranscriptWriter:
     def _on_complete(self, tool_name, preview, args, kwargs):
         dur = kwargs.get("duration_seconds")
         summary = kwargs.get("summary") or preview
+        # No result sidecar here. ``delegate_tool_child_run.emit_complete`` caps this event's
+        # ``summary`` at 500 chars, so writing it would freeze a prefix into the sidecar — and an
+        # answer short enough to survive that cap is already whole in the log (assistant lines
+        # elide only past ``_ASSISTANT_MAX``). ``finalize`` owns the sidecar.
         self.marker(_joined(
             f"status={kwargs.get('status', '?')}",
             f"duration={dur}s" if dur is not None else "",
@@ -204,6 +252,10 @@ class LiveTranscriptWriter:
 
     def finalize(self, entry: dict[str, Any]) -> None:
         """Terminal marker with exit-reason detail subagent.complete lacks."""
+        # The single write of the child's answer. finalize runs after the summary budget trim
+        # (delegate_tool_dispatch), so it is also the only hook still able to reach the untrimmed
+        # text — via the spill path the trim left on the entry.
+        _write_result_sidecar(self.path, _full_summary_text(entry))
         exit_reason = entry.get("exit_reason")
         self.marker(_joined(
             f"end status={entry.get('status', '?')}",

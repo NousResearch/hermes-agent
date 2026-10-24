@@ -84,12 +84,28 @@ def _utc_now_iso() -> str:
     return datetime.now(tz=UTC).isoformat().replace("+00:00", "Z")
 
 
+def _resolve_hook_cwd(kwargs: dict[str, Any]) -> str:
+    """The session's working directory, not the process launch dir: a gateway, Desktop backend or
+    multiplexed host serves many sessions from one cwd. Terminal-writer key first (the routing key
+    when bound, else the task id), then the file tools' workspace ladder so hooks and file tools agree.
+    Reads recorded state only: building a payload must never start a terminal backend (SSH connect)."""
+    from tools.approval_context import get_current_session_key
+    from tools.file_tools_paths import _authoritative_workspace_root
+    from tools.terminal_tool import get_session_cwd
+
+    task_id = str(kwargs.get("task_id") or kwargs.get("session_id") or "default")
+    recorded = get_session_cwd(get_current_session_key(default="") or task_id) or _authoritative_workspace_root(task_id)
+    if recorded:
+        return recorded
+    try:
+        return str(Path.cwd())
+    except OSError:  # no session anchor and the launch dir was deleted
+        return ""
+
+
 def _payload_fields(kwargs: dict[str, Any]) -> dict[str, Any]:
     """Common stdin/POST payload fields (shared with outbound webhooks); key order is wire order."""
-    try:
-        cwd = str(Path.cwd())
-    except OSError:
-        cwd = ""
+    cwd = _resolve_hook_cwd(kwargs)
     from hermes_cli.profiles import get_active_profile_name
     return {
         "tool_name": kwargs.get("tool_name"),
@@ -476,7 +492,7 @@ def _windows_script_argv(argv: list[str]) -> list[str]:
     return [_find_bash(), *argv]
 
 
-def _spawn(spec: ShellHookSpec, stdin_json: str) -> dict[str, Any]:
+def _spawn(spec: ShellHookSpec, stdin_json: str, cwd: Optional[str] = None) -> dict[str, Any]:
     """The single subprocess site: run ``spec.command`` with ``stdin_json`` on stdin. Same result keys for every outcome."""
     result: dict[str, Any] = {"returncode": None, "stdout": "", "stderr": "", "timed_out": False, "elapsed_seconds": 0.0, "error": None}
 
@@ -504,7 +520,9 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> dict[str, Any]:
             argv = _windows_script_argv(argv)
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, encoding='utf-8', errors='replace', shell=False,
-                                env=build_subprocess_env(scrub_secrets=is_multiplex_active()), **popen_kwargs)
+                                env=build_subprocess_env(scrub_secrets=is_multiplex_active()),
+                                # A container/SSH backend's path does not exist on this host: keep the launch dir.
+                                cwd=cwd if cwd and os.path.isdir(cwd) else None, **popen_kwargs)
     except Exception as exc:
         for cls, msg in _POPEN_ERRORS:
             if isinstance(exc, cls):
@@ -541,7 +559,7 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[dict[str, Any]
             return None
         if spec.event in _TOOL_EVENTS and not spec.matches_tool(kwargs.get("tool_name")):
             return None
-        return _evaluate_result(spec, _spawn(spec, _serialize_payload(spec.event, kwargs)))
+        return _evaluate_result(spec, _spawn(spec, _serialize_payload(spec.event, kwargs), _resolve_hook_cwd(kwargs)))
 
     _callback.__name__ = _callback.__qualname__ = f"shell_hook[{spec.event}:{spec.command}]"
     return _callback
@@ -837,6 +855,6 @@ def script_is_executable(command: str) -> bool:
 
 def run_once(spec: ShellHookSpec, kwargs: dict[str, Any]) -> dict[str, Any]:
     """Fire one hook with a synthetic payload (``hermes hooks test`` / doctor) through the production path."""
-    result = _spawn(spec, _serialize_payload(spec.event, kwargs))
+    result = _spawn(spec, _serialize_payload(spec.event, kwargs), _resolve_hook_cwd(kwargs))
     result["parsed"] = _evaluate_result(spec, result)
     return result

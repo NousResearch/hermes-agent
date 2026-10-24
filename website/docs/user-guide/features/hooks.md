@@ -1909,6 +1909,8 @@ Each time the event fires, Hermes spawns a subprocess for every matching hook (m
 }
 ```
 
+`cwd` is the session's working directory (where its terminal last `cd`'d, else the configured workspace), and the script runs in that directory, so a relative path or a bare `git status` sees the same project the agent is working in. Only a container or SSH backend path that does not exist on the Hermes host falls back to the process launch directory.
+
 `profile` names the Hermes profile that fired the hook (`"default"` outside profiles), so one
 script can serve every profile behind a multiplexed gateway; the subprocess also runs with that
 profile's `HERMES_HOME`. `tool_name` and `tool_input` are `null` for non-tool events (`pre_llm_call`, `subagent_stop`, session lifecycle). The `extra` dict carries all event-specific kwargs (`user_message`, `conversation_history`, `child_role`, `duration_ms`, …). Unserialisable values are stringified rather than omitted.

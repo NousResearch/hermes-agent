@@ -1762,6 +1762,7 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
         # A photo burst always absorbs; otherwise merge only when media is involved on either
         # side. Captions merge in every absorbing case.
         if both_photo or existing.media_urls or incoming_has_media:
+            existing.__dict__.pop("_gateway_process_completion_provenance", None)
             if both_photo or incoming_has_media:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
@@ -1781,6 +1782,7 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
             return
         both_text = existing_type == MessageType.TEXT and event.message_type == MessageType.TEXT
         if merge_text and both_text:
+            existing.__dict__.pop("_gateway_process_completion_provenance", None)
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
             existing.absorb_reply_expected(event)
@@ -4704,16 +4706,13 @@ class BasePlatformAdapter(ABC):
             session_key,
             asyncio.create_task(self._drain_after(pending_event, session_key, delay, guard)))
 
-    async def _drain_after(self, pending_event: MessageEvent, session_key: str, delay: float,
-                           guard: Optional[asyncio.Event]) -> None:
-        if delay > 0:
-            await asyncio.sleep(delay)
-            await self._flush_text_debounce_now(session_key)  # as every other task exit does
-            pending_event = self._pending_messages.pop(session_key, None)
-            if pending_event is None:  # consumed elsewhere during the back-off
-                self._cleanup_finished_session_task(session_key, guard)
-                return
-        await self._process_message_background(pending_event, session_key)
+    from gateway.platforms.base_drain import drain_after as _drain_after
+
+    @staticmethod
+    def _drain_event_has_consumed_process_completion(event: MessageEvent) -> bool:
+        """Discard only a proven, unchanged synthetic completion with every result consumed."""
+        from gateway.process_completion_provenance import consumed_completion_only
+        return consumed_completion_only(event)
 
     def _clear_session_guard(self, session_key: str) -> None:
         """Clear (not delete) the session's interrupt Event so the guard stays live for inbound."""

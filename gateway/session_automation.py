@@ -303,12 +303,14 @@ def automation_display_metadata(metadata):
 # and display_kind/display_text so the persisted row is the card the producer named; heartbeat_tick is
 # a liveness tick's own output, persisted so a later tick of its process folds from the ledger.
 # gateway_proven_session_id / gateway_completion_ids are main's delivery-time ownership proof for the
-# classic resolver (802fd5782f3, fd4e277c849). They are accepted and not persisted (a sibling set in the
+# classic resolver (802fd5782f3, fd4e277c849). gateway_process_session_ids is the adapter drain's
+# transient consumed-completion marker. They are accepted and not persisted (a sibling set in the
 # fingerprint would make the same completion's retry a new identity); execute_admission re-stamps the
 # proof at execution from the target the pre-claim check validated, and the turn's resolver reads it.
 _AUTOMATION_METADATA = frozenset({'gateway_session_key', 'gateway_session_id', 'automation_identities',
     'turn_author', 'notification_origin', 'original_trigger_message_id', 'notification_category',
-    'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids', 'heartbeat_tick'})
+    'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids',
+    'gateway_process_session_ids', 'heartbeat_tick'})
 
 
 def admission_display(payload):

@@ -121,6 +121,16 @@ class ProcessCheckpointMixin:
                     entry.get("session_id", "?"), pid)
                 continue
             if fate != "running":
+                # A notify-on-complete child that died while its owning process was
+                # gone exits UNOBSERVED: nobody collected a status, but the session
+                # that spawned it still must learn it finished. Publish a
+                # reason="lost" wake + durable receipt — unless a receipt already
+                # exists, which proves some earlier owner DID observe the exit.
+                if entry.get("notify_on_complete") and not adoptable_log(entry.get("output_log")):
+                    from hermes_constants import get_hermes_home
+                    receipt = get_hermes_home() / "logs" / "process-results" / f"{entry.get('session_id', '')}.json"
+                    if not receipt.exists():
+                        self._emit_lost_recovery_wake(entry, pid)
                 systemd_unit = entry.get("systemd_unit", "")
                 if systemd_unit and not _stop_systemd_unit(systemd_unit):
                     logger.warning(
@@ -157,3 +167,55 @@ class ProcessCheckpointMixin:
                 })
         self._write_checkpoint(extra_entries=unresolved_scope_entries)
         return recovered
+
+    def _emit_lost_recovery_wake(self, entry: dict[str, Any], pid: int) -> None:
+        """Queue a ``reason="lost"`` completion for a checkpointed notify child
+        whose exit nobody observed (its owning process was gone when it died).
+
+        The exit code is unknown by construction — never invented. The receipt
+        makes the loss durable; the queued wake tells the session it owns what
+        happened. Idempotent by the caller's receipt check.
+        """
+        from agent.redact import redact_sensitive_text
+        from tools.process_registry import ProcessSession
+        from tools.process_registry_results import save_completed_result
+
+        session = ProcessSession(
+            id=entry.get("session_id", f"proc_unknown_{pid}"),
+            command=redact_sensitive_text(entry.get("command", "unknown"), code_file=True),
+            task_id=entry.get("task_id", ""),
+            owner_task_id=entry.get("owner_task_id", "") or entry.get("task_id", ""),
+            started_at=entry.get("started_at", time.time()),
+            pid=pid, pid_scope="host", detached=True,
+            host_start_time=entry.get("host_start_time"),
+            notify_on_complete=True,
+        )
+        with session._lock:
+            session.exited = True
+            session.exited_at = time.time()
+            session.completion_reason = "lost"
+            session.termination_source = "recovery_unobserved"
+        try:
+            save_completed_result(session)
+        except Exception:
+            logger.warning("Lost-recovery receipt for %s failed", session.id, exc_info=True)
+        notification = {
+            "type": "completion",
+            "session_id": session.id,
+            "session_key": entry.get("session_key", ""),
+            "task_id": session.task_id,
+            "owner_task_id": session.owner_task_id,
+            "command": session.command,
+            "exit_code": None,
+            "completion_reason": "lost",
+            "termination_source": "recovery_unobserved",
+            "started_at": session.started_at,
+            "exited_at": session.exited_at,
+        }
+        logger.warning(
+            "Process %s (pid %s) exited while unobserved (owning process was gone); "
+            "publishing a lost completion wake",
+            session.id, pid)
+        from tools.process_registry import process_registry as _global_registry
+        queue = getattr(self, "completion_queue", None) or _global_registry.completion_queue
+        queue.put(notification)

@@ -720,6 +720,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         self.on_output = None
         self.on_close = None
         self._heartbeat_thread: Optional[threading.Thread] = None
+        self._detached_sweeper_thread: Optional[threading.Thread] = None
 
     # ── heartbeat ───────────────────────────────────────────────────────────
     def arm_heartbeat(self, session: ProcessSession, seconds: int) -> int:
@@ -753,6 +754,104 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                        and now - s._heartbeat_last >= s.heartbeat_seconds]
             for session in due:
                 self._emit_heartbeat(session, now)
+
+    # ── detached sweeper ──────────────────────────────────────────────────────
+    # Recovered (checkpoint) host-PID sessions have no reader thread: their exit is
+    # observed only by the gateway's watcher loop — which a serve/Desktop backend
+    # never starts. The sweeper gives those sessions an exit observer so a backend
+    # restart does not silently swallow the completion wake.
+    def _ensure_detached_sweeper(self) -> None:
+        with self._lock:
+            if self._detached_sweeper_thread is not None and self._detached_sweeper_thread.is_alive():
+                return
+            self._detached_sweeper_thread = threading.Thread(
+                target=self._detached_sweeper_loop, name="process-detached-sweeper", daemon=True)
+            self._detached_sweeper_thread.start()
+
+    def _detached_sweeper_loop(self) -> None:
+        while True:
+            time.sleep(HEARTBEAT_TICK_SECONDS)
+            try:
+                self._sweep_detached_once()
+            except Exception:
+                logger.debug("Detached-session sweep failed", exc_info=True)
+
+    def _sweep_detached_once(self) -> None:
+        """Publish the exit of every recovered host-PID session whose PID is gone."""
+        with self._lock:
+            candidates = [s for s in self._running.values()
+                          if s.detached and not s.exited and s.pid_scope == "host" and not s.output_log]
+        for session in candidates:
+            fate = self._detached_host_fate(session.pid, session.host_start_time)
+            if fate == "running":
+                continue
+            # Claim the exit exactly once, under the session lock a racing
+            # kill_process on the same detached session also honours.
+            with session._lock:
+                if session.exited:
+                    continue
+                session.exited = True
+                session.exited_at = time.time()
+                if fate == "reused":
+                    # The number belongs to a stranger: no exit status was ever
+                    # collected for OUR process — close silently, never signal.
+                    session.termination_source = "pid_reused"
+                    reused = True
+                else:
+                    session.completion_reason = "lost"
+                    session.termination_source = "recovery_unobserved"
+                    reused = False
+            if reused:
+                with self._lock:
+                    self._running.pop(session.id, None)
+                    self._finished[session.id] = session
+                self._write_checkpoint()
+                session._completion_event.set()
+                logger.info(
+                    "Detached session %s closed: pid %s was recycled onto another process",
+                    session.id, session.pid)
+                continue
+            # Gone: a notify session's exit was never observed — publish it.
+            if session.notify_on_complete and not self._receipt_exists(session.id):
+                self._publish_lost_session(session)
+            with self._lock:
+                self._running.pop(session.id, None)
+                if session.systemd_unit:
+                    self._finished[session.id] = session
+            self._write_checkpoint()
+            session._completion_event.set()
+
+    @staticmethod
+    def _receipt_exists(session_id: str) -> bool:
+        from hermes_constants import get_hermes_home
+        receipt = get_hermes_home() / "logs" / "process-results" / f"{session_id}.json"
+        return receipt.exists()
+
+    def _publish_lost_session(self, session: ProcessSession) -> None:
+        """Receipt + queued ``reason="lost"`` completion for an unobserved exit."""
+        from tools.process_registry_results import save_completed_result
+
+        try:
+            save_completed_result(session)
+        except Exception:
+            logger.warning("Lost-exit receipt for %s failed", session.id, exc_info=True)
+        notification = {
+            "type": "completion",
+            "session_id": session.id,
+            "session_key": session.session_key,
+            "task_id": session.task_id,
+            "owner_task_id": session.owner_task_id,
+            "command": session.command,
+            "exit_code": None,
+            "completion_reason": "lost",
+            "termination_source": "recovery_unobserved",
+            "started_at": session.started_at,
+            "exited_at": session.exited_at or time.time(),
+        }
+        logger.warning(
+            "Process %s (pid %s) exited while unobserved (no reader survived the owning "
+            "process); publishing a lost completion wake", session.id, session.pid)
+        self.completion_queue.put(notification)
 
     def _emit_heartbeat(self, session: ProcessSession, now: float) -> None:
         """Queue a heartbeat carrying the output since the last one. A tick with nothing new is
@@ -2577,7 +2676,8 @@ PROCESS_SCHEMA = {
     # (write-vs-submit is the one real trap: a lone \n on a Windows PTY is not Enter).
     # See #95681.
     "description": (
-        "Poll, wait on, send input to, or kill terminal(background=true) processes. "
+        "Poll, wait on, or kill background terminal processes (from "
+        "terminal(background=true)). "
         "Completed results remain retrievable by session_id when resuming their owning conversation "
         "(up to 7 days, newest 64 results per profile; rolling output tail). "
         "poll: status + new output. log: full output, paged. wait: block "

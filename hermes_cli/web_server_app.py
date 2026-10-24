@@ -12,6 +12,31 @@ from hermes_cli.pty_session import run_reaper
 logger = logging.getLogger("hermes_cli.web_server")
 
 
+def _recover_serve_process_checkpoint() -> int:
+    """Recover checkpointed background processes for a standalone (serve/Desktop)
+    backend, mirroring ``gateway run`` startup recovery.
+
+    Without this, a backend restart orphaned every checkpointed child: alive
+    children lost their exit observer (a serve backend starts no process
+    watcher loop) and dead ``notify_on_complete`` children were pruned with no
+    receipt and no wake — the owning session never learned its process finished.
+    Best-effort by design: a failed recovery logs and lets the backend boot.
+    """
+    recovered = 0
+    try:
+        from tools.process_registry import process_registry
+        recovered = process_registry.recover_from_checkpoint()
+        # Recovered-alive children need an exit observer in a process that runs
+        # no gateway watcher loop: arm the detached sweeper (no-op when armed).
+        if recovered:
+            process_registry._ensure_detached_sweeper()
+        if recovered:
+            logger.info("Recovered %s background process(es) from previous backend run", recovered)
+    except Exception:
+        logger.warning("Process checkpoint recovery failed during backend startup", exc_info=True)
+    return recovered
+
+
 def _unlink_pty_markers(app: FastAPI) -> None:
     """Second pass after ``PTY_REGISTRY.close_all()``: drop channel markers left in app state,
     including stale paths from sessions reaped earlier (``PtySession.close()`` only removes
@@ -57,6 +82,16 @@ async def standalone_lifespan(app: "FastAPI"):
         name="statedb-eager-reconcile",
     )
     eager_reconcile_thread.start()
+
+    # Crash/respawn recovery of checkpointed background processes (the gateway
+    # does this at startup; a standalone backend never did, so a backend restart
+    # silently orphaned every notify-on-complete child). Best-effort, off-thread:
+    # recovery probes PIDs and can touch a contended checkpoint lock.
+    threading.Thread(
+        target=_recover_serve_process_checkpoint,
+        name="serve-process-recovery",
+        daemon=True,
+    ).start()
 
     # Import hermes_cli.gateway *before* the yield: on Windows + 3.11 the
     # import holds the GIL, so run_in_executor still froze the loop 15-22s and

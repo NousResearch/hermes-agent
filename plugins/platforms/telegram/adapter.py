@@ -4088,6 +4088,16 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             return False
         return (chat_type or "").lower() in {"dm", "private"}
 
+    def draft_activity_interval(
+        self, chat_type: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
+    ) -> float:
+        # Empty drafts keep an in-topic Thinking placeholder alive before visible text.
+        if (self.supports_draft_streaming(chat_type=chat_type, metadata=metadata)
+                and self._dm_topic_fallback(metadata)
+                and self._message_thread_id_for_send(self._metadata_thread_id(metadata)) is not None):
+            return 20.0
+        return 0.0
+
     async def send_draft(self, chat_id: str, draft_id: int, content: str, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Stream a partial message via ``sendRichMessageDraft`` (when rich is enabled and supported) else
         ``sendMessageDraft``; reusing ``draft_id`` animates the preview. The caller sends the final text."""

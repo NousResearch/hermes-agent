@@ -100,3 +100,37 @@ class TestXaiNoForcedEnglish:
 
         assert result["success"] is True
         assert captured["data"]["language"] == "he"
+
+
+class TestExplicitlyEmptyLanguage:
+    """``language: ""`` on a provider section means auto-detect, not "fall through" (#120100).
+
+    The global ``stt.language`` defaults to "en"; before this, an operator who set
+    ``stt.local.language: ""`` to opt back into Whisper auto-detection still got "en" pinned,
+    because the empty string was skipped like an unset key.
+    """
+
+    def test_empty_provider_language_suppresses_global_default(self):
+        cfg = {"language": "en", "local": {"language": ""}}
+        assert _resolve_stt_language("local", cfg) is None
+
+    def test_whitespace_only_provider_language_is_auto_detect(self):
+        cfg = {"language": "en", "local": {"language": "   "}}
+        assert _resolve_stt_language("local", cfg) is None
+
+    def test_empty_alias_key_suppresses_global_default(self):
+        cfg = {"language": "en", "local": {"language_code": ""}}
+        assert _resolve_stt_language("local", cfg, extra_keys=("language_code",)) is None
+
+    def test_absent_provider_language_still_falls_back_to_global(self):
+        cfg = {"language": "en", "local": {}}
+        assert _resolve_stt_language("local", cfg) == "en"
+
+    def test_explicit_null_provider_language_falls_back_to_global(self):
+        cfg = {"language": "en", "local": {"language": None}}
+        assert _resolve_stt_language("local", cfg) == "en"
+
+    def test_empty_provider_language_suppresses_env_default(self, monkeypatch):
+        monkeypatch.setenv("HERMES_LOCAL_STT_LANGUAGE", "de")
+        cfg = {"local": {"language": ""}}
+        assert _resolve_stt_language("local", cfg) is None

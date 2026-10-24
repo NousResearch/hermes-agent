@@ -59,16 +59,22 @@ BINARY_PACKAGES = {
                "xauth": "xorg-xauth", "xdpyinfo": "xorg-xdpyinfo", "setxkbmap": "xorg-setxkbmap", "xprop": "xorg-xprop"},
 }
 
+# The install list itself. `at-spi2-core` ships none of REQUIRED_BINARIES but is not optional: its
+# `/usr/libexec/at-spi-bus-launcher` is what owns `org.a11y.Bus`, and cua-driver's accessibility tree
+# needs that bus. Without it `hermes computer-use doctor` reports `ax_capability: ❌` and
+# `get_window_state` returns empty trees, while X11 screen capture and input injection keep working —
+# which is why it is deliberately not a REQUIRED_BINARY: a screen that is merely degraded must not be
+# reported as "packages missing".
 PACKAGES = {
     "apt": ["tigervnc-standalone-server", "xfce4-panel", "xfwm4", "xfdesktop4", "xfce4-settings",
             "xfce4-terminal", "dbus-x11", "x11-xserver-utils", "x11-utils", "x11-xkb-utils", "xauth",
-            "fonts-dejavu-core"],
+            "fonts-dejavu-core", "at-spi2-core"],
     "dnf": ["tigervnc-x11-server", "xfce4-panel", "xfwm4", "xfdesktop", "xfce4-settings",
             "xfce4-terminal", "dbus-daemon", "xsetroot", "xset", "xdpyinfo", "xprop", "xorg-x11-xauth", "setxkbmap",
-            "dejavu-sans-fonts"],
+            "dejavu-sans-fonts", "at-spi2-core"],
     "pacman": ["tigervnc", "xfce4-panel", "xfwm4", "xfdesktop", "xfce4-settings", "xfce4-terminal", "dbus",
                "xorg-xsetroot", "xorg-xset", "xorg-xdpyinfo", "xorg-xprop", "xorg-xauth", "xorg-setxkbmap",
-               "ttf-dejavu"],
+               "ttf-dejavu", "at-spi2-core"],
 }
 
 

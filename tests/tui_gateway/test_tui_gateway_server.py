@@ -313,8 +313,8 @@ def test_compute_host_explicit_images_do_not_clear_later_attachment(monkeypatch)
             session["attached_images"].append("/tmp/c.png")
 
     session = _session(attached_images=[])
+    monkeypatch.setitem(server._sessions, "sid", session)
     monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: _Supervisor())
-
     response = server._submit_prompt_to_compute_host(
         "r1", "sid", session, "B", image_paths=["/tmp/b.png"]
     )

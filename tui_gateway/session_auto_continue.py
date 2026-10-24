@@ -236,7 +236,7 @@ def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
     def interrupt() -> None:
         try:
             with contextlib.suppress(Exception):
-                agent.interrupt() if use_agent else _get_compute_host_supervisor().interrupt(sid)
+                agent.interrupt() if use_agent else _compute_host_supervisor_for_session(sid, session).interrupt(sid)
         finally:
             with session["history_lock"]:
                 session["_busy_interrupt_pending"] = False

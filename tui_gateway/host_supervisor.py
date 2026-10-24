@@ -173,6 +173,8 @@ class HostSupervisor:
         # The host emits its control.ack whenever it finishes; without this the ack matched no queue and was
         # silently dropped. See #97948.
         self._late_control_handlers: dict[str, tuple[float, Callable[[dict], None]]] = {}
+        self._active_callbacks = 0
+        self._on_callbacks_idle: Callable[[], None] | None = None
         self._stderr_tail: list[str] = []
         self._last_progress_counter = 0
         if autostart:
@@ -244,11 +246,17 @@ class HostSupervisor:
         try:
             self._send_frame(payload)
         except Exception as exc:
+            callback = None
             with self._lock:
-                self._pending_turns.pop(request_id, None)
-            if on_complete is not None:
-                on_complete({"type": "turn.error", "sid": sid, "request_id": request_id,
-                             "reason": "send_failed", "message": str(exc)})
+                pending = self._pending_turns.pop(request_id, None)
+                if pending is not None and pending[1] is not None:
+                    callback = pending[1]
+                    self._active_callbacks += 1
+            if callback is not None:
+                callback_frame = {"type": "turn.error", "sid": sid, "request_id": request_id,
+                                  "reason": "send_failed", "message": str(exc)}
+                self._invoke_callback(callback, callback_frame, "compute host send-failure callback failed",
+                                      reserved=True)
             raise
         return request_id
 
@@ -256,6 +264,21 @@ class HostSupervisor:
         self.start()
         self._send_frame(
             {"type": "interrupt", "sid": sid, "request_id": request_id or uuid.uuid4().hex})
+
+    def interrupt_if_running(self, sid: str, *, request_id: str | None = None) -> bool:
+        """Send an interrupt only to the currently-owned child; never start or respawn one."""
+        with self._lock:
+            proc = self._proc
+            if self._closing or proc is None or proc.poll() is not None or proc.stdin is None:
+                return False
+            try:
+                proc.stdin.write(json.dumps(
+                    {"type": "interrupt", "sid": sid, "request_id": request_id or uuid.uuid4().hex},
+                    separators=(",", ":"), ensure_ascii=False) + "\n")
+                proc.stdin.flush()
+            except (OSError, ValueError):
+                return False
+            return True
 
     def has_pending_turn(self, sid: str) -> bool:
         """True when a host completion callback is still registered for ``sid``.
@@ -268,17 +291,62 @@ class HostSupervisor:
         with self._lock:
             return any(s == sid for s, _cb in self._pending_turns.values())
 
-    def _await_reply(self, frame: dict[str, Any], request_id: str, timeout: float) -> dict:
-        """Send ``frame`` and block for the host reply carrying ``request_id``."""
+    def has_pending_work(self) -> bool:
+        """Whether this target still owns a turn, control, callback, or late ACK."""
+        with self._lock:
+            return bool(self._pending_turns or self._pending_controls
+                        or self._late_control_handlers or self._active_callbacks)
+
+    def _invoke_callback(
+        self, callback: Callable[[dict], None], frame: dict[str, Any], failure: str, *, reserved: bool = False
+    ) -> None:
+        if not reserved:
+            with self._lock:
+                self._active_callbacks += 1
+        try:
+            _call_logged(callback, frame, failure)
+        finally:
+            on_callbacks_idle = None
+            with self._lock:
+                self._active_callbacks = max(0, self._active_callbacks - 1)
+                if (self._active_callbacks == 0 and not self._pending_turns
+                        and not self._pending_controls and not self._late_control_handlers):
+                    on_callbacks_idle = self._on_callbacks_idle
+            if on_callbacks_idle is not None:
+                on_callbacks_idle()
+
+    def _await_reply(
+        self, frame: dict[str, Any], request_id: str, timeout: float,
+        *, on_timeout: Callable[[dict], None] | None = None,
+    ) -> dict:
+        """Send ``frame`` and atomically retain a late handler when the waiter expires."""
         q: queue.Queue[dict] = queue.Queue(maxsize=1)
         with self._lock:
             self._pending_controls[request_id] = q
         try:
             self._send_frame(frame)
             return q.get(timeout=timeout)
+        except queue.Empty:
+            with self._lock:
+                # A reply may have arrived between the timed get and this lock.  Consume it
+                # before transferring custody to the late handler, preserving exactly one owner.
+                current = self._pending_controls.get(request_id)
+                if current is q:
+                    try:
+                        reply = q.get_nowait()
+                    except queue.Empty:
+                        self._pending_controls.pop(request_id, None)
+                        if on_timeout is not None:
+                            self._register_late_control_handler_locked(request_id, on_timeout)
+                        raise
+                    else:
+                        self._pending_controls.pop(request_id, None)
+                        return reply
+            raise
         finally:
             with self._lock:
-                self._pending_controls.pop(request_id, None)
+                if self._pending_controls.get(request_id) is q:
+                    self._pending_controls.pop(request_id, None)
 
     def respond(self, sid: str, params: dict[str, Any], *, timeout: float = 15.0) -> dict:
         """Deliver an interactive prompt response to the host that owns it."""
@@ -309,39 +377,47 @@ class HostSupervisor:
         if not wait:
             self._send_frame(frame)
             return {"status": "sent", "request_id": request_id}
-        try:
-            return self._await_reply(frame, request_id, timeout)
-        except queue.Empty:
-            if on_late_ack is not None:
-                self._register_late_control_handler(request_id, on_late_ack)
-            raise
+        return self._await_reply(frame, request_id, timeout, on_timeout=on_late_ack)
 
     def _register_late_control_handler(self, request_id: str, handler: Callable[[dict], None]) -> None:
-        now = time.monotonic()
         with self._lock:
-            handlers = self._late_control_handlers
-            for rid in [r for r, (at, _cb) in handlers.items() if now - at > _LATE_CONTROL_TTL_SECS]:
-                handlers.pop(rid, None)
-            while len(handlers) >= _LATE_CONTROL_MAX:
-                handlers.pop(min(handlers, key=lambda rid: handlers[rid][0]), None)
-            handlers[request_id] = (now, handler)
+            self._register_late_control_handler_locked(request_id, handler)
+
+    def _register_late_control_handler_locked(
+        self, request_id: str, handler: Callable[[dict], None]
+    ) -> None:
+        now = time.monotonic()
+        handlers = self._late_control_handlers
+        for rid in [r for r, (at, _cb) in handlers.items() if now - at > _LATE_CONTROL_TTL_SECS]:
+            handlers.pop(rid, None)
+        while len(handlers) >= _LATE_CONTROL_MAX:
+            handlers.pop(min(handlers, key=lambda rid: handlers[rid][0]), None)
+        handlers[request_id] = (now, handler)
 
     def _deliver_control_frame(self, request_id: str, frame: dict[str, Any]) -> None:
+        callback = None
         with self._lock:
             q = self._pending_controls.get(request_id)
             late = None if q is not None else self._late_control_handlers.pop(request_id, None)
+            if late is not None:
+                callback = late[1]
+                self._active_callbacks += 1
         if q is not None:
             with contextlib.suppress(queue.Full):
                 q.put_nowait(frame)
-        elif late is not None:
-            _call_logged(late[1], frame, f"compute host late control ack handler failed (request_id={request_id})")
+        elif callback is not None:
+            self._invoke_callback(
+                callback, frame,
+                f"compute host late control ack handler failed (request_id={request_id})", reserved=True)
 
     def _spawn_locked(self, *, reason: str) -> None:
         if self._stopped_respawning:
             raise RuntimeError("compute host respawn disabled after crash loop")
         self._hello_event.clear()
         self._hello = {}
-        env = {**hermes_subprocess_env(inherit_credentials=True), **os.environ, **(self.env or {})}
+        # A target-scoped env is authoritative. Merging raw os.environ after it would reintroduce
+        # the launch profile's HERMES_HOME and credentials into a routed child.
+        env = dict(self.env) if self.env is not None else hermes_subprocess_env(inherit_credentials=True)
         env["HERMES_COMPUTE_HOST_HEARTBEAT_SECS"] = str(self.heartbeat_secs)
         root = str(_repo_root())
         env.setdefault("PYTHONPATH", root)
@@ -433,10 +509,14 @@ class HostSupervisor:
             if isinstance(frame.get("message"), dict):
                 self.rpc_sink(frame["message"])
         elif ftype in ("turn.end", "turn.error"):
+            callback = None
             with self._lock:
                 pending = self._pending_turns.pop(request_id, None)
-            if pending is not None and pending[1] is not None:
-                _call_logged(pending[1], frame, "compute host turn completion callback failed")
+                if pending is not None and pending[1] is not None:
+                    callback = pending[1]
+                    self._active_callbacks += 1
+            if callback is not None:
+                self._invoke_callback(callback, frame, "compute host turn completion callback failed", reserved=True)
 
     def _wait_for_exit(self, proc: subprocess.Popen[str]) -> None:
         code = proc.wait()
@@ -454,21 +534,33 @@ class HostSupervisor:
         with self._lock:
             pending = self._pending_turns
             self._pending_turns = {}
+            pending_items = []
+            for request_id, (sid, callback) in pending.items():
+                if callback is not None:
+                    self._active_callbacks += 1
+                pending_items.append((request_id, sid, callback))
         failure = {"reason": reason, "message": message}
-        for request_id, (sid, cb) in pending.items():
-            self.rpc_sink({"jsonrpc": "2.0", "method": "event",
-                           "params": {"type": "error", "session_id": sid, "payload": dict(failure)}})
-            if cb is not None:
+        for request_id, sid, callback in pending_items:
+            _call_logged(
+                self.rpc_sink,
+                {"jsonrpc": "2.0", "method": "event",
+                 "params": {"type": "error", "session_id": sid, "payload": dict(failure)}},
+                "compute host failure event relay failed")
+            if callback is not None:
                 frame = {"type": "turn.error", "sid": sid, "request_id": request_id, **failure}
-                _call_logged(cb, frame, "compute host error callback failed")
+                self._invoke_callback(callback, frame, "compute host error callback failed", reserved=True)
         # A crashed host never emits the late acks timed-out control waiters still expect; fail
         # them too so the client's "still running" notice can't hang.
         with self._lock:
             late = self._late_control_handlers
             self._late_control_handlers = {}
-        for request_id, (_registered_at, handler) in late.items():
+            late_callbacks = []
+            for request_id, (_registered_at, handler) in late.items():
+                self._active_callbacks += 1
+                late_callbacks.append((request_id, handler))
+        for request_id, handler in late_callbacks:
             frame = {"type": "control.error", "request_id": request_id, **failure}
-            _call_logged(handler, frame, "compute host late control error handler failed")
+            self._invoke_callback(handler, frame, "compute host late control error handler failed", reserved=True)
 
     def _maybe_respawn_after_crash(self) -> None:
         now = time.monotonic()

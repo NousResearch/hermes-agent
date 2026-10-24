@@ -124,15 +124,17 @@ def test_host_crash_fails_outstanding_late_ack_handlers():
 
 
 @pytest.fixture
-def compute_host_gateway(monkeypatch):
+def compute_host_gateway(monkeypatch, tmp_path):
     sup, sent = _supervisor()
     emitted: list = []
-    monkeypatch.setattr(server, "_compute_host_supervisor", sup)
     monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: emitted.append((event, sid, payload)))
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda _s, cfg=None: True)
     monkeypatch.setattr(server, "_compute_host_compress_wait_seconds", lambda cfg=None: 0.05)
     monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {"model": "mirrored"})
-    session = _session()
+    home = tmp_path / "profile"
+    home.mkdir()
+    monkeypatch.setattr(server, "_compute_host_supervisors", {str(home.resolve()): sup})
+    session = _session(profile_home=str(home))
     server._sessions["sid"] = session
     try:
         yield sup, sent, emitted, session

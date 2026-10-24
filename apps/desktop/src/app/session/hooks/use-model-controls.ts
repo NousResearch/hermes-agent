@@ -364,13 +364,24 @@ export function useModelControls({
           ...(confirmExpensiveModel ? { confirm_expensive_model: true } : {})
         })
 
-      const finishSwitch = (result: ModelSwitchResponse | undefined) => {
+      const finishSwitch = (result: ModelSwitchResponse | undefined, token: number) => {
         // A pick made DURING a turn is queued by the gateway and applied at the
         // next turn start (`deferred`). Re-fetching now would answer with the
         // model still running and repaint the old name over the user's choice —
         // the switch publishes session.info when it lands, and that is what
         // re-syncs every surface.
         if (!result?.deferred) {
+          if (touchesPrimary && $activeSessionId.get() === liveSessionId && !isPickSuperseded(liveSessionId, token)) {
+            // The accepted route must reach SessionView before the menu applies
+            // its preset. Preserve the wire stamp if session.info already
+            // reported this route; later info remains authoritative.
+            sessionTileDelegate()?.updateSession(liveSessionId, state =>
+              state.model === selection.model && state.provider === selection.provider
+                ? state
+                : { ...state, model: selection.model, provider: selection.provider, reasoningEffortWire: '' }
+            )
+          }
+
           void queryClient.invalidateQueries({
             queryKey: modelOptionsQueryKey(liveGatewayProfile, liveSessionId, cacheOwnerConnectionId)
           })
@@ -430,10 +441,9 @@ export function useModelControls({
             requestConfirmed: () => requestSwitch(true),
             finish: result => {
               if (retryToken !== null) {
+                finishSwitch(result, retryToken)
                 settleModelPick(liveSessionId, retryToken, true)
               }
-
-              finishSwitch(result)
             },
             rollback: () => {
               const repaint = retryToken === null ? restored : settleModelPick(liveSessionId, retryToken, false)
@@ -447,8 +457,8 @@ export function useModelControls({
           return false
         }
 
+        finishSwitch(result, pickToken)
         settleModelPick(liveSessionId, pickToken, true)
-        finishSwitch(result)
 
         return true
       } catch (err) {

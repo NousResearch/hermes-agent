@@ -555,7 +555,7 @@ class MemoryStore:
         if target_error := _memory_target_error(self, target, operations):
             return target_error
         if not operations:
-            return _error("operations list is empty.", "invalid_args")
+            return self._batch_failure(target, "operations list is empty.", "invalid_args")
         ops = [op or {} for op in operations]
         # Scan every add/replace content BEFORE touching disk -- one poisoned op rejects the batch.
         for i, op in enumerate(ops):

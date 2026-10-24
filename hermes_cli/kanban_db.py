@@ -2604,7 +2604,7 @@ class EmptyCompletionError(ValueError):
 
 
 class ArtifactPreservationError(RuntimeError):
-    """Raised when a declared scratch deliverable cannot be preserved."""
+    """Raised when a declared completion deliverable cannot be preserved."""
 
 
 class LiveClaimError(ValueError):
@@ -2666,9 +2666,11 @@ def complete_task(
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
     _gate_empty_completion(conn, task_id, result=result, summary=summary)
+    from hermes_cli.kanban_db_artifacts import _merge_completion_prose_artifacts, _scope_completion_artifacts
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
     )
+    metadata = _scope_completion_artifacts(conn, task_id, metadata)
     handoff_summary = summary if summary is not None else result
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
@@ -2814,7 +2816,8 @@ def _stage_completion_artifacts(
     """Copy scratch artifacts to the attachments dir and record each as an
     attachment row; returns the copies so the caller can discard them if its
     transaction rolls back."""
-    _persist_scratch_completion_artifacts(conn, task_id, metadata)
+    from hermes_cli.kanban_db_artifacts import _persist_completion_artifacts
+    _persist_completion_artifacts(conn, task_id, metadata)
     staged = [Path(stored_path) for stored_path in metadata.pop("_staged_artifacts", [])]
     for path in staged:
         _insert_completion_attachment(
@@ -2878,121 +2881,8 @@ def _flag_phantom_prose_refs(
             )
 
 
-def _merge_completion_prose_artifacts(
-    conn: sqlite3.Connection, task_id: str, metadata: Optional[dict], *, summary: Optional[str],
-    result: Optional[str],
-) -> Optional[dict]:
-    """Legacy workers named deliverables only by absolute path in prose; add
-    those that exist under the scratch workspace to ``metadata["artifacts"]``
-    before cleanup can erase them."""
-    workspace = _scratch_workspace(conn, task_id)
-    if workspace is None:
-        return metadata
-    if not _is_managed_scratch_path(workspace):
-        return metadata
-    text = "\n".join(part for part in (summary, result) if part)
-    if not text:
-        return metadata
-    prefix = re.escape(str(workspace))
-    discovered: list[str] = []
-    for match in re.finditer(prefix + r"(?:[/\\][^\s`\"'<>]+)", text):
-        raw = match.group(0).rstrip(".,;:!?)]}")
-        candidate = Path(raw)
-        if candidate.is_file():
-            discovered.append(str(candidate))
-    if not discovered:
-        return metadata
-    updated = dict(metadata) if isinstance(metadata, dict) else {}
-    existing = updated.get("artifacts")
-    merged = list(existing) if isinstance(existing, (list, tuple)) else []
-    seen = {str(path) for path in merged}
-    for path in discovered:
-        if path not in seen:
-            merged.append(path)
-            seen.add(path)
-    updated["artifacts"] = merged
-    return updated
 
 
-def _persist_scratch_completion_artifacts(
-    conn: sqlite3.Connection, task_id: str, metadata: dict,
-) -> None:
-    """Copy scratch-workspace completion artifacts before cleanup removes them."""
-    raw_artifacts = metadata.get("artifacts")
-    if not isinstance(raw_artifacts, (list, tuple)):
-        return
-
-    workspace = _scratch_workspace(conn, task_id)
-    if workspace is None:
-        return
-    is_managed, board = _managed_scratch_path_info(workspace)
-    if not is_managed:
-        return
-
-    try:
-        workspace_root = workspace.resolve()
-    except OSError:
-        return
-
-    attachment_dir = task_attachments_dir(task_id, board=board)
-    persisted: list[str] = []
-    used_destinations: set[Path] = set()
-    changed = False
-
-    def _discard_copies() -> None:
-        _discard_staged_copies(used_destinations, attachment_dir)
-
-    for item in raw_artifacts:
-        artifact = str(item).strip() if isinstance(item, str) else ""
-        if not artifact:
-            continue
-        src = Path(artifact).expanduser()
-        try:
-            resolved_src = src.resolve()
-        except OSError:
-            persisted.append(artifact)
-            continue
-
-        if not resolved_src.is_relative_to(workspace_root):
-            persisted.append(artifact)
-            continue
-
-        problem = None
-        if not src.is_file():
-            problem = f"declared scratch artifact is unavailable or not a regular file: {artifact}"
-        elif resolved_src.stat().st_size > KANBAN_ATTACHMENT_MAX_BYTES:
-            problem = (
-                f"declared scratch artifact exceeds the "
-                f"{KANBAN_ATTACHMENT_MAX_BYTES}-byte limit: {artifact}"
-            )
-        if problem:
-            _discard_copies()
-            raise ArtifactPreservationError(problem)
-
-        dest: Optional[Path] = None
-        try:
-            attachment_dir.mkdir(parents=True, exist_ok=True)
-            dest = _unique_attachment_path(attachment_dir, resolved_src.name, used_destinations)
-            _copy_capped(resolved_src, dest, artifact)
-        except Exception as exc:
-            if dest is not None:
-                with contextlib.suppress(OSError):
-                    dest.unlink(missing_ok=True)
-            _discard_copies()
-            if isinstance(exc, ArtifactPreservationError):
-                raise
-            raise ArtifactPreservationError(
-                f"could not preserve declared scratch artifact {artifact}: {exc}"
-            ) from exc
-        used_destinations.add(dest)
-        persisted.append(str(dest.resolve()))
-        changed = True
-
-    if changed:
-        metadata["artifacts"] = persisted
-        metadata["_staged_artifacts"] = [
-            path for path in persisted if path.startswith(str(attachment_dir.resolve()))
-        ]
 
 
 def _discard_staged_copies(copies: Iterable[Path], attachment_dir: Path) -> None:
@@ -3032,16 +2922,6 @@ def _insert_completion_attachment(
     _append_event(conn, task_id, "attached", {"filename": filename, "size": size, "by": uploaded_by})
 
 
-def _unique_attachment_path(directory: Path, filename: str, used: set[Path]) -> Path:
-    """Return a non-conflicting path under ``directory`` for ``filename``."""
-    safe_name = Path(filename).name or "artifact"
-    stem, suffix = Path(safe_name).stem or "artifact", Path(safe_name).suffix
-    candidate = directory / safe_name
-    idx = 1
-    while candidate in used or candidate.exists():
-        candidate = directory / f"{stem}_{idx}{suffix}"
-        idx += 1
-    return candidate
 
 
 def edit_task(
@@ -3290,7 +3170,9 @@ def request_review(
     # Declared (metadata["artifacts"]) and prose-referenced files
     # must be durable BEFORE anything can clean the scratch workspace up: for a
     # review-bound card the reviewer's completion is the cleanup trigger.
+    from hermes_cli.kanban_db_artifacts import _merge_completion_prose_artifacts, _scope_completion_artifacts
     metadata = _merge_completion_prose_artifacts(conn, task_id, metadata, summary=summary, result=None)
+    metadata = _scope_completion_artifacts(conn, task_id, metadata)
     now = int(time.time())
     # Staged copies live outside the txn: a rollback after staging must not
     # leave orphans that make the retry stage ``name_1.ext`` beside them.

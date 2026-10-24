@@ -42,6 +42,18 @@ def current_execution():
     return _execution.get()
 
 
+def finish_pre_agent_run(owner_execution, result):
+    """Close an admitted fire that never constructed an agent, retaining its retry receipt.
+
+    This runs on the cron worker thread and borrows the owner's store without closing it.
+    Agent-backed runs keep their existing compression-aware finalization.
+    """
+    if owner_execution is not None:
+        authority, session_id, _, _ = owner_execution
+        authority.db.end_session(session_id, 'cron_skipped' if result[0] else 'cron_preflight_failed')
+    return result
+
+
 def bind_execution(authority, session_id, job_id, execution_id):
     """Bind this context's cron admission ``(authority, session_id, job_id, execution_id)``, the
     layout ``current_execution()`` readers index; returns the ``ContextVar`` reset token."""

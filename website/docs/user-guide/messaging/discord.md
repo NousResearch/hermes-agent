@@ -469,6 +469,17 @@ When enabled, every `@mention` in a regular text channel automatically creates a
 
 Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.no_thread_channels`, and channels listed in `discord.free_response_channels` unless [`discord.free_response_auto_thread`](#discordfree_response_auto_thread) is `true`, also bypass auto-threading and get inline replies instead.
 
+#### `discord.prompt_header_in_content`
+
+**Type:** boolean — **Default:** `true`
+
+Whether interactive prompt messages (such as clarification buttons, exec command approvals, and slash confirmations) repeat the prompt title header in plain text message content alongside the embed. Defaults to `true` for maximum compatibility on clients where embeds do not render. Set to `false` (or set `DISCORD_PROMPT_HEADER_IN_CONTENT=false`) to avoid duplicate titles when cards and embeds are displayed.
+
+```yaml
+discord:
+  prompt_header_in_content: false
+```
+
 #### `discord.reactions`
 
 **Type:** boolean — **Default:** `true`

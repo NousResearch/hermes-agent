@@ -197,9 +197,16 @@ def mcp_call(url: str, tool: str, arguments: dict[str, Any], timeout: int = _TIM
     payload = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": arguments}}
     headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream", "User-Agent": "hermes-agent"}
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=timeout)
+        response = requests.post(url, json=payload, headers=headers, timeout=timeout, allow_redirects=url != EXA_MCP_URL)
     except requests.RequestException as exc:
         raise KeylessMCPError(f"request failed: {exc}") from exc
+    if url == EXA_MCP_URL and 300 <= response.status_code < 400:
+        raise KeylessMCPError(f"HTTP {response.status_code}: Exa MCP redirects are not followed")
+    if response.status_code == 429 and url == EXA_MCP_URL:
+        from plugins.web.exa.fallback import retry_after_429
+        retried = retry_after_429(payload, timeout)
+        if retried is not None:
+            return retried
     if response.status_code >= 400:
         raise KeylessMCPError(f"HTTP {response.status_code}: {_response_text(response)[:300]}")
     return _parse_mcp_body(_response_text(response))
@@ -270,7 +277,8 @@ def _parse_exa_search_text(text: str, limit: int) -> list[dict[str, Any]]:
 
 
 def exa_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
-    return _search("exa", lambda: _parse_exa_search_text(mcp_call(EXA_MCP_URL, "web_search_exa", {"query": query, "numResults": max(1, int(limit))}), limit))
+    arguments = {"query": query, "objective": query, "numResults": max(1, int(limit))}
+    return _search("exa", lambda: _parse_exa_search_text(mcp_call(EXA_MCP_URL, "web_search_exa", arguments), limit))
 
 
 def exa_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:

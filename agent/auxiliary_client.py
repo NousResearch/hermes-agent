@@ -6237,6 +6237,16 @@ def _resolve_task_provider_model(
         return cfg_provider, resolved_model, cfg_base_url, None, resolved_api_mode
     if cfg_provider and cfg_provider != "auto":
         return cfg_provider, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
+    if cfg_base_url and str(cfg_provider or "").strip().lower() in ("", "auto"):
+        # A task block configured with base_url but no provider identity is a bare custom
+        # endpoint: this function's docstring ("A bare base_url means custom") and the
+        # aux-block schema ("base_url overrides provider", hermes_cli/config_defaults.py)
+        # both promise it. Before this branch such blocks fell through to "auto", silently
+        # dropping the configured endpoint while keeping the pinned model name, so the
+        # pinned model rode the LIVE session's provider instead: a local
+        # auxiliary.compression pin (model + base_url, no provider) billed the summary to
+        # the aggregator the chat session happened to use.
+        return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
     return "auto", resolved_model, None, None, resolved_api_mode
 
 

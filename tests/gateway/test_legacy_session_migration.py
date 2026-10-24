@@ -318,3 +318,67 @@ async def test_native_host_adopts_row_stamped_by_a_served_login(tmp_path, monkey
             for overlay in list(_registry._scoped_providers.values()):
                 overlay.pop('basic', None)
         assert get_provider('basic', scope=str(tmp_path)) is None
+
+
+@pytest.mark.asyncio
+async def test_native_host_can_delete_a_served_login_row_after_adoption(tmp_path, monkeypatch):
+    """#139818 acceptance matrix cell 1 (delete leg): before adoption a bare ``basic:<user>`` row
+    is refused by ``authorize_history`` with ``permission_denied`` (the host could not even clean
+    the ghost row up); after the host native viewer's adoption commits, the row is native-owned and
+    canonical-routed, so the same viewer's ``session.mutate delete`` retires it — no 403."""
+    import secrets
+
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_controls import AuthorityConnection
+    from hermes_cli.dashboard_auth.registry import register_provider, get_provider
+    from hermes_state_mutation_binding import authorize_history
+    import plugins.dashboard_auth.basic as basic_plugin
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'gui': []}})
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    db = store._db
+    db.create_session('served-row', source='desktop', model='old-model',
+                      cwd=str(tmp_path), user_id='basic:hermes')
+    db.append_message('served-row', role='user', content='HELLO')
+    db.end_session('served-row', 'session_switch')
+
+    provider = basic_plugin.BasicAuthProvider(
+        username='hermes', password_hash=basic_plugin.hash_password('pw'),
+        secret=secrets.token_bytes(32))
+    register_provider(provider, scope=str(tmp_path))
+    try:
+        runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
+                                 _cached_agent_for=lambda route: None)
+        runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+        authority = await initialize_session_authority(runner, profile_id=str(tmp_path),
+                                                       instance_id='first')
+        native = AuthorityConnection(authority, object(), {'provider': 'local', 'user_id': 'native',
+            'profile_id': str(tmp_path), 'instance_id': 'first'})
+
+        # Pre-adoption: the foreign-login stamp refuses the host viewer's delete at the authorizer.
+        with db._read_ctx() as conn:
+            with pytest.raises(Exception, match='permission_denied'):
+                authorize_history(conn, native.actor, 'served-row', claim=True)
+
+        adopted = await native.dispatch({'id': 1, 'method': 'session.resume',
+                                         'params': {'session_id': 'served-row'}})
+        assert adopted.get('result', {}).get('session_id') == 'served-row', adopted
+
+        deleted = await native.dispatch({'id': 2, 'method': 'session.mutate', 'params': {
+            'session_id': 'served-row', 'request_id': 'delete-served-row',
+            'expected_revision': 0, 'expected_generation': 0,
+            'operation': 'delete', 'payload': {}}})
+        assert 'error' not in deleted, deleted
+        assert deleted['result'].get('deleted_ids') == ['served-row'], deleted
+        assert db.get_session('served-row') is None
+    finally:
+        from hermes_cli.dashboard_auth import registry as _registry
+        with _registry._lock:
+            _registry._providers.pop('basic', None)
+            for overlay in list(_registry._scoped_providers.values()):
+                overlay.pop('basic', None)
+        assert get_provider('basic', scope=str(tmp_path)) is None

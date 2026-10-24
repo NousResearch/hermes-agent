@@ -295,8 +295,18 @@ def build_fill_js(fills: list[dict[str, Any]], expected_origin: str, nonce: str 
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
     )
-    return (_FILL_JS_TEMPLATE.replace("__EXPECTED_ORIGIN__", json.dumps(expected_origin))
-            .replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce)))
+    # Placeholder substitution must be a single pass over the template: a chained str.replace
+    # rescans what an earlier replace already inserted, so a secret literally containing
+    # "__NONCE__" would be rewritten into broken JS with its tail outside the string literal.
+    substitutions = {
+        "__EXPECTED_ORIGIN__": json.dumps(expected_origin),
+        "__FILLS__": payload,
+        "__NONCE__": json.dumps(nonce),
+    }
+    return _FILL_PLACEHOLDER.sub(lambda m: substitutions[m.group(0)], _FILL_JS_TEMPLATE)
+
+
+_FILL_PLACEHOLDER = re.compile(r"__(EXPECTED_ORIGIN|FILLS|NONCE)__")
 
 
 _FILL_JS_TEMPLATE = """(() => {

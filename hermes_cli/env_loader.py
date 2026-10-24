@@ -244,18 +244,20 @@ def reset_secret_source_cache(hermes_home: str | os.PathLike | None = None) -> N
     this process, and a per-fire cron re-pull or a plugin-discovery refresh for one home must not wipe
     a sibling's hydrated snapshot — the sibling's next scope build would run empty until it re-hydrated
     (#102041)."""
-    if hermes_home is None:
-        _APPLIED_HOMES.clear()
-        _SECRET_SOURCES.clear()
-        _SOURCE_SUPPLIED_NAMES.clear()
-        _SECRET_SOURCE_VALUES_BY_HOME.clear()
-        _SECRET_SOURCE_RESTORE_BY_HOME.clear()
-        _SECRET_SOURCE_WRITES_BY_HOME.clear()
-        return
-    home_key = str(Path(hermes_home).resolve())
-    _APPLIED_HOMES.discard(home_key)
-    _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
-    _SECRET_SOURCE_RESTORE_BY_HOME.pop(home_key, None)
+    # Locked so a pass already fetching cannot mark the home applied after the reset and swallow the re-pull.
+    with _SECRET_SOURCE_CACHE_LOCK:
+        if hermes_home is None:
+            _APPLIED_HOMES.clear()
+            _SECRET_SOURCES.clear()
+            _SOURCE_SUPPLIED_NAMES.clear()
+            _SECRET_SOURCE_VALUES_BY_HOME.clear()
+            _SECRET_SOURCE_RESTORE_BY_HOME.clear()
+            _SECRET_SOURCE_WRITES_BY_HOME.clear()
+            return
+        home_key = str(Path(hermes_home).resolve())
+        _APPLIED_HOMES.discard(home_key)
+        _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
+        _SECRET_SOURCE_RESTORE_BY_HOME.pop(home_key, None)
 
 
 def format_secret_source_suffix(env_var: str) -> str:
@@ -684,6 +686,13 @@ def _revoke_secret_source_writes(home_path: Path, *, keep) -> None:
 
 
 def _apply_external_secret_sources(home_path: Path) -> None:
+    """Hold the secret-source lock for the whole pass: the home is marked applied only after the fetch, so
+    a concurrent load for the same home would otherwise pass the guard and fetch and print a second time."""
+    with _SECRET_SOURCE_CACHE_LOCK:
+        _apply_external_secret_sources_locked(home_path)
+
+
+def _apply_external_secret_sources_locked(home_path: Path) -> None:
     """Pull secrets from every enabled external source into env — AFTER dotenv (sources need .env bootstrap
     tokens), BEFORE Hermes reads credentials; failures never block startup. Precedence/conflicts/provenance
     live in ``registry.apply_all``; this wrapper owns the once-per-home guard, the post-apply ASCII sweep,

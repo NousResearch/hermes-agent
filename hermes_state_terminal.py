@@ -7,7 +7,7 @@ Worker receipt reads additionally require the original private adoption proof.
 import hmac
 import json
 
-from hermes_state_runtime import RuntimeStoreError, _epoch, _json, _row, _secret_digest, _text, admission_fingerprint
+from hermes_state_runtime import AdmissionConflict, RuntimeStoreError, _epoch, _json, _row, _secret_digest, _text, admission_fingerprint
 
 RESULT_PREFIX = 'gateway.admission.result.v1.'
 ADMISSION_PREFIX = 'gateway.terminal_admission.v1.'
@@ -142,7 +142,10 @@ def retry_terminal_admission(db, *, epoch, principal_id, session_id, request_id,
             raise RuntimeStoreError('not_found')
         row = terminal_admission(conn, json.loads(saved[0]))
         if row['payload_digest'] != digest:
-            raise RuntimeStoreError('admission_conflict')
+            # A retired admission's payload is frozen for the exact-retry horizon, so a differing
+            # digest can never be replayed onto it: the same proof the live-row branch carries.
+            raise RuntimeStoreError('admission_conflict', field='payload_digest',
+                                    conflict=AdmissionConflict.IMMUTABLE_PAYLOAD)
         return _row(row)
 
 
@@ -164,6 +167,9 @@ def terminal_worker_receipt(db, *, execution_id, session_id, generation, sequenc
         if receipt is None:
             raise RuntimeStoreError('stale_generation')
         if receipt['payload_digest'] != payload_digest:
+            # Deliberately untagged: this digest names a producer's worker receipt, not an admission
+            # payload, and no retry-bounded consumer classifies it (the notification budget spends
+            # admitted notices only). Tagging it would assert a stronger proof than this comparison.
             raise RuntimeStoreError('admission_conflict')
         if receipt['result_json'] is None:
             raise RuntimeStoreError('stale_generation')

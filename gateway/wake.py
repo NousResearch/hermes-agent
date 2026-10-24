@@ -39,7 +39,9 @@ def adapter_supports_push(adapter: Any) -> bool:
 # route has no session (``not_found``) or the payload is malformed (``invalid_params``). A bare
 # ``admission_conflict`` proves nothing: an unowned completion, or one pinned to a live session the
 # route does not run, may still find its owner (d6635ffe03b), so it is permanent only when the
-# authority's state proves the pin gone (``refusal_proven_permanent``). Every other refusal
+# authority's state proves the pin gone (``refusal_proven_permanent``) — or when the store itself
+# proves the offered payload can never match the immutable one stored at this exact identity
+# (``RuntimeStoreError.conflict``: a closed enum, never the reason text). Every other refusal
 # (``runtime_draining`` during a restart's after-turn wait or a parked profile, ``queue_full``,
 # ``session_busy``, ``stale_epoch``, ...) clears on its own: back off, never give the notice up.
 PERMANENT_REFUSAL_REASONS = frozenset({'not_found', 'invalid_params'})
@@ -48,11 +50,16 @@ PERMANENT_REFUSAL_REASONS = frozenset({'not_found', 'invalid_params'})
 class WakeNotAccepted(RuntimeError):
     """No adapter admission: retry without treating a healthy chat as dead. ``reason`` is the
     store's refusal code when the session authority refused it (None: the adapter did not accept);
-    ``permanent`` is set once the refusal is proven final (``refusal_proven_permanent``)."""
+    ``conflict`` is the store's closed proof when it compared a stored digest (``AdmissionConflict``,
+    else None); ``permanent`` is set once the refusal is proven final
+    (``refusal_proven_permanent``)."""
 
-    def __init__(self, message: str = "internal wake not accepted by adapter", *, reason: Optional[str] = None):
+    def __init__(self, message: str = "internal wake not accepted by adapter", *, reason: Optional[str] = None,
+                 conflict: Any = None):
         super().__init__(message)
         self.reason = reason
+        # Carried opaquely: only the store's enum compares as proof, never a string a caller passed.
+        self.conflict = conflict
         self.permanent = False
 
 
@@ -126,7 +133,7 @@ async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source:
                 if await admit_route_wake(runner, adapter, source, text, "kanban-wake", category):
                     return  # committed to the session FIFO: never interrupts the admitted turn
             except RuntimeStoreError as exc:
-                raise WakeNotAccepted(str(exc), reason=exc.reason) from exc
+                raise WakeNotAccepted(str(exc), reason=exc.reason, conflict=exc.conflict) from exc
         synth_event = MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=True,
                                    metadata={"notification_category": notification_category})
         await admit_internal_event(adapter, synth_event)

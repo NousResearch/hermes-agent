@@ -63,7 +63,10 @@ async def deliver_heartbeat(runner, event):
                 logger.exception("Watch notification injection error")
                 return False
             if delivered is False and prepared is not event:
-                event['_refusal_permanent'] = prepared.get('_refusal_permanent')  # the drain requeues the original
+                # The drain requeues the ORIGINAL event: the replacement's verdict and the candidate
+                # fingerprint its shared refusal budget is keyed on must ride across with it.
+                event['_refusal_permanent'] = prepared.get('_refusal_permanent')
+                event['_watch_refusal_candidate'] = prepared.get('_watch_refusal_candidate')
             if delivered is not False or not _replaced_tick_claimed(runner, prepared):
                 return delivered
             # The tick it replaced started first and runs with its own output: admit this one alone.

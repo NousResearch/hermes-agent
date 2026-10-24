@@ -41,6 +41,7 @@ _SECRET_VAR = r'\$\{?\w*(?:key|token|secret|passwd|password|credential)\w*\}?'
 _UPLOAD_FLAG = (r'(?<!\S)(?:(?-i:-[a-zA-Z]*[dFT])|--data(?:-binary|-raw|-urlencode|-ascii)?|--form(?:-string)?'
                 r'|--upload-file|--json|--post-(?:data|file)|--body-(?:data|file))')
 _EMOJI_RANGE = r'\U0001F000-\U0001FAFF\u2600-\u27BF'
+_CREDENTIAL_UPLOAD_DESCRIPTION = "upload a secret or credential file via curl/wget (possible exfiltration)"
 # Global flags before a subcommand, each with an optional value. Every flag has one parse ('-' plus
 # its possessive remainder, so '--x' and '--x=v' never split two ways) and a value cannot itself be a
 # flag, so a long run that never reaches the subcommand fails in linear time instead of holding the
@@ -341,7 +342,7 @@ DANGEROUS_PATTERNS = [
     # an uploading curl/wget. Flag letters are case-sensitive (-d/-F/-T upload; -D/-f/-t do not).
     (rf'{_UPLOAD_FLAG}(?:[\s=]+|(?=[@"\'$]))(?:"[^"]*(?:{_SECRET_VAR}|{_SECRET_FILE})|\'[^\']*{_SECRET_FILE}'
      rf'|\$\([^)]*{_SECRET_FILE}|\S*?(?:{_SECRET_VAR}|{_SECRET_FILE}))',
-     "upload a secret or credential file via curl/wget (possible exfiltration)"),
+     _CREDENTIAL_UPLOAD_DESCRIPTION),
     (rf'{_SECRET_FILE}[^|;&\n]*\|[^;&|\n]*\b(?:curl|wget)\b[^;&|\n]*{_UPLOAD_FLAG}',
      "pipe a credential file into a curl/wget upload (possible exfiltration)"),
     # Invisible / bidirectional Unicode controls make the command the user approves differ from what runs.
@@ -1545,6 +1546,23 @@ def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
     return contains_gateway_lifecycle_command(command)
 
 
+def _upload_flag_owned_by_curl_or_wget(command: str, flag_start: int) -> bool:
+    """True when a curl/wget word precedes the upload flag at *flag_start* in the same simple command.
+    ``awk -F``, ``cut -d`` and ``sort -t`` share the flag letters but take a delimiter and upload
+    nothing; curl run as an argument (``xargs curl``, ``ssh host curl``) still owns its flags."""
+    for start, _, _ in _iter_shell_command_word_spans(command):
+        if not start <= flag_start < start + len(_shell_command_segment(command, start)):
+            continue
+        pos = start
+        while pos < flag_start:
+            word_start, pos, word = _read_shell_word(command, pos)
+            if word_start == pos:
+                break
+            if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() in ("curl", "wget"):
+                return True
+    return False
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check dangerous patterns -> (is_dangerous, pattern_key, description)."""
     if _command_parser_limit_exceeded(command):
@@ -1562,7 +1580,9 @@ def detect_dangerous_command(command: str) -> tuple:
                     )
                 if pattern_re.search(masked_lower):
                     return (True, description, description)
-            elif pattern_re.search(command_lower):
+            elif any(description != _CREDENTIAL_UPLOAD_DESCRIPTION
+                     or _upload_flag_owned_by_curl_or_wget(command_lower, match.start())
+                     for match in pattern_re.finditer(command_lower)):
                 return (True, description, description)
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):

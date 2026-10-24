@@ -1008,6 +1008,14 @@ _FB_SINGLE_REQUIRED_FIELDS = (
 
 def _validate_voice(config: dict[str, Any], issues: list[ConfigIssue]) -> None:
     voice_cfg = config.get("voice")
+    if isinstance(voice_cfg, dict) and "auto_tts_mode" in voice_cfg:
+        auto_tts_mode = voice_cfg.get("auto_tts_mode")
+        normalized_mode = auto_tts_mode.strip().lower() if isinstance(auto_tts_mode, str) else None
+        if normalized_mode not in {"all", "voice_only"}:
+            _issue(issues, "error",
+                   f"voice.auto_tts_mode must be 'all' or 'voice_only', got {auto_tts_mode!r}",
+                   "Set voice.auto_tts_mode to all (audio with every reply) or "
+                   "voice_only (audio only after voice input)")
     if not (isinstance(voice_cfg, dict) and "submit_mode" in voice_cfg):
         return
     submit_mode = voice_cfg.get("submit_mode")

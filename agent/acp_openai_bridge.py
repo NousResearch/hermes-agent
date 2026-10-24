@@ -13,9 +13,10 @@ from __future__ import annotations
 import json
 import re
 from types import SimpleNamespace
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
-from openai.types.chat.chat_completion_message_tool_call import ChatCompletionMessageToolCall, Function
+if TYPE_CHECKING:  # openai is heavy; import lazily in build_openai_tool_call
+    from openai.types.chat.chat_completion_message_tool_call import ChatCompletionMessageToolCall
 
 TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 TOOL_CALL_JSON_RE = re.compile(
@@ -79,6 +80,8 @@ def completion_to_stream_chunks(completion: SimpleNamespace) -> StreamChunks:
 
 def build_openai_tool_call(*, call_id: str, name: str, arguments: str) -> ChatCompletionMessageToolCall:
     """Build an OpenAI-compatible tool-call object for downstream handling."""
+    from openai.types.chat.chat_completion_message_tool_call import ChatCompletionMessageToolCall, Function
+
     return ChatCompletionMessageToolCall(
         id=call_id, call_id=call_id, response_item_id=None, type="function",
         function=Function(name=name, arguments=arguments),

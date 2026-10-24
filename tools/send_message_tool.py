@@ -268,6 +268,8 @@ def _handle_send(args):
     if _relay_denial:
         return tool_error(_relay_denial)
 
+    subject = args.get("subject") if platform_name == "email" else None
+
     try:
         from model_tools import _run_async
         # Only custom plugin handlers receive the complete typed request. ``mentions`` is only for platforms
@@ -277,6 +279,8 @@ def _handle_send(args):
         mentions = args.get("mentions")
         if mentions and entry is not None and entry.standalone_send is not None and entry.standalone_send.mentions:
             handler_args["mentions"] = [mentions] if isinstance(mentions, str) else list(mentions)
+        if subject:
+            handler_args["subject"] = subject
         result = _run_async(_send_to_platform(platform, pconfig, chat_id, cleaned_message, thread_id=thread_id,
                                               media_files=media_files, force_document=force_document_attachments,
                                               **handler_args))
@@ -676,7 +680,7 @@ _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, fei
 
 
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None,
-                            force_document=False, mentions=None, args=None):
+                            force_document=False, mentions=None, args=None, subject=None):
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
     lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
@@ -715,7 +719,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                    f"native send_message media delivery is currently only supported for {_MEDIA_PLATFORMS_NOTE}")
     if policy is not None and policy.text_direct:
         # Text-only straight to the plugin's standalone sender (media dropped with the warning above).
-        send_one = lambda chunk, is_last: _registry_standalone_send(platform_name, pconfig, chat_id, chunk, thread_id)
+        extra = {"subject": subject} if platform_name == "email" and subject is not None else {}
+        send_one = lambda chunk, is_last: _registry_standalone_send(
+            platform_name, pconfig, chat_id, chunk, thread_id, **extra)
     else:
         from gateway.platform_registry import platform_registry
         entry = platform_registry.get(platform_name)

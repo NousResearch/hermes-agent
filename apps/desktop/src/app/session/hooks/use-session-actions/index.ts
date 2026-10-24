@@ -2681,13 +2681,17 @@ export function useSessionActions({
 
         // No title: the backend auto-names the branch from its parent's lineage.
         if (!createFlight) {
+          const throughMessageId = branchThroughRowId(branchMessages)
           const branchParams = {
             session_id: sourceSessionId,
             // Stable per-attempt key: a lost-response retry of session.branch /
             // session.branch_whole returns the SAME child (#65410).
             idempotency_key: key,
             ...(branchCount !== undefined
-              ? { count: branchCount, through_message_id: branchThroughRowId(branchMessages) }
+              ? {
+                  count: branchCount,
+                  ...(throughMessageId !== undefined ? { through_message_id: throughMessageId } : {})
+                }
               : {})
           }
 

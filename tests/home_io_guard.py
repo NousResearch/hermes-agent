@@ -24,6 +24,8 @@ def _pm_generation_dirs(prefixes) -> set[Path]:
 
 
 _INTERPRETER_PREFIXES = tuple({
+    Path(p) for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
+} | {
     Path(p).resolve() for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
 } | {
     # A PM-activated developer shell runs sys.prefix's python against a dependency generation

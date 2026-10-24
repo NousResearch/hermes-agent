@@ -31,7 +31,7 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
-from agent.interrupt_control import _REASON_USER_INTERRUPT, interrupt_skip_wording
+from agent.interrupt_control import _REASON_USER_INTERRUPT, interrupt_skip_wording, steer_yield_pending
 from agent.message_sanitization import coalesce_tool_call_id
 from agent.onboarding import observe_tool_result as observe_onboarding_result
 from agent import plugin_live_notes
@@ -565,6 +565,11 @@ def _registered_tool_worker(agent):
     tid = threading.current_thread().ident
     with agent._tool_worker_threads_lock:
         agent._tool_worker_threads.add(tid)
+    # A redirect that landed during an earlier tool of this batch fanned its yield out to tids that
+    # have since exited; without this a later wait/command parks the user's message (codex#55644).
+    if steer_yield_pending(agent):
+        from tools.interrupt import request_yield
+        request_yield(tid)
     try:
         yield tid
     finally:

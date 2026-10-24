@@ -43,6 +43,9 @@ _DEBUG_INTERRUPT = env_var_enabled("HERMES_DEBUG_INTERRUPT")
 # The inner poll loop is what returns partial output + returncode 124; this outer bound only exists for when
 # that loop itself never returns (family A of #94285: a blocked wait that silently disables asyncio timers).
 _EXECUTE_WAIT_BOUND_GRACE_S = 2.0
+# A pending yield is honoured only once the command has run this long, so a redirect that
+# carried over from an earlier tool (``_steer_yield_pending``) leaves quick commands alone.
+_YIELD_GRACE_S = 1.0
 
 if _DEBUG_INTERRUPT:
     # quiet_mode forces the `tools` logger to ERROR on CLI startup, which would
@@ -548,7 +551,10 @@ class BaseEnvironment(ABC):
                     _kill_and_join()
                     return {**self._finalize_wait_result(output, output.render(suffix="\n[Command interrupted]"), 130),
                             "hermes_interrupted": True}
-                if yield_handler is not None and consume_yield(watch_interrupt_tid):
+                # The grace lets a quick command started after a redirect finish with its output
+                # instead of being handed to the background on the first poll.
+                if (yield_handler is not None and time.monotonic() - _activity_state["start"] >= _YIELD_GRACE_S
+                        and consume_yield(watch_interrupt_tid)):
                     drain_stop.set()
                     drain_thread.join(timeout=1)
                     try:

@@ -90,9 +90,10 @@ class AgentPluginPackage:
     diagnostics: tuple[AgentPluginDiagnostic, ...]
 
 
-_SERVER_DECLARATION_KEYS = frozenset({"app", "requires", "liveness", "trust", "timeout", "costs", "spend_limit", "cost_unit"})
+_SERVER_DECLARATION_KEYS = frozenset({"app", "requires", "liveness", "trust", "timeout", "auth", "costs", "spend_limit",
+                                      "cost_unit"})
 # Hermes call-policy keys: alone they configure a server, they do not declare an application.
-_SERVER_POLICY_KEYS = frozenset({"trust", "timeout", "costs", "spend_limit", "cost_unit"})
+_SERVER_POLICY_KEYS = frozenset({"trust", "timeout", "auth", "costs", "spend_limit", "cost_unit"})
 
 
 def _server_declarations(
@@ -176,6 +177,27 @@ def _server_timeouts(manifest: Mapping[str, Any], mcp_servers: Mapping[str, dict
             raise AgentPluginError(f"server declaration '{name}' timeout must be positive seconds within the platform wait limit")
         timeouts[name] = float(value)
     return timeouts
+
+
+def _server_oauth(manifest: Mapping[str, Any], mcp_servers: Mapping[str, dict[str, Any]]) -> list[str]:
+    """Remote servers the package asks Hermes to sign in to: ``extensions.com.nousresearch.hermes.servers.<name>.auth``.
+
+    Agent Plugins v1 leaves authorization to the client and gives ``mcp.json`` no field for it, so without
+    this a package server that requires OAuth answers 401 and parks. ``oauth`` gives the entry the native
+    ``auth: oauth``: the user signs in with ``hermes mcp login <name>`` or Desktop's Authenticate, and
+    Hermes stores and refreshes the token in the profile. The package never sees it.
+    """
+    raw_servers = manifest.get("extensions", {}).get(_HERMES_EXTENSION, {}).get("servers", {})
+    names: list[str] = []
+    for name, raw in (raw_servers.items() if isinstance(raw_servers, dict) else ()):
+        if not isinstance(raw, dict) or "auth" not in raw or name not in mcp_servers:
+            continue
+        if raw["auth"] != "oauth":
+            raise AgentPluginError(f"server declaration '{name}' auth must be 'oauth', not {raw['auth']!r}")
+        if "url" not in mcp_servers[name]:
+            raise AgentPluginError(f"server declaration '{name}' auth applies only to a streamable-http server")
+        names.append(name)
+    return names
 
 
 def _server_costs(manifest: Mapping[str, Any], mcp_servers: Mapping[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -508,6 +530,8 @@ def load_agent_plugin(plugin_root: Path, data_root: Path) -> AgentPluginPackage:
         mcp_servers[name] = {**mcp_servers[name], "trust": tier}
     for name, timeout in _server_timeouts(manifest, mcp_servers).items():
         mcp_servers[name] = {**mcp_servers[name], "timeout": timeout}
+    for name in _server_oauth(manifest, mcp_servers):
+        mcp_servers[name] = {**mcp_servers[name], "auth": "oauth"}
     for name, costs in _server_costs(manifest, mcp_servers).items():
         mcp_servers[name] = {**mcp_servers[name], **costs}
     server_declarations = _server_declarations(manifest, mcp_servers, diagnostics)
@@ -533,6 +557,15 @@ def read_agent_plugin_manifest(plugin_root: Path) -> tuple[dict, tuple[AgentPlug
     """Validate only root ``plugin.json`` without discovering components."""
     _root, manifest, diagnostics = _validate_root(plugin_root)
     return manifest, tuple(diagnostics)
+
+
+def oauth_server_names(plugin_root: Path) -> list[str]:
+    """Servers the package's ``plugin.json`` declares as OAuth (``hermes plugins remove`` signs them out).
+    Reads only the manifest: a package whose ``mcp.json`` no longer parses was still signed in."""
+    manifest, _diagnostics = read_agent_plugin_manifest(plugin_root)
+    servers = manifest.get("extensions", {}).get(_HERMES_EXTENSION, {}).get("servers", {})
+    return [name for name, raw in (servers.items() if isinstance(servers, dict) else ())
+            if isinstance(raw, dict) and raw.get("auth") == "oauth"]
 
 
 def has_enabled_agent_plugin_mcp(raw_config: Mapping[str, Any]) -> bool:

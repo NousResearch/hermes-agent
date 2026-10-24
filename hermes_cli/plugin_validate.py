@@ -667,6 +667,9 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
         if config.get("trust") == "untrusted":
             report.add(f"server trust: {server_name}", True,
                        "untrusted (Hermes asks before every write-capable tool call)")
+        if config.get("auth") == "oauth":
+            report.add(f"server auth: {server_name}", True,
+                       f"OAuth (the user signs in with `hermes mcp login {server_name}` or Desktop's Authenticate)")
         if config.get("tool_costs"):
             limit = config.get("spend_limit") or 0
             report.add(f"server costs: {server_name}", True,

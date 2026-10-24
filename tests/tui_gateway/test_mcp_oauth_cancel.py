@@ -16,7 +16,7 @@ def test_cancel_is_scoped_idempotent_and_releases_worker(
     monkeypatch.setattr(sessions, "_sessions", {})
     finished = threading.Event()
 
-    def worker(*_args, flow, on_done=None):
+    def worker(*_args, flow, on_done=None, **_options):
         try:
             asyncio.run(
                 flow.publish_authorization_url(

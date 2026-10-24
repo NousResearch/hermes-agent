@@ -317,12 +317,16 @@ export function pluginServerRows({ runtime, servers }: PluginServerJoinInput): L
     .map(row => {
       const state = live.get(row.name)
       const split = row.name.indexOf('__')
+      // A server the plugin declares as OAuth waits for the user's sign-in until a token is stored.
+      const signedOut = row.auth === 'oauth' && row.oauth_tokens_present === false
+      const status: LocalServerStatus = signedOut ? 'needs-auth' : state ? RUNTIME_STATUS[state.status] : 'unknown'
 
       return {
+        canAuthenticate: canAuthenticate({ auth: row.auth ?? undefined, url: row.url ?? undefined }, status),
         enabled: row.enabled,
         name: row.name,
         plugin: row.plugin ?? '',
-        status: state ? RUNTIME_STATUS[state.status] : 'unknown',
+        status,
         target: text(row.url) ?? [row.command ?? '', ...row.args].join(' ').trim(),
         title: connectorTitle(split === -1 ? row.name : row.name.slice(split + 2)),
         toolsTotal: state?.tools

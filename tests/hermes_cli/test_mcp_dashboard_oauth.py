@@ -38,7 +38,7 @@ def test_hosted_auth_start_returns_public_authorization_url(monkeypatch):
         json={"name": "reports", "url": "https://mcp.example/mcp", "auth": "oauth"},
     )
 
-    def fake_worker(flow, cfg):
+    def fake_worker(flow, cfg, **_kwargs):
         import asyncio
 
         asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=s1"))
@@ -106,7 +106,7 @@ def test_hosted_auth_allows_same_server_name_in_different_profiles(tmp_path, mon
     )
     _web_server_mcp._mcp_oauth_flows[existing.flow_id] = existing
 
-    def fake_worker(flow, cfg):
+    def fake_worker(flow, cfg, **_kwargs):
         import asyncio
 
         asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=work"))

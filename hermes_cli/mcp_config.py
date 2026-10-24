@@ -969,9 +969,17 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
         return False
 
 
+def _get_sign_in_servers() -> dict[str, dict]:
+    """``mcp_servers`` plus enabled plugins' servers (config.yaml wins a name). Signing in writes only the
+    profile's token store, so a plugin server that declares ``auth: oauth`` needs no config.yaml entry."""
+    from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
+
+    return server_configs_with_sources(_get_mcp_servers())[0]
+
+
 def cmd_mcp_login(args):
     """Run an explicit browser or device authorization for an OAuth-based MCP server."""
-    cfg = _lookup_server(args.name, _get_mcp_servers())
+    cfg = _lookup_server(args.name, _get_sign_in_servers())
     if cfg is not None:
         _reauth_oauth_server(args.name, cfg, flow=getattr(args, "flow", None))
 
@@ -984,7 +992,7 @@ def cmd_mcp_reauth(args):
     This is the self-service fix for the recurring stale-client ritual in GH#36767 (and avoids the startup
     popup storm when several servers go stale at once).
     """
-    servers = _get_mcp_servers()
+    servers = _get_sign_in_servers()
     name = getattr(args, "name", None)
     if getattr(args, "all", False):
         oauth_servers = [(n, c) for n, c in servers.items() if c.get("auth") == "oauth" and c.get("url")]

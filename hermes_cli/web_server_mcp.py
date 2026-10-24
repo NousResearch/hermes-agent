@@ -116,8 +116,9 @@ def _mcp_oauth_transaction(flow) -> threading.Lock:
         return _mcp_oauth_transactions.setdefault(key, threading.Lock())
 
 
-def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
-    """Run the normal MCP probe with dashboard redirect/callback handlers."""
+def _run_dashboard_mcp_oauth(flow, cfg: dict, *, save_config: bool = True) -> None:
+    """Run the normal MCP probe with dashboard redirect/callback handlers. ``save_config=False`` (a
+    plugin's server) keeps only the tokens: a config.yaml copy would replace the plugin's entry."""
     from hermes_cli.mcp_config import _oauth_tokens_present, _probe_single_server, _save_mcp_server
     try:
         from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
@@ -147,7 +148,8 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
                             "The server responded, but no OAuth token was obtained — "
                             "this provider may require a manually-registered OAuth client."
                         )
-                    _save_mcp_server(flow.server_name, cfg)
+                    if save_config:
+                        _save_mcp_server(flow.server_name, cfg)
                     flow.tools = [{"name": t, "description": d} for t, d in tools]
                     flow.mark_approved()
                     if flow.reconnect_live:

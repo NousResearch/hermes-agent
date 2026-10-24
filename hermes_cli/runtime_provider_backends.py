@@ -15,6 +15,8 @@ from agent.secret_scope import get_secret_str
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, base_url_origin
 
+from hermes_cli.runtime_provider_custom import _resolve_declared_key_env
+
 
 def _rp():
     import hermes_cli.runtime_provider as origin
@@ -141,6 +143,16 @@ def _resolve_openrouter_runtime(
     )
     base_url = ((explicit_base_url or "").strip() or env_custom_base_url or (cfg_base_url.strip() if use_config_base_url else "")
                 or env_openrouter_base_url or OPENROUTER_BASE_URL).rstrip("/")
+    uses_model_endpoint = bool(
+        requested_norm in {"custom", "auto"}
+        and use_config_base_url
+        and base_url == (cfg_base_url or "").strip().rstrip("/")
+    )
+    cfg_key_env, has_declared_key = (
+        _resolve_declared_key_env(model_cfg, explicit_api_key)
+        if uses_model_endpoint
+        else ("", False)
+    )
     # Choose API key based on whether the resolved base_url targets OpenRouter. When hitting OpenRouter,
     # prefer OPENROUTER_API_KEY (issue #289). When hitting a custom endpoint (e.g. Z.ai, local LLM), prefer
     # OPENAI_API_KEY so the OpenRouter key doesn't leak to an unrelated provider (issues #420, #560).
@@ -158,7 +170,7 @@ def _resolve_openrouter_runtime(
     )
     # A bare ``custom`` route to a URL a ``providers:`` entry owns, when that entry declares a credential:
     # the entry's key replaces the implicit env keys (on its built-in's host those are another account's).
-    from hermes_cli.runtime_provider_custom import _model_cfg_key_env_for, _owning_entry_credential
+    from hermes_cli.runtime_provider_custom import _owning_entry_credential
     declared, entry_key = _owning_entry_credential(rp, base_url) if requested_norm == "custom" else (False, "")
     if is_openrouter_context:
         # Same read order as the credential pool and _resolve_api_key_provider_secret
@@ -177,14 +189,12 @@ def _resolve_openrouter_runtime(
             openai_key_ok = bool(openai_origin[1]) and openai_origin == base_url_origin(base_url)
         else:
             openai_key_ok = not is_openrouter_url or rp.looks_like_openrouter_key(openai_key)
-        candidates = [explicit_api_key]
+        candidates = [explicit_api_key, cfg_key_env]
         if not declared:  # an owning entry's declared credential replaces the implicit env keys
             candidates += [get_env_value_prefer_dotenv("OPENROUTER_API_KEY"), openai_key if openai_key_ok else ""]
     else:
-        # ``model.api_key`` and ``model.key_env`` back a trusted config base_url only; the key_env
-        # rung is what a bare ``provider: custom`` block relies on (#67453).
-        candidates = [explicit_api_key, (cfg_api_key if use_config_base_url else ""),
-                      (_model_cfg_key_env_for(model_cfg, base_url) if use_config_base_url else ""),
+        candidates = [explicit_api_key, cfg_key_env,
+                      (cfg_api_key if use_config_base_url and not has_declared_key else ""),
                       *([] if declared else rp._host_gated_env_key_candidates(base_url, ollama=True))]
     api_key = next((str(c or "").strip() for c in candidates if rp.has_usable_secret(c)), "") or entry_key
     source = "explicit" if (explicit_api_key or explicit_base_url) else "env/config"
@@ -194,7 +204,7 @@ def _resolve_openrouter_runtime(
         return rp._runtime("openrouter", cfg_api_mode or rp._detect_api_mode_for_url(base_url) or "chat_completions", base_url,
                            api_key, source=source)
     # An explicit launch key is the operator's credential for this route and wins over the pool (R2-M1).
-    if base_url and not rp.has_usable_secret(explicit_api_key):
+    if base_url and not has_declared_key and not rp.has_usable_secret(explicit_api_key):
         pool_result = rp._try_resolve_from_custom_pool(base_url, "custom", cfg_api_mode, provider_name=None)
         if pool_result:
             return pool_result

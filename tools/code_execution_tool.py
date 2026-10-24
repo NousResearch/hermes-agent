@@ -257,6 +257,7 @@ _sock = None
 # threads (e.g. ThreadPoolExecutor) would race on the shared socket and get
 # each other's responses. Serialize the entire send+recv round-trip.
 _call_lock = threading.Lock()
+_rid = 0
 ''' + _COMMON_HELPERS + '''\
 
 def _connect():
@@ -286,10 +287,14 @@ def _connect():
 
 def _call(tool_name, args):
     """Send a tool call to the parent process and return the parsed result."""
+    global _sock, _rid
+    _rid += 1
+    _my_rid = "%d-%d" % (os.getpid(), _rid)
     request = json.dumps({
         "tool": tool_name,
         "args": args,
         "token": os.environ.get("HERMES_RPC_TOKEN", ""),
+        "rid": _my_rid,
     }) + "\\n"
     # Session kernels outlive the RPC server's 300s idle window, so their
     # connection can be legitimately gone by the next cell. The server
@@ -308,16 +313,23 @@ def _call(tool_name, args):
                     buf += chunk
                     if buf.endswith(b"\\n"):
                         break
+                _env = json.loads(buf.decode().strip())
+                if isinstance(_env, dict) and set(_env) == {"rid", "result"}:
+                    if _env["rid"] != _my_rid:
+                        # out-of-step bridge: this is another request's reply; never hand it to the cell.
+                        raise RuntimeError("RPC reply id mismatch (stale reply discarded)")
+                    buf = (_env["result"] if isinstance(_env["result"], str) else json.dumps(_env["result"])).encode() + b"\\n"
                 break
-            except (OSError, RuntimeError):
-                global _sock
+            except BaseException as _exc:
+                # Whatever interrupted us (OSError, alarm/KeyboardInterrupt, thread cancel), a reply to THIS request
+                # may still be in flight, so the connection is out of step. Drop it; never reuse it.
                 try:
                     if _sock is not None:
                         _sock.close()
                 except OSError:
                     pass
                 _sock = None
-                if _attempt + 1 >= _attempts:
+                if not isinstance(_exc, (OSError, RuntimeError)) or _attempt + 1 >= _attempts:
                     raise
     raw = buf.decode().strip()
     result = json.loads(raw)

@@ -136,8 +136,8 @@ def _binding(runner, source, profile):
         # bot (#104933), so the receiving adapter's owner is part of the match.
         matches = [route for route in runner.config.profile_routes if route.matches(
             source.platform.value, guild_id=source.scope_id, chat_id=source.chat_id,
-            thread_id=source.thread_id, parent_chat_id=source.parent_chat_id,
-            adapter_profile=profile, user_id=source.user_id)]
+            thread_id=source.thread_id, parent_chat_id=source.parent_chat_id, adapter_profile=profile,
+            user_id=getattr(source, 'user_id', None))]
         if source.profile and source.platform.value in _PREFIX_PRODUCERS:
             # ``/p/<profile>/`` producers address a profile explicitly on the HOST's listener; that
             # URL prefix names the profile and wins over ``profile_routes`` (webhook.py /

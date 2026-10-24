@@ -1477,7 +1477,7 @@ slash:
   reload_mcp:
     description: "Перезагрузить MCP-серверы из конфигурации"
   resume:
-    description: "Возобновить ранее названный сеанс"
+    description: "Вернуться к беседе"
   sethome:
     description: "Сделать этот чат домашним каналом"
   update:
@@ -1503,7 +1503,7 @@ slash:
   start:
     description: "Принимать стартовые пинги платформы без ответа"
   new:
-    description: "Начать новый сеанс (новый ID сеанса и история)"
+    description: "Новая беседа"
   topic:
     description: "Включить или просмотреть сеансы-темы в личных сообщениях Telegram"
   clear:
@@ -1515,13 +1515,13 @@ slash:
   save:
     description: "Экспортировать текущий разговор (/save без аргументов покажет справку)"
   retry:
-    description: "Повторить последнее сообщение (отправить агенту заново)"
+    description: "Отправить последнее сообщение снова"
   prompt:
     description: "Написать следующий промпт в $EDITOR (markdown) и отправить его"
   undo:
-    description: "Откатиться на N реплик пользователя и задать промпт заново (по умолчанию 1)"
+    description: "Откатиться на N промптов"
   title:
-    description: "Задать название текущего сеанса"
+    description: "Задать заголовок"
   handoff:
     description: "Передать этот сеанс в мессенджер (Telegram, Discord и т. д.)"
   branch:
@@ -1573,7 +1573,7 @@ slash:
   subgoal:
     description: "Добавить дополнительные критерии к активной цели или управлять ими"
   status:
-    description: "Показать сведения о сеансе, модели, токенах и контексте"
+    description: "Сведения о модели"
   egress:
     description: "Показать состояние egress-прокси Docker"
   context:
@@ -1583,7 +1583,7 @@ slash:
   profile:
     description: "Показать имя активного профиля и его домашний каталог"
   sessions:
-    description: "Просмотреть и возобновить предыдущие сеансы"
+    description: "Все беседы"
   config:
     description: "Показать текущую конфигурацию"
   model:
@@ -1671,7 +1671,7 @@ slash:
   restart:
     description: "Аккуратно перезапустить шлюз после завершения активных запусков"
   usage:
-    description: "Показать расход токенов и лимиты; `reset` использует накопленный сброс лимита Codex"
+    description: "Расход токенов"
   subscription:
     description: "Посмотреть ваш тариф Nous и изменить его в браузере"
   login:

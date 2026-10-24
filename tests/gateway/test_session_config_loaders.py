@@ -80,19 +80,22 @@ def test_each_new_session_reads_its_profiles_prefill_once_and_workers_match(tmp_
 
 def _in_process_prefill(authority, policy, monkeypatch, chat_id):
     """The prefill an in-process agent (re)build hands ``AIAgent`` (``_build_fresh_agent``)."""
+    return _in_process_agent(authority, policy, monkeypatch, chat_id).prefill_messages
+
+
+def _in_process_agent(authority, policy, monkeypatch, chat_id):
+    """The agent an in-process (re)build constructs (``_build_fresh_agent``), kwargs as attributes."""
     from gateway import session_policy
     from gateway.session_execution import GatewaySessionAgentMixin
     monkeypatch.setattr(session_policy, 'policy_for_source', lambda runner, source: policy)
-    built = {}
     turn = GatewaySessionAgentMixin.__new__(GatewaySessionAgentMixin)
     turn._runner = SimpleNamespace(session_authority=authority, _prefill_messages=STALE, _service_tier=None,
                                    _session_db=None, _refresh_fallback_model=lambda: None)
     source = SimpleNamespace(chat_id=chat_id, user_id='u', user_id_alt=None, user_name=None, chat_name=None,
                              chat_type='dm', thread_id=None)
     turn._ctx = SimpleNamespace(source=source, user_config={}, enabled_toolsets=[], disabled_toolsets=None,
-                                session_id=chat_id, session_key='k', AIAgent=lambda **kw: built.update(kw))
-    turn._build_fresh_agent({'model': 'm', 'runtime': {}}, 'local', None, 1, None, {}, False)
-    return built['prefill_messages']
+                                session_id=chat_id, session_key='k', AIAgent=lambda **kw: SimpleNamespace(**kw))
+    return turn._build_fresh_agent({'model': 'm', 'runtime': {}}, 'local', None, 1, None, {}, False)
 
 
 def test_an_open_sessions_prefill_survives_cache_pressure_and_file_edits(tmp_path, monkeypatch):
@@ -189,13 +192,35 @@ CONFIG = ('platform_toolsets: {cli: []}\n'
           'model: {provider: custom, default: m, base_url: "http://127.0.0.1:9/v1"}\n')
 
 
-def _create(owner, connection, home, request_id):
+def _create(owner, connection, home, request_id, **params):
     from gateway.session_local import create_local_session
     from gateway.session_policy import restore_policy
     from hermes_state_local import local_receipt
     ref = create_local_session(owner, connection.actor, {'request_id': request_id, 'source': 'cli',
-                                                         'cwd': str(home), 'toolsets': []})
+                                                         'cwd': str(home), 'toolsets': [], **params})
     return ref, restore_policy(local_receipt(owner.db, ref.session_id)['policy'])
+
+
+@pytest.mark.asyncio
+async def test_the_in_process_agent_carries_the_sessions_launch_key(tmp_path, monkeypatch):
+    """``hermes chat --api-key`` (#142362): the in-process build marks the session's launch key on
+    the agent, so the per-turn .env credential refresh never swaps it for the provider's .env key.
+    A keyless session's agent carries no mark."""
+    from tests.gateway.test_local_create_env_refs import _owner
+    home = tmp_path / 'home'
+    home.mkdir()
+    (home / 'config.yaml').write_text(CONFIG)
+    owner, connection = await _owner(home, monkeypatch)
+    try:
+        keyed, keyed_policy = _create(owner, connection, home, 'keyed', api_key='sk-explicit')
+        plain, plain_policy = _create(owner, connection, home, 'plain')
+        keyed_agent = _in_process_agent(owner, keyed_policy, monkeypatch, keyed.session_id)
+        assert keyed_agent._launch_api_key == 'sk-explicit'
+        plain_agent = _in_process_agent(owner, plain_policy, monkeypatch, plain.session_id)
+        assert getattr(plain_agent, '_launch_api_key', None) is None
+    finally:
+        await connection.close()
+        owner.db.close()
 
 
 async def _prefill_owner(tmp_path, monkeypatch):

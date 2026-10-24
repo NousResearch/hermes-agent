@@ -278,3 +278,41 @@ class TestNamedCustomProviders:
         env["LONGCAT_API_KEY"] = "lc-fresh"
 
         assert agent._try_refresh_env_client_credentials() is False
+
+
+class TestLaunchKeyIsNeverSwapped:
+    """#142362: ``hermes chat --api-key`` binds a launch-only key that the
+    route resolver prefers over .env every turn — .env is not this session's
+    credential source, so neither the first look nor a later edit may swap it."""
+
+    def test_named_custom_provider_keeps_launch_key(self, env, named_custom_provider):
+        agent = _make_agent(provider="custom", base_url=CUSTOM_BASE, api_key="sk-explicit")
+        agent.requested_provider = "longcat"
+        agent._launch_api_key = "sk-explicit"
+        env["LONGCAT_API_KEY"] = "lc-env"
+
+        assert agent._try_refresh_env_client_credentials() is False
+        env["LONGCAT_API_KEY"] = "lc-env-edited"
+        assert agent._try_refresh_env_client_credentials() is False
+        assert agent.api_key == "sk-explicit"
+        agent._replace_primary_openai_client.assert_not_called()
+
+    def test_registry_provider_at_default_base_keeps_launch_key(self, env):
+        agent = _make_agent(api_key="sk-explicit")
+        agent._launch_api_key = "sk-explicit"
+        env["OPENAI_API_KEY"] = "sk-env"
+
+        assert agent._try_refresh_env_client_credentials() is False
+        assert agent.api_key == "sk-explicit"
+
+    def test_pin_follows_the_key_not_the_session(self, env):
+        """Once the session runs a different key (fallback, /model move), the
+        launch key no longer matches and .env edits are adopted as before."""
+        agent = _make_agent(api_key="sk-old")
+        agent._launch_api_key = "sk-explicit"
+        env["OPENAI_API_KEY"] = "sk-old"
+        assert agent._try_refresh_env_client_credentials() is False
+
+        env["OPENAI_API_KEY"] = "sk-new"
+        assert agent._try_refresh_env_client_credentials() is True
+        assert agent.api_key == "sk-new"

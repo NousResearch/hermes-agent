@@ -749,6 +749,103 @@ class TestRegisterSessionMcpServers:
             # Should not raise
             await agent._register_session_mcp_servers(state, [server])
 
+    @pytest.mark.asyncio
+    async def test_partial_registration_failure_reaches_client(self, agent, mock_manager):
+        """A per-server connect failure is visible even when registration itself returns normally."""
+        from acp.schema import McpServerStdio
+
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent.disabled_toolsets = None
+        state.agent.tools = []
+        state.agent.valid_tool_names = set()
+        agent._conn = MagicMock()
+        agent._conn.session_update = AsyncMock()
+        servers = [
+            McpServerStdio(name="healthy", command="healthy-mcp", args=[], env=[]),
+            McpServerStdio(name="broken", command="broken-mcp", args=[], env=[]),
+        ]
+
+        statuses = [
+            {"name": "healthy", "status": "connected", "connected": True, "tools": 1},
+            {
+                "name": "broken",
+                "status": "failed",
+                "connected": False,
+                "tools": 0,
+                "error": "Bearer super-secret refused",
+            },
+        ]
+        with (
+            patch("tools.mcp_tool_discovery.register_mcp_servers", return_value=["mcp_healthy_search"]),
+            patch("tools.mcp_tool_discovery.get_mcp_status", return_value=statuses),
+            patch("model_tools.get_tool_definitions", return_value=[]),
+        ):
+            await agent._register_session_mcp_servers(state, servers)
+
+        updates = [call.kwargs["update"] for call in agent._conn.session_update.await_args_list]
+        warnings = [
+            update.content.text
+            for update in updates
+            if getattr(update, "session_update", None) == "agent_message_chunk"
+        ]
+        assert warnings == ["MCP server 'broken' failed to connect: [REDACTED] refused"]
+
+
+    @pytest.mark.asyncio
+    async def test_registration_failure_bounds_and_redacts_url_credentials(self, agent, mock_manager):
+        from acp.schema import McpServerStdio
+
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent.disabled_toolsets = None
+        agent._conn = MagicMock()
+        agent._conn.session_update = AsyncMock()
+        server = McpServerStdio(name="broken", command="broken-mcp", args=[], env=[])
+        error = "https://alice:private-password@example.test/mcp refused " + "x" * 5000
+        with (
+            patch("tools.mcp_tool_discovery.register_mcp_servers", return_value=[]),
+            patch("tools.mcp_tool_discovery.get_mcp_status", return_value=[
+                {"name": "broken", "status": "failed", "error": error}
+            ]),
+            patch("model_tools.get_tool_definitions", return_value=[]),
+        ):
+            await agent._register_session_mcp_servers(state, [server])
+
+        text = agent._conn.session_update.await_args.kwargs["update"].content.text
+        assert "alice" not in text and "private-password" not in text
+        assert "example.test/mcp refused" in text
+        assert len(text) <= 1250
+        assert text.endswith("…")
+
+    @pytest.mark.asyncio
+    async def test_registration_reports_cached_failure_during_retry_cooldown(self, agent, mock_manager, monkeypatch):
+        from acp.schema import McpServerStdio
+        from tools import mcp_tool as core
+        from tools.mcp_tool_discovery import _note_connect_failure, _connect_cooldown_active
+
+        # The real discovery/status path must retain a failure when registration skips a retry.
+        for name in ("_server_connect_errors", "_server_connect_failures", "_server_connect_retry_after"):
+            monkeypatch.setattr(core, name, {})
+        _note_connect_failure("cooldown-test", RuntimeError("connection refused"))
+        assert _connect_cooldown_active("cooldown-test")
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent.disabled_toolsets = None
+        agent._conn = MagicMock()
+        agent._conn.session_update = AsyncMock()
+        server = McpServerStdio(name="cooldown-test", command="unused-during-cooldown", args=[], env=[])
+        with (
+            patch("tools.mcp_tool_discovery._run_discovery_pass") as connect,
+            patch("model_tools.get_tool_definitions", return_value=[]),
+        ):
+            await agent._register_session_mcp_servers(state, [server])
+            await agent._register_session_mcp_servers(state, [server])
+        connect.assert_not_called()
+        assert agent._conn.session_update.await_count == 2
+        for call in agent._conn.session_update.await_args_list:
+            assert "connection refused" in call.kwargs["update"].content.text
+
 
 class TestDisabledToolsetsFilterToolSurface:
     def test_cmd_tools_strips_configured_disabled_toolsets(self, agent, mock_manager):

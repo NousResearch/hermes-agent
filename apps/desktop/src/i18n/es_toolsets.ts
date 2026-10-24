@@ -1,0 +1,123 @@
+import type { TranslationOverrides } from './define-locale'
+
+export const esToolsets: NonNullable<TranslationOverrides['settings']>['toolsets'] = {
+  loadingConfig: 'Cargando configuración',
+  savedTitle: 'Credencial guardada',
+  savedMessage: key => `${key} actualizada.`,
+  removedTitle: 'Credencial quitada',
+  removedMessage: key => `${key} quitada.`,
+  failedSave: key => `No se pudo guardar ${key}`,
+  failedRemove: key => `No se pudo quitar ${key}`,
+  failedReveal: key => `No se pudo mostrar ${key}`,
+  removeConfirm: key => `¿Quitar ${key} de .env?`,
+  set: 'Definir',
+  notSet: 'Sin definir',
+  selectedTitle: 'Proveedor seleccionado',
+  selectedMessage: provider => `${provider} está activo.`,
+  failedSelect: provider => `No se pudo seleccionar ${provider}`,
+  failedLoad: 'No se pudo cargar la configuración de herramientas',
+  noProviderOptions:
+    'Este conjunto de herramientas no tiene opciones de proveedor; actívalo y funcionará con tu configuración actual.',
+  noProviders: 'No hay proveedores disponibles para este conjunto de herramientas ahora mismo.',
+  ready: 'Listo',
+  needsSignIn: 'Necesita iniciar sesión',
+  needsSetup: 'Configuración requerida',
+  activeBackend: 'Activo',
+  browserAxesHint:
+    'Browser Use selecciona el controlador del navegador. El proveedor determina dónde se ejecuta. Ambos pueden estar activos a la vez.',
+  activeBackendHint: 'Este es tu backend activo',
+  useBackend: 'Usar este backend',
+  nousIncluded: 'Incluido con una suscripción de Nous: inicia sesión con tu cuenta de Nous para activarlo.',
+  nousAuthNeededTitle: 'Inicia sesión con tu cuenta de Nous',
+  nousAuthNeededMessage: (provider: string) =>
+    `${provider} está guardado, pero solo funcionará cuando inicies sesión con tu cuenta de Nous.`,
+  nousAuthSignIn: 'Iniciar sesión',
+  nousAuthDoneTitle: 'Cuenta de Nous conectada',
+  nousAuthDoneMessage: 'Los backends de tu suscripción ya están activos.',
+  nousAuthFailed: 'No se completó el inicio de sesión en Nous',
+  nousAuthFailedMessage: 'Vuelve a intentarlo.',
+  nousAuthTryAgain: 'Reintentar',
+  noApiKeyRequired: 'No se requiere clave API.',
+  postSetupHint: step =>
+    `Este backend necesita una instalación única (${step}). Se ejecuta en esta máquina y puede tardar unos minutos.`,
+  postSetupInstalledHint: 'Instalado. Repite la configuración solo si algo no funciona.',
+  postSetupRun: 'Ejecutar instalación',
+  postSetupRerun: 'Repetir instalación',
+  postSetupInstalled: 'Instalado',
+  postSetupRunning: 'Instalando…',
+  postSetupStarting: 'Iniciando…',
+  postSetupCompleteTitle: 'Instalación completa',
+  postSetupCompleteMessage: step => `${step} instalado.`,
+  postSetupErrorTitle: 'La instalación terminó con errores',
+  postSetupErrorMessage: (step: string) =>
+    `La configuración de ${step} no terminó. Abre los registros para ver por qué y vuelve a ejecutar la configuración.`,
+  postSetupOpenLogs: 'Abrir registros',
+  postSetupRunAgain: 'Ejecutar de nuevo',
+  postSetupFailed: step => `No se pudo ejecutar la instalación de ${step}`,
+  webSearchActive: backend => `Búsqueda: ${backend}`,
+  webExtractActive: backend => `Extracción: ${backend}`,
+  webCapabilityUnset: 'sin definir',
+  webUseForSearch: 'Usar para búsqueda',
+  webUseForExtract: 'Usar para extracción',
+  webUsedForSearch: 'Backend de búsqueda',
+  webUsedForExtract: 'Backend de extracción',
+  webCapabilitySelectedMessage: (provider, capability) =>
+    `${provider} ahora se encarga de ${capability === 'search' ? 'las búsquedas web' : 'la extracción de contenido web'}.`,
+  failedSelectCapability: provider => `No se pudo configurar ${provider}`,
+  loadingModels: 'Cargando catálogo de modelos...',
+  modelSectionTitle: 'Modelo',
+  modelCount: count => `${count} ${count === 1 ? 'modelo' : 'modelos'}`,
+  modelInUse: 'En uso',
+  modelDefault: 'predeterminado',
+  modelInactiveHint: 'Selecciona primero este backend para cambiar su modelo.',
+  modelSelectedTitle: 'Modelo seleccionado',
+  modelSelectedMessage: model => `${model} se aplica a las sesiones nuevas.`,
+  failedSelectModel: model => `No se pudo seleccionar ${model}`,
+  terminalBackend: {
+    sectionTitle: 'Backend de ejecución',
+    loading: 'Comprobando backends de ejecución…',
+    failedLoad: 'No se pudieron cargar los backends del terminal',
+    ready: 'Listo',
+    needsSetup: 'Necesita configuración',
+    unavailable: 'No disponible',
+    inUse: 'En uso',
+    selectedTitle: 'Backend seleccionado',
+    selectedMessage: backend =>
+      `Los comandos del terminal ahora se ejecutan mediante ${backend}. Se aplica a las sesiones nuevas.`,
+    failedSelect: backend => `No se pudo seleccionar ${backend}`,
+    needsSetupHint:
+      'Este backend está seleccionado sin configuración completa: los comandos fallarán hasta que termine la configuración.',
+    needsSetupConfirmTitle: (backend: string) => `¿Seleccionar ${backend} de todos modos?`,
+    needsSetupConfirmDescription: (detail: string) =>
+      `${detail} Las sesiones que empiecen tras este cambio no tendrán herramientas de terminal ni de archivos hasta que termine la configuración.`,
+    needsSetupConfirmDescriptionGeneric:
+      'Este backend todavía no está configurado. Las sesiones que empiecen tras este cambio no tendrán herramientas de terminal ni de archivos hasta que termine la configuración.',
+    needsSetupConfirmAction: 'Seleccionar de todos modos',
+    unavailableTitle: 'Los comandos de terminal no están disponibles',
+    unavailableMessage: (backend: string) =>
+      `Hermes no puede ejecutar comandos de shell ahora mismo: ${backend} no está listo. Cambia a Local o termina de configurar ${backend} y vuelve a intentarlo.`,
+    openBackendSettings: 'Abrir ajustes del terminal',
+    useLocal: 'Usar Local',
+    switchedToLocal: 'Los comandos de terminal ahora se ejecutan localmente. Se aplica a las sesiones nuevas.'
+  },
+  browserRealProfile: {
+    label: 'Usar mi perfil real del navegador',
+    description:
+      'Copia los inicios de sesión y las cookies de tu navegador predeterminado en una instantánea administrada con la que navega el agente. Tu perfil en uso nunca se abre directamente. Se aplica a las sesiones nuevas.',
+    enabledTitle: 'Navegación con perfil real activada',
+    enabledMessage: 'Las sesiones nuevas navegarán con una instantánea de tu perfil predeterminado del navegador.',
+    disabledTitle: 'Navegación con perfil real desactivada',
+    disabledMessage: 'Se eliminará la instantánea del perfil; las sesiones nuevas usan un navegador limpio.',
+    failedSave: 'No se pudo guardar el ajuste del perfil real',
+    prompt: {
+      title: 'Mantén la sesión iniciada en tus sitios',
+      body: 'Deja que Hermes navegue con una instantánea de tu perfil predeterminado del navegador, para que los sitios se abran con la sesión ya iniciada.',
+      bulletSnapshot: 'Las cookies y los inicios de sesión se copian en una instantánea administrada.',
+      bulletLiveProfile: 'Tu perfil del navegador en uso nunca se abre directamente.',
+      bulletLocal: 'Nada sale de este equipo.',
+      dontShowAgain: 'No volver a mostrar',
+      notNow: 'Ahora no',
+      enable: 'Usar mi perfil'
+    }
+  }
+}

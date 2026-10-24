@@ -173,6 +173,46 @@ afterEach(() => {
 })
 
 describe('ToolsetConfigPanel', () => {
+  it('explains that the browser driver and provider can be active together', async () => {
+    getToolsetConfig.mockResolvedValue(
+      config({
+        name: 'browser',
+        active_provider: 'Local Browser',
+        providers: [
+          {
+            name: 'Browser Use',
+            badge: 'driver',
+            tag: 'Browser Use driver',
+            env_vars: [],
+            post_setup: null,
+            requires_nous_auth: false,
+            is_active: true,
+            status: 'ready'
+          },
+          {
+            name: 'Local Browser',
+            badge: 'free',
+            tag: 'Headless Chromium, no API key needed',
+            env_vars: [],
+            post_setup: null,
+            requires_nous_auth: false,
+            is_active: true,
+            status: 'ready'
+          }
+        ]
+      })
+    )
+
+    render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
+
+    expect(
+      await screen.findByText(
+        'Browser Use selects the browser driver. The provider selects where the browser runs. Both can be active at once.'
+      )
+    ).toBeTruthy()
+    expect(await screen.findAllByText('Active')).toHaveLength(2)
+  })
+
   it('renders inline voice/model fields for a TTS provider row carrying tts_provider', async () => {
     // The Capabilities gap: provider rows only showed API keys — voice/model
     // settings lived exclusively in Settings → Voice. Rows now carry the

@@ -1285,6 +1285,11 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         self._semantic_thread_renames = SemanticThreadRenames()
         # Persistent typing loops per channel (DMs don't reliably show bot typing events).
         self._typing_tasks: dict[str, asyncio.Task] = {}
+        # Backstop so an orphaned typing loop — a turn that ends without stop_typing(),
+        # e.g. a session eviction / turn interrupt that never reaches the per-turn
+        # finally (#85427) — cannot POST /typing forever. A still-running turn
+        # re-arms a fresh loop on the next _keep_typing tick.
+        self._typing_max_lifetime_secs: float = 15 * 60
         self._bot_task: Optional[asyncio.Task] = None
         # Background task that runs post-connect housekeeping (command-menu registration + DM-topic setup)
         # off the connect path so a slow Bot API call (e.g. a set_my_commands stall for certain tokens)
@@ -4330,15 +4335,20 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Start a persistent typing loop (POST typing every 12s; indicator lasts ~10s).
-        TYPING_START is unreliable for bots in DMs; 429 sleeps ``retry_after``; CancelledError ends it."""
+        TYPING_START is unreliable for bots in DMs; 429 sleeps ``retry_after``; CancelledError ends it.
+        The loop is bounded by ``_typing_max_lifetime_secs`` so an orphaned task (a turn that ends
+        without ``stop_typing`` — e.g. session eviction / turn interrupt, #85427) cannot POST forever;
+        a still-active turn re-arms a fresh loop on the next ``_keep_typing`` tick."""
         if not self._client:
             return
         if chat_id in self._typing_tasks:
             return
 
         async def _typing_loop() -> None:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + self._typing_max_lifetime_secs
             try:
-                while True:
+                while loop.time() < deadline:
                     try:
                         route = discord.http.Route(
                             "POST", "/channels/{channel_id}/typing", channel_id=chat_id,
@@ -4358,7 +4368,15 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                             return
                         await asyncio.sleep(retry_after)
                         continue
-                    await asyncio.sleep(12)
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        break
+                    await asyncio.sleep(min(12.0, remaining))
+                logger.debug(
+                    "Discord typing loop hit its %.0fs max lifetime for %s; stopping so it "
+                    "cannot outlive the turn as an orphaned loop",
+                    self._typing_max_lifetime_secs, chat_id,
+                )
             except asyncio.CancelledError:
                 pass
             finally:

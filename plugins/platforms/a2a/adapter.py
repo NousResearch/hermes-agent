@@ -13,7 +13,6 @@ import logging
 import os
 import socket
 import re
-import socket
 import threading
 import time
 import urllib.parse
@@ -469,14 +468,20 @@ class A2AAdapter(BasePlatformAdapter):
             active_tasks = set(self._active_tasks)
             parked = set(self._parked)
         timeout = _orphan_timeout()
-        failed = self.tasks.fail_orphans(timeout, exclude=active_tasks)
+        # An INPUT_REQUIRED task is waiting on the human, not on a reply window: the short orphan grace
+        # must not fail a clarification while it is being answered. It is not parked (its reply already
+        # landed, so no late reply can arrive) and _finalize_task has already popped it from
+        # _active_tasks — without this exclusion the 300s sweep is what kills it.
+        awaiting_input = set(self.tasks.input_required())
+        failed = self.tasks.fail_orphans(timeout, exclude=active_tasks | awaiting_input)
         for tid in failed:
             logger.warning("A2A: orphaned task %s marked failed (timeout %gs)", tid, timeout)
             self._drop_swept_pending(tid)
         # Parked tasks are deliberately excluded above (a live entry is what lets the late reply land),
-        # so the job budget is the only thing that ever bounds them.
+        # so the job budget is the only thing that ever bounds them. The same budget is the only bound on
+        # an unanswered clarification: it is off the short sweep, never off the clock.
         job = _job_timeout()
-        expired = self.tasks.fail_orphans(job, exclude=active_tasks - parked, only=parked,
+        expired = self.tasks.fail_orphans(job, exclude=active_tasks - parked, only=parked | awaiting_input,
                                           reason=f"[task exceeded A2A_JOB_TIMEOUT={job:.0f}s — no reply within the job budget]")
         for tid in expired:
             logger.warning("A2A: parked task %s marked failed (job budget %.0fs)", tid, job)

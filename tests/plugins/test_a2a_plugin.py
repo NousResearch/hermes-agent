@@ -2243,6 +2243,27 @@ class TestV1SpecRegressionFixes:
         assert restored is not None
         assert restored["state"] == protocol.STATE_WORKING
 
+    def test_input_required_survives_the_orphan_grace_but_not_the_job_budget(self, monkeypatch):
+        """TASK_STATE_INPUT_REQUIRED is not terminal, so it is exposed to the orphan sweep — but the
+        task is waiting on the human, not on a reply window. The short grace must not fail a
+        clarification; the job budget still bounds an unanswered one."""
+        from plugins.platforms.a2a import adapter as adapter_mod
+        adapter, _base = _make_live_adapter(monkeypatch, reply_fn=lambda e: None)
+        adapter.tasks.create("t-clarify", "c1", "peer")
+        adapter.tasks.set_state("t-clarify", protocol.STATE_INPUT_REQUIRED)
+        adapter.tasks._tasks["t-clarify"]["created_at"] = time.time() - (adapter_mod._orphan_timeout() + 60)
+
+        # Older than the orphan grace, still inside the job budget: the clarification survives.
+        assert adapter._fail_orphans_once() == []
+        assert adapter.tasks.get("t-clarify")["state"] == protocol.STATE_INPUT_REQUIRED
+
+        # Past the job budget: an unanswered clarification is torn down like any other task.
+        adapter.tasks._tasks["t-clarify"]["created_at"] = time.time() - (adapter_mod._job_timeout() + 60)
+        assert adapter._fail_orphans_once() == ["t-clarify"]
+        stored = adapter.tasks.get("t-clarify")
+        assert stored["state"] == protocol.STATE_FAILED
+        assert "A2A_JOB_TIMEOUT" in stored["reply"]
+
     def test_live_forwarded_identities_are_exempt_from_the_dir_size_cap(self, monkeypatch, tmp_path):
         """The size cap must not prune the identity of a task that is still running.
 

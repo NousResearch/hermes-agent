@@ -348,6 +348,16 @@ class TaskStore:
         with self._lock:
             return [dict(rec) for rec in self._tasks.values() if rec.get("input_id")]
 
+    def input_required(self) -> list[str]:
+        """Task ids currently waiting on the user (TASK_STATE_INPUT_REQUIRED).
+
+        Deliberately absent from TERMINAL_STATES: a clarification is an open task, so tasks/get keeps
+        answering it. That is exactly why the orphan sweep has to be told about these separately — the
+        store would otherwise treat them like any other non-terminal task on the short grace.
+        """
+        with self._lock:
+            return [tid for tid, rec in self._tasks.items() if rec["state"] == STATE_INPUT_REQUIRED]
+
     def set_state(self, task_id: str, state: str) -> None:
         with self._lock:
             if (rec := self._tasks.get(task_id)) and rec["state"] not in TERMINAL_STATES:

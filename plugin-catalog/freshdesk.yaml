@@ -1,7 +1,7 @@
 name: freshdesk
 repo: https://github.com/aedelgod/hermes-plugin-freshdesk
 sha: "86d2f5312c1a1184516bef649ecb16f3fccc9011"
-description: "Generic Freshdesk API v2 tools for Hermes Agent. Unaffiliated community connector, not a Freshworks product. Disclosure: calls the account's native Freshdesk HTTPS origin with profile-scoped secrets FRESHDESK_DOMAIN and FRESHDESK_API_KEY; downloads an attachment into the Hermes cache only from that ticket's own attachment hosts; the five write tools escalate to Hermes human approval and fail closed when no person is present. No third-party dependencies, shell commands, telemetry, or self-updater."
+description: "Generic Freshdesk API v2 tools for Hermes Agent. Unaffiliated community connector, not a Freshworks product. Disclosure — calls the account's native Freshdesk HTTPS origin with profile-scoped secrets FRESHDESK_DOMAIN and FRESHDESK_API_KEY; downloads an attachment into the Hermes cache only from that ticket's own attachment hosts; the five write tools (private note, create ticket, public reply that Freshdesk emails to the ticket's requester, time entry, status/priority update) escalate to Hermes human approval and fail closed when no person is present. No third-party dependencies, shell commands, telemetry, or self-updater."
 maintainer: GFORGOV
 tier: community
 category: tools

@@ -1,0 +1,5 @@
+name: prime-inference-provider
+kind: model-provider
+version: 1.0.0
+description: Prime Intellect Prime Inference — OpenAI-compatible API
+author: Prime Intellect

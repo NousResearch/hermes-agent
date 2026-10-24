@@ -4,6 +4,8 @@ import type { Terminal } from '@xterm/xterm'
 import { useEffect, useRef } from 'react'
 import type { RefObject } from 'react'
 
+import { $terminalFontSize } from '@/store/terminal-font-size'
+
 import { $terminalFontFamily, applyTerminalFontFamily, resolveTerminalFontFamily } from './terminal-font'
 import { redrawAllTerminals } from './terminals'
 
@@ -11,6 +13,16 @@ interface TerminalFontControllerOptions {
   fitRef: RefObject<((visible: boolean) => void) | null>
   termRef: RefObject<Terminal | null>
   webglRef: RefObject<WebglAddon | null>
+}
+
+function clearAtlasSafely(webgl: Pick<WebglAddon, 'clearTextureAtlas'> | null): boolean {
+  try {
+    webgl?.clearTextureAtlas()
+
+    return true
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -25,7 +37,25 @@ export function useTerminalFontController({ fitRef, termRef, webglRef }: Termina
   const mountedRef = useRef(false)
   const generationRef = useRef(0)
 
+  const fontSize = useStore($terminalFontSize)
+  const latestFontSizeRef = useRef(fontSize)
+
   latestFontFamilyRef.current = fontFamily
+  latestFontSizeRef.current = fontSize
+
+  useEffect(() => {
+    const term = termRef.current
+
+    if (!mountedRef.current || !term || term.options.fontSize === fontSize) {
+      return
+    }
+
+    term.options.fontSize = fontSize
+    fitRef.current?.(true)
+
+    clearAtlasSafely(webglRef.current)
+    redrawAllTerminals()
+  }, [fitRef, fontSize, termRef, webglRef])
 
   useEffect(() => {
     const term = termRef.current
@@ -55,5 +85,5 @@ export function useTerminalFontController({ fitRef, termRef, webglRef }: Termina
     }
   }, [fitRef, fontFamily, termRef, webglRef])
 
-  return { latestFontFamilyRef, mountedRef }
+  return { latestFontFamilyRef, latestFontSizeRef, mountedRef }
 }

@@ -621,8 +621,19 @@ def build_alias_map() -> dict[str, str]:
     Scans the wrapper dir ONCE, reading only a head slice of each candidate and skipping
     binaries. A custom alias (file name != profile) wins over the profile-named wrapper;
     deterministic via sorted iteration."""
-    wrapper_dir = _get_wrapper_dir()
     result: dict[str, str] = {}
+    for alias, canon in list_wrapper_aliases():
+        if alias == canon:
+            result.setdefault(canon, alias)  # never overwrite a custom alias already found
+        else:
+            result[canon] = alias
+    return result
+
+
+def list_wrapper_aliases() -> list[tuple[str, str]]:
+    """Return ``(alias, target_profile)`` for every Hermes-generated wrapper."""
+    wrapper_dir = _get_wrapper_dir()
+    result: list[tuple[str, str]] = []
     if not wrapper_dir.is_dir():
         return result
     is_windows = sys.platform == "win32"
@@ -648,10 +659,7 @@ def build_alias_map() -> dict[str, str]:
             continue
         canon = normalize_profile_name(canon)
         alias = entry.stem if is_windows else entry.name
-        if alias == canon:
-            result.setdefault(canon, alias)  # never overwrite a custom alias already found
-        else:
-            result[canon] = alias
+        result.append((alias, canon))
     return result
 
 

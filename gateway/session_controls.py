@@ -841,7 +841,8 @@ class AuthorityConnection:
         def entitled(session_id, events):
             # The same rule ``clarify.lock`` applies to the same request id (attached + respond).
             return may_settle(self.authority, self.actor, session_id, events)
-        if not resolve(frame, session_ok=entitled):
+        # ``self.transport`` is the peer ``attach`` put on the session's fan-out: an abstention names it.
+        if not resolve(frame, session_ok=entitled, transport=self.transport):
             import logging
             logging.getLogger(__name__).debug('dropping response for unknown server request id=%r', frame.get('id'))
 

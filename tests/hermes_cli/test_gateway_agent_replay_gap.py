@@ -198,12 +198,13 @@ def test_a_finite_turn_whose_start_the_gap_ate_answers_its_requests(agents, monk
         return await original(method, **params)
 
     monkeypatch.setattr(client, "rpc", rpc)
-    replies = []
+    replies, abstained = [], []
     agent.connection.reply = lambda rid, result: replies.append((rid, result)) or True
+    agent.connection.abstain = lambda rid: abstained.append(rid) or True
     set_sudo_password_callback(lambda: "pw")
     try:
         result = agent.run_conversation("run sudo")  # this thread: the sudo callback is thread-local
     finally:
         set_sudo_password_callback(None)
     assert not result["failed"]
-    assert replies == ([("srq-sudo", {"value": "pw"})] if answered else [])
+    assert (replies, abstained) == (([("srq-sudo", {"value": "pw"})], []) if answered else ([], ["srq-sudo"]))

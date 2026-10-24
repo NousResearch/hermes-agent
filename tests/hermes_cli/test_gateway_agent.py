@@ -589,7 +589,8 @@ _SUDO_REQUEST = {"jsonrpc": "2.0", "id": "srq-sudo", "method": "sudo",
 def test_a_finite_client_leaves_the_running_turns_requests_to_the_viewers_that_show_them(make_agent):
     """``hermes chat --resume <id> -Q`` queued behind a Desktop turn (#143565): that turn's batch clarify and
     sudo prompt reach every attached viewer. The headless -Q answer settled them blank at once, before the
-    human on Desktop saw the card."""
+    human on Desktop saw the card; it abstains instead, which the gateway declines at once only when no
+    other viewer is attached."""
     from hermes_cli.cli_agent_setup_mixin import _single_query_clarify_callback
     from tools.terminal_tool import set_sudo_password_callback
     clarify = {"jsonrpc": "2.0", "id": "srq-clr", "method": "clarify", "params": {"session_id": SID, "questions": [
@@ -601,14 +602,15 @@ def test_a_finite_client_leaves_the_running_turns_requests_to_the_viewers_that_s
          frame("message.start", {}), frame("message.complete", {"text": "ok", "outcome": "completed"})],
         clarify_callback=lambda questions: asked.append(questions) or _single_query_clarify_callback(questions))
     agent._finite = True
-    replies = []
+    replies, abstained = [], []
     agent.connection.reply = lambda rid, result: replies.append((rid, result)) or True
+    agent.connection.abstain = lambda rid: abstained.append(rid) or True
     set_sudo_password_callback(lambda: asked.append("sudo") or "")
     try:
         agent.run_conversation("note")
     finally:
         set_sudo_password_callback(None)
-    assert (asked, replies) == ([], [])
+    assert (asked, replies, abstained) == ([], [], ["srq-clr", "srq-sudo"])
 
 
 def test_a_finite_client_answers_its_own_turns_requests(make_agent):
@@ -616,14 +618,15 @@ def test_a_finite_client_answers_its_own_turns_requests(make_agent):
     agent, _ = make_agent([frame("message.start", {}), _SUDO_REQUEST,
                            frame("message.complete", {"text": "ok", "outcome": "completed"})])
     agent._finite = True
-    replies = []
+    replies, abstained = [], []
     agent.connection.reply = lambda rid, result: replies.append((rid, result)) or True
+    agent.connection.abstain = lambda rid: abstained.append(rid) or True
     set_sudo_password_callback(lambda: "pw")
     try:
         agent.run_conversation("run sudo")
     finally:
         set_sudo_password_callback(None)
-    assert replies == [("srq-sudo", {"value": "pw"})]
+    assert (replies, abstained) == ([("srq-sudo", {"value": "pw"})], [])
 
 
 def test_a_mid_turn_steer_row_is_estimated_delta_like_main(make_agent):

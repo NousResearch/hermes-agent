@@ -866,9 +866,12 @@ class GatewayAgent:
                 continue
             if frame.get("method") in _SERVER_REQUESTS and "id" in frame:
                 # A finite client (``-q``/``-Q``) answers with no human. Before its own admission runs, a
-                # request is the running turn's, left to the viewers that can show it (#143565).
+                # request is the running turn's: it abstains, leaving it to the viewers that can show it, and
+                # with none attached the gateway declines it at once (#143565).
                 if turn.started or not getattr(self, "_finite", False):
                     self._answer_request(frame)
+                else:
+                    self.connection.abstain(frame["id"])
                 continue
             kind, payload = params.get("type"), params.get("payload") or {}
             admission = params.get("admission_id") or (payload.get("admission_id") if isinstance(payload, dict) else None)

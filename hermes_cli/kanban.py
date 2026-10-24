@@ -350,8 +350,14 @@ def _cmd_create(args: argparse.Namespace) -> int:
         branch_name = _parse_branch_flag(getattr(args, "branch", None))
     except argparse.ArgumentTypeError as exc:
         return _err(f"kanban: {exc}", 2)
-    if branch_name and ws_kind != "worktree":
+    if branch_name and ws_kind is not None and ws_kind != "worktree":
         return _err("kanban: --branch is only valid with --workspace worktree", 2)
+    branch_template = getattr(args, "branch_template", None)
+    branch_prefix = getattr(args, "branch_prefix", None)
+    if branch_name and branch_template:
+        return _err("kanban: --branch and --branch-template are mutually exclusive", 2)
+    if (branch_template or branch_prefix) and ws_kind is not None and ws_kind != "worktree":
+        return _err("kanban: --branch-template and --branch-prefix are only valid with --workspace worktree", 2)
     try:
         max_runtime = _parse_duration(getattr(args, "max_runtime", None))
     except ValueError as exc:
@@ -365,6 +371,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             conn, title=args.title, body=body, assignee=args.assignee,
             created_by=args.created_by or _profile_author(),
             workspace_kind=ws_kind, workspace_path=ws_path, branch_name=branch_name,
+            branch_template=branch_template, branch_prefix=branch_prefix,
             project_id=getattr(args, "project", None), tenant=args.tenant, priority=args.priority,
             parents=tuple(args.parent or ()), triage=bool(getattr(args, "triage", False)),
             idempotency_key=getattr(args, "idempotency_key", None),

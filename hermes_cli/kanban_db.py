@@ -23,6 +23,7 @@ import sqlite3
 import subprocess
 import sys
 import logging
+import string
 import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
@@ -1157,7 +1158,8 @@ def create_task(
     conn: sqlite3.Connection, *, title: str, body: Optional[str] = None,
     assignee: Optional[str] = None, created_by: Optional[str] = None,
     workspace_kind: Optional[str] = None, workspace_path: Optional[str] = None,
-    branch_name: Optional[str] = None, tenant: Optional[str] = None, priority: int = 0,
+    branch_name: Optional[str] = None, branch_template: Optional[str] = None,
+    branch_prefix: Optional[str] = None, tenant: Optional[str] = None, priority: int = 0,
     parents: Iterable[str] = (), triage: bool = False, idempotency_key: Optional[str] = None,
     max_runtime_seconds: Optional[int] = None, skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None, model_override: Optional[str] = None,
@@ -1212,12 +1214,22 @@ def create_task(
         )
     if branch_name is not None:
         branch_name = str(branch_name).strip() or None
-    if branch_name and workspace_kind != "worktree":
-        raise ValueError("branch_name is only valid for worktree workspaces")
+    if branch_template is not None:
+        branch_template = str(branch_template).strip() or None
+    if branch_prefix is not None:
+        branch_prefix = str(branch_prefix).strip() or None
+    if branch_name and branch_template:
+        raise ValueError("branch_name and branch_template are mutually exclusive")
+    if branch_prefix and not branch_template:
+        raise ValueError("branch_prefix requires branch_template")
 
     project_id, project_obj, project_repo, workspace_kind = _resolve_project_link(
         conn, project_id, project_source_task_id, workspace_kind, workspace_path
     )
+    if branch_name and workspace_kind != "worktree":
+        raise ValueError("branch_name is only valid for worktree workspaces")
+    if (branch_template or branch_prefix) and workspace_kind != "worktree":
+        raise ValueError("branch_template and branch_prefix are only valid for worktree workspaces")
     parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
 
@@ -1249,6 +1261,10 @@ def create_task(
             # commit so the dispatcher never sees a half-built graph.
             with write_txn(conn, allow_nested=True):
                 task_status, tenant = initial_task_state(conn, parents, initial_status, triage, tenant)
+                if branch_template:
+                    branch_name = _branch_name_from_template(
+                        branch_template, branch_prefix, task_id, title,
+                    )
                 # Project worktree: fresh dir under the repo + deterministic
                 # branch, instead of the random ``wt/<id>`` worker fallback.
                 if project_obj is not None and workspace_kind == "worktree":
@@ -1340,6 +1356,36 @@ def _project_branch_name(project_obj: Any, task_id: str, title: Optional[str]) -
         return _pdb.branch_name_for(project_obj, task_id, title=title or "")
     except Exception:
         return None
+
+
+def _branch_name_from_template(
+    template: str, prefix: Optional[str], task_id: str, title: str,
+) -> str:
+    """Render the supported create-time fields after a task id is allocated."""
+    fields: set[str] = set()
+    try:
+        for _, field_name, format_spec, conversion in string.Formatter().parse(template):
+            if field_name is not None:
+                fields.add(field_name)
+                if format_spec or conversion or field_name not in {"prefix", "task_id", "slug"}:
+                    raise ValueError
+    except ValueError as exc:
+        raise ValueError(
+            "branch_template supports only {prefix}, {task_id}, and {slug} without format modifiers"
+        ) from exc
+    if "prefix" in fields and not prefix:
+        raise ValueError("branch_template uses {prefix}; pass a non-empty branch_prefix")
+    branch_name = template.format(
+        prefix=prefix or "", task_id=task_id, slug=_branch_slug(title),
+    )
+    if not branch_name or branch_name.startswith("-") or any(ch.isspace() for ch in branch_name):
+        raise ValueError("branch_template produced an invalid branch name")
+    return branch_name
+
+
+def _branch_slug(title: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    return slug or "task"
 
 
 def _link(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:

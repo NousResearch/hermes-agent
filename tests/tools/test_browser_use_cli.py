@@ -730,25 +730,25 @@ class TestHeaderVariants:
         monkeypatch.setattr(
             "tools.vision_tools._should_use_native_vision_fast_path", lambda: False
         )
+        monkeypatch.setattr("tools.vision_tools.check_vision_requirements", lambda: False)
         monkeypatch.setattr(
             "tools.browser_lightpanda.lightpanda_engine_status", lambda: (False, "")
         )
         assert bu_cli._description_header() == bu_cli._HEADER_BASE + bu_cli._HEADER_TEXT_ONLY
 
-    def test_text_only_header_claims_nothing_about_model_vision(self, monkeypatch):
-        """The text-only gate measures whether screenshots ride back in TOOL RESULTS, not whether
-        the model has vision; a vision-capable model on a provider without tool-result media must
-        not be told it "cannot view images" (#131568: it then skipped a user-attached image)."""
-        monkeypatch.setattr(
-            "tools.vision_tools._should_use_native_vision_fast_path", lambda: False
-        )
-        monkeypatch.setattr(
-            "tools.browser_tool_lightpanda_fallback.lightpanda_engine_status", lambda: (False, "")
-        )
-        header = bu_cli._description_header().lower()
-        assert "your model cannot" not in header
-        assert "cannot view images" not in header
-        assert "tool's results" in header and "text-first" in header
+    def test_non_native_header_never_calls_the_model_blind(self, monkeypatch):
+        """The gate measures whether screenshots ride back in THIS tool's results, not whether the
+        model sees (#131568: "your model cannot view images" made a model skip a user image). With a
+        vision route (an explicit auxiliary.vision pin) the header names it; without one it says so."""
+        monkeypatch.setattr("tools.vision_tools._should_use_native_vision_fast_path", lambda: False)
+        monkeypatch.setattr("tools.browser_lightpanda.lightpanda_engine_status", lambda: (False, ""))
+        for aux_route in (True, False):
+            monkeypatch.setattr("tools.vision_tools.check_vision_requirements", lambda: aux_route)
+            header = bu_cli._description_header().lower()
+            assert "cannot view images" not in header and "your model cannot" not in header
+            assert "described below" not in header  # no screenshot section follows the header
+            assert "not attached to this tool's results" in header and "text-first" in header
+            assert ("vision_analyze" in header) is aux_route
 
 
 class TestSkillTextDescription:

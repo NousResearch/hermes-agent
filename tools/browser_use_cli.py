@@ -808,25 +808,32 @@ _HEADER_VISION = (
     "with your own vision — never send browser screenshots to a separate vision tool."
 )
 
-# Chosen when screenshots cannot ride back inside THIS tool's results (provider/model
-# rejects tool-result media, or routing is not ``native``). That is a transport fact
-# about tool results, not a verdict on the model's vision: a vision-capable model still
-# sees images the user attaches to the conversation, so the header must never say
-# "your model cannot view images" — models quote that against themselves (#131568).
-_HEADER_TEXT_ONLY = (
-    " Screenshots will not reach you through this tool's results in this setup, so work text-first: "
+_TEXT_FIRST = (
     "page_info() for state, js() for reading/extracting DOM text, fill_input(selector, text) for inputs, and "
-    "js(\"document.querySelector('…').click()\") for clicks — skip the screenshot-driven workflow described below. "
-    "This says nothing about images the user attaches to the conversation."
+    "js(\"document.querySelector('…').click()\") for clicks."
 )
 
-# Appended when the local engine is Lightpanda: no graphical renderer, and one CDP
-# connection holds one page — a second Target.createTarget fails with
-# TargetAlreadyLoaded (drop the new_tab() sentence once lightpanda-io/browser#1962 lands).
+# The non-native headers state a transport fact (screenshots do not ride back inside THIS
+# tool's results: routing is not ``native`` — e.g. an explicit ``auxiliary.vision`` pin — or
+# the route rejects tool-result media), never a verdict on the model's own vision: models
+# quote "your model cannot view images" against themselves and skip user images (#131568).
+_HEADER_VISION_TOOL = (
+    " Screenshots are not attached to this tool's results; to inspect one, pass its capture_screenshot() "
+    "path to vision_analyze. Otherwise work text-first: " + _TEXT_FIRST
+)
+
+_HEADER_TEXT_ONLY = (
+    " Screenshots are not attached to this tool's results and no vision route is configured, so work "
+    "text-first: " + _TEXT_FIRST
+)
+
+# Lightpanda: no graphical renderer, and one CDP connection holds one page — a second
+# Target.createTarget fails with TargetAlreadyLoaded (drop the new_tab() sentence once
+# lightpanda-io/browser#1962 lands).
 _HEADER_LIGHTPANDA = (
     " The local engine is Lightpanda (no graphical renderer, one page per session): capture_screenshot() "
-    "is unavailable, so work text-first; navigate with new_tab(url) exactly once, then goto_url(url) for "
-    "every later navigation — a second new_tab() fails with TargetAlreadyLoaded."
+    "is unavailable, so work text-first: " + _TEXT_FIRST + " Navigate with new_tab(url) exactly once, then "
+    "goto_url(url) for every later navigation — a second new_tab() fails with TargetAlreadyLoaded."
 )
 
 # Pinned quick-reference for the CLI's pre-imported helpers, replacing the live
@@ -847,12 +854,15 @@ _HELPERS_DIGEST = (
 
 
 def _description_header() -> str:
-    """Header tailored to whether the active model can see images natively"""
+    """Header tailored to how a screenshot reaches the model: attached natively, via
+    vision_analyze (the same gate that registers that tool), or not at all."""
     if _lazy_call("tools.browser_lightpanda", "lightpanda_engine_status", (False, ""),
                   "lightpanda engine status unavailable")[0]:  # no screenshots, whatever the model sees
-        return _HEADER_BASE + _HEADER_TEXT_ONLY + _HEADER_LIGHTPANDA
-    vision = _lazy_call("tools.vision_tools", "_should_use_native_vision_fast_path", False, "")
-    return _HEADER_BASE + (_HEADER_VISION if vision else _HEADER_TEXT_ONLY)
+        return _HEADER_BASE + _HEADER_LIGHTPANDA
+    if _lazy_call("tools.vision_tools", "_should_use_native_vision_fast_path", False, ""):
+        return _HEADER_BASE + _HEADER_VISION
+    vision_tool = _lazy_call("tools.vision_tools", "check_vision_requirements", False, "vision route lookup failed")
+    return _HEADER_BASE + (_HEADER_VISION_TOOL if vision_tool else _HEADER_TEXT_ONLY)
 
 
 def _dynamic_schema_overrides() -> dict:

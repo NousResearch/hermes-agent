@@ -7,6 +7,7 @@ import dataclasses
 import hashlib
 import inspect
 import json
+import threading
 import logging
 import os
 import html as _html
@@ -723,6 +724,17 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         # Last truncated mid-stream preview per (chat_id, message_id): past the 4096 cap every edit
         # truncates to the SAME text, and resending burns flood budget. Dropped on finalize.
         self._last_overflow_preview: dict[tuple, str] = {}
+
+        # /purge buffer: tracks message_ids per chat so /purge can ask the
+        # Bot API to delete them. Bot API rules: can only delete messages
+        # within the last 48h, and only messages whose id we already know —
+        # so we capture every incoming (user) and outgoing (bot) message id
+        # we see from this moment on. Retroactive cleanup of past history is
+        # not possible. Persisted to disk so the buffer survives gateway
+        # restart within the 48h window.
+        self._purge_buffer: _TelegramPurgeBuffer = _TelegramPurgeBuffer(
+            hermes_home=str(_resolve_hermes_home_for_adapter(self))
+        )
 
     @property
     def send_path_degraded(self) -> bool:
@@ -1486,6 +1498,27 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         except Exception:
             pass
 
+    def _purge_buffer_add(
+        self,
+        chat_id: Any,
+        message_id: Any,
+        direction: str,
+        timestamp: Optional[int] = None,
+    ) -> None:
+        """Record a message id in the /purge buffer. Never raises — tracking is best-effort."""
+        buffer = getattr(self, "_purge_buffer", None)
+        if buffer is None:
+            return
+        try:
+            buffer.add(
+                chat_id=str(chat_id),
+                message_id=str(message_id),
+                direction=direction,
+                timestamp=timestamp,
+            )
+        except Exception:
+            logger.debug("[%s] purge_buffer.add failed", getattr(self, "name", "telegram"), exc_info=True)
+
     async def _try_send_rich(
         self, chat_id: str, content: str, reply_to: Optional[str], metadata: Optional[dict[str, Any]]) -> Optional[SendResult]:
         """Attempt a single ``sendRichMessage``. Returns a SendResult (success, or a transient failure the
@@ -1526,6 +1559,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             message_id = getattr(msg, "message_id", None)
         if message_id is not None:
             await self._record_rich_sent(chat_id, message_id, content)
+            # Track outgoing rich-message id so /purge can delete it.
+            self._purge_buffer_add(chat_id, message_id, direction="out")
         return SendResult(success=True, message_id=str(message_id) if message_id is not None else None)
 
     def _rich_payload_base(self, chat_id: str, content: str) -> dict[str, Any]:
@@ -3741,6 +3776,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             msg, used_thread_fallback = outcome
             delivered.append(str(msg.message_id))
         await self._retrigger_typing(chat_id, metadata)
+        # Track outgoing ids so /purge can delete them. Only the final
+        # message ids count — intermediate previews are superseded by these,
+        # so deleting the final messages removes the visible chat history.
+        for _mid in delivered:
+            self._purge_buffer_add(chat_id, _mid, direction="out")
         return SendResult(
             success=True, message_id=delivered[0] if delivered else None,
             raw_response={
@@ -7138,6 +7178,19 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         from plugins.platforms.telegram.telegram_context import group_identity_prompt
         _chat_id_str = str(chat.id)
         channel_prompt = resolve_channel_prompt(self.config.extra, thread_id_str or _chat_id_str, _chat_id_str if thread_id_str else None)
+        # Track this incoming message so /purge can ask the Bot API to delete
+        # it later. Bot API rules: can only delete within the last 48h and
+        # only with known ids — capture from this moment on.
+        self._purge_buffer_add(
+            _chat_id_str,
+            message.message_id,
+            direction="in",
+            timestamp=(
+                int(message.date.timestamp())
+                if getattr(message, "date", None) is not None
+                else None
+            ),
+        )
         return MessageEvent(
             text=expand_link_entities(message), message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.message_id), platform_update_id=update_id,
@@ -7379,3 +7432,198 @@ def register(ctx) -> None:
         env_overrides=gateway_env.ENV_OVERRIDES,
         env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
     )
+
+
+# ---------------------------------------------------------------------------
+# /purge support: message-id buffer
+# ---------------------------------------------------------------------------
+#
+# Telegram Bot API's ``deleteMessage`` only works for messages that the bot
+# already knows the id of (the API has no "list all messages in chat" endpoint),
+# and only within the last 48 hours.  This buffer captures every incoming and
+# outgoing message id we observe from now on, persisted to disk so the buffer
+# survives a gateway restart within the 48h window.
+#
+# The buffer is intentionally chat-scoped (not message-id-global) so /purge
+# only deletes from the chat where the user invoked it.  Timestamps let us
+# pre-filter anything older than 48h before calling the API (a 400 from the
+# Bot API is noisier than skipping the call locally).
+# ---------------------------------------------------------------------------
+
+_PURGE_BUFFER_PATH = "state/telegram_purge_buffer.json"
+_PURGE_MAX_AGE_SECONDS = 48 * 60 * 60  # Bot API deleteMessage window
+_PURGE_MAX_ENTRIES_PER_CHAT = 5000     # cap memory; older entries pruned first
+
+
+def _resolve_hermes_home_for_adapter(adapter: Any) -> _Path:
+    """Return the active HERMES_HOME path for a Telegram adapter instance.
+
+    Falls back to ``~/.hermes`` if ``get_hermes_home()`` raises (e.g. during
+    isolated unit tests that bypass ``HermesHome``).  Defined as a top-level
+    helper so the adapter's ``__init__`` can reference it via forward-declared
+    name without an import cycle.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+
+        return _Path(get_hermes_home())
+    except Exception:
+        return _Path(os.path.expanduser("~/.hermes"))
+
+
+class _TelegramPurgeBuffer:
+    """Per-chat rolling buffer of message_ids, with atomic disk persistence.
+
+    Public surface:
+      - ``add(chat_id, message_id, direction, timestamp=None)``
+      - ``snapshot(chat_id)`` → list of dicts the /purge handler iterates
+      - ``clear(chat_id)`` → drops everything tracked for a chat (called
+        after /purge deletes them all, so the buffer stays in sync with
+        the visible chat history and avoids "stale id" 400s next time)
+      - ``truncate_old()`` → drops entries older than the Bot API window,
+        called lazily on every ``add`` and on ``snapshot``
+    """
+
+    def __init__(self, hermes_home: str) -> None:
+        self._lock = threading.Lock()
+        self._path = _Path(hermes_home) / _PURGE_BUFFER_PATH
+        # in-memory: {chat_id: {message_id: {"d": "in"|"out", "t": int}}}
+        self._data: dict[str, dict[str, dict[str, Any]]] = {}
+        self._loaded = False
+        self._dirty = False
+
+    # ----- public API -----------------------------------------------------
+
+    def add(
+        self,
+        chat_id: str,
+        message_id: str,
+        direction: str,
+        timestamp: Optional[int] = None,
+    ) -> None:
+        if not chat_id or not message_id:
+            return
+        if direction not in ("in", "out"):
+            return
+        ts = int(timestamp) if timestamp is not None else int(time.time())
+        with self._lock:
+            self._ensure_loaded()
+            chat = self._data.setdefault(str(chat_id), {})
+            # Keep whichever direction the most recent observation assigned
+            # (an edit may flip direction knowledge but the id itself is
+            # what matters for deleteMessage).  Dedupe by id.
+            existing = chat.get(str(message_id))
+            if existing is None or existing.get("t", 0) <= ts:
+                chat[str(message_id)] = {"d": direction, "t": ts}
+                self._dirty = True
+            self._maybe_prune_chat(chat)
+            self._schedule_flush()
+
+    def snapshot(self, chat_id: str) -> list[dict[str, Any]]:
+        """Return a copy of tracked ids for a chat, oldest-first.
+
+        Entries older than the Bot API 48h window are filtered out so
+        /purge never issues a delete call we know will fail with 400.
+        """
+        with self._lock:
+            self._ensure_loaded()
+            self._truncate_old_locked()
+            chat = self._data.get(str(chat_id), {})
+            out = [
+                {"message_id": mid, "direction": meta.get("d"), "timestamp": meta.get("t")}
+                for mid, meta in chat.items()
+            ]
+        out.sort(key=lambda e: e.get("timestamp") or 0)
+        return out
+
+    def clear(self, chat_id: str) -> int:
+        """Drop all tracked ids for a chat.  Returns the count cleared."""
+        with self._lock:
+            self._ensure_loaded()
+            chat = self._data.pop(str(chat_id), {})
+            count = len(chat)
+            if count:
+                self._dirty = True
+                self._schedule_flush()
+            return count
+
+    # ----- internal -------------------------------------------------------
+
+    def _ensure_loaded(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
+        try:
+            if not self._path.exists():
+                return
+            raw = self._path.read_text(encoding="utf-8")
+            if not raw.strip():
+                return
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                return
+            for chat_id, entries in parsed.items():
+                if not isinstance(entries, dict):
+                    continue
+                clean: dict[str, dict[str, Any]] = {}
+                for mid, meta in entries.items():
+                    if not isinstance(meta, dict):
+                        continue
+                    clean[str(mid)] = {
+                        "d": str(meta.get("d", "out")),
+                        "t": int(meta.get("t", 0) or 0),
+                    }
+                self._data[str(chat_id)] = clean
+        except Exception:
+            logger.debug(
+                "[TelegramPurgeBuffer] failed to load %s", self._path, exc_info=True
+            )
+            self._data = {}
+
+    def _maybe_prune_chat(self, chat: dict[str, dict[str, Any]]) -> None:
+        if len(chat) <= _PURGE_MAX_ENTRIES_PER_CHAT:
+            return
+        # Drop oldest entries first
+        sorted_items = sorted(chat.items(), key=lambda kv: kv[1].get("t", 0))
+        excess = len(chat) - _PURGE_MAX_ENTRIES_PER_CHAT
+        for mid, _meta in sorted_items[:excess]:
+            chat.pop(mid, None)
+
+    def _truncate_old_locked(self) -> None:
+        cutoff = int(time.time()) - _PURGE_MAX_AGE_SECONDS
+        dirty = False
+        for chat in list(self._data.values()):
+            stale = [mid for mid, meta in chat.items() if int(meta.get("t", 0) or 0) < cutoff]
+            for mid in stale:
+                chat.pop(mid, None)
+                dirty = True
+        if dirty:
+            self._dirty = True
+
+    def _schedule_flush(self) -> None:
+        # Atomic disk write via utils.atomic_replace (writes tmp file,
+        # then os.replace onto the target).  Synchronous within the lock
+        # so a /purge issued immediately after a flurry of messages sees
+        # the latest state.  Skipped if no changes since last flush.
+        if not self._dirty:
+            return
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps(self._data, separators=(",", ":"))
+            tmp_path = self._path.with_suffix(self._path.suffix + ".tmp")
+            tmp_path.write_text(payload, encoding="utf-8")
+            try:
+                os.chmod(tmp_path, 0o600)
+            except OSError:
+                pass
+            from utils import atomic_replace
+            atomic_replace(tmp_path, self._path)
+            try:
+                os.chmod(self._path, 0o600)
+            except OSError:
+                pass
+            self._dirty = False
+        except Exception:
+            logger.debug(
+                "[TelegramPurgeBuffer] failed to flush %s", self._path, exc_info=True
+            )

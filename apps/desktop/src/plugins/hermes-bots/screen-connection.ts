@@ -64,6 +64,16 @@ export function isDisplayUnavailable(error: unknown): boolean {
   return message.includes('method not found') || message.includes('method-not-found')
 }
 
+/** The portal had no routable owner for this bot. A profile-only `display.*` request is
+ *  refused on a multi-source desktop (`Profile "x" requires a route descriptor…`), so no
+ *  status can ever be asked for: settled, unlike an offline bot's transient failure. */
+export function isDisplayRouteMissing(error: unknown): boolean {
+  const message =
+    typeof error === 'object' && error !== null ? String((error as { message?: unknown }).message ?? '') : ''
+
+  return message.includes('requires a route descriptor') || message.includes('has no connection owner')
+}
+
 /** The bot's backend is a Portal-managed runtime (Hermes Cloud): its Hermes is updated by the
  *  platform, never by the user, so "update the bot's Hermes" is not an instruction the user
  *  can follow. A `display.*` method-not-found from a managed release simply means Screen has

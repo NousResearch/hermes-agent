@@ -121,6 +121,34 @@ def _guarded_cleanup(label: str, fn: Callable[[], Any], errors: list[str], logge
         logger.error("finalize_turn: _%s failed: %s", label, err, exc_info=True)
 
 
+_OPEN_TODO_STATUSES = ("pending", "in_progress")
+_OPEN_NOTICE_MAX_ITEMS = 10
+
+
+def _open_todo_items(agent) -> list:
+    """Open (pending / in_progress) items of the agent's durable todo list; [] when there is none."""
+    store = getattr(agent, "_todo_store", None)
+    if store is None:
+        return []
+    try:
+        return [t for t in store.read() if t.get("status") in _OPEN_TODO_STATUSES]
+    except Exception:
+        return []
+
+
+def _open_obligations_notice(open_items: list, api_call_count: int, max_iterations: int) -> str:
+    """Deterministic, model-independent status for a turn that hit the iteration limit with open todos."""
+    marker = {"in_progress": "[>]", "pending": "[ ]"}
+    lines = [f"⚠️ Stopped at the iteration limit ({api_call_count}/{max_iterations}) with "
+             f"{len(open_items)} task(s) still open. This work is not complete:"]
+    for t in open_items[:_OPEN_NOTICE_MAX_ITEMS]:
+        lines.append(f"- {marker.get(t.get('status'), '[?]')} {t.get('id')}. {t.get('content')} ({t.get('status')})")
+    if len(open_items) > _OPEN_NOTICE_MAX_ITEMS:
+        lines.append(f"- ... and {len(open_items) - _OPEN_NOTICE_MAX_ITEMS} more")
+    lines.append("Send a message to resume from here.")
+    return "\n".join(lines)
+
+
 def _resolve_budget_fallback(
     agent, *, final_response, api_call_count, interrupted, failed, messages, _turn_exit_reason,
     _pending_verification_response, _pending_verification_response_previewed, logger,
@@ -169,6 +197,18 @@ def _resolve_budget_fallback(
                 interrupted = True
                 _turn_exit_reason = interrupted_during_api_call_reason(agent)
                 final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{time.time() - _summary_start:.1f}s elapsed)."
+
+    # #16004: a turn that stops on the iteration limit while the durable todo list (the same store Hermes
+    # restores and re-injects after compaction) still has open items must not read as finished. Append a
+    # deterministic notice built from the store, not from the exhausted model's own summary, and expose the
+    # count on the turn result (``open_obligations`` / ``resume_required``).
+    agent._turn_open_obligations = 0
+    if str(_turn_exit_reason).startswith("max_iterations_reached") and not interrupted:
+        open_items = _open_todo_items(agent)
+        if open_items:
+            agent._turn_open_obligations = len(open_items)
+            notice = _open_obligations_notice(open_items, api_call_count, agent.max_iterations)
+            final_response = f"{final_response.rstrip()}\n\n{notice}" if isinstance(final_response, str) and final_response.strip() else notice
 
     # A kanban worker must record a terminal outcome whether or not a fallback path
     # was eligible, so the dispatcher learns the worker could not complete. Only the
@@ -691,6 +731,9 @@ def finalize_turn(
         "api_calls": api_call_count,
         "completed": completed,
         "turn_exit_reason": _turn_exit_reason,
+        # #16004: open todo items when the turn stopped on the iteration limit (0 otherwise).
+        "open_obligations": getattr(agent, "_turn_open_obligations", 0),
+        "resume_required": bool(getattr(agent, "_turn_open_obligations", 0)),
         "failed": failed,
         "partial": False,  # True only when stopped due to invalid tool calls
         "interrupted": interrupted,

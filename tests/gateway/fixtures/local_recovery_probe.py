@@ -5,7 +5,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import random
 import signal
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -53,6 +55,31 @@ CHILD_ENV_KEYS = ('PATH', 'LANG', 'TZ', 'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', '
 
 def child_env():
     return {k: os.environ[k] for k in CHILD_ENV_KEYS if k in os.environ}
+
+
+def listen_port():
+    """A free loopback port below the kernel's ephemeral range, for a daemon to bind later.
+
+    A ``bind(('127.0.0.1', 0))`` pick sits in the ephemeral range, which every other test's
+    ``bind(0)`` and every outbound connect's source port draw from; on a 32-worker CI runner one
+    of them takes it before the daemon binds (or rebinds after a crash) -> EADDRINUSE.
+    Ports below the range are only handed out by explicit binds like this one.
+    """
+    try:
+        low = int(Path('/proc/sys/net/ipv4/ip_local_port_range').read_text(encoding='ascii').split()[0])
+    except (OSError, ValueError, IndexError):
+        low = 49152  # macOS/Windows default ephemeral floor
+    low = min(low, 32768)
+    picker = random.SystemRandom()
+    for _ in range(100):
+        port = picker.randrange(max(1024, low - 12000), low)
+        with socket.socket() as sock:
+            try:
+                sock.bind(('127.0.0.1', port))
+            except OSError:
+                continue
+        return port
+    raise RuntimeError('no free loopback port below the ephemeral range')
 
 
 async def rpc(ws, method, **params):
@@ -109,7 +136,7 @@ def probe(tmp_path):
     url = f'http://127.0.0.1:{peer.server_port}/v1'
     cfg = {'gateway': {'multiplex_profiles': False}, 'model': {'provider': 'custom', 'default': 'old-default', 'base_url': url},
            'auxiliary': {'title_generation': {'enabled': False}}, 'platform_toolsets': {'cli': []}}
-    (home / 'config.yaml').write_text(json.dumps(cfg))
+    (home / 'config.yaml').write_text(json.dumps(cfg), encoding='utf-8')
     env = child_env()
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
                OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url, PYTHONUNBUFFERED='1')
@@ -172,7 +199,7 @@ def probe(tmp_path):
             db.execute('UPDATE state_meta SET value=? WHERE key=?', ('{}', prefix + sessions['corrupt']))
         cfg['model']['default'] = 'changed-default'
         cfg['platform_toolsets']['cli'] = ['terminal']
-        (home / 'config.yaml').write_text(json.dumps(cfg))
+        (home / 'config.yaml').write_text(json.dumps(cfg), encoding='utf-8')
         with daemon(root, home, env, barrier=False) as (proc, desc):
             pids.append(proc.pid); epochs.append(desc['authority_epoch'])
             asyncio.run(second(desc))

@@ -912,24 +912,23 @@ def _zai_reset_ms(value: Any) -> Optional[datetime]:
     if _is_finite_num(value):
         # Z.AI returns epoch milliseconds for quota reset times.
         try:
-            return datetime.fromtimestamp(float(value) / 1000.0, tz=timezone.utc)
+            return datetime.fromtimestamp(float(value) / 1000.0, tz=UTC)
         except (OverflowError, OSError, ValueError):
             return None
     return _parse_dt(value)
 
 
 _ZAI_WINDOW_LABELS = {
-    # unit 3 + number 5 = rolling 5-hour credit window (Coding Plan).
-    (3, 5): "5h credits",
-    # unit 6 + number 1 = weekly/long-window credit quota.
-    (6, 1): "Weekly credits",
+    # Pro credits and Lite tokens use the same duration codes.
+    (3, 5): "5-hour window",
+    (6, 1): "Weekly window",
 }
 
 
 def _zai_window_label(item: dict[str, Any]) -> str:
     kind = str(item.get("type") or "").strip().upper()
     if kind == "TIME_LIMIT":
-        return "MCP/tools"
+        return "Monthly MCP/tools" if (item.get("unit"), item.get("number")) == (5, 1) else "MCP/tools"
     try:
         unit = int(item.get("unit", -1))
         number = int(item.get("number", -1))
@@ -947,11 +946,9 @@ def _fetch_zai_account_usage(
     """Z.AI (GLM Coding Plan) quota snapshot.
 
     Uses the monitor endpoint consumed by the Z.AI usage dashboard. The
-    endpoint returns the plan tier plus per-window credit usage for rolling
-    5-hour and weekly quotas. Verified live 2026-08-19: the Coding Plan key
-    returns CREDIT_LIMIT entries (not TOKENS_LIMIT). If Z.AI changes or
-    disables the endpoint, failures are caught by fetch_account_usage and the
-    quota block disappears rather than displaying invented numbers.
+    endpoint returns CREDIT_LIMIT (Pro) or TOKENS_LIMIT (Lite) model windows,
+    plus a separate TIME_LIMIT MCP/tool-call pool. Failures are caught by
+    fetch_account_usage rather than displaying invented numbers.
     """
     # The monitor endpoint and payload below were verified only for the global
     # Coding Plan route. Do not send unrelated Z.AI, China, or custom-route
@@ -1003,12 +1000,15 @@ def _fetch_zai_account_usage(
                 used_percent=used_percent,
                 reset_at=_zai_reset_ms(item.get("nextResetTime")),
                 detail=detail,
+                # Tool calls can be exhausted while model inference still works.
+                scope="tool" if str(item.get("type") or "").strip().upper() == "TIME_LIMIT" else "account",
             )
         )
         for usage_detail in item.get("usageDetails") or ():
-            if isinstance(usage_detail, dict) and usage_detail.get("modelCode"):
+            if (isinstance(usage_detail, dict) and usage_detail.get("modelCode")
+                    and usage_detail.get("usage") is not None):
                 details.append(
-                    f"{usage_detail.get('modelCode')}: {usage_detail.get('usage', 0)}"
+                    f"{usage_detail.get('modelCode')}: {usage_detail['usage']}"
                 )
 
     details.append("Usage dashboard: https://z.ai/manage-apikey/subscription")

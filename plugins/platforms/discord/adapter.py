@@ -82,6 +82,8 @@ class _Snowflake:
 
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
+from .config_extra import authored_extra
+
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
@@ -2700,8 +2702,25 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             )
         self._with_discord_recovery_db(_op)
 
+    def _is_draft_message(self, content: Any) -> bool:
+        """Opt-in literal markers at a word boundary; policy belongs to this adapter's profile."""
+        markers = self.config.extra.get("draft_markers", [])
+        if not isinstance(content, str) or not isinstance(markers, list):
+            return False
+        text = content.lstrip().casefold()
+        for marker in markers:
+            if not isinstance(marker, str) or not marker.strip():
+                continue
+            prefix = marker.strip().casefold()
+            if text.startswith(prefix) and (len(text) == len(prefix) or not text[len(prefix)].isalnum()
+                                           and text[len(prefix)] != "_"):
+                return True
+        return False
+
     async def _should_backfill_discord_message(self, message: Any) -> bool:
         """Return True when a recent Discord message still needs Hermes work."""
+        if self._is_draft_message(getattr(message, "content", "")):
+            return False
         if not self._client or not getattr(self._client, "user", None):
             return False
         if getattr(getattr(message, "author", None), "id", None) == getattr(self._client.user, "id", None):
@@ -5243,6 +5262,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 nonlocal has_unverified
                 if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
                     return None
+                if self._is_draft_message(getattr(msg, "content", "")):
+                    return None
                 content = getattr(msg, "clean_content", msg.content) or ""
                 if (
                     str(getattr(msg, "id", "")) in self._nonconversational_messages
@@ -6083,10 +6104,29 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 return _Snowflake(int(_ref_mid))
         return None
 
+    def _is_draft_only_forward(self, message: Any) -> bool:
+        if (getattr(message, "content", "") or "").strip() or getattr(message, "attachments", []):
+            return False
+        snapshots = getattr(message, "message_snapshots", []) or []
+        return bool(snapshots) and all(self._is_draft_message(getattr(item, "content", "")) for item in snapshots)
+
+    def _draft_filtered_snapshots(self, message: Any) -> tuple[str, list]:
+        parts, attachments = [], []
+        for snapshot in getattr(message, "message_snapshots", []) or []:
+            content = getattr(snapshot, "content", "") or ""
+            if self._is_draft_message(content):
+                continue
+            if content:
+                parts.append(content.strip())
+            attachments.extend(getattr(snapshot, "attachments", []) or [])
+        return "\n".join(parts), attachments
+
     async def _handle_message(
         self, message: DiscordMessage, role_authorized: bool = False, *, recovered: bool = False,
     ) -> bool:
         """Handle one Discord message and report whether it reached dispatch."""
+        if self._is_draft_message(getattr(message, "content", "")) or self._is_draft_only_forward(message):
+            return False
         # Server channels (not DMs) require @mention unless free-response or an already-joined thread.
         #
         # Config (discord.* in config.yaml or DISCORD_* env vars):
@@ -6108,16 +6148,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         raw_content = message.content.strip()
         normalized_content = raw_content
         mention_prefix = False
-        snapshot_attachments = []
-        if hasattr(message, "message_snapshots") and message.message_snapshots:
-            snapshot_text_parts = []
-            for snap in message.message_snapshots:
-                if getattr(snap, "content", None):
-                    snapshot_text_parts.append(snap.content.strip())
-                snapshot_attachments.extend(getattr(snap, "attachments", []) or [])
-            if snapshot_text_parts and not raw_content:
-                raw_content = "\n".join(snapshot_text_parts)
-                normalized_content = raw_content
+        snapshot_text, snapshot_attachments = self._draft_filtered_snapshots(message)
+        if snapshot_text and not raw_content:
+            raw_content = snapshot_text
+            normalized_content = raw_content
         if self._self_is_explicitly_mentioned(message):
             mention_prefix = True
             if self._client.user:
@@ -6201,7 +6235,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         referenced_attachments = []
         reference = getattr(message, "reference", None)
         resolved_reference = getattr(reference, "resolved", None) if reference else None
-        if resolved_reference is not None:
+        if resolved_reference is not None and not self._is_draft_message(getattr(resolved_reference, "content", "")):
             referenced_attachments = list(getattr(resolved_reference, "attachments", []) or [])
         all_attachments = list(message.attachments) + snapshot_attachments + referenced_attachments
         if normalized_content.startswith("/"):
@@ -6287,7 +6321,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         reply_to_text = None
         if message.reference:
             reply_to_id = str(message.reference.message_id)
-            if message.reference.resolved:
+            if message.reference.resolved and not self._is_draft_message(getattr(message.reference.resolved, "content", "")):
                 reply_to_text = getattr(message.reference.resolved, "content", None) or None
         event = MessageEvent(
             text=event_text, message_type=msg_type, source=source, raw_message=message,
@@ -7287,7 +7321,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     def _csv(value) -> str:
         return ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
 
-    seeded_extra = {}
+    seeded_extra = authored_extra(discord_cfg, ("draft_markers",))
     for key, env_key in _YAML_BOOL_ENV_KEYS:
         if key in discord_cfg:
             seeded_extra[key] = discord_cfg[key]  # original type: the shared-key loop seeds bools as bools

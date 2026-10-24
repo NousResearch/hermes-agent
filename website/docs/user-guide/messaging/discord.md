@@ -1001,3 +1001,19 @@ Leave `everyone` and `roles` at `false` unless you know exactly why you need the
 For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).
 
 
+
+### Personal draft markers
+
+By default Hermes processes ordinary messages, including sentences beginning with `Draft`.
+To exclude personal drafts from Discord input and quoted context, set literal markers per profile:
+
+```yaml
+discord:
+  draft_markers: ["Draft", "Drafts"]  # optional; default []
+```
+
+Matching is case-insensitive at the beginning of the message, after leading whitespace.
+A marker must end at a word boundary: `Draft: private notes` is ignored, while
+`Drafting the release plan` remains ordinary input. The same filter covers recovered
+messages, channel history, forwarded snapshots and reply text/attachments. This only
+filters future input; it does not remove previously stored conversation content.

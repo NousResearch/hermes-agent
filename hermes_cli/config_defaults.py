@@ -1536,8 +1536,8 @@ DEFAULT_CONFIG = {
         "thread_require_mention": False,  # require @mention in thread replies too
         "channel_prompts": {},  # per-channel ephemeral system prompts
     },
-
     "discord": {
+        "draft_markers": [],  # optional ignored prefixes; profile-scoped
         "require_mention": True,  # require @mention to respond in server channels
         "free_response_channels": "",  # comma-separated channel IDs answered without mention
         "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)

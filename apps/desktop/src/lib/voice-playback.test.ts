@@ -108,6 +108,7 @@ class FakeAudioContext {
     getChannelData: () => new Float32Array(length)
   }))
   createBufferSource = vi.fn(() => ({
+    onended: null as null | (() => void),
     buffer: null as unknown,
     connect: vi.fn(),
     start: vi.fn()
@@ -223,6 +224,26 @@ describe('voice-playback teardown (#91991)', () => {
     expect(ws.sent.length).toBe(sentBefore)
   })
 
+  it('waits for all audio buffers even when the audio clock lags wall time', async () => {
+    const session = await liveSession()
+    const ws = FakeSocket.instances[0]
+    ws.serverOpen()
+    ws.serverFrame({ type: 'start', sample_rate: 24_000 })
+    ws.serverPcm(48_000)
+    ws.serverPcm(48_000)
+    ws.serverFrame({ type: 'end' })
+    ws.serverClose()
+    const context = FakeAudioContext.instances[0]
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(context.close).not.toHaveBeenCalled()
+    const sources = context.createBufferSource.mock.results.map(result => result.value)
+    sources[0].onended?.()
+    expect(context.close).not.toHaveBeenCalled()
+    sources[1].onended?.()
+    await expect(session.done).resolves.toBe('done')
+    expect(context.close).toHaveBeenCalledTimes(1)
+  })
+
   it('a barge-in during the drain window settles the session and the late drain is a no-op', async () => {
     const session = await liveSession()
     const ws = FakeSocket.instances[0]
@@ -230,16 +251,15 @@ describe('voice-playback teardown (#91991)', () => {
     ws.serverOpen()
     ws.serverFrame({ type: 'start', sample_rate: 24_000 })
     ws.serverPcm(64)
-    ws.serverFrame({ type: 'end' }) // drains, then settles — timer pending
+    ws.serverFrame({ type: 'end' }) // audio buffers are still playing
 
     stopVoicePlayback()
 
     await expect(session.done).resolves.toBe('done')
     expect(ws.close).toHaveBeenCalled()
 
-    // The pending drain timer fires later — it must not double-settle or
-    // disturb anything that started since.
-    await vi.runOnlyPendingTimersAsync()
+    // A late audio-ended event must not double-settle or revive playback.
+    FakeAudioContext.instances[0].createBufferSource.mock.results[0].value.onended?.()
 
     expect($voicePlayback.get().status).toBe('idle')
   })

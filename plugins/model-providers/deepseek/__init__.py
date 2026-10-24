@@ -50,6 +50,27 @@ class DeepSeekProfile(ProviderProfile):
             return {"thinking": {"type": "disabled"}}, {}
         return extras, top_level
 
+    def supported_reasoning_efforts(self, model: str | None) -> tuple[str, ...] | None:
+        """DeepSeek wire vocabulary for reasoning.effort, so max stays max.
+
+        The Responses transport consults this before its built-in Codex ladder,
+        which stops at xhigh; without a declaration a configured max was clamped
+        to xhigh -- and DeepSeek maps xhigh to high, so the ask silently lost its
+        top tier. Live 2026-10-16 on POST /responses: every level in the set below
+        returned HTTP 200, and an unknown level returns HTTP 422 whose message
+        names exactly these variants (none, minimal, low, medium, high, xhigh,
+        ultra, max). ultra is deliberately NOT declared: it is Hermes-internal
+        (the Codex product tier) and every declared wire set stops at max, so a
+        requested ultra clamps down to max instead of being sent.
+
+        Only DeepSeek's own models are declared; anything else returns None so
+        the transport keeps its per-route default.
+        """
+        m = (model or "").strip().lower()
+        if not m.startswith("deepseek"):
+            return None
+        return ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+
 
 deepseek = DeepSeekProfile(
     name="deepseek", aliases=("deepseek-chat", "deep-seek"), env_vars=("DEEPSEEK_API_KEY",), display_name="DeepSeek",

@@ -815,6 +815,10 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     allow_permanent = not smart_denied
 
     def deny(template: str, outcome: str, **fmt) -> dict:
+        if outcome in ("timeout", "cancelled"):
+            # The BLOCKED message names no pattern, so log it to keep the cause traceable.
+            logger.warning("Approval %s (pattern: %s): %s", outcome, pattern_key,
+                           redact_sensitive_text(description))
         breaker = ""
         if "{breaker}" in template:
             breaker = _denial_breaker_addendum(session_key)

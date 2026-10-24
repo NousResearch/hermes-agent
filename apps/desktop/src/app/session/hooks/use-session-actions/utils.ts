@@ -212,6 +212,29 @@ function preserveStructuralParts(message: ChatMessage, previous: ChatMessage): C
     part.type === 'reasoning' ? !hasReasoning : !presentToolCallIds.has(part.toolCallId)
   )
 
+  // A flat inflight snapshot has newer prose but no activity positions.
+  // Preserve the cached timeline instead of prepending its tools: that moved
+  // a pending question above the explanation that introduced it on resume.
+  const previousText = chatMessageText(previous)
+  const nextText = chatMessageText(message)
+
+  if (
+    missing.length &&
+    message.parts.every(part => part.type === 'text') &&
+    previous.parts.every(part => ['text', 'reasoning', 'tool-call'].includes(part.type)) &&
+    previousText &&
+    nextText.startsWith(previousText)
+  ) {
+    const lastText = previous.parts.findLastIndex(part => part.type === 'text')
+    const suffix = nextText.slice(previousText.length)
+
+    const parts = previous.parts.map((part, index) =>
+      index === lastText && part.type === 'text' && suffix ? { ...part, text: part.text + suffix } : part
+    )
+
+    return { ...message, parts }
+  }
+
   return missing.length ? { ...message, parts: [...missing, ...message.parts] } : message
 }
 
@@ -510,9 +533,7 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
         !hasStructuralParts(message) &&
         !isStrictAnswerTextExtension(nextText, previousVisibleText)
       ) {
-        const nonText = preserved.parts.filter(part => part.type !== 'text')
-        const priorAnswer = previous.parts.filter(part => part.type === 'text')
-        preserved = { ...preserved, parts: [...nonText, ...priorAnswer] }
+        preserved = { ...preserved, parts: previous.parts }
       }
     }
 

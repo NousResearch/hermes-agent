@@ -936,6 +936,7 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             # Clear ownership now so a later stop can't reap work this run left running.
             _api_server._clear_turn_process_ownership(agent)
             self._memory_sessions.checkin(agent)
+            _close_turn_codex_session(agent)
             # Declared-conversation binding, same precedence gate as _run_agent.
             if run.declared_selected:
                 self._bind_declared_conversation(
@@ -1148,6 +1149,20 @@ def _unregister_approval_notify(approval_session_key: Optional[str]) -> None:
         from tools.approval import unregister_gateway_notify
         if approval_session_key:
             unregister_gateway_notify(approval_session_key)
+
+
+def _close_turn_codex_session(agent) -> None:
+    """End-of-turn release of the agent's Codex app-server child (#137451).
+
+    Every API-server turn builds a fresh agent and drops it afterwards; nothing evicts it the way
+    the messaging gateway's agent cache does, so an unclosed ``codex app-server`` keeps running for
+    the gateway's life and, still owning the Codex thread, blocks the next turn's resume ("already
+    has an active writer"). Only the Codex session is closed: ``release_clients()`` would also
+    soft-release ``_active_children`` — the background-review fork still running after the turn —
+    and ``close()`` would tear down the session's terminal processes and the memory provider the
+    next request checks out again."""
+    with suppress(Exception):
+        agent._close_codex_session()
 
 
 def _release_run_owner_if_forgotten(self, run_id: str) -> None:

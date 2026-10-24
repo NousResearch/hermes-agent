@@ -19,6 +19,7 @@ const UTTERANCE_SETTLE_MS = 1_500
 
 interface PendingVoiceResponse {
   id: string
+  turnKey?: string
   pending: boolean
   text: string
 }
@@ -407,8 +408,8 @@ export function useVoiceLiveConversation({
       if (response) {
         turnObservedRef.current = true
 
-        if (spokenResponseIdRef.current !== response.id) {
-          spokenResponseIdRef.current = response.id
+        if (spokenResponseIdRef.current !== (response.turnKey ?? response.id)) {
+          spokenResponseIdRef.current = response.turnKey ?? response.id
           spokenLengthRef.current = 0
         }
 

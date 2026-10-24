@@ -732,7 +732,65 @@ def _cmd_unlink(args: argparse.Namespace) -> int:
                       f"Unlinked {args.parent_id} -> {args.child_id}")
 
 
+def _session_claim_hazard(task: Optional[kb.Task]) -> Optional[str]:
+    """Why a session claim of ``task`` can end in two concurrent writers (#83736), else None.
+
+    A session claim carries no heartbeat and cannot be terminated on reclaim:
+    once the claim TTL expires the dispatcher releases the stale lease and
+    reprocesses the card while the session keeps writing. Only
+    dispatcher-managed cards carry that hazard:
+
+    - an assignee that is a real profile - any dispatcher on the board may
+      reclaim the card and spawn a worker for it (deliberately the raw
+      ``profile_exists`` check: this home's ``kanban.dispatch_profiles``
+      allowlist does not constrain *other* homes on a shared board);
+    - an unassigned card this home routes via ``kanban.default_assignee``
+      (#27145) - resolved through the dispatcher's own predicate, so
+      ``kanban.dispatch_profiles`` is honoured on that lane.
+
+    Control-plane lanes (non-profile assignees) and plain unassigned cards
+    with no configured default are pulled by terminals by design and stay
+    claimable.
+    """
+    if task is None:
+        return None
+    if task.assignee:
+        from hermes_cli.profiles import profile_exists
+        if profile_exists(task.assignee):
+            return f"assignee profile '{task.assignee}'"
+        return None
+    raw = _kanban_config().get("default_assignee")
+    raw = raw.strip() if isinstance(raw, str) else None
+    # Same resolution the dispatcher uses for its unassigned lane, so the
+    # guard and the dispatcher agree on kanban.dispatch_profiles.
+    resolved = kbd._resolve_default_assignee(raw) if raw else None
+    if resolved:
+        return f"kanban.default_assignee routes it to '{resolved}'"
+    return None
+
+
 def _cmd_claim(args: argparse.Namespace) -> int:
+    # A session claim has no heartbeat and cannot be terminated on reclaim, so
+    # claiming a dispatcher-managed task risks two concurrent writers once the
+    # TTL expires (#83736): the dispatcher releases the stale lease and spawns
+    # a worker into the same workspace while the session is still writing.
+    # Dispatcher workers carry HERMES_KANBAN_RUN_ID, and control-plane lanes
+    # are pulled by terminals by design - both stay claimable. Refuse unless
+    # the caller opts in via --allow-session.
+    if not args.allow_session and not os.environ.get("HERMES_KANBAN_RUN_ID"):
+        with kbc.connect_closing() as conn:
+            existing = kb.get_task(conn, args.task_id)
+        hazard = _session_claim_hazard(existing)
+        if hazard is not None:
+            return _err(
+                f"cannot claim {args.task_id}: task is dispatcher-managed "
+                f"({hazard}). Session claims have no heartbeat and cannot be "
+                "terminated on reclaim, so the dispatcher would spawn a second "
+                "worker into the same workspace once the TTL expires. Create "
+                "the task and let the dispatcher own execution, or pass "
+                f"--allow-session for short tasks guaranteed to finish inside "
+                f"the lease ({args.ttl}s)."
+            )
     with kbc.connect_closing() as conn:
         task = kb.claim_task(conn, args.task_id, ttl_seconds=args.ttl)
         if task is None:

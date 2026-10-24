@@ -20,7 +20,7 @@ from agent.message_sanitization import (
     _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, coerce_tool_name, tool_call_id_variants, tool_result_id_variants
 )
 from agent.message_metadata import (
-    TOOL_CALL_UIDS, merge_tool_call_uids, per_occurrence_tool_call_uids, record_absorbed_message)
+    MERGED_TURN_PREFIX, TOOL_CALL_UIDS, merge_tool_call_uids, per_occurrence_tool_call_uids, record_absorbed_message)
 from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.think_scrubber import THINK_TAG_NAMES
@@ -31,7 +31,7 @@ from agent.credential_pool import (
 )
 from agent.error_classifier import FailoverReason
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
-from agent.message_metadata import MERGED_TURN_PREFIX
+from agent.command_token_source import remint_after_auth_failure
 from agent.turn_context import drop_stale_api_content
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
@@ -1014,8 +1014,8 @@ def recover_with_credential_pool(
     rotating. ``classified_reason`` beats raw HTTP codes (e.g. Anthropic 400 "out of extra
     usage"); ``billing_unverified`` gives the entry a short cooldown, not the one-hour bench."""
     pool = agent._credential_pool
-    if pool is None:
-        return False, has_retried_429
+    if pool is None:  # no pool, but a key_cmd source can still re-mint a rejected token once (#91119)
+        return remint_after_auth_failure(getattr(agent, "api_key", None), status_code, classified_reason), has_retried_429
     # The pool belongs to the PRIMARY provider: acting on fallback errors would corrupt its state
     # and reset base_url to the primary endpoint. Empty pool provider means unscoped; empty agent
     # provider is a mismatch (swap would leave provider="" model="").

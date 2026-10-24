@@ -5,7 +5,7 @@ copied into ``.env`` goes stale within the hour. ``key_cmd`` names a command tha
 (the ``apiKeyHelper`` / ``gcloud auth print-access-token`` idiom). Both wire clients accept a
 callable API key and invoke it per request; the token is cached until shortly before expiry.
 Output contract: ONLY the token on stdout, bare or as JSON with an ``access_token`` field
-(``expires_in`` / ISO ``expiry`` honoured). Precedence: explicit ``--api-key`` wins (one-off
+(the shortest of ``expires_in`` / ISO ``expiry`` honoured). Precedence: explicit ``--api-key`` wins (one-off
 recovery escape hatch); otherwise ``key_cmd`` beats a static ``api_key`` / ``key_env``.
 """
 
@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 _TOKEN_REFRESH_LEEWAY_SECONDS = 60.0
 # Helpers answer from a local cache in milliseconds; this long means hung.
 _MINT_TIMEOUT_SECONDS = 15
-# No advertised expiry: nothing in the request path re-mints on 401 (the SDK retries 429/5xx only), so
-# a process-lifetime cache would 401 forever once the token died. Re-mint on a bounded window instead.
+# No advertised expiry: a process-lifetime cache would 401 forever once the token died (a pool-less
+# provider gets one forced re-mint per token, see remint_after_auth_failure). Re-mint on a bounded window.
 _NO_TTL_REFRESH_SECONDS = 900.0
 
 
@@ -89,19 +89,19 @@ def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
                 raise CommandTokenError(
                     f"key_cmd for provider {label!r} returned JSON without an 'access_token' field"
                 )
-            ttl = payload.get("expires_in")
-            if isinstance(ttl, (int, float)) and ttl > 0:
-                return token, float(ttl)
-            # CLI helpers often print an absolute ISO 8601 deadline instead of OAuth's relative
-            # lifetime; honour it or the token 401s once past. Lazy import: hermes_cli.auth imports agent.*.
+            # CLI helpers often print an absolute ISO 8601 deadline instead of (or beside) OAuth's
+            # relative lifetime. Honour the SHORTEST: a helper answering from its own cache reprints the
+            # original ``expires_in`` while the deadline counts down. Lazy import: hermes_cli.auth imports agent.*.
             from hermes_cli.auth import _parse_iso_timestamp
 
+            relative = payload.get("expires_in")
+            lifetimes = [float(relative)] if isinstance(relative, (int, float)) else []
             for field in ("expiry", "expiresOn"):
                 deadline = _parse_iso_timestamp(payload.get(field))
-                remaining = deadline - time.time() if deadline is not None else 0
-                if remaining > 0:
-                    return token, remaining
-            return token, None
+                if deadline is not None:
+                    lifetimes.append(deadline - time.time())
+            usable = [ttl for ttl in lifetimes if ttl > 0]
+            return token, (min(usable) if usable else None)
 
     # Bare token: stdout carries the token and nothing else. Do NOT keep one line of several — that
     # turns a misconfigured helper (banner, warning) into a corrupt-key 401 far harder to diagnose.
@@ -125,6 +125,8 @@ class CommandTokenSource:
         self._lock = threading.Lock()
         self._token = ""
         self._expires_at: float = 0.0
+        self._remint_pending = False  # the next mint answers a rejection
+        self._reminted = False  # the cached token answered a rejection
 
     @property
     def cache_identity(self) -> str:
@@ -137,6 +139,7 @@ class CommandTokenSource:
                 return self._token
             token, ttl = _mint(self._command, self._label)
             self._token = token
+            self._reminted, self._remint_pending = self._remint_pending, False
             self._expires_at = time.monotonic() + (
                 max(ttl - _TOKEN_REFRESH_LEEWAY_SECONDS, 5.0) if ttl else _NO_TTL_REFRESH_SECONDS
             )
@@ -145,6 +148,36 @@ class CommandTokenSource:
                 self._label, f"{int(ttl)}s" if ttl else "unknown",
             )
             return token
+
+    def invalidate(self) -> bool:
+        """Drop a live cached token the provider rejected, so the next call re-runs the helper.
+
+        The advertised TTL can outlive the credential (a cached helper reprints a stale lifetime; a
+        broker can revoke early), so a rejection is the authoritative staleness signal. Refused for a
+        token that itself answered a rejection: a revoked credential mints the same dead token, and
+        retrying it would spin. The next scheduled mint re-arms recovery. Also refused when nothing
+        live is cached (the next call mints anyway, and a failed mint will fail again)."""
+        with self._lock:
+            if self._reminted or not self._token or time.monotonic() >= self._expires_at:
+                return False
+            self._token, self._expires_at, self._remint_pending = "", 0.0, True
+            return True
+
+
+def remint_after_auth_failure(api_key: object, status_code: Optional[int], classified_reason: object) -> bool:
+    """Auth recovery for a provider without a credential pool: True when a rejected ``key_cmd``
+    token was dropped so the retry re-mints (#91119). A bare status counts only as 401; 403 is
+    often quota or permission, which a new token cannot fix."""
+    from agent.error_classifier import FailoverReason
+
+    if classified_reason is None:
+        is_auth = status_code == 401
+    else:
+        is_auth = classified_reason in (FailoverReason.auth, FailoverReason.auth_permanent)
+    if not (is_auth and isinstance(api_key, CommandTokenSource) and api_key.invalidate()):
+        return False
+    logger.info("Auth failure on key_cmd provider %s: dropped the cached token, re-minting for one retry", api_key._label)
+    return True
 
 
 def build_command_token_provider(key_cmd: str, provider_label: str = "custom") -> Optional[CommandTokenSource]:

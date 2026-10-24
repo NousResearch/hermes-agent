@@ -447,14 +447,56 @@ class LiveTargetHeldError(LiveTargetUnavailableError):
     """The owner refused because another session writer holds the Bot Chat, and settled this
     delivery id as never sent (``bot_relay.settle``): every later attempt under the id gets that
     disposition, so this is a definite no-send too. A refusal without that settlement stays the
-    ambiguous outcome."""
+    ambiguous outcome.
 
-    resend = "after that session closes"
+    ``refusal`` is the owner's ``error.data`` when this attempt received it. Only a named holder
+    earns "after that session closes": an orphaned or deferred lease has no session to close."""
+
+    def __init__(self, refusal: dict | None = None):
+        refusal = refusal or {}
+        surface = refusal.get("holder_surface")
+        self.surface = surface if isinstance(surface, str) and surface else None
+        super().__init__(self._describe(refusal))
+
+    def _describe(self, refusal: dict) -> str:
+        if not self.surface:
+            return "Bot Chat is held by another session writer"
+        pid, age = refusal.get("holder_pid"), refusal.get("holder_age_minutes")
+        named = ", ".join(part for part in (
+            f"a {self.surface} session",
+            f"pid {pid}" if type(pid) is int and pid > 0 else "",
+            f"open {age} min" if type(age) is int else "") if part)
+        return f"Bot Chat is held by another session writer ({named})"
+
+    @property
+    def resend(self) -> str:
+        return f"after that {self.surface} session closes" if self.surface else "later"
 
     @property
     def reason(self) -> str:
         from tools.bot_failure_reasons import HELD_NOT_SENT
         return HELD_NOT_SENT
+
+
+class LiveTargetRegistryUnprovableError(LiveTargetHeldError):
+    """The same settled no-send when the owner could not read its active-session registry: closed,
+    because no writer could be ruled out, but there is no holder session to wait for."""
+
+    resend = "once that registry (runtime/active_sessions.json) is repaired"
+
+    def _describe(self, refusal: dict) -> str:
+        self.surface = None
+        return "Hermes could not read its active-session registry, so it cannot rule out another writer on Bot Chat"
+
+    @property
+    def reason(self) -> str:
+        from tools.bot_failure_reasons import COORDINATION_UNAVAILABLE
+        return COORDINATION_UNAVAILABLE
+
+
+def _held_error(refusal: dict | None) -> LiveTargetHeldError:
+    unprovable = (refusal or {}).get("field") == "session_registry"
+    return (LiveTargetRegistryUnprovableError if unprovable else LiveTargetHeldError)(refusal)
 
 
 def _unavailable_payload(dm_file: str, exc: LiveTargetUnavailableError) -> str:
@@ -519,6 +561,7 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
             pinned_now = True
     home = intent["owner"]["profile_home"]
     record = read_delivery_result(home, intent["delivery_id"])
+    refusal = None
     if record is None or intent["owner"].get("canonical"):
         from hermes_cli.gateway_client import GatewayRPCError
         from tools.bot_failure_reasons import HELD_NOT_SENT
@@ -530,6 +573,7 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
         except GatewayRPCError as exc:
             if str(exc) != HELD_NOT_SENT or exc.data.get("admitted") is not False:
                 raise
+            refusal = exc.data
             # Nothing was admitted while that refusal held the owner's lock, but a same-id attempt
             # may have admitted since: only the owner's settle decides, under that same lock.
             record = settle_held_delivery(home, intent["owner"], intent["message"], **identity)
@@ -542,7 +586,7 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
             raise LiveTargetUnavailableError(f"live authority dial failed before admission ({exc})") from exc
     if _held_disposition(record):
         # The callers remove the intent and payload (``_settled_no_send``).
-        raise LiveTargetHeldError("Bot Chat is held by another session writer")
+        raise _held_error(refusal)
     return record
 
 

@@ -242,7 +242,9 @@ def adopt_legacy_session(authority, actor, row):
     from gateway.session_policy import build_policy, bind_launch_key
     from gateway.session_local_recovery import restore_local_session
     from hermes_state_local import commit_local_session
-    from hermes_cli.active_sessions import active_session_liveness_guard, ActiveSessionRegistryError
+    from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
+    from hermes_cli.active_sessions import (
+        ActiveSessionRegistryError, active_session_holders_guard, is_authority_lease)
 
     request_id = 'legacy:' + row['id']
     sid = row['id']
@@ -307,10 +309,36 @@ def adopt_legacy_session(authority, actor, row):
                'legacy_session_id': row['id'], 'lineage': [row['id']]}
     try:
         # Same lock order as old Bot Chat: mailbox (if any), liveness, SQLite.
-        with active_session_liveness_guard(row['id'], registry_home=Path(authority.db.db_path).parent) as active:
-            if active:
-                raise RuntimeStoreError('runtime_coordination_required')
-            commit_local_session(authority.db, epoch=authority.epoch, receipt=receipt)
+        with active_session_holders_guard(row['id'], registry_home=Path(authority.db.db_path).parent) as holders:
+            # An authority-era tui_gateway pane refuses its own turn while the canonical ledger holds
+            # work and serializes on the durable turn lease, as on an adopted chat. Any other live
+            # holder (classic CLI, an older backend) may write this transcript outside every FIFO.
+            blocking = next((entry for entry in holders if not is_authority_lease(entry)), None)
+            if blocking is not None:
+                raise writer_held(blocking)
+            try:
+                commit_local_session(authority.db, epoch=authority.epoch, receipt=receipt)
+            except MUTATION_GUARD_REFUSALS as exc:
+                # That pane is mid-turn: refused inside the write txn, nothing bound. It ends on its own,
+                # so no holder is named (there is no session to close).
+                raise RuntimeStoreError('runtime_coordination_required', field='session_writer',
+                                        detail='a turn is running in another session writer') from exc
     except ActiveSessionRegistryError as exc:
-        raise RuntimeStoreError('runtime_coordination_required') from exc
+        raise registry_unprovable() from exc
     return restore_local_session(authority, sid)
+
+
+def writer_held(entry):
+    """The refusal for a live lease on the session, naming its holder (never its metadata)."""
+    from hermes_cli.active_sessions import lease_holder_facts
+    exc = RuntimeStoreError('runtime_coordination_required', field='session_writer',
+                            detail='another session writer holds this session')
+    exc.holder = lease_holder_facts(entry)
+    return exc
+
+
+def registry_unprovable():
+    """The refusal when the active-session registry cannot prove who holds the session: still
+    closed, but distinct from a writer holding it, since no session exists to wait for."""
+    return RuntimeStoreError('runtime_coordination_required', field='session_registry',
+                             detail='the active-session registry is unreadable, so no writer can be ruled out')

@@ -73,7 +73,27 @@ def _read_marker(path: Path) -> Optional[str]:
         return None
 
 
-def snapshot_shutdown_context(received_signal: Any = None) -> dict[str, Any]:
+def _accepted_planned_stop_provenance(record: Any) -> Optional[dict[str, Any]]:
+    """Select the identity fields safe to retain after a planned-stop marker is consumed."""
+    if not isinstance(record, dict):
+        return None
+    provenance: dict[str, Any] = {}
+    for key in ("stopper_pid", "target_pid"):
+        value = record.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            provenance[key] = value
+    target_start_time = record.get("target_start_time")
+    if isinstance(target_start_time, (int, float)) and not isinstance(target_start_time, bool):
+        provenance["target_start_time"] = target_start_time
+    written_at = record.get("written_at")
+    if isinstance(written_at, str) and len(written_at) <= 64:
+        provenance["written_at"] = written_at
+    return provenance or None
+
+
+def snapshot_shutdown_context(
+    received_signal: Any = None, *, accepted_planned_stop: Optional[dict[str, Any]] = None
+) -> dict[str, Any]:
     """Fast (<10ms) snapshot of who/what is asking us to shut down: signal name/number, own + parent
     /proc summaries, systemd parentage, takeover/planned-stop markers, TracerPid, 1-min load,
     timestamps. Pure stdlib, never raises, never blocks."""
@@ -98,6 +118,9 @@ def snapshot_shutdown_context(received_signal: Any = None) -> dict[str, Any]:
         if (tracer := _read_proc_field(pid, "TracerPid")) is not None and tracer != "0":
             ctx["tracer_pid"] = int(tracer) if tracer.isdigit() else tracer
             ctx["tracer"] = _proc_summary(int(tracer)) if tracer.isdigit() else None
+    accepted_provenance = _accepted_planned_stop_provenance(accepted_planned_stop)
+    if accepted_provenance is not None:
+        ctx["accepted_planned_stop"] = accepted_provenance
     # Race hint: a takeover marker on disk that does NOT name us is a smoking gun for "another
     # --replace instance is killing us". Filenames mirror gateway.status; literals keep the signal-
     # handler path import-light.
@@ -110,7 +133,7 @@ def snapshot_shutdown_context(received_signal: Any = None) -> dict[str, Any]:
                 ctx["takeover_marker_for_self"] = (f'"target_pid": {pid}' in raw
                                                    or f"'target_pid': {pid}" in raw)
             raw = _read_marker(Path(hermes_home_str) / ".gateway-planned-stop.json")
-            if raw is not None:
+            if raw is not None and accepted_provenance is None:
                 ctx["planned_stop_marker"] = raw[:300]
     return ctx
 
@@ -179,6 +202,15 @@ def format_context_for_log(ctx: dict[str, Any]) -> str:
         extras.append(f"takeover_marker_present={who}")
     if ctx.get("planned_stop_marker") is not None:
         extras.append("planned_stop_marker_present=yes")
+    if accepted := ctx.get("accepted_planned_stop"):
+        if stopper_pid := accepted.get("stopper_pid"):
+            extras.append(f"planned_stop_stopper_pid={stopper_pid}")
+        if target_pid := accepted.get("target_pid"):
+            extras.append(f"planned_stop_target_pid={target_pid}")
+        if target_start_time := accepted.get("target_start_time"):
+            extras.append(f"planned_stop_target_start_time={target_start_time}")
+        if written_at := accepted.get("written_at"):
+            extras.append(f"planned_stop_written_at={written_at}")
     if ctx.get("tracer_pid"):
         extras.append(f"tracer_pid={ctx['tracer_pid']}")
     extras_str = (" " + " ".join(extras)) if extras else ""

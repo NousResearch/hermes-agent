@@ -175,6 +175,7 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
     """Build the SIGINT/SIGTERM handler; ``_signal_initiated_shutdown[0]`` records an unplanned signal."""
     from gateway.run import (_best_effort, _hermes_home, asyncio, logger, signal)
     planned_stop_seen = [False]
+    accepted_planned_stop: dict[str, Any] = {}
 
     def shutdown_signal_handler(received_signal=None):
         # Planned --replace takeover (sibling marked this PID): exit 0 so systemd won't revive us.
@@ -185,12 +186,12 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
         # Planned stop: CLI marks first, else its SIGTERM looks like an external kill. SIGINT = Ctrl+C.
         def _planned_stop() -> bool:
             from gateway.status import consume_planned_stop_marker_for_self
-            return consume_planned_stop_marker_for_self()
+            return consume_planned_stop_marker_for_self(on_accepted=accepted_planned_stop.update)
 
         # Fast (<10ms) sync snapshot: stdlib + /proc, no subprocesses (`ps aux` here once blocked ~3s).
         def _snapshot():
             from gateway.shutdown_forensics import snapshot_shutdown_context
-            return snapshot_shutdown_context(received_signal)
+            return snapshot_shutdown_context(received_signal, accepted_planned_stop=accepted_planned_stop or None)
 
         planned_takeover = bool(_best_effort(_takeover, "Takeover marker check failed: %s"))
         planned_stop = received_signal == signal.SIGINT or (

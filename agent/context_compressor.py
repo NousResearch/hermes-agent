@@ -2323,25 +2323,10 @@ class ContextCompressor(
         self._compression_telemetry_seed = None
         self._reset_proactive_prune_rearm()
 
-    def bind_session_state(self, session_db: Any = None, session_id: str = "") -> None:
-        """Bind the current session row so durable cooldowns can round-trip."""
-        self._session_db = session_db
-        self._session_id = session_id or ""
-        self._summary_failure_cooldown_until = 0.0
-        self._cooldown_persist_failed = False
-        self._last_summary_error = None
-        self._consecutive_timeout_failures = self._consecutive_truncation_failures = self._fallback_compression_streak = 0
-        self._consecutive_overload_aborts = 0
-        self._ineffective_compression_count = self._prellm_skip_count = 0
-        self._anti_thrash_recovery_deadline = self._structural_no_op_backoff_until = self._fallback_probe_at = 0.0
-        self._reset_proactive_prune_rearm()
-        self.get_active_compression_failure_cooldown()
-        self._load_fallback_compression_streak()
-        self._load_ineffective_compression_count()
-        self._load_anti_thrash_recovery_deadline()
-        self._load_fallback_probe_at()
-        self._load_consecutive_overload_aborts()
-        self._load_proactive_prune_rearm_tokens()
+    def bind_session_state(self, session_db: Any = None, session_id: str = "", *, parent_session_id: str | None = None) -> None:
+        """Bind durable cooldowns without discarding an unchanged transcript's backoff."""
+        from agent.context_compressor_binding import bind_session_state
+        bind_session_state(self, session_db, session_id, parent_session_id=parent_session_id)
 
     def on_session_start(self, session_id: str, **kwargs) -> None:
         """Bind session-scoped compression state for a new or resumed session."""
@@ -2368,7 +2353,7 @@ class ContextCompressor(
             previous_overload_aborts = _parent(
                 "get_compression_overload_streak", "compression parent overload streak", previous_overload_aborts,
             )
-        self.bind_session_state(session_db, session_id)
+        self.bind_session_state(session_db, session_id, parent_session_id=old_session_id if boundary_reason == "compression" else None)
         if boundary_reason == "compression":
             # Rotation creates a fresh child row first; carry the streak until boundary bookkeeping persists it.
             self._fallback_compression_streak = previous_fallback_streak
@@ -5167,7 +5152,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         """Reset per-call result state (callers read it after compress()) and open telemetry."""
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
-        self._last_feasibility_skip = False
+        self._last_feasibility_skip = self._last_compress_pruning_only = False
         self._last_summary_error = None
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
@@ -5466,6 +5451,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         # A detached stale attempt must not even reset per-call state the fallback owns. Staleness that
         # arises mid-compress is caught by the write-point gates below; this covers stale-at-entry.
         from agent.conversation_compression import _raise_if_stale_attempt
+        from agent.context_compressor_pruned import finish_pruned_or_defer
 
         _raise_if_stale_attempt(self)
         telemetry = self._begin_compress_attempt(current_tokens, force)
@@ -5498,12 +5484,11 @@ Write only the summary body. Do not include any preamble or prefix."""
             self._record_compression_regions(
                 head_messages=messages[:compress_start], middle_messages=[], tail_messages=messages[compress_end:],
             )
-            self._structural_no_op_result(
-                telemetry, "no_compressible_window",
+            return finish_pruned_or_defer(self, messages, canonical_messages, pruned_count,
+                spare_pending_images, telemetry, "no_compressible_window",
                 f"compress_start ({compress_start}) >= compress_end ({compress_end}) - transcript fits within tail budget",
                 n_messages,
             )
-            return canonical_messages
         turns_to_summarize = messages[compress_start:compress_end]
         # Lean mode demotes stale tail tool results before summary generation so stubs exist even if it aborts.
         if getattr(self, "tail_mode", "lean") == "lean":
@@ -5517,12 +5502,11 @@ Write only the summary body. Do not include any preamble or prefix."""
         if not turns_to_summarize:
             # Window is only handoff rows (#59496): skip the aux call; _previous_summary is KEPT —
             # it came from this transcript.
-            self._structural_no_op_result(
-                telemetry, "empty_post_handoff_window",
+            return finish_pruned_or_defer(self, messages, canonical_messages, pruned_count,
+                spare_pending_images, telemetry, "empty_post_handoff_window",
                 f"window {compress_start}-{compress_end} holds only already-summarized handoffs",
                 n_messages,
             )
-            return canonical_messages
         if not self.quiet_mode:
             self._log_compression_start(
                 display_tokens, compress_start, compress_end, len(turns_to_summarize), n_messages - scan.tail_start,

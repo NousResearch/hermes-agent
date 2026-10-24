@@ -368,3 +368,17 @@ Your engine must therefore assume:
 - [Context Compression and Caching](./context-compression-and-caching.md) — how the built-in compressor works
 - [Memory Provider Plugins](./memory-provider-plugin.md) — analogous single-select plugin system for memory
 - [Plugins](../user-guide/features/plugins.md) — general plugin system overview
+
+### Built-in pruning recovery
+
+The built-in compressor can commit useful tool-result pruning even when no new
+summary window remains. That boundary arms the existing provider-usage verdict,
+but it does not reset the summary model's fallback streak. Only actual prompt usage
+below the effective threshold rearms the turn's compression budget; absent, equal
+or above-threshold usage does not. The existing one-response verdict policy remains
+unchanged for providers that omit usage.
+
+A structural no-op backoff describes the current transcript shape. Rebinding the
+same session preserves it; a compression child inherits it only when the database
+confirms its parent is the currently bound session. An unrelated session starts
+without that structural timer. Completed useful compaction still clears the timer.

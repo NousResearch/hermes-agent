@@ -295,6 +295,21 @@ def test_task_xml_binds_actual_action_and_principal(case, reason, tmp_path):
         verify_windows_task(xml, home, user, 'S-1-5-21-123')
 
 
+def test_task_identity_reads_utf16_launcher_with_non_ascii_home(tmp_path):
+    """A Scheduled Task launcher is UTF-16 so WSH preserves a localized HERMES_HOME (#140682)."""
+    from hermes_cli.gateway_runtime_service_identity import verify_windows_task
+    from hermes_cli.gateway_windows import _build_scheduled_task_xml
+
+    home = tmp_path / "个人程序"
+    home.mkdir()
+    script = _installed_vbs(home, str(home))
+    script.write_text(script.read_text(encoding="utf-8"), encoding="utf-16", newline="")
+    user = "DOMAIN\\owner"
+    xml = _build_scheduled_task_xml("Hermes_Gateway", script, user)
+
+    verify_windows_task(xml, home, user, "S-1-5-21-123")
+
+
 @pytest.mark.platforms("macos")
 @pytest.mark.parametrize("case,reason", [("loaded_good_disk_wrong", None), ("loaded_wrong_disk_good", "profile_mismatch"), ("bootstrap", None)])
 def test_native_launchd_checks_loaded_job_before_disk(case, reason, tmp_path, monkeypatch):

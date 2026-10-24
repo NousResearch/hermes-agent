@@ -5,6 +5,7 @@ programs. Manager-loaded values take precedence over filenames and disk copies.
 """
 from __future__ import annotations
 
+import codecs
 import json
 import os
 from pathlib import Path
@@ -345,6 +346,13 @@ def _vbs_identity(script: str) -> tuple[str, list[str]]:
     return env.get("HERMES_HOME", ""), argv
 
 
+def _decode_vbs_definition(data: bytes) -> str:
+    """Decode a vendor launcher without losing WSH's UTF-16 BOM form."""
+    if data[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE):
+        return data.decode("utf-16")
+    return data.decode("utf-8")
+
+
 def verify_windows_task(xml: str | bytes, home: Path, account: str, sid: str) -> None:
     import xml.etree.ElementTree as ET
 
@@ -379,6 +387,6 @@ def verify_windows_task(xml: str | bytes, home: Path, account: str, sid: str) ->
     script = _absolute(match[1])
     if script.suffix.lower() != '.vbs':
         _unverified()
-    configured, argv = _vbs_identity(read_definition(script).decode("utf-8"))
+    configured, argv = _vbs_identity(_decode_vbs_definition(read_definition(script)))
     verify_home(home, configured)
     verify_gateway_argv(argv, home)

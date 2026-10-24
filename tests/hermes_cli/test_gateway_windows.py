@@ -409,6 +409,15 @@ def test_atomic_write_leaves_no_staging_file_when_swap_fails(monkeypatch, tmp_pa
     assert sorted(p.name for p in startup.iterdir()) == []
 
 
+def test_atomic_write_uses_utf16_for_vbs_launcher(tmp_path):
+    """WSH needs a UTF-16 BOM to preserve a localized launcher path (#140682)."""
+    launcher = tmp_path / "Hermes_Gateway.vbs"
+    gateway_windows._atomic_write(launcher, "' 个人程序\r\n", launcher.with_suffix(".tmp"))
+
+    assert launcher.read_bytes().startswith(b"\xff\xfe")
+    assert launcher.read_bytes().decode("utf-16") == "' 个人程序\r\n"
+
+
 def test_uninstall_and_reinstall_sweep_stale_startup_staging_file(monkeypatch, tmp_path):
     """Debris from a pre-fix failed swap is removed by uninstall() and by an install() that takes the
     Scheduled Task path (which never rewrites the Startup folder itself)."""

@@ -84,6 +84,21 @@ describe('focusComposerInput', () => {
     expect(document.activeElement).toBe(input)
   })
 
+  it('places the caret at the end after focusing a remounted editor without a selection', () => {
+    const input = mountInput()
+    input.textContent = 'restored draft'
+    const outside = document.createElement('button')
+
+    document.body.append(outside)
+    outside.focus()
+    focusComposerInput(input)
+
+    const selection = window.getSelection()
+    expect(selection?.rangeCount).toBe(1)
+    expect(input.contains(selection?.anchorNode ?? null)).toBe(true)
+    expect(selection?.anchorOffset).toBe(input.childNodes.length)
+  })
+
   it('takes the caret from a hidden keep-alive composer on tab switch', () => {
     const hidden = mountInput(true)
     const visible = mountInput()

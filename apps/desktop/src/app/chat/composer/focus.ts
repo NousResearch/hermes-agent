@@ -17,7 +17,7 @@ import { dataUrlToBlob } from '@/lib/preview-annotate/pack'
 
 import { $floatingComposerOwner } from './floating-state'
 import type { InlineRefInput } from './inline-refs'
-import { RICH_INPUT_SLOT } from './rich-editor'
+import { placeCaretEnd, RICH_INPUT_SLOT } from './rich-editor'
 
 /** Composer routing key. The main chat is `'main'`, the edit composer
  *  `'edit'`; scoped composers (session tiles) use `'tile:<id>'`. */
@@ -761,7 +761,19 @@ export const focusComposerInput = (el: HTMLElement | null) => {
       return
     }
 
+    const selection = window.getSelection()
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+    const selectionWasInEditor = Boolean(range && el.contains(range.commonAncestorContainer))
+
     el.focus({ preventScroll: true })
+
+    // A remounted editor may have restored its text while detached, when
+    // placeCaretEnd deliberately does nothing. Browser focus then puts the
+    // fresh contenteditable caret at offset zero. Preserve an existing editor
+    // selection, but make a newly focused editor continue at its draft end.
+    if (!selectionWasInEditor) {
+      placeCaretEnd(el)
+    }
   }
 
   focus()

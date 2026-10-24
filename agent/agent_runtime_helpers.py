@@ -872,7 +872,11 @@ _STATUS_TO_FAILOVER_REASON = {
     403: FailoverReason.auth,
 }
 _USAGE_LIMIT_REASON_TOKENS = ("usage_limit_reached", "gousagelimit")
-_USAGE_LIMIT_MESSAGE_TOKENS = ("usage limit reached", "usage limit has been reached")
+_USAGE_LIMIT_MESSAGE_TOKENS = (
+    "usage limit reached",
+    "usage limit has been reached",
+    "would exceed your account's rate limit",
+)
 
 
 def _failed_credential_identity(agent, pool) -> Tuple[Optional[str], Optional[str]]:

@@ -140,6 +140,31 @@ class TestPoolRotationCycle:
         assert has_retried is True
         pool.mark_exhausted_and_rotate.assert_not_called()
 
+    def test_anthropic_account_limit_429_rotates_immediately(self):
+        """Anthropic's account-limit wording is definitive, so don't sleep before fallback."""
+        from agent.agent_runtime_helpers import _recover_rate_limit
+
+        pool = MagicMock()
+        pool.current.return_value = None
+        pool.entries.return_value = []
+        rotate = MagicMock(return_value=True)
+        error_context = {
+            "message": "This request would exceed your account's rate limit. Please try again later."
+        }
+
+        recovered, has_retried = _recover_rate_limit(
+            pool,
+            has_retried_429=False,
+            error_context=error_context,
+            api_key_hint=None,
+            credential_id=None,
+            rotate_and_swap=rotate,
+        )
+
+        assert recovered is True
+        assert has_retried is False
+        rotate.assert_called_once_with(429, "rate limit")
+
     def test_second_429_rotates_to_next(self):
         """Second consecutive 429 should rotate to next credential."""
         agent, pool, entries = self._make_agent_with_pool(3)

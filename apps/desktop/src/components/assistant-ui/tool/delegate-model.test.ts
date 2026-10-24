@@ -88,6 +88,18 @@ describe('delegateRowsFromCall', () => {
     expect(dispatched.map(r => r.delegationId)).toEqual(['deleg_abc'])
     expect(delegateRowsFromCall({ tasks: [{ goal: 'A' }] }, undefined)[0]!.delegationId).toBeUndefined()
   })
+
+  // #136532 review: a pre-tool guard rejects the spawn — the result carries an
+  // error and neither dispatched nor settled any child. The call owns no rows.
+  it('describes no rows for a spawn rejected outright', () => {
+    const args = { tasks: [{ goal: 'Check part 1' }, { goal: 'Check part 2' }] }
+
+    expect(delegateRowsFromCall(args, { error: 'Workflow guard: not allowed' })).toEqual([])
+    // A per-child error inside settled results is a normal settled run, not a rejection.
+    expect(
+      delegateRowsFromCall(args, { error: 'one child failed', results: [{ status: 'error' }, { status: 'ok' }] }).length
+    ).toBe(2)
+  })
 })
 
 describe('mergeDelegateRows', () => {
@@ -238,5 +250,30 @@ describe('mergeDelegateRows', () => {
 
     expect(merged.map(r => r.model)).toEqual([undefined, undefined])
     expect(merged.map(r => r.status)).toEqual(['completed', 'completed'])
+  })
+
+  // #136532 review: a rejected spawn (no delegation id — the old-results fuzzy
+  // path applies) must not claim the live children of a retried call that
+  // reused the same goals, which doubled every card (A, B, A, B).
+  it('never renders live rows for a rejected spawn whose retry reused the goals', () => {
+    const args = { tasks: [{ goal: 'Check part 1' }, { goal: 'Check part 2' }] }
+    const live = [
+      subagent({
+        id: 'sa-0',
+        goal: 'Check part 1',
+        taskIndex: 0,
+        status: 'running',
+        stream: [{ at: 1, kind: 'tool', text: 'Execute Code' }]
+      }),
+      subagent({ id: 'sa-1', goal: 'Check part 2', taskIndex: 1, status: 'running', stream: [{ at: 1, kind: 'tool', text: 'Terminal' }] })
+    ]
+
+    const rejected = mergeDelegateRows(
+      delegateRowsFromCall(args, { error: 'Workflow guard: not allowed' }, 'call1'),
+      live,
+      'call1'
+    )
+
+    expect(rejected).toEqual([])
   })
 })

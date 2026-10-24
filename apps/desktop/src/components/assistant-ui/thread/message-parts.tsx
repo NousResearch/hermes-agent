@@ -18,6 +18,7 @@ import { StartChatTool } from '@/components/assistant-ui/start-chat-tool'
 import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/assistant-ui/thread/agent-delivery'
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
+import { rejectedDelegateSpawn } from '@/components/assistant-ui/tool/delegate-model'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fallback'
 import { parseMaybeObject, toolCallFailed } from '@/components/assistant-ui/tool/fallback-model'
 import { formatElapsed, useElapsedSeconds, useMeasuredDuration } from '@/components/chat/activity-timer'
@@ -65,8 +66,11 @@ const ImageGenerateTool: FC<TimelineToolCallProps> = props => {
 
 const DelegateToolPart: FC<TimelineToolCallProps> = props => {
   // A call that failed outright dispatched nothing — there are no children to
-  // list, only an error. The generic row extracts and expands it properly.
-  if (props.isError || settledWithoutResult(props)) {
+  // list, only an error. The generic row extracts and expands it properly. That
+  // includes a spawn rejected by a pre-tool hook: its result carries the error
+  // without the protocol-level `isError` flag, and its rows would otherwise
+  // claim a retried call's workers by the fuzzy goal join (#136532 review).
+  if (props.isError || settledWithoutResult(props) || rejectedDelegateSpawn(props.result)) {
     return <ToolFallback {...props} />
   }
 

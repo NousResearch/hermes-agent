@@ -74,6 +74,23 @@ function dispatchedGoals(result: unknown): string[] {
 }
 
 /**
+ * A spawn that was rejected outright (pre-tool guard, bad arguments): the result
+ * carries an `error` and neither dispatched nor settled any child. Such a call
+ * owns no children — its rows must not claim a retried call's live workers by
+ * the fuzzy goal join, which doubled every card when the retry reused the goals
+ * (#136532 review).
+ */
+export function rejectedDelegateSpawn(result: unknown): boolean {
+  const record = parseMaybeObject(result)
+
+  return (
+    field(record, 'error') !== '' &&
+    resultRows(result).length === 0 &&
+    dispatchedGoals(result).length === 0
+  )
+}
+
+/**
  * The rows a call describes on its own — before any live subagent state is
  * layered on. This is what a rehydrated transcript has to work with: the goals
  * it dispatched, and whatever the result said about how they went.
@@ -82,6 +99,13 @@ function dispatchedGoals(result: unknown): string[] {
  * running; the moment a background dispatch answers, they drop to parked.
  */
 export function delegateRowsFromCall(args: unknown, result: unknown, toolCallId = ''): DelegateRow[] {
+  // A rejected spawn describes no children: render the rejection itself (the
+  // generic error row), never rows that a fuzzy goal join could pin onto a
+  // retried call's live workers.
+  if (rejectedDelegateSpawn(result)) {
+    return []
+  }
+
   const goals = delegateGoals(args)
   const finished = resultRows(result)
   const dispatched = dispatchedGoals(result)

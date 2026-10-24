@@ -1,3 +1,5 @@
+import { stat } from 'node:fs/promises'
+
 import type { AppUpdater } from 'electron-updater'
 
 import { applyPackagedHandoff } from './packaged-handoff'
@@ -12,10 +14,28 @@ export interface MacStrategyDeps {
   appVersion: string
   /** Squirrel verifies the signed app before any backend is stopped. */
   prepareInstall: () => Promise<void>
+  /** Smallest zip the bundled Squirrel.Mac cannot install; unset when it streams to disk. */
+  zipLimitBytes?: number
   beforeInstall: () => Promise<void>
   onInstallFailure: () => Promise<void>
   emitProgress: (payload: { stage: string; message: string; percent: number | null }) => void
 }
+
+/**
+ * Squirrel.Mac before Electron 44.7.0 reads the whole update zip into one
+ * buffer that CoreFoundation grows to the next power of two. From 1 GiB on that
+ * asks for 2 GiB, past Chromium's allocation cap, and the app crashes while
+ * installing. Squirrel.Mac #327, shipped in Electron 44.7.0, streams to disk.
+ */
+export function squirrelZipLimit(electronVersion: string): number | undefined {
+  const [major, minor] = electronVersion.split('.').map(Number)
+
+  return major < 44 || (major === 44 && minor < 7) ? 2 ** 30 : undefined
+}
+
+const ZIP_TOO_LARGE =
+  'This update is too large for the built-in macOS installer, which would crash while installing it. ' +
+  'Install the latest Hermes Desktop from https://hermes-agent.nousresearch.com/ instead.'
 
 export class MacStrategy implements UpdaterStrategy {
   readonly mechanism = 'electron-updater' as const
@@ -82,6 +102,7 @@ export class MacStrategy implements UpdaterStrategy {
 
           const files = await this.deps.updater.downloadUpdate()
           await this.deps.verifyDownload?.(files)
+          await this.refuseOversizedZip(files)
           this.deps.emitProgress({ stage: 'prepare', message: 'Verifying the signed macOS update.', percent: null })
           await this.deps.prepareInstall()
           await stop()
@@ -98,6 +119,21 @@ export class MacStrategy implements UpdaterStrategy {
     } finally {
       this.deps.updater.removeListener('download-progress', progress)
       this.applying = false
+    }
+  }
+
+  private async refuseOversizedZip(files: string[]): Promise<void> {
+    const limit = this.deps.zipLimitBytes
+
+    if (limit === undefined) {
+      return
+    }
+
+    // electron-updater may cache the zip under any feed basename, so check every file it returns.
+    for (const file of files) {
+      if ((await stat(file)).size >= limit) {
+        throw new Error(ZIP_TOO_LARGE)
+      }
     }
   }
 }

@@ -16,9 +16,14 @@ Refs:
   - PR #36212 (open): adds M3 to `_PROVIDER_MODELS["minimax"]` catalog
   - PR #6082: M2.7-highspeed → M2.7 for aux model (half-price fix)
   - Commit 773a0faca: same profile-layer fix pattern for `deepseek`
+  - Issue #142648: the live catalog lives at ``<base>/v1/models``; ``<base>/models`` 404s
 """
 
 from __future__ import annotations
+
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Thread
 
 import pytest
 
@@ -149,3 +154,81 @@ class TestMinimaxOauthAliases:
         for alias in ("minimax_oauth", "minimax-portal", "minimax-global"):
             resolved = providers.get_provider_profile(alias)
             assert resolved is not None and resolved.name == "minimax-oauth", alias
+
+
+class _CatalogHandler(BaseHTTPRequestHandler):
+    """Serves a model list on the configured path, 404s everything else."""
+
+    served_path = "/v1/models"
+    model_ids = ["MiniMax-M3.1-Flash", "MiniMax-M3"]
+
+    def do_GET(self):
+        if self.path.rstrip("/") == self.served_path.rstrip("/"):
+            body = json.dumps({"data": [{"id": mid} for mid in self.model_ids]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        pass  # suppress noise
+
+
+def _serve(served_path, model_ids):
+    """Start a local catalog server; returns (server, port)."""
+    handler = type("_Handler", (_CatalogHandler,), {"served_path": served_path, "model_ids": model_ids})
+    server = HTTPServer(("127.0.0.1", 0), handler)
+    Thread(target=server.serve_forever, daemon=True).start()
+    return server, server.server_address[1]
+
+
+class TestMinimaxCatalogDiscovery:
+    """MiniMax's live catalog must be readable from the profile.
+
+    The vendor publishes the catalog under ``<base>/v1/models``; the generic
+    ``{base_url}/models`` probe answers 404, so every catalog surface silently
+    degraded to the curated floor and new models never surfaced (#142648).
+    """
+
+    def test_catalog_is_read_from_the_v1_route(self):
+        import providers
+
+        server, port = _serve("/anthropic/v1/models", ["MiniMax-M3.1-Flash", "MiniMax-M3"])
+        try:
+            profile = providers.get_provider_profile("minimax")
+            assert profile is not None
+            models = profile.fetch_models(
+                api_key="test-key", base_url=f"http://127.0.0.1:{port}/anthropic")
+        finally:
+            server.shutdown()
+        assert models == ["MiniMax-M3.1-Flash", "MiniMax-M3"]
+
+    def test_plain_models_route_still_serves_custom_endpoints(self):
+        """A custom endpoint that publishes ``<base>/models`` keeps working."""
+        import providers
+
+        server, port = _serve("/proxy/models", ["proxy-model-a"])
+        try:
+            profile = providers.get_provider_profile("minimax")
+            assert profile is not None
+            models = profile.fetch_models(
+                api_key="test-key", base_url=f"http://127.0.0.1:{port}/proxy")
+        finally:
+            server.shutdown()
+        assert models == ["proxy-model-a"]
+
+    def test_china_profile_reads_the_china_catalog(self):
+        import providers
+
+        server, port = _serve("/anthropic/v1/models", ["MiniMax-M3.1-Flash"])
+        try:
+            profile = providers.get_provider_profile("minimax-cn")
+            assert profile is not None
+            models = profile.fetch_models(
+                api_key="test-key", base_url=f"http://127.0.0.1:{port}/anthropic")
+        finally:
+            server.shutdown()
+        assert models == ["MiniMax-M3.1-Flash"]

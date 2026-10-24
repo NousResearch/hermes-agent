@@ -22,6 +22,7 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
+from hermes_cli import decompose_gate
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_db_graph import decompose_triage_task
 from hermes_cli import kanban_db_connect as kbc
@@ -199,6 +200,11 @@ class _Routing:
     auto_promote: bool
     roster: list[dict]
     valid_names: set[str]
+    # Decomposer-reform gate config (see hermes_cli/decompose_gate.py).
+    decompose_opt_in_only: bool = False
+    decompose_opt_in_created_by: tuple = ()
+    decompose_require_multi_deliverable: bool = False
+    decompose_max_recon_children: int = 0
 
 
 def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
@@ -215,7 +221,70 @@ def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
         auto_promote=bool(kanban_cfg.get("auto_promote_children", True)),
         roster=roster,
         valid_names=valid_names,
+        decompose_opt_in_only=bool(kanban_cfg.get("auto_decompose_opt_in_only", False)),
+        decompose_opt_in_created_by=tuple(kanban_cfg.get("decompose_opt_in_created_by") or ()),
+        decompose_require_multi_deliverable=bool(
+            kanban_cfg.get("decompose_require_multi_deliverable", False)),
+        decompose_max_recon_children=int(kanban_cfg.get("decompose_max_recon_children", 0) or 0),
     )
+
+
+def _decompose_gate(conn, task, routing: _Routing) -> tuple[bool, str]:
+    """Free pre-gate: skip cards already handled, opted out, or not opted in.
+
+    Prevents the auto-decompose sweep from re-sending the same ineligible card
+    to the aux LLM every dispatcher tick (board flood + quota burn). Reads only
+    local rows — never spends an LLM call.
+    """
+    has_children = False
+    specified = decomposed = False
+    try:
+        has_children = conn.execute(
+            "SELECT 1 FROM task_links WHERE parent_id = ? LIMIT 1",
+            (task.id,),
+        ).fetchone() is not None
+    except Exception:  # pragma: no cover - schema-drift safety
+        pass
+    try:
+        for (kind,) in conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ? "
+            "AND kind IN ('specified', 'decomposed')",
+            (task.id,),
+        ).fetchall():
+            if kind == "specified":
+                specified = True
+            elif kind == "decomposed":
+                decomposed = True
+    except Exception:  # pragma: no cover - schema-drift safety
+        pass
+    return decompose_gate.should_decompose(
+        status=getattr(task, "status", "triage"),
+        has_children=has_children,
+        specified=specified,
+        decomposed=decomposed,
+        title=getattr(task, "title", "") or "",
+        body=getattr(task, "body", "") or "",
+        created_by=getattr(task, "created_by", "") or "",
+        opt_in_only=routing.decompose_opt_in_only,
+        opt_in_created_by=routing.decompose_opt_in_created_by,
+        require_multi_deliverable=routing.decompose_require_multi_deliverable,
+    )
+
+
+def is_decomposable(task_id: str, routing: Optional[_Routing] = None) -> bool:
+    """Cheap, no-LLM eligibility check (the gateway's per-tick pre-filter).
+
+    Lets the auto-decompose tick skip ineligible cards *without* spending its
+    per-tick budget, so opted-in work is reached promptly.
+    """
+    if routing is None:
+        routing = _load_routing()
+    with kbc.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+        if task is None:
+            return False
+        ok, _reason = _decompose_gate(conn, task, routing)
+    return ok
 
 
 def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -> DecomposeOutcome:
@@ -271,13 +340,35 @@ def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[l
     return children, ""
 
 
-def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) -> DecomposeOutcome:
+def _apply_fanout(task: kb.Task, parsed: dict, routing: _Routing, author: str) -> DecomposeOutcome:
+    task_id = task.id
     raw_tasks = parsed.get("tasks") or []
     if not isinstance(raw_tasks, list) or not raw_tasks:
         return DecomposeOutcome(task_id, False, "decomposer returned fanout=true with empty tasks list")
     children, reason = _clean_children(task_id, raw_tasks, routing)
     if reason:
         return DecomposeOutcome(task_id, False, reason)
+    # Value gate: drop read-only recon children beyond the cap. If fewer than
+    # two children remain, a fan-out is not worth it — collapse to a single
+    # specification instead of creating a one-child graph.
+    children, dropped_recon = decompose_gate.filter_children(
+        children, max_recon_children=routing.decompose_max_recon_children)
+    if dropped_recon:
+        logger.info(
+            "decompose: %s dropped %d recon child(ren) (cap=%d)",
+            task_id, dropped_recon, routing.decompose_max_recon_children,
+        )
+    if len(children) < 2:
+        if not children:
+            return DecomposeOutcome(
+                task_id, False, "fan-out collapsed: no non-recon child")
+        first = children[0]
+        return _apply_single(
+            task,
+            {"title": first.get("title"), "body": first.get("body"),
+             "assignee": first.get("assignee")},
+            routing, author,
+        )
     try:
         with kbc.connect_closing() as conn:
             child_ids = decompose_triage_task(
@@ -314,6 +405,15 @@ def decompose_task(
         return DecomposeOutcome(task_id, False, reason)
 
     routing = _load_routing(root_assignee=task.assignee)
+
+    # Free pre-gate: never spend an aux-LLM call on a card that is already
+    # specified/decomposed, opted out, or not opted in (board flood + quota
+    # burn guard — see hermes_cli/decompose_gate.py).
+    with kbc.connect_closing() as conn:
+        gate_ok, gate_reason = _decompose_gate(conn, task, routing)
+    if not gate_ok:
+        return DecomposeOutcome(task_id, False, gate_reason)
+
     raw, reason = _call_aux(
         "decompose", task_id, aux_task="kanban_decomposer", system=_SYSTEM_PROMPT,
         user=_USER_TEMPLATE.format(
@@ -333,7 +433,7 @@ def decompose_task(
     audit_author = author or _profile_author()
     if not parsed.get("fanout"):
         return _apply_single(task, parsed, routing, audit_author)
-    return _apply_fanout(task_id, parsed, routing, audit_author)
+    return _apply_fanout(task, parsed, routing, audit_author)
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:

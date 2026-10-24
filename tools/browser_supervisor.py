@@ -270,7 +270,10 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         (``scheme://host[:port]``). The initial attach picks the FIRST page target, but tools
         that open their own tabs (browser_exec) put the login form somewhere else. With
         ``accept`` (a JS expression) the first same-origin tab where it evaluates truthy wins,
-        so a login and a checkout tab on one site resolve to the right one. Returns
+        so a login and a checkout tab on one site resolve to the right one. The page the
+        supervisor is already attached to wins first when it is on the origin (and the probe
+        passes) — with several sessions sharing one CDP browser, the first listed same-origin
+        tab can be another session's or a stale tab. Returns
         ``{"ok": True, "url"}`` or ``{"ok": False, "error"}``; on failure the previous session stays."""
         loop = self._loop
         if loop is None or not loop.is_running():
@@ -285,6 +288,30 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
 
         async def _focus() -> dict[str, Any]:
             from agent.vault_store import normalize_origin
+            # Prefer the page this supervisor is already attached to: when several sessions
+            # share one CDP browser, the walk below resolves to the FIRST same-origin target,
+            # which can be another session's or a stale tab. Keep our own page when it is
+            # already on the origin (and the accept probe passes); a stale session (tab
+            # closed / target gone) or a non-matching page falls through to the walk.
+            with self._state_lock:
+                current_sid = self._page_session_id
+            if current_sid:
+                try:
+                    href = str((await self._cdp("Runtime.evaluate",
+                                                {"expression": "window.location.href", "returnByValue": True},
+                                                session_id=current_sid, timeout=timeout))
+                               .get("result", {}).get("result", {}).get("value") or "")
+                    if href.startswith(("http://", "https://")) and (not origin or normalize_origin(href) == origin):
+                        if not accept or (await self._cdp("Runtime.evaluate",
+                                                          {"expression": accept, "returnByValue": True},
+                                                          session_id=current_sid, timeout=timeout)
+                                          ).get("result", {}).get("result", {}).get("value"):
+                            return {"ok": True, "url": href}
+                except Exception:
+                    # A failed probe (stale session, unparseable URL) means "not a
+                    # match": fall through to the walk below.
+                    logger.debug("focus_page: probing the attached page failed; falling back to the target walk",
+                                 exc_info=True)
             targets = (await self._cdp("Target.getTargets", timeout=timeout)).get("result", {}).get("targetInfos", [])
             candidates = []
             for t in targets:

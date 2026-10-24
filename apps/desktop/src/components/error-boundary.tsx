@@ -24,7 +24,10 @@ interface ErrorBoundaryState {
 // Some assistant-ui lookup races escape the message-local boundary and reach
 // the root. Retry only that exact transient error class, never arbitrary render
 // failures, and cap retries so a persistent failure still exposes the fallback.
-const ASSISTANT_UI_LOOKUP_ERROR = /(useClientLookup|tapClient(Lookup|Resource)).*out of bounds/
+// Two wordings for the same race: the index form (`Index 6 out of bounds`) and
+// the keyed-scope form (`Key "<ts>-<n>-assistant" not found`); see
+// assistant-ui/message-render-boundary.tsx.
+const ASSISTANT_UI_LOOKUP_ERROR = /(useClientLookup|tapClient(Lookup|Resource)).*(out of bounds|not found)/
 // Vendor React throws this when portal teardown races a host subtree swap
 // (Radix menus/dialogs unmounting mid-commit — #98654, also seen in #41693).
 // The fiber graph settles once the swap completes, so a scheduled re-render

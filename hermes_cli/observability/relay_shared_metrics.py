@@ -1092,13 +1092,20 @@ class _Runtime:
         if new is not None:
             self._share_spent(new)
         if old is not None:
-            with old.lock:
-                old.retiring = not old.closing
-                idle = old.retiring and not old.tasks
-            if idle:
-                self.close_session({"session_id": old_id})
+            self.retire_session(old_id)
         for stale in overflow:
             self._flush_lineage(stale)
+
+    def retire_session(self, session_id: str) -> None:
+        """Close a session now if no task is open, else once its last open task finishes."""
+        session = self._session({"session_id": session_id})
+        if session is None:
+            return
+        with session.lock:
+            session.retiring = not session.closing
+            idle = session.retiring and not session.tasks
+        if idle:
+            self.close_session({"session_id": session_id})
 
     def _lineage_spent(self, session_id: str) -> deque | None:
         with self._lineage_lock:
@@ -1423,9 +1430,11 @@ def _with_runtime_toolset(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def _close_child_session(runtime: _Runtime, kwargs: dict[str, Any]) -> None:
+    # Retire, not close: a timed-out child's worker may still be unwinding its turn, and aborting its
+    # open task here would let the worker's next hook re-create the session.
     child_session_id = _text(kwargs, "child_session_id")
     if child_session_id:
-        runtime.close_session({"session_id": child_session_id})
+        runtime.retire_session(child_session_id)
 
 
 _HOOK_HANDLERS: dict[str, Callable[[_Runtime, dict[str, Any]], Any]] = {

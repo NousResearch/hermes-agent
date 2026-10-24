@@ -197,6 +197,37 @@ def test_recently_finished_long_running_execution_survives_retention(
     assert executions.get_execution(newer["id"]) is None
 
 
+def test_retention_keeps_each_jobs_latest_attempt_under_a_chatty_neighbour(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 5)
+    weekly = executions.create_execution("weekly-review", source="builtin")
+    executions.finish_execution(weekly["id"], success=True)
+    for _ in range(20):
+        row = executions.create_execution("chatty", source="builtin")
+        executions.finish_execution(row["id"], success=True)
+
+    terminal = [row for row in executions.list_executions(limit=100) if row["status"] == "completed"]
+    assert len(terminal) == 5
+    assert executions.get_execution(weekly["id"])["status"] == "completed"
+    assert sum(row["job_id"] == "chatty" for row in terminal) == 4
+
+
+def test_retention_reclaims_from_the_largest_job_first(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 4)
+    ids = {}
+    for job in ("older-job", "newer-job"):
+        ids[job] = []
+        for index in range(3):
+            row = executions.create_execution(job, source="builtin")
+            executions.finish_execution(row["id"], success=index != 1, error="boom")
+            ids[job].append(row["id"])
+
+    kept = {row["id"] for row in executions.list_executions(limit=100)}
+    # Two newest per job survive; recency alone would have dropped the whole older job.
+    assert kept == {*ids["older-job"][1:], *ids["newer-job"][1:]}
+
+
 def test_corrupt_store_fails_closed_without_overwrite(monkeypatch, tmp_path):
     executions = _point_ledger(monkeypatch, tmp_path)
     executions.EXECUTIONS_FILE.parent.mkdir(parents=True)

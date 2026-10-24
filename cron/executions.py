@@ -199,11 +199,20 @@ def touch_execution_progress(execution_id: str) -> bool:
 
 
 def _prune_unlocked(conn: sqlite3.Connection) -> None:
+    # Fair-share eviction under the same global cap: rank each terminal row within its own job
+    # first, so every job keeps its newest attempt before any job keeps its second-newest. A
+    # recency-only cut let one chatty job flush a weekly job's latest terminal record out of the
+    # profile ledger within days, and with it any receipt that names that execution as its owner.
     conn.execute(
         """DELETE FROM executions WHERE id IN (
-             SELECT id FROM executions
-             WHERE status IN ('completed','failed','unknown')
-             ORDER BY julianday(finished_at) DESC, finished_at DESC,
+             SELECT id FROM (
+               SELECT id, finished_at, claimed_at, ROW_NUMBER() OVER (
+                        PARTITION BY job_id
+                        ORDER BY julianday(finished_at) DESC, finished_at DESC,
+                                 julianday(claimed_at) DESC, claimed_at DESC, id DESC
+                      ) AS job_rank
+               FROM executions WHERE status IN ('completed','failed','unknown'))
+             ORDER BY job_rank ASC, julianday(finished_at) DESC, finished_at DESC,
                       julianday(claimed_at) DESC, claimed_at DESC, id DESC LIMIT -1 OFFSET ?
            )""",
         (max(0, int(MAX_TERMINAL_EXECUTIONS)),),

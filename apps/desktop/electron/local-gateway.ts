@@ -261,6 +261,12 @@ export async function ensureLocalGateway(
 // Unsafe path permissions or types require repair, not another ensure of the same home.
 const STALE_CONTROL_ERRORS = new Set(['Invalid gateway ticket response', 'Invalid gateway control pointer', 'Noncanonical gateway profile'])
 
+// The live owner refusing a profile it does not serve (`gateway.standalone: true`, a parked profile)
+// is an answer, not a stale owner: re-ensuring cannot make it serve that profile, and forgetting the
+// shared descriptor on every refused request re-ensures it in a loop and fails the requests of every
+// profile it does serve. gateway/runtime_bootstrap.py `TicketStore.mint`.
+const TICKET_BINDING_REJECTED = 'PermissionError: bootstrap binding rejected'
+
 export function isStaleLocalGatewayError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? '')
 
@@ -665,8 +671,13 @@ export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose:
         const reply = JSON.parse(buffer.split('\n')[0])
         const grant = reply.result
 
-        if (!reply.ok || reply.protocol !== 1 || reply.id !== 1 || grant?.instance_id !== endpoint.instance_id || grant?.profile_id !== home || typeof grant?.ticket !== 'string') {throw new Error('Invalid gateway ticket')}
-        resolve(grant.ticket)
+        if (reply.ok === false && reply.error === TICKET_BINDING_REJECTED) {
+          reject(new Error(`The gateway does not serve profile '${path.basename(home)}' (${home})`))
+        } else if (!reply.ok || reply.protocol !== 1 || reply.id !== 1 || grant?.instance_id !== endpoint.instance_id || grant?.profile_id !== home || typeof grant?.ticket !== 'string') {
+          throw new Error('Invalid gateway ticket')
+        } else {
+          resolve(grant.ticket)
+        }
       } catch { reject(new Error('Invalid gateway ticket response')) }
 
       socket.destroy()

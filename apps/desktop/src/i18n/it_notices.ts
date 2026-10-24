@@ -1,0 +1,46 @@
+import type { TranslationOverrides } from './define-locale'
+import { itDesktopCommands } from './it_desktop_commands'
+import { itSessionCommands } from './it_session_commands'
+
+// Avvisi della shell (toast display remoto, butterbar), sparsi in it.ts.
+export const itNotices = {
+  remoteDisplayBanner: {
+    message: reason =>
+      `Rendering software attivo — rilevato uno schermo remoto (${reason}). L’accelerazione GPU è stata disattivata per evitare lo sfarfallio.`
+  },
+  butterbar: {
+    goTo: (index, total) => `Mostra avviso ${index} di ${total}`,
+    legal: {
+      before: 'L’uso di Hermes Agent è soggetto ai nostri ',
+      terms: 'Termini di servizio',
+      between: ' e ',
+      privacy: 'Informativa sulla privacy',
+      after: '.'
+    }
+  },
+  promptNotices: {
+    compactedTurnUnavailable:
+      'Quel messaggio è stato riassunto durante la compressione della chat, quindi non può più essere ripristinato o modificato.',
+    staleTurnUnavailable: 'Quel messaggio non è più nella cronologia di questa chat.',
+    legacySendUnconfirmed:
+      'Questo server non ha potuto confermare l’invio precedente di questo messaggio, quindi potrebbe essere già stato elaborato. Controlla la conversazione prima di inviarlo di nuovo.',
+    mcpReloadDeferred:
+      'Questa chat è occupata: la modifica MCP si applica quando il turno in corso termina e MCP si ricarica, o alla riapertura della chat',
+    mcpReloadUnavailable: servers => `Connessione non riuscita: ${servers}`,
+    sessionCommands: itSessionCommands,
+    desktopCommands: itDesktopCommands
+  },
+  keepAwakeOffer: {
+    title: 'Il computer si è spento mentre Hermes lavorava',
+    message:
+      'Hermes può mantenere il computer sveglio mentre un’attività è in esecuzione. Lo schermo si spegne comunque, e a batteria il computer potrebbe comunque andare in riposo.',
+    action: 'Tieni sveglio il computer mentre lavora'
+  },
+  connectorOffer: {
+    heading: 'Mantieni le app connesse',
+    body: 'Accedi con un account Nous gratuito per mantenere su tuo account le app che hai collegato, come Gmail o Slack.'
+  }
+} satisfies Pick<
+  TranslationOverrides,
+  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'connectorOffer'
+>

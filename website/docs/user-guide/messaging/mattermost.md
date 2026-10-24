@@ -155,6 +155,10 @@ MATTERMOST_ALLOWED_USERS=3uo8dkh1p7g1mfk49ear5fzs5c
 
 # Optional: channels where bot responds without @mention (comma-separated channel IDs)
 # MATTERMOST_FREE_RESPONSE_CHANNELS=channel_id_1,channel_id_2
+
+# Optional: peer bot user IDs. These senders use the bot loop guard; set
+# MATTERMOST_ALLOW_BOTS=all (or mentions) only when bot-to-bot messages are intentional.
+# MATTERMOST_BOT_USERS=peer_bot_user_id_1,peer_bot_user_id_2
 ```
 
 Optional behavior settings in `~/.hermes/config.yaml`:

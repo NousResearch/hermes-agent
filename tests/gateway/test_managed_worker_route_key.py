@@ -1,7 +1,11 @@
 """A managed worker without a launch key (every Kanban run) resolves its route's credential the
 way the in-process runner does (``_resolve_policy_agent_runtime``), so an ``anthropic_messages``
 provider other than Anthropic gets its own key instead of ``Bearer `` (#139155). The key comes from
-the worker's own profile home, never the default one, and a bound launch key still wins."""
+the worker's own profile home, never the default one, and a bound launch key still wins. An
+opencode-go Responses worker likewise threads the route's resolved ``api_mode``
+(``codex_responses``) instead of falling through to chat_completions (#141861), and every worker
+builds on the route's resolved endpoint (Bedrock's regional URL, a healed opencode URL), never the
+frozen ``model.base_url`` alone."""
 import json
 import secrets
 import threading
@@ -13,6 +17,9 @@ from tests.gateway.test_managed_turn_contract import assignment
 
 BASE_URL = 'https://api.minimax.io/anthropic'
 KEY_ENV = 'KB5_MINIMAX_TEST_KEY'
+GO_BASE_URL = 'https://opencode.ai/zen/go/v1'
+GO_KEY_ENV = 'OPENCODE_GO_API_KEY'
+GO_MODEL = 'muse-spark-1.3-contributor'
 
 
 def _minimax_frame(tmp_path, monkeypatch, api_key=None):
@@ -24,6 +31,16 @@ def _minimax_frame(tmp_path, monkeypatch, api_key=None):
                                    'api_mode': 'anthropic_messages'}]
     request = {k: v for k, v in json.loads(frame['policy']['request_json']).items() if k not in ('provider', 'base_url')}
     policy = {**frame['policy'], 'model': 'MiniMax-M2.7', 'config_json': json.dumps(config),
+              'request_json': json.dumps(request)}
+    return {**frame, 'policy': policy, 'api_key': api_key}
+
+
+def _opencode_frame(tmp_path, monkeypatch, api_key=None, base_url=GO_BASE_URL):
+    frame, _ = assignment(tmp_path, monkeypatch)
+    config = json.loads(frame['policy']['config_json'])
+    config['model'] = {'default': GO_MODEL, 'provider': 'opencode-go', 'base_url': base_url}
+    request = {k: v for k, v in json.loads(frame['policy']['request_json']).items() if k not in ('provider', 'base_url')}
+    policy = {**frame['policy'], 'model': GO_MODEL, 'config_json': json.dumps(config),
               'request_json': json.dumps(request)}
     return {**frame, 'policy': policy, 'api_key': api_key}
 
@@ -108,6 +125,79 @@ def test_bound_launch_key_wins_over_the_route_key(tmp_path, monkeypatch):
     assert built['api_key'] == launch
 
 
+def test_keyless_worker_threads_resolved_api_mode(tmp_path, monkeypatch):
+    """An opencode-go Responses model (muse-spark) keeps ``codex_responses`` in the worker: the
+    in-process turn resolves it via ``route_runtime``, and the worker threads the same resolution
+    instead of falling through to chat_completions (#141861)."""
+    key = 'fake-' + secrets.token_hex(8)
+    monkeypatch.setenv(GO_KEY_ENV, key)
+    built = _execute(_opencode_frame(tmp_path, monkeypatch), monkeypatch)
+    assert built['api_mode'] == 'codex_responses'
+    assert built['api_key'] == key
+
+
+def test_bound_launch_key_keeps_resolved_api_mode(tmp_path, monkeypatch):
+    """A bound launch key wins for the credential, and the resolved per-model api_mode is still
+    threaded (#141861)."""
+    launch = 'fake-launch-' + secrets.token_hex(8)
+    monkeypatch.setenv(GO_KEY_ENV, 'fake-route-' + secrets.token_hex(8))
+    built = _execute(_opencode_frame(tmp_path, monkeypatch, api_key=launch), monkeypatch)
+    assert built['api_key'] == launch
+    assert built['api_mode'] == 'codex_responses'
+
+
+def test_keyless_worker_builds_on_the_routes_healed_endpoint(tmp_path, monkeypatch):
+    """The endpoint comes from the same resolution: a stale ``model.base_url`` without ``/v1`` is healed
+    by the runtime, and the worker builds on the healed URL the in-process turn uses."""
+    monkeypatch.setenv(GO_KEY_ENV, 'fake-' + secrets.token_hex(8))
+    built = _execute(_opencode_frame(tmp_path, monkeypatch, base_url='https://opencode.ai/zen/go'), monkeypatch)
+    assert built['base_url'] == GO_BASE_URL
+    assert built['api_mode'] == 'codex_responses'
+
+
+BEDROCK_MODEL = 'eu.anthropic.claude-opus-5-5'
+
+
+def _bedrock_frame(tmp_path, monkeypatch):
+    """A Bedrock profile as setup writes it: provider and model, no ``model.base_url`` (the runtime
+    builds the regional endpoint)."""
+    frame, _ = assignment(tmp_path, monkeypatch)
+    config = json.loads(frame['policy']['config_json'])
+    config['model'] = {'default': BEDROCK_MODEL, 'provider': 'bedrock'}
+    request = {k: v for k, v in json.loads(frame['policy']['request_json']).items() if k not in ('provider', 'base_url')}
+    policy = {**frame['policy'], 'model': BEDROCK_MODEL, 'config_json': json.dumps(config),
+              'request_json': json.dumps(request)}
+    return {**frame, 'policy': policy, 'api_key': None}
+
+
+def test_keyless_bedrock_worker_builds_on_its_routes_regional_endpoint(tmp_path, monkeypatch):
+    """Bedrock keeps no ``model.base_url``: the runtime builds ``bedrock-runtime.<region>`` from
+    ``bedrock.region`` / AWS_REGION, and the worker builds on that URL as the in-process turn does. The
+    frozen policy's empty URL defaulted every Kanban worker to us-east-1, where an ``eu.`` inference
+    profile fails with "The provided model identifier is invalid"."""
+    monkeypatch.setenv('AWS_REGION', 'eu-north-1')
+    monkeypatch.setenv('AWS_BEARER_TOKEN_BEDROCK', 'fake-' + secrets.token_hex(8))
+    built = _execute(_bedrock_frame(tmp_path, monkeypatch), monkeypatch)
+    assert built['base_url'] == 'https://bedrock-runtime.eu-north-1.amazonaws.com'
+    assert built['api_mode'] == 'bedrock_converse'
+
+
+def test_keyless_bedrock_worker_client_is_bound_to_the_configured_region(tmp_path, monkeypatch):
+    """Asserted on the real agent, where the Bedrock client's region is bound."""
+    from agent import bedrock_adapter
+    from run_agent import AIAgent
+    monkeypatch.setenv('AWS_REGION', 'eu-north-1')
+    monkeypatch.setenv('AWS_BEARER_TOKEN_BEDROCK', 'fake-' + secrets.token_hex(8))
+    regions, bind = [], bedrock_adapter.bind_bedrock_runtime
+
+    def recording_bind(agent, base_url, api_mode):
+        bind(agent, base_url, api_mode)
+        regions.append(agent._bedrock_region)
+    monkeypatch.setattr(bedrock_adapter, 'bind_bedrock_runtime', recording_bind)
+    _execute(_bedrock_frame(tmp_path, monkeypatch), monkeypatch, base=AIAgent)
+    assert regions == ['eu-north-1']
+
+
 def test_primary_auth_failure_never_borrows_a_fallback_providers_key(tmp_path, monkeypatch):
     """A fallback entry's credential belongs to another provider; the worker's primary route never
     carries it (the agent's own fallback chain switches provider, model and key together)."""
@@ -115,11 +205,14 @@ def test_primary_auth_failure_never_borrows_a_fallback_providers_key(tmp_path, m
 
     def resolve(config, **kwargs):
         calls.append(kwargs)
-        return {'provider': 'openrouter', 'api_key': 'fake-other-provider'}, {'provider': 'openrouter', 'model': 'x'}
+        return ({'provider': 'openrouter', 'api_key': 'fake-other-provider'},
+                {'provider': 'openrouter', 'model': 'x',
+                 'api_key': 'fake-fallback-key', 'api_mode': 'chat_completions'})
     monkeypatch.setattr('hermes_cli.runtime_provider.resolve_runtime_with_fallback', resolve)
     monkeypatch.setattr('hermes_cli.runtime_provider_custom._resolve_named_custom_runtime', lambda **kw: None)
     built = _execute(_minimax_frame(tmp_path, monkeypatch), monkeypatch)
     assert calls and built['api_key'] is None
+    assert built.get('api_mode') is None
 
 
 def _kanban_failures():

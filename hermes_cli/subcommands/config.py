@@ -23,6 +23,12 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     config_get.add_argument(
         "--raw", action="store_true",
         help="Print credential values unmasked (default masks api_key/token/secret-shaped values)")
+    config_get.add_argument(
+        "--origin",
+        action="store_true",
+        help="Print which layer defines the key (env/managed/user/default/unset) "
+        "instead of the value — Codex-style per-key origins tracking",
+    )
 
     config_set = config_subparsers.add_parser("set", help="Set a configuration value")
     config_set.add_argument(

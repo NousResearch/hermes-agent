@@ -42,17 +42,17 @@ describe('ArtifactPreview', () => {
     expect(frame.getAttribute('sandbox')).not.toContain('same-origin')
   })
 
-  it('strips scripts out of svg before it renders inline', async () => {
+  it('renders svg as an image, so its script, <style> and ids never enter the app document', async () => {
     const { artifactId } = register(
       'Logo',
       'svg',
-      '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
+      '<svg xmlns="http://www.w3.org/2000/svg"><style>body{background:red}</style><script>alert(1)</script></svg>'
     )
 
     await renderArtifact(artifactId)
 
-    expect(document.querySelector('svg')).not.toBeNull()
-    expect(document.querySelector('svg script')).toBeNull()
+    expect((screen.getByAltText('Logo') as HTMLImageElement).src).toMatch(/^data:image\/svg\+xml/)
+    expect(document.querySelector('svg script, svg style')).toBeNull()
   })
 
   it('offers only the source view for code, which has nothing to render', async () => {

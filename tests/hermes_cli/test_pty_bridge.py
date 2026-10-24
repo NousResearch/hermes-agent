@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import errno
 import os
-import select
 import shutil
 import signal
 import subprocess
@@ -138,7 +137,11 @@ class TestPtyBridgeIO:
         bridge._fd = 123
         bridge._closed = False
 
-        monkeypatch.setattr(select, "select", lambda *_args: ([123], [], []))
+        class _AlwaysReady:
+            def wait(self, _timeout):
+                return True
+
+        bridge._waiter = _AlwaysReady()
 
         def would_block(_fd, _size):
             raise BlockingIOError(errno.EAGAIN, "try again")

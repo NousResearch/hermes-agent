@@ -9,6 +9,7 @@ import { useSessionView } from '@/app/chat/session-view'
 import { sessionRoute } from '@/app/routes'
 import { ConnectorDirectoryCard } from '@/components/assistant-ui/connector-directory-card'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
+import { TypedAnswer } from '@/components/assistant-ui/typed-answer'
 import { useConnectionOwner } from '@/components/assistant-ui/use-connection-owner'
 import { SCAFFOLD_LABEL_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { Button } from '@/components/ui/button'
@@ -205,21 +206,26 @@ export function ConnectorDirectoryReceipt({ result }: { result: unknown }) {
     ? outcome.newly_connected.flatMap(name => connectorText(name) ?? [])
     : []
 
-  const text = receiptText(copy, outcome, added)
+  const said = connectorText(outcome.said)?.trim()
 
   return (
-    <div data-conversation-scaffold="" data-slot="connector-directory-receipt">
-      <ScaffoldRow>
-        {added.map(name => (
-          <ConnectorLogo
-            className="size-4 rounded-[0.25rem]"
-            connector={{ iconUrl: connectorIconUrl(name), name, title: connectorTitle(name) }}
-            key={name}
-          />
-        ))}
-        <span className={SCAFFOLD_LABEL_CLASS}>{text}</span>
-      </ScaffoldRow>
-    </div>
+    <>
+      {added.length > 0 || !said ? (
+        <div data-conversation-scaffold="" data-slot="connector-directory-receipt">
+          <ScaffoldRow>
+            {added.map(name => (
+              <ConnectorLogo
+                className="size-4 rounded-[0.25rem]"
+                connector={{ iconUrl: connectorIconUrl(name), name, title: connectorTitle(name) }}
+                key={name}
+              />
+            ))}
+            <span className={SCAFFOLD_LABEL_CLASS}>{receiptText(copy, outcome, added)}</span>
+          </ScaffoldRow>
+        </div>
+      ) : null}
+      {said ? <TypedAnswer text={said} /> : null}
+    </>
   )
 }
 

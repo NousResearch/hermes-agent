@@ -15,6 +15,9 @@ CONNECTOR_SCHEMAS_PATH = f"{CONNECTORS_PATH}/schemas"
 CONNECTOR_EXECUTE_PATH = f"{CONNECTORS_PATH}/execute"
 CONNECTOR_CONNECTIONS_PATH = f"{CONNECTORS_PATH}/connections"
 CONNECTOR_ACCOUNTS_PATH = f"{CONNECTORS_PATH}/accounts"
+CONNECTOR_FILE_UPLOAD_PATH = f"{CONNECTORS_PATH}/files/upload"
+# The gateway's cap on a staged file's declared size.
+CONNECTOR_FILE_MAX_BYTES = 20 * 1024 * 1024
 
 # The gateway's six-state account status (contract `CONNECTOR_CONNECTION_STATUSES`; the vendor's
 # INITIALIZING and INITIATED both arrive as `pending`). Present only once the session binds an
@@ -52,12 +55,21 @@ EXECUTE_ERROR_CODES: dict[str, tuple[ErrorFamily, int]] = {
 }
 
 
+# Failures the agent reports itself while staging a file input, before the call reaches execute.
+FILE_ERROR_FAMILIES: dict[str, ErrorFamily] = {
+    "FILE_NOT_ALLOWED": "product",
+    "FILE_NOT_FOUND": "product",
+    "FILE_TOO_LARGE": "product",
+    "FILE_UPLOAD_FAILED": "backend",
+}
+
+
 def execute_error_family(code: str, family: Optional[str] = None) -> Optional[str]:
     """The gateway's family when it sent one, else the table's; ``None`` for an unknown code."""
     if family in ("product", "backend"):
         return family
     known = EXECUTE_ERROR_CODES.get(code)
-    return known[0] if known else None
+    return known[0] if known else FILE_ERROR_FAMILIES.get(code)
 
 
 class _Wire(BaseModel):
@@ -117,6 +129,29 @@ class ConnectorSchemasResponse(_Wire):
     suggestions: dict[str, list[str]] = Field(default_factory=dict)
 
 
+class ConnectorFileUploadRequest(_Wire):
+    toolkit: str
+    tool: str
+    filename: str
+    mimetype: str
+    size: int
+
+
+class ConnectorFileDescriptor(_Wire):
+    """The value a ``file_uploadable`` tool input takes on the wire."""
+
+    name: str
+    mimetype: str
+    s3key: str
+
+
+class ConnectorFileUploadResponse(_Wire):
+    upload_url: str = Field(alias="uploadUrl")
+    headers: dict[str, str] = Field(default_factory=dict)
+    descriptor: ConnectorFileDescriptor
+    expires_at: str = Field(alias="expiresAt")
+
+
 class ConnectorToolError(_Wire):
     code: ConnectorErrorCode
     message: str
@@ -156,11 +191,20 @@ class ConnectorExecuteSingleRequest(_Wire):
     op: Optional[str] = Field(default=None, min_length=1, max_length=128)
 
 
+# What a model receiving this result must guarantee; absent when the connector asks nothing.
+DataUseRequirement = Literal["no_training", "zero_retention"]
+
+
+class ConnectorDataUse(_Wire):
+    requires: list[DataUseRequirement]
+
+
 class ConnectorExecuteSingleResult(_Wire):
     connector: str = ""
     tool: str = ""
     data: Any = None
     account: Optional[str] = None
+    data_use: Optional[ConnectorDataUse] = Field(default=None, alias="dataUse")
 
 
 class ConnectorExecuteSingleResponse(_Wire):
@@ -176,6 +220,7 @@ class ConnectorExecuteResult(_Wire):
     error: Optional[ConnectorToolError] = None
     # The alias of the account the call ran under; null when that account has no alias.
     account: Optional[str] = None
+    data_use: Optional[ConnectorDataUse] = Field(default=None, alias="dataUse")
 
 
 class ConnectorExecuteResponse(_Wire):

@@ -77,8 +77,10 @@ def _run(argv, env):
 
 def test_delivery_runner_admits_through_dependencies_it_activates(tmp_path, committed_home):
     """Live admission (``_admit_live_dm``) imports Hermes' third-party graph. Launched bare, the
-    runner must activate the committed environment, find no live owner, and hand the DM to the
-    transport, which consumes the file — never report an ``ambiguous`` import failure."""
+    runner must activate the committed environment and find no live owner — never report an
+    ``ambiguous`` import failure. With no owner the local CLI transport fallback is retired: the
+    runner answers the typed not-ready refusal and retains the DM, never handing it to the
+    transport."""
     _home, env = committed_home
     profile_home = tmp_path / "profile"
     profile_home.mkdir()
@@ -91,9 +93,12 @@ def test_delivery_runner_admits_through_dependencies_it_activates(tmp_path, comm
                    "--profile-home", str(profile_home), *transport], env)
 
     assert "No module named" not in result.stdout + result.stderr, result
-    assert result.returncode == 0, result
-    assert result.stdout.strip() == "hello teammate"
-    assert not dm_file.exists()
+    assert result.returncode == 1, result
+    payload = json.loads(result.stdout)
+    assert payload["delivery_id"] == _dm_delivery_id(str(dm_file)), payload
+    assert "profile authority is not ready" in payload["error"], payload
+    assert "hello teammate" not in result.stdout  # the transport never ran
+    assert dm_file.read_text(encoding="utf-8") == "hello teammate"
 
 
 def test_delivery_runner_that_cannot_activate_names_the_repair_remedy(tmp_path, uncommittable_home):

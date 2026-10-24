@@ -101,6 +101,55 @@ class TestFilterMCPChildren:
         assert _mcp_lifecycle._filter_mcp_children({101, 102, 103}) == {103}
 
 
+class TestMCPSDKLazyBinding:
+    """Regression coverage for lazy SDK imports that fail inside an installed package."""
+
+    def test_internal_import_failure_is_logged_and_retried(self, monkeypatch, caplog):
+        """A broken installed SDK must not be reported as a missing module forever."""
+        from tools import mcp_tool
+
+        attempts = 0
+        state_names = (
+            "_MCP_AVAILABLE", "_MCP_HTTP_AVAILABLE", "_MCP_NEW_HTTP", "_MCP_LEGACY_HTTP",
+            "_MCP_SAMPLING_TYPES", "_MCP_NOTIFICATION_TYPES", "_MCP_ELICITATION_TYPES",
+            "_MCP_MESSAGE_HANDLER_SUPPORTED", "_MCP_LOGGING_CALLBACK_SUPPORTED",
+            "_MCP_SDK_IMPORT_ATTEMPTED", "ClientSession", "sse_client",
+            "LATEST_HANDSHAKE_VERSION", "_JSONRPC_METHOD_NOT_FOUND",
+        )
+        for name in state_names:
+            monkeypatch.setattr(mcp_tool, name, getattr(mcp_tool, name))
+        for name in mcp_tool._MCP_SDK_LAZY_SYMBOLS:
+            if name in mcp_tool.__dict__:
+                monkeypatch.setattr(mcp_tool, name, getattr(mcp_tool, name))
+
+        def import_sdk(module):
+            nonlocal attempts
+            if module == "mcp":
+                attempts += 1
+                if attempts == 1:
+                    raise ModuleNotFoundError("No module named 'pydantic_core._pydantic_core'")
+                return SimpleNamespace(
+                    ClientSession=type("ClientSession", (), {}),
+                    StdioServerParameters=object,
+                )
+            if module == "mcp.client.stdio":
+                return SimpleNamespace(stdio_client=object)
+            return SimpleNamespace()
+
+        monkeypatch.setattr(mcp_tool.importlib, "import_module", import_sdk)
+        monkeypatch.setattr(mcp_tool, "_MCP_SDK_IMPORT_ATTEMPTED", False)
+        monkeypatch.setattr(mcp_tool, "ClientSession", None)
+
+        with caplog.at_level("WARNING", logger="tools.mcp_tool"):
+            assert mcp_tool._ensure_mcp_sdk() is False
+
+        assert "MCP SDK bind failed" in caplog.text
+        assert caplog.records[0].exc_info is not None
+        assert mcp_tool._MCP_SDK_IMPORT_ATTEMPTED is False
+        assert mcp_tool._ensure_mcp_sdk() is True
+        assert attempts == 2
+
+
 # ---------------------------------------------------------------------------
 # Config loading
 # ---------------------------------------------------------------------------

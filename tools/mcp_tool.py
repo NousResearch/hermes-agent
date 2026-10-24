@@ -133,7 +133,13 @@ def _import_sdk_names(module: str, names: tuple, missing_msg: Optional[str] = No
     try:
         mod = importlib.import_module(module)
         values = {n: getattr(mod, n) for n in names}
-    except (ImportError, AttributeError):
+    except ImportError:
+        if not missing_msg:
+            logger.warning("MCP SDK bind failed while importing %s", module, exc_info=True)
+        elif missing_msg:
+            logger.debug(missing_msg)
+        return False
+    except AttributeError:
         if missing_msg:
             logger.debug(missing_msg)
         return False
@@ -156,31 +162,29 @@ def _ensure_mcp_sdk() -> bool:
     with _MCP_SDK_IMPORT_LOCK:
         if _MCP_SDK_IMPORT_ATTEMPTED or ClientSession is not None:
             return _MCP_AVAILABLE
-        if (_import_sdk_names("mcp", ("ClientSession", "StdioServerParameters"))
+        if not (_import_sdk_names("mcp", ("ClientSession", "StdioServerParameters"))
                 and _import_sdk_names("mcp.client.stdio", ("stdio_client",))):
-            _MCP_AVAILABLE = True
-            # mcp >= 1.24 ships streamable_http_client; 2.0 dropped the deprecated
-            # streamablehttp_client alias. Either one gives HTTP.
-            _MCP_NEW_HTTP = _import_sdk_names("mcp.client.streamable_http", ("streamable_http_client",))
-            _MCP_LEGACY_HTTP = _import_sdk_names("mcp.client.streamable_http", ("streamablehttp_client",))
-            _MCP_HTTP_AVAILABLE = _MCP_NEW_HTTP or _MCP_LEGACY_HTTP
-            _import_sdk_names("mcp.types", ("LATEST_PROTOCOL_VERSION",),
-                              "mcp.types.LATEST_PROTOCOL_VERSION not available -- using fallback protocol version")
-            if not _import_sdk_names("mcp.client.session", ("LATEST_HANDSHAKE_VERSION",)):
-                # Pre-2.x SDKs: newest revision IS the handshake revision.
-                LATEST_HANDSHAKE_VERSION = LATEST_PROTOCOL_VERSION
-            if not _import_sdk_names("mcp.client.sse", ("sse_client",),
-                                     "mcp.client.sse.sse_client not available -- SSE transport disabled"):
-                sse_client = None
-            _MCP_SAMPLING_TYPES, _MCP_ELICITATION_TYPES, _MCP_NOTIFICATION_TYPES = [
-                _import_sdk_names(*family) for family in _OPTIONAL_TYPE_FAMILIES]
-        else:
-            logger.debug("mcp package not installed -- MCP tool support disabled")
-        if _MCP_AVAILABLE:
-            try:
-                _JSONRPC_METHOD_NOT_FOUND = importlib.import_module("mcp.types").METHOD_NOT_FOUND
-            except Exception:  # pragma: no cover — SDK without the constant
-                pass
+            return False
+        _MCP_AVAILABLE = True
+        # mcp >= 1.24 ships streamable_http_client; 2.0 dropped the deprecated
+        # streamablehttp_client alias. Either one gives HTTP.
+        _MCP_NEW_HTTP = _import_sdk_names("mcp.client.streamable_http", ("streamable_http_client",))
+        _MCP_LEGACY_HTTP = _import_sdk_names("mcp.client.streamable_http", ("streamablehttp_client",))
+        _MCP_HTTP_AVAILABLE = _MCP_NEW_HTTP or _MCP_LEGACY_HTTP
+        _import_sdk_names("mcp.types", ("LATEST_PROTOCOL_VERSION",),
+                          "mcp.types.LATEST_PROTOCOL_VERSION not available -- using fallback protocol version")
+        if not _import_sdk_names("mcp.client.session", ("LATEST_HANDSHAKE_VERSION",)):
+            # Pre-2.x SDKs: newest revision IS the handshake revision.
+            LATEST_HANDSHAKE_VERSION = LATEST_PROTOCOL_VERSION
+        if not _import_sdk_names("mcp.client.sse", ("sse_client",),
+                                 "mcp.client.sse.sse_client not available -- SSE transport disabled"):
+            sse_client = None
+        _MCP_SAMPLING_TYPES, _MCP_ELICITATION_TYPES, _MCP_NOTIFICATION_TYPES = [
+            _import_sdk_names(*family) for family in _OPTIONAL_TYPE_FAMILIES]
+        try:
+            _JSONRPC_METHOD_NOT_FOUND = importlib.import_module("mcp.types").METHOD_NOT_FOUND
+        except Exception:  # pragma: no cover — SDK without the constant
+            pass
         _MCP_MESSAGE_HANDLER_SUPPORTED = _client_session_accepts("message_handler")
         if _MCP_AVAILABLE and not _MCP_MESSAGE_HANDLER_SUPPORTED:
             logger.debug("MCP SDK does not support message_handler -- dynamic tool discovery disabled")

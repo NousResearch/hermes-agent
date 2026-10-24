@@ -7,6 +7,7 @@ import pytest
 from hermes_cli import projects_db as pdb
 from tools import project_tools, terminal_tool
 from tools.registry import registry
+from tui_gateway import server
 
 
 def _use_projects_db(monkeypatch, tmp_path):
@@ -226,3 +227,48 @@ def test_idempotent_create_from_a_session_keeps_profile_active_pointer(gui_sessi
     assert tab["cwd"] == str(folders["existing"])
     with pdb.connect_closing() as conn:
         assert pdb.get_active_id(conn) == foreground
+
+
+def test_session_id_resolution_when_task_id_is_ephemeral_turn(gui_sessions, tmp_path):
+    """In live agent tool execution, model_tools dispatches with both task_id (turn UUID)
+    and session_id (durable session key). desktop_project must resolve the session."""
+    target_folder = tmp_path / "project_dir"
+    target_folder.mkdir()
+    session = gui_sessions("session-abc", str(tmp_path))
+
+    raw = registry.dispatch(
+        "desktop_project",
+        {"action": "create", "name": "Test Project", "path": str(target_folder)},
+        task_id="turn-uuid-12345",
+        session_id="session-abc",
+    )
+    assert isinstance(raw, str)
+    result = json.loads(raw)
+    assert result["success"] is True
+    assert session["cwd"] == str(target_folder)
+
+
+def test_turn_task_id_fallback_resolves_session(gui_sessions, tmp_path):
+    """When session_id is omitted or equal to turn task_id, _apply_project_workspace
+    resolves via the agent's _current_task_id."""
+    target_folder = tmp_path / "fallback_dir"
+    target_folder.mkdir()
+    session = gui_sessions("session-def", str(tmp_path))
+
+    class DummyAgent:
+        session_id = "session-def"
+        _current_task_id = "turn-uuid-67890"
+
+    session["agent"] = DummyAgent()
+
+    raw = registry.dispatch(
+        "desktop_project",
+        {"action": "create", "name": "Fallback Project", "path": str(target_folder)},
+        task_id="turn-uuid-67890",
+    )
+    assert isinstance(raw, str)
+    result = json.loads(raw)
+    assert result["success"] is True
+    assert session["cwd"] == str(target_folder)
+
+

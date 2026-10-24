@@ -196,12 +196,16 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
     and push session.info. The ONLY auto-cwd path — an explicit tool call, never a `cd`."""
     if not path:
         return
-    # task_id is the durable session_key; _sessions (and desktop event routing) key by sid.
+    # task_id may be the durable session_key/session_id, or an active turn's effective_task_id;
+    # _sessions (and desktop event routing) key by sid.
     key = str(task_id or "")
     with _sessions_lock:
         sid, session = (key, _sessions[key]) if key in _sessions else next(
             ((s, c) for s, c in _sessions.items()
-             if c.get("session_key") == key or getattr(c.get("agent"), "session_id", None) == key),
+             if c.get("session_key") == key
+             or getattr(c.get("agent"), "session_id", None) == key
+             or getattr(c.get("agent"), "_current_task_id", None) == key
+             or key in getattr(c.get("agent"), "_process_owner_task_ids", ())),
             ("", None))
     resolved = os.path.abspath(os.path.expanduser(str(path)))
     if session is None or not os.path.isdir(resolved):

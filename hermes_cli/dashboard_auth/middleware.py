@@ -175,7 +175,8 @@ async def gated_auth_middleware(
     bearer = _extract_bearer(request)
     if bearer:
         try:
-            bearer_session = _verify_access_token(request, access_token=bearer, audit=False)
+            bearer_session = await run_in_threadpool(
+                _verify_access_token, request, access_token=bearer, audit=False)
         except ProviderError as e:
             return unreachable_response(str(e))
         if bearer_session is not None:
@@ -194,7 +195,8 @@ async def gated_auth_middleware(
     session = None
     if at:
         try:
-            session = _verify_access_token(request, access_token=at, provider_hint=provider_hint)
+            session = await run_in_threadpool(
+                _verify_access_token, request, access_token=at, provider_hint=provider_hint)
         except ProviderError as e:
             return unreachable_response(str(e))
     if session is None:

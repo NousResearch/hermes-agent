@@ -58,7 +58,7 @@ def test_terminal_refresh_quarantine_warns_with_reauth_hint(
     cleared: list = []
     monkeypatch.setattr(pool, sync_name, lambda e: e)  # no peer rotated in the meantime
     monkeypatch.setattr(pool, clear_name, lambda e, exc: cleared.append(e.id))
-    monkeypatch.setattr(pool, "_quarantine_sources", lambda e, sources: None)
+    monkeypatch.setattr(pool, "_quarantine_sources", lambda e, sources, **kwargs: None)
     monkeypatch.setattr(cp.auth_mod, terminal_predicate, lambda exc: True)
 
     with caplog.at_level(logging.INFO, logger=cp.logger.name):
@@ -150,7 +150,7 @@ def test_nous_login_missing_refresh_failure_is_terminal(tmp_path, monkeypatch, c
     pool._entries = [entry]
     cleared: list = []
     monkeypatch.setattr(pool, "_clear_terminal_nous_state", lambda e, exc: cleared.append(e.id))
-    monkeypatch.setattr(pool, "_quarantine_sources", lambda e, sources: None)  # keep the row to inspect it
+    monkeypatch.setattr(pool, "_quarantine_sources", lambda e, sources, **kwargs: None)  # keep the row to inspect it
 
     with caplog.at_level(logging.INFO, logger=cp.logger.name):
         result = pool._refresh_entry_impl(entry, force=True)

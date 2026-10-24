@@ -34,7 +34,7 @@ def _patch_resolution(monkeypatch, *, model_from_config: str, provider: str = "o
     monkeypatch.setattr(
         gateway_run,
         "_resolve_runtime_agent_kwargs",
-        lambda: {
+        lambda target_model=None: {
             "provider": provider,
             "api_key": "x",
             "base_url": "https://openrouter.ai/api/v1",

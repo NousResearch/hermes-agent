@@ -171,7 +171,7 @@ async def _run_once(monkeypatch, tmp_path, agent_cls, session_id):
     monkeypatch.setattr(
         gateway_run,
         "_resolve_runtime_agent_kwargs",
-        lambda: {"api_key": "fake"},
+        lambda target_model=None: {"api_key": "fake"},
     )
     source = SessionSource(
         platform=Platform.TELEGRAM,

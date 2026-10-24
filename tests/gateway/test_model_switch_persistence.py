@@ -321,6 +321,8 @@ class TestOneTurnNeverPersisted:
         )
         monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
         monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
+        monkeypatch.setattr("agent.model_metadata.model_metadata_http.get",
+                            lambda *a, **kw: SimpleNamespace(status_code=200, json=lambda: {"data": []}))
         monkeypatch.setattr(
             "hermes_cli.model_switch.switch_model",
             lambda **kw: ModelSwitchResult(

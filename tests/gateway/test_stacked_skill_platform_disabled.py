@@ -121,7 +121,7 @@ async def test_stacked_second_skill_disabled_for_platform_is_blocked(monkeypatch
         lambda platform=None: {"disabled-skill"} if platform == "telegram" else set(),
     )
     monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"}
     )
 
     runner = _make_runner()

@@ -57,7 +57,7 @@ def _make_runner(
     import gateway.session as gs
 
     monkeypatch.setattr(gs, "_discord_tools_loaded", lambda: True)
-    monkeypatch.setattr(gr, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    monkeypatch.setattr(gr, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "fake"})
     monkeypatch.setattr(mm, "get_model_context_length", lambda *a, **k: 100_000)
 
     r = gr.GatewayRunner(config or GatewayConfig())
@@ -649,7 +649,7 @@ async def test_channel_override_turns_keep_one_cached_agent_and_the_pin(
     _TurnAgent.instances = 0
 
     runner = _make_runner(monkeypatch, config)
-    monkeypatch.setattr(gr, "_resolve_runtime_agent_kwargs", lambda: dict(runtime))
+    monkeypatch.setattr(gr, "_resolve_runtime_agent_kwargs", lambda target_model=None: dict(runtime))
     runner.session_store._entries = {}
 
     await _drive(runner, ((False, _human_source()), (True, _wake_source()), (False, _human_source())))

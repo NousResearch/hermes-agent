@@ -85,10 +85,9 @@ import {
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
 import { $focusedStoredSessionId, TILE_PANE_PREFIX } from './session-focus'
 import { turnHasReply, withNoReplyNotice } from './session-no-reply'
-import { assertSessionOwnerResolved } from './session-owner-resolution'
+import { requestForOwnedSession, setSessionOwnedRequestOwnerResolver } from './session-owned-request'
 import {
   isSessionOwnerRoute,
-  requestForSessionProfile,
   type SessionOwnerRoute,
   type SessionOwnerScope,
   type SessionProfileRoute
@@ -216,16 +215,7 @@ export function liveSessionScopes(): Set<string> {
   return scopes
 }
 
-// The owner hold itself (the map, TTL, hold/release/reset, and the
-// foreground-scope sweep) lives in ./session-owner-holds; re-exported here
-// because session-states.ts is where the rest of the ownership ladder lives
-// and most call sites already import from it.
-export {
-  $sessionOwnerHoldRevision,
-  _resetSessionOwnerHoldsForTests,
-  holdSessionOwnerUntilForeground,
-  releaseSessionOwnerHold
-} from './session-owner-holds'
+export { requestForOwnedSession, setSessionOwnerProbe } from './session-owned-request'
 import { sweepSessionOwnerHolds } from './session-owner-holds'
 
 /**
@@ -1785,6 +1775,23 @@ export function knownOwnerForSession(sessionId: null | string | undefined): Sess
 // connection pin through the SAME owner ladder as RPC dispatch (#125372).
 setSessionOwnerResolver(knownOwnerForSession)
 
+// `requestForOwnedSession` lives in a topical sibling (this module is over its
+// code-health line cap) and asks for the ladder by injection. Registering it
+// here keeps ONE definition of "who owns this session" for REST reads, RPC
+// dispatch and the RPC gate alike.
+setSessionOwnedRequestOwnerResolver(knownOwnerForSession)
+
+// The owner hold itself (the map, TTL, hold/release/reset, and the
+// foreground-scope sweep) lives in ./session-owner-holds; re-exported here
+// because session-states.ts is where the rest of the ownership ladder lives
+// and most call sites already import from it.
+export {
+  $sessionOwnerHoldRevision,
+  _resetSessionOwnerHoldsForTests,
+  holdSessionOwnerUntilForeground,
+  releaseSessionOwnerHold
+} from './session-owner-holds'
+
 /** The profile whose chat is on screen — the rail's scope.
  *
  *  NOT `$activeGatewayProfile`: a focused tab does not swap the gateway socket,
@@ -1853,39 +1860,6 @@ export function isSessionRemote(sessionId: null | string | undefined): boolean {
   const mode = ownerConnectionMode(knownOwnerForSession(sessionId)) ?? $connection.get()?.mode
 
   return mode === 'remote'
-}
-
-/**
- * Dispatch a session-scoped RPC through the OWNER of `sessionId` (tile route →
- * hint → connection-tagged row / known profile). This is the client half of
- * #91684: approval.respond (and siblings) sent on the ambient socket land on
- * whatever backend is active, which for a cross-profile session is a backend
- * that never held the approval. An UNKNOWN owner fails closed with an
- * explicit SessionOwnerResolutionError unless the ambient gateway is provably
- * the only backend (legacy single-profile, no registry source).
- */
-export function requestForOwnedSession<T>(
-  sessionId: null | string | undefined,
-  ambientRequest: <R>(
-    method: string,
-    params?: Record<string, unknown>,
-    timeoutMs?: number,
-    signal?: AbortSignal
-  ) => Promise<R>,
-  method: string,
-  params: Record<string, unknown> = {},
-  timeoutMs?: number,
-  signal?: AbortSignal
-): Promise<T> {
-  const owner = knownOwnerForSession(sessionId)
-
-  try {
-    assertSessionOwnerResolved(owner, { method, sessionId })
-  } catch (error) {
-    return Promise.reject(error)
-  }
-
-  return requestForSessionProfile<T>(owner, ambientRequest, method, params, timeoutMs, signal)
 }
 
 /** Resolve a session id THAT MAY BE A RUNTIME ID to the stored id its tile

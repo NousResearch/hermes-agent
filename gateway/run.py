@@ -1097,76 +1097,6 @@ def _prepare_resume_pending_message(
     return recovery_message, persist_message
 
 
-# Assistant fields that must survive replay for CLI parity (reasoning continuity, prefix-cache hits, provider
-# echo): unreconstructable thinking text (DeepSeek/Kimi), opaque signatures, Codex blobs (caching degrades).
-# ``reasoning`` and ``reasoning_details`` were the original three preserved by PR #2974 (schema v6).
-# ``reasoning_content``, ``codex_reasoning_items``, ``codex_message_items``, and ``finish_reason`` were
-# added to the DB later but the gateway's replay whitelist was never expanded to match — so any pure-text
-# assistant turn (no ``tool_calls``) silently dropped them on replay, regressing the CLI-vs-gateway
-# behavioural parity. Why each field matters on replay: ``_copy_reasoning_content_for_api`` promotes
-# ``reasoning`` → ``reasoning_content`` at send time, but only when the strings happen to match. Carrying
-# the original ``reasoning_content`` verbatim avoids reconstruction loss for providers that return them as
-# distinct fields (DeepSeek/Kimi/Moonshot thinking modes). * ``reasoning_details``: opaque structured array
-# (signature, encrypted_content) used by OpenRouter/Anthropic to maintain reasoning continuity across turns.
-# * ``codex_reasoning_items``: encrypted reasoning blobs for the OpenAI Codex Responses API. *
-# ``codex_message_items``: exact assistant message items with ``phase``. OpenAI docs: "preserve and resend
-# phase on all assistant messages — dropping it can degrade performance."  Required for prefix cache hits. *
-# ``finish_reason``: informational; cheap to keep so transcripts replay identically across CLI and gateway.
-_ASSISTANT_REPLAY_FIELDS: tuple[str, ...] = (
-    "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items", "codex_message_items",
-    "finish_reason")
-
-
-def _build_replay_entry(
-    role: str, content: Any, msg: dict[str, Any], preserve_timestamp: bool = False
-) -> dict[str, Any]:
-    """Build a replay entry for a non-tool-calling message, preserving ``_ASSISTANT_REPLAY_FIELDS``.
-
-    ``preserve_timestamp``: only user rows need it (stale-dangerous-confirmation stripper). Falsy fields are
-    dropped EXCEPT ``reasoning_content``: DeepSeek/Kimi treat "" as a sentinel; dropping it can 400.
-
-    Empty values: most fields are dropped when falsy (matching the original PR #2974 behaviour) since an
-    empty list/string for those carries no information. The exception is ``reasoning_content``:
-    DeepSeek/Kimi thinking-mode replay treats an empty string as a meaningful sentinel that
-    ``_copy_reasoning_content_for_api`` upgrades to a single space. Dropping it here would make the gateway
-    send no ``reasoning_content`` at all on the next turn, which can cause HTTP 400 from strict thinking
-    providers.
-    """
-    entry: dict[str, Any] = {"role": role, "content": content}
-    # api_content sidecar keeps the request prefix byte-stable — ONLY if this pipeline did not rewrite
-    # content. The caller renders timestamps AFTER this check so a stamp alone never drops the sidecar.
-    _sidecar = msg.get("api_content")
-    if (
-        role in ("user", "assistant")
-        and isinstance(_sidecar, str)
-        and _sidecar
-        and content == msg.get("content")):
-        entry["api_content"] = _sidecar
-    if role == "assistant":
-        for _rkey in _ASSISTANT_REPLAY_FIELDS:
-            if _rkey not in msg:
-                continue
-            _rval = msg.get(_rkey)
-            if (_rval is None) if _rkey == "reasoning_content" else (not _rval):
-                continue
-            entry[_rkey] = _rval
-    if preserve_timestamp and msg.get("timestamp"):
-        entry["timestamp"] = msg["timestamp"]
-    entry.update(scaffolding_replay_fields(msg))  # a proactive prune re-persists this view: keep the flags
-    # Replay rebuilds the SAME conversation: every role keeps its uid and merge witness, so a context engine sees the
-    # uids the store holds. Tool-call uid maps stay on rows that still carry their calls (those pass through whole).
-    copy_identity_fields({key: msg[key] for key in (MESSAGE_UID, ABSORBED_MESSAGE_UIDS) if key in msg}, entry)
-    # Replay rewrites are view-only: keep the durable-row stamp so marker-only
-    # flushes skip rows already in state.db (#121462/#123462).
-    if msg.get("_db_persisted"):
-        entry["_db_persisted"] = True
-    # A merged user dict lost that stamp; this one is what ties it to its durable rows at compaction.
-    # The other counts the rows the repair dropped behind a dict or folded into an assistant turn,
-    # which this view cannot name either; the last names them for the commit.
-    for stamp in (MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS, RETIRED_DURABLE_ROWS):
-        if msg.get(stamp):
-            entry[stamp] = msg[stamp]
-    return entry
 
 
 _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER = "observed Telegram group context"
@@ -1258,6 +1188,7 @@ def _build_gateway_agent_history(
     """Convert stored gateway transcript rows into agent replay messages.
 
     Observed context stays out of ``conversation_history`` so consecutive-user repair can't merge it in."""
+    from gateway.replay_entries import _build_replay_entry
     from hermes_time import get_timezone as _get_msg_tz
     from gateway.message_timestamps import (
         render_user_content_with_timestamp as _render_msg_ts,

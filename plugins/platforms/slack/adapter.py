@@ -58,10 +58,12 @@ try:  # sibling modules; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
     from .adapter_slash_lane import SlashHandoffLanes
     from .adapter_slash_payload import slash_command_text, slash_thread_id
+    from .adapter_status import log_status_failure
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
     from adapter_slash_lane import SlashHandoffLanes  # type: ignore
     from adapter_slash_payload import slash_command_text, slash_thread_id  # type: ignore
+    from adapter_status import log_status_failure  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -271,13 +273,11 @@ _AGENT_SESSIONS_SUPPORTED: Optional[bool] = None
 
 
 def _sdk_supports_agent_sessions() -> bool:
-    """Whether the installed slack-sdk ships the Agent Sessions API.
+    """Whether the installed slack-sdk ships the Agent Sessions API (typed methods since 3.44.0).
 
-    Slack is deprecating the Assistant messaging experience in February 2027:
-    ``assistant.threads.setStatus`` / ``assistant.threads.setTitle`` are
-    replaced by ``agents.sessions.setStatus`` / ``agents.sessions.rename``
-    (typed methods landed in slack-sdk 3.44.0). Checked on the SDK class —
-    never on a client instance, where mock auto-attributes would lie.
+    Only the thread title uses it (``agents.sessions.rename`` replaces ``assistant.threads.setTitle``);
+    the status line stays on ``assistant.threads.setStatus`` (see ``SlackAdapter._set_thread_status``).
+    Checked on the SDK class — never on a client instance, where mock auto-attributes would lie.
     """
     global _AGENT_SESSIONS_SUPPORTED
     if _AGENT_SESSIONS_SUPPORTED is None:
@@ -289,15 +289,6 @@ def _sdk_supports_agent_sessions() -> bool:
         except Exception:
             _AGENT_SESSIONS_SUPPORTED = False
     return _AGENT_SESSIONS_SUPPORTED
-
-
-def _session_status_method(client: Any):
-    """Return the status setter: Agent Sessions API when available, else legacy."""
-    if _sdk_supports_agent_sessions():
-        method = getattr(client, "agents_sessions_setStatus", None)
-        if method is not None:
-            return method
-    return client.assistant_threads_setStatus
 
 
 def _session_title_method(client: Any):
@@ -2758,7 +2749,7 @@ class SlackAdapter(BasePlatformAdapter):
             # Evict oldest-thread-first (key[2] is the thread ts) so the newest survives.
             self._evict_oldest_by_ts(
                 self._active_status_threads, self._ACTIVE_STATUS_THREADS_MAX, lambda k: k[2])
-        # May lack assistant:write scope or assistant context; reactions still work.
+        # Needs only chat:write since Slack's 2026-03-05 scope change; reactions still work if it fails.
         _status = getattr(self, "_status_text", {}).get(str(chat_id)) or getattr(
             self.config, "typing_status_text", None)
         _status = _status or self._default_status_text(_status_started)
@@ -2766,12 +2757,16 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _set_thread_status(
         self, chat_id: str, team_id: str, thread_ts: str, status: str, fail_label: str) -> None:
-        """``assistant.threads.setStatus`` (empty ``status`` clears); failures are debug-logged."""
+        """``assistant.threads.setStatus`` (empty ``status`` clears), also on slack-sdk 3.44+:
+        ``agents.sessions.setStatus`` takes only a lifecycle enum and rejects free text and "".
+        Slack documents a compatibility bridge from this call to the session lifecycle (text ->
+        processing, "" -> active). A rejection is a WARNING once per workspace and Slack error."""
         try:
-            _set_status = _session_status_method(self._get_client(chat_id, team_id=team_id))
-            await _set_status(channel_id=chat_id, thread_ts=thread_ts, status=status)
+            team_id = team_id or self._channel_team.get(chat_id, "")
+            await self._get_client(chat_id, team_id=team_id).assistant_threads_setStatus(
+                channel_id=chat_id, thread_ts=thread_ts, status=status)
         except Exception as e:
-            logger.debug("[Slack] assistant.threads.setStatus %s: %s", fail_label, e)
+            log_status_failure(self._lazy_attr("_status_error_warned", set), team_id, fail_label, e)
 
     @staticmethod
     def _default_status_text(started: Optional[float]) -> str:

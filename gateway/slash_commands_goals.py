@@ -62,7 +62,12 @@ class GatewayGoalCommandsMixin:
         if result.clear_pending:
             self._clear_goal_continuations(event, result.clear_pending)
         if result.prompt:
-            self._enqueue_goal_turn(event, result.prompt, label="command enqueue", kickoff=result.kickoff)
+            prompt = (
+                mgr.next_continuation_prompt() or result.prompt
+                if result.kickoff
+                else result.prompt
+            )
+            self._enqueue_goal_turn(event, prompt, label="command enqueue", kickoff=result.kickoff)
         return result.output
 
     def _clear_goal_continuations(self, event: MessageEvent, verb: str) -> None:
@@ -78,8 +83,11 @@ class GatewayGoalCommandsMixin:
     ) -> None:
         """Enqueue *text* as the next turn through the adapter FIFO (the post-turn judge's path).
 
-        A kickoff keeps the triggering message id / channel prompt / bound skills; a resume
-        continuation carries none. Best-effort: failures only logged. A local ``slash.exec`` returns
+        A kickoff keeps the triggering channel prompt / bound skills but not the triggering
+        message id: the kickoff is its own inbound lifecycle, and reusing the command's id made
+        the platform-ledger dedup classify it as the already-processed command (the goal stayed
+        active without starting work until another user message arrived). A resume continuation
+        carries none of them. Best-effort: failures only logged. A local ``slash.exec`` returns
         the turn to the client as its ``send`` directive instead (the client submits it with its own
         input id).
         """
@@ -96,7 +104,12 @@ class GatewayGoalCommandsMixin:
                     text=text,
                     message_type=MessageType.TEXT,
                     source=event.source,
-                    message_id=event.message_id if kickoff else None,
+                    # No message id: the kickoff must not alias the command's platform
+                    # message id, or the ledger/transcript dedup treats it as the same
+                    # already-processed inbound and the goal never starts its work.
+                    # The channel prompt and bound skills still ride along, so the kickoff
+                    # renders the same pinned prompt as the command turn.
+                    message_id=None,
                     channel_prompt=event.channel_prompt if kickoff else None,
                     auto_skill=event.auto_skill if kickoff else None,
                     inherit_channel_pin=not kickoff,

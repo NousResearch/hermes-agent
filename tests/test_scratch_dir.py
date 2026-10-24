@@ -693,3 +693,64 @@ def test_prune_owner_lookup_survives_symlinked_scratch_and_drops_orphaned_mcp_he
             helper.kill()
             helper.wait(timeout=10)
 
+
+
+def test_long_lived_daemon_prunes_each_hour_from_the_stamp(tmp_path, monkeypatch):
+    """The stamp file, not a process flag, decides when to prune: a gateway that has been up for
+    days must prune every hour. A once-per-process latch pruned at boot and never again — 21.7 GB
+    of idle worktrees outlived a 24 h policy with nothing in the log (PRX-5636)."""
+    import hermes_constants as hc
+
+    scratch = hc.get_scratch_dir(tmp_path, prune=False)
+    clock = [time.time()]
+    monkeypatch.setattr(time, "time", lambda: clock[0])
+    getattr(hc, "_scratch_prune_next_check", {}).clear()  # base has only a process latch
+
+    def idle_entry(name):
+        entry = scratch / name
+        entry.mkdir()
+        (entry / "big.bin").write_bytes(b"x" * 64)
+        aged = clock[0] - 30 * 3600
+        os.utime(entry / "big.bin", (aged, aged))
+        os.utime(entry, (aged, aged))
+        return entry
+
+    first = idle_entry("lane-one")
+    hc._prune_scratch_dir_once(scratch)  # first call of the process: no stamp yet
+    assert not first.exists()
+    assert (scratch / hc._SCRATCH_PRUNE_STAMP).exists()
+
+    second = idle_entry("lane-two")
+    hc._prune_scratch_dir_once(scratch)  # same minute: stamp holds the hour
+    assert second.exists(), "a second call inside the hour walked the tree again"
+
+    clock[0] += hc._SCRATCH_PRUNE_INTERVAL_SECONDS + 1
+    hc._prune_scratch_dir_once(scratch)
+    assert not second.exists(), "an hour later the same process never pruned again"
+
+
+def test_prune_failure_is_recorded_and_retried_not_swallowed(tmp_path, monkeypatch):
+    """A prune that raises leaves one line in scratch-prune.log and is retried in minutes, not
+    an hour: the blanket ``contextlib.suppress(Exception)`` made a dead control indistinguishable
+    from an idle one (PRX-5636)."""
+    import hermes_constants as hc
+
+    home = tmp_path / "home"
+    scratch = hc.get_scratch_dir(home, prune=False)
+    getattr(hc, "_scratch_prune_next_check", {}).clear()  # base has only a process latch
+    clock = [time.time()]
+    monkeypatch.setattr(time, "time", lambda: clock[0])
+    calls: list[float] = []
+
+    def boom(*_args, **_kwargs):
+        calls.append(clock[0])
+        raise OSError("scratch on a read-only volume")
+
+    monkeypatch.setattr(hc, "prune_scratch_dir", boom)
+    hc._prune_scratch_dir_once(scratch)
+
+    record = (home / "logs" / "scratch-prune.log").read_text(encoding="utf-8")
+    assert "FAILED" in record and "read-only volume" in record
+    clock[0] += 6 * 60  # still inside the hour: a failure retries in minutes, not next interval
+    hc._prune_scratch_dir_once(scratch)
+    assert len(calls) == 2, "a failed prune was not retried until the next hour"

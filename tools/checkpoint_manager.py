@@ -48,6 +48,7 @@ reclaim object storage.  A size-cap pass drops the oldest checkpoints per
 project until total store size is under ``max_total_size_mb``.
 """
 
+import contextvars
 import hashlib
 import json
 import logging
@@ -57,6 +58,8 @@ import shutil
 import subprocess
 import tempfile
 import time
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import selected_git_env, windows_hide_flags
@@ -313,6 +316,51 @@ def _project_meta_path(store: Path, dir_hash: str) -> Path:
 # Git env
 # ---------------------------------------------------------------------------
 
+@dataclass(frozen=True)
+class _GitEnvScope:
+    """The Git environment selected for one checkpoint operation."""
+
+    env: dict
+
+
+# Per-operation only: set and reset by ``_operation_git_env``.  Never a process-wide cache --
+# another profile's operation, and this profile's next edit, must select for themselves.
+_OPERATION_GIT_ENV: contextvars.ContextVar[Optional[_GitEnvScope]] = contextvars.ContextVar(
+    "checkpoint_operation_git_env", default=None,
+)
+
+
+def _git_base_env() -> dict:
+    """Ask PM (or the machine) which Git to use, once per checkpoint operation.
+
+    Selection is not cheap: ``selected_git_env`` enters ``pm.ensure`` and the config machinery.
+    A store sweep then makes one Git call per project, so resolving this per call turned a
+    377-project size round into minutes (134.7 s measured, 3.3 s with one selected environment).
+
+    The result is a template: ``GIT_DIR``/``GIT_WORK_TREE``, the per-project index and per-call
+    ``extra_env`` are applied by :func:`_git_env` on a copy.
+    """
+    # git child with hand-isolated config env; exact preservation — a HOME
+    # rewrite would change which ~/.gitconfig the isolation vars are hiding.
+    from tools.environments.local import build_subprocess_env
+
+    return selected_git_env(build_subprocess_env(scrub_secrets=False, inherit_profile_home=False))
+
+
+@contextmanager
+def _operation_git_env():
+    """Select the Git environment once for one checkpoint operation (take, restore).
+
+    Reset in ``finally``, so unrelated operations and other profiles select for themselves and
+    see whatever the selector and profile context say at their own start.
+    """
+    token = _OPERATION_GIT_ENV.set(_GitEnvScope(_git_base_env()))
+    try:
+        yield
+    finally:
+        _OPERATION_GIT_ENV.reset(token)
+
+
 def _git_env(
     store: Path,
     working_dir: str,
@@ -335,11 +383,13 @@ def _git_env(
     ``store/indexes/<hash>`` so projects don't race on a shared index.
     """
     normalized_working_dir = _normalize_path(working_dir)
-    # git child with hand-isolated config env; exact preservation — a HOME
-    # rewrite would change which ~/.gitconfig the isolation vars are hiding.
-    from tools.environments.local import build_subprocess_env
-
-    env = selected_git_env(build_subprocess_env(scrub_secrets=False, inherit_profile_home=False))
+    # Reuse what the enclosing checkpoint operation selected; the copy keeps this call's
+    # GIT_DIR/GIT_WORK_TREE, index_file and extra_env from leaking into (or out of) it.
+    scope = _OPERATION_GIT_ENV.get()
+    if scope is not None:
+        env = dict(scope.env)
+    else:
+        env = _git_base_env()
     env["GIT_DIR"] = str(store)
     env["GIT_WORK_TREE"] = str(normalized_working_dir)
     env.pop("GIT_NAMESPACE", None)
@@ -530,12 +580,15 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     (store / _INDEXES_DIRNAME).mkdir(exist_ok=True)
     (store / _PROJECTS_DIRNAME).mkdir(exist_ok=True)
 
-    # ``git init --bare`` rejects GIT_WORK_TREE, so we can't use _run_git
-    # here (which always sets GIT_DIR + GIT_WORK_TREE).  Use a raw
-    # subprocess with just the config-isolation env vars.
-    from tools.environments.local import build_subprocess_env
-
-    init_env = selected_git_env(build_subprocess_env(scrub_secrets=False, inherit_profile_home=False))
+    # ``git init --bare`` rejects GIT_WORK_TREE, so we can't use _run_git here (which always sets
+    # GIT_DIR + GIT_WORK_TREE).  Use a raw subprocess with just the config-isolation env vars.
+    # A take creates its store inside its operation scope, so a first-ever checkpoint reuses a
+    # copy of that one selection; a standalone call still selects for itself.
+    scope = _OPERATION_GIT_ENV.get()
+    if scope is not None:
+        init_env = dict(scope.env)
+    else:
+        init_env = dict(_git_base_env())
     init_env["GIT_CONFIG_GLOBAL"] = os.devnull
     init_env["GIT_CONFIG_SYSTEM"] = os.devnull
     init_env["GIT_CONFIG_NOSYSTEM"] = "1"
@@ -941,7 +994,7 @@ class CheckpointManager:
         try:
             from tools.checkpoint_pruning import store_lock
 
-            with store_lock(_resolve_checkpoint_base()):
+            with store_lock(_resolve_checkpoint_base()), _operation_git_env():
                 return self._take(abs_dir, reason)
         except Exception as e:
             logger.debug("Checkpoint failed (non-fatal): %s", e)
@@ -1135,7 +1188,7 @@ class CheckpointManager:
         from tools.checkpoint_pruning import PruneError, store_lock
 
         try:
-            with store_lock(_resolve_checkpoint_base()):
+            with store_lock(_resolve_checkpoint_base()), _operation_git_env():
                 return self._restore(working_dir, commit_hash, file_path, safe)
         except (PruneError, OSError) as exc:
             return {"success": False, "error": str(exc)}

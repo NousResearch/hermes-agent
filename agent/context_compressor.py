@@ -31,6 +31,7 @@ from agent.auxiliary_client import (
     extract_content_or_reasoning,
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
+from agent.context_compressor_code import summarize_execute_code
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_prune import ProactivePruneMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
@@ -1712,12 +1713,6 @@ def _sum_delegate_task(name, args, content, content_len, line_count):
     return f"[delegate_task] '{goal}' ({content_len:,} chars result)" + _result_failure_suffix(content)
 
 
-def _sum_execute_code(name, args, content, content_len, line_count):
-    code_str = _str_arg(args, "code")
-    code_preview = code_str[:60].replace("\n", " ") + ("..." if len(code_str) > 60 else "")
-    return f"[execute_code] `{code_preview}` ({line_count} lines output)"
-
-
 def _sum_skill_view(name, args, content, content_len, line_count):
     skill = args.get("name", "?")
     # Ghost-skill defense: any loaded body, however small, leaves the marker saying it is gone and how to reload.
@@ -1958,7 +1953,7 @@ _TOOL_RESULT_SUMMARIZERS = {
     "web_search": _sum_template("[web_search] query='{query}' ({content_len:,} chars result)", query="?"),
     "web_extract": _sum_web_extract,
     "delegate_task": _sum_delegate_task,
-    "execute_code": _sum_execute_code,
+    "execute_code": summarize_execute_code,
     "skill_view": _sum_skill_view,
     "skills_list": _sum_skills_list,
     "skill_manage": _sum_skill_manage,

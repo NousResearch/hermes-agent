@@ -35,7 +35,9 @@ from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_prune import ProactivePruneMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_retry import retryable_user_text
-from agent.context_compressor_tail import demote_stale_tail_tools, is_demoted_stub, skill_view_names_by_call_id
+from agent.context_compressor_tail import (
+    demote_stale_tail_tools, is_demoted_stub, skill_view_names_by_call_id, with_skill_safety_rule,
+)
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
@@ -908,15 +910,8 @@ def _reinject_pruned_skill_markers(summary: str, skill_names: list[str]) -> str:
     missing = [_skill_pruned_marker(name) for name in skill_names if _skill_pruned_marker(name) not in summary]
     if not missing:
         return summary
-    block = (
-        "\n\n" + _PRUNED_SKILLS_SECTION_HEADING + "\n"
-        + "\n".join(missing)
-        + "\n(The listed skills' instructions were pruned during context "
-        "compression. Reload with the skill_view call in each marker before "
-        "relying on that skill; one reload per skill is enough — ignore any "
-        "older markers for the same skill.)"
-    )
-    return summary + _redact_compaction_text(block)
+    # How to react to the markers is the handoff's Skill Safety Rule (``with_skill_safety_rule``), not repeated here.
+    return summary + _redact_compaction_text("\n\n" + _PRUNED_SKILLS_SECTION_HEADING + "\n" + "\n".join(missing))
 
 
 # Lean tail mode: small recency window; continuity via verbatim user messages in
@@ -5563,6 +5558,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         head/tail compress at all (#61932); tool-call arguments are never rewritten by pruning."""
         compressed = self._assemble_head(messages, compress_start)
         tail_messages = self._assemble_tail(messages, compress_end, scan.tail_start, scan.summary_indices)
+        summary = with_skill_safety_rule(summary, [*compressed, *tail_messages])
         summary_role, merge_into_tail, force_user_leading, first_tail_visible_idx = (
             self._summary_placement(compressed, tail_messages, compress_start)
         )

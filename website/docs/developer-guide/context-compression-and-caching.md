@@ -570,7 +570,10 @@ summarized, and its older images are retired so compaction can still make room.
 A skill's instructions are not kept verbatim forever, but the model is always told when they are
 gone. Every `skill_view` result that a pass stubs or summarizes away (whatever its size) carries
 `[SKILL_PRUNED: content lost in compression; reload with skill_view(name='…')]`, and the summary
-lists each such skill under `## Pruned Skills`. Skills loaded inline by `/skill-name`, bundles,
+lists each such skill under `## Pruned Skills`. Whenever a marker survives anywhere in the compacted
+transcript, the handoff summary ends with a `## Skill Safety Rule` telling the model to reload the
+skill before relying on it; fresh sessions never carry that rule in their system prompt, since no
+marker can exist before the first compaction. Skills loaded inline by `/skill-name`, bundles,
 stacked invocations and gateway channel auto-load get the same marker when their turn is
 summarized, and the summary quotes that turn as typed (`/skill-name do X`) rather than the skill
 body. A reload after the boundary returns the full skill again. Skills preloaded with `-s` or

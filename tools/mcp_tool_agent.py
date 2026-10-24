@@ -38,8 +38,10 @@ def _resolve_refresh_toolsets(agent, enabled_override, disabled_override):
     if enabled_override is not None or disabled_override is not None:
         enabled = enabled_override if enabled_override is not None else enabled
         if disabled_override is not None:
+            from agent.oneshot_footprint import agent_is_oneshot
             from toolsets import session_disabled_toolsets
-            disabled = session_disabled_toolsets(disabled_override, getattr(agent, "platform", None))
+            disabled = session_disabled_toolsets(
+                disabled_override, getattr(agent, "platform", None), oneshot=agent_is_oneshot(agent))
         agent.enabled_toolsets, agent.disabled_toolsets = enabled, disabled
     return enabled, disabled
 
@@ -55,11 +57,8 @@ def _tool_defs_content_changed(agent, new_defs: list) -> bool:
 
 
 def _drop_session_tools(agent, new_defs: list, new_names: set) -> tuple:
-    from toolsets import agent_tool_drops
-    drops = agent_tool_drops(agent)
-    if not drops:
-        return new_defs, new_names
-    return [entry for entry in new_defs if _def_name(entry) not in drops], new_names - drops
+    from toolsets import agent_tool_drops, agent_tool_surface
+    return agent_tool_surface(agent, new_defs), new_names - agent_tool_drops(agent)
 
 
 def _publish_tool_snapshot(

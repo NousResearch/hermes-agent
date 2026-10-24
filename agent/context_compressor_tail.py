@@ -1,4 +1,5 @@
-"""Lean-mode stale-tail demotion for ContextCompressor: old tail tool results become one-line recovery stubs."""
+"""Lean-mode stale-tail demotion for ContextCompressor (old tail tool results become one-line recovery stubs), and
+the Skill Safety Rule the compaction handoff carries whenever its transcript holds a skill prune marker."""
 
 from __future__ import annotations
 
@@ -83,3 +84,26 @@ def demote_stale_tail_tools(
         result[i] = _rewritten(msg, stub)
         demoted += 1
     return result, demoted
+
+
+# Sent only where ``[SKILL_PRUNED:`` markers exist — after a compaction, riding its handoff — rather than in every
+# fresh session's system prompt; adding it to a compacted transcript is the one sanctioned cache break.
+SKILL_SAFETY_HEADING = "## Skill Safety Rule"
+SKILL_SAFETY_RULE = (
+    f"{SKILL_SAFETY_HEADING}\n"
+    "A skill placeholder containing `[SKILL_PRUNED]` lost its content in context compression and is inaccessible — "
+    "reload it with skill_view(name='...') before acting on anything that depends on it. After reloading, ignore any "
+    "remaining `[SKILL_PRUNED]` markers for that same skill; they are historical artifacts of earlier compactions."
+)
+
+
+def with_skill_safety_rule(summary: str, kept_messages: list[dict[str, Any]]) -> str:
+    """*summary* plus :data:`SKILL_SAFETY_RULE` when it or a message kept beside it carries a prune marker
+    (summary-side ``## Pruned Skills`` markers, Phase-1 and lean-demoted ``skill_view`` stubs); else unchanged."""
+    from agent.context_compressor import SKILL_PRUNED_MARKER_PREFIX, _content_text_for_contains
+    if SKILL_SAFETY_RULE in summary:
+        return summary
+    texts = (summary, *(_content_text_for_contains(m.get("content")) for m in kept_messages if isinstance(m, dict)))
+    if not any(SKILL_PRUNED_MARKER_PREFIX in text for text in texts):
+        return summary
+    return f"{summary}\n\n{SKILL_SAFETY_RULE}"

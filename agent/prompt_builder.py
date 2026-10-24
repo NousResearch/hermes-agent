@@ -171,9 +171,11 @@ DEFAULT_AGENT_IDENTITY = (
 HERMES_AGENT_HELP_GUIDANCE = (
     # Injected only when skill_view exists AND the hermes-agent skill is installed (system_prompt.py slot
     # resolution). No "when the two differ" clause: docs-are-authoritative already carries the precedence.
-    "You run on Hermes Agent (by Nous Research). When the user needs help with Hermes itself — configuring, "
-    "setting up, using, extending, or troubleshooting it — or when you need to understand your own features, "
-    "tools, or capabilities, the documentation at https://hermes-agent.nousresearch.com/docs is your "
+    # Names Hermes Agent without restating identity: SOUL.md line 1 already says who you are, while a custom
+    # persona (no Hermes identity line) still learns from "Hermes Agent itself" + "your own features" what it runs on.
+    "For help with Hermes Agent itself — configuring, setting up, using, extending, or troubleshooting it — "
+    "or to understand your own features, tools, or capabilities, the documentation at "
+    "https://hermes-agent.nousresearch.com/docs is your "
     "authoritative reference and always holds the latest, most up-to-date information. The `hermes-agent` "
     "skill has the actual commands and proven workflows — load it with skill_view(name='hermes-agent') "
     "before configuring, modifying, or troubleshooting Hermes so you don't guess or invent workarounds."
@@ -181,9 +183,9 @@ HERMES_AGENT_HELP_GUIDANCE = (
 
 # Variant for sessions without the skills toolset (e.g. Blank Slate): naming skill_view() there would dangle.
 HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS = (
-    "You run on Hermes Agent (by Nous Research). When the user needs help with Hermes itself — configuring, "
-    "setting up, using, extending, or troubleshooting it — or when you need to understand your own features, "
-    "tools, or capabilities, the documentation at https://hermes-agent.nousresearch.com/docs is the "
+    "For help with Hermes Agent itself — configuring, setting up, using, extending, or troubleshooting it — "
+    "or to understand your own features, tools, or capabilities, the documentation at "
+    "https://hermes-agent.nousresearch.com/docs is the "
     "authoritative reference and always holds the latest, most up-to-date information. Point the user there "
     "(or read it yourself if you have a way to fetch web content)."
 )
@@ -243,7 +245,7 @@ SESSION_SEARCH_GUIDANCE = (
 # The opening sentence is worded deliberately: Anthropic's server-side filter rejected the previous phrasing
 # ("After completing a complex task (5+ tool calls)... save the approach as a skill...") on subscription OAuth
 # credentials, surfacing as a billing-shaped HTTP 400. If you rewrite it, re-verify with a subscription OAuth
-# token — sk-ant-api keys do not hit the filter. The safety-rule heading is referenced by tests and compaction summaries.
+# token — sk-ant-api keys do not hit the filter.
 # Anthropic's server-side content filter rejects the previous phrasing ("After completing a complex task (5+
 # tool calls), fixing a tricky error, or discovering a non-trivial workflow, save the approach as a skill
 # with skill_manage so you can reuse it next time.") on subscription OAuth credentials, and surfaces that
@@ -253,16 +255,10 @@ SESSION_SEARCH_GUIDANCE = (
 # not understood — if you rewrite this sentence, re-verify against a subscription OAuth token, not an
 # sk-ant-api… key, which does not hit the filter. Dieted (#95681, maintainer-directed): the record-it /
 # patch-it coaching that used to open this block duplicated the ## Skills section (which teaches both "offer
-# to save as a skill" and "fix it with skill_manage(action='patch')") and skill_manage's own schema. Only
-# the compaction-pruning contract lives here — nothing else teaches it.
-SKILL_SAFETY_HEADING = "## Skill Safety Rule"
-SKILLS_GUIDANCE = (
-    "When you work out a non-trivial workflow, record it with skill_manage for future reuse.\n\n"
-    f"{SKILL_SAFETY_HEADING}\n"
-    "A skill placeholder containing `[SKILL_PRUNED]` lost its content in context compression and is inaccessible — "
-    "reload it with skill_view(name='...') before acting on anything that depends on it. After reloading, ignore any "
-    "remaining `[SKILL_PRUNED]` markers for that same skill; they are historical artifacts of earlier compactions."
-)
+# to save as a skill" and "fix it with skill_manage(action='patch')") and skill_manage's own schema. The
+# [SKILL_PRUNED] reload rule that followed moved to the compaction summary, the only place markers exist
+# (agent/context_compressor_tail.py::with_skill_safety_rule): fresh sessions no longer pay for it.
+SKILLS_GUIDANCE = "When you work out a non-trivial workflow, record it with skill_manage for future reuse."
 
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
@@ -662,14 +658,6 @@ def hud_surface_note(valid_tool_names: set[str] | None = None,
 # swapped at the API boundary in _build_api_kwargs().
 DEVELOPER_ROLE_MODELS = ("gpt-5", "codex")
 
-_LOCAL_CRON_DELIVERY_NOTE = (
-    "Cron jobs scheduled from this session are LOCAL-ONLY: their output is saved (viewable via cronjob "
-    "action='list') but is NOT delivered back into this session — there is no live-delivery channel here. If "
-    "the user wants to be notified when a job runs, the job's `deliver` must target a gateway-connected "
-    "messaging platform (e.g. deliver='telegram' or 'all'). Do not promise that a deliver='origin' or "
-    "default-deliver cron job will message them in this session."
-)
-
 # Hints for core surfaces only. A messaging platform's hint ships with its plugin
 # (``PlatformEntry.platform_hint``, read by agent/system_prompt._default_platform_hint).
 PLATFORM_HINTS = {
@@ -684,15 +672,15 @@ PLATFORM_HINTS = {
         "You are in a plain terminal (CLI). Markdown does NOT render — asterisks, headers, and fences appear as "
         "literal characters, so write plain text (indentation and blank lines are your only layout tools). Files: "
         "there is no attachment channel and MEDIA:/path tags are NOT intercepted here (they print as literal text) — "
-        "deliver a file by stating its absolute path or URL in plain text; the user opens it themselves. "
-        f"{_LOCAL_CRON_DELIVERY_NOTE}"
+        # The cron local-only delivery caveat lives in cronjob_manage's deliver description (deferred: paid
+        # only when the tool is loaded), not in every CLI/TUI prompt.
+        "deliver a file by stating its absolute path or URL in plain text; the user opens it themselves."
     ),
     "tui": (
         # Same file-delivery reality as the CLI: no MEDIA: interception in tui/.
         "You are in the Hermes terminal UI (TUI). Files: there is no attachment channel and MEDIA:/path tags "
         "are NOT intercepted here (they print as literal text) — deliver a file by stating its absolute path "
-        "or URL in plain text. "
-        f"{_LOCAL_CRON_DELIVERY_NOTE}"
+        "or URL in plain text."
     ),
     "desktop": (
         # Every claim verified against the shipping renderer (inline-preview-directive.tsx). Widget text is

@@ -3,6 +3,8 @@ import type { ReactNode } from 'react'
 import { useEffect, useMemo } from 'react'
 
 import { COMPOSER_AREAS } from '@/app/chat/composer/contrib'
+import { recordComposerUndoPoint } from '@/app/chat/composer/hooks/use-composer-undo'
+import { RICH_INPUT_SLOT } from '@/app/chat/composer/rich-editor'
 import { terminalMenuHandleFor } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { openStarMapNodeMenuFor } from '@/app/starmap/context-menu-handle'
 import { DROPDOWN_KIT } from '@/components/ui/actions-menu'
@@ -196,7 +198,21 @@ function domSections(
   }
 
   const spellcheckAction = (action: { kind: 'add' | 'replace'; word: string }) => {
-    withEditableFocus(() => void window.hermesDesktop?.contextMenuSpellcheck?.(action))
+    const editable = target.editable
+
+    withEditableFocus(() => {
+      // Chromium's `replaceMisspelling` (main) edits the field through its own
+      // pipeline: the composer only sees the DOM change, never the edit that
+      // produced it, so its undo stack has no record of the correction and ⌘Z
+      // would undo whatever came BEFORE it instead. Bank the pre-replace state
+      // first. Only a rich-input editor (the main composer, the message-edit
+      // composer) has a stack: anything else is a no-op inside the helper.
+      if (action.kind === 'replace' && editable?.dataset.slot === RICH_INPUT_SLOT) {
+        recordComposerUndoPoint(editable)
+      }
+
+      void window.hermesDesktop?.contextMenuSpellcheck?.(action)
+    })
   }
 
   if (linkUrl) {

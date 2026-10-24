@@ -27,8 +27,37 @@ Analyze repositories for lines of code, language breakdown, file counts, and cod
 
 ## Prerequisites
 
+The steps below call `pygount` directly, so it must be on `PATH`. Check first — it is often
+already installed:
+
 ```bash
-pip install --break-system-packages pygount 2>/dev/null || pip install pygount
+command -v pygount
+```
+
+If it is missing, install it into an isolated environment rather than the system Python. Most
+modern distributions (and Homebrew) mark the system interpreter as externally managed
+([PEP 668](https://peps.python.org/pep-0668/)), so a plain `pip install` is refused by design:
+
+```bash
+# Run it without installing anything at all (uv provides `uvx`)
+uvx pygount --format=summary .
+
+# Or install it into an isolated tool environment
+uv tool install pygount          # then use `pygount ...` as shown below
+pipx install pygount             # or this
+
+# Or install into the project virtualenv you are already working in
+/path/to/venv/bin/pip install pygount
+```
+
+If you install with `uvx`, prefix each command below with `uvx`.
+
+Use `--break-system-packages` only when the user has **explicitly** asked for a system-wide
+install — and never silence the failure; read it first:
+
+```bash
+pip install pygount                          # let any error surface, then decide
+pip install --break-system-packages pygount  # last resort, explicit user intent only
 ```
 
 ## 1. Basic Summary (Most Common)

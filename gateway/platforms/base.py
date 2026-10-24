@@ -4256,7 +4256,7 @@ class BasePlatformAdapter(ABC):
             from gateway.dead_targets import classify_dead_error
             from gateway.delivery_ledger import is_reconnect_only, mark_delivered, mark_failed
             if getattr(result, "success", False):
-                await asyncio.to_thread(mark_delivered, obligation_id)
+                await asyncio.to_thread(mark_delivered, obligation_id, getattr(result, "message_id", None))
                 return
             error = str(getattr(result, "error", "") or "")
             await asyncio.to_thread(mark_failed, obligation_id, error)

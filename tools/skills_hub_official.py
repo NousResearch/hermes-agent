@@ -133,10 +133,17 @@ class OptionalSkillSource(SkillSource):
         return self._bundle(rel_id, files) if files else None
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
-        skill_name = self._rel(identifier).rsplit("/", 1)[-1]
-        for meta in self._scan_all():
+        rel = self._rel(identifier)
+        local = self._scan_all()
+        for meta in local:
+            if meta.identifier == f"official/{rel}":
+                return meta
+        skill_name = rel.rsplit("/", 1)[-1]
+        for meta in local:
             if meta.name == skill_name:
                 return meta
+        if rel in self._list_remote_skill_dirs():
+            return self._remote_meta(rel)
         matches = self._remote_matches(skill_name)  # not in the local checkout — check live main
         return self._remote_meta(matches[0]) if len(matches) == 1 else None
 

@@ -494,6 +494,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_kanban_worker_stale_claim` | Observer | After a TTL-expired claim is reclaimed; live-PID extensions don't fire. Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `worker_pid`, `heartbeat_stale`, `retry_status` | Identifiers and claim metadata only. |
 | `on_kanban_task_updated` | Observer | After a committed task-field write outside the claim/complete/block lifecycle (assign, overrides, dashboard editors). Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `changed_fields` | `changed_fields` carries field names only, never values; the named title/body values in the board DB may contain user/project content. |
 | `on_kanban_dispatch_tick` | Observer | Once per dispatcher tick, strictly after the dispatch lock is released; idle and contended ticks fire too. Return ignored. | `board`, `profile_name`, `dry_run`, `outcome`, `result` | `result` is the tick's `DispatchResult` and carries task ids, assignees, and workspace paths. |
+| `on_kanban_dispatcher_stuck` | Observer | When the gateway or forced standalone dispatcher emits its existing rate-limited ready-but-unspawned health warning; outside dispatch locks. Return ignored. | `board`, `profile_name`, `bad_ticks`, `held`, `source` | `board` is `null` for the gateway's multi-board aggregate; `held` is a suppression summary and `source` is `"gateway"` or `"daemon"`. |
 
 ---
 
@@ -1841,6 +1842,7 @@ Five additional observers (RFC #58548) extend the kanban family. All are observe
 - **`on_kanban_worker_stale_claim`** — when a TTL-expired claim is reclaimed; live-PID extensions don't fire. Adds `worker_pid`, `heartbeat_stale`, `retry_status`.
 - **`on_kanban_task_updated`** — after a committed task-field write outside the claim/complete/block lifecycle (`assign_task`, model/reasoning overrides, dashboard editors). Adds `changed_fields` — field names only, never values.
 - **`on_kanban_dispatch_tick`** — once per dispatcher tick, strictly after the dispatch lock is released, including idle and lock-contended ticks. Payload: `board`, `profile_name`, `dry_run`, `outcome`, `result`.
+- **`on_kanban_dispatcher_stuck`** — when the existing rate-limited health warning finds ready work but no spawned workers for consecutive ticks. It runs outside dispatch locks. Payload: `board` (`null` for the gateway aggregate), `profile_name`, `bad_ticks`, `held`, `source` (`"gateway"` or `"daemon"`).
 
 ---
 

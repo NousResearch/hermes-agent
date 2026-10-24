@@ -553,7 +553,32 @@ def _export_markdown(db, args, filters, redact):
         return
     lineage_is_logical = getattr(args, "lineage", "single") == "logical"
     if args.session_id:
-        return _export_markdown_single(db, args, _export_one, output_dir, lineage_is_logical)
+        # Use the enhanced export_session_lineage with completeness guarantees
+        raw_data = db.export_session_lineage(args.session_id, include_compacted=True)
+        if not raw_data:
+            return _not_found(args.session_id)
+            
+        # Apply redaction if requested
+        data = redact(raw_data)
+        
+        # Write the markdown file
+        path = write_session_markdown(data, output_dir, fmt=args.format, force=args.force)
+        append_manifest_entry(output_dir, data, path, fmt=args.format)
+        
+        # Handle delete-after-verified if requested
+        if args.delete_after_verified:
+            def _do(conn):
+                # Delete the session and all its lineage
+                conn.execute("DELETE FROM sessions WHERE id = ?", (args.session_id,))
+                # Also delete any delegated children
+                for delegate in raw_data.get("delegates", []):
+                    conn.execute("DELETE FROM sessions WHERE id = ?", (delegate["id"],))
+                return True
+            db._execute_write(_do)
+            print(f"Deleted session {args.session_id} and its lineage.")
+            
+        print(f"Exported lineage for session {args.session_id} to {path}")
+        return_export_markdown_single(db, args, _export_one, output_dir, lineage_is_logical)
     if not filters:
         print("Refusing bulk export without a filter. Pass --session-id or "
               "at least one filter (e.g. --older-than 90, --source telegram).")

@@ -820,6 +820,49 @@ def _assignment_sub(render, *, check_keyword: bool):
     return _sub
 
 
+# --- Credential values riding on command-line flags / Azure connection-string keys (#143982) ---
+# ``mysql --password=…`` / ``psql --password …`` put the secret on a flag VALUE, not a
+# NAME=value assignment, so the passes above never see it. Both ``--name=value`` and
+# ``--name value`` forms are covered by one pattern; the value stops at ``;`` too —
+# unquoted, that is a shell command separator, not part of the value. The flag name goes
+# through the same word-bounded-keyword + value-shape gate as env assignments, so
+# ``--max-tokens 100`` / ``--token-count 5`` (numeric scalars are not opaque) and
+# ``--auth-token ~/.config/hermes/token`` (path reference) stay untouched. The value must
+# contain a non-space character, so ``--password please`` in prose reads as a placeholder
+# and is masked — the conservative same-as-equals-form trade-off, 宁漏勿误.
+_FLAG_VALUE_RE = re.compile(r"(?<![\w-])(--[A-Za-z][A-Za-z0-9_-]*)(=|[ \t]+)(['\"]?)([^;\s'\"]+)\3")
+# ``docker login -p <pass>``: the short flag carries no credential name to gate on, so it
+# is anchored to a ``docker login`` verb run. The gap may not cross ``;``/``|``/``&``/newline,
+# so a second command's ``-p`` (``docker run -p 8080:80`` behind a ``;``) never inherits
+# the context.
+_DOCKER_LOGIN_P_RE = re.compile(
+    r"(\bdocker[ \t]+login\b[^;|&\n]*?[ \t]-p)(=|[ \t]+)(['\"]?)([^;\s'\"]+)\3")
+# Azure storage / Service Bus connection strings carry CamelCase keys (``AccountKey=…``,
+# ``SharedAccessKey=…``), which the all-caps _ENV_ASSIGN_RE and the underscore-boundary
+# _ENV_ASSIGN_LOWER_RE both miss. The names are unambiguously credentials, so the value is
+# masked unconditionally, up to the next ``;``, quote, or whitespace.
+_AZURE_CONN_KEY_RE = re.compile(r"((?:Account|SharedAccess)Key)=(['\"]?)([^;\s'\"]+)\2")
+
+
+def _redact_flag_credentials(text: str, mask) -> str:
+    """Mask credential values passed as command-line flags (#143982)."""
+
+    def _sub(m):
+        if not _should_redact_assignment(m.group(1), m.group(4), check_keyword=True):
+            return m.group(0)
+        return f"{m.group(1)}{m.group(2)}{m.group(3)}{mask(m.group(4))}{m.group(3)}"
+
+    if "--" in text and _CFG_SECRET_WORD_RE.search(text):
+        text = _FLAG_VALUE_RE.sub(_sub, text)
+    if "docker login" in text and "-p" in text:
+        text = _DOCKER_LOGIN_P_RE.sub(
+            lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}{mask(m.group(4))}{m.group(3)}", text)
+    if "Key=" in text:
+        text = _AZURE_CONN_KEY_RE.sub(
+            lambda m: f"{m.group(1)}={m.group(2)}{mask(m.group(3))}{m.group(2)}", text)
+    return text
+
+
 def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     """ENV / config / JSON / YAML assignment passes (skipped for code files). Passes
     that would match ``token=``/``key=`` URL params skip ``://`` text (web-URL query
@@ -868,6 +911,10 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     if ":" in text and "://" not in text:
         text = _YAML_ASSIGN_RE.sub(
             _assignment_sub(lambda g: f"{g[0]}{g[1]}{mask(g[2])}", check_keyword=True), text)
+
+    # Credential flag values / Azure connection-string keys run last, after the NAME=value
+    # passes have already masked the assignment forms of the same secrets (#143982).
+    text = _redact_flag_credentials(text, mask)
     return text
 
 

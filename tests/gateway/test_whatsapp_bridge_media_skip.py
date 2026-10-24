@@ -85,16 +85,19 @@ async def test_cached_photo_still_accepted(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_allowed_bridge_local_path_still_accepted(monkeypatch):
+async def test_allowed_bridge_local_path_still_accepted(monkeypatch, tmp_path):
     """A bridge-written local absolute path inside the cache dir still passes (no regression)."""
     monkeypatch.setattr(
         "plugins.platforms.whatsapp.adapter._is_allowed_bridge_path", lambda p: True
     )
     adapter = _make_adapter()
+    # tmp_path, not "/tmp/...": the branch under test is gated on os.path.isabs, which is False
+    # for a POSIX literal on Windows.
+    local_audio = str(tmp_path / "aud_xyz.ogg")
 
     urls, mimes = await adapter._collect_bridge_media(
-        {"mediaUrls": ["/tmp/hermes/cache/audio/aud_xyz.ogg"]}, MessageType.VOICE
+        {"mediaUrls": [local_audio]}, MessageType.VOICE
     )
 
-    assert urls == ["/tmp/hermes/cache/audio/aud_xyz.ogg"]
+    assert urls == [local_audio]
     assert mimes == ["audio/ogg"]

@@ -218,6 +218,14 @@ def _last_run_display(job: dict[str, Any]) -> str:
         # Agent succeeded but the result never reached the user — not green; last_error is None.
         return color(f"ran, but the result was not delivered ({_short_reason(job.get('last_delivery_error'))}). "
                      f"{_delivery_fix_hint(job)}", Colors.YELLOW)
+    if last_status == "paused_usage_limit":
+        # An Anthropic per-model quota wall (t_317282ed): the job did nothing wrong, the provider
+        # window is closed, and cron/quota_hold.py has already parked next_run_at past it — this
+        # is NOT the red "needs triage" shape error/delivery_failed are. Yellow, like the other
+        # non-error holding states above, not red.
+        hold_until = job.get("quota_hold_until")
+        when = f" until {_short_reason(hold_until, limit=40)}" if hold_until else ""
+        return color(f"paused (usage limit){when} — resumes automatically, no action needed", Colors.YELLOW)
     display = color(f"{last_status}: {job.get('last_error', '?')}", Colors.RED)
     streak = int(job.get("failure_streak") or 0)
     if streak >= 2:

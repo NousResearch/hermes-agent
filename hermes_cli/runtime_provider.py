@@ -24,7 +24,7 @@ from agent.credential_pool import (  # custom_provider_pool_key_candidates is re
 )
 from agent.secret_scope import get_secret_str
 from hermes_cli.auth import (  # resolve_external_process_provider_credentials is read via origin by runtime_provider_backends
-    ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, AuthError, DEFAULT_CODEX_BASE_URL, DEFAULT_QWEN_BASE_URL, DEFAULT_XAI_OAUTH_BASE_URL,
+    ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, AuthError, CODEX_RATE_LIMITED_CODE, DEFAULT_CODEX_BASE_URL, DEFAULT_QWEN_BASE_URL, DEFAULT_XAI_OAUTH_BASE_URL,
     PROVIDER_REGISTRY, _agent_key_is_usable, _nous_inference_env_override, format_auth_error, resolve_provider,
     resolve_nous_runtime_credentials, resolve_codex_runtime_credentials, resolve_xai_oauth_runtime_credentials,
     resolve_qwen_runtime_credentials, resolve_api_key_provider_credentials,
@@ -399,15 +399,57 @@ def _anthropic_cfg_base_url(model_cfg: dict[str, Any]) -> str:
     return cfg_base_url if _anthropic_base_url_override_ok(cfg_base_url) else ""
 
 
+# t_0d53d772: when the pool can't compute a precise reset time, fall back to this cheap-poll
+# interval rather than None — matches t_317282ed BUILD #1's original spec ("record reset time
+# from the response headers when present, else poll cheaply every 30 min").
+_ANTHROPIC_COOLDOWN_UNKNOWN_FALLBACK_SECONDS = 1800.0
+
+
+def _anthropic_model_cooldown_retry_after(model: str) -> float:
+    """Seconds until *model*'s pool cooldown lifts. Always positive.
+
+    Feeds :class:`AuthError`'s ``retry_after`` so a cron job hitting this wall carries the
+    same "retry after <N>s" shape Codex's quota AuthError already does — without it,
+    ``cron/quota_hold.py``'s ``hold_seconds_from_failure`` (which only reads
+    ``AuthError.retry_after`` or a "retry after Ns" string) never engages, and the job keeps
+    re-firing into a window it cannot pass (t_317282ed BUILD #2).
+
+    This is called only after ``_anthropic_token_or_raise`` has already confirmed *model* is
+    blocked (the unscoped resolve succeeded but the model-scoped one returned None), so a pool
+    read that can't produce a precise number — ``next_available_at`` returning ``None``, or a
+    read exception — is not "no wait needed"; it means the pool just can't say exactly how long,
+    and must still return a positive fallback. Returning ``None``/``0`` here was the actual
+    regression (t_0d53d772): the AuthError's ``retry_after`` went missing, so
+    ``hold_seconds_from_failure`` could never engage and the run fell through to a bare
+    ``RuntimeError``/"error" status instead of the pause-and-resume ``paused_usage_limit`` one.
+    """
+    import time
+    try:
+        until = load_pool("anthropic").next_available_at(model=model)
+    except Exception:
+        return _ANTHROPIC_COOLDOWN_UNKNOWN_FALLBACK_SECONDS
+    if until is None:
+        return _ANTHROPIC_COOLDOWN_UNKNOWN_FALLBACK_SECONDS
+    return max(until - time.time(), 0.0) or _ANTHROPIC_COOLDOWN_UNKNOWN_FALLBACK_SECONDS
+
+
 def _anthropic_token_or_raise(*, model: str | None = None) -> str:
     from agent.anthropic_credentials import resolve_anthropic_token
     token = resolve_anthropic_token(model=model)
     if not token:
         # A key the pool benched for *this* model is not a missing credential; telling the
         # user to re-authenticate would send them chasing a cooldown that lifts on its own.
+        #
+        # This is a quota wall, so it MUST carry the transient rate-limit code. Without it
+        # `is_rate_limited_auth_error()` returns False and a Kanban worker that hit a 429
+        # exits 1 instead of KANBAN_RATE_LIMIT_EXIT_CODE — the dispatcher then books a
+        # provider outage as the task's own failure and burns its retry budget (#124xxx).
         if model and resolve_anthropic_token():
             raise AuthError(f"Anthropic credentials are rate-limited for {model}; "
-                            "other Claude models remain available (see `hermes auth list`).")
+                            "other Claude models remain available (see `hermes auth list`).",
+                            provider="anthropic", code=CODEX_RATE_LIMITED_CODE,
+                            relogin_required=False, retryable=True,
+                            retry_after=_anthropic_model_cooldown_retry_after(model))
         raise AuthError(_NO_ANTHROPIC_CREDENTIALS_MSG)
     return token
 

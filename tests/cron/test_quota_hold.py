@@ -21,6 +21,7 @@ from cron.jobs import (
 from hermes_cli.auth import CODEX_RATE_LIMITED_CODE, AuthError
 
 QUOTA_MSG = "Codex provider quota exhausted (429); retry after 123518s. Credentials are still valid."
+ANTHROPIC_QUOTA_MSG = "Anthropic credentials are rate-limited for claude-opus-5-5; other Claude models remain available."
 
 
 @pytest.fixture
@@ -33,6 +34,11 @@ def tmp_cron_home(tmp_path, monkeypatch):
 
 def _quota_error() -> AuthError:
     return AuthError(QUOTA_MSG, provider="openai-codex", code=CODEX_RATE_LIMITED_CODE)
+
+
+def _anthropic_quota_error() -> AuthError:
+    return AuthError(ANTHROPIC_QUOTA_MSG, provider="anthropic", code=CODEX_RATE_LIMITED_CODE,
+                     retry_after=7200)
 
 
 def test_hold_seconds_only_from_rate_limited_auth_error_in_cause_chain():
@@ -175,3 +181,61 @@ def test_quota_hold_parks_past_window_survives_stale_rearm_and_clears_on_model_r
     j = update_job(job_id, {"schedule": "every 15m"})
     assert qh.STATE_KEY not in j
     assert datetime.fromisoformat(j["next_run_at"]) - now < timedelta(hours=1)
+
+
+def _raise_anthropic_quota(**_kw):
+    raise _anthropic_quota_error()
+
+
+def test_hold_provider_from_failure_reads_provider_off_the_auth_error():
+    """cron/quota_hold.py's hold_provider_from_failure (t_317282ed BUILD #2) is the scheduler's
+    only way to tell an Anthropic quota wall from a Codex one when deciding the cron-list status
+    label — it must read AuthError.provider through the same cause-chain walk as
+    hold_seconds_from_failure, and return None for anything that isn't a rate-limited AuthError."""
+    try:
+        raise RuntimeError(ANTHROPIC_QUOTA_MSG) from _anthropic_quota_error()
+    except RuntimeError as wrapped:
+        assert qh.hold_provider_from_failure(wrapped) == "anthropic"
+
+    try:
+        raise RuntimeError(QUOTA_MSG) from _quota_error()
+    except RuntimeError as wrapped:
+        assert qh.hold_provider_from_failure(wrapped) == "openai-codex"
+
+    assert qh.hold_provider_from_failure(RuntimeError(QUOTA_MSG)) is None
+    relogin = AuthError(QUOTA_MSG, provider="openai-codex", code="expired", relogin_required=True)
+    assert qh.hold_provider_from_failure(relogin) is None
+
+
+def test_anthropic_quota_hold_parks_job_and_shows_paused_not_error(tmp_cron_home, cron_owner):
+    """t_317282ed BUILD #2: an Anthropic per-model usage wall must (a) park the job past the
+    window exactly like Codex's does — the hold mechanics in cron/quota_hold.py are provider-
+    agnostic — but (b) render as last_status='paused_usage_limit', not the red 'error' status
+    Codex's own quota wall still uses (test_quota_hold_parks_past_window_... above). Before this
+    fix, the AuthError _anthropic_token_or_raise raised for a rate-limited model carried no
+    retry_after at all, so hold_seconds_from_failure never matched and the job just kept
+    re-firing into the wall every cadence tick."""
+    # A real (non-local) lane: the alert rides the durable delivery queue, whose enqueue is the
+    # seam (same reasoning as test_quota_hold_parks_past_window_... above) — "local" delivery
+    # bypasses cron/delivery_queue.py entirely (scheduler.py's "== local: return" short-circuit),
+    # so asserting against the mocked enqueue on a local-lane job would never see a delivery.
+    (tmp_cron_home / "config.yaml").write_text(
+        "platforms:\n  slack:\n    enabled: true\n    token: xoxb-test\n", encoding="utf-8")
+    job = create_job("anthropic digest", "every 30m", deliver="slack:alerts")
+    job_id = job["id"]
+    now = datetime.now(timezone.utc)
+    deliveries: list = []
+
+    _tick(get_job(job_id), tmp_cron_home, deliveries, _raise_anthropic_quota)
+    j = get_job(job_id)
+    assert j["last_status"] == "paused_usage_limit", (
+        "an Anthropic usage-limit hold must not render as a red triage-me 'error'")
+    assert len(deliveries) == 1, deliveries
+    parked = datetime.fromisoformat(j["next_run_at"])
+    assert parked - now >= timedelta(seconds=7200), "next_run_at must land past the window"
+    assert j[qh.STATE_KEY] == j["next_run_at"]
+
+    from hermes_cli.cron import _last_run_display
+    rendered = _last_run_display(j)
+    assert "paused (usage limit)" in rendered
+    assert "no action needed" in rendered

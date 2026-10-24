@@ -29,6 +29,13 @@ def _kbd():
 
 _CORRUPT_DB_MARKERS = ("file is not a database", "database disk image is malformed")
 
+# Per-board decomposer backoff after a rate-limited aux call (t_317282ed): the fixed-cadence
+# auto-decompose tick must not re-probe the same wall every ~60s all day (2,700 429s on 5 Oct).
+# Shares HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS with the dispatcher's own worker-respawn
+# cooldown (``_resolve_rate_limit_cooldown_seconds``) — one knob, not a second one to discover
+# and keep in sync. Process-local by design: each gateway process backs off its own tick only.
+_decompose_rate_limit_until: "dict[str, float]" = {}
+
 
 @dataclass
 class _DispatcherSettings:
@@ -249,6 +256,13 @@ class _KanbanDispatcher:
 
         Runs before dispatch fans out; the per-tick cap keeps a bulk triage
         load from burst-spending the aux LLM. Returns the number decomposed.
+
+        Skips a board entirely while it is in rate-limit backoff
+        (``_decompose_rate_limit_until``, set by :func:`_decompose_one` the moment
+        the aux LLM reports a rate-limit/usage-wall failure) — otherwise this loop
+        re-probes the same wall every tick until it clears (t_317282ed: ~2,700 429s
+        in one day against a single triage task while the weekly Anthropic limit
+        held).
         """
         try:
             from hermes_cli import kanban_decompose as _decomp
@@ -262,6 +276,14 @@ class _KanbanDispatcher:
             for slug in self._board_slugs():
                 if attempted >= auto_decompose_per_tick:
                     break
+                now = time.time()
+                backoff_until = _decompose_rate_limit_until.get(slug)
+                if backoff_until is not None and now < backoff_until:
+                    logger.debug(
+                        "kanban auto-decompose [%s]: skipping board, rate-limit backoff for %.0fs more",
+                        slug, backoff_until - now,
+                    )
+                    continue
                 # Pin the board via env for the call: the decomposer connects
                 # with no board kwarg (same pattern as the dashboard specify endpoint).
                 prev_env = os.environ.get("HERMES_KANBAN_BOARD")
@@ -277,6 +299,12 @@ class _KanbanDispatcher:
                             break
                         attempted += 1
                         successes += self._decompose_one(_decomp, slug, tid)
+                        if slug in _decompose_rate_limit_until:
+                            # Rate-limited on this board this tick — stop burning the
+                            # per-tick budget on sibling triage tasks that will hit
+                            # the same wall, and leave the rest of the board's queue
+                            # for the next unblocked tick.
+                            break
                 finally:
                     if prev_env is None:
                         os.environ.pop("HERMES_KANBAN_BOARD", None)
@@ -286,13 +314,33 @@ class _KanbanDispatcher:
 
     @staticmethod
     def _decompose_one(_decomp: Any, slug: str, tid: str) -> int:
-        """Decompose one triage task; returns 1 on success, 0 otherwise."""
+        """Decompose one triage task; returns 1 on success, 0 otherwise.
+
+        A rate-limited aux reply (``outcome.reason == "rate_limited"``, see
+        ``kanban_specify._is_rate_limited_aux_error``) arms this board's backoff window
+        (``_decompose_rate_limit_until``) instead of logging a generic skip — t_317282ed:
+        without this, the fixed-cadence auto-decompose tick re-probed the SAME wall every
+        ~60s all day (2,700 429s on 5 Oct) because a quota wall looked identical to any
+        other "no aux client" skip reason.
+        """
         try:
             outcome = _decomp.decompose_task(tid, author="auto-decomposer")
         except Exception:
             logger.exception("kanban auto-decompose: decompose_task crashed on %s", tid)
             return 0
         if not outcome.ok:
+            if outcome.reason == "rate_limited":
+                from hermes_cli import kanban_db as _kb
+                cooldown = _kb._resolve_rate_limit_cooldown_seconds()
+                if cooldown > 0:
+                    _decompose_rate_limit_until[slug] = time.time() + cooldown
+                    logger.info(
+                        "kanban auto-decompose [%s]: %s rate-limited; backing off this board for %ds",
+                        slug, tid, cooldown,
+                    )
+                else:
+                    logger.debug("kanban auto-decompose [%s]: %s rate-limited (cooldown disabled)", slug, tid)
+                return 0
             # Common no-op reasons (no aux client) must not spam logs every tick.
             logger.debug("kanban auto-decompose [%s]: %s skipped: %s", slug, tid, outcome.reason)
             return 0

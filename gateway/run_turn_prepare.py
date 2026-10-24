@@ -258,7 +258,14 @@ class GatewayTurnPrepareMixin:
         model = getattr(agent, "model", None)
         if not model:
             return
-        runtime = {k: getattr(agent, k, None) for k in ("provider", "base_url", "api_mode")}
+        from hermes_cli.runtime_provider_custom import session_provider_identity
+        runtime = {
+            "provider": session_provider_identity(getattr(agent, "provider", None),
+                                                  getattr(agent, "requested_provider", None),
+                                                  getattr(agent, "base_url", None), model),
+            "base_url": getattr(agent, "base_url", None),
+            "api_mode": getattr(agent, "api_mode", None),
+        }
         runtime["fallback_active"] = bool(getattr(agent, "_fallback_activated", False))
         runtime = {k: v for k, v in runtime.items() if v not in (None, "")}
         try:

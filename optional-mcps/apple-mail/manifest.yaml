@@ -14,9 +14,9 @@ source: https://github.com/sweetrb/apple-mail-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-mail-mcp@2.20.28`:
+# On macOS, `npx -y apple-mail-mcp@2.20.29`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     2.20.28 — i.e. the bytes npx resolved are the bytes pinned here;
+#     2.20.29 — i.e. the bytes npx resolved are the bytes pinned here;
 #   - returns a full `tools/list` of 52 tools, every one carrying a description;
 #   - resolves all 18 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
@@ -326,12 +326,31 @@ source: https://github.com/sweetrb/apple-mail-mcp
 # No new tools: still 52 tools, all 18 default_enabled entries resolve
 # (re-verified via a live `initialize` + `tools/list` handshake against
 # apple-mail-mcp@2.20.28, serverInfo.version matching).
+#
+# 2.20.29 is re-pinned on the security footing of 2.17.6 above: it fixes
+# GHSA-mrhx-c7xc-m3w5 (high; `zod` < 4.6.6 can exhaust memory validating an
+# oversized constrained collection) (sweetrb/apple-mail-mcp#327). 2.20.28
+# inlines `zod` 3.25.76 into `build/index.js`, inside the advisory's range;
+# 2.20.29 inlines 4.6.7. zod validates every tool call's input, so the
+# advisory is reachable through every default_enabled tool. That is a
+# major-line move (zod 3 -> 4), so `build/index.js` also gains a small
+# `src/utils/toolRegistration.ts` shim that keeps the advertised JSON-schema
+# contracts (`additionalProperties`, integer typing) under zod 4; no other
+# shipped file changed except package.json. Compared tool by tool against
+# 2.20.28, the only `tools/list` schema differences on default_enabled tools
+# are emission artifacts of that move — an inlined `$ref` on
+# `search-messages`' `dateTo`, and `propertyNames` on string-keyed record
+# outputs of `list-messages`/`search-messages`/`get-thread` — with no field,
+# type or constraint added or removed.
+# No new tools: still 52 tools, all described, all 18 default_enabled
+# entries resolve (re-verified via a live `initialize` + `tools/list`
+# handshake against apple-mail-mcp@2.20.29, serverInfo.version matching).
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-mail-mcp@2.20.28"
+    - "apple-mail-mcp@2.20.29"
 
 # Drives Apple Mail locally via AppleScript; no credentials.
 auth:

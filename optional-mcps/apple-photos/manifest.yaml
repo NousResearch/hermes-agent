@@ -14,9 +14,9 @@ source: https://github.com/sweetrb/apple-photos-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-photos-mcp@2.1.20`:
+# On macOS, `npx -y apple-photos-mcp@2.1.22`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     2.1.20 — i.e. the bytes npx resolved are the bytes pinned here;
+#     2.1.22 — i.e. the bytes npx resolved are the bytes pinned here;
 #   - returns a full `tools/list` of 21 tools, every one carrying a description;
 #   - resolves all 13 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
@@ -59,14 +59,27 @@ source: https://github.com/sweetrb/apple-photos-mcp
 # no default_enabled fix on its own), 2.1.19 (`@modelcontextprotocol/sdk`
 # OAuth-client CVE, unreachable from this stdio server; `source-map-js`
 # floor, dev-only). No tool surface change: still 21 tools, all 13
-# default_enabled entries resolve. Declined since: 2.1.21 (Dependabot:
-# bundled MCP SDK 1.31.0 -> 1.32.1, plus lint/type tooling).
+# default_enabled entries resolve.
+#
+# 2.1.22 is re-pinned on the security footing of 2.1.12 above: it fixes
+# GHSA-mrhx-c7xc-m3w5 (high; `zod` < 4.6.6 can exhaust memory validating an
+# oversized constrained collection) (sweetrb/apple-photos-mcp#114). 2.1.20
+# and 2.1.21 inline `zod` 3.25.76 into `build/index.js`, inside the
+# advisory's range; 2.1.22 inlines 4.6.7. zod validates every tool call's
+# input, so the advisory is reachable through every default_enabled tool.
+# The same release raises the `ip-address` floor to 10.7.4, which is not
+# inlined in `build/index.js`. Riding along, declined on its own and
+# superseded by this security release: 2.1.21 (Dependabot: bundled MCP SDK
+# 1.31.0 -> 1.32.1, plus lint/type tooling). No tool surface change: still
+# 21 tools, all described, all 13 default_enabled entries resolve (verified
+# via a live `initialize` + `tools/list` handshake against
+# apple-photos-mcp@2.1.22, serverInfo.version matching).
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-photos-mcp@2.1.20"
+    - "apple-photos-mcp@2.1.22"
 
 # Reads the Photos library via an osxphotos Python sidecar; no credentials.
 auth:

@@ -1136,7 +1136,7 @@ class GatewayAgent:
                                     owner={"type": "session", "session_id": self.session_id})
 
     def _answer_request(self, frame):
-        """A gateway server→client request (``sudo``, ``secret``, ``clarify``): main's own modal
+        """A gateway server→client request (``sudo``, ``secret``, the ``vault.*`` prompts, ``clarify``): main's own modal
         answers it on this (agent) thread, through the callback HermesCLI registered for the turn; the
         answer travels only in the JSON-RPC response frame."""
         method = frame["method"]
@@ -1195,6 +1195,37 @@ class GatewayAgent:
             finally:
                 callbacks.save_env_value_secure = saver
         return captured[0] if captured else ""
+
+    def _ask_vault_unlock(self, params):
+        """Main's masked password-manager unlock panel, through the callback HermesCLI registered."""
+        from agent.vault_backends.unlock import get_unlock_prompt_callback
+        callback = get_unlock_prompt_callback()
+        if callback is None:
+            return ""
+        return callback(str(params.get("backend") or ""), str(params.get("display_name") or "")) or ""
+
+    def _ask_vault_save_login(self, params):
+        """Main's two-step "save this login" panel. The gateway stores the login in the vault, so the
+        identifier and password go back as one JSON string in the response frame, as the cards send it."""
+        from agent.vault_backends.unlock import get_save_login_prompt_callback
+        callback = get_save_login_prompt_callback()
+        if callback is None:
+            return ""
+        answer = callback(str(params.get("origin") or ""), str(params.get("site") or ""))
+        if not isinstance(answer, dict) or not answer.get("password"):
+            return ""
+        try:
+            return json.dumps({"identifier": str(answer.get("identifier") or ""), "password": str(answer["password"])})
+        finally:
+            answer.clear()
+
+    def _ask_vault_code(self, params):
+        """Main's one-time-code panel, through the callback HermesCLI registered."""
+        from agent.vault_backends.unlock import get_code_prompt_callback
+        callback = get_code_prompt_callback()
+        if callback is None:
+            return ""
+        return callback(str(params.get("site") or ""), str(params.get("hint") or "")) or ""
 
     # -- result --------------------------------------------------------------------------------
     def _user_row(self, user_message):
@@ -1422,6 +1453,9 @@ _SECRET_LOCK = threading.Lock()
 _SERVER_REQUESTS = {
     "sudo": GatewayAgent._ask_sudo,
     "secret": GatewayAgent._ask_secret,
+    "vault.unlock_prompt": GatewayAgent._ask_vault_unlock,
+    "vault.save_login": GatewayAgent._ask_vault_save_login,
+    "vault.code": GatewayAgent._ask_vault_code,
     "clarify": GatewayAgent._ask_clarify,
 }
 

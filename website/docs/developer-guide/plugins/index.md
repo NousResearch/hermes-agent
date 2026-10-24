@@ -141,7 +141,7 @@ write-capable call instead of relying on the skill's instructions alone:
 
 The server name must match an `mcp.json` entry. With `untrusted`, every tool
 call to that server that is not annotated `readOnlyHint: true` asks the user
-first, and fails closed where nobody can answer (cron, unattended runs). The
+first (Once, Session or Always, per tool), and fails closed where nobody can answer (cron, unattended runs). The
 only other accepted value is `full`, the default, so a package can narrow
 access but never widen it. A `config.yaml` server with the same name replaces
 the package's entry, including its trust, but keeps the package's declared costs
@@ -210,7 +210,10 @@ A server entry key this Hermes does not know (one a newer release added) is
 ignored with a warning, which `hermes plugins validate` lists, and the package
 still installs. Releases from before this rule reject the package instead, and a
 release that ignores a key may behave less safely than intended, so declare a new
-key together with a catalog `requires_hermes` floor.
+key together with a catalog `requires_hermes` floor. `plugin.json` has no
+`requires_hermes` field, so that catalog floor is a portable package's only one: an install by
+catalog name refuses on an older Hermes, and `hermes plugins update` keeps the
+installed pin until Hermes is updated.
 
 An explicit per-server MCP call budget also reaches Hermes' outer tool executor. A call
 whose budget exceeds the shared concurrent-batch deadline becomes a sequential
@@ -1434,17 +1437,16 @@ ctx.register_tool(
 
 ### Overriding a built-in tool
 
-To replace a built-in tool with your own implementation (e.g. swap the
-default browser tool for a headed-Chrome CDP backend, or replace
+To replace a built-in tool with your own implementation (e.g. replace
 `web_search` with a custom corporate index), pass `override=True`:
 
 ```python
 def register(ctx):
     ctx.register_tool(
-        name="browser_navigate",             # same name as the built-in
-        toolset="plugin_my_browser",         # your own toolset namespace
+        name="web_search",                   # same name as the built-in
+        toolset="plugin_my_search",          # your own toolset namespace
         schema={...},
-        handler=my_custom_navigate,
+        handler=my_corporate_search,
         override=True,                       # explicit opt-in
     )
 ```

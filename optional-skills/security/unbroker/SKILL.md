@@ -27,7 +27,7 @@ person controls.
 The Python CLI (`scripts/pdd.py`) owns the deterministic state - config, dossiers + consent, the
 broker database, tier planning, the ledger, drafts, reports, **email sending (SMTP), verification-link
 polling (IMAP), and the autonomous action queue (`next`)**. You (the agent) do the scanning and
-form-driving with native tools: `web_extract` and `browser_navigate` for searching and web forms, and
+form-driving with native tools: `web_extract` and `browser_exec` for searching and web forms, and
 `cronjob` for recurring re-scans.
 
 ## Autonomy contract
@@ -76,13 +76,13 @@ verifying re-scan.
   - Email automation, two credential-free-or-not options:
     - **Browser mode (no password): `setup --email-mode browser`.** The agent sends opt-out/CCPA
       emails and opens verification links through the operator's **logged-in webmail** using
-      `browser_*` tools. Nothing is stored. This requires Hermes to be pointed at the operator's own
+      `browser_exec`. Nothing is stored. This requires Hermes to be pointed at the operator's own
       logged-in browser, **NOT** a cloud browser: a headless cloud browser (Browserbase) holds no
       webmail session and is itself Cloudflare/DataDome-gated on webmail and on session-bound broker
       gates (e.g. PeopleConnect guided-mode). Drive the operator's real Chrome over CDP - launch
       `chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.hermes/chrome-debug"` (a dedicated
-      debug profile signed into the webmail once, not the Default profile) and connect the browser
-      tools to `127.0.0.1:9222`. **`$PDD cdp` launches this for you** (finds Chrome/Chromium/Brave/Edge,
+      debug profile signed into the webmail once, not the Default profile) and attach Hermes's browser
+      to `127.0.0.1:9222` with `/browser connect`. **`$PDD cdp` launches this for you** (finds Chrome/Chromium/Brave/Edge,
       starts it detached on the dedicated profile, prints the CDP endpoint; `--check` to test, `--print`
       for the command). See `references/methods.md` -> "Browser backends: scan vs execute".
       Falls back to drafts for an email if the inbox isn't reachable.
@@ -141,7 +141,7 @@ For anything past a couple of brokers, run this as **map → reduce → act**, n
   effects, so it is safe to parallelize and retry. Getting the full exposure map *before* acting is
   what unlocks cluster dedup and prioritization below. **Default: the parent drives `web_extract`
   probes directly** - most people-search sites render name/phone/address results as static HTML that
-  `web_extract` reads in seconds. Escalate to `browser_*` only for the few JS-only sites, and to
+  `web_extract` reads in seconds. Escalate to `browser_exec` only for the few JS-only sites, and to
   `delegate_task` subagents only for genuinely *reasoning*-heavy work (large-scale namesake/relative
   disambiguation). **Do NOT hand a browser-toolset subagent a big list of brokers to crawl** - in the
   field this timed out repeatedly (600s, ~5-6 brokers each, no summary) because browser navigation is
@@ -223,7 +223,7 @@ recording `found` and before any deletion.
    `delegate_task` subagent per `batch`, in parallel, passing that batch's ready-made `brief`** - do
    not scan all brokers yourself sequentially. For `scan_inline`: scan the few brokers yourself.
    Either way, each broker gets **every** `search_vectors` entry via the `references/methods.md`
-   ladder (`web_extract` → `site:` probe → `browser_navigate` → `scrapling`), a 404 is INCONCLUSIVE
+   ladder (`web_extract` → `site:` probe → `browser_exec` → `scrapling`), a 404 is INCONCLUSIVE
    (not `not_found`), `blocked` is recorded when `antibot` is set and no stealth browser is available,
    and subject vs namesake/relative is confirmed before recording:
    `$PDD record <subject> <broker> <found|not_found|indirect_exposure|blocked> --found <bool> --evidence '{"listing_urls":[...]}'`.
@@ -235,8 +235,8 @@ recording `found` and before any deletion.
    just the hide-my-listing flow. When it carries `prefer_suppression` instead (**PeopleConnect** -
    deleting removes your suppressions and does not stop re-listing), do the suppression flow and keep
    it maintained; use their Delete button only for a deliberate data-purge. Per method:
-   - **web_form** → drive `optout_url` with `browser_navigate`/`browser_type`/`browser_click`, submit
-     only `disclosure_fields`, screenshot the confirmation, then the action's `after` record command.
+   - **web_form** → drive `optout_url` with `browser_exec` (`new_tab` + `wait_for_load`, `fill_input`,
+     a `js()` click to submit), submit only `disclosure_fields`, `capture_screenshot()` the confirmation, then the action's `after` record command.
      Playbooks may end with a right-to-delete `send-email` follow-up - do it (full erasure, not just
      listing suppression).
     - **email** → `$PDD send-email <subject> <broker> --kind <ccpa|gdpr|generic> --to <addr>
@@ -244,7 +244,7 @@ recording `found` and before any deletion.
       record declares; `next` picks the kind from residency - never claim CCPA/GDPR for someone who
       can't). In **browser** mode it returns a recipient-locked `compose` payload: compose a new
       message to `compose.to` with `compose.subject`/`compose.body` exactly in the operator's webmail
-      via `browser_*` and send (no password); in **programmatic** mode it SMTP-sends. `next` also
+      via `browser_exec` and send (no password); in **programmatic** mode it SMTP-sends. `next` also
       routes human-gated forms (phone-callback/gov-ID) through a broker's deletion email when one
       exists - the **rescue lane** (verified Whitepages pattern). Draft-only falls back to
       `render-email` + a digest entry.

@@ -480,7 +480,7 @@ def version_satisfies(spec: str, current: str) -> bool:
     return True
 
 
-def requires_hermes_error(manifest: PluginManifest) -> Optional[str]:
+def requires_hermes_error(manifest: PluginManifest | Mapping[str, Any]) -> Optional[str]:
     """Load-blocking reason when the manifest's ``requires_hermes`` rejects the running version."""
     spec = manifest.get("requires_hermes", "") if isinstance(manifest, Mapping) else manifest.requires_hermes
     if not spec:

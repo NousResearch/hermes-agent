@@ -357,6 +357,61 @@ def test_truncation_without_a_profile_uses_the_shared_handle(server, launch_db, 
     ]
 
 
+@pytest.mark.parametrize("isolated", [True, False], ids=["compute-host", "in-process"])
+def test_truncation_fails_closed_when_the_profile_db_cannot_be_opened(
+    server, launch_db, profile_db, monkeypatch, isolated
+):
+    """A profile session whose own state.db cannot be opened refuses the edit.
+
+    ``_session_db`` yields None for it. Skipping the durable write there cuts
+    memory while the profile db keeps the old tail, so the turns the user just
+    edited away come back on resume. The compute-host path then runs the turn on
+    the cut memory; the in-process path cuts memory first and only afterwards
+    refuses the send for the unavailable store. Memory and the durable transcript
+    must stay in agreement: refuse the turn (5008) like the /undo rewind does.
+    """
+    import sqlite3
+
+    import hermes_state_registry
+
+    profile_home, pdb = profile_db
+    user_row_ids: list = []
+    history = _seed(pdb, _capture_user_row_ids=user_row_ids)
+    # Stamped rows: target resolution needs no durable read, so the run reaches the write.
+    user_turn = 0
+    for msg in history:
+        if msg["role"] == "user":
+            msg["_row_id"] = user_row_ids[user_turn]
+            user_turn += 1
+    _register(server, history, profile_home=profile_home)
+    if isolated:
+        _stop_after_truncate(server, monkeypatch)
+
+    def _unopenable(*_args, **_kwargs):
+        raise sqlite3.OperationalError("unable to open database file")
+
+    monkeypatch.setattr(hermes_state_registry, "acquire", _unopenable)
+
+    resp = _rpc(
+        server,
+        "prompt.submit",
+        {
+            "session_id": SESSION_ID,
+            "text": "edited question 2",
+            "truncate_before_row_id": user_row_ids[1],
+            "truncate_before_user_ordinal": 1,
+            "confirm_truncate": True,
+            "confirm_deep_truncate": True,  # cuts 2 of 3 user turns (#133716)
+        },
+    )
+
+    full = ["question 1", "answer 1", "question 2", "answer 2", "question 3", "answer 3"]
+    assert resp.get("error", {}).get("code") == 5008, resp
+    assert _texts(server._sessions[SESSION_ID]["history"]) == full
+    assert _texts(pdb.get_messages_as_conversation(SESSION_KEY)) == full
+    assert not server._sessions[SESSION_ID].get("running")
+
+
 # ---------------------------------------------------------------------------
 # /history and /context — slash.exec
 # ---------------------------------------------------------------------------

@@ -52,6 +52,35 @@ def test_fields_are_omitted_when_absent(tmp_path, monkeypatch, caplog):
     assert "write=" not in line and "id=" not in line and "upstream=" not in line
 
 
+def test_served_model_is_on_the_line_when_the_route_reports_a_different_one(tmp_path, monkeypatch, caplog):
+    a = _agent(tmp_path, monkeypatch)
+    try:
+        line = _line(a, caplog, SimpleNamespace(usage=_usage(0, 0, 100), id=None, model="anthropic/claude-opus-4-5"))
+    finally:
+        a.close()
+    assert " served=anthropic/claude-opus-4-5" in line
+    # appended after the existing fields, so parsers reading a prefix keep working
+    assert line.endswith(" served=anthropic/claude-opus-4-5")
+
+
+def test_served_model_is_omitted_when_it_matches_the_requested_model(tmp_path, monkeypatch, caplog):
+    a = _agent(tmp_path, monkeypatch)
+    try:
+        line = _line(a, caplog, SimpleNamespace(usage=_usage(0, 0, 100), id=None, model="anthropic/claude-fable-5.1"))
+    finally:
+        a.close()
+    assert "served=" not in line
+
+
+def test_served_model_is_on_the_usage_less_line(tmp_path, monkeypatch, caplog):
+    a = _agent(tmp_path, monkeypatch)
+    try:
+        line = _line(a, caplog, SimpleNamespace(usage=None, id=None, model="anthropic/claude-opus-4-5"))
+    finally:
+        a.close()
+    assert "usage=unavailable served=anthropic/claude-opus-4-5" in line
+
+
 def test_forensics_parser_reads_the_new_fields(tmp_path):
     from evals.postmortem.forensics.logcalls import parse_logs
     log = tmp_path / "agent.log"

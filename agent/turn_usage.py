@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List
 
 from agent.image_token_cost import calibrate_from_usage
+from agent.relay_llm import _response_model_name
 from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
 from agent.usage_pricing import estimate_usage_cost, normalize_usage, with_served_service_tier
 
@@ -92,9 +93,11 @@ def record_response_usage(
         _note_usage_less = getattr(compressor, "note_usage_less_response", None)
         if callable(_note_usage_less):
             _note_usage_less()
+        _served = _response_model_name(response)
+        _served_field = f" served={_served}" if _served and _served != agent.model else ""
         logger.info(
-            "API call #%d: model=%s provider=%s in=? out=? total=? latency=%.1fs usage=unavailable",
-            agent.session_api_calls, agent.model, agent.provider or "unknown", api_duration,
+            "API call #%d: model=%s provider=%s in=? out=? total=? latency=%.1fs usage=unavailable%s",
+            agent.session_api_calls, agent.model, agent.provider or "unknown", api_duration, _served_field,
         )
         return ResponseUsageOutcome(compression_attempts=compression_attempts, rearmed=rearmed)
 
@@ -200,8 +203,9 @@ def record_response_usage(
         _cache_pct = f" cache={canonical_usage.cache_read_tokens}/{prompt_tokens} ({100*canonical_usage.cache_read_tokens/prompt_tokens:.0f}%)"
     # write= is the money (cache writes cost 50x a read); id= is what a provider needs to look the
     # request up; upstream= is who actually served it when the route reports that (OpenRouter's
-    # `provider`). Diagnosing the 1,393-agent run's cache misses took a DB join and a live probe
-    # because none of the three were on this line.
+    # `provider`); served= is the response-reported model when it differs from the requested one
+    # (combo routing), omitted when they match. Diagnosing the 1,393-agent run's cache misses took
+    # a DB join and a live probe because none of the three were on this line.
     if canonical_usage.cache_write_tokens:
         _cache_pct += f" write={canonical_usage.cache_write_tokens}"
     _rid = getattr(response, "id", None)
@@ -209,6 +213,9 @@ def record_response_usage(
     _upstream = getattr(response, "provider", None)
     if isinstance(_upstream, str) and _upstream:
         _ident += f" upstream={_upstream}"
+    _served = _response_model_name(response)
+    if _served and _served != agent.model:
+        _ident += f" served={_served}"
     logger.info(
         "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s%s",
         agent.session_api_calls, agent.model, agent.provider or "unknown",

@@ -37,7 +37,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **xAI Grok OAuth (SuperGrok)** | `hermes model` → "xAI Grok OAuth (SuperGrok / Premium+)" — browser login, no API key. See [guide](../guides/xai-grok-oauth.md) |
 | **Qwen Cloud (Alibaba DashScope)** | `DASHSCOPE_API_KEY` in `~/.hermes/.env` (provider: `alibaba`; mainland-China endpoint: `alibaba-cn`) |
 | **Alibaba Cloud (Coding Plan)** | `ALIBABA_CODING_PLAN_API_KEY` (falls back to `DASHSCOPE_API_KEY`) (provider: `alibaba-coding-plan`, alias: `alibaba_coding`; mainland-China endpoint: `alibaba-coding-plan-cn` with `ALIBABA_CODING_PLAN_CN_API_KEY`, falling back to the shared keys) — separate billing SKU, different endpoint |
-| **Alibaba Cloud (Token Plan)** | `ALIBABA_TOKEN_PLAN_API_KEY` in `~/.hermes/.env` (provider: `alibaba-token-plan`; mainland-China endpoint: `alibaba-token-plan-cn` with `ALIBABA_TOKEN_PLAN_CN_API_KEY`, falling back to the shared key) — Model Studio flat-token tier |
+| **Alibaba Cloud (Token Plan)** | Personal and Team subscriptions, Global and China; choose the matching profile under **Qwen** (see [Token Plan](#alibaba-cloud-token-plan)) |
 | **Kilo Code** | `KILOCODE_API_KEY` in `~/.hermes/.env` (provider: `kilocode`) |
 | **Xiaomi MiMo** | `XIAOMI_API_KEY` in `~/.hermes/.env` (provider: `xiaomi`, aliases: `mimo`, `xiaomi-mimo`) |
 | **Tencent TokenHub** | `TOKENHUB_API_KEY` in `~/.hermes/.env` (provider: `tencent-tokenhub`, aliases: `tencent`, `tokenhub`, `tencentmaas`) |
@@ -536,6 +536,47 @@ hermes chat --provider alibaba_coding --model qwen3-coder-plus
 `alibaba_coding` uses the same `DASHSCOPE_API_KEY` your `alibaba` entry already uses — no separate key needed, just a different routing target. Before this provider was registered, users who set `provider: alibaba_coding` in `config.yaml` silently fell through to OpenRouter routing.
 
 For the mainland-China endpoint (`alibaba-coding-plan-cn`, `https://coding.dashscope.aliyuncs.com/v1`) set `ALIBABA_CODING_PLAN_CN_API_KEY`. The CN provider still falls back to `ALIBABA_CODING_PLAN_API_KEY` / `DASHSCOPE_API_KEY`, but with only the shared key set the `/model` picker lists just the international row — set the CN key (or `provider: alibaba-coding-plan-cn` in `config.yaml`) to surface the CN one. The same applies to `alibaba-token-plan-cn` with `ALIBABA_TOKEN_PLAN_CN_API_KEY`.
+
+### Alibaba Cloud (Token Plan)
+
+Token Plan is separate from DashScope pay-as-you-go and Coding Plan. Choose the
+matching region and tier under **Qwen** in `hermes model`:
+
+| Provider | Dedicated key |
+|---|---|
+| `alibaba-token-plan` | `ALIBABA_TOKEN_PLAN_PERSONAL_API_KEY` |
+| `alibaba-token-plan-team` | `ALIBABA_TOKEN_PLAN_TEAM_API_KEY` |
+| `alibaba-token-plan-cn` | `ALIBABA_TOKEN_PLAN_CN_PERSONAL_API_KEY` |
+| `alibaba-token-plan-cn-team` | `ALIBABA_TOKEN_PLAN_CN_TEAM_API_KEY` |
+
+Global profiles use `https://token-plan.maas.qwencloudapi.com/compatible-mode/v1`;
+China profiles use `https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1`.
+Existing explicit endpoint overrides remain in effect. `DASHSCOPE_API_KEY` is
+not used for Token Plan. Team requires its own key; its tier cannot be inferred
+from the key prefix.
+
+Personal retains the legacy aliases: Global checks `QWEN_TOKEN_PLAN_API_KEY`,
+`BAILIAN_TOKEN_PLAN_API_KEY`, `ALIBABA_TOKEN_PLAN_API_KEY`, then the dedicated
+Personal key. China checks `ALIBABA_TOKEN_PLAN_CN_API_KEY`, the dedicated China
+Personal key, then the legacy generic `ALIBABA_TOKEN_PLAN_API_KEY` fallback.
+Existing provider aliases and saved model selections remain valid.
+
+Model discovery intersects the live list with the selected tier's chat catalogue
+in canonical order. A successful empty response stays empty; an unavailable
+endpoint uses the tier's offline catalogue. Image/video/audio models are not
+chat choices. The bundled catalogue is generated from the
+[public Token Plan reference](https://github.com/oliver-mee/alibaba-token-plan-wiki/blob/main/data/models.json).
+
+Reasoning controls retain DashScope reasoning replay and map explicit Token Plan
+thinking toggles and effort values. Always-thinking models never receive a false
+thinking toggle. All four profiles accept `prompt_cache_key`; this does not
+promise measured cache savings or enable explicit `cache_control` markers.
+
+If using the standalone Token Plan chat plugin, follow its
+[release-gated migration guide](https://github.com/oliver-mee/hermes-alibaba-token-plan/blob/142b6e07bfdb1f2e10a6ece2f9e94f352df0139c/docs/core-chat-migration.md)
+once your Hermes release includes this integration. User-installed providers can
+override bundled profiles. Retire only the chat component after backup and
+verification; the separate media plugin remains independently installed.
 
 ### MiniMax (OAuth)
 

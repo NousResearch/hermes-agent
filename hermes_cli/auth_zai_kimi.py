@@ -9,8 +9,11 @@ from __future__ import annotations
 import logging
 import hashlib
 import time
-from typing import Dict, Optional
+from typing import Dict, Optional, TYPE_CHECKING
 from hermes_cli.auth_constants import httpx
+
+if TYPE_CHECKING:
+    from hermes_cli.auth import ProviderConfig
 
 logger = logging.getLogger("hermes_cli.auth")
 
@@ -165,3 +168,19 @@ def _normalize_lmstudio_runtime_base_url(base_url: str) -> str:
             root = root[: -len(suffix)].rstrip("/")
             break
     return (root or "http://127.0.0.1:1234") + "/v1"
+
+
+def _provider_env_base_url(pconfig: ProviderConfig) -> str:
+    """Read endpoint overrides from the same profile scope as provider keys."""
+    from agent.secret_scope import get_secret_str
+
+    if pconfig.id == "actual":
+        from hermes_cli.providers import normalize_provider
+        from hermes_cli.auth import read_raw_config
+
+        model = read_raw_config().get("model")
+        if isinstance(model, dict) and normalize_provider(str(model.get("provider") or "")) == "actual":
+            configured_url = str(model.get("base_url") or "").strip()
+            if configured_url:
+                return configured_url
+    return get_secret_str(pconfig.base_url_env_var).strip() if pconfig.base_url_env_var else ""

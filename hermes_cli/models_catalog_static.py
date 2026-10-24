@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
+from providers.alibaba_token_plan_models import PERSONAL_MODELS, TEAM_MODELS
+
 
 class CuratedFallbackModels(list[str]):
     """A curated list served because the provider's live catalog was unavailable. The disk cache
@@ -163,11 +165,6 @@ _ALIBABA_CODING_PLAN_MODELS = [
     "qwen3.7-plus", "qwen3.6-plus", "qwen3.5-plus", "qwen3-max-2026-01-23", "qwen3-coder-plus",
     "qwen3-coder-next", "kimi-k2.5", "glm-5", "glm-4.7", "MiniMax-M2.5",
 ]
-# Verified against a live Token Plan subscription (key tier ``sk-sp-...``).
-_ALIBABA_TOKEN_PLAN_MODELS = [
-    "qwen3.8-max-0902", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash", "deepseek-v4-pro",
-    "deepseek-v4-flash", "deepseek-v3.2", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "glm-5.2", "glm-5.1", "glm-5",
-]
 _XAI_MODELS = _xai_curated_models()
 
 # Curated per-provider lists. ``-cn`` twins share the international catalog on a domestic endpoint.
@@ -274,8 +271,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "alibaba-cn": list(_ALIBABA_MODELS),
     "alibaba-coding-plan": list(_ALIBABA_CODING_PLAN_MODELS),
     "alibaba-coding-plan-cn": list(_ALIBABA_CODING_PLAN_MODELS),
-    "alibaba-token-plan": list(_ALIBABA_TOKEN_PLAN_MODELS),
-    "alibaba-token-plan-cn": list(_ALIBABA_TOKEN_PLAN_MODELS),
+    "alibaba-token-plan": list(PERSONAL_MODELS),
+    "alibaba-token-plan-cn": list(PERSONAL_MODELS),
+    "alibaba-token-plan-team": list(TEAM_MODELS),
+    "alibaba-token-plan-cn-team": list(TEAM_MODELS),
     # Only agentic HF models that map to OpenRouter defaults.
     "huggingface": [
         "moonshotai/Kimi-K2.5", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.5-35B-A3B",
@@ -445,7 +444,7 @@ PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "xai":      ("xAI Grok",        "Direct API or SuperGrok / Premium+ OAuth",        ["xai", "xai-oauth"]),
     "google":   ("Google Gemini",   "Google AI Studio (API key)",                     ["gemini"]),
     "openai":   ("OpenAI",          "ChatGPT/Codex subscription or direct OpenAI API", ["openai-codex", "openai-api"]),
-    "qwen":     ("Qwen",            "Qwen Cloud / DashScope, Coding Plan, Token Plan & Qwen CLI OAuth", ["alibaba", "alibaba-cn", "alibaba-coding-plan", "alibaba-coding-plan-cn", "alibaba-token-plan", "alibaba-token-plan-cn", "qwen-oauth"]),
+    "qwen":     ("Qwen",            "Qwen Cloud / DashScope, Coding Plan, Token Plan & Qwen CLI OAuth", ["alibaba", "alibaba-cn", "alibaba-coding-plan", "alibaba-coding-plan-cn", "alibaba-token-plan", "alibaba-token-plan-cn", "alibaba-token-plan-team", "alibaba-token-plan-cn-team", "qwen-oauth"]),
     "opencode": ("OpenCode",        "Zen pay-as-you-go or Go subscription", ["opencode-zen", "opencode-go"]),
     "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
     "tencent":  ("Tencent Hy",      "Hy4 / Hy3 via TokenHub & TokenPlan", ["tencent-tokenhub", "tencent-tokenplan"]),
@@ -578,6 +577,17 @@ _BORROWED_MODEL_PROVIDERS: frozenset[str] = frozenset()
 # surfaced newest model stays on top when the live API lags. Zen/Go re-expose dozens of vendors
 # and rotate them often, so their stale curated entries must not pollute the top.
 _LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencode-go", "meta-ai"})
+
+
+# Subscription-tier providers whose entitlements differ per plan (intl vs cn, key tier), so no
+# single static list can be right for every account: a SUCCESSFUL live /v1/models is terminal for
+# the picker — curated ids the account's live catalog omits are phantom rows that 404 on every
+# turn, so they must not be merged back in (#119481). The curated list only fills in when the probe
+# fails (no key / network error), exactly like every other provider.
+_ALIBABA_TOKEN_PLAN_PROVIDERS: frozenset[str] = frozenset({
+    "alibaba-token-plan", "alibaba-token-plan-cn", "alibaba-token-plan-team", "alibaba-token-plan-cn-team",
+})
+_LIVE_TERMINAL_PICKER_PROVIDERS: frozenset[str] = _ALIBABA_TOKEN_PLAN_PROVIDERS | {"tencent-tokenplan"}
 
 
 # Models supporting OpenAI Priority Processing (service_tier="priority"; see

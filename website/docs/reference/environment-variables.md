@@ -90,8 +90,13 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `ALIBABA_CODING_PLAN_CN_BASE_URL` | Override the Qwen Coding Plan base URL (mainland China) |
 | `ALIBABA_TOKEN_PLAN_API_KEY` | Alibaba Model Studio Token Plan API key (`alibaba-token-plan`; also a fallback for `alibaba-token-plan-cn`) |
 | `ALIBABA_TOKEN_PLAN_CN_API_KEY` | Token Plan API key for the mainland-China `alibaba-token-plan-cn` provider (checked before the shared key) |
-| `ALIBABA_TOKEN_PLAN_BASE_URL` | Override the Token Plan base URL (international) |
-| `ALIBABA_TOKEN_PLAN_CN_BASE_URL` | Override the Token Plan base URL (mainland China) |
+| `QWEN_TOKEN_PLAN_API_KEY` / `BAILIAN_TOKEN_PLAN_API_KEY` | Legacy Global Personal Token Plan aliases (checked before `ALIBABA_TOKEN_PLAN_API_KEY`) |
+| `ALIBABA_TOKEN_PLAN_PERSONAL_API_KEY` | Dedicated Global Personal key, after legacy aliases |
+| `ALIBABA_TOKEN_PLAN_CN_PERSONAL_API_KEY` | Dedicated China Personal key, after `ALIBABA_TOKEN_PLAN_CN_API_KEY` and before the generic fallback |
+| `ALIBABA_TOKEN_PLAN_TEAM_API_KEY` | Global Team key (`alibaba-token-plan-team`); no Personal-key fallback |
+| `ALIBABA_TOKEN_PLAN_CN_TEAM_API_KEY` | China Team key (`alibaba-token-plan-cn-team`); no Personal-key fallback |
+| `ALIBABA_TOKEN_PLAN_BASE_URL` | Override the Token Plan base URL (Global Personal and Team) |
+| `ALIBABA_TOKEN_PLAN_CN_BASE_URL` | Override the Token Plan base URL (China Personal and Team) |
 | `DEEPSEEK_API_KEY` | DeepSeek API key for direct DeepSeek access ([platform.deepseek.com](https://platform.deepseek.com/api_keys)) |
 | `DEEPSEEK_BASE_URL` | Custom DeepSeek API base URL |
 | `DEEPINFRA_API_KEY` | DeepInfra API key ([deepinfra.com](https://deepinfra.com/dash/api_keys)) |

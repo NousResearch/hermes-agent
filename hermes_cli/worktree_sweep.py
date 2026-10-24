@@ -459,9 +459,8 @@ def execute_plan(repo_root: str, plan: list[Decision], settings: dict
 
 
 def run_sweep(repo_root: str, max_age_hours: int, settings: dict) -> None:
-    """Plan + execute + archive retention for one repo (the archive-mode pruner)."""
+    """Plan + execute for one repo (the archive-mode pruner); retention runs in ``expire_archives``."""
     from hermes_cli import worktree_ops as ops
-    from hermes_cli.worktree_archive import prune_expired_archives
     plan = plan_sweep(repo_root, max_age_hours, settings)
     preserved, kept_branches, archived = execute_plan(repo_root, plan, settings)
     removed = [ref for ref, gone, _why in archived if gone]
@@ -471,7 +470,12 @@ def run_sweep(repo_root: str, max_age_hours: int, settings: dict) -> None:
     if preserved:
         logger.warning("Preserving %d stale worktree(s) (run `hermes worktree prune --dry-run` for reasons): %s",
                        len(preserved), ", ".join(sorted(preserved)[:20]))
+    ops._prune_orphaned_branches(repo_root, protect=kept_branches)
+
+
+def expire_archives(repo_root: str, settings: dict) -> None:
+    """Delete archives past ``archive_retention_days`` (every startup pass, classic mode too)."""
+    from hermes_cli.worktree_archive import prune_expired_archives
     expired = prune_expired_archives(repo_root, settings["archive_retention_days"])
     if expired:
         logger.info("Deleted %d worktree archive(s) older than %g days", len(expired), settings["archive_retention_days"])
-    ops._prune_orphaned_branches(repo_root, protect=kept_branches)

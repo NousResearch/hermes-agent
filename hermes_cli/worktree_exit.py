@@ -38,7 +38,7 @@ def worktree_state(info: dict) -> Optional[str]:
         return None
     if _worktree_is_dirty(path, repo_root, timeout=10):
         return "dirty"
-    if _worktree_has_unpushed_commits(path, timeout=10):
+    if _worktree_has_unpushed_commits(path, timeout=10, branch=info.get("branch")):
         return "unpushed"
     return None
 

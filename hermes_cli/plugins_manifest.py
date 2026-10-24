@@ -35,7 +35,8 @@ _KNOWN_MANIFEST_FIELDS: set[str] = {
     "pip_dependencies", "provides_browser_providers", "provides_web_providers",
     "manifest_version", "api_version", "requires_plugins", "python_dependencies", "config_schema",
     "license", "homepage", "tags", "capabilities", "emits", "listens", "hermes", "depends",
-    "requires_hermes", "python_runtime", "provides_locales", "requires_auth", "oauth",
+    "requires_hermes", "python_runtime", "provides_locales", "provides_middleware",
+    "requires_auth", "oauth",
 }
 
 # Highest manifest schema version this Hermes understands.

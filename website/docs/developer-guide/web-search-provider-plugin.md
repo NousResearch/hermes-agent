@@ -265,3 +265,29 @@ my-backend-web = "my_backend_web_package"
 - [Web Search](../user-guide/features/web-search.md) — user-facing feature documentation and per-backend configuration
 - [Plugins overview](../user-guide/features/plugins.md) — all plugin types at a glance
 - [Build a Hermes Plugin](./plugins/index.md) — general tools/hooks/slash commands guide
+
+
+
+## Search result provenance
+
+The `web_search` wrapper adds `data.provenance` to successful responses. It reports
+the requested backend, any provider-reported serving backend, retrieval and delivery
+times, the Hermes memory-cache hit/miss/bypass status, and fetched versus returned
+result counts. A cache hit retains the original retrieval time. These timestamps
+describe Hermes's retrieval; they do not establish when a search engine last crawled
+the underlying page.
+
+Search results are metadata: `page_fetched` is always false and `evidence_scope` is
+`search_result_metadata_only`. Use `web_extract` to obtain page content. Providers may
+add fields such as `engine`, `limitations`, `transformations`, or an
+`upstream_cache_timestamp` in RFC 3339 format. Hermes owns routing, cache, time, scope,
+and count fields and overwrites provider values for those fields. Invalid or
+unsupported timestamps are reported with an explicit status rather than presented
+as retrieval times. Bare `confidence`, `fresh`, `current`, `verified`, and
+`authoritative` keys are omitted throughout the response; provider metrics should
+use explicit names such as `provider_confidence`.
+
+Before caching or adding provenance, successful responses must have a literal
+boolean `success: true`, an object at `data`, a list of result objects at `data.web`,
+and JSON-compatible values. Invalid successful envelopes become uncached failures.
+Existing provider failure envelopes keep their error behavior.

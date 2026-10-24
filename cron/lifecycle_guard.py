@@ -764,7 +764,13 @@ def _lifecycle_command_scan_with_data_exemption(text: str) -> bool:
     if not contains_gateway_lifecycle_command(text):
         return False
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
-    return contains_gateway_lifecycle_command(_mask_data_sink_arguments(normalized))
+    masked = _mask_data_sink_arguments(normalized)
+    if not contains_gateway_lifecycle_command(masked):
+        return False
+    # A lifecycle command shipped over ssh to a provably-remote host cannot SIGTERM this gateway.
+    from cron.lifecycle_guard_ssh import mask_remote_ssh_commands
+
+    return contains_gateway_lifecycle_command(mask_remote_ssh_commands(masked))
 
 
 def _direct_lifecycle_scan(command: str) -> bool:

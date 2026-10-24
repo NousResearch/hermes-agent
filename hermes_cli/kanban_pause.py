@@ -32,9 +32,24 @@ def _kb():
     return kanban_db
 
 
+def resolve_slug(board: Optional[str] = None) -> str:
+    """The board *board* names, resolving ``None`` the way ``connect()`` does.
+
+    ``board_dir(None)`` answers for ``default`` while ``connect(None)`` opens the *current*
+    board, so every pause entry point that took the raw argument watched a different board
+    than the work it guards: ``hermes kanban pause`` on a switched board wrote the sentinel to
+    ``default``, and a dashboard ``POST /pause`` without ``?board`` paused ``default`` while its
+    own response named the current board. One resolver, used everywhere here, is what makes a
+    bare ``pause()`` mean "the board I am looking at".
+    """
+    if board:
+        return _kb()._slug_or_default(board)
+    return _kb().get_current_board()
+
+
 def pause_path(board: Optional[str] = None) -> Path:
     """``<board_dir>/PAUSED`` — the per-board pause sentinel."""
-    return _kb().board_dir(board) / PAUSE_FILE
+    return _kb().board_dir(resolve_slug(board)) / PAUSE_FILE
 
 
 def is_paused(board: Optional[str] = None) -> bool:
@@ -65,8 +80,12 @@ def board_of_connection(conn: Any) -> Optional[str]:
     try:
         parts = path.resolve().parent.resolve().relative_to(kb.boards_root().resolve()).parts
     except (ValueError, OSError):
+        # The default board's DB lives at the kanban root, and a HERMES_KANBAN_DB override can
+        # point anywhere: neither names a named board, so the sentinel they fall back to is the
+        # default one.
         return kb.DEFAULT_BOARD
-    return parts[0] if len(parts) == 1 else kb.DEFAULT_BOARD
+    # ``boards/<slug>/…`` at any depth is that board (workspaces keep DBs in subdirectories).
+    return parts[0] if parts else kb.DEFAULT_BOARD
 
 
 def is_paused_for(conn: Any) -> bool:
@@ -85,7 +104,7 @@ def get_state(board: Optional[str] = None) -> Optional[dict[str, Any]]:
     """
     if not is_paused(board):
         return None
-    slug = _kb()._slug_or_default(board)
+    slug = resolve_slug(board)
     state: dict[str, Any] = {"board": slug, "reason": None, "paused_at": None}
     with suppress(OSError, ValueError, AttributeError):
         raw = json.loads(pause_path(board).read_text(encoding="utf-8-sig"))
@@ -100,7 +119,7 @@ def pause(board: Optional[str] = None, reason: Optional[str] = None) -> dict[str
 
     Returns the state, so callers can echo it back without a second read.
     """
-    slug = _kb()._slug_or_default(board)
+    slug = resolve_slug(board)
     if slug != _kb().DEFAULT_BOARD:
         if not _kb().board_exists(slug):
             raise ValueError(f"unknown board {slug!r}")

@@ -152,13 +152,15 @@ export function LiveAgentsPanel({ cols }: { cols: number }) {
   const live = subagents.some(s => s.status === 'running' || s.status === 'queued')
   const [now, setNow] = useState(Date.now)
   const processRows = useProcessRows(now)
-  // Process rows carry `Ns ago` / elapsed text, so the clock ticks while any are shown.
-  const ticking = live || processRows.length > 0
+  // Only expanded rows need elapsed / `Ns ago` updates.
+  const ticking = !collapsed && (live || processRows.length > 0)
   useEffect(() => {
     if (!ticking) {
       return
     }
 
+    // Reopening after a pause must not wait a tick to show current ages.
+    setNow(Date.now())
     const timer = setInterval(() => setNow(Date.now()), 1000)
 
     return () => clearInterval(timer)

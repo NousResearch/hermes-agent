@@ -38,6 +38,7 @@ describe('isLoopbackPreviewUrl', () => {
 const remoteTarget = {
   kind: 'file' as const,
   label: 'report.html',
+  language: 'html',
   path: '/srv/report.html',
   previewKind: 'html' as const,
   source: '/srv/report.html',
@@ -159,6 +160,13 @@ describe('remote HTML previews', () => {
 
   it('still joins relative paths onto cwd', () => {
     expect(localPreviewTarget('out/report.html', '/repo')?.path).toBe('/repo/out/report.html')
+  })
+
+  it.each([
+    ['file:///C:/reports/report%20one.md', 'C:/reports/report one.md'],
+    ['file://server/share/report%20one.md', '\\\\server\\share\\report one.md']
+  ])('preserves the backend path carried by file URL %s', (raw, path) => {
+    expect(localPreviewTarget(raw)?.path).toBe(path)
   })
 
   it('preserves POSIX double-slash file paths', () => {

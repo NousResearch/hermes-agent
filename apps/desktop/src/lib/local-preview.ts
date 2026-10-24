@@ -238,7 +238,12 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
 
   if (/^file:\/\//i.test(raw)) {
     try {
-      path = decodeURIComponent(new URL(raw).pathname)
+      const fileUrl = new URL(raw)
+      path = decodeURIComponent(fileUrl.pathname).replace(/^\/([a-z]:\/)/i, '$1')
+
+      if (fileUrl.hostname && fileUrl.hostname !== 'localhost') {
+        path = `\\\\${fileUrl.hostname}${path.replace(/\//g, '\\')}`
+      }
     } catch {
       path = raw.replace(/^file:\/\//i, '')
     }
@@ -306,30 +311,32 @@ export async function normalizeOrLocalPreviewTarget(
   rawTarget: string,
   cwd?: string | null
 ): Promise<PreviewTarget | null> {
+  // Remote paths and file types belong to the gateway. The Electron host may
+  // resolve the same spelling to a different file or use a different path syntax.
+  if (isDesktopFsRemoteMode()) {
+    const baseDir = /^~(?:[/\\]|$)/.test(rawTarget.trim()) ? undefined : cwd
+
+    return enrichPreviewTarget(localPreviewTarget(rawTarget, baseDir))
+  }
+
   try {
     const normalized = await window.hermesDesktop?.normalizePreviewTarget?.(rawTarget, cwd || undefined)
 
     if (normalized) {
-      // Directories and dead links arrive as typed non-previewable results
-      // (#101683). Locally they must not fall through to the renderer's blind
-      // classification below, which would fabricate a text tab for a path
-      // that cannot be previewed. A remote backend's paths are not on this
-      // machine, so remote mode keeps the fabricated fallback the gateway
-      // read resolves later.
+      // Local directories and dead links must not become fabricated text tabs (#101683).
       if (normalized.previewKind === 'directory' || normalized.previewKind === 'missing') {
-        return isDesktopFsRemoteMode() ? enrichPreviewTarget(localPreviewTarget(rawTarget, cwd)) : null
+        return null
       }
 
-      return enrichPreviewTarget(normalized)
+      return normalized
     }
 
     // The main process resolved the target against the real filesystem and
     // found nothing openable (`null`); an absent bridge yields `undefined` from
     // the optional call above instead. In local mode the main process's answer
     // is authoritative — the fallback below can only fabricate a broken
-    // preview tab (#101683). Remote-backend paths, and a dev server without
-    // the bridge, keep it.
-    if (!isDesktopFsRemoteMode() && normalized === null) {
+    // preview tab (#101683). A dev server without the bridge keeps the fallback.
+    if (normalized === null) {
       return null
     }
   } catch {
@@ -337,5 +344,5 @@ export async function normalizeOrLocalPreviewTarget(
     // through to renderer-side local classification so text/images still open.
   }
 
-  return enrichPreviewTarget(localPreviewTarget(rawTarget, cwd))
+  return localPreviewTarget(rawTarget, cwd)
 }

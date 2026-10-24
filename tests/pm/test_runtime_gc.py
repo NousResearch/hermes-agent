@@ -54,6 +54,27 @@ def test_collector_yields_to_an_in_flight_stage(tmp_path):
     assert collect_runtime_generations(root) == [aborted]
 
 
+def test_collector_continues_after_one_generation_cannot_be_removed(tmp_path, monkeypatch):
+    import pm.runtime as runtime
+
+    root = tmp_path / "pm-runtime"
+    blocked = _generation(root, "blocked", published=False)
+    removable = _generation(root, "removable", published=False)
+    root.mkdir(exist_ok=True)
+    real_rmtree = runtime.shutil.rmtree
+
+    def fail_one(path, *args, **kwargs):
+        if Path(path) == blocked:
+            raise PermissionError("mapped image")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(runtime.shutil, "rmtree", fail_one)
+
+    assert collect_runtime_generations(root) == [removable]
+    assert blocked.is_dir()
+    assert not removable.exists()
+
+
 def test_next_reader_removes_lease_left_by_hard_exit(tmp_path):
     from hermes_cli.runtime_state import lease_directory
 

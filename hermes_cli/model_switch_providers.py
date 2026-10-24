@@ -26,28 +26,53 @@ logger = logging.getLogger("hermes_cli.model_switch")
 _UNCAPPED_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencode-go", "nous", "openrouter"})
 
 
+def _discovered_model_entries(cfg: dict) -> list[dict]:
+    """Every endpoint entry that can carry a discovered catalog, from BOTH config shapes.
+
+    Two stores hold custom endpoints and only one was ever written back: ``custom_providers``
+    (a LIST) and ``providers`` (a DICT keyed by slug). An endpoint declared under ``providers``
+    therefore never received a discovered catalog, so its ``models`` mapping stayed frozen at
+    whatever a human last typed and rotted on every provider retirement — which is why the
+    desktop Settings → Custom endpoints dropdown offered retired ids while the picker (which
+    reads the live catalog) was already correct.
+    """
+    out: list[dict] = []
+    custom = cfg.get("custom_providers")
+    if isinstance(custom, list):
+        out.extend(entry for entry in custom if isinstance(entry, dict))
+    prov = cfg.get("providers")
+    if isinstance(prov, dict):
+        out.extend(entry for entry in prov.values() if isinstance(entry, dict))
+    return out
+
+
 def _save_discovered_models_to_config(
     api_url: str, model_ids: list[str], *, api_mode: Optional[str] = None,
     headers: Optional[dict[str, str]] = None, credential_identity: str | None = None) -> None:
-    """Persist a successful ``/v1/models`` probe into the matching ``custom_providers`` entry.
+    """Persist a successful ``/v1/models`` probe into the matching endpoint entry.
 
-    Matches by base_url (slash-normalised), api_mode and headers. A failed config write is
-    swallowed — the picker still shows the live models for this session."""
+    Covers BOTH config shapes (the ``custom_providers`` list and the ``providers`` dict) — see
+    :func:`_discovered_model_entries` for why. Reads the RAW document rather than
+    ``load_config()`` (which is default-expanded) and writes through ``save_config``, whose
+    round-trip writer deletes absent keys: verified that replacing the mapping DROPS retired
+    ids while leaving every other section byte-identical.
+
+    Matching is by base_url (slash-normalised), api_mode and headers. Ownership is the entry's
+    own ``models_discovered`` marker (or the legacy in-mapping sentinel), so a hand-curated
+    catalog is never clobbered. A failed config write is swallowed — the picker still shows the
+    live models for this session."""
     from hermes_cli.model_switch import _extra_headers_from_config
     if not api_url or not model_ids:
         return
     try:
-        from hermes_cli.config import load_config, save_config
-        cfg = load_config()
-        providers = cfg.get("custom_providers") or []
-        if not isinstance(providers, list):
+        from hermes_cli.config import read_raw_config, save_config
+        cfg = read_raw_config()
+        if not isinstance(cfg, dict) or not cfg:
             return
 
         norm_url = api_url.strip().rstrip("/").lower()
         changed = False
-        for entry in providers:
-            if not isinstance(entry, dict):
-                continue
+        for entry in _discovered_model_entries(cfg):
             entry_url = (entry.get("base_url", "") or entry.get("url", "")).strip()
             if entry_url.rstrip("/").lower() != norm_url or _entry_api_mode(entry) != api_mode:
                 continue
@@ -62,7 +87,6 @@ def _save_discovered_models_to_config(
             changed = True
 
         if changed:
-            cfg["custom_providers"] = providers
             save_config(cfg)
     except Exception:
         pass

@@ -47,6 +47,9 @@ def _wire(provider, base_url, model="m", rejected=()):
     # everyone else: the de-facto standard alias
     ("zai", "https://api.z.ai/api/paas/v4", "glm-5.3", {"reasoning_content"}),
     ("openai-api", "https://api.openai.com/v1", "gpt-5", {"reasoning_content"}),
+    # a remote gateway named under `providers:` resolves to "custom"; local-engine carriers would
+    # send the `reasoning` alias next to `reasoning_content` -> 400 duplicate field (#136486)
+    ("custom", "https://api.inference.wandb.ai/v1", "m", {"reasoning_content"}),
 ])
 def test_each_route_gets_exactly_the_carriers_it_reads(provider, base_url, model, expected):
     turn, bare = _wire(provider, base_url, model)

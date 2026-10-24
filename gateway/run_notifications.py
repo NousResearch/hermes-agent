@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import dataclasses
 import json
 import logging
@@ -1757,13 +1758,19 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         tool thread. Waiting for the post-turn drain leaves a process that finishes while its
         launching turn is still running with no watcher at all (#112033). False = the gateway
         is not serving (startup, shutdown): the caller keeps the descriptor in
-        ``pending_watchers`` for the startup / post-turn drain."""
+        ``pending_watchers`` for the startup / post-turn drain.
+
+        The watcher starts in an empty context, as a recovered watcher does: scheduling copies the
+        CALLING thread's context, and the turns its completion admits inherit the watcher's. Armed
+        from a delegate child, a process handed to the parent completed into a parent turn that ran
+        as that child (its own notify watchers downgraded, sudo refused, the board fenced). Delivery
+        binds the owning profile's scope itself (``_completion_event_scope``)."""
         loop = getattr(self, "_gateway_loop", None)
         if not getattr(self, "_running", False) or loop is None or not loop.is_running():
             return False
         from agent.async_utils import safe_schedule_threadsafe
-        future = safe_schedule_threadsafe(
-            self._run_process_watcher(watcher), loop, logger=logger,
+        future = contextvars.Context().run(
+            safe_schedule_threadsafe, self._run_process_watcher(watcher), loop, logger=logger,
             log_message="Live process watcher arming failed",
         )
         return future is not None

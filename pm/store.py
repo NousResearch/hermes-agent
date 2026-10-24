@@ -315,8 +315,12 @@ def tree_digest(root: Path) -> str:
     state, not package bytes — the digest is over what pm published."""
     import hashlib
 
+    def unreadable(error: OSError) -> None:
+        # A partial inventory is not evidence that the installed bytes changed.
+        raise error
+
     files: list[tuple[str, Path]] = []
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root, onerror=unreadable):
         descend = []
         for name in sorted(dirnames):
             path = Path(dirpath) / name

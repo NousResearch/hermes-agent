@@ -384,10 +384,16 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
     # All consumers, including validation and approval previews, must use the
     # same correction policy before a fuzzy strategy can match ambiguous text.
     from tools.escape_drift_autocorrect import AmbiguousEscapeDriftError, maybe_correct_escape_drift
+    sent_old = old_string
     try:
         old_string, new_string, correction_note = maybe_correct_escape_drift(old_string, new_string, content)
     except AmbiguousEscapeDriftError as exc:
         return content, 0, None, str(exc)
+    if correction_note:
+        competing_err = _competing_escaped_anchor_error(content, sent_old, old_string)
+        if competing_err:
+            _note_edit_match(None, "ambiguous")
+            return content, 0, None, competing_err
     if old_string == new_string:
         return content, 0, None, IDENTICAL_STRINGS_ERROR
 
@@ -444,6 +450,30 @@ def _note_edit_match(strategy: Optional[str], miss: Optional[str] = None) -> Non
 
 
 # ── Escape-drift guards ──────────────────────────────────────────────────
+
+def _competing_escaped_anchor_error(content: str, sent_old: str, corrected_old: str) -> Optional[str]:
+    """Error string when the anchor as sent also matches the file without de-escaping, else None.
+
+    Escape-drift correction only proves its de-escaped anchor occurs verbatim; it says nothing
+    about whether the escaped text the caller sent occurs too (e.g. a whitespace difference away).
+    When both exist, which line the caller meant is undecidable, so refuse instead of letting the
+    correction silently pick one. Only strategies that keep backslashes and quotes literal count:
+    escape_normalized rewrites escapes and the similarity strategies match loosely.
+    """
+    for strategy_name, strategy_fn in STRATEGIES:
+        if strategy_name == "escape_normalized" or strategy_name in SIMILARITY_STRATEGIES:
+            continue
+        escaped = strategy_fn(content, sent_old)
+        if escaped:
+            corrected = _strategy_exact(content, corrected_old)
+            return (
+                "Escape-drift ambiguous: old_string as sent matches the file via "
+                f"'{strategy_name}', and its de-escaped form also matches exactly, so it is "
+                "unclear which text you meant to replace. Re-read the file and resend "
+                "old_string exactly as the intended text appears, with enough context to be "
+                f"unique.\nAs sent:\n{_format_match_locations(content, escaped)}\n"
+                f"De-escaped:\n{_format_match_locations(content, corrected)}")
+    return None
 
 def _detect_newline_literal_drift(content: str, matches: list[Span],
                                   old_string: str, new_string: str) -> Optional[str]:

@@ -12,8 +12,11 @@ is parked (logged, left out of ``served_profiles``) instead of aborting every ot
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 from pathlib import Path
+import sqlite3
+from time import monotonic as _monotonic
 import uuid
 
 logger = logging.getLogger(__name__)
@@ -42,9 +45,10 @@ async def _build_profile_authority(runner, name, home, *, register):
     # Each home's store resolves through the runner's scope-following handle cache, exactly
     # the handle every later scoped read of that profile uses (one writer per state.db).
     with _profile_runtime_scope(home, hydrate_secrets=False):
-        db = getattr(runner._session_db, '_db', runner._session_db)
+        db = await _scoped_store_off_loop(runner)
         if db is None:
-            raise RuntimeError(_store_open_failure(runner, home))
+            reason, error = _store_open_failure(runner, home)
+            raise ProfileStoreUnavailable(reason) from error
         if (await asyncio.to_thread(Path(db.db_path).resolve)).parent != home:
             raise RuntimeError(f'session authority database does not belong to the reserved profile {home}')
         registry.add(home, None, name=name)
@@ -58,19 +62,51 @@ async def _build_profile_authority(runner, name, home, *, register):
     return authority
 
 
+async def _scoped_store_off_loop(runner):
+    """The active scope's store, resolved in a worker (the context carries the scope): an open that
+    waits out a locked store's write patience (20 s) never holds up the loop every other profile
+    is served on. A cancelled caller still waits for the open to end, so nothing it unwinds next
+    (a retirement, a reservation release, a handle sweep) overtakes the open."""
+    def resolve():
+        db = runner._session_db
+        return getattr(db, '_db', db)
+
+    pending = asyncio.ensure_future(asyncio.to_thread(resolve))
+    cancelled = None
+    while not pending.done():
+        try:
+            await asyncio.wait({pending})
+        except asyncio.CancelledError as exc:
+            cancelled = exc
+    if cancelled is not None:
+        if not pending.cancelled():
+            pending.exception()  # retrieved: the caller's cancellation wins
+        raise cancelled
+    return pending.result()
+
+
+class ProfileStoreUnavailable(RuntimeError):
+    """A reserved profile's store has no handle: its open failed, and the handle caches answer None
+    while they back off. Raised from that open's own exception when a cache recorded it."""
+
+
 def _store_open_failure(runner, home):
     """Why *home*'s ``state.db`` has no handle: the scoped handle caches answer None for a failed open
     (and while they back off), so the park reason named an ownership mismatch over the real cause, a
     legacy store that crashed its migration on every open (#141467). The reason is the exception the
     failed open recorded; reopening here to learn it could create or migrate the store, and would skip
-    the caches' backoff."""
+    the caches' backoff. Returns the reason and that exception itself (None when none is recorded),
+    which tells the park whether the failure clears by itself (``transient_serve_failure``)."""
     path = home / 'state.db'
     caches = (getattr(getattr(runner, 'session_store', None), '_db_handle_cache', None),
               getattr(runner, '_session_db_handle_cache', None))
-    error = next((e for e in (c.last_error(path) for c in caches if c is not None) if e), '')
+    # One cache's record, text and exception read together, so the reason and the cause name one open.
+    error, cause = next((f for f in (c.last_failure(path) for c in caches if c is not None) if f[0]), ('', None))
+    if not isinstance(cause, BaseException):  # a cache double's stand-in is no cause to chain or judge
+        cause = None
     if error:
-        return f'{path} did not open: {error}'
-    return f'{path} is unavailable (its last open failed; retry pending)'
+        return f'{path} did not open: {error}', cause
+    return f'{path} is unavailable (its last open failed; retry pending)', cause
 
 
 def _park_reserved_profile(runner, name, home, exc):
@@ -80,19 +116,33 @@ def _park_reserved_profile(runner, name, home, exc):
     logger.error("[MULTIPLEX] Profile '%s' not served: its session store is unusable (%s): %s",
                  name, home, exc)
     release_profile_home(runner, home)
-    park_profile(runner, name, f'session store unusable: {exc}')
+    park_profile(runner, name, f'session store unusable: {exc}', cause=exc)
 
 
-def park_profile(runner, name, reason):
+def park_profile(runner, name, reason, *, cause=None):
     """Publish *name* under ``parked_profiles`` (name -> reason) in the runtime descriptor and the
     root's ``gateway_state.json``: a client of that profile then gets a terminal ``profile_parked``
-    verdict from ``ensure`` instead of waiting its whole deadline for a service that never comes."""
+    verdict from ``ensure`` instead of waiting its whole deadline for a service that never comes.
+    A *cause* that clears by itself (``transient_serve_failure``) also schedules the profile
+    watcher's next attempt to serve it, with backoff; any other park waits for a rescan."""
+    reason = str(reason)
+    retries = _park_retries(runner)
+    if cause is not None and transient_serve_failure(cause):
+        attempt = retries.get(name, (0, 0.0))[0] + 1
+        wait = min(PARK_RETRY_FIRST_SECONDS * 2 ** min(attempt - 1, 16), PARK_RETRY_MAX_SECONDS)
+        retries[name] = (attempt, _monotonic() + wait)
+        logger.warning("[MULTIPLEX] Profile '%s' parked by a transient failure; serving it again is "
+                       "retried in %.0fs (attempt %d)", name, wait, attempt)
+        reason = f'transient, retried automatically with backoff; {reason}'
+    else:
+        retries.pop(name, None)
     parked = parked_profile_map(runner)
-    parked[name] = str(reason)[:500]
+    parked[name] = reason[:500]
     _record_parked_profiles(parked)
 
 
 def unpark_profile(runner, name):
+    _park_retries(runner).pop(name, None)
     parked = parked_profile_map(runner)
     if parked.pop(name, None) is not None:
         _record_parked_profiles(parked)
@@ -130,6 +180,59 @@ def _record_parked_profiles(parked):
         write_runtime_status(parked_profiles=dict(parked))
     except Exception:
         logger.debug('could not record parked_profiles', exc_info=True)
+
+
+# A park whose cause clears by itself is served again by the profile watcher
+# (``reconcile_served_profiles``, every 30 s) once its backoff lapses: the first attempt after
+# PARK_RETRY_FIRST_SECONDS, each further transient failure doubling the wait up to
+# PARK_RETRY_MAX_SECONDS. Boot never waits for it.
+PARK_RETRY_FIRST_SECONDS = 15.0
+PARK_RETRY_MAX_SECONDS = 300.0
+# SQLite primary result codes of a store that is busy or failing I/O right now, not damaged.
+_TRANSIENT_SQLITE_CODES = frozenset({sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED, sqlite3.SQLITE_IOERR})
+
+
+def transient_serve_failure(exc):
+    """True when *exc*, which stopped a profile's serve, names a condition that clears by itself:
+    SQLite busy, locked or failing I/O (decided by result code; a codeless re-raise, a store
+    refusal, a failed store open or an unreadable Bot Chat liveness registry by the error it wraps,
+    the text only as the last resort), EIO from the filesystem, or ``runtime_coordination_required``
+    (a CLI holds the Bot Chat owner session). Anything else, a corrupt store, malformed registry
+    data, a permission or schema refusal or a bug, is permanent."""
+    from hermes_cli.active_sessions import ActiveSessionRegistryError
+    from hermes_state_errors import is_transient_sqlite_error
+    from hermes_state_runtime import RuntimeStoreError
+    for _ in range(8):
+        if isinstance(exc, RuntimeStoreError) and exc.reason == 'runtime_coordination_required':
+            return True
+        if isinstance(exc, sqlite3.Error):
+            code = getattr(exc, 'sqlite_errorcode', None)
+            if isinstance(code, int):
+                return code & 0xFF in _TRANSIENT_SQLITE_CODES
+            if exc.__cause__ is None:
+                return is_transient_sqlite_error(exc)
+            exc = exc.__cause__  # a codeless re-raise: the error it re-raises decides
+        elif isinstance(exc, (RuntimeStoreError, ProfileStoreUnavailable, ActiveSessionRegistryError)):
+            # A store refusal, a failed open, an unreadable Bot Chat liveness registry: the error it
+            # was raised from (or while handling, unless ``from None``) decides; none is permanent.
+            exc = exc.__cause__ if exc.__cause__ is not None or exc.__suppress_context__ else exc.__context__
+        else:
+            return isinstance(exc, OSError) and exc.errno == errno.EIO
+    return False
+
+
+def park_retry_due(runner, name):
+    """True when *name* was parked by a transient failure and its backoff has lapsed."""
+    entry = _park_retries(runner).get(name)
+    return entry is not None and _monotonic() >= entry[1]
+
+
+def _park_retries(runner):
+    """name -> (attempts, due) of each profile parked by a transient failure."""
+    retries = getattr(runner, '_park_retries', None)
+    if retries is None:
+        retries = runner._park_retries = {}
+    return retries
 
 
 async def initialize_gateway_runtime(runner):
@@ -506,7 +609,9 @@ async def _recover_profile_bot_mailbox(runner, authority):
     """Startup Bot Chat recovery of one served profile. A secondary whose durable leftovers cannot
     be recovered is parked like one whose store cannot be opened (retired, unreserved, named under
     ``parked_profiles``): under multiplex it would otherwise take every other profile down with it,
-    on every restart (#140018). The launch profile's failure still aborts the start."""
+    on every restart (#140018). A failure that clears by itself (a busy store, a CLI holding the Bot
+    Chat owner session) is served again by the profile watcher with backoff (``park_profile``). The
+    launch profile's failure still aborts the start."""
     from gateway.session_authorities import owner_scope
     try:
         with owner_scope(authority):
@@ -530,7 +635,7 @@ async def _recover_profile_bot_mailbox(runner, authority):
         _publish_served_set(runner)
         release_profile_home(runner, home)
         park_profile(runner, name, f'startup recovery failed (a control-socket rescan, '
-                                   f'`hermes -p {name} gateway run`, serves it again): {exc}')
+                                   f'`hermes -p {name} gateway run`, serves it again): {exc}', cause=exc)
 
 
 async def recover_gateway_native_sessions(runner):

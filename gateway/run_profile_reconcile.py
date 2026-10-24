@@ -165,7 +165,8 @@ class GatewayProfileReconcileMixin:
         reserve + build the runtime and start adapters for new profiles, tear down, unroute and
         unreserve deleted ones, (re)build adapters for served profiles whose config/.env changed.
         Other profiles' adapters are never touched. A new profile whose home another gateway owns or
-        whose store is unusable is parked (logged, not served) and left for an explicit rescan.
+        whose store is unusable is parked (logged, not served) and left for an explicit rescan, or,
+        when the failure clears by itself, for this watcher once its backoff lapses.
         Returns ``{"added", "removed", "rescanned", "parked", "served_profiles"}``."""
         from gateway.run import MultiplexConfigError
         from hermes_cli.profiles import profiles_to_serve
@@ -218,13 +219,15 @@ class GatewayProfileReconcileMixin:
             self._profile_own_gateway_warned = blocked
             self._profile_probe_timeout_warned = timed_out
             sigs = self._served_profile_signatures or {}
-            from gateway.run_runtime import unpark_profile
+            from gateway.run_runtime import park_retry_due, unpark_profile
             for name in [n for n in self._parked_profile_names() if n not in listed]:
                 unpark_profile(self, name)
             parked = self._parked_profile_names()
-            # The watcher never re-parks the same profile every cycle; a creator's explicit signal does.
+            # The watcher never re-parks the same profile every cycle; a creator's explicit signal
+            # does, and so does a transient park's lapsed backoff (a busy store, a held Bot Chat).
             retry_parked = reason == "control-socket"
-            added = [n for n in live if n not in known and n != active and (retry_parked or n not in parked)]
+            added = [n for n in live if n not in known and n != active
+                     and (retry_parked or n not in parked or park_retry_due(self, n))]
             removed = [n for n in known if n not in live and n != active]
             changed = [n for n in live if n in known and n != active and n not in added
                        and profile_serve_signature(live[n]) != sigs.get(n)]
@@ -252,10 +255,10 @@ class GatewayProfileReconcileMixin:
             await self._unserve_profile(name, known[name])
             result["removed"].append(name)
         for name in list(added):
-            reason_ = await self._serve_profile_runtime(name, live[name])
-            if reason_ is not None:
+            refused = await self._serve_profile_runtime(name, live[name])
+            if refused is not None:
                 added.remove(name)
-                park_profile(self, name, reason_)
+                park_profile(self, name, refused[0], cause=refused[1])
                 result["parked"].append(name)
                 continue
             unpark_profile(self, name)
@@ -393,10 +396,11 @@ class GatewayProfileReconcileMixin:
             logger.info("[MULTIPLEX] A second profile exists; serving every profile from this process (no restart)")
             return True
 
-    async def _serve_profile_runtime(self, name: str, home: Path) -> Optional[str]:
+    async def _serve_profile_runtime(self, name: str, home: Path) -> Optional[tuple]:
         """Grow the reservation by *home* and build its session authority (boot's per-secondary
-        steps). Returns the park reason — reservation released — when another gateway owns the home
-        (a stray per-profile daemon) or its store cannot be opened; None when served. An
+        steps). Returns ``(park reason, cause)`` — reservation released — when another gateway owns
+        the home (a stray per-profile daemon) or its store cannot be opened; None when served. The
+        cause is None when a writer keeps the reservation (only a rescan retries that park). An
         adapters-only runner (no authority registry) grows the reservation alone."""
         from gateway.run_runtime import release_profile_home, reserve_profile_home, serve_profile_runtime
         from gateway.runtime_ownership import OwnershipConflict
@@ -404,7 +408,7 @@ class GatewayProfileReconcileMixin:
             reserve_profile_home(self, name, home)
         except (OwnershipConflict, OSError) as exc:
             logger.error("[MULTIPLEX] Profile '%s' not served: %s", name, exc)
-            return f"home owned by another gateway: {exc}"
+            return f"home owned by another gateway: {exc}", exc
         if getattr(self, "session_authorities", None) is None:
             return None
         try:
@@ -416,11 +420,11 @@ class GatewayProfileReconcileMixin:
                 # adapters) and the batch goes on for every other profile.
                 logger.error("[MULTIPLEX] Profile '%s' not served (%s); a turn outlived its Stop, "
                              "ownership retained", name, exc, exc_info=True)
-                return f"stopping after a failed serve; ownership retained: {exc}"
+                return f"stopping after a failed serve; ownership retained: {exc}", None
             logger.error("[MULTIPLEX] Profile '%s' not served: its session store is unusable (%s): %s",
                          name, home, exc, exc_info=True)
             release_profile_home(self, home)
-            return f"session store unusable: {exc}"
+            return f"session store unusable: {exc}", exc
         return None
 
     def _live_resource_claims(self, active: str) -> dict[tuple, str]:

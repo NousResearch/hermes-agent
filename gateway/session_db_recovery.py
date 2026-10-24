@@ -20,6 +20,7 @@ class _Unavailable:
     next_retry_at: float = 0.0
     in_flight: bool = False
     error: str = ""
+    exception: Exception | None = None  # ``error``'s exception itself, for a caller that judges it
 
 
 class _HealthSource:
@@ -123,6 +124,7 @@ class RecoverableHandleCache:
                 if not stale:
                     unavailable.failures += 1
                     unavailable.error = f"{type(exc).__name__}: {exc}"
+                    unavailable.exception = exc
                     backoff = self._initial_retry_delay * (2 ** min(unavailable.failures - 1, 30))
                     unavailable.next_retry_at = self._clock() + min(backoff, self._max_retry_delay)
                     unavailable.in_flight = False
@@ -157,6 +159,15 @@ class RecoverableHandleCache:
         target = Path(path).resolve()
         with self.lock:
             return next((u.error for key, u in self._unavailable.items() if key.resolve() == target), "")
+
+    def last_failure(self, path: Path) -> tuple[str, Exception | None]:
+        """``last_error``'s text and the exception itself, read together so both name the same open
+        (``('', None)`` when none is recorded): its type and result code tell a busy or I/O-failing
+        store from a damaged one."""
+        target = Path(path).resolve()
+        with self.lock:
+            return next(((u.error, u.exception) for key, u in self._unavailable.items()
+                         if key.resolve() == target), ("", None))
 
     def close_all(self, close: Callable[[Any], None]) -> None:
         """Drain cached handles under the lock and close them outside it."""

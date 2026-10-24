@@ -130,11 +130,14 @@ def normalize_symbols_for_tts(text: str) -> str:
         text = re.sub(symbol + r"\s*([\d,]*\d(?:\.\d+)?)", r"\1 " + word, text, flags=flags)
     text = re.sub(r"(?<=\d)\s*%", " percent", text)
     # Month abbreviations ("Nov. 3" -> "November 3") — engines read the bare
-    # abbreviation as a foreign word ("nov"), never as the month. The period
-    # is optional; full month names already spell out and match nothing here.
+    # abbreviation as a foreign word ("nov"), never as the month. Gated on a
+    # following day/year number: whole-word collisions ("Jan said", "mar the
+    # launch", "the APR is") are ordinary English and stay untouched (#139320).
+    # The abbreviation's period/comma/spaces are consumed by the match so
+    # "Nov.3" and "Nov, 2026" expand with a single space before the number.
     text = re.sub(
-        r"(?<!\w)(" + "|".join(_MONTH_ABBREVS) + r")\.?(?=\s|,|$)",
-        lambda m: _MONTH_ABBREVS[m.group(1).upper()], text, flags=re.IGNORECASE,
+        r"(?<!\w)(" + "|".join(_MONTH_ABBREVS) + r")\.?\s*,?\s*(?=\d)",
+        lambda m: _MONTH_ABBREVS[m.group(1).upper()] + " ", text, flags=re.IGNORECASE,
     )
     # Operators and separators that commonly leak from formatted answers.
     text = re.sub("[•◦▪▫]", " ", text.replace("&", " and "))  # bullet glyphs

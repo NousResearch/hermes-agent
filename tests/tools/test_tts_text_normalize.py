@@ -99,3 +99,15 @@ def test_prepare_spoken_text_month_abbreviations_leave_other_text_intact():
     assert "2027-02-04" in spoken
     assert "TCP/IP" in spoken
     assert "N/A" in spoken
+
+
+def test_prepare_spoken_text_month_abbreviations_need_a_day_number():
+    # Whole-word collisions ("Jan" the name, "mar" the verb, "APR" the rate)
+    # must NOT become months: the expansion is gated on a following day/year
+    # number, which every real date mention has.
+    assert "Jan said" in prepare_spoken_text("Jan said the deploy is green.")
+    assert "mar the launch" in prepare_spoken_text("A delay could mar the launch")
+    assert "APR is" in prepare_spoken_text("The APR is 12 percent")
+    # Date-shaped mentions still expand, including comma year and no-space forms.
+    assert "November 3" in prepare_spoken_text("Ship by Nov.3 ok")
+    assert "November 2026" in prepare_spoken_text("Renewal in Nov, 2026 ok")

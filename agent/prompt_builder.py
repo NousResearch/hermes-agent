@@ -22,10 +22,9 @@ from hermes_constants import (
 from agent.model_metadata import CHARS_PER_TOKEN
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
-    EXCLUDED_SKILL_DIRS, SKILL_SUPPORT_DIRS,
     TIER_LOCAL, extract_skill_conditions, extract_skill_description, get_disabled_skill_names, get_skill_search_roots,
     iter_skill_index_files, parse_frontmatter, skill_matches_apps, skill_matches_environment,
-    skill_matches_platform, skill_matches_platform_list,
+    skill_matches_platform, skill_matches_platform_list, walk_skill_tree,
 )
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
 from utils import atomic_json_write, file_signature
@@ -1113,9 +1112,7 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
     manifest: dict[str, list[int]] = {}
     skills_dir_str = str(skills_dir)
     prefix_len = len(os.path.join(skills_dir_str, ""))
-    for root, dirs, files in os.walk(skills_dir_str, followlinks=True):
-        has_skill_md = "SKILL.md" in files
-        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS and not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
+    for root, _dirs, files in walk_skill_tree(skills_dir_str):
         for filename in ("SKILL.md", "DESCRIPTION.md"):
             path = os.path.join(root, filename)
             try:

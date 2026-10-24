@@ -1,0 +1,18 @@
+name: true402-swap-guard
+repo: https://github.com/true402/hermes-swap-guard
+sha: 27da03ba948ba2e91c2d33bf96f36ab509e6547a
+subdir: true402_swap_guard_free
+description: "Blocks token buys when true402 finds a honeypot or a rug in progress — one pre_tool_call hook in front of every trading tool, MCP server and terminal command (Base, Ethereum, BSC, Solana). Free edition: it never pays, holds no wallet key and has no payment code. Disclosure — for each token a tool call would buy, the token address and chain are sent to true402.dev's free check endpoint; nothing about prompts, the trade, the wallet or other tools. Uses true402's small daily free allowance; when it is used up, a token counts as unchecked and passes by default (configurable to ask or block). Blocks only on a definite danger verdict for a token being bought; a possible sale goes to the approval gate instead. No stored data, no shell commands, background processes or telemetry."
+maintainer: true402
+tier: community
+category: tools
+title: true402 swap guard
+requires_hermes: ">=0.22.0"
+docs_url: https://true402.dev/guides/rug-check-hermes-nousresearch-agent
+version: "1.0.0"
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

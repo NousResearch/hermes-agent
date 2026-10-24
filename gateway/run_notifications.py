@@ -29,6 +29,9 @@ from gateway.run_notifications_ownership import GatewayNotificationOwnershipMixi
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+# delegation_id -> already warned that its completion cannot be routed
+_UNDELIVERABLE_SEEN: set[str] = set()
+
 
 def _served_notice_target_key(profile: Optional[str], platform_value: str, chat_id, thread_id) -> tuple:
     """Notice-dedupe key for one SERVED profile's home channel.
@@ -1077,6 +1080,28 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         except Exception:
             logger.log(logging.WARNING if kind == "complete" else logging.DEBUG, fail_msg, exc_info=True)
 
+    @staticmethod
+    def _note_undeliverable(evt: dict, verdict: str) -> None:
+        """Say ONCE that a deferred completion cannot be routed, instead of deferring silently.
+
+        Called for the ``retry`` verdict only: the session route could not be resolved, so the claim
+        is deferred and retried on every sweep. The row then stays pending for good and the parent
+        never learns the child finished. Without this the result is lost with no trace anywhere. The
+        full answer stays readable from the ledger via
+        ``tools.async_delegation.pending_completions()``, which also lists ``dropped`` rows.
+
+        A ``terminal`` verdict is NOT retried — the pre-flight drops the row on the same pass and
+        logs that itself, so it must not reach here.
+        """
+        key = str(evt.get("delegation_id") or "")
+        if not key or key in _UNDELIVERABLE_SEEN:
+            return
+        _UNDELIVERABLE_SEEN.add(key)
+        logger.warning(
+            "Async delegation %s cannot be routed to its parent (verdict=%s); deferring and "
+            "retrying, result stays readable via tools.async_delegation.pending_completions()",
+            key, verdict)
+
     async def _completion_delivery_ready(self, evt: dict) -> bool:
         """Unavailable owners/transports must not spend a durable delivery attempt."""
         from gateway.wake import adapter_supports_push
@@ -1085,6 +1110,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         if parent_session_id:
             verdict = await self._classify_completion_target(parent_session_id, str(evt.get("session_key") or ""))
             if verdict != "deliver":
+                # Only "retry" is deferred; "terminal" is dropped on this pass, and the pre-flight's
+                # terminal disposition logs its own line. Claiming deferral here would contradict it.
+                if verdict == "retry":
+                    self._note_undeliverable(evt, verdict)
                 # Definitively closed targets still need the normal terminal disposition.
                 return verdict == "terminal"
         source = await asyncio.to_thread(self._build_process_event_source, evt)
@@ -1152,7 +1181,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if evt_type == "async_delegation":
                 logger.warning(
                     "Async delegation %s targets permanently-gone session %s; "
-                    "terminally dropping delivery (result remains in the delegation records).",
+                    "terminally dropping delivery (result remains in the delegation records, "
+                    "readable via tools.async_delegation.pending_completions()).",
                     claim.delegation_id or "<legacy>", parent_session_id,
                 )
                 if claim.claim_id:

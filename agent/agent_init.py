@@ -24,6 +24,7 @@ from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
 from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, recompute_init_fallback_api_mode
+from agent.agent_identity import agent_identity_kwargs, context_engine_identity_kwargs
 from agent.agent_init_params import _CALLBACK_PARAMS, _GATEWAY_IDENTITY_PARAMS, _PASSTHROUGH_PARAMS
 from agent.agent_runtime_helpers import _ra
 from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
@@ -1264,8 +1265,8 @@ def _memory_provider_init_kwargs(agent, platform) -> dict[str, Any]:
         "session_id": agent.session_id,
         "platform": platform or "cli",
         "hermes_home": str(get_hermes_home()),
-        # platform="cron" (scheduler) / "subagent" (delegate_task) → providers skip writes (MemoryProvider.initialize).
-        "agent_context": platform if platform in ("cron", "subagent") else "primary",
+        # agent_context, gateway user/chat identity, profile identity (context engines get the same).
+        **agent_identity_kwargs(agent, platform),
     }
     if kwargs["platform"] == "cli":
         kwargs["warning_callback"] = agent._emit_warning
@@ -1279,19 +1280,8 @@ def _memory_provider_init_kwargs(agent, platform) -> dict[str, Any]:
                 _source = agent._session_db.get_session_title_source(agent.session_id)
                 if _source:
                     kwargs["session_title_source"] = _source
-    # Gateway user/chat identity for per-user scoping (gateway_session_key: stable per-chat
-    # Honcho session isolation).
-    for _ident in _GATEWAY_IDENTITY_PARAMS:
-        _val = getattr(agent, f"_{_ident}")
-        if _val:
-            kwargs[_ident] = _val
     if agent.session_cwd:
         kwargs["cwd"] = agent.session_cwd
-    # Profile identity for per-profile provider scoping
-    with suppress(Exception):
-        from hermes_cli.profiles import get_active_profile_name
-        kwargs["agent_identity"] = get_active_profile_name()
-        kwargs["agent_workspace"] = "hermes"
     return kwargs
 
 
@@ -2157,6 +2147,7 @@ def _inject_context_engine_tools(agent):
                 platform=agent.platform or "cli", model=agent.model,
                 context_length=getattr(agent.context_compressor, "context_length", 0),
                 conversation_id=getattr(agent, "_gateway_session_key", None),
+                **context_engine_identity_kwargs(agent, agent.context_compressor.on_session_start),
             )
         except Exception as _ce_err:
             _ra().logger.debug("Context engine on_session_start: %s", _ce_err)

@@ -7,7 +7,7 @@ import pytest
 
 from gateway.run import _profile_runtime_scope
 from hermes_constants import hermes_home_key
-from tools import browser_tool
+from tools import browser_session
 from tools import browser_use_cli as cli
 
 
@@ -16,7 +16,7 @@ def harness(monkeypatch):
     monkeypatch.setattr(cli, "_browser_use_sessions", {})
     monkeypatch.setattr(cli, "_driven_daemons", {})
     monkeypatch.setattr(cli, "_find_cli", lambda: ["browser-use"])
-    monkeypatch.setattr(browser_tool, "_build_browser_env", dict)
+    monkeypatch.setattr(browser_session, "build_browser_env", dict)
     monkeypatch.setattr(cli, "_code_url_verdict", lambda code: cli._CodeUrlVerdict(None, False))
     monkeypatch.setattr(cli, "_route_backend", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, "_attach_vault_supervisor", lambda *args: None)
@@ -33,6 +33,12 @@ def harness(monkeypatch):
 
     monkeypatch.setattr(cli, "_run_cli_killing_process_group", run)
     return calls
+
+
+def test_inactivity_timeout_reads_the_active_profile(tmp_path):
+    (tmp_path / "config.yaml").write_text("browser:\n  inactivity_timeout: 95\n")
+    with _profile_runtime_scope(tmp_path, hydrate_secrets=False):
+        assert cli._browser_use_inactivity_timeout() == 95
 
 
 def test_profile_reload_keeps_other_owned_runtime(tmp_path, harness):

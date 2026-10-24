@@ -44,6 +44,7 @@ from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, We
 from gateway.platforms.webhook_mcp_events import (
     handle_mcp_event_control, mcp_event_delivery_id, render_mcp_event_prompt)
 from gateway.response_filters import is_autonomous_silence_response
+from media_constants import MEDIA_IMAGE_EXTS, MEDIA_VIDEO_EXTS
 
 logger = logging.getLogger(__name__)
 
@@ -1009,7 +1010,12 @@ class WebhookAdapter(BasePlatformAdapter):
         return self.gateway_runner._authorization_adapter(target_platform, profile)
 
     async def _deliver_cross_platform(self, platform_name: str, content: str, delivery: dict) -> SendResult:
-        """Route response to another platform (telegram, discord, etc.)."""
+        # Route response to another platform (telegram, discord, etc.). ``content`` may carry
+        # MEDIA:<path> tags (and [[audio_as_voice]]/[[as_document]]) from an agent run just like a
+        # normal gateway turn's final response -- extract them and dispatch through the adapter's
+        # native media senders (send_image_file/send_video/send_voice/send_document), mirroring the
+        # routing cron delivery already does in cron.scheduler_delivery._send_media_via_adapter. A
+        # plain adapter.send() of the raw text here used to silently drop every attachment.
         if not self.gateway_runner:
             return SendResult(success=False, error="No gateway runner for cross-platform delivery")
         try:
@@ -1031,10 +1037,54 @@ class WebhookAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=f"No chat_id or home channel for {platform_name}")
                 chat_id = home.chat_id
             thread_id = extra.get("message_thread_id") or extra.get("thread_id")  # Telegram forum topics
-            result = await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)
+            metadata = {"thread_id": thread_id} if thread_id else None
+            media_files, cleaned_content = BasePlatformAdapter.extract_media(content)
+            media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+            if not media_files:
+                result = await adapter.send(chat_id, content, metadata=metadata)
+            else:
+                result = await self._send_cross_platform_media(
+                    adapter, target_platform, chat_id, cleaned_content, media_files, metadata)
             if result.success:
                 self._mirror_delivery(platform_name, str(chat_id), content, delivery, thread_id)
             return result
+
+    async def _send_cross_platform_media(self, adapter, target_platform, chat_id: str, text: str,
+                                         media_files: list, metadata: Optional[dict]) -> SendResult:
+        # Send ``text`` (if any) then every extracted MEDIA file via the adapter's native per-kind
+        # sender, mirroring cron's _send_media_via_adapter routing (image/video/voice/document by
+        # extension, with Telegram's voice-tag + MP3/M4A rules via should_send_media_as_audio).
+        # A failed attachment does not stop the rest from being attempted; failures remain visible
+        # even when a later attachment succeeds.
+        from gateway.platforms.base import should_send_media_as_audio
+        result: SendResult = SendResult(success=True)
+        errors: list[str] = []
+        if text and text.strip():
+            result = await adapter.send(chat_id, text, metadata=metadata)
+            if not result.success:
+                return result
+        for media_path, is_voice in media_files:
+            ext = os.path.splitext(media_path)[1].lower()
+            if should_send_media_as_audio(target_platform, ext, is_voice=is_voice):
+                method, path_kw = "send_voice", "audio_path"
+            elif ext in MEDIA_VIDEO_EXTS:
+                method, path_kw = "send_video", "video_path"
+            elif ext in MEDIA_IMAGE_EXTS:
+                method, path_kw = "send_image_file", "image_path"
+            else:
+                method, path_kw = "send_document", "file_path"
+            try:
+                result = await getattr(adapter, method)(chat_id=chat_id, metadata=metadata, **{path_kw: media_path})
+            except Exception as e:
+                logger.warning("[webhook] cross-platform media send (%s) failed for %s: %s", method, media_path, e)
+                result = SendResult(success=False, error=f"{method} failed: {e}")
+            if not result.success:
+                logger.warning("[webhook] cross-platform media delivery failed for %s: %s", media_path, result.error)
+                detail = result.error or "adapter returned failure without an error"
+                errors.append(f"{method} failed for {os.path.basename(media_path)}: {detail}")
+        if errors:
+            return SendResult(success=False, error="; ".join(errors))
+        return result
 
     def _delivery_config(self, profile: Optional[str]):
         """Gateway config of the profile a delivery is bound to (call inside ``_profile_scope``)."""

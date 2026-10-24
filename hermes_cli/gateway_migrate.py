@@ -461,10 +461,18 @@ def _credential_probe(platform_config) -> SimpleNamespace:
     """Config-shaped stand-in for ``GatewayRunner._adapter_credential_fingerprint`` (which probes
     adapter attributes): token/api_key plus the id-style credentials adapters expose from ``extra``."""
     extra = getattr(platform_config, "extra", None) or {}
+    account = extra.get("account")
+    # Runtime precedence: an adapter's own attributes come before ``config.token``. An
+    # account-identified adapter (Signal) never copies ``config.token`` onto itself, so a stray
+    # generic ``token`` in its YAML must not shadow the account here either — otherwise runtime parks
+    # a duplicate the preflight never reports (or the preflight blocks two distinct accounts that
+    # merely share an unused token).
     return SimpleNamespace(
-        token=getattr(platform_config, "token", None) or getattr(platform_config, "api_key", None),
+        token=None if account else (
+            getattr(platform_config, "token", None) or getattr(platform_config, "api_key", None)),
         _app_id=extra.get("app_id"), _client_id=extra.get("client_id"), _bot_id=extra.get("bot_id"),
-        _project_secret=extra.get("project_secret"), config=platform_config,
+        _project_secret=extra.get("project_secret"), account=account,
+        config=platform_config,
     )
 
 

@@ -89,6 +89,32 @@ class TestCredentialFingerprint:
         assert fp(a) != fp(c)
         assert "app-1" not in fp(a)
 
+    def test_reads_signal_account(self):
+        """Signal has no bot token: the registered phone number (``SignalAdapter.account``) is the
+        bot identity. Without ``account`` in the attribute list every Signal adapter returned None
+        here, so two profiles whose ``.env`` both carried the same ``SIGNAL_ACCOUNT`` started two
+        adapters on one signal-cli account under the multiplexer and every DM was answered twice
+        (the ``signal-phone`` scoped lock is self-reacquired inside a single PID, so it cannot
+        catch an in-process duplicate)."""
+        class _SignalAdapter:
+            def __init__(self, account):
+                self.http_url = "http://127.0.0.1:8080"
+                self.account = account
+
+        fp = GatewayRunner._adapter_credential_fingerprint
+        same_a, same_b = fp(_SignalAdapter("+15551234567")), fp(_SignalAdapter("+15551234567"))
+        assert same_a is not None
+        assert same_a == same_b  # same account -> same fingerprint -> conflict detected
+        assert same_a != fp(_SignalAdapter("+15557654321"))
+        assert "5551234567" not in same_a  # log-safe, never the raw number
+
+    def test_blank_signal_account_is_not_a_credential(self):
+        class _SignalAdapter:
+            http_url = "http://127.0.0.1:8080"
+            account = "   "
+
+        assert GatewayRunner._adapter_credential_fingerprint(_SignalAdapter()) is None
+
     def test_reads_config_token(self):
         """Adapters like Discord store token on `config`, not on self.
 
@@ -218,6 +244,8 @@ def _secondary_recovery_runner(*, running=True):
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig(multiplex_profiles=True)
     runner._running = running
+    runner.adapters = {}  # primary adapters (empty: the default profile runs no bot here)
+    runner._failed_platforms = {}
     runner._profile_adapters = {}
     runner._profile_failed_platforms = {}
     runner._background_tasks = set()
@@ -1255,3 +1283,70 @@ class TestSecondarySkipsCredentiallessPlatforms:
         assert connected == 1
         assert created == [(Platform.SLACK, profile_cfg.platforms[Platform.SLACK])]
         assert Platform.SLACK in runner._profile_adapters["profile-b"]
+
+
+
+class TestSecondaryReconnectClaimGuard:
+    """The retry path mirrors startup's same-credential guard. Before this, a secondary whose first
+    connect failed was rebuilt and connected on retry with no claim check, so if another profile had
+    claimed the same credential meanwhile both ended up live and every inbound was answered twice."""
+
+    @staticmethod
+    def _adapter_with_token(token):
+        adapter = _SecondaryRecoveryAdapter()
+        adapter.config = PlatformConfig(enabled=True, token=token)
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_retry_is_parked_when_another_profile_holds_the_credential(self, monkeypatch):
+        runner = _secondary_recovery_runner()
+        runner._profile_adapters["beta"] = {Platform.DISCORD: self._adapter_with_token("profile-token")}
+        rebuilt = self._adapter_with_token("profile-token")
+        _install_secondary_reconnect_context(monkeypatch, runner, rebuilt)
+        connect = AsyncMock(return_value=True)
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", connect)
+        statuses = []
+        monkeypatch.setattr(runner, "_update_platform_runtime_status",
+                            lambda key, **kw: statuses.append((key, kw)))
+
+        assert await runner._secondary_reconnect_attempt("alpha", Platform.DISCORD) == (None, None)
+
+        connect.assert_not_called()
+        assert "alpha" not in runner._profile_adapters
+        assert statuses == [("alpha:discord", {
+            "platform_state": "fatal", "error_code": "duplicate_credential",
+            "error_message": "Profile 'beta' and 'alpha' both configure discord with the same "
+                             "credential. Give each profile its own discord credential.",
+        })]
+
+    @pytest.mark.asyncio
+    async def test_retry_connects_when_the_credential_is_free_or_its_own(self, monkeypatch):
+        runner = _secondary_recovery_runner()
+        # alpha's own predecessor still mapped under alpha: an own claim is not a conflict.
+        runner._profile_adapters["alpha"] = {Platform.DISCORD: self._adapter_with_token("profile-token")}
+        # beta holds a DIFFERENT credential on the same platform: not a conflict either.
+        runner._profile_adapters["beta"] = {Platform.DISCORD: self._adapter_with_token("other-token")}
+        rebuilt = self._adapter_with_token("profile-token")
+        _install_secondary_reconnect_context(monkeypatch, runner, rebuilt)
+        connect = AsyncMock(return_value=True)
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", connect)
+        monkeypatch.setattr(runner, "_update_platform_runtime_status", lambda key, **kw: None)
+
+        assert await runner._secondary_reconnect_attempt("alpha", Platform.DISCORD) == (rebuilt, True)
+        connect.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_retry_is_parked_when_the_primary_holds_the_credential(self, monkeypatch):
+        runner = _secondary_recovery_runner()
+        runner.adapters = {Platform.DISCORD: self._adapter_with_token("profile-token")}
+        rebuilt = self._adapter_with_token("profile-token")
+        _install_secondary_reconnect_context(monkeypatch, runner, rebuilt)
+        connect = AsyncMock(return_value=True)
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", connect)
+        statuses = []
+        monkeypatch.setattr(runner, "_update_platform_runtime_status",
+                            lambda key, **kw: statuses.append((key, kw)))
+
+        assert await runner._secondary_reconnect_attempt("alpha", Platform.DISCORD) == (None, None)
+        connect.assert_not_called()
+        assert statuses[0][1]["error_code"] == "duplicate_credential"

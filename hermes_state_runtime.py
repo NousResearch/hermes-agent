@@ -196,6 +196,26 @@ def list_session_admissions(db, *, session_id: str, pending_only: bool = True) -
 
 _ANY_HEAD = object()
 
+#: Durable carrier for the claim's transcript mark (the ``messages.id`` high-water mark at claim
+#: time). It used to live only on the in-memory claim, so a next owner that settled a turn lost to
+#: a hard crash could not tell the lost turn's own failed-turn boundary from an earlier turn's, and
+#: the two notices stacked instead of replacing one another (#134889 GW-25). Same store, same
+#: pattern as the per-admission result next to it.
+TRANSCRIPT_MARK_PREFIX = 'gateway.admission.transcript_mark.v1.'
+
+
+def transcript_mark(conn, admission_id: str) -> Optional[int]:
+    """The claim's durable transcript mark for *admission_id*, or None when it has none."""
+    saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                         (TRANSCRIPT_MARK_PREFIX + admission_id,)).fetchone()
+    if saved is None:
+        return None
+    try:
+        return int(saved[0])
+    except (TypeError, ValueError):
+        return None
+
+
 
 def claim_session_input(db, *, epoch: int, session_id: str, _guard=None, head=_ANY_HEAD) -> dict | bool | None:
     """Claim the FIFO head. ``_guard(conn)`` (owner admission gate) raises to refuse inside the
@@ -230,8 +250,14 @@ def claim_session_input(db, *, epoch: int, session_id: str, _guard=None, head=_A
         claimed = _row(_admission(conn, row['admission_id']))
         # The transcript high-water mark at the claim (``messages.id`` is AUTOINCREMENT across every
         # session): a row above it on this conversation was written by this turn, so settlement can
-        # tell this turn's own failed-turn boundary from an earlier turn's (#134889 GW-21).
-        claimed['transcript_mark'] = conn.execute('SELECT COALESCE(MAX(id), 0) FROM messages').fetchone()[0]
+        # tell this turn's own failed-turn boundary from an earlier turn's (#134889 GW-21). It is
+        # durable, so the next owner that settles a turn lost to a hard crash can read it too and
+        # replace that boundary instead of stacking a second one (#134889 GW-25).
+        mark = conn.execute('SELECT COALESCE(MAX(id), 0) FROM messages').fetchone()[0]
+        claimed['transcript_mark'] = mark
+        conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) '
+                     'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                     (TRANSCRIPT_MARK_PREFIX + row['admission_id'], str(mark)))
         return claimed
     return db._execute_write(write)
 

@@ -389,6 +389,33 @@ class MemoryStore:
         # content) but still refuse a failed read — add rewrites the WHOLE file.
         return self._mutate(target, _add, skip_drift=True)
 
+    def add_independent_entries(self, target: str, contents: List[str]) -> Dict[str, Any]:
+        """Save each eligible addition that fits, without requiring the rest of a staged batch.
+
+        Called only after the original batch has been validated and its destructive entries
+        pinned. A skipped duplicate/oversized entry is not reported as saved. The write and
+        resulting count share one lock and disk snapshot; no hidden consolidation failures.
+        """
+        cleaned = [content.strip() for content in contents if isinstance(content, str) and content.strip()]
+        if not cleaned:
+            return {"success": True, "additions_saved": 0}
+        for content in cleaned:
+            if scan_error := _scan_memory_content(content):
+                return _error(scan_error, "scan_blocked")
+
+        def _add_fitting(entries, limit):
+            working = list(entries)
+            saved = 0
+            for content in cleaned:
+                if content not in working and len(ENTRY_DELIMITER.join(working + [content])) <= limit:
+                    working.append(content)
+                    saved += 1
+            if not saved:
+                return {"success": True, "additions_saved": 0}
+            return working, "Independent additions saved.", {"additions_saved": saved}
+
+        return self._mutate(target, _add_fitting, skip_drift=True)
+
     def replace(self, target: str, old_text: str, new_content: str,
                 matched_entry: Optional[str] = None) -> dict[str, Any]:
         """Find the entry containing old_text (whole-entry exact match first) and
@@ -536,21 +563,26 @@ class MemoryStore:
         working[idx:idx + 1] = [patched]
         return None, previous_content, "none", patched
 
-    def apply_batch(self, target: str, operations: list[dict[str, Any]]) -> dict[str, Any]:
+    def apply_batch(self, target: str, operations: list[dict[str, Any]], *,
+                    preserve_existing: bool = False) -> dict[str, Any]:
         """Apply add/replace/remove ops atomically against the FINAL budget, so one call
         can free space and add entries. All-or-nothing: any malformed / unmatched op or
         an over-limit result writes NOTHING and returns the first failure. Aborts do not
         echo ``current_entries`` — the store is unchanged and the model already has it."""
-        return self._batch(target, operations, commit=True)
+        return self._batch(target, operations, commit=True, preserve_existing=preserve_existing)
 
-    def resolve_batch_entries(self, target: str, operations: list[dict[str, Any]]) -> dict[str, Any]:
+    def resolve_batch_entries(self, target: str, operations: list[dict[str, Any]], *,
+                              for_staging: bool = False) -> dict[str, Any]:
         """Dry-run ``apply_batch`` under the lock without persisting: the same content scan,
         op walk, empty-store and budget checks, so it fails exactly where the direct batch
         would; on success ``{"success": True, "matched_entries": [...]}`` — per op, the FULL
-        entry its replace/remove selects now (None for add), in batch order."""
-        return self._batch(target, operations, commit=False)
+        entry its replace/remove selects now (None for add), in batch order. Background
+        staging may defer final budget/empty-store checks and ignore empty additions so
+        a proposal that cannot yet apply does not block valid independent additions."""
+        return self._batch(target, operations, commit=False, for_staging=for_staging)
 
-    def _batch(self, target: str, operations: list[dict[str, Any]], *, commit: bool) -> dict[str, Any]:
+    def _batch(self, target: str, operations: list[dict[str, Any]], *, commit: bool,
+               preserve_existing: bool = False, for_staging: bool = False) -> dict[str, Any]:
         from tools.memory_tool import _memory_target_error
         if target_error := _memory_target_error(self, target, operations):
             return target_error
@@ -559,7 +591,8 @@ class MemoryStore:
         ops = [op or {} for op in operations]
         # Scan every add/replace content BEFORE touching disk -- one poisoned op rejects the batch.
         for i, op in enumerate(ops):
-            scan_error = op.get("action") in {"add", "replace"} and op.get("content") and _scan_memory_content(op["content"])
+            content = (op.get("content") or op.get("new_text") or "").strip()
+            scan_error = op.get("action") in {"add", "replace"} and content and _scan_memory_content(content)
             if scan_error:
                 return _error(f"Operation {i + 1}: {scan_error}", "scan_blocked")
 
@@ -570,6 +603,9 @@ class MemoryStore:
             for i, op in enumerate(ops):
                 act = op.get("action")
                 content, old_text = op.get("content") or op.get("new_text") or "", op.get("old_text") or ""
+                if for_staging and act == "add" and not content.strip():
+                    matched.append(None)
+                    continue
                 if act != "patch":  # whole-entry actions; a patch span keeps its whitespace
                     content, old_text = content.strip(), old_text.strip()
                 msg, previous_content, failure_class, after = self._apply_batch_op(
@@ -580,6 +616,14 @@ class MemoryStore:
                 matched.append(previous_content)
                 if after is not None:
                     produced[i + 1] = after
+            if for_staging and not commit:
+                return {"success": True, "matched_entries": matched, "patched_entries_after": produced}
+            if preserve_existing and any(
+                not any(new == old or new.startswith((old + " ", old + "\n")) for new in working)
+                for old in entries
+            ):
+                return _error("Background review cannot verify that every existing entry remains "
+                              "verbatim; stage this change for approval.", "gate_refused", requires_approval=True)
             if entries and not working:
                 # #103419: a consolidation batch that removes the last entry would
                 # commit an empty file as a normal successful write. Refuse; single

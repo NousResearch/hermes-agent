@@ -284,6 +284,8 @@ def _migrate_split_pairing_dirs(*, home: Optional[Path] = None, active: Optional
 
     If both exist, approved users in the inactive location must not be silently
     ignored (they would be asked for a fresh code). Active data wins on key conflict.
+    Consume each imported file so a later reopen cannot replay a revoked approval.
+    The caller holds the active directory's edit lock through merge and removal.
     """
     home = home or get_hermes_home()
     old_dir = home / "pairing"
@@ -300,6 +302,7 @@ def _migrate_split_pairing_dirs(*, home: Optional[Path] = None, active: Optional
         merged.update(current)
         if merged != current:
             _save_json_file(active / src.name, merged)
+        src.unlink()
 
 
 _dir_lock_holders: dict = {}
@@ -338,9 +341,10 @@ class PairingStore:
             profile_home = root if profile == "default" else root / "profiles" / profile
         self._dir = get_hermes_dir("platforms/pairing", "pairing", home=profile_home) if profile else _default_pairing_dir()
         self._dir.mkdir(parents=True, exist_ok=True)
-        # Merge the alternate old/new layout so upgrades cannot split approvals.
-        _migrate_split_pairing_dirs(home=profile_home, active=self._dir)
         self._lock = threading.RLock()  # adapters run concurrently in threads sharing one store
+        # Migration and ordinary edits must not publish competing approval snapshots.
+        with self._locked():
+            _migrate_split_pairing_dirs(home=profile_home, active=self._dir)
         self._profile = profile  # for diagnostics / log lines
         self._approved_cache: dict = {}
 

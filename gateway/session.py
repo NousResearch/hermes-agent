@@ -1222,25 +1222,27 @@ class SessionStore(
                 self._save()
         return len(dropped)
 
-    def remove_by_session_id(self, session_id: str) -> int:
+    def remove_by_session_id(self, session_id: str, *, namespace: Optional[str] = None) -> int:
         """Drop every routing entry pointing at *session_id* (hard delete) and persist the drop.
 
         The routing index is written back by THIS process, so removing only the state.db rows
         elsewhere in a delete flow is undone by the next whole-index save: the surviving entry
         hands the same id to the next inbound message and run_agent's INSERT OR IGNORE
         re-creates the row — the deleted conversation comes back (#42422). Idempotent; returns
-        the number of entries dropped.
+        the number of entries dropped. A profile-local caller supplies its exact
+        ``agent:<namespace>`` so colliding IDs in other profiles remain untouched.
         """
         if not session_id:
             return 0
         with self._lock:
             self._ensure_loaded_locked()
-            dropped = [key for key, entry in self._entries.items() if entry.session_id == session_id]
+            dropped = [key for key, entry in self._entries.items() if entry.session_id == session_id
+                       and (namespace is None or key.startswith(namespace + ":"))]
             for key in dropped:
                 self._entries.pop(key, None)
             if dropped:
                 hints = getattr(self, "_session_owner_hints", None)
-                if hints is not None:
+                if hints is not None and not any(entry.session_id == session_id for entry in self._entries.values()):
                     hints.pop(session_id, None)
                 self._save()
         if dropped:

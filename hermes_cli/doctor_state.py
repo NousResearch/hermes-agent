@@ -595,7 +595,24 @@ def _check_skills_hub(should_fix: bool, f: Finding) -> None:
         check_ok("GitHub token configured", "(validity checked under API Connectivity)")
     else:
         check_bool(_gh_authenticated(), ("GitHub authenticated via gh CLI", "(full API access — no GITHUB_TOKEN needed)"),
-                   ("No GITHUB_TOKEN", f"(60 req/hr rate limit — set in {_DHH}/.env for better rates)"))
+                   ("No GitHub credential", "(public reads remain available — configure GITHUB_TOKEN in a supported Hermes secret source for authenticated access)"))
+
+@doctor_check()
+def _check_github_workflow(should_fix: bool, f: Finding) -> None:
+    try:
+        from hermes_cli.config import load_config_readonly
+        from hermes_cli.github_workflow import resolve_github_capability
+        capability = resolve_github_capability(load_config_readonly(), perform_preflight=False)
+        if capability.workflow_enabled:
+            if capability.credential_available:
+                check_ok("GitHub workflow available", "(Hermes secret scope configured)")
+            else:
+                check_warn("GitHub workflow credential unavailable", f"({capability.remediation})")
+        else:
+            check_ok("GitHub workflow disabled", "(github.workflow.enabled=false)")
+    except Exception as exc:
+        check_warn("GitHub workflow diagnostic unavailable", f"({exc})")
+
 
 
 # provider -> (checker, ImportError row, ImportError issue, label for "check failed"); every provider

@@ -4,6 +4,7 @@ imported lazily inside each method (import cycle)."""
 
 from __future__ import annotations
 
+import os
 import sys
 
 from rich.markup import escape as _escape
@@ -655,6 +656,25 @@ class CLIAgentSetupMixin:
         self.finalize_preloaded_skills()
         # No deferred plugin discovery either: the gateway that runs the turn loads the plugins (PLG-7).
         self._install_tool_callbacks()
+
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.github_workflow import repository_context, resolve_github_capability
+            from agent.skill_commands import build_preloaded_skills_prompt
+            repo = repository_context(os.getenv("TERMINAL_CWD", os.getcwd()))
+            capability = resolve_github_capability(load_config(), perform_preflight=False)
+            if capability.workflow_enabled and repo.owner and repo.name:
+                github_prompt, loaded, _missing = build_preloaded_skills_prompt(
+                    ["github-auth"], task_id=self.session_id
+                )
+                if github_prompt and "github-auth" not in getattr(self, "preloaded_skills", []):
+                    self.system_prompt = "\n\n".join(
+                        part for part in (self.system_prompt, github_prompt) if part
+                    ).strip()
+                    self.preloaded_skills = [*getattr(self, "preloaded_skills", []), *loaded]
+        except Exception:
+            pass
+
         if not self._ensure_runtime_credentials():
             return False
         # No MCP discovery here: the gateway session that runs the turn owns its MCP servers.

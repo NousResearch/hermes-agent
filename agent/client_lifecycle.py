@@ -994,6 +994,12 @@ class ClientLifecycleMixin:
         self._credential_pool_entry_id = getattr(entry, "id", None)
         from hermes_cli.route_identity import normalize_route_base_url
         route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(runtime_base)
+        # The compressor sends its own copy of the main key (aux main_runtime, latched summary pin). A copy of this
+        # route (same provider, endpoint and key) moves with the agent, or compaction keeps the benched or
+        # refreshed-away key; a compressor on another route keeps its own.
+        cc = getattr(self, "context_compressor", None)
+        if cc is not None and any(getattr(cc, k, None) != getattr(self, k, None) for k in ("provider", "base_url", "api_key")):
+            cc = None
         if self.api_mode == "anthropic_messages":
             with suppress(Exception):
                 self._anthropic_client.close()
@@ -1001,8 +1007,12 @@ class ClientLifecycleMixin:
             self._anthropic_client = self._build_direct_anthropic_client(runtime_key, self._anthropic_base_url)
             self._is_anthropic_oauth = self._anthropic_oauth_flag(runtime_key)
             self.api_key, self.base_url = runtime_key, stripped_base
+            if cc is not None:
+                cc.api_key, cc.base_url = runtime_key, stripped_base
             return True
         self.api_key, self.base_url = runtime_key, stripped_base
+        if cc is not None:
+            cc.api_key, cc.base_url = runtime_key, stripped_base
         # Inlined (not _sync_client_kwargs_credentials): tests call this unbound on a SimpleNamespace agent.
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url

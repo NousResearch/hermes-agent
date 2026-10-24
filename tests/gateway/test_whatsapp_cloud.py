@@ -1127,6 +1127,21 @@ class TestSendSlashConfirmButtons:
         assert ids == ["sc:once:cf-9", "sc:always:cf-9", "sc:cancel:cf-9"]
         assert adapter._slash_confirm_state["cf-9"] == "sess-sc-1"
 
+    @pytest.mark.asyncio
+    async def test_disabling_persistence_omits_always_button(self):
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(return_value=_mock_httpx_response(200, {"messages": [{"id": "wamid.s2"}]}))
+
+        result = await adapter.send_slash_confirm(
+            chat_id="15551234567", title="Reset", message="Discard history.", session_key="sess-sc-2",
+            confirm_id="cf-no-always", allow_persistent=False,
+        )
+
+        assert result.success
+        buttons = adapter._http_client.post.call_args.kwargs["json"]["interactive"]["action"]["buttons"]
+        assert [button["reply"]["id"] for button in buttons] == ["sc:once:cf-no-always", "sc:cancel:cf-no-always"]
+
 
 @pytest.mark.usefixtures("authorized_interactive_env")
 class TestDispatchInteractiveReplyClarify:

@@ -197,3 +197,34 @@ class TestGatewayApprovalAllowPermanent:
         assert payload["command"] == "rm -rf /important"
         assert payload["allow_permanent"] is True
         assert payload["allow_session"] is True
+
+    def test_shared_gateway_disables_persistent_choices_and_refuses_injected_choice(self, monkeypatch):
+        """A raw legacy ``session`` answer cannot bypass a shared-room choice set."""
+        from tools.approval import register_gateway_notify, resolve_gateway_approval, unregister_gateway_notify
+
+        monkeypatch.setattr(approval_context, "_get_approval_config", lambda: {"allow_persistent": False})
+        captured = []
+        session_key = "gw-no-persistent"
+
+        def notify(data):
+            captured.append(dict(data))
+            resolve_gateway_approval(session_key, "always")
+
+        register_gateway_notify(session_key, notify)
+        token = set_current_session_key(session_key)
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        os.environ["HERMES_EXEC_ASK"] = "1"
+        os.environ["HERMES_SESSION_KEY"] = session_key
+        try:
+            result = check_all_command_guards("rm -rf /shared", "local")
+        finally:
+            os.environ.pop("HERMES_GATEWAY_SESSION", None)
+            os.environ.pop("HERMES_EXEC_ASK", None)
+            os.environ.pop("HERMES_SESSION_KEY", None)
+            reset_current_session_key(token)
+            unregister_gateway_notify(session_key)
+
+        assert captured[0]["allow_permanent"] is False
+        assert captured[0]["allow_session"] is False
+        assert result["approved"] is False
+        assert approval_module._permanent_approved == set()

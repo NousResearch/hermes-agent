@@ -9,6 +9,9 @@ match). The fix bounds lines at the search-engine layer: rg gets
 ``--max-columns 2000 --max-columns-preview``; the grep fallbacks pipe
 through ``cut -c1-2000``.
 
+Long lines must not hide the match itself: rg reports the match column, so a
+hit past the 500-char content clamp is shown in a window around it.
+
 These tests run the REAL pipelines via bash (no mocked stdout) so the
 flag/pipe behavior of the installed rg/grep is what's exercised.
 """
@@ -99,3 +102,31 @@ def test_line_cap_skipped_for_path_and_count_modes(giant_dir, engine, output_mod
     else:
         assert {os.path.basename(k) for k in result.counts} == {"trace.json", "small.py"}
     assert env.max_stdout < STDOUT_CEILING
+
+
+def test_rg_match_deep_in_a_long_line_stays_visible(tmp_path):
+    """A hit past the per-line content clamp is shown in a window around it; one
+    past rg's --max-columns preview is named by its (byte) column. A zero-width
+    match at line end (``$``) keeps the line start."""
+    if shutil.which("rg") is None:
+        pytest.skip("rg not installed")
+    (tmp_path / "notes.md").write_text("A" * 800 + "NEEDLE" + "B" * 800 + "\n", encoding="utf-8")
+    (tmp_path / "accents.md").write_text("é" * 700 + "NEEDLE" + "x" * 100 + "\n", encoding="utf-8")
+    (tmp_path / "dump.json").write_text("C" * 3000 + "NEEDLE\n", encoding="utf-8")
+    (tmp_path / "emoji.txt").write_text("😀" * 2100 + "NEEDLE\n", encoding="utf-8")
+    (tmp_path / "short.txt").write_text("plain NEEDLE\n", encoding="utf-8")
+    ops, _ = _ops(tmp_path, "rg")
+
+    result = ops.search("NEEDLE", path=str(tmp_path), target="content")
+
+    assert result.error is None
+    content = {os.path.basename(m.path): m.content for m in result.matches}
+    assert "NEEDLE" in content["notes.md"]
+    assert "NEEDLE" in content["accents.md"]
+    assert "column 3001" in content["dump.json"]
+    assert "column 8401" in content["emoji.txt"]
+    assert content["short.txt"] == "plain NEEDLE"
+    assert all(len(text) <= 500 for text in content.values())
+
+    line_end = ops.search("$", path=str(tmp_path / "notes.md"), target="content")
+    assert line_end.matches[0].content.startswith("A" * 400)

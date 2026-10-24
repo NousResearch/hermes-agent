@@ -20,6 +20,11 @@ import hermes_yaml as yaml
 from agent import model_metadata_http
 from agent.model_metadata_cache import _write_context_cache, locked_context_cache
 from agent.model_metadata_llamacpp import llamacpp_context
+from agent.model_metadata_relay import (
+    _catalog_scoped_provider,
+    _concrete_provider_for_metadata,
+    _endpoint_scoped_context_length,
+)
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
@@ -588,29 +593,6 @@ def _ollama_show_context(data: dict[str, Any], *, gguf_first: bool, minimum: Opt
             if minimum is None or ctx >= minimum:
                 return ctx
     return None
-
-
-# (host, canonical paths, model ids, context) — see _endpoint_scoped_context_length.
-_ENDPOINT_SCOPED_CONTEXT = (
-    ("api.kimi.com", {"/coding", "/coding/v1"}, {"k3", "kimi-k3", "kimi-k3-cot"}, 1_048_576),
-    ("integrate.api.nvidia.com", {"/v1"}, {"deepseek-ai/deepseek-v4-pro"}, 262_144),
-)
-
-
-def _endpoint_scoped_context_length(model: str, base_url: str) -> Optional[int]:
-    """Context confirmed for one provider endpoint only (see _ENDPOINT_SCOPED_CONTEXT): Kimi Coding
-    serves K3 at 1 Mi only on the canonical ``api.kimi.com/coding`` host (legacy Moonshot keys do
-    not); NVIDIA NIM serves deepseek-v4-pro at 262,144 while DeepSeek's native endpoint is 1M."""
-    try:
-        parsed = urlparse(_normalize_base_url(base_url))
-        port = parsed.port
-    except ValueError:
-        return None
-    # Only canonical https://host[:443]/path with no credentials/query/fragment.
-    if parsed.scheme.lower() != "https" or port not in (None, 443) or parsed.username is not None or parsed.password is not None or parsed.query or parsed.fragment:
-        return None
-    host, path, model_key = (parsed.hostname or "").lower(), parsed.path.rstrip("/"), model.strip().lower()
-    return next((ctx for scoped_host, paths, models, ctx in _ENDPOINT_SCOPED_CONTEXT if host == scoped_host and path in paths and model_key in models), None)
 
 
 def _skip_persistent_context_cache(base_url: str, provider: str) -> bool:
@@ -2213,7 +2195,8 @@ def get_model_context_length(
     provider: str = "", custom_providers: list | None = None,
 ) -> int:
     """Context length for a model. Resolution order: 0 config override / MoA aggregator /
-    model_overrides / custom_providers / endpoint-scoped; 1 persistent cache (Nous, LM
+    model_overrides / custom_providers / endpoint-scoped (canonical host, else the owning
+    provider — a relay keeps it); 1 persistent cache (Nous, LM
     Studio, Codex OAuth bypass it) and Bedrock; 2-3 custom endpoints (/models, local
     probe, Ollama); 4 Anthropic /v1/models (API keys only); 5 provider-aware (Copilot,
     Nous, Codex OAuth, GMI, Ollama, OpenRouter live, models.dev); 6 OpenRouter for
@@ -2249,15 +2232,19 @@ def get_model_context_length(
     # a generic family default. Mirrors the validation path's base/suffix split
     # in hermes_cli.models.validate_requested_model.
     model = _strip_openrouter_routing_variant(model, base_url=base_url, provider=provider)
+    # Provider-scoped metadata keys on a CONCRETE provider: picker-started sessions pass "auto" (no
+    # profile behind that string) and a gateway route may declare the vendor it resells (#142334).
+    scoped_provider = _catalog_scoped_provider(
+        _concrete_provider_for_metadata(provider, base_url))
     # Endpoint-scoped metadata goes AHEAD of the persistent cache so a value learned on a
     # multiplexed provider's other endpoint cannot override it.
-    endpoint_context = _endpoint_scoped_context_length(model, base_url)
+    endpoint_context = _endpoint_scoped_context_length(model, base_url, provider=scoped_provider)
     if endpoint_context is not None:
         return endpoint_context
     # A profile that qualifies its own bound (external processes have no /models probe) wins
     # over the generic caches below; explicit user/endpoint overrides above still take precedence.
     from providers import get_provider_profile
-    profile = get_provider_profile(provider)
+    profile = get_provider_profile(scoped_provider)
     context = profile.get_model_context_length(model) if profile else None
     if type(context) is int and context > 0:
         return context

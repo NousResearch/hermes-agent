@@ -51,7 +51,7 @@ def _doctor_fix(tmp_path, monkeypatch, cfg):
     root.mkdir()
     shutil.copy2(cfg.get_project_root() / "cli-config.yaml.example", root / "cli-config.yaml.example")
     home = cfg.get_hermes_home()
-    monkeypatch.setattr(doctor, "HERMES_HOME", home)
+    monkeypatch.setenv("HERMES_HOME", str(home))  # doctor resolves the home at call time
     monkeypatch.setattr(doctor, "PROJECT_ROOT", root)
     assert _check_config_file(True).fixed == 1
     if os.name == "posix":

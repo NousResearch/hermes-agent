@@ -657,6 +657,11 @@ gateway:
     page_info: " ({total} 件中 {start}–{end})"
   clarify:
     hint_single: "番号、選択肢のテキスト、または自由回答で返信してください。"
+    poll_other: "✏️ その他（入力します）"
+    poll_type_answer: "では、回答を入力してください。"
+    poll_title_single: "1つ選んでください："
+    poll_title_multi: "当てはまるものをすべて選んでください："
+    poll_skip: "⏭️ スキップ"
     hint_multi: "複数選択できます — カンマまたはスペース区切りの番号 (例: \"1, 3\")、選択肢のテキスト、または自由回答で返信してください。"
     option_line: "  {index}. {choice}"
     question: "❓ {question}"

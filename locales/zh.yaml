@@ -657,6 +657,11 @@ gateway:
     page_info: " （第 {start}–{end} 项，共 {total} 项）"
   clarify:
     hint_single: "回复编号、选项文字，或你自己的答案。"
+    poll_other: "✏️ 其他（我来输入）"
+    poll_type_answer: "好的，请输入你的答案。"
+    poll_title_single: "请选择一项："
+    poll_title_multi: "请选择所有适用项："
+    poll_skip: "⏭️ 跳过"
     hint_multi: "可多选——回复以逗号或空格分隔的编号（例如 \"1, 3\"）、选项文字，或你自己的答案。"
     option_line: "  {index}. {choice}"
     question: "❓ {question}"

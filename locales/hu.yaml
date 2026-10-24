@@ -667,6 +667,11 @@ gateway:
     page_info: " ({start}–{end} / {total})"
   clarify:
     hint_single: "Válaszolj a sorszámmal, az opció szövegével vagy a saját válaszoddal."
+    poll_other: "✏️ Egyéb (beírom)"
+    poll_type_answer: "Rendben, írd be a válaszod."
+    poll_title_single: "Válassz egyet:"
+    poll_title_multi: "Válaszd ki az összes megfelelőt:"
+    poll_skip: "⏭️ Kihagyás"
     hint_multi: "Több választás is lehetséges — válaszolj a sorszámokkal vesszővel vagy szóközzel elválasztva (pl. \"1, 3\"), az opció szövegével vagy a saját válaszoddal."
     option_line: "  {index}. {choice}"
     question: "❓ {question}"

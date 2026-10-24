@@ -657,6 +657,11 @@ gateway:
     page_info: " ({start}–{end} van {total})"
   clarify:
     hint_single: "Antwoord met die nommer, die opsieteks, of jou eie antwoord."
+    poll_other: "✏️ Ander (ek tik dit)"
+    poll_type_answer: "Goed, tik jou antwoord."
+    poll_title_single: "Kies een:"
+    poll_title_multi: "Kies almal wat van toepassing is:"
+    poll_skip: "⏭️ Slaan oor"
     hint_multi: "Veelvuldige keuses toegelaat — antwoord met die nommers geskei deur kommas of spasies (bv. \"1, 3\"), die opsieteks, of jou eie antwoord."
     option_line: "  {index}. {choice}"
     question: "❓ {question}"

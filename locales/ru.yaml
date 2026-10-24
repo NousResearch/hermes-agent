@@ -657,6 +657,11 @@ gateway:
     page_info: " ({start}–{end} из {total})"
   clarify:
     hint_single: "Ответьте номером, текстом варианта или своим ответом."
+    poll_other: "✏️ Другое (напишу сам)"
+    poll_type_answer: "Хорошо, напишите свой ответ."
+    poll_title_single: "Выберите один вариант:"
+    poll_title_multi: "Выберите все подходящие:"
+    poll_skip: "⏭️ Пропустить"
     hint_multi: "Можно выбрать несколько вариантов — ответьте номерами через запятую или пробел (например, \"1, 3\"), текстом варианта или своим ответом."
     option_line: "  {index}. {choice}"
     question: "❓ {question}"

@@ -657,6 +657,11 @@ gateway:
     page_info: " ({start}–{end} من {total})"
   clarify:
     hint_single: "أجب بالرقم، أو بنص الخيار، أو بإجابتك الخاصة."
+    poll_other: "✏️ أخرى (سأكتبها)"
+    poll_type_answer: "حسنًا، اكتب إجابتك."
+    poll_title_single: "اختر واحدًا:"
+    poll_title_multi: "اختر كل ما ينطبق:"
+    poll_skip: "⏭️ تخطي"
     hint_multi: "يُسمح بتحديد أكثر من خيار — أجب بالأرقام مفصولة بفواصل أو مسافات (مثلًا \"1, 3\")، أو بنص الخيار، أو بإجابتك الخاصة."
     option_line: "  {index}. {choice}"
     question: "❓ {question}"

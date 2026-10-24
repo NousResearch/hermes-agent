@@ -657,6 +657,11 @@ gateway:
     page_info: " ({start}–{end} as {total})"
   clarify:
     hint_single: "Freagair leis an uimhir, le téacs na rogha, nó le do fhreagra féin."
+    poll_other: "✏️ Eile (clóscríobhfaidh mé é)"
+    poll_type_answer: "Ceart go leor, clóscríobh do fhreagra."
+    poll_title_single: "Roghnaigh ceann amháin:"
+    poll_title_multi: "Roghnaigh gach ceann a bhaineann leis:"
+    poll_skip: "⏭️ Scipeáil"
     hint_multi: "Ceadaítear roghanna iolracha — freagair leis na huimhreacha scartha le camóga nó spásanna (m.sh. \"1, 3\"), le téacs na rogha, nó le do fhreagra féin."
     option_line: "  {index}. {choice}"
     question: "❓ {question}"

@@ -657,6 +657,11 @@ gateway:
     page_info: " ({start}–{end} de {total})"
   clarify:
     hint_single: "Responde con el número, el texto de la opción o tu propia respuesta."
+    poll_other: "✏️ Otra (la escribo)"
+    poll_type_answer: "De acuerdo, escribe tu respuesta."
+    poll_title_single: "Elige una:"
+    poll_title_multi: "Elige todas las que apliquen:"
+    poll_skip: "⏭️ Omitir"
     hint_multi: "Se permiten varias selecciones — responde con los números separados por comas o espacios (p. ej. \"1, 3\"), el texto de la opción o tu propia respuesta."
     option_line: "  {index}. {choice}"
     question: "❓ {question}"

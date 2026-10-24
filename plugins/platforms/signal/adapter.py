@@ -222,6 +222,14 @@ class SignalAdapter(BasePlatformAdapter):
         self._recipient_uuid_by_number: dict[str, str] = {}
         self._recipient_number_by_uuid: dict[str, str] = {}
         self._recipient_cache_lock = asyncio.Lock()
+        # Poll timestamp -> pending clarify poll (choices, clarify id, debounce task).
+        # Multiple-choice clarify renders as a native poll unless disabled (extra.clarify_polls
+        # or SIGNAL_CLARIFY_POLLS=false); needs signal-cli >= 0.14 (else numbered-list fallback).
+        self._clarify_polls: OrderedDict[int, dict] = OrderedDict()
+        _cp_cfg = extra.get("clarify_polls")
+        self.clarify_polls_enabled = (bool(_cp_cfg) if _cp_cfg is not None
+                                      else str(_sig_secret("SIGNAL_CLARIFY_POLLS", "true")).lower()
+                                      not in {"false", "0", "no", "off"})
         logger.info("Signal adapter initialized: url=%s account=%s groups=%s", self.http_url,
                     redact_phone(self.account), "enabled" if self.group_allow_from else "disabled")
 
@@ -444,6 +452,10 @@ class SignalAdapter(BasePlatformAdapter):
         if is_group and not self._group_allowed(group_id):
             return
         chat_id = f"group:{group_id}" if is_group else sender
+        # A vote on a clarify poll answers that clarify; never becomes an agent turn.
+        if isinstance(data_message.get("pollVote"), dict):
+            await self._handle_poll_vote(data_message["pollVote"], sender, sender_uuid, chat_id)
+            return
         text = data_message.get("message", "")
         if text and (mentions := data_message.get("mentions", [])):
             text = _render_mentions(text, mentions)
@@ -725,6 +737,151 @@ class SignalAdapter(BasePlatformAdapter):
                 return err
         # No editable message identifier; message_id=None keeps the stream consumer on the non-edit path.
         return SendResult(success=True, message_id=None, raw_response=last_result)
+
+    _POLL_QUESTION_MAX = 200
+    _POLL_MAX_OPTIONS = 10
+    _POLL_DEBOUNCE_SECONDS = 1.5
+    _POLL_MAX_TRACKED = 64
+
+    async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
+                           session_key: str, metadata: Optional[dict[str, Any]] = None) -> SendResult:
+        """Multiple choice renders as a native Signal poll plus an "Other" option. The vote is
+        mapped back to the choice and resolves the clarify directly; typed replies (number, label,
+        free text) keep working through the gateway text intercept. Open-ended prompts, too many
+        options, polls disabled, or a failed poll send fall back to the base numbered list."""
+        if (not choices or not self.clarify_polls_enabled
+                or len(choices) + 2 > self._POLL_MAX_OPTIONS):
+            return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
+        from tools import clarify_gateway as _cg
+        pending = _cg.get_pending(clarify_id)
+        multi = bool(pending and pending.multi_select)
+        _cg.mark_awaiting_text(clarify_id)
+        await self._stop_typing_indicator(chat_id)
+        # Two fixed trailing options: Other (typed answer) and Skip (same as typing "skip").
+        options = [str(c).strip() for c in choices] + [t("gateway.clarify.poll_other"),
+                                                       t("gateway.clarify.poll_skip")]
+        title = (question or "").strip()
+        # The gateway appends the 'Reply "skip"' hint; the Skip option replaces it in a poll.
+        skip_hint = t("gateway.clarify.skip_hint")
+        if skip_hint and title.endswith(skip_hint):
+            title = title[: -len(skip_hint)].rstrip()
+        if not title or len(title) > self._POLL_QUESTION_MAX:
+            # Long question: send it as a normal message, keep the poll title short.
+            if title:
+                await self.send(chat_id, title, metadata=metadata)
+            title = t("gateway.clarify.poll_title_multi" if multi else "gateway.clarify.poll_title_single")
+        params = await self._with_target(
+            {"account": self.account, "question": title, "option": options, "noMulti": not multi}, chat_id)
+        result = await self._rpc("sendPollCreate", params)
+        ts = result.get("timestamp") if isinstance(result, dict) else None
+        if not ts:
+            logger.warning("[Signal] poll clarify failed (%s); falling back to numbered list", result)
+            return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
+        self._track_sent_timestamp(result)
+        self._clarify_polls[ts] = {"clarify_id": clarify_id, "chat_id": chat_id, "choices": list(choices),
+                                    "options": options, "multi": multi, "task": None, "done": False}
+        while len(self._clarify_polls) > self._POLL_MAX_TRACKED:
+            _old_ts, old = self._clarify_polls.popitem(last=False)
+            if old.get("task"):
+                old["task"].cancel()
+        logger.info("[Signal] clarify %s sent as poll ts=%s (%d options, multi=%s)", clarify_id, ts,
+                    len(options), multi)
+        return SendResult(success=True, message_id=str(ts), raw_response=result)
+
+    async def _handle_poll_vote(self, vote: dict, sender: str, sender_uuid: str, chat_id: str) -> None:
+        """Debounce votes (Signal sends one per tap; the latest selection wins), then resolve."""
+        ts = vote.get("targetSentTimestamp")
+        entry = self._clarify_polls.get(ts)
+        if entry is None:
+            logger.debug("[Signal] ignoring vote on untracked poll %s", ts)
+            return
+        if entry["chat_id"] != chat_id:
+            logger.warning("[Signal] ignoring vote on poll %s from a different chat", ts)
+            return
+        allowed = self.dm_allow_from
+        if "*" not in allowed and sender not in allowed and (not sender_uuid or sender_uuid not in allowed):
+            logger.info("[Signal] ignoring poll vote from unauthorized sender %s", redact_phone(sender))
+            return
+        if entry["done"]:
+            logger.info("[Signal] vote on poll %s after its clarify ended; ignored", ts)
+            return
+        n = len(entry["options"])
+        indexes = sorted({i for i in (vote.get("optionIndexes") or []) if isinstance(i, int) and 0 <= i < n})
+        if entry.get("task"):
+            entry["task"].cancel()
+            entry["task"] = None
+        if not indexes:  # deselection: wait for the next tap
+            return
+        if not entry.get("ack"):
+            # Instant feedback while the debounce runs: 👀 on the poll + typing dots.
+            entry["ack"] = True
+            with suppress(Exception):
+                await self.send_reaction(chat_id, "👀", self.account, ts)
+            with suppress(Exception):
+                await self.send_typing(chat_id)
+        entry["task"] = asyncio.create_task(self._resolve_poll_after_debounce(ts, entry, indexes),
+                                            name=f"signal-clarify-poll-{ts}")
+
+    async def _resolve_poll_after_debounce(self, ts: int, entry: dict, indexes: list) -> None:
+        try:
+            await asyncio.sleep(self._POLL_DEBOUNCE_SECONDS)
+        except asyncio.CancelledError:
+            return
+        entry["task"] = None
+        from tools import clarify_gateway as _cg
+        other_idx, skip_idx = len(entry["options"]) - 2, len(entry["options"]) - 1
+        picked = [entry["choices"][i] for i in indexes if i < other_idx]
+        if not picked and skip_idx in indexes:  # Skip: same sentinel as typing "skip"
+            if _cg.resolve_gateway_clarify(entry["clarify_id"], _cg.SKIPPED):
+                entry["done"] = True
+                logger.info("[Signal] clarify %s skipped by poll vote", entry["clarify_id"])
+                await self._swap_poll_ack(ts, entry, "⏭️")
+                with suppress(Exception):
+                    self.resume_typing_for_chat(entry["chat_id"])
+                await self._terminate_clarify_poll(ts, entry)
+            else:
+                entry["done"] = True
+            return
+        if not picked:  # only "Other": the clarify is already in text-capture mode
+            _cg.mark_awaiting_text(entry["clarify_id"])
+            await self._swap_poll_ack(ts, entry, "✏️")
+            await self.send(entry["chat_id"], t("gateway.clarify.poll_type_answer"))
+            return
+        value = (json.dumps([str(p).strip() for p in picked], ensure_ascii=False) if entry["multi"]
+                 else str(picked[0]).strip())
+        if _cg.resolve_gateway_clarify(entry["clarify_id"], value):
+            entry["done"] = True
+            logger.info("[Signal] clarify %s answered by poll vote", entry["clarify_id"])
+            await self._swap_poll_ack(ts, entry, "✅")
+            with suppress(Exception):
+                self.resume_typing_for_chat(entry["chat_id"])
+            await self._terminate_clarify_poll(ts, entry)
+        else:
+            entry["done"] = True
+            logger.info("[Signal] poll %s vote arrived after its clarify ended; ignored", ts)
+
+    async def _swap_poll_ack(self, ts: int, entry: dict, emoji: str) -> None:
+        """Replace the 👀 acknowledgement on the poll with a final emoji (best effort)."""
+        if not entry.get("ack"):
+            return
+        with suppress(Exception):
+            await self.send_reaction(entry["chat_id"], emoji, self.account, ts)
+
+    async def _terminate_clarify_poll(self, ts: int, entry: dict) -> None:
+        """Best effort: close the poll so it stops looking answerable."""
+        with suppress(Exception):
+            params = await self._with_target({"account": self.account, "pollTimestamp": ts}, entry["chat_id"])
+            await self._rpc("sendPollTerminate", params, log_failures=False)
+
+    async def retire_clarify_card(self, clarify_id: str, notice: str) -> None:
+        """Gateway hook: the clarify ended without a vote (typed answer, timeout, reset, prose)."""
+        for ts, entry in list(self._clarify_polls.items()):
+            if entry["clarify_id"] == clarify_id and not entry["done"]:
+                entry["done"] = True
+                if entry.get("task"):
+                    entry["task"].cancel()
+                    entry["task"] = None
+                await self._terminate_clarify_poll(ts, entry)
 
     def _track_sent_timestamp(self, rpc_result) -> None:
         """Record outbound message timestamp for echo-back filtering."""

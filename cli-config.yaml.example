@@ -410,6 +410,14 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
+  # Which cards get their terminal handoff (complete / request-review) checked
+  # by the completion judge:
+  #   goal_mode   - default: only goal_mode cards (unchanged behaviour)
+  #   verify_line - goal_mode cards + any card whose body has a `verify:` line
+  #   all         - every card
+  # When wider than goal_mode, a rejected handoff from a card that only created
+  # child cards becomes a dependency wait on those children instead of "done".
+  # evidence_gate: goal_mode
 
 # =============================================================================
 # Terminal Tool Configuration

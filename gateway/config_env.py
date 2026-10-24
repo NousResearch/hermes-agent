@@ -342,6 +342,7 @@ def _relay(config: GatewayConfig) -> None:
                 platform.value,
             )
         platform_config.enabled = False
+        platform_config.disabled_by_relay = True
 
 
 def _scrub_explicit_markers(config: GatewayConfig) -> None:

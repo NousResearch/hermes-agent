@@ -60,6 +60,21 @@ function stateBadge(state: string) {
   return STATE_BADGE[state] ?? { tone: "outline" as const, label: state };
 }
 
+// The relay-exclusive rule turns this platform off on every gateway start (#141175):
+// a plain "Disabled" plus a live toggle reads as a setting that will not save.
+export function RelayManagedNote({ platform }: { platform: MessagingPlatform }) {
+  if (!platform.disabled_by_relay) return null;
+  return (
+    <span id={`relay-note-${platform.id}`} className="text-xs text-muted-foreground">
+      Team Gateway carries messaging on this deployment, so the gateway turns the direct{" "}
+      {platform.name} connection off at every start. To run it alongside the relay, set{" "}
+      <code className="font-mono">GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true</code> in the
+      gateway's environment (a direct connection keeps the instance from scaling to zero and
+      can deliver messages twice).
+    </span>
+  );
+}
+
 const TELEGRAM_USER_ID_RE = /^\d+$/;
 const TELEGRAM_BOT_TOKEN_RE = /^\d+:[A-Za-z0-9_-]{30,}$/;
 const SLACK_MEMBER_ID_RE = /^[UW][A-Z0-9]{2,}$/;
@@ -570,7 +585,9 @@ export default function ChannelsPage() {
       {/* Platform list */}
       <div className="grid gap-3">
         {platforms.map((platform) => {
-          const badge = stateBadge(platform.state);
+          const badge = platform.disabled_by_relay
+            ? { tone: "secondary" as const, label: "Managed by Team Gateway" }
+            : stateBadge(platform.state);
           const busy = togglingId === platform.id;
           const StateIcon =
             platform.state === "connected"
@@ -604,6 +621,7 @@ export default function ChannelsPage() {
                       <span className="text-xs text-muted-foreground">
                         {platform.description}
                       </span>
+                      <RelayManagedNote platform={platform} />
                       {platform.error_message && (
                         <span className="text-xs text-destructive">
                           {platform.error_message}
@@ -627,6 +645,10 @@ export default function ChannelsPage() {
                           checked={platform.enabled}
                           onCheckedChange={() => void handleToggle(platform)}
                           aria-label={`Enable ${platform.name}`}
+                          disabled={platform.disabled_by_relay}
+                          aria-describedby={
+                            platform.disabled_by_relay ? `relay-note-${platform.id}` : undefined
+                          }
                         />
                       )}
                     </div>

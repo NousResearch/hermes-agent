@@ -10,8 +10,10 @@ import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { deleteSession, type SessionInfo } from '@/hermes'
-import { setSessions } from '@/store/session'
+import { $sessions, setSessions } from '@/store/session'
+import { $removedSessionIds } from '@/store/session-removal'
 import { $archivedSessions } from '@/store/sidebar-archive'
+import { dropTranscriptTailEverywhere } from '@/store/transcript-tail-cache'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -31,6 +33,11 @@ vi.mock('@/hermes', async importOriginal => ({
 vi.mock('@/store/profile', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   ensureGatewayProfile: vi.fn().mockResolvedValue(undefined)
+}))
+
+vi.mock('@/store/transcript-tail-cache', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  dropTranscriptTailEverywhere: vi.fn()
 }))
 
 function archivedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -98,12 +105,16 @@ describe('removeSession × archived view store', () => {
     setSessions([])
     $archivedSessions.set([])
     vi.mocked(deleteSession).mockReset()
+    vi.mocked(dropTranscriptTailEverywhere).mockReset()
+    $removedSessionIds.set(new Set())
   })
 
   afterEach(() => {
     cleanup()
     setSessions([])
     $archivedSessions.set([])
+    $removedSessionIds.set(new Set())
+    vi.restoreAllMocks()
   })
 
   it('evicts the row from $archivedSessions on successful delete', async () => {
@@ -127,6 +138,26 @@ describe('removeSession × archived view store', () => {
     await act(() => handle.removeSession('arch-1'))
 
     expect($archivedSessions.get().map(session => session.id)).toEqual(['arch-1'])
+    expect($removedSessionIds.get().has('arch-1')).toBe(false)
+  })
+
+  it('keeps a committed deletion evicted when transcript cleanup throws', async () => {
+    const session = archivedSession({ archived: false, profile: 'default' })
+    setSessions([session])
+    $archivedSessions.set([archivedSession({ id: 'keep-archived' })])
+    vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+    vi.mocked(dropTranscriptTailEverywhere).mockImplementation(() => {
+      throw new Error('cache unavailable')
+    })
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    const handle = await mountHarness()
+    await act(() => handle.removeSession(session.id))
+
+    expect(deleteSession).toHaveBeenCalledWith(session.id, 'default')
+    expect($sessions.get()).toEqual([])
+    expect($removedSessionIds.get().has(session.id)).toBe(true)
+    expect($archivedSessions.get().map(row => row.id)).toEqual(['keep-archived'])
   })
 
   it('passes the archived row profile to deleteSession', async () => {

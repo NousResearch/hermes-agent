@@ -241,6 +241,10 @@ limits and avoids formatting that won't render.
 Message size limit: 4000 characters per message. Longer agent responses are
 automatically split across multiple messages.
 
+Links in incoming messages: a hyperlink typed in the Chat UI shows only its
+label in the message's plain text. Hermes reads the URL back from Chat's
+formatted text and hands the agent `[label](url)`, so the agent can open it.
+
 Thread support: when a user replies inside a thread, Hermes detects the
 `thread.name` and posts its reply in the same thread, so each thread gets a
 separate Hermes session.

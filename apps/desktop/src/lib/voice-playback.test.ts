@@ -109,6 +109,8 @@ class FakeAudioContext {
   }))
   createBufferSource = vi.fn(() => ({
     buffer: null as unknown,
+    // Standard AudioBufferSourceNode property; the streaming scheduler sets it.
+    playbackRate: { value: 1 },
     connect: vi.fn(),
     start: vi.fn()
   }))

@@ -16,6 +16,7 @@ from tools.mcp_tool_errors import _MCP_HTTP_MAX_BODY_BYTES, NonMcpEndpointError,
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _leader_start_time, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids, _stdio_starttimes
 from tools.mcp_tool_common import _core
 from tools.mcp_tool_node_abi import node_abi_error
+from tools.mcp_tool_schema import list_tools_repairing_schemas
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_events as _events
 from tools import mcp_tool_lifecycle as _lifecycle
@@ -689,7 +690,8 @@ class MCPServerTransportMixin:
             async with self._rpc_lock:
                 self._list_cache_meta = {}
                 self._tools = await _core._paginate_full_list(
-                    self.session.list_tools, "tools", self.name, cache_meta_out=self._list_cache_meta)
+                    list_tools_repairing_schemas(self.session), "tools", self.name,
+                    cache_meta_out=self._list_cache_meta)
         self._register_discovered_tools_if_needed()
 
     def _register_discovered_tools_if_needed(self) -> None:

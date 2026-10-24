@@ -89,9 +89,19 @@ afterEach(() => {
 })
 
 describe('desktop media adapter', () => {
-  it('lazily exposes one memoized adapter per plugin context', () => {
+  it('does not expose or create the media adapter when the plugin has not declared it', () => {
     const tracked: Array<() => void> = []
     const ctx = createPluginContext('context-test', fn => tracked.push(fn))
+
+    expect(tracked).toHaveLength(0)
+    expect(ctx.media).toBeUndefined()
+    expect(tracked).toHaveLength(0)
+  })
+
+  it('lazily exposes one memoized adapter when the plugin declares media.player', () => {
+    const tracked: Array<() => void> = []
+    const ctx = createPluginContext('context-test', fn => tracked.push(fn), ['media.player'])
+
     expect(tracked).toHaveLength(0)
     expect(ctx.media).toBe(ctx.media)
     expect(tracked).toHaveLength(1)

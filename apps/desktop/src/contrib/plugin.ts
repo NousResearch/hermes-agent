@@ -193,7 +193,12 @@ export interface PluginContext {
   /** Plugin-scoped i18n: ship + register locale bundles under this plugin,
    *  resolved against the app's active locale — no core `en.ts` edit. */
   i18n: PluginI18n
-  /** Optional host-owned native media surface. Feature-detect before use. */
+  /**
+   * Optional proposed host-owned native media surface. It is exposed only when
+   * the plugin declares `capabilities: ['media.player']`; feature-detect before
+   * use. The plugin's existing activation decision is the trust gate, and
+   * linking a chat to the player remains a separate explicit action.
+   */
   readonly media?: DesktopMedia
 }
 
@@ -209,8 +214,8 @@ export interface HermesPlugin {
    *  user flips the switch. */
   defaultEnabled?: boolean
   /** Sensitive doors this plugin uses, declared up front so the app can show
-   *  them and gate them. Today: `'preview.executeJavaScript'` (`ctx.preview`).
-   *  A door the plugin did not declare refuses every call. */
+   *  them and gate them. `'preview.executeJavaScript'` gates `ctx.preview`;
+   *  proposed `'media.player'` exposes `ctx.media` only when declared. */
   capabilities?: readonly string[]
   /** Called once at load; wire contributions through `ctx`. */
   register: (ctx: PluginContext) => void
@@ -410,6 +415,8 @@ export function createPluginContext(
     files: createPluginFiles(pluginId),
     i18n: createPluginI18n(pluginId, track),
     get media() {
+      if (!capabilities.includes('media.player')) {return undefined}
+
       return (media ??= createDesktopMedia(pluginId, track))
     }
   }

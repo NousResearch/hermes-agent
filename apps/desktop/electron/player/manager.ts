@@ -350,7 +350,9 @@ export class PlayerManager {
     link: AwarenessLink,
     operation: Extract<PlayerAgentOperation, { type: 'transcript.start' | 'download.start' }>
   ): Promise<PlayerAgentResponse> {
-    if (!this.readySlot(owner)) {
+    const slot = this.readySlot(owner)
+
+    if (!slot) {
       return playerOperationError(operation, 'player-not-ready', 'The player is not ready.')
     }
 
@@ -358,6 +360,14 @@ export class PlayerManager {
 
     if (!captured) {
       return playerOperationError(operation, 'player-context-expired', 'Refresh player context and try again.')
+    }
+
+    if (!playerControlGenerationIsCurrent(captured, slot.navigationGeneration)) {
+      return playerOperationError(
+        operation,
+        'player-context-stale',
+        'The player page changed. Refresh context and try again.'
+      )
     }
 
     if (!captured.target || captured.target.adStatus === 'ad') {

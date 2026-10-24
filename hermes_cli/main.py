@@ -1562,28 +1562,10 @@ def _resolve_chat_session_args(args, use_tui: bool) -> None:
 
 
 def _warn_retired_xai_models() -> None:
-    """One-shot xAI retirement warning on stderr; non-blocking, never fails startup."""
-    try:
-        from hermes_cli.xai_retirement import (
-            MIGRATION_GUIDE_URL,
-            RETIREMENT_DATE,
-            find_retired_xai_refs,
-            format_issue,
-        )
-        from hermes_cli.config import load_config as _load_config_for_xai_check
+    """Backward-compatible startup hook for all configured model retirements."""
+    from hermes_cli.startup_model_retirement import warn_retired_models
 
-        _retired_xai_refs = find_retired_xai_refs(_load_config_for_xai_check())
-        if _retired_xai_refs:
-            sys.stderr.write(
-                f"\033[33m⚠ xAI retires {len(_retired_xai_refs)} model(s) "
-                f"in your config on {RETIREMENT_DATE}:\033[0m\n"
-            )
-            for _ref in _retired_xai_refs:
-                sys.stderr.write(f"  \033[33m⚠\033[0m {format_issue(_ref)}\n")
-            sys.stderr.write(f"  \033[2mMigration guide: {MIGRATION_GUIDE_URL}\033[0m\n")
-            sys.stderr.write("  \033[2mRun 'hermes doctor' for details.\033[0m\n\n")
-    except Exception:
-        pass
+    warn_retired_models()
 
 
 def _start_chat_background_prefetch() -> None:

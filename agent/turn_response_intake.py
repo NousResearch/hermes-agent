@@ -160,11 +160,13 @@ def normalize_model_response(
     # Gemma 4 text tool-call extraction: when the server strips special tokens
     # (<|tool_call>, <tool_call|>, <|"|>), tool calls arrive as plain text
     # "call:name{args}".  Parse them into ToolCall objects before hooks and
-    # metrics see the response.
+    # metrics see the response.  A length-truncated reply may end mid-call,
+    # so it is never parsed.
     if (
         not getattr(assistant_message, "tool_calls", None)
         and assistant_message.content
         and "call:" in assistant_message.content
+        and finish_reason != "length"
     ):
         from agent.gemma4_text_tool_parser import is_gemma4_model, extract_gemma4_tool_calls
         if is_gemma4_model(agent.model):

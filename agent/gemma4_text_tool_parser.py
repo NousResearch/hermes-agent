@@ -4,17 +4,25 @@ When Featherless/vLLM serves Gemma 4 without ``--tool-call-parser gemma4``,
 special tokens (``<|tool_call>``, ``<tool_call|>``, ``<|"|>``) are stripped and
 tool calls arrive as plain text::
 
-    call:get_weather{city:Paris}
+    call:get_weather{city:Paris}call:get_weather{city:London}
 
 This module parses them into ``ToolCall`` objects that the conversation loop
 dispatches normally.
 
-Design:
+Design (grounded in live Featherless output):
+- Generation stops at the tool call, so real calls are the *trailing run* of
+  the content: one or more ``call:name{...}`` back to back (parallel calls are
+  glued with no separator) with nothing but whitespace after the last ``}``.
+  Any ``call:`` followed by more text is prose, not a request.
+- Calls inside Markdown examples (fenced blocks, inline code, blockquotes)
+  are never dispatched, and an unterminated ``call:name{`` makes the whole
+  message ineligible: everything after it is its (truncated) argument text.
+- Brace matching tries progressively simpler quote models and takes the first
+  that tiles the run exactly to the end of the content, so a mis-read quote
+  surfaces as "no calls" rather than a truncated argument.
 - Schema-aware arg splitting uses tool parameter names from ``agent.tools``
   to split only on ``,<known_param>:`` boundaries, so commas in values are safe.
 - All values are strings — no type coercion (avoids mangling "007" → 7).
-- Prose guard: skips extraction when ``call:`` blocks are a minority of the
-  content (prevents executing quoted examples).
 """
 
 from __future__ import annotations
@@ -31,21 +39,34 @@ logger = logging.getLogger(__name__)
 
 # Gemma 4 thinking tokens: <|channel>thought\n...<channel|>
 _GEMMA4_THINK_OPEN = "<|channel>thought"
-_GEMMA4_THINK_CLOSE = "<channel|>"
 _GEMMA4_THINK_RE = re.compile(
     r"<\|channel>thought\s*(.*?)<channel\|>", re.DOTALL,
 )
 
 _GEMMA4_MODEL_SUBSTRINGS = ("gemma-4", "gemma4", "gemma_4")
 
-# Python string prefixes; a quote after any other word character is an apostrophe.
+# Not after a word character (``recall:``); after `}`, a backtick or whitespace is fine.
+_CALL_START_RE = re.compile(r"(?<!\w)call:(\w+)\{")
+# Inside one call's arguments this is the seam of two glued parallel calls.
+_GLUED_CALL_RE = re.compile(r"\}\s*call:\w+\{")
+
+# Python string prefixes; a single quote after any other word is an apostrophe.
 _STRING_PREFIXES = frozenset({"", "b", "f", "r", "u", "br", "rb", "fr", "rf"})
 
-# Markdown regions where a ``call:`` is an illustration, never a real call:
-# fenced blocks (an unclosed fence runs to the end), inline code, blockquote lines.
+# Quote models for brace matching, most to least specific:
+#   smart: " always delimits, ' only when not an in-word apostrophe (don't)
+#   all:   both quote characters delimit (shell: echo prefix'}')
+#   none:  quotes are literal
+_QUOTE_MODES = ("smart", "all", "none")
+
+# Markdown regions where a ``call:`` is an illustration, never a real call.
+# Fences close on a run at least as long as the opener; an unclosed fence runs
+# to the end. Inline code pairs equal-length backtick runs and may wrap lines
+# but not cross a blank line.
 _EXAMPLE_SPAN_RE = re.compile(
-    r"^[ \t]*(`{3,}|~{3,})[^\n]*\n.*?(?:^[ \t]*\1[ \t]*$|\Z)"
-    r"|`[^`\n]+`"
+    r"^[ \t]*(?P<bt>`{3,})[^`\n]*\n.*?(?:^[ \t]*(?P=bt)`*[ \t]*$|\Z)"
+    r"|^[ \t]*(?P<td>~{3,})[^\n]*\n.*?(?:^[ \t]*(?P=td)~*[ \t]*$|\Z)"
+    r"|(?<!`)(?P<code>`+)(?!`)(?:(?!\n[ \t]*\n).)*?(?<!`)(?P=code)(?!`)"
     r"|^[ \t]*>[^\n]*$",
     re.DOTALL | re.MULTILINE,
 )
@@ -55,65 +76,60 @@ def is_gemma4_model(model: str | None) -> bool:
     return any(g in (model or "").lower() for g in _GEMMA4_MODEL_SUBSTRINGS)
 
 
-def _find_balanced_calls(text: str) -> list[tuple[str, str, int, int]]:
-    """Find ``call:name{...}`` with balanced braces.
+class _Quotes:
+    """O(1) lookup of the next unescaped quote, so long content stays linear."""
 
-    Returns ``[(name, args_body, start, end)]`` where *args_body* is the
-    content **inside** the outer braces.
+    def __init__(self, text: str) -> None:
+        self._text = text
+        self._next: dict[str, list[int]] = {}
 
-    Only matches ``call:`` at the start of text or preceded by whitespace.
-    """
-    results: list[tuple[str, str, int, int]] = []
-    i = 0
-    while i < len(text):
-        m = re.search(r"(?:^|(?<=\s))call:(\w+)\{", text[i:])
-        if not m:
-            break
-        brace_start = i + m.end() - 1
-        close = _match_brace(text, brace_start)
-        if close is None:
-            # Truncated call: never dispatch a partial argument body.
-            i = brace_start + 1
-            continue
-        results.append((m.group(1), text[brace_start + 1 : close], i + m.start(), close + 1))
-        i = close + 1
-    return results
+    def close(self, j: int) -> int | None:
+        quote = self._text[j]
+        if quote not in self._next:
+            self._next[quote] = self._index(quote)
+        k = self._next[quote][j]
+        return k if k >= 0 else None
+
+    def _index(self, quote: str) -> list[int]:
+        text = self._text
+        nxt = [-1] * len(text)
+        nearest = -1
+        for k in range(len(text) - 1, -1, -1):
+            nxt[k] = nearest
+            if text[k] == quote and not _escaped(text, k):
+                nearest = k
+        return nxt
 
 
-def _opens_string(text: str, j: int) -> bool:
-    """A quote opens a string unless it is an apostrophe inside a word (``don't``)."""
+def _escaped(text: str, k: int) -> bool:
+    backslashes = 0
+    while k - backslashes > 0 and text[k - backslashes - 1] == "\\":
+        backslashes += 1
+    return backslashes % 2 == 1
+
+
+def _opens_string(text: str, j: int, mode: str) -> bool:
+    if mode == "none":
+        return False
+    if mode == "all" or text[j] == '"':
+        return True
     k = j
     while k > 0 and (text[k - 1].isalnum() or text[k - 1] == "_"):
         k -= 1
     return text[k:j].lower() in _STRING_PREFIXES
 
 
-def _string_end(text: str, j: int) -> int | None:
-    """Index of the quote closing the string opened at *j*, or None if unterminated."""
-    quote = text[j]
-    k = j + 1
-    while k < len(text):
-        if text[k] == "\\":
-            k += 2
-            continue
-        if text[k] == quote:
-            return k
-        k += 1
-    return None
-
-
-def _match_brace(text: str, brace_start: int) -> int | None:
+def _match_brace(text: str, brace_start: int, mode: str, quotes: _Quotes) -> int | None:
     """Index of the ``}`` closing the ``{`` at *brace_start*, or None if unbalanced.
 
-    Braces inside quoted strings don't count. A quote with no closing partner
-    (``'tis``) is a literal character, not a string delimiter.
+    A quote with no closing partner (``'tis``) is a literal character.
     """
     depth = 0
     j = brace_start
     while j < len(text):
         ch = text[j]
-        if ch in "\"'" and _opens_string(text, j):
-            end = _string_end(text, j)
+        if ch in "\"'" and _opens_string(text, j, mode):
+            end = quotes.close(j)
             if end is not None:
                 j = end + 1
                 continue
@@ -127,8 +143,71 @@ def _match_brace(text: str, brace_start: int) -> int | None:
     return None
 
 
-def _example_spans(text: str) -> list[tuple[int, int]]:
-    return [m.span() for m in _EXAMPLE_SPAN_RE.finditer(text)]
+def _tile(text: str, start: int, mode: str, quotes: _Quotes) -> tuple[list[tuple[str, str, int]], bool]:
+    """Parse ``call:name{...}`` back to back from *start* to the end of *text*.
+
+    Returns ``([(name, args_body, start)], covered)``; *covered* is True only
+    when the calls reach the end of *text* exactly (whitespace allowed between
+    and after them). On failure the list holds the calls visited before it.
+    """
+    calls: list[tuple[str, str, int]] = []
+    pos = start
+    while pos < len(text):
+        m = _CALL_START_RE.match(text, pos)
+        close = _match_brace(text, m.end() - 1, mode, quotes) if m else None
+        if close is None:
+            return calls, False
+        args = text[m.end() : close]
+        if _GLUED_CALL_RE.search(args):
+            return calls, False
+        calls.append((m.group(1), args, pos))
+        pos = close + 1
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+    return calls, True
+
+
+def _is_example(text: str, pos: int, spans: list[tuple[int, int]]) -> bool:
+    if any(s <= pos < e for s, e in spans):
+        return True
+    # An unpaired backtick right before the call opens an inline example that
+    # never closed; a paired one closing a code span (`x`call:...) is fine.
+    return pos > 0 and text[pos - 1] == "`" and not any(e == pos for _, e in spans)
+
+
+def _find_trailing_calls(text: str) -> list[tuple[str, str, int]]:
+    """The trailing run of real calls in *text* (already right-stripped), or []."""
+    if not text.endswith("}"):
+        return []
+    spans = [m.span() for m in _EXAMPLE_SPAN_RE.finditer(text)]
+    quotes = _Quotes(text)
+    # A chain that failed from one call fails identically from any later call
+    # in it, so each start is tiled at most once per quote mode (keeps it linear).
+    dead: dict[str, set[int]] = {mode: set() for mode in _QUOTE_MODES}
+    args_end = 0
+    for m in _CALL_START_RE.finditer(text):
+        start = m.start()
+        if start < args_end or _is_example(text, start, spans):
+            continue
+        for mode in _QUOTE_MODES:
+            if start in dead[mode]:
+                continue
+            calls, covered = _tile(text, start, mode, quotes)
+            if covered:
+                return calls
+            dead[mode].update(c[2] for c in calls)
+            dead[mode].add(start)
+        close = next(
+            (c for mode in _QUOTE_MODES if (c := _match_brace(text, m.end() - 1, mode, quotes)) is not None),
+            None,
+        )
+        if close is None:
+            # Unterminated call: everything after it is its argument text, so
+            # nothing later (even a balanced call) can be a real request.
+            return []
+        # A call: inside another call's arguments is argument text, not a call.
+        args_end = close
+    return []
 
 
 def _schema_aware_split(args_body: str, param_names: list[str]) -> dict[str, str]:
@@ -246,37 +325,19 @@ def extract_gemma4_tool_calls(
     *agent_tools*: the agent's tool list (OpenAI format) for schema-aware
     splitting.
 
-    Returns ``(tool_calls, cleaned_content)``.
+    Returns ``(tool_calls, cleaned_content)`` where *cleaned_content* is the
+    text before the trailing call run.
     """
     if not content or "call:" not in content:
         return [], content or ""
 
-    spans = _example_spans(content)
-    calls = [
-        c for c in _find_balanced_calls(content)
-        if not any(s <= c[2] < e for s, e in spans)
-    ]
+    text = content.rstrip()
+    calls = _find_trailing_calls(text)
     if not calls:
         return [], content
 
-    # Prose guard: only extract when call: blocks dominate the content.
-    total_call_chars = sum(end - start for _, _, start, end in calls)
-    non_call_text = content
-    for _, _, start, end in reversed(calls):
-        non_call_text = non_call_text[:start] + non_call_text[end:]
-    non_call_text = non_call_text.strip()
-
-    if non_call_text and len(non_call_text) > total_call_chars:
-        logger.debug(
-            "Skipping Gemma 4 extraction: content is mostly prose "
-            "(%d chars non-call vs %d call)",
-            len(non_call_text),
-            total_call_chars,
-        )
-        return [], content
-
     tool_calls: list[ToolCall] = []
-    for name, args_body, _start, _end in calls:
+    for name, args_body, _start in calls:
         param_names = _get_tool_param_names(agent_tools, name)
         if param_names is not None:
             parsed_args = _schema_aware_split(args_body, param_names)
@@ -285,16 +346,10 @@ def extract_gemma4_tool_calls(
         else:
             parsed_args = _naive_split(args_body)
 
-        tc = build_tool_call(
+        tool_calls.append(build_tool_call(
             id=f"gemma4_{uuid.uuid4().hex[:8]}",
             name=name,
             arguments=json.dumps(parsed_args),
-        )
-        tool_calls.append(tc)
+        ))
 
-    cleaned = content
-    for _, _, start, end in reversed(calls):
-        cleaned = cleaned[:start] + cleaned[end:]
-    cleaned = cleaned.strip()
-
-    return tool_calls, cleaned
+    return tool_calls, text[: calls[0][2]].strip()

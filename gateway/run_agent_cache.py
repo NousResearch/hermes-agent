@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import importlib
 import logging
+import socket
 import threading
 import time
 from contextlib import nullcontext, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 from agent.interrupt_compat import _accepts_keyword
 from gateway.config import Platform
@@ -31,6 +33,35 @@ logger = logging.getLogger("gateway.run")
 _OVERRIDE_APPLY_KEYS = (
     "provider", "requested_provider", "api_key", "base_url", "api_mode", "credential_pool", "capabilities", "max_tokens",
 )
+
+
+def _dead_loopback_endpoint(base_url: Any, *, timeout: float = 0.5) -> bool:
+    """True when ``base_url`` targets a local port that is not accepting connections.
+
+    A persisted loopback URL survives a restart even after the proxy that owned the port has moved
+    to a new port (or died). Keeping it strands the session on a dead endpoint: every turn burns the
+    full connect-retry ladder before failing, so one stale pin costs minutes per message. The same
+    guard already ships for the managed llama.cpp supervisor (``LLAMACPP_ALIASES`` below); this
+    generalizes it to any loopback endpoint. A remote URL is never probed — only local ports can be
+    checked cheaply and unambiguously.
+    """
+    if not base_url:
+        return False
+    try:
+        parsed = urlsplit(str(base_url))
+        host, port = parsed.hostname, parsed.port
+    except (ValueError, TypeError):
+        return False
+    if not host or not port or host not in ("127.0.0.1", "localhost", "::1", "0.0.0.0"):
+        return False
+    dial_host = "127.0.0.1" if host == "0.0.0.0" else host
+    try:
+        with socket.create_connection((dial_host, port), timeout=timeout):
+            return False
+    except TimeoutError:
+        return False  # a slow accept queue is still a live listener
+    except OSError:
+        return True
 
 
 def _first_agent(entry: Any) -> Any:
@@ -165,6 +196,15 @@ class GatewayAgentCacheMixin:
         from hermes_cli.runtime_provider import is_foreign_provider_endpoint
         if is_foreign_provider_endpoint(provider, override.get("base_url")):
             override["base_url"] = None  # left over from a switch that kept the previous provider's URL
+        if _dead_loopback_endpoint(override.get("base_url")):
+            # The port moved (or the proxy died) since the override was written. Dropping the URL lets
+            # the block below re-resolve the live route from config instead of stranding every turn on
+            # a connect-retry ladder that can only fail.
+            logger.warning(
+                "Dropped persisted /model base_url %s for session=%s — local endpoint is not accepting connections",
+                override.get("base_url"), session_key,
+            )
+            override["base_url"] = None
         if provider:
             # Re-resolve credentials for the persisted provider. On failure (e.g. credentials removed
             # since the switch) keep the credential-less override — _resolve_session_agent_runtime

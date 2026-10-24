@@ -88,8 +88,6 @@ export function rebuildAroundCaret(editor: HTMLDivElement, tokenLength: number, 
 interface CompletionSource {
   adapter: Unstable_TriggerAdapter | null
   loading: boolean
-  /** Opens no menu: `/` in the onboarding chat before its setup ends. */
-  off?: boolean
 }
 
 interface UseComposerTriggerOptions {
@@ -146,7 +144,8 @@ export function useComposerTrigger({
     setTriggerActiveExplicit(false)
   }, [])
 
-  const slashOff = Boolean(slash.off)
+  // A `/` source with no adapter offers no menu (the onboarding chat before its setup ends).
+  const slashOff = !slash.adapter
 
   const refreshTrigger = useCallback(() => {
     const editor = editorRef.current

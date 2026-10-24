@@ -59,10 +59,9 @@ function commandText(value: string): string {
 const SESSION_INLINE_LIMIT = 7
 
 export interface SlashCompletions {
-  adapter: Unstable_TriggerAdapter
+  /** Null while this session offers no `/` menu: the onboarding chat before its setup ends. */
+  adapter: Unstable_TriggerAdapter | null
   loading: boolean
-  /** No `/` menu for this session: the onboarding chat before its setup ends. */
-  off: boolean
 }
 
 /** Live `/` completions backed by the gateway's `complete.slash` RPC. */
@@ -359,5 +358,5 @@ export function useSlashCompletions(options: {
   // Slash commands come after setup: none in the onboarding chat until its run ends.
   const off = useStore(useMemo(() => onboardingChatStore(sessionId ?? null), [sessionId]))
 
-  return { ...live, off }
+  return off ? { adapter: null, loading: false } : live
 }

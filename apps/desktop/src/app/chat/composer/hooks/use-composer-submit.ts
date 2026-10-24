@@ -365,6 +365,19 @@ export function useComposerSubmit({
     return yielded ? 'yielded' : null
   }
 
+  // Slash commands come after setup. Every send action asks here first, so the words stay put and one
+  // note (re-shown, never stacked) says why.
+  const refusedDuringSetup = (text: string): boolean => {
+    if (!isSlashCommandText(text) || !isOnboardingChat(sessionId)) {
+      return false
+    }
+
+    notify({ id: 'onboarding-slash-off', kind: 'info', message: t.firstRun.slashOffBody, title: t.firstRun.slashOffTitle })
+    focusInput()
+
+    return true
+  }
+
   const submitDraft = () => {
     if (disabled) {
       return
@@ -395,11 +408,7 @@ export function useComposerSubmit({
     const text = pathifyRefs(draftRef.current)
     const payloadPresent = text.trim().length > 0 || attachments.length > 0
 
-    // Slash commands come after setup: the words stay put, and one note (re-shown, never stacked) says why.
-    if (isSlashCommandText(text) && isOnboardingChat(sessionId)) {
-      notify({ id: 'onboarding-slash-off', kind: 'info', message: t.firstRun.slashOffBody, title: t.firstRun.slashOffTitle })
-      focusInput()
-
+    if (refusedDuringSetup(text)) {
       return
     }
 
@@ -514,7 +523,7 @@ export function useComposerSubmit({
   }
 
   const queueDraft = () => {
-    if (disabled || !busy) {
+    if (disabled || !busy || refusedDuringSetup(draftRef.current)) {
       return
     }
 

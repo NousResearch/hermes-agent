@@ -1048,6 +1048,19 @@ describe('useComposerSubmit with a setup card waiting in the onboarding chat', (
     expect($notifications.get().map(note => note.kind)).toEqual(['info'])
   })
 
+  it('queues no slash command while setup is in progress (Cmd/Ctrl+Enter)', () => {
+    $onboardingPhase.set('shown')
+    $onboardingSession.set({ connectionId: null, runId: 'run-1', runtimeId: 'runtime-session', storedId: 'stored-session' })
+
+    const { clearDraft, hook, onSubmit, queueCurrentDraft } = renderSubmitHook({ busy: true, text: '/help' })
+
+    act(() => hook.result.current.queueDraft())
+
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(clearDraft).not.toHaveBeenCalled()
+  })
+
   it('runs slash commands as usual in the same chat once setup has ended', () => {
     $onboardingPhase.set('done')
     $onboardingSession.set({ connectionId: null, runId: 'run-1', runtimeId: 'runtime-session', storedId: 'stored-session' })

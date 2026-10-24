@@ -11,7 +11,7 @@ import asyncio
 import pytest
 
 from tests.gateway.test_onboarding_on_the_authority import _desktop, _request, _Transport
-from tests.waiting import async_wait_until
+from tests.waiting import async_wait_until, wait_until
 
 
 async def _reload(desktop):
@@ -53,3 +53,26 @@ async def test_a_resumed_viewer_gets_the_waiting_setup_card_and_its_answer_unblo
         assert not waiting(live.event_stream, stored, "setup_beat")
     finally:
         await desktop.connection.close()
+
+
+def test_an_automatic_window_request_is_not_handed_to_a_reconnecting_viewer():
+    """A preview click still in flight at a reconnect would run twice if replayed; a card is replayed."""
+    import threading
+    from gateway.session_events import SessionEvents
+    from gateway.session_server_requests import ask_viewer, ask_viewer_result, open_requests, waiting, withdraw
+    events = SessionEvents()
+    events.fanout.attach(_Transport())
+    asks = [threading.Thread(target=ask_viewer, args=(events, "s1", "preview.act", {"action": "click"}),
+                             kwargs={"timeout": 10, "replay": False}),
+            threading.Thread(target=ask_viewer_result, args=(events, "s1", "setup_beat", {"beat": "name"}),
+                             kwargs={"timeout": 10})]
+    for ask in asks:
+        ask.start()
+    try:
+        wait_until(lambda: waiting(events, "s1", "preview.act") and waiting(events, "s1", "setup_beat"), timeout=5)
+        assert [entry["method"] for entry in open_requests(events, "s1")] == ["setup_beat"]
+    finally:
+        withdraw(events, "s1", "preview.act")
+        withdraw(events, "s1", "setup_beat")
+        for ask in asks:
+            ask.join(5)

@@ -68,7 +68,7 @@ function mountTrigger(editor: HTMLDivElement, items: Unstable_TriggerItem[], sla
       editorRef,
       requestMainFocus: vi.fn(),
       setComposerText,
-      slash: { adapter, loading: false, off: slashOff }
+      slash: { adapter: slashOff ? null : adapter, loading: false }
     })
   )
 

@@ -111,6 +111,9 @@ class MessageEvent:
     # ``message_id`` with new text, so native admission keys it apart from the original send.
     # Appended for positional compat (see the field-order rule above).
     edit_revision: Optional[str] = None
+    # Hermes rebuilt this text on a source that did not write it (a /retry replay, a leftover /steer):
+    # attribution only, the turn's ``turn_origin`` is None. Appended for positional compat.
+    borrowed_source: bool = False
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)

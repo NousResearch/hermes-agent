@@ -157,7 +157,8 @@ class GatewayBusySessionMixin:
         if leftover_steer:
             steer_prompt, steer_source = self._pinned_channel_inputs(session_key, None, source, internal=True)
             self._session_state(session_key).conversation.queued_events.insert(0, pending_event)
-            pending_event = MessageEvent(text=leftover_steer, source=steer_source, channel_prompt=steer_prompt)
+            pending_event = MessageEvent(text=leftover_steer, source=steer_source, channel_prompt=steer_prompt,
+                                         borrowed_source=True)
         adapter._pending_messages[session_key] = pending_event
         logger.info("Deferring queued follow-up for session %s until after its compression-exhausted reset", session_key)
 
@@ -203,7 +204,7 @@ class GatewayBusySessionMixin:
                     session_key, None, source, internal=True,
                 )
                 steer_event = MessageEvent(
-                    text=leftover_steer, source=steer_source, channel_prompt=steer_prompt,
+                    text=leftover_steer, source=steer_source, channel_prompt=steer_prompt, borrowed_source=True,
                 )
                 if session_key:
                     self._enqueue_fifo(session_key, steer_event, adapter)
@@ -1166,7 +1167,7 @@ class GatewayBusySessionMixin:
                 reply_to_author_name=event.reply_to_author_name,
                 reply_to_is_own_message=event.reply_to_is_own_message, auto_skill=event.auto_skill,
                 channel_prompt=event.channel_prompt, channel_context=event.channel_context,
-                internal=event.internal, timestamp=event.timestamp,
+                internal=event.internal, timestamp=event.timestamp, borrowed_source=event.borrowed_source,
             )
             if await self._queue_command_turn(quick_key, event, queued, adapter, t("gateway.queue.queued")):
                 return None  # its commit sends the ack
@@ -1190,7 +1191,7 @@ class GatewayBusySessionMixin:
             if adapter and await self._queue_command_turn(quick_key, event, MessageEvent(
                 text=steer_text, message_type=MessageType.TEXT, source=event.source,
                 message_id=event.message_id, channel_prompt=event.channel_prompt,
-                channel_context=event.channel_context,
+                channel_context=event.channel_context, borrowed_source=event.borrowed_source,
             ), adapter, reply):
                 return None  # its commit sends the reply
             return reply

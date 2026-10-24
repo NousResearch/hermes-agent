@@ -1188,6 +1188,14 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             _rescued = self._rescue_orphaned_overflow(_quick_key, _orphan_adapter)
             if _rescued is None:
                 return event, source, is_internal
+            from gateway.session_ingress import admission_origin, executing_admission
+            if executing_admission.get():
+                # This turn runs the orphan, so it takes the orphan's origin. The parked row's input runs
+                # later on its own: when its source does not tell its row's origin (a viewer's submit on
+                # the session's source), it must not read as that source's message.
+                from gateway.session_turn_origin import direct_turn_origin
+                event.borrowed_source |= direct_turn_origin(event) != admission_origin.get()
+                admission_origin.set(direct_turn_origin(_rescued))
             # Into the slot when the chain was a single orphan (post-turn drain picks it up),
             # otherwise into overflow behind the already-staged next orphan.
             self._enqueue_fifo(_quick_key, event, _orphan_adapter)

@@ -80,7 +80,7 @@ def _failed_delegations(session_id, owner):
 
 @method("subagent.interrupt")
 def _(rid, params):
-    from agent.interrupt_compat import request_hard_interrupt
+    from tools.delegate_tool_registry import request_subagent_stop
 
     subagent_id = _str_param(params, "subagent_id")
     if not subagent_id:
@@ -96,7 +96,7 @@ def _(rid, params):
     found = False
     if agent is not None:
         try:
-            found = bool(request_hard_interrupt(agent, f"Interrupted via TUI ({subagent_id})"))
+            found = request_subagent_stop(agent, subagent_id)
         except Exception:
             logger.debug("subagent interrupt failed", exc_info=True)
     return _ok(rid, {"found": found, "subagent_id": subagent_id})

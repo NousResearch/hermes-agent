@@ -272,7 +272,8 @@ class HostRuntime:
                 self._run(register(ctx))
             except Exception as exc:
                 if not captured:
-                    logger.debug("register() failed for %s: %s", params.get("name"), exc)
+                    logger.warning("Plugin '%s' register() raised %s: %s",
+                                   params.get("name"), type(exc).__name__, exc, exc_info=True)
         if not captured:
             for attr in dir(module):
                 value = getattr(module, attr, None)
@@ -280,8 +281,10 @@ class HostRuntime:
                     try:
                         captured.append(value())
                         break
-                    except Exception:
-                        continue
+                    except Exception as exc:
+                        logger.warning("Plugin '%s' constructor %s raised %s: %s",
+                                       params.get("name"), attr, type(exc).__name__, exc,
+                                       exc_info=True)
         if not captured:
             return None
         return self._describe_object(plugin_key, captured[0])

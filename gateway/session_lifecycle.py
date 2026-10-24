@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Optional
 from hermes_state_ids import new_session_id
 
 if TYPE_CHECKING:
-    from gateway.session import SessionEntry, SessionSource
+    from gateway.session import SessionEntry, SessionSource, SessionStore
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.session")
@@ -242,15 +242,23 @@ class SessionLifecycleMixin:
             entry.last_resume_marked_at = _now()
         return self._update_entry(session_key, _apply)
 
-    def clear_resume_pending(self, session_key: str) -> bool:
+    def clear_resume_pending(self: SessionStore, session_key: str) -> bool:
         """Clear the resume-pending flag after a successful resumed turn; True if cleared."""
-        def _apply(entry: SessionEntry):
-            if not entry.resume_pending:
+        with self._lock:
+            entry = self._entry_locked(session_key)
+            if entry is None or not entry.resume_pending:
                 return False
+            # Publishing first would let the next retry observe False after a
+            # failed save, send the answer, then resurrect the old flag at boot.
+            candidate = entry.to_dict()
+            candidate.update(resume_pending=False, resume_reason=None, last_resume_marked_at=None)
+            data, generation = self._snapshot_routing_locked()
+            data[session_key] = candidate
+            self._persist_routing_data(data, generation)
             entry.resume_pending = False
             entry.resume_reason = None
             entry.last_resume_marked_at = None
-        return self._update_entry(session_key, _apply)
+            return True
 
     def prune_old_entries(self, max_age_days: int) -> int:
         """Drop routing entries idle (by ``updated_at``) for more than max_age_days; suspended

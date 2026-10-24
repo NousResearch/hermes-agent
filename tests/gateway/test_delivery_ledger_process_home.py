@@ -20,7 +20,7 @@ import pytest
 
 import hermes_constants
 from gateway import delivery_ledger as dl
-from gateway.config import Platform, PlatformConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
@@ -68,6 +68,7 @@ def _runner(adapter):
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
     runner.adapters = {}
     runner._profile_adapters = {"research": {Platform.SLACK: adapter}}
     runner._active_profile_name = lambda: "default"

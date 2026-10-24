@@ -538,6 +538,21 @@ class WebSocketRelayTransport:
         per-gateway secret was revoked. Terminal: no reconnect."""
         return self._auth_revoked
 
+    @property
+    def delivery_ready(self) -> bool:
+        """A live, authenticated generation may wake a refunded delivery claim."""
+        return (
+            not self._closing
+            and not self._dormant
+            and not self._auth_revoked
+            and self._ws is not None
+            and self._descriptor is not None
+        )
+
+    def set_reconnect_handler(self, handler: Callable[[], None]) -> None:
+        """Register the adapter's scheduler for authenticated re-handshakes."""
+        self._reconnect_handler = handler
+
     def set_inbound_handler(self, handler: InboundHandler) -> None:
         self._inbound = handler
 
@@ -645,9 +660,9 @@ class WebSocketRelayTransport:
         # Fail fast during teardown: the disconnect() fail-pending loop may already
         # have run, so a future registered now would never be settled.
         if self._closing:
-            return {"success": False, "error": "relay transport closed"}
+            return {"success": False, "error": "relay transport closed", "not_sent": True}
         if self._ws is None:
-            return {"success": False, "error": "relay transport not connected"}
+            return {"success": False, "error": "relay transport not connected", "not_sent": True}
         request_id = uuid.uuid4().hex
         fut: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = fut
@@ -664,18 +679,23 @@ class WebSocketRelayTransport:
         try:
             await self._send(frame)
             frame_sent = True
-            return await asyncio.wait_for(fut, timeout=self._outbound_timeout_s)
+            result = await asyncio.wait_for(fut, timeout=self._outbound_timeout_s)
+            # Only the local pre-write guards can prove that this attempt never
+            # reached the connector. Never accept that claim from its response.
+            result.pop("not_sent", None)
+            return result
         except TimeoutError:
             # AMBIGUOUS by contract: the frame reached the wire and only the ack is
             # missing — the connector may have applied it. The fail-fast paths
             # above never sent anything (definite non-delivery) and stay unmarked.
             return {"success": False, "error": "relay outbound timed out", "ambiguous": True}
         except Exception as exc:
-            # The socket can die between the liveness guard and the write, so _send
-            # may raise into callers whose contract is a result dict. A raise from
-            # the WRITE = frame never sent (no flag); a failure surfaced by the
-            # FUTURE (disconnect failing pending mid-flight) = frame sent, outcome
-            # unknown -> ambiguous. CancelledError still propagates (BaseException).
+            # _send can raise before writing OR after writing while awaiting flow
+            # control. frame_sent only records that the await returned, not proof
+            # of non-delivery when False. Keep the generic error instead of
+            # classifying socket-close text as a definite pre-send rejection.
+            # A completed send with a lost result is explicitly ambiguous below.
+            # CancelledError still propagates (BaseException).
             logger.debug("relay outbound send failed", exc_info=True)
             result: dict[str, Any] = {"success": False, "error": f"relay send failed: {exc}"}
             if frame_sent:
@@ -926,12 +946,21 @@ class WebSocketRelayTransport:
             self._descriptors_by_platform[descriptor.platform] = descriptor
         # The FIRST descriptor of this generation is the session default; later
         # arrivals must NOT overwrite it (else last-writer-wins across platforms).
-        if self._descriptor is None:
+        first_descriptor = self._descriptor is None
+        if first_descriptor:
             self._descriptor = descriptor
         # Upgrade auth passed at least once: a LATER 4401 is a revocation.
         self._handshake_succeeded = True
         if self._descriptor_ready is not None and not self._descriptor_ready.done():
             self._descriptor_ready.set_result(descriptor)
+        # A transport-level reconnect keeps the same adapter. Notify once after
+        # authentication, without awaiting a send on this socket's reader.
+        handler = getattr(self, "_reconnect_handler", None)
+        if first_descriptor and self._dial_generation > 1 and handler is not None:
+            try:
+                handler()
+            except Exception:
+                logger.exception("relay reconnect delivery notification failed")
 
     async def _on_inbound(self, frame: dict[str, Any]) -> None:
         if self._inbound is None:

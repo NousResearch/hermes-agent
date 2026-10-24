@@ -28,7 +28,7 @@ from agent.local_prompt_progress import (
     PromptReadingClock, current_prompt_reading_hook, prompt_progress, prompt_reading_hook, with_prompt_progress)
 from agent.error_classifier import (
     _BILLING_PATTERNS,
-    _OVERLOADED_PATTERNS,
+    _OVERLOADED_PATTERNS, FailoverReason, classify_api_error,
     UNSUPPORTED_PARAM_MARKERS,
     is_reasoning_field_rejection,
     is_reasoning_required_rejection,
@@ -3745,9 +3745,9 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
         return _rotate(401)
     if _is_payment_error(exc):
         return _rotate(402)
-    if _is_rate_limit_error(exc) and not _is_overloaded_error(exc):
-        return _rotate(429)
-    return False
+    # An upstream model throttle (OpenRouter-wrapped, OpenCode Go "Upstream request failed") leaves the key healthy.
+    upstream = classify_api_error(exc, provider=normalized).reason is FailoverReason.upstream_rate_limit
+    return _rotate(429) if _is_rate_limit_error(exc) and not _is_overloaded_error(exc) and not upstream else False
 
 
 def _prepare_same_provider_retry(

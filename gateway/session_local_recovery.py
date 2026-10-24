@@ -8,7 +8,7 @@ from gateway.config import Platform
 from gateway.session import SessionEntry, SessionSource
 from gateway.session_contract import SessionRef
 from hermes_state_keys import local_identity
-from hermes_state_local import POLICY_PREFIX, local_receipt
+from hermes_state_local import POLICY_PREFIX, creation_identity, local_receipt
 from hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
 
@@ -103,8 +103,7 @@ def owned_receipt(authority, sid):
     receipt = local_receipt(authority.db, sid)
     if receipt['profile_id'] != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
-    chat_id = (receipt['legacy_session_id'] if 'legacy_session_id' in receipt else
-               local_identity(receipt['profile_id'], receipt['principal_id'], receipt['request_id']))
+    chat_id = receipt['legacy_session_id'] if 'legacy_session_id' in receipt else creation_identity(receipt)
     if receipt['session_id'] != sid or sid != chat_id:
         raise ValueError('identity mismatch')
     source = local_source(authority, chat_id, receipt['principal_id'])

@@ -250,6 +250,14 @@ def annotate_local_lineages(sessions, heads):
     return sessions
 
 
+def creation_identity(receipt):
+    """The session id *receipt*'s creation derives: from the profile it was created under, which a
+    renamed profile's receipt keeps as ``created_profile_id`` (``hermes_state_local_rekey``)."""
+    from hermes_state_keys import local_identity
+    return local_identity(receipt.get('created_profile_id', receipt['profile_id']),
+                          receipt['principal_id'], receipt['request_id'])
+
+
 def local_receipt(db, session_id):
     with db._read_ctx() as conn:
         row = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + session_id,)).fetchone()

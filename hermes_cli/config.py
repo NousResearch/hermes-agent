@@ -1532,9 +1532,9 @@ def _env_ref_lookup(name: str) -> Optional[str]:
     try:
         from agent.secret_scope import current_secret_scope, get_secret as _get_secret
     except Exception:
-        return os.environ.get(name)
+        return v if (v := os.environ.get(name)) is not None else load_env().get(name)
     if current_secret_scope() is None:
-        return os.environ.get(name)
+        return v if (v := os.environ.get(name)) is not None else load_env().get(name)
     return _get_secret(name)
 
 

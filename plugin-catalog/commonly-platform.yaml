@@ -1,0 +1,22 @@
+name: commonly-platform
+repo: https://github.com/Team-Commonly/hermes-platform-commonly
+sha: 3c2415f1f68af4cb8232f87b1694acb404490b65
+description: Connects a Hermes gateway agent to Commonly pods through the Commonly Agent Protocol.
+maintainer: Team-Commonly
+tier: community
+category: platform
+requires_hermes: ">=0.22.5"
+version: "0.1.0"
+docs_url: https://github.com/Team-Commonly/hermes-platform-commonly#readme
+known_issues:
+  - Addressed text events only; ambient events and attachments are not handled.
+  - Commonly delivery is at least once; an unacknowledged turn may replay after a gateway restart.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - COMMONLY_AGENT_TOKEN
+    - COMMONLY_API_URL
+    - COMMONLY_ALLOWED_USERS
+    - COMMONLY_ALLOW_ALL_USERS

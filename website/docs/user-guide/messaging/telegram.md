@@ -1117,6 +1117,8 @@ gateway:
         allow_cjk_rich_messages: false
 ```
 
+`rich_messages` also accepts `always`: instead of selecting rich rendering only for constructs MarkdownV2 degrades, every non-empty reply is sent as a native Rich Message. Use it when you want one consistent rendering and native copied text across all replies, not just tables and math.
+
 This setting is for client-rendering/copy compatibility; Hermes already falls back automatically when Telegram rejects the rich API call. `rich_drafts` controls whether the DM streaming preview *renders* rich (`sendRichMessageDraft`) and stays off by default because Telegram Desktop/macOS can visually overlay rich draft frames until the chat redraws; with it off, the preview streams plain and the final still arrives as a native Rich Message.
 
 CJK text (Chinese, Japanese, Korean, and rare Han extensions) stays on the legacy MarkdownV2 path by default because affected Telegram Desktop/macOS clients have rendered Bot API rich messages with overlapping CJK glyph artifacts. If you use an unaffected client and prefer native rich tables/task lists/details/math for CJK payloads, set `allow_cjk_rich_messages: true` alongside `rich_messages: true` to opt in to that client-side risk.

@@ -274,8 +274,15 @@ class ManagedWorker:
             stopper.cancel()
             arrived.cancel()
 
-    def interrupt(self):
-        self.control({'type': 'stop'})
+    def interrupt(self, message=None):
+        """The legacy ``interrupt(message=None)`` ABI ``request_hard_interrupt`` falls back to: the
+        worker takes no message, only the Stop control. A worker already closed (its turn ended and
+        ``close`` began while ``adopted`` still names it until settlement) has nothing left to stop."""
+        try:
+            self.control({'type': 'stop'})
+        except RuntimeStoreError as exc:
+            if exc.reason != 'managed_worker_lost':
+                raise
 
     def respond(self, kind, prompt_id, value):
         self.control({'type': kind, 'prompt_id': prompt_id, 'value': value})

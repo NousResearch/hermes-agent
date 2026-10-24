@@ -45,6 +45,7 @@ import { useI18n } from '@/i18n'
 import { connectorCalls, mcpTargets } from '@/lib/connector-tools'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
+import { firstStringField } from '@/lib/text'
 import { toolResultRecord } from '@/lib/tool-result-metadata'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
@@ -73,6 +74,7 @@ import {
   isFileEditTool,
   isPreviewableTarget,
   looksRedundant,
+  parseMaybeObject,
   type SearchResultRow,
   selectMessageRunning,
   toolCopyPayload,
@@ -541,6 +543,18 @@ function ToolEntry({ part }: ToolEntryProps) {
   // what's painted, so the row's Copy button still yields the full output.
   const copyAction = useMemo(() => toolCopyPayload(stablePart, view), [stablePart, view])
 
+  const editPath = useMemo(() => {
+    if (!isFileEdit) {
+      return ''
+    }
+
+    // Preview inference may find paths in diff content; clipboard actions need explicit fields.
+    return (
+      firstStringField(parseMaybeObject(args), ['path', 'file', 'filepath']) ||
+      firstStringField(toolResultRecord(stablePart), ['path', 'file', 'filepath', 'resolved_path'])
+    )
+  }, [args, isFileEdit, stablePart])
+
   const diffStats = useMemo(
     () => (isFileEdit && view.inlineDiff ? countDiffLineStats(view.inlineDiff) : null),
     [isFileEdit, view.inlineDiff]
@@ -617,7 +631,24 @@ function ToolEntry({ part }: ToolEntryProps) {
     >
       <div className={cn(open && 'border-b border-(--ui-stroke-tertiary) px-2 py-1.5')}>
         <DisclosureRow
-          action={dismissAction}
+          action={
+            editPath ? (
+              <span className="flex items-center gap-0.5">
+                <CopyButton
+                  appearance="icon"
+                  buttonSize="icon-xs"
+                  className="size-5 rounded-md text-(--ui-text-tertiary) hover:text-(--ui-text-primary)"
+                  iconClassName="size-3"
+                  label={copy.copyPath}
+                  stopPropagation
+                  text={editPath}
+                />
+                {dismissAction}
+              </span>
+            ) : (
+              dismissAction
+            )
+          }
           onToggle={
             hasExpandableContent
               ? () => {

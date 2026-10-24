@@ -9,6 +9,7 @@ import re
 import shutil
 import stat
 import sys
+import threading
 from collections.abc import Callable, Mapping, MutableMapping
 from contextvars import ContextVar, Token
 from pathlib import Path
@@ -809,6 +810,8 @@ SCRATCH_MAX_IDLE_HOURS = 24
 _SCRATCH_PRUNE_STAMP = ".last_prune"
 _SCRATCH_PRUNE_INTERVAL_SECONDS = 3600
 _scratch_pruned_once = False
+_scratch_prune_lock = threading.Lock()
+_scratch_prune_thread: threading.Thread | None = None
 
 # AF_UNIX socket paths cap at 104 bytes (macOS) / 108 (Linux). Chrome appends
 # ``com.google.Chrome.XXXXXX/SingletonSocket`` (~45) and the code kernel
@@ -1007,6 +1010,21 @@ def _prune_scratch_dir_once(scratch: Path) -> None:
     with contextlib.suppress(Exception):
         stamp.touch()
         prune_scratch_dir(scratch)
+
+
+def prune_scratch_dir_in_background(scratch: Path) -> None:
+    """Schedule one prune using the caller's resolved home, without blocking a turn."""
+    global _scratch_prune_thread
+    if _scratch_pruned_once:
+        return
+    with _scratch_prune_lock:
+        if _scratch_pruned_once or _scratch_prune_thread is not None:
+            return
+        _scratch_prune_thread = threading.Thread(
+            target=_prune_scratch_dir_once, args=(scratch,), name="scratch-prune", daemon=True,
+        )
+        with contextlib.suppress(RuntimeError):
+            _scratch_prune_thread.start()
 
 
 def scratch_dir_usage_bytes(scratch: Path | None = None) -> int:

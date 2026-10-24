@@ -7,8 +7,10 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from tests.waiting import wait_until
@@ -17,6 +19,107 @@ import psutil
 import pytest
 
 from hermes_constants import apply_scratch_tmp_env, get_scratch_dir, prune_scratch_dir
+
+
+@pytest.fixture
+def background_scratch_prune(tmp_path, monkeypatch):
+    import hermes_constants as constants
+
+    home = tmp_path / "launch"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(constants, "_scratch_pruned_once", False)
+    monkeypatch.setattr(constants, "_scratch_prune_thread", None)
+    monkeypatch.setattr(constants, "_scratch_prune_lock", threading.Lock())
+    calls, threads = [], []
+    real_thread = threading.Thread
+
+    def tracked_thread(*args, **kwargs):
+        thread = real_thread(*args, **kwargs)
+        if thread.name == "scratch-prune":
+            threads.append(thread)
+        return thread
+
+    monkeypatch.setattr(constants.threading, "Thread", tracked_thread)
+    monkeypatch.setattr(constants, "prune_scratch_dir", calls.append)
+    token = constants.set_hermes_home_override(None)
+    try:
+        yield SimpleNamespace(home=home, calls=calls, threads=threads)
+    finally:
+        for thread in threads:
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+        constants.reset_hermes_home_override(token)
+
+
+def test_host_hints_do_not_wait_for_scratch_prune(background_scratch_prune, monkeypatch):
+    import hermes_constants as constants
+    from agent.prompt_builder import _local_host_hints
+
+    state = background_scratch_prune
+
+    def slow_prune(scratch):
+        state.calls.append(scratch)
+        time.sleep(2)  # health: allow HX013 -- simulate the slow prune specified by the regression
+
+    monkeypatch.setattr(constants, "prune_scratch_dir", slow_prune)
+    start = time.monotonic()
+    hints = _local_host_hints()
+    elapsed = time.monotonic() - start
+    assert elapsed < 0.5
+    assert len(state.threads) == 1
+    thread = state.threads[0]
+    assert thread.daemon
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    scratch = state.home / "cache" / "scratch"
+    assert state.calls == [scratch]
+    assert f"Scratch directory: {scratch} (TMPDIR points here; write temporary files " in hints[0]
+
+
+def test_host_hints_schedule_only_one_scratch_prune(background_scratch_prune, monkeypatch):
+    import hermes_constants as constants
+    from agent.prompt_builder import _local_host_hints
+
+    state = background_scratch_prune
+    release = threading.Event()
+    prune_once = constants._prune_scratch_dir_once
+
+    def delayed_prune(scratch):
+        release.wait(timeout=5)
+        prune_once(scratch)
+
+    monkeypatch.setattr(constants, "_prune_scratch_dir_once", delayed_prune)
+    try:
+        _local_host_hints()
+        _local_host_hints()
+        assert len(state.threads) == 1
+    finally:
+        release.set()
+        for thread in state.threads:
+            thread.join(timeout=5)
+    _local_host_hints()
+    assert len(state.threads) == 1
+    assert state.calls == [state.home / "cache" / "scratch"]
+
+
+def test_host_hints_scratch_prune_uses_routed_home(background_scratch_prune, tmp_path):
+    import hermes_constants as constants
+    from agent.prompt_builder import _local_host_hints
+
+    state = background_scratch_prune
+    routed_home = tmp_path / "routed"
+    token = constants.set_hermes_home_override(routed_home)
+    try:
+        hints = _local_host_hints()
+    finally:
+        constants.reset_hermes_home_override(token)
+    assert len(state.threads) == 1
+    thread = state.threads[0]
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    scratch = routed_home / "cache" / "scratch"
+    assert state.calls == [scratch]
+    assert f"Scratch directory: {scratch} (TMPDIR points here; write temporary files " in hints[0]
 
 
 def test_scratch_env_follows_home_and_respects_user_tmpdir(tmp_path):

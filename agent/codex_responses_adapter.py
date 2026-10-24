@@ -612,6 +612,7 @@ def _chat_messages_to_responses_input(
     messages: list[dict[str, Any]], *, is_xai_responses: bool = False, is_github_responses: bool = False,
     replay_encrypted_reasoning: bool = True, current_issuer_kind: Optional[str] = None,
     current_issuer_model: Optional[str] = None, native_compaction_eligible: bool = False,
+    replay_configuration_updates: bool = False,
 ) -> list[dict[str, Any]]:
     """Convert internal chat-style messages to Responses input items.
 
@@ -667,8 +668,17 @@ def _chat_messages_to_responses_input(
     def emit(new_items: list[dict[str, Any]], msg: dict[str, Any]) -> None:
         items.extend(new_items)
         item_sources.extend([msg] * len(new_items))
+    from agent.effort_updates import effort_update
     for msg in messages:
         if not isinstance(msg, dict):
+            continue
+        update = effort_update(msg)
+        if update is not None:
+            if replay_configuration_updates and not update.get("reset") and update["effort"] != update["previous"]:
+                emit([{
+                    "type": "configuration_update",
+                    "reasoning": {"effort": update["effort"]},
+                }], msg)
             continue
         role = msg.get("role")
         if role == "tool":
@@ -904,6 +914,18 @@ def _preflight_message(item: dict[str, Any], idx: int, ctx: _PreflightCtx) -> di
     return _assistant_message_item(item, normalized_content, is_github_responses=ctx.is_github_responses)
 
 
+def _preflight_configuration_update(
+    item: dict[str, Any], idx: int, ctx: _PreflightCtx,
+) -> dict[str, Any]:
+    reasoning = item.get("reasoning")
+    effort = reasoning.get("effort") if isinstance(reasoning, dict) else None
+    if effort not in {"none", "low", "medium", "high", "xhigh", "max"}:
+        raise ValueError(
+            f"Codex Responses input[{idx}] configuration_update must contain a supported reasoning.effort."
+        )
+    return {"type": "configuration_update", "reasoning": {"effort": effort}}
+
+
 def _preflight_role_message(item: dict[str, Any], idx: int, ctx: _PreflightCtx) -> dict[str, Any]:
     """``user``/``assistant`` role message, typed or untyped; string content or Responses parts."""
     role = item.get("role")
@@ -940,6 +962,7 @@ def _preflight_role_message(item: dict[str, Any], idx: int, ctx: _PreflightCtx) 
 _PREFLIGHT_ITEM_HANDLERS: dict[str, Callable[..., Optional[dict[str, Any]]]] = {
     "function_call": _preflight_function_call, "function_call_output": _preflight_function_call_output,
     "reasoning": _preflight_encrypted, "compaction": _preflight_encrypted, "message": _preflight_message,
+    "configuration_update": _preflight_configuration_update,
 }
 
 

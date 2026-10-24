@@ -24,6 +24,15 @@ def test_worker_context_preserves_authority_identity_and_prompt_receipts(tmp_pat
             store.patch_session_model_config('owned', {'_usage_anchor': {'tokens': 23}})
             assert store.get_session_model_config_value('owned', '_usage_anchor') == {'tokens': 23}
             assert db.get_session_model_config_value('owned', '_delegate_from') == 'parent'
+            # The effort-update lineage is written from inside the worker every turn; a refused
+            # sidecar latches the store and every later turn dies with invalid_params.
+            from types import SimpleNamespace
+            from agent.effort_updates import EFFORT_BASELINE_KEY, record_effort_switch
+            record_effort_switch(SimpleNamespace(_session_db=store, session_id='owned', _session_init_model_config={},
+                                                 reasoning_config={'enabled': True, 'effort': 'low'},
+                                                 provider='p', model='m', base_url=''), [])
+            assert store.failure is None
+            assert db.get_session_model_config_value('owned', EFFORT_BASELINE_KEY)['effort'] == 'low'
             assert db.get_session('foreign')['system_prompt'] == 'private'
             original = store.rpc
             def lost_ack(method, **params):

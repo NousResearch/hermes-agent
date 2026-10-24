@@ -68,6 +68,7 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
 
     skills_list = skills_subparsers.add_parser("list", help="List installed skills")
     skills_list.add_argument("--source", default="all", choices=["all", "hub", "builtin", "local"])
+    add_json_flag(skills_list, "Output JSON instead of a table (full names, scripting-friendly)")
     _flag(skills_list, "--enabled-only",
         help="Hide disabled skills. Use with -p <profile> to see exactly "
         "which skills will load for that profile.")

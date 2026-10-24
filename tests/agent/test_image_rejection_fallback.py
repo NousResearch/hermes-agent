@@ -220,6 +220,11 @@ class TestImageRejectionPhraseIsolation:
             # turn should still switch to text-only/aux-vision mode (#57948).
             "The provided messages input is invalid. The error info is [Unexpected item type in content].",
             "The image data you provided does not represent a valid image. Please check your input and try again.",
+            # OpenCode Go gateway wrapping a text-only upstream (issue #141563): the image used
+            # to stay in history and every later turn failed with the same 400.
+            "HTTP 400: Upstream request failed: [unsupported_request] Message content supports text content only. "
+            "Images, audio and files are not enabled.",
+            "Images, audio and files are not enabled.",
         ]
         for body in bodies:
             assert self._matches(body) is True, f"false negative on: {body}"

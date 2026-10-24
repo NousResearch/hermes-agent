@@ -102,3 +102,21 @@ def test_scan_leaves_reduced_memory_only_zero_skills_rows_and_session_id_overrid
     assert "already has no stored prompt" in capsys.readouterr().out
     assert _cmd_repair_prompts(db, _args(session_id="no-such-session", apply=True)) == 1
     assert "No session matches" in capsys.readouterr().out
+
+
+def test_scan_leaves_a_healthy_prompt_stored_before_the_skill_guidance_rewordings(db, monkeypatch, capsys):
+    # Literal skills guidance stored before its opening line was reworded: old opening, then the Skill Safety heading.
+    legacy = (
+        "You are Hermes.\n"
+        "<available_skills>\n  dogfood: exploratory QA of web apps\n</available_skills>\n"
+        "After completing a complex task (5+ tool calls), fixing a tricky error, or discovering a non-trivial "
+        "workflow, save the approach as a skill with skill_manage so you can reuse it next time.\n\n"
+        "## Skill Safety Rule\n"
+        "A skill placeholder containing `[SKILL_PRUNED]` lost its content in context compression and is "
+        "inaccessible — reload it with skill_view(name='...') before acting on anything that depends on it.\n"
+    )
+    healthy = db.create_session("legacy-healthy", "telegram", system_prompt=legacy)
+    db.update_session_tool_names(healthy, _pin("skills_list", "skill_manage"))
+
+    assert _apply_json(db, monkeypatch, capsys)["cleared"] == []
+    assert db.get_session(healthy)["system_prompt"] == legacy

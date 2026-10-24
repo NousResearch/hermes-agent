@@ -1299,6 +1299,7 @@ function Invoke-BootstrapPm {
 }
 
 function Stage-PythonDeps {
+    if (-not (Ensure-Git)) { Fail "no pinned Git artifact for this Windows architecture" }
     Invoke-BootstrapPm
 }
 

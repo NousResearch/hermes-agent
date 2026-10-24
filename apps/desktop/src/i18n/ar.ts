@@ -7,13 +7,14 @@ import { arChrome } from './ar_chrome'
 import { arCommandCenter } from './ar_command_center'
 import { arCommon } from './ar_common'
 import { arConnectors } from './ar_connectors'
+import { arDecisionTree } from './ar_decision_tree'
 import { arDiagnostics } from './ar_diagnostics'
 import { arFirstRun } from './ar_first_run'
 import { arSettings } from './ar_settings'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 
 export const arOverrides = {
-
+  decisionTree: arDecisionTree,
   catalog: {
     add: 'إضافة',
     added: 'تمت الإضافة',

@@ -1,0 +1,166 @@
+/**
+ * Decision Tree — the connectors are the component's one piece of geometry: a
+ * rail off the question with a tick into every branch, and the branch's own
+ * consequences hanging under it.
+ *
+ * Tokens only. Nothing here animates layout geometry: the entrance moves the
+ * line's transform, never its box, and every animation is gated behind
+ * `prefers-reduced-motion: no-preference`.
+ */
+
+.dt-root {
+  container-type: inline-size;
+}
+
+.dt-decision {
+  display: grid;
+  gap: 0.5rem;
+}
+
+/* The rail: one hairline the branches hang off. */
+.dt-branches {
+  position: relative;
+  margin-left: 0.5rem;
+  padding-left: 0.9rem;
+  border-left: 1px solid var(--ui-stroke-tertiary);
+}
+
+.dt-node {
+  position: relative;
+  display: grid;
+  gap: 0.2rem;
+  padding-block: 0.1rem;
+  /* Resting state owns the transition, so hover paints now and the return
+     eases (DESIGN.md, Motion). */
+  transition: opacity 140ms ease;
+}
+
+.dt-node::before {
+  position: absolute;
+  top: 0.95rem;
+  left: -0.9rem;
+  width: 0.55rem;
+  height: 1px;
+  background: var(--ui-stroke-tertiary);
+  content: '';
+  transform-origin: left center;
+}
+
+/* A group that dims siblings goes instant. */
+.dt-branches:hover .dt-node:not([data-lit]) {
+  opacity: 0.45;
+  transition: none;
+}
+
+.dt-node[data-lit] {
+  opacity: 1;
+}
+
+.dt-node[data-dimmed] {
+  filter: saturate(0.4);
+  opacity: 0.16;
+  transition: none;
+}
+
+/* The agent's pick keeps its mark after the branch is dimmed away. */
+.dt-node[data-dimmed] [data-slot='decision-tree-pick'] {
+  opacity: 0;
+}
+
+/* A dormant follow-up is present — the whole tree shows at once — but it is
+   `inert`, so it neither takes a pointer nor a keystroke until its branch is
+   picked. */
+.dt-node[data-dormant] {
+  opacity: 0.4;
+}
+
+.dt-note-open {
+  position: absolute;
+  top: calc(100% + 0.25rem);
+  left: 0;
+  z-index: 20;
+  width: max-content;
+  max-width: 20rem;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--stroke-nous);
+  border-radius: 0.375rem;
+  background: var(--popover);
+  box-shadow: var(--shadow-nous);
+  color: var(--ui-text-secondary);
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
+/* Wide: the question keeps the left column and the tree runs off it to the
+   right. Nothing about the DOM changes, so the reading order and the keyboard
+   model stay identical at both widths. */
+@container (min-width: 640px) {
+  .dt-decision {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+    align-items: start;
+    column-gap: 1rem;
+  }
+
+  .dt-decision-head {
+    grid-column: 1;
+  }
+
+  .dt-branches {
+    grid-column: 2;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* A new decision grows in: the question first, then its branches, each
+     line drawing itself out a beat after the other. */
+  .dt-decision {
+    animation: dt-rise 200ms ease-out both;
+  }
+
+  .dt-node {
+    animation: dt-rise 180ms ease-out both;
+    animation-delay: calc(var(--dt-order, 0) * 40ms + 60ms);
+  }
+
+  .dt-node::before {
+    animation: dt-draw 150ms ease-out both;
+    animation-delay: calc(var(--dt-order, 0) * 40ms + 60ms);
+  }
+
+  /* The chosen path draws on to its outcome; everything else is already gone. */
+  .dt-decision[data-settled] .dt-node[data-chosen] {
+    animation: dt-hold 240ms ease-out both;
+  }
+}
+
+@keyframes dt-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes dt-draw {
+  from {
+    transform: scaleX(0);
+  }
+
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes dt-hold {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 1;
+  }
+}

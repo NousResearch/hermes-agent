@@ -7,6 +7,7 @@ import { jaBoot } from './ja_boot'
 import { jaCatalog, jaSkillDeepLink } from './ja_catalog'
 import { jaClarify } from './ja_clarify'
 import { jaConnectors } from './ja_connectors'
+import { jaDecisionTree } from './ja_decision_tree'
 import { jaErrorLayers } from './ja_error_layers'
 import { jaFirstRun } from './ja_first_run'
 import { jaLocalModels } from './ja_local_models'
@@ -23,6 +24,7 @@ import { jaThemePicker } from './ja_theme_picker'
 import { jaUpdateChannel } from './ja_update_channel'
 
 export const jaOverrides = {
+  decisionTree: jaDecisionTree,
   catalog: jaCatalog,
   connectors: jaConnectors.connectors,
   externalOpenFailed: {

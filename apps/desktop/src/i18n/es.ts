@@ -6,6 +6,7 @@ import { esBoot } from './es_boot'
 import { esClarify } from './es_clarify'
 import { esConnectorAccounts } from './es_connector_accounts'
 import { esConnectorCard } from './es_connector_card'
+import { esDecisionTree } from './es_decision_tree'
 import { esErrorLayers } from './es_error_layers'
 import { esFirstRun } from './es_first_run'
 import { esLocalModels } from './es_local_models'
@@ -23,6 +24,7 @@ import { esUpdateChannel } from './es_update_channel'
 import { introEs } from './intro-es'
 
 export const esOverrides = {
+  decisionTree: esDecisionTree,
   sharedMetrics: esSharedMetrics,
   firstRun: esFirstRun,
   intro: introEs,

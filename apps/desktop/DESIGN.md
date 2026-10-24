@@ -365,6 +365,16 @@ from their root base tokens; do not multiply the global tokens or nest CSS zoom.
   (`src/components/chat/widget-shell.ts`): shared radius, the
   `--ui-widget-surface-background` fill, no border. Its actions sit *outside*
   the panel, below it. Don't give one widget its own radius or fill.
+- **Decisions** — an agent asking which way to go renders as `DecisionTree`
+  (`src/components/ui/decision-tree/`): the question, two to four branches, and
+  what each branch changes. The agent's own pick is marked, never pre-selected.
+  A branch with a follow-up shows it dimmed and `inert` until that branch is
+  picked, and the pair reaches `onChoose` as one route (`then`). Digits pick,
+  ←/→ (or J/K) move between decisions, `F` walks the flagged consequences,
+  `Esc` closes what is open. The surface comes from the caller
+  (`WIDGET_SHELL_CLASS` in the transcript); the primitive owns the tree alone,
+  takes no key from a field it does not own, and never moves focus or navigates
+  on its own.
 - Bordered surfaces in the transcript (tables, fences, callouts, attachments)
   use `--ui-stroke-tertiary`. Not `border-border` — that's the app-wide
   default and reads too hot against the thread.

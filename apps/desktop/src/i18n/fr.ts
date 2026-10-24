@@ -6,6 +6,7 @@ import { frBoot } from './fr_boot'
 import { frClarify } from './fr_clarify'
 import { frConnectorAccounts } from './fr_connector_accounts'
 import { frConnectorCard } from './fr_connector_card'
+import { frDecisionTree } from './fr_decision_tree'
 import { frErrorLayers } from './fr_error_layers'
 import { frFirstRun } from './fr_first_run'
 import { frLocalModels } from './fr_local_models'
@@ -23,6 +24,7 @@ import { frUpdateChannel } from './fr_update_channel'
 import { introFr } from './intro-fr'
 
 export const frOverrides = {
+  decisionTree: frDecisionTree,
   sharedMetrics: frSharedMetrics,
   firstRun: frFirstRun,
   intro: introFr,

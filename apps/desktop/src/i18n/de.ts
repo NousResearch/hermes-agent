@@ -5,6 +5,7 @@ import { deBoot } from './de_boot'
 import { deClarify } from './de_clarify'
 import { deConnectorAccounts } from './de_connector_accounts'
 import { deConnectorCard } from './de_connector_card'
+import { deDecisionTree } from './de_decision_tree'
 import { deErrorLayers } from './de_error_layers'
 import { deFirstRun } from './de_first_run'
 import { deLocalModels } from './de_local_models'
@@ -23,6 +24,7 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
 
 export const deOverrides = {
+  decisionTree: deDecisionTree,
   sharedMetrics: deSharedMetrics,
   firstRun: deFirstRun,
   intro: introDe,

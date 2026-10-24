@@ -12,9 +12,10 @@ import { zhHantConnectors } from './zh-hant_connectors'
 import { zhHantDiagnostics } from './zh-hant_diagnostics'
 import { zhHantFirstRun } from './zh-hant_first_run'
 import { zhHantSettings } from './zh-hant_settings'
+import { zhHantDecisionTree } from './zh_hant_decision_tree'
 
 export const zhHantOverrides = {
-
+  decisionTree: zhHantDecisionTree,
   catalog: {
     add: '新增',
     added: '已新增',

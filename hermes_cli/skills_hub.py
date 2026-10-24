@@ -791,7 +791,8 @@ def _record_skill_install(identifier: str, bundle, outcome: str, attempt: Option
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True, name_override: str = "",
-               source_id: Optional[str] = None) -> Optional[bool]:
+               source_id: Optional[str] = None, *,
+               dev_lab_integration: Optional[Any] = None) -> Optional[bool]:
     """Fetch, quarantine, scan, confirm, and install a skill. ``source_id`` pins resolution to one
     adapter; callers that know the provenance (``do_update``) must pass it so a bare identifier
     cannot resolve to a same-named skill elsewhere.
@@ -810,7 +811,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     try:
         bundle, outcome, installed = _install_skill(identifier, category, force, console or _console,
                                                     skip_confirm, invalidate_cache, name_override, source_id,
-                                                    attempt=attempt)
+                                                    attempt=attempt, dev_lab_integration=dev_lab_integration)
     except Exception as exc:
         if fresh:
             _record_skill_install(identifier, None, "failed", attempt, error=exc)
@@ -822,7 +823,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
 def _install_skill(identifier: str, category: str, force: bool, c: Console, skip_confirm: bool,
                    invalidate_cache: bool, name_override: str, source_id: Optional[str],
-                   attempt: Optional[dict] = None) -> tuple:
+                   attempt: Optional[dict] = None, dev_lab_integration: Optional[Any] = None) -> tuple:
     """``do_install``'s body: ``(bundle, outcome, installed)``. ``outcome`` is the extension-install
     event (None when this was no new install); ``installed`` is ``do_install``'s return value.
     ``attempt`` collects the metric's ``registry`` (adapter id) and, on a failed exit, its
@@ -901,6 +902,61 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
                          f"{len(result.findings)}_findings", q_path=q_path, lead="\n", label="Not installed:")
         attempt["failure_class"] = "scan_blocked"
         return bundle, failed, False
+
+    # External admission is default-off.  Any configured non-off result is fail-closed
+    # unless an exact QUARANTINE is handled by an explicitly injected LAB dependency.
+    # Every non-off exit is "not installed": a failed install (non-zero CLI exit) whose
+    # telemetry class is the existing closed-set value ``scan_blocked``.
+    from tools.external_skill_admission import run_external_admission
+    source_version = str(extra_metadata.get("version") or "")
+    external_admission = run_external_admission(
+        q_path, source_id=bundle.identifier, source_version=source_version,
+    )
+    if external_admission.executed:
+        c.print(
+            f"[dim]External admission ({external_admission.mode}): "
+            f"{external_admission.decision}; evidence: "
+            f"{external_admission.evidence_dir or 'none'}[/]"
+        )
+
+    if external_admission.mode != "off":
+        attempt["failure_class"] = "scan_blocked"
+        if (external_admission.mode == "enforce"
+                and external_admission.decision == "QUARANTINE"
+                and dev_lab_integration is not None):
+            lab_result = dev_lab_integration.simulate(
+                external_admission,
+                q_path,
+                source_id=bundle.identifier,
+                source_version=source_version,
+            )
+            if lab_result.allowed:
+                c.print(
+                    "\n[bold green]LAB simulation allowed:[/] "
+                    f"{lab_result.outcome}; candidate remains quarantined and is not installed"
+                )
+            else:
+                c.print(
+                    "\n[bold red]LAB simulation rejected:[/] "
+                    f"{lab_result.reason}; quarantine preserved"
+                )
+            return bundle, failed, False
+
+        if (external_admission.mode == "enforce"
+                and external_admission.decision == "QUARANTINE"):
+            c.print(
+                "\n[bold red]Not installed:[/] foreground_review_required; "
+                "quarantine preserved"
+            )
+            return bundle, failed, False
+
+        c.print(
+            "\n[bold red]Not installed:[/] external admission "
+            f"{external_admission.decision.lower()} is not install authorization; "
+            "quarantine preserved"
+        )
+        return bundle, failed, False
+
     # Advisory second opinion — warn-and-continue by design (PII-class findings are
     # informational); the install confirmation below is where the user decides.
     _print_tier1_advisory(q_path, c)

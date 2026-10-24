@@ -555,6 +555,36 @@ def _check_xai_retirement(should_fix: bool, f: Finding) -> None:
     f.manual_issues.append(f"Update {len(retired_refs)} retired xAI model reference(s) in config.yaml — see {MIGRATION_GUIDE_URL}")
 
 
+@doctor_check("model availability check skipped", "({e})")
+def _check_model_availability(should_fix: bool, f: Finding) -> None:
+    """Configured model ids the provider's catalog no longer lists.
+
+    A retired id fails at the first request with HTTP 404, and nothing else in the
+    install says so: the picker does not show the model, the scheduled jobs carry the
+    failure on their own. The provider catalogs are read from the install's own cache,
+    so this costs no network call.
+    """
+    from hermes_cli.config import load_config
+    from hermes_cli.model_availability import cached_catalogs, unavailable_models
+
+    config = load_config()
+    catalogs = cached_catalogs()
+    if not catalogs:
+        check_ok("No provider catalog cache yet (open the model picker to populate it)")
+        return
+    unavailable = unavailable_models(config, catalogs)
+    if not unavailable:
+        check_ok(f"Every configured model is listed by its provider ({len(catalogs)} catalogs checked)")
+        return
+    for item in unavailable:
+        check_warn(item.render())
+    # A curated id the provider does not publish can still be callable, so this warns.
+    check_info("A provider may keep serving an id it does not publish; confirm with a live request "
+               "before changing the config")
+    f.manual_issues.append(
+        f"Point {len(unavailable)} configured model reference(s) at ids the provider still serves")
+
+
 @doctor_check("Session reset check skipped", "({e})")
 def _check_retired_session_reset(should_fix: bool, f: Finding) -> None:
     from hermes_cli.config_effective import load_user_config_effective

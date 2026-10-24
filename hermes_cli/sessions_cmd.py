@@ -289,8 +289,14 @@ def _cmd_list(db, args):
     # LIMIT lives in the query, so probe one row past the cap: it is the only way to know the
     # page was cut without a second COUNT query (``--limit 0`` is ``LIMIT 0``: no rows, no probe).
     limit = args.limit
+    # Content-less rows are not conversations. A client that launches a TUI per tab
+    # (Hermes Console runs `hermes` as every new terminal's startup command) leaves one
+    # behind per abandoned tab, so listing them floods the picker with unnamed entries.
+    # They stay in the DB — resume, routing and `hermes sessions prune/archive
+    # --max-messages 0` still see them.
     sessions = _surface_reader(db).list_sessions_rich(
-        source=args.source, exclude_sources=_default_exclude(args), limit=limit + 1 if limit > 0 else limit,
+        source=args.source, exclude_sources=_default_exclude(args), min_message_count=1,
+        limit=limit + 1 if limit > 0 else limit,
     )
     truncated = limit > 0 and len(sessions) > limit
     sessions = sessions[:limit] if truncated else sessions
@@ -471,7 +477,9 @@ def _export_trace(db, args, filters):
     leave the machine with --upload); --no-redact opts out."""
     session_id = args.session_id
     if not session_id and not filters:  # "the last thing I did"
-        rows = db.list_sessions_rich(limit=1, order_by_last_active=True)
+        # Skip content-less rows: the newest row can be an abandoned launch (a client that
+        # starts a TUI per tab leaves one), and exporting that trace exports nothing.
+        rows = db.list_sessions_rich(limit=1, order_by_last_active=True, min_message_count=1)
         session_id = rows[0].get("id") if rows else None
         if not session_id:
             print("No session found to export. Pass --session-id.")

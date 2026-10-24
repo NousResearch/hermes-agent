@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_eviction_policy import images_all_within_many_image_limit, outbound_image_retire_count
 from agent.anthropic_thinking_policy import anthropic_thinking_route, route_replays_prior_thinking
+from agent.tool_result_chaining import fold_tool_result_hint
 
 logger = logging.getLogger(__name__)
 
@@ -459,9 +460,13 @@ def _tool_result_content(m: dict[str, Any]) -> Any:
 def _convert_tool_message_to_result(result: list[dict[str, Any]], m: dict[str, Any]) -> None:
     """Append a tool_result to ``result``, merging into a trailing tool_result user message when
     there is one. Mutates ``result`` in place."""
+    content = _tool_result_content(m)
+    # Fold the sibling-key tool-result reference hint into the model-visible text
+    # (kept out of ``content`` on the message so it stays a parseable JSON string).
+    content = fold_tool_result_hint(content, m.get("_tool_result_hint"))
     tool_result = {
         "type": "tool_result", "tool_use_id": _sanitize_tool_id(m.get("tool_call_id", "")),
-        "content": _tool_result_content(m),
+        "content": content,
     }
     _carry_cache_control(tool_result, m, copy=True)
     last = result[-1] if result else {}

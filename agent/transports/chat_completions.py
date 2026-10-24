@@ -20,6 +20,7 @@ from agent.message_sanitization import coalesce_tool_call_id, normalize_finish_r
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
+from agent.tool_result_chaining import fold_tool_result_hint
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 # xAI reserves ``tool_search`` for its server-side tool (HTTP 400 on client
@@ -484,6 +485,11 @@ def _sanitize_message(
         if result_key and (mapped := _mistral_tool_id(result_key)) != msg["tool_call_id"]:
             out_msg["tool_call_id"] = mapped
             remapped = True
+    # Tool-result reference hints ride as a sibling key to keep message content a
+    # parseable JSON string; fold them into the model-visible text at the wire.
+    _ref_hint = msg.get("_tool_result_hint")
+    if _ref_hint:
+        out_msg["content"] = fold_tool_result_hint(out_msg.get("content"), _ref_hint)
     if kept_details:
         out_msg["reasoning_details"] = kept_details
     tool_calls = msg.get("tool_calls")

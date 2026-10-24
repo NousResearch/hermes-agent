@@ -7,6 +7,9 @@ import paths are unchanged.
 from __future__ import annotations
 
 import subprocess
+import sys
+
+from hermes_cli.debug_redaction import redact_debug_support_text
 
 
 def _run_systemctl(args: list[str], *, system: bool = False, **kwargs) -> subprocess.CompletedProcess:
@@ -22,3 +25,10 @@ def _run_systemctl(args: list[str], *, system: bool = False, **kwargs) -> subpro
 
 def _service_scope_label(system: bool = False) -> str:
     return "system" if system else "user"
+
+
+def print_systemctl_status(result: subprocess.CompletedProcess[str]) -> None:
+    if result.stdout:
+        print(redact_debug_support_text(result.stdout), end="")
+    if result.stderr:
+        print(redact_debug_support_text(result.stderr), end="", file=sys.stderr)

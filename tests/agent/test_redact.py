@@ -1759,6 +1759,23 @@ class TestFlagAndKeyShapedCredentials:
         bus = f"Endpoint=sb://ns.servicebus.windows.net/;SharedAccessKey={self.SECRET}"
         assert self.SECRET not in redact_sensitive_text(bus, force=True)
 
+    @pytest.mark.parametrize("material", [
+        "-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nlQOYBF4kMaterialAAAABBBBCCCCDDDD\n-----END PGP PRIVATE KEY BLOCK-----",
+        "PuTTY-User-Key-File-3: ssh-rsa\nEncryption: none\nPrivate-Lines: 1\nAAAAB3NzaC1yc2ElQOYBF4kMaterialAAAABBBB\n",
+        "AGE-SECRET-KEY-1LQOYBF4KMATERIALAAAABBBBCCCCDDDD",
+    ])
+    def test_non_pem_private_key_formats_are_masked_on_every_surface(self, material):
+        from agent.redact import redact_for_egress, redact_terminal_output
+
+        leaked_value = "lQOYBF4kMaterialAAAABBBBCCCCDDDD"
+        for out in (
+            redact_sensitive_text(material, force=True),
+            redact_for_egress(material),
+            redact_terminal_output(material, "cat ~/.ssh/id_rsa"),
+        ):
+            assert leaked_value not in out
+            assert leaked_value.upper() not in out
+
     def test_a_base64_pem_key_is_masked_on_every_surface(self):
         from agent.redact import redact_for_egress, redact_terminal_output
 

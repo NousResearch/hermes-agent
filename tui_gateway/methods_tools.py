@@ -318,6 +318,7 @@ def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False,
     launch home). ``preserve_prefix``: append-only rebuild inside a live conversation. ``plugin_note``:
     ``(plugin_key, text)`` queued once per session for its next tool result or turn
     (``agent/plugin_live_notes.py``)."""
+    from agent.onboarding_session import carry_onboarding_toolset
     from hermes_constants import hermes_home_key
     want = hermes_home_key(home) if home is not None else None
     with _sessions_lock:
@@ -328,7 +329,7 @@ def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False,
         agent = sess["agent"]
         try:
             with _session_profile_runtime_scope(sess):
-                enabled = _carry_onboarding_toolset(_load_enabled_toolsets(getattr(agent, "platform", None)), agent)
+                enabled = carry_onboarding_toolset(_load_enabled_toolsets(getattr(agent, "platform", None)), agent)
                 disabled = _load_disabled_toolsets()
                 refresh(agent, enabled_override=enabled, disabled_override=disabled,
                         quiet_mode=True, preserve_prefix=preserve_prefix)
@@ -496,7 +497,7 @@ def _plugin_command_handler(name: str):
         return None
 
 
-def _run_plugin_command(handler, arg: str, session=None) -> str:
+def _run_plugin_command(handler, arg: str, session=None, sid: str = "") -> str:
     """Run a plugin slash-command handler under the session's ``HERMES_SESSION_*`` binding.
 
     Plugin handlers read ``get_session_env()`` for the chat/session they serve; these RPCs run on
@@ -509,8 +510,11 @@ def _run_plugin_command(handler, arg: str, session=None) -> str:
     tokens = _set_session_context(key, cwd=str(session.get("cwd") or "")) if session else []
     context = {"source": None, "session_key": key, "platform": _session_source(session),
                "session_id": getattr(session.get("agent"), "session_id", None) or key if session else ""}
+    # ctx.ask_choice: the ``clarify`` server request this backend's clarify tool sends.
+    choices = _tools_mod("hermes_cli.plugin_choices")
     try:
-        return str(plugins.resolve_plugin_command_result(invoke(handler, arg, **context)) or "")
+        with choices.bind_asker(choices.clarify_asker(lambda questions: _clarify_block(sid, questions))):
+            return str(plugins.resolve_plugin_command_result(invoke(handler, arg, **context)) or "")
     finally:
         _clear_session_context(tokens)
 
@@ -588,7 +592,8 @@ def _is_registry_command(base: str) -> bool:
 def _dispatch_plugin(rid, params, session, name, arg):
     if handler := _plugin_command_handler(name):
         with contextlib.suppress(Exception):
-            return _ok(rid, {"type": "plugin", "output": _run_plugin_command(handler, arg, session)})
+            return _ok(rid, {"type": "plugin", "output": _run_plugin_command(
+                handler, arg, session, params.get("session_id", ""))})
     return None
 
 
@@ -1058,7 +1063,8 @@ def _(rid, params: dict) -> dict:
             return dispatched
     if plugin_handler := _plugin_command_handler(base) if base else None:
         try:
-            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg, session) or "(no output)"})
+            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg, session, params.get("session_id", ""))
+                             or "(no output)"})
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
     worker = session.get("slash_worker")
@@ -1197,12 +1203,9 @@ def _container_checkpoint_refusal(session, mgr, cwd) -> str | None:
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     action = params.get("action", "status")
-    if action in {"status", "use"}:
-        from tools.browser_use_cli import is_browser_use_cli_mode, set_browser_use_mode
-        if action == "use":
-            set_browser_use_mode(params.get("enabled", True) is not False)
+    if action == "status":
         url = _resolve_browser_cdp_url()
-        return _ok(rid, {"connected": bool(url), "url": url, "browser_use": is_browser_use_cli_mode()})
+        return _ok(rid, {"connected": bool(url), "url": url})
     if action == "disconnect":
         return _browser_disconnect(rid)
     if action == "connect":

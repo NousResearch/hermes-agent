@@ -28,11 +28,14 @@ vi.mock('@/store/gateway', async importOriginal => ({
 const owner = { connectionId: 'athena', profile: 'leverage-ai' }
 const requests: HermesApiRequest[] = []
 let authFlow: 'device_code' | 'pkce'
+// The sign-in long-poll asks at once, so a test that cancels a waiting flow keeps it pending.
+let pollStatus: 'approved' | 'pending'
 let deferStart: (() => Promise<void>) | undefined
 
 beforeEach(() => {
   vi.useFakeTimers()
   authFlow = 'device_code'
+  pollStatus = 'approved'
   deferStart = undefined
   requests.length = 0
   setApiRequestConnection(owner.connectionId)
@@ -63,7 +66,7 @@ beforeEach(() => {
         }
 
         if (path.includes('/poll/') || path.endsWith('/submit')) {
-          return { ok: true, status: 'approved' }
+          return { ok: true, status: path.endsWith('/submit') ? 'approved' : pollStatus }
         }
 
         if (path.startsWith('/api/model/options')) {
@@ -147,6 +150,7 @@ it.each(['device_code', 'pkce'] as const)(
 )
 
 it('cancels on the original owner after the foreground changes', async () => {
+  pollStatus = 'pending'
   const ctx = beginContext()
   await startProviderOAuth({ ...makeOAuthProvider('openai-codex'), flow: 'device_code' }, ctx)
   switchForeground()

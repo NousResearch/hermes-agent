@@ -60,7 +60,7 @@ metadata:
     requires_toolsets: [web]            # Optional — only show when these toolsets are active
     requires_tools: [web_search]        # Optional — only show when these tools are available
     fallback_for_toolsets: [browser]    # Optional — hide when these toolsets are active
-    fallback_for_tools: [browser_navigate]  # Optional — hide when these tools exist
+    fallback_for_tools: [browser_exec]  # Optional — hide when these tools exist
     config:                              # Optional — config.yaml settings the skill needs
       - key: my.setting
         description: "What this setting controls"
@@ -120,7 +120,7 @@ metadata:
     requires_toolsets: [web]           # Hide if the web toolset is NOT active
     requires_tools: [web_search]       # Hide if web_search tool is NOT available
     fallback_for_toolsets: [browser]   # Hide if the browser toolset IS active
-    fallback_for_tools: [browser_navigate]  # Hide if browser_navigate IS available
+    fallback_for_tools: [browser_exec]  # Hide if browser_exec IS available
 ```
 
 | Field | Behavior |

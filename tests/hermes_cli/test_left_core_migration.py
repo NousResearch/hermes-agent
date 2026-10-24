@@ -378,6 +378,36 @@ def test_old_spotify_commands_point_at_the_plugin(tmp_path, monkeypatch):
     assert lcm.moved_command_hint("hermes", "honcho") == ""
 
 
+def test_old_mcp_serve_spelling_names_the_plugin_command(tmp_path, monkeypatch, capsys):
+    """`hermes mcp serve` (what MCP client configs launch) exits 2 with the new spelling and the install
+    line on stderr, never on stdout (the MCP wire); once the plugin is installed only the spelling."""
+    import sys
+
+    from hermes_cli import main as main_mod
+    home = _home(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(sys, "argv", ["hermes", "mcp", "serve", "--tools"])
+    parser, _ = main_mod._build_cli_parser()
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["mcp", "serve", "--tools"])
+    out, err = capsys.readouterr()
+    assert exc.value.code == 2 and out == ""
+    assert "`hermes mcp serve` is now `hermes mcp-serve`" in err
+    assert "plugins install mcp-serve" in err
+    (home / "plugins" / "mcp-serve").mkdir(parents=True)
+    hint = lcm.moved_command_hint("hermes mcp", "serve")
+    assert "is now `hermes mcp-serve`" in hint and "install" not in hint
+
+
+def test_mcp_serve_is_never_installed_automatically(tmp_path):
+    """MCP clients live outside Hermes, so no home shows the feature in use: hint only, no install."""
+    installs = []
+    home = _home(tmp_path, config="mcp_servers:\n  hermes:\n    command: hermes\n    args: [mcp, serve]\n")
+    assert lcm.migrate_home(home, install=lambda name: installs.append(name) or {"ok": True},
+                            say=lambda _m: None) == []
+    assert installs == []
+
+
 _LANGFUSE_KEYS_ENV = "HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-x\nHERMES_LANGFUSE_SECRET_KEY=sk-lf-x\n"
 
 

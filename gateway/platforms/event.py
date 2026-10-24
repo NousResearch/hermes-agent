@@ -39,6 +39,11 @@ class ProcessingOutcome(Enum):
     SUCCESS = "success"
     FAILURE = "failure"
     CANCELLED = "cancelled"
+    # Deliberately refused before the handler ran (e.g. an authorization
+    # rejection). Unlike FAILURE it is not an error, and unlike SUCCESS the turn
+    # produced no agent work, so reactions are fully suppressed (no ✅/❌) and the
+    # message visibly goes unhandled (#81440).
+    REJECTED = "rejected"
 
 
 @dataclass
@@ -91,6 +96,11 @@ class MessageEvent:
     channel_context: Optional[str] = None
     # Set for synthetic events (e.g. background-process notifications) that must bypass user authorization.
     internal: bool = False
+    # Set by the inbound gate when the message is refused before the agent runs
+    # (e.g. an authorization rejection). The processing-complete hook reports
+    # ProcessingOutcome.REJECTED so reactions are suppressed instead of painting
+    # a refusal as success (#81440).
+    rejected: bool = False
     # Free-form per-event metadata (e.g. ``whatsapp_from_owner=True``); plugins must ``.get()``.
     metadata: dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)

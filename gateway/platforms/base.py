@@ -4606,13 +4606,22 @@ class BasePlatformAdapter(ABC):
                     record_delivery=_record_delivery)
             await self._release_turn_marker(event)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+            # A refused message (e.g. an authorization rejection) is neither a
+            # success nor a failure — the handler deliberately produced no work.
+            # Report REJECTED so reaction hooks suppress the final reaction
+            # instead of painting the refusal as ✅ (#81440).
+            if getattr(event, "rejected", False):
+                processing_outcome = ProcessingOutcome.REJECTED
+            else:
+                processing_outcome = (
+                    ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE
+                )
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(
                 session_key, getattr(interrupt_event, "_hermes_run_generation", None),
                 event=event) or "")
             await self._run_processing_hook(
-                "on_processing_complete", event,
-                ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE)
+                "on_processing_complete", event, processing_outcome)
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)

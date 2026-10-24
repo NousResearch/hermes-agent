@@ -30,7 +30,7 @@ async def standalone_lifespan(app: "FastAPI"):
     from hermes_cli.web_server import (
         _eager_reconcile_own_session_db, _warm_gateway_module,
         _start_desktop_cron_ticker, _dashboard_selftest_loop,
-        _auto_archive_ticker_loop, _terminate_desktop_managed_gateway, _probe_install_before_state_db,
+        _auto_archive_ticker_loop, _terminate_desktop_managed_gateway,
     )
     from hermes_cli.web_server_chat import PTY_REGISTRY
 
@@ -52,10 +52,6 @@ async def standalone_lifespan(app: "FastAPI"):
     # connection closed from the main thread mid-probe (pytest's leaked-DB
     # sweep) and segfaulted the interpreter. The worker is time-bounded by
     # SessionDB's lock patience, so the join cannot hang shutdown.
-    # The first-install check reads the default root's state.db: on the desktop's own backend it runs
-    # before this process starts creating or healing that database, and its answer is kept.
-    _probe_install_before_state_db()
-
     eager_reconcile_thread = threading.Thread(
         target=_eager_reconcile_own_session_db,
         name="statedb-eager-reconcile",
@@ -162,9 +158,6 @@ async def standalone_lifespan(app: "FastAPI"):
     from hermes_cli.free_tier_bootstrap import start_background_bootstrap
 
     start_background_bootstrap()
-    # The desktop's onboarding due answer, worked out after that bootstrap and before it is asked.
-    # Through the server: methods_* functions run with the server's globals (``bind_module``).
-    tui_gateway.server.start_due_boot()
 
     try:
         yield

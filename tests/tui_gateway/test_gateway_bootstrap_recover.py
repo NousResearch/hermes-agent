@@ -121,3 +121,49 @@ def test_started_daemon_does_not_inherit_the_launch_time_kanban_board(monkeypatc
     with pytest.raises(RuntimeError):
         module.bootstrap(True)
     assert seen == [None]
+
+
+@pytest.mark.parametrize("start,recover", [(True, False), (False, True)])
+def test_restart_wait_owner_is_attachable_on_start_and_recover(monkeypatch, tmp_path, start, recover):
+    """GW-6: an owner in a restart's after-turn wait (draining/restart_wait) still owns its turns;
+    reopening the TUI to answer a parked prompt must attach, not refuse or re-ensure it."""
+    import io
+    import os
+    module = _load_bootstrap()
+    home = (tmp_path / "home").resolve()
+    home.mkdir()
+    endpoint = SimpleNamespace(profile_id=str(home), instance_id="draining-owner", api_origin="http://127.0.0.1:1",
+                               runtime_protocol=1, control_home=str(home))
+    receipt = SimpleNamespace(state="draining", endpoint=endpoint, reason_code="restart_wait", detail=None)
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(gateway_runtime, "discover_gateway_endpoint", lambda h, timeout=5: receipt)
+    ensured = []
+    monkeypatch.setattr(gateway_runtime, "ensure_gateway_runtime",
+                        lambda h, timeout=30, idle_exit=False: (ensured.append(h), receipt)[1])
+    reply = json.dumps({"ok": True, "id": 1, "result": {
+        "instance_id": endpoint.instance_id, "profile_id": endpoint.profile_id, "ticket": "grant"}}).encode()
+    if os.name == "nt":
+        import gateway.runtime_bootstrap_windows as windows_bootstrap
+        monkeypatch.setattr(windows_bootstrap, "query_runtime_control", lambda h, req, timeout: reply)
+    else:
+        import hermes_cli.gateway_runtime_discovery as discovery
+
+        class Peer:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def sendall(self, _request):
+                pass
+
+            def makefile(self, _mode):
+                return io.BytesIO(reply)
+
+        monkeypatch.setattr(discovery, "connect_private", lambda h, timeout: Peer())
+
+    result = module.bootstrap(start, recover=recover)
+
+    assert result["instance_id"] == "draining-owner"
+    assert ensured == ([home] if start else [])

@@ -61,7 +61,7 @@ def reissue(operation: ConnectionOperation, names: Sequence[str], *, initiator: 
     if targets[0].kind == "connector":
         from tools.connectors.managed import CARD_RETRY, managed_client, mint
 
-        client = managed_client(initiator=initiator or CARD_RETRY, call=operation.call)
+        client = managed_client(creates_guest=True, initiator=initiator or CARD_RETRY, call=operation.call)
         mint(client, operation, stale, reinitiate=True, actor=Actor.user)
         return None
     from tools.connectors import catalog
@@ -80,6 +80,16 @@ def apply_answer(operation: ConnectionOperation, raw: str) -> None:
         display.apply_answer(operation, raw)
         return
     (catalog.apply_answer if catalog.owns(operation.op_id) else mcp.apply_answer)(operation, raw)
+
+
+def respond(operation: ConnectionOperation, raw: str) -> bool:
+    """The card's answer: apply it, settle once every target is resolved, close a settled operation. Returns whether it settled; raises ``IllegalTransition`` for an answer the operation refuses."""
+    apply_answer(operation, raw)
+    if not operation.settled and operation.all_resolved:
+        operation.settle(SettleReason.all_resolved)
+    if operation.settled:
+        live.close(operation)
+    return operation.settled
 
 
 def run_operation(

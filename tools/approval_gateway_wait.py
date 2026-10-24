@@ -151,6 +151,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     from agent.terminal_approval_batch import approval_published, preparing_terminal_approval, register_prepared_approval
 
     primary_key = approval_data.get("pattern_key", "")
+    if surface == "gateway":
+        surface = _ctx.gateway_approval_surface()
     payload = {
         "command": approval_data.get("command", ""),
         "description": approval_data.get("description", ""),

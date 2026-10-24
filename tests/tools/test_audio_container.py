@@ -152,6 +152,6 @@ class TestSignalDelegatesToCentralSniffer:
     """signal._guess_extension audio branches delegate to the shared module."""
 
     def test_signal_uses_shared_sniffer(self):
-        from gateway.platforms import signal as signal_mod
+        from plugins.platforms.signal import adapter as signal_mod
 
         assert signal_mod._guess_extension(M4A) == ".m4a"

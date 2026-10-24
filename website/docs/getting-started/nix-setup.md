@@ -910,8 +910,9 @@ A build-time collision check prevents plugin packages from shadowing core hermes
 
 ### Dev Shell
 
-The flake provides an editable Python environment with the lock-derived interpreter
-and the `dev` dependency group. `HERMES_PYTHON` points to its interpreter. It does not install
+The flake provides an editable Python venv with the `dev` dependency group, running
+on the interpreter `pm/lock.json` pins. `HERMES_PYTHON` and `VIRTUAL_ENV` point at it,
+and it needs no `PYTHONPATH`. It does not install
 Python dependencies into a repository-local `.venv`. The shell also provides
 Node.js and runtime tools. Its npm hook refreshes JS workspaces when their inputs change.
 

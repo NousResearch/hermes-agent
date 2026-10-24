@@ -41,6 +41,8 @@ class CodexRetirements:
         if owner is None:
             return
         _, session, _ = owner
+        if getattr(agent, "__dict__", {}).get("_gateway_cache_owner") is not None:
+            raise RuntimeError("Codex writer is still executing another gateway turn")
         session.close()
         if getattr(agent, "_codex_session", None) is session:
             agent._codex_session = None

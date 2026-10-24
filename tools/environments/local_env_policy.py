@@ -110,8 +110,12 @@ def _build_adapter_secret_env() -> frozenset:
         CORE_DECLARED_ENV_NAMES, OPTIONAL_ENV_VARS, PLATFORM_SECRET_ENV_SUFFIXES, platform_manifest_secret_envs)
     from hermes_cli.profile_channels import config_env_table_keys
     # Read in code only, declared nowhere else: the Microsoft Graph app secret and webhook
-    # clientState, and the QQ bot's speech-to-text key.
-    names: set[str] = {"MSGRAPH_CLIENT_SECRET", "MSGRAPH_WEBHOOK_CLIENT_STATE", "QQ_STT_API_KEY"}
+    # clientState, the QQ bot's speech-to-text key, and secrets only a plugin's ``env_overrides``
+    # reads (Feishu webhook keys, Yuanbao's legacy app key). Those rows live on the adapter's
+    # PlatformEntry, which this import-time policy cannot load without importing every adapter;
+    # tests/gateway/test_platform_env_overrides.py pins that every such secret is listed here.
+    names: set[str] = {"MSGRAPH_CLIENT_SECRET", "MSGRAPH_WEBHOOK_CLIENT_STATE", "QQ_STT_API_KEY",
+                       "FEISHU_ENCRYPT_KEY", "FEISHU_VERIFICATION_TOKEN", "YUANBAO_APP_KEY"}
     names.update(name.upper() for name, meta in OPTIONAL_ENV_VARS.items()
                  if name in CORE_DECLARED_ENV_NAMES
                  and meta.get("category") == "messaging" and meta.get("password"))

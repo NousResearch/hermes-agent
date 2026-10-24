@@ -477,7 +477,7 @@ itself ships.
 | `hermes.memory.op.count` | op (`add`/`replace`/`remove`/`read`/`search`/`other`), provider (`builtin`, a bundled memory plugin, else `plugin`), origin (`foreground`/`background_review`), outcome (`success`/`failed`/`rejected`), failure class | Is the learning loop writing memory, who asks for it (the user's turn or the background review), and how often writes are refused or fail, and why. Since package schema v4 `failure_class` names the reason from a closed list mapped from each refusal/failure return of the built-in store: `no_match` (old_text matched no entry), `ambiguous` (it matched several), `over_budget` (the write would pass the char limit), `would_empty` (a batch would remove the last entry), `drift` (the file holds text the store cannot round-trip), `read_failed` (the file exists but cannot be read), `retry_cap` (the per-turn retry budget is spent), `scan_blocked` (the content matched a threat pattern), `missing_content`, `missing_old_text`, `invalid_args`, `stale_entry` (a staged write's entry changed), `disabled` (that target is off in config), `staged` (held for the user's approval), `gate_refused` (the write-approval gate blocked it); `provider_error` / `exception` for a plugin provider's tool that returned an error or raised; `none` on success; `other`/`unknown` otherwise. A batch applies all or none, so every op row of a refused batch carries the class of the op that stopped it. Never the memory text, the old_text or the error message. |
 | `hermes.curator.run.count` | trigger (`scheduled`/`manual`), outcome (`success`/`failed`/`skipped`), archived/merged/patched/created buckets | Does the skill curator run, and does it actually consolidate anything. Dry runs report `skipped`; a scheduled check that finds another process already running the pass records nothing. Never skill names. |
 | `hermes.delegation.run.count` | subagent-count bucket, depth (`1`–`3`, `gte_4`), mode (`foreground`/`background`), outcome (`success`/`partial`/`failed`/`cancelled`) | How wide and deep delegate_task fan-outs go and how often every child finishes. One row per call, however many completion units it splits into. |
-| `hermes.execution_backend.count` | kind (`terminal`/`browser`/`code`), backend, outcome, error class | Which sandboxes carry real work and how reliable each is. Terminal backends are the `terminal.backend` values (else `other`); browser backends are `local`, `lightpanda`, `cdp`, `camofox`, `extension` or a bundled cloud provider (else `other`); execute_code is `local` or `remote`. A command's own nonzero exit is still a backend success, but a foreground command that hits its timeout is `failed`/`timeout`; terminal and execute_code calls a guard refuses before they reach the backend, Hermes' own listings for TUI/Desktop path completion, and calls made by the background review and curator forks are not counted. |
+| `hermes.execution_backend.count` | kind (`terminal`/`browser`/`code`), backend, outcome, error class | Which sandboxes carry real work and how reliable each is. Terminal backends are the `terminal.backend` values (else `other`); browser backends are `local`, `lightpanda`, `cdp` or a bundled cloud provider (else `other`; `camofox` and `extension` stay in the schema as legacy labels); execute_code is `local` or `remote`. A command's own nonzero exit is still a backend success, but a foreground command that hits its timeout is `failed`/`timeout`; terminal and execute_code calls a guard refuses before they reach the backend, Hermes' own listings for TUI/Desktop path completion, and calls made by the background review and curator forks are not counted. |
 | `hermes.platform.health` | platform, event (`connect_ok`/`connect_failed`/`reconnect`/`disconnect`), error class (`auth`/`network`/`rate_limited`/`config`/`other`) | Which messaging platforms fail to connect or drop, and why. `connect_failed` counts a failed-connect episode once per profile, platform and UTC day (the reconnect watcher's retries are not new rows; the next success ends the episode, and a platform still failing the next day counts again), with the error class of the episode's first failure. Classified from exception types, HTTP statuses and Hermes's own fatal codes, never error text. |
 | `hermes.platform.delivery` | platform, outcome (`sent`/`failed`), failure class (`rate_limited`/`too_long`/`auth`/`network`/`forbidden`/`other`) | How often replies fail to reach the user per platform (one count per logical reply, retries included). |
 | `hermes.gateway.reply_latency` | platform, first-response bucket (`lt_2s` … `gte_60s`) | Time from an accepted inbound message to the first visible reply text (stream first chunk or final message). |
@@ -684,7 +684,14 @@ field sets of `hermes.model_route.count`, `hermes.tool_call.count` and the task
 counters, so counters recorded before an upgrade drain safely.
 Vocabularies derived from in-repo registries (tool names, platforms, memory
 providers, error classes) are bounded by pattern in the JSON schema; the
-authoritative allowlist is `shared_metrics_contract.py`.
+authoritative allowlist is `shared_metrics_contract.py`. Values Hermes no longer
+emits stay accepted as legacy values so counters recorded by an older version
+still drain: the removed built-in browser tools (`browser_navigate`,
+`browser_snapshot`, `browser_click`, `browser_type`, `browser_scroll`,
+`browser_back`, `browser_press`, `browser_console`, `browser_get_images`,
+`browser_vision`) remain valid tool names, and `camofox` remains a valid browser
+backend label. Camofox now ships as the `camofox` catalog plugin, so its tools
+report `plugin`.
 
 Each package contains an `install_id` generated as a random UUID. Despite the
 schema field name, its current scope is one `HERMES_HOME`, so it is more
@@ -766,8 +773,11 @@ telemetry:
 - Like `enabled`, `send` is profile-owned and is not overridden by
   managed-scope configuration.
 
-Both keys are asked once per profile, with the same three answers everywhere
-(Send to Nous / Local only / No thanks):
+Both keys are asked once per profile, with the same two answers everywhere
+(Share with Nous / No thanks). Each answer sets both keys: "Share with Nous"
+writes `enabled: true, send: true`, "No thanks" writes both false. The keys stay
+separate so the sender keeps its own gate. Collecting without sending is no
+longer offered; a hand-edited config can still set it.
 
 | Surface | Where the offer appears |
 | --- | --- |
@@ -788,9 +798,13 @@ was starting could save "No thanks" before the question appeared. A "No thanks"
 recorded without `offer_version` is therefore offered once more on every surface,
 with a note saying why. Any response settles it for good, including Esc or the
 banner's ✕, which keep "No thanks". Answers that opted in are never re-asked.
-To change the answer
+
+The offer used to have a third answer that collected without sending ("Local
+only" / "Keep on this computer"). Profiles that chose it keep it and are not
+asked again; nothing is sent. Desktop's switch reads off for them and the
+`hermes tools` row reads "collecting locally". To change the answer
 later, use `hermes setup telemetry`, `hermes tools`, or Desktop's Settings ›
-Safety › Privacy & network.
+Safety › Privacy & network; each offers the same single on/off choice.
 
 **A package is only sent when its whole period falls inside a recorded
 consent window.** Consent is stored as explicit intervals in the shared-

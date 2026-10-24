@@ -344,7 +344,7 @@ def test_running_eviction_keeps_owner_until_turn_release():
     client = session._client
     agent = agent_shell(session)
     runner = GatewayRunner.__new__(GatewayRunner)
-    turn = SimpleNamespace(agent=agent, lease=None)
+    turn = SimpleNamespace(agent=agent, lease=None, retired_agents=[])
     turn.clear = lambda: setattr(turn, 'agent', None)
     state = SimpleNamespace(turn=turn, conversation=SimpleNamespace())
     runner._peek_session_state = lambda _: state

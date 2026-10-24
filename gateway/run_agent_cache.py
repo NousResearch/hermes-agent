@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
 from agent.codex_lifecycle import codex_retirements
-from gateway.agent_cache_claim import cache_agent_in_use, evict_deferred_agent
+from gateway.agent_cache_claim import cache_agent_in_use, evict_deferred_agent, release_retired_agents
 from gateway.config import Platform
 from gateway.session import SessionSource, build_session_context_prompt
 from gateway.session_prompt_pin import PROMPT_PIN_VERSION, sanitize_prompt_pin
@@ -320,6 +320,7 @@ class GatewayAgentCacheMixin:
             from gateway.run import _AGENT_PENDING_SENTINEL
             if agent is not None and agent is not _AGENT_PENDING_SENTINEL:
                 evict_deferred_agent(self, session_key, agent)
+            release_retired_agents(self, session_key)
         # Turn boundary: a running-agent slot was just released; persist the new (lower) in-flight count
         # so the dashboard readout stays current. Preserves gateway_state (see _persist_active_agents).
         self._persist_active_agents()
@@ -655,7 +656,7 @@ class GatewayAgentCacheMixin:
         member/speaking churn can't touch the prompt."""
         if source.platform != Platform.DISCORD:
             return None
-        adapter = self.adapters.get(Platform.DISCORD)
+        adapter = self._delivery_adapter_for(source)
         guild_id = self._get_guild_id(event)
         if not (guild_id and adapter and hasattr(adapter, "get_voice_channel_context")):
             return None
@@ -673,13 +674,13 @@ class GatewayAgentCacheMixin:
         return f"[Voice channel now: {vc_now or 'not connected to a voice channel'}]"
 
     async def _rehydrate_prompt_pins(self, session_key: str, expected_session_id: Optional[str]) -> None:
-        """Adopt the durable pin snapshot for an internal turn when this process holds no pins for
-        *session_key* (a restart). Eviction clears only ``ephemeral_pin`` and keeps ``channel_pin``,
-        so an evicted agent still re-renders instead of reviving the snapshot."""
+        """Adopt the durable pin snapshot for an internal turn when this process holds no context pin
+        for *session_key*: a restart, or an eviction (/stop, /undo, /model), which clears only
+        ``ephemeral_pin``. Without it the wake renders from its origin-only source (no chat or user
+        names) and the next human turn re-keys back, rewriting the system bytes twice. Human turns
+        never call this, so an evicted agent's next human turn still re-renders."""
         state = self._peek_session_state(session_key)
-        if state is not None and (
-            state.conversation.ephemeral_pin is not None or state.conversation.channel_pin is not None
-        ):
+        if state is not None and state.conversation.ephemeral_pin is not None:
             return
         try:
             pin = sanitize_prompt_pin(await self.async_session_store.get_prompt_pin(
@@ -692,7 +693,8 @@ class GatewayAgentCacheMixin:
             return
         conversation = self._session_state(session_key).conversation
         conversation.ephemeral_pin = (pin["context_key"], pin["context_prompt"], pin["redact_pii"])
-        conversation.channel_pin = (pin["channel_prompt"], pin["parent_chat_id"])
+        if conversation.channel_pin is None:
+            conversation.channel_pin = (pin["channel_prompt"], pin["parent_chat_id"])
 
     async def _persist_prompt_pins(self, session_key: Optional[str], expected_session_id: Optional[str]) -> None:
         """Persist this conversation's pins before the agent runs; the store no-ops an unchanged
@@ -725,10 +727,12 @@ class GatewayAgentCacheMixin:
         source rebuilt from the persisted origin, without chat_name/user_name/message_id. Rendering
         from it re-keyed the pin, and the next human turn re-keyed it back (A→B→A), rewriting
         already-sent system bytes each time. An internal event is never a real metadata change, so
-        it reuses an existing pin verbatim (restored by ``_rehydrate_prompt_pins`` after a restart); with
+        it reuses an existing pin verbatim (restored by ``_rehydrate_prompt_pins`` after a restart or an eviction); with
         no pin yet it renders and pins as usual. The pin records the ``privacy.redact_pii`` it was
         rendered under: bytes from another privacy policy are never reused, even by an internal
-        event."""
+        event. Callers pass ``event.internal or event.inherit_channel_pin`` (synthetic
+        goal/heartbeat/resume turns strip ``message_id``) so this pin and ``_pinned_channel_inputs``
+        reuse on the same decision."""
         _pin_state = self._peek_session_state(session_key) if session_key else None
         _eph_pin = _pin_state.conversation.ephemeral_pin if _pin_state else None
         if _eph_pin is not None and _eph_pin[2] != redact_pii:
@@ -749,10 +753,12 @@ class GatewayAgentCacheMixin:
         """``(channel_prompt, source)`` for this turn's agent run.
 
         The ephemeral system prompt also appends ``channel_prompt`` and the ``channel_overrides``
-        prompt (looked up by chat/thread/``parent_chat_id``). Internal events carry
-        ``channel_prompt=None`` and a source without ``parent_chat_id``, so they dropped both and
-        toggled the system prompt like the context pin did. Human turns record their inputs;
-        internal turns reuse them (``_rehydrate_prompt_pins`` restores both after a restart)."""
+        prompt (looked up by chat/thread/``parent_chat_id``). Events with no channel inputs of
+        their own (internal events, and synthetic goal/heartbeat/resume turns — see
+        ``MessageEvent.inherit_channel_pin``) carry ``channel_prompt=None`` and a source without
+        ``parent_chat_id``, so they dropped both and toggled the system prompt like the context pin
+        did. Human turns record their inputs; turns that ask to reuse the pin get them back
+        (``_rehydrate_prompt_pins`` restores both after a restart)."""
         if not session_key:
             return channel_prompt, source
         if not internal:
@@ -814,7 +820,8 @@ class GatewayAgentCacheMixin:
         )
         return hashlib.sha256(repr(key_tuple).encode("utf-8")).hexdigest()
 
-    def _evict_cached_agent(self, session_key: str, *, commit_memory: bool = False, expected_agent: Any = None) -> None:
+    def _evict_cached_agent(self, session_key: str, *, commit_memory: bool = False,
+                            release_after_turn: bool = False, expected_agent: Any = None) -> None:
         """Remove a cached agent (/new, /model, ...) and soft-release its LLM client pool (AIAgent
         holds reference cycles; without it RSS grows across /new). Soft = frees clients and child
         subagents but PRESERVES terminal sandbox / browser / bg processes since the session may
@@ -826,6 +833,9 @@ class GatewayAgentCacheMixin:
         reference cycles (callbacks, tool state) that delay refcount collection, so a manual release is
         required to keep gateway RSS flat across many /new, /model, undo and reset operations (#29298, same
         leak class as #25315).
+
+        ``release_after_turn`` hides a one-turn route immediately. Its clients retire once both
+        the running slot and the actual synchronous checkout no longer use the agent.
         """
         from gateway.run import _AGENT_PENDING_SENTINEL
         # Tests build runners with ``_agent_cache_lock = None``; evict lock-free then. With the lock
@@ -848,9 +858,15 @@ class GatewayAgentCacheMixin:
                 self._agent_cache.pop(session_key, None)
                 return None
             if cache_agent_in_use(agent) or id(agent) in self._running_agent_ids():
-                # Keep the owner in the cache until the running slot is released. Never
-                # register a retirement and then abandon it after a second running snapshot.
+                # Ordinary eviction keeps the owner cached until its checkout ends. A one-turn
+                # route moves to the upstream retired list below without dropping writer ownership.
                 agent._cache_evict_after_turn = commit_memory or getattr(agent, "_cache_evict_after_turn", False)
+                if release_after_turn and state is not None:
+                    # Hide a one-turn route immediately, but retain its physical writer and
+                    # checkout claim until the actual worker (not just its async slot) exits.
+                    codex_retirements(self).track(agent)
+                    state.turn.retired_agents.append(agent)
+                    self._agent_cache.pop(session_key, None)
                 return None
             commit_memory = vars(agent).pop("_cache_evict_after_turn", False) or commit_memory
             codex_retirements(self).track(agent)

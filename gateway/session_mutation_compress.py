@@ -1,8 +1,12 @@
 """Summary preparation has no canonical store; publication owns the only write."""
 import asyncio
 import json
+import logging
+from pathlib import Path
 
 from hermes_state_runtime import RuntimeStoreError
+
+logger = logging.getLogger(__name__)
 
 
 def compress_request(payload):
@@ -82,17 +86,48 @@ async def prepare_compress(authority, live, payload, prepared):
     if compressed is None:
         # Nothing removable (a short session keeps every message): main's read-only
         # "No changes from compression" report, estimated like main's (system prompt + tools).
-        tokens = _request_tokens(resident, messages)
+        row = None if resident is not None else authority.db.get_session(snapshot['target'])  # resident: row unused
+        tokens = _request_tokens(resident, messages, row)
         return {'status': 'noop', 'summary': summarize_manual_compression(
             messages, messages, tokens, tokens, compression_state=compressor)}
     summary = summarize_manual_compression(messages, compressed, estimate_request_tokens_rough(messages),
                                            estimate_request_tokens_rough(compressed), compression_state=compressor)
-    return dict(prepared, messages=compressed, summary=summary,
+    from agent.model_metadata import estimate_messages_tokens_rough
+    hook = None if policy.safe_mode else {  # same rough basis as the agent path's compaction record
+        'before_tokens': estimate_messages_tokens_rough(messages),
+        'after_tokens': estimate_messages_tokens_rough(compressed), 'messages_removed': len(messages) - len(compressed)}
+    return dict(prepared, messages=compressed, summary=summary, post_compaction=hook,
                 in_place=is_truthy_value(options.get('in_place'), default=True))
 
 
-def _request_tokens(agent, messages):
-    """Main's /compress request estimate: the agent's system prompt and tool schemas plus the messages."""
+async def fire_post_compaction_hook(authority, prepared, result):
+    """``post_compaction`` for a committed ``/compress``: this path summarizes outside the agent's
+    ``compress_context``, so it fires here, after the commit, in the session's profile."""
+    from agent.compaction_events import fire_post_compaction
+    from gateway.run import _async_profile_runtime_scope
+    target, previous = result['target_session_id'], result['previous_target_session_id']
+    try:
+        async with _async_profile_runtime_scope(Path(authority.profile_id)):
+            await asyncio.to_thread(
+                fire_post_compaction, session_id=target, old_session_id='' if previous == target else previous,
+                kind='summarize', reason='manual', **prepared['post_compaction'])
+    except Exception:  # the compaction is committed; a plugin-side failure must not fail the reply
+        logger.warning('post_compaction hook delivery failed', exc_info=True)
+
+
+def _request_tokens(agent, messages, row=None):
+    """Main's /compress request estimate: the agent's system prompt and tool schemas plus the messages.
+    No resident agent (a cold session): the prompt and tools[] pin the session row stores, which the
+    next agent restores and sends, so the figure matches what main's resident agent reported."""
     from agent.model_metadata import estimate_request_tokens_rough
-    return estimate_request_tokens_rough(messages, system_prompt=getattr(agent, '_cached_system_prompt', '') or '',
-                                         tools=getattr(agent, 'tools', None) or None)
+    prompt = getattr(agent, '_cached_system_prompt', '') or ''
+    tools = getattr(agent, 'tools', None) or None
+    if agent is None and isinstance(row, dict):
+        prompt = row.get('system_prompt') or ''
+        try:
+            pin = json.loads(row.get('tool_names') or 'null')
+        except (TypeError, ValueError):
+            pin = None  # a pin hash whose row was swept resolves to itself
+        from tools.mcp_tool_agent import pinned_tool_defs
+        tools = pinned_tool_defs(pin) or None
+    return estimate_request_tokens_rough(messages, system_prompt=prompt, tools=tools)

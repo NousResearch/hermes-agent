@@ -543,6 +543,18 @@ export function prewarmProfileBackend(name: string, connectionId: null | string 
 
 let gatewaySwitch: Promise<void> | null = null
 
+// Bumped by every explicit profile selection (ensureGatewayProfile with a
+// target). Boot and connection applies snapshot it before their slow
+// descriptor/dial awaits; a selection made in between is newer intent than
+// the boot's primary adoption, which must then leave the active route alone
+// (T19, #134889: the first secondary click right after boot otherwise flipped
+// back to default and the sidebar loaded default's sessions).
+let profileSelectionRevision = 0
+
+export function currentProfileSelectionRevision(): number {
+  return profileSelectionRevision
+}
+
 // Descriptor lookups are IPC round-trips into Electron main. A wedged main
 // (the #93454 class: a ticket mint that never answers) must not latch the
 // gatewaySwitch mutex — and, through it, every later profile/source switch
@@ -607,6 +619,7 @@ export async function ensureGatewayProfile(
   }
 
   const target = normalizeProfileKey(profile)
+  profileSelectionRevision += 1
 
   // Fast path: only when the REGISTRY's active route — the authority that
   // selects the socket in applyActive — already serves the target. The

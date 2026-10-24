@@ -1,10 +1,16 @@
 """Display and heartbeat phase of the request-local streaming monitor."""
 
+import logging
 import time
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 from agent import chat_completion_wait_notice as wn
 from agent.model_metadata import is_local_endpoint
+from agent.proxy_bypass import is_loopback_host
+from agent.sleep_clock import SleepWatch
+
+logger = logging.getLogger(__name__)
 
 
 class StreamingWaitMonitor:
@@ -14,9 +20,11 @@ class StreamingWaitMonitor:
         REAL chunk arrived for 2s+ (never during healthy token flow); in-memory,
         no network. True while loading = heartbeat liveness, skip the rest of
         this iteration (the stale detector's local floor dwarfs any load)."""
-        from agent.chat_completion_helpers import _managed_local_load_notice
+        from agent.chat_completion_local import _managed_local_load_notice
 
         m = self._mon
+        if self._show_prompt_progress(now):
+            return True
         if now - self.last_chunk_time["t"] < 2.0 or now - m.last_load_poll < 1.0:
             return False
         m.last_load_poll = now
@@ -35,6 +43,46 @@ class StreamingWaitMonitor:
                 m.load_notice_shown, m.load_notice_misses = False, 0
                 self.agent._emit_wait_notice("")
         return False
+
+    def _show_prompt_progress(self, now: float) -> bool:
+        """Prompt progress straight from the stream's own progress chunks (llama-server with
+        ``return_progress``), at most once a second until the first token. Clears the line
+        when the first token arrives. True when it showed progress."""
+        from agent.local_prompt_progress import prompt_progress_percent
+
+        m = self._mon
+        state = getattr(self, "prompt_progress", None)
+        diag = getattr(getattr(self, "clients", None), "diag", None)
+        first_token = isinstance(diag, dict) and bool(diag.get("first_chunk_at"))
+        if not state or state["progress"] is None:
+            return False
+        if first_token:
+            if m.load_notice_shown:
+                m.load_notice_shown, m.load_notice_misses = False, 0
+                self.agent._emit_wait_notice("")
+            return False
+        if now - state["t"] > 60.0 or now - m.last_load_poll < 1.0:
+            return False
+        m.last_load_poll = now
+        percent = prompt_progress_percent(state["progress"])
+        m.wait_notice_started_ts = None  # The prompt-progress line owns the display.
+        m.wait_notice.reset()
+        self.agent._emit_wait_notice(
+            f"⚙ processing prompt — {percent}%" if percent is not None else "⚙ processing prompt")
+        m.load_notice_shown, m.load_notice_misses, m.last_heartbeat = True, 0, now
+        return True
+
+    def _skip_sleep(self, slept: float) -> None:
+        """The computer slept and froze this request with a server on the same machine: move the
+        stall clock past the sleep, so the request gets its full patience again after wake. Never
+        past now: a chunk can land between the sleep reading and this write."""
+        if slept <= 0:
+            return
+        now = time.time()
+        self.last_chunk_time["t"] = min(self.last_chunk_time["t"] + slept, now)
+        self._mon.last_heartbeat = min(self._mon.last_heartbeat + slept, now)
+        logger.info("Computer slept for %.0fs during a model request; the stall timer skips that time.", slept)
+        self.agent._touch_activity(f"resumed after the computer slept for {int(slept)}s")
 
     def _heartbeat(self, waiting_secs: int) -> None:
         """Gateway inactivity heartbeat: the start-to-first-chunk gap (thinking,
@@ -64,8 +112,13 @@ class StreamingWaitMonitor:
             wait_notice=wn.WaitNoticeState(),
         )
         _is_local_base = bool(self.agent.base_url) and is_local_endpoint(self.agent.base_url)
+        # Only a server on this machine sleeps with it; a remote one kept working (or died).
+        sleep_watch = (SleepWatch(interval=0.3) if self.agent.base_url
+                       and is_loopback_host(urlsplit(self.agent.base_url).hostname) else None)
         while not self._call_done.is_set():
             self._call_done.wait(timeout=0.3)
+            if sleep_watch is not None:
+                self._skip_sleep(sleep_watch.slept())
             _hb_now = time.time()
             if _is_local_base and self._poll_local_load_notice(_hb_now):
                 continue

@@ -139,14 +139,27 @@ def _toolset_configuration_platform(ts_key: str, default: str = "cli") -> str:
     return default if not allowed or default in allowed else min(allowed)
 
 
+# A classic CLI on a gateway session reads plugin toolsets from the gateway instead of loading plugins
+# (installed by ``_ensure_gateway_session``): ``() -> ([(key, label, description)], {portable MCP})`` or
+# None (off the gateway: this process's own registry).
+_gateway_plugin_toolsets = None
+
+
+def _projected_plugin_toolsets():
+    provider = _gateway_plugin_toolsets
+    return provider() if provider is not None else None
+
+
 def _get_effective_configurable_toolsets():
     """CONFIGURABLE_TOOLSETS + plugin toolsets (appended after built-ins; a plugin key already built-in is skipped)."""
     result = list(CONFIGURABLE_TOOLSETS)
     seen = {ts_key for ts_key, _, _ in result}
     try:
-        from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
-        discover_plugins()  # idempotent — ensures plugins are loaded
-        for entry in get_plugin_toolsets():
+        projected = _projected_plugin_toolsets()
+        if projected is None:
+            from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
+            discover_plugins()  # idempotent — ensures plugins are loaded
+        for entry in projected[0] if projected is not None else get_plugin_toolsets():
             if entry[0] not in seen:
                 seen.add(entry[0])
                 result.append(entry)
@@ -158,6 +171,8 @@ def _get_effective_configurable_toolsets():
 def _get_plugin_toolset_keys() -> set:
     """Return the set of toolset keys provided by plugins."""
     try:
+        if (projected := _projected_plugin_toolsets()) is not None:
+            return {key for key, _, _ in projected[0]}
         # Non-blocking on CLI startup: while background discovery is still importing, serve last
         # launch's persisted key set instead of joining the discovery thread.
         from hermes_cli.plugins import get_plugin_toolset_keys_nowait
@@ -287,7 +302,7 @@ TOOL_CATEGORIES = {
         # picks the gateway at run time (tools/image_generation_managed.py).
         "providers": [
             _row("Nous Subscription", "subscription",
-                 "Managed image generation (FAL, Krea 2, Nous Portal models) billed to your subscription", **_NOUS,
+                 "Managed image generation (FAL, Krea 3 and Krea 2, Nous Portal models) billed to your subscription", **_NOUS,
                  managed_nous_feature="image_gen", override_env_vars=["FAL_KEY"], imagegen_backend="nous"),
         ],
     },
@@ -322,25 +337,18 @@ TOOL_CATEGORIES = {
         # Cloud provider rows (Browserbase, Browser Use, Firecrawl) come from plugins.browser.<vendor> via
         # _plugin_browser_providers(); only non-provider setup-flow rows live here. "Local Browser" MUST stay
         # first so a fresh install's Enter lands on the free local backend (index 0), never on the paid Nous row.
-        # Lightpanda is local too (cloud_provider: local, browser.engine: lightpanda — Browser Use mode spawns
-        # ``lightpanda serve``, built-in tools use ``agent-browser --engine lightpanda``; no Chromium).
-        # Camofox short-circuits the cloud dispatch via _is_camofox_mode().
+        # Lightpanda is local too (cloud_provider: local, browser.engine: lightpanda — browser_exec spawns
+        # ``lightpanda serve``; no Chromium).
         "providers": [
             _row("Local Browser", "★ recommended · free", "Headless Chromium, no API key needed", browser_provider="local",
-                 browser_engine="auto", post_setup="agent_browser"),
+                 browser_engine="auto", post_setup="chromium"),
             _row("Lightpanda", "free · local · no Chromium", "Zig headless browser spawned by Hermes, text-only (no screenshots)",
                  browser_provider="local", browser_engine="lightpanda", post_setup="lightpanda"),
-            # Cloud hook installs only the agent-browser CLI: Browser Use hosts its own Chromium, so the
-            # local-Chromium install and readiness gate must not apply (with "agent_browser" this row read
-            # "needs setup" forever on machines without a local Chromium build).
+            # Browser Use hosts its own Chromium, so the local-Chromium install and readiness gate must not
+            # apply (with "chromium" this row read "needs setup" forever on machines without a local build).
             _row("Nous Subscription (Browser Use cloud)", "subscription", "Managed Browser Use billed to your subscription",
                  browser_provider="browser-use", **_NOUS, managed_nous_feature="browser",
                  override_env_vars=["BROWSER_USE_API_KEY"], post_setup="browserbase"),
-            _row("Camofox", "free · local", "Anti-detection browser (Firefox/Camoufox)",
-                 [_key("CAMOFOX_URL", "Camofox server URL", "https://github.com/jo-inc/camofox-browser", default="http://localhost:9377")],
-                 browser_provider="camofox", post_setup="camofox"),
-            _row("Browser Use", "free · local · cloud", "New SOTA web harness (CLI 3.0)", browser_backend="browser-use",
-                 post_setup="browser_use_cli"),
         ],
     },
     "computer_use": {
@@ -403,8 +411,10 @@ def enabled_mcp_server_names(config: dict) -> set[str]:
         if isinstance(server_cfg, dict) and mcp_server_enabled(server_cfg)
     }
     try:
-        from hermes_cli.plugins import get_portable_mcp_server_names_nowait
-        portable = get_portable_mcp_server_names_nowait()
+        projected = _projected_plugin_toolsets()
+        if projected is None:
+            from hermes_cli.plugins import get_portable_mcp_server_names_nowait
+        portable = projected[1] if projected is not None else get_portable_mcp_server_names_nowait()
         names |= portable - set(mcp_servers)  # native config wins on a name collision (mirrors _load_mcp_config)
     except Exception:
         logger.debug("Failed to include portable MCP servers", exc_info=True)
@@ -685,15 +695,19 @@ def _merge_mcp_servers(
     """Explicit passthrough entries plus this platform's MCP servers: listed names form an allowlist, else every
     globally enabled server (when ``include_default_mcp_servers``); the ``no_mcp`` sentinel disables all."""
     enabled_mcp_servers = enabled_mcp_server_names(config)
+    configured = config.get("mcp_servers") if isinstance(config.get("mcp_servers"), dict) else {}
+    known = enabled_mcp_servers | {str(name) for name in configured}
     # ``mcp-<server>`` names the same server as its bare alias: either spelling selects only that server
     # (unless a server is literally named ``mcp-<server>``).
-    explicit_passthrough = {ts[4:] if ts.startswith("mcp-") and ts not in enabled_mcp_servers
-                            and ts[4:] in enabled_mcp_servers else ts for ts in explicit_passthrough}
-    result = explicit_passthrough - enabled_mcp_servers
+    explicit_passthrough = {ts[4:] if ts.startswith("mcp-") and ts not in known
+                            and ts[4:] in known else ts for ts in explicit_passthrough}
+    result = explicit_passthrough - known
     if "no_mcp" in toolset_names:
         return result - {"no_mcp"}
     explicit_mcp_servers = explicit_passthrough & enabled_mcp_servers
-    if include_default_mcp_servers and not explicit_mcp_servers:
+    # A listed server that is configured but disabled is still the user's server selection: it stays
+    # off, and it must not fall through to every enabled server.
+    if include_default_mcp_servers and not explicit_passthrough & known:
         return result | enabled_mcp_servers
     return result | explicit_mcp_servers
 
@@ -910,9 +924,10 @@ def _shared_metrics_state(config: dict) -> tuple[bool, bool]:
 
 
 def _shared_metrics_menu_label(config: dict) -> str:
-    """Menu row for shared metrics, showing both consent states."""
+    """Menu row for shared metrics. Collect-only is an answer the offer no longer has; a profile
+    that chose it earlier keeps it, and the row names it rather than reading "off" while it collects."""
     enabled, send = _shared_metrics_state(config)
-    state = "off" if not enabled else ("collecting + sending to Nous" if send else "collecting locally")
+    state = "off" if not enabled else ("sending to Nous" if send else "collecting locally")
     return f"Configure shared metrics  ({state})"
 
 

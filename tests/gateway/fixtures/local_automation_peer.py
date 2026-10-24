@@ -44,6 +44,50 @@ def probe(base, source):
     async def wait(predicate):
         await async_wait_until(predicate, timeout=30)
 
+    def notes():
+        with sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True) as db:
+            return db.execute("SELECT display_kind, json_extract(display_metadata, '$.display_text') FROM messages"
+                              " WHERE role='user' AND content LIKE ?", ('%REAL_TERMINAL_COMPLETION%',)).fetchall()
+
+    def completion_turns():
+        # Model calls whose newest user input is the completion: an automation turn for it.
+        return [r for r in model.requests if r.get('messages') and 'REAL_TERMINAL_COMPLETION' in str(next(
+            (m.get('content', '') for m in reversed(r['messages']) if m['role'] == 'user'), ''))]
+
+    async def unviewed(desc, sid):
+        # No viewer is left (#134889 LC-7): the completion is committed behind the running turn and the
+        # human follower, in FIFO order, and when it reaches the head it is written into the session as a
+        # note (no model call) instead of an automation turn; the next turn sees it.
+        await wait(lambda: any(r['principal_id'].startswith('automation:') for r in rows()))
+        automatic = [r for r in rows() if r['principal_id'].startswith('automation:')]
+        assert len(automatic) == 1 and automatic[0]['status'] == 'queued', automatic
+        assert json.loads(automatic[0]['request_id'])[0] == ('watch_match' if watch else 'completion'), automatic
+        assert automatic[0]['seq'] > next(r for r in rows() if r['request_id'] == 'follower')['seq']
+        assert not notes()
+        model.release.set()
+        await wait(lambda: all(r['status'] == 'terminal' for r in rows()))
+        await async_wait_until(notes, timeout=120)
+        await asyncio.sleep(8)  # health: allow HX013 -- proves no automation turn or second note arrives
+        assert completion_turns() == [], 'an unviewed completion started a model turn'
+        assert all(r['outcome'] == 'completed' for r in rows()), rows()
+        found = notes()
+        if watch:  # a watch match is a notice, not the async-result card
+            assert len(found) == 1 and found[0][0] == 'internal_notification', found
+        else:
+            assert len(found) == 1 and found[0][0] == 'process_complete', found
+            assert str(found[0][1]).startswith('Background Process Finished: '), found
+        async with websocket(home, desc) as ws:
+            assert 'result' in await rpc(ws, 'session.resume', session_id=sid)
+            assert 'result' in await rpc(ws, 'prompt.submit', session_id=sid, input_id='after', text='AFTER_NOTE')
+            await wait(lambda: next((r['status'] for r in rows() if r['request_id'] == 'after'), '') == 'terminal')
+        users = [str(m.get('content')) for m in model.requests[-1]['messages'] if m['role'] == 'user']
+        assert 'AFTER_NOTE' in users[-1] and any('REAL_TERMINAL_COMPLETION' in u for u in users), users
+        assert 'HUMAN_FIFO_FOLLOWER' in str(users), users
+        prefixes = {json.dumps([m for m in r['messages'] if m['role'] in ('system', 'developer')], sort_keys=True)
+                    for r in model.requests if r.get('messages')}
+        assert len(prefixes) == 1, 'the note changed the cached system prefix'
+        return {'source': source, 'ledger': rows(), 'note': found, 'observer_closed_before_completion': True}
+
     async def run(desc):
         async with websocket(home, desc) as ws:
             result = await rpc(ws, 'session.create', request_id='automation', source=source,
@@ -66,43 +110,7 @@ def probe(base, source):
             await submit('follower', 'HUMAN_FIFO_FOLLOWER')
         # Last observer closes while owner remains in a model call.
         model.gate.touch()
-        await wait(lambda: any(r['principal_id'].startswith('automation:') for r in rows()))
-        # The completion is in; a duplicate admission would land within this window (none may).
-        await asyncio.sleep(8)  # health: allow HX013 -- proves no second automation row arrives
-        ledger = rows()
-        automatic = [r for r in ledger if r['principal_id'].startswith('automation:')]
-        assert automatic, {'missing_automation': ledger}
-        assert len(automatic) == 1 and automatic[0]['status'] == 'queued', automatic
-        if watch:
-            assert json.loads(automatic[0]['request_id'])[0] == 'watch_match', automatic
-        assert next(r for r in ledger if r['request_id'] == 'held')['status'] == 'started'
-        assert automatic[0]['seq'] > next(r for r in ledger if r['request_id'] == 'follower')['seq']
-        model.release.set()
-        await wait(lambda: all(r['status'] == 'terminal' for r in rows()))
-        assert all(r['outcome'] == 'completed' for r in rows()), rows()
-        texts = [next((m.get('content', '') for m in reversed(r['messages']) if m['role'] == 'user'), '')
-                 for r in model.requests if r.get('messages')]
-        assert 'REAL_TERMINAL_COMPLETION' in str(texts[-1]), texts
-        assert sum('REAL_TERMINAL_COMPLETION' in str(text) for text in texts) == 1, texts
-        with sqlite3.connect(home / 'state.db') as db:
-            notices = db.execute("SELECT display_kind, json_extract(display_metadata, '$.display_text') FROM messages"
-                                 " WHERE role='user' AND content LIKE ?", ('%REAL_TERMINAL_COMPLETION%',)).fetchall()
-        # A completion is the same async-result card the in-process TUI persisted; a watch match is not one.
-        assert len(notices) == 1, notices
-        if watch:
-            assert notices[0][0] == 'internal_notification', notices
-        else:
-            assert notices[0][0] == 'process_complete', notices
-            assert str(notices[0][1]).startswith('Background Process Finished: '), notices
-        prefixes = [json.dumps([m for m in r['messages'] if m['role'] in ('system', 'developer')], sort_keys=True)
-                    for r in model.requests if r.get('messages')]
-        assert len(set(prefixes)) == 1, 'automation changed the cached system prefix'
-        assert 'HUMAN_FIFO_FOLLOWER' in str(texts[-2]), texts
-        async with websocket(home, desc) as ws:
-            resumed = await rpc(ws, 'session.resume', session_id=sid)
-            assert 'result' in resumed, resumed
-        return {'source': source, 'ledger': rows(), 'model_inputs': texts,
-                'observer_closed_before_completion': True}
+        return await unviewed(desc, sid)
 
     try:
         with daemon(root, home, env, barrier=restart, fixture='local_automation_daemon.py') as (proc, desc):
@@ -132,8 +140,9 @@ def probe(base, source):
                     asyncio.run(recovered(desc))
             texts = [next((m.get('content', '') for m in reversed(r['messages']) if m['role'] == 'user'), '')
                      for r in model.requests if r.get('messages')]
-            completion_inputs = [t for t in texts if 'REAL_TERMINAL_COMPLETION' in str(t)]
-            assert len(completion_inputs) == 1, texts
+            # The committed completion outlived two owners; with no viewer it ran once, as one note.
+            assert completion_turns() == [], texts
+            assert len(notes()) == 1, notes()
             assert len(set(pids)) == 3 and epochs == sorted(set(epochs))
             print(json.dumps({'pids': pids, 'epochs': epochs, 'ledger': rows(),
                               'model_inputs': texts, 'lost_producer_ack': True}))

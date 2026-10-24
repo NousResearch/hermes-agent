@@ -215,9 +215,9 @@ _SUPERVISED_SERVE_BACKENDS = frozenset(
 )
 # Backends whose supervisor restarts the process without any updater bookkeeping. ``manual-serve``
 # is excluded: it owes a durable handoff (``defer_manual_serve``) before it stops counting.
-# ``systemd``/``windows-service``/``service`` mirror ``_SUPERVISED_SERVE_BACKENDS`` for parity only —
-# the inventory writer classifies a serve/dashboard row as exactly launchd, desktop, desktop-ssh or manual-serve
-# (``update_inventory._collect_ledger_runtimes``); those three are set for gateway rows alone.
+# The inventory writer classifies a serve/dashboard row as launchd, desktop, desktop-ssh, systemd (a unit's
+# MainPID, #141021) or manual-serve (``update_inventory._collect_ledger_runtimes``); ``windows-service`` and
+# ``service`` mirror ``_SUPERVISED_SERVE_BACKENDS`` for parity only — they are set for gateway rows alone.
 _SUPERVISOR_OWNED_SERVE_BACKENDS = _SUPERVISED_SERVE_BACKENDS - {"manual-serve"}
 
 
@@ -735,6 +735,19 @@ def _scoped_manual_gateway_pids(pids, *, keep=(), quiet: bool = False) -> list[i
     return [pid for pid in pids if pid in keep or pid in owned]
 
 
+def _is_serve_or_dashboard_unit(unit: str) -> bool:
+    """``hermes-serve*``/``hermes-dashboard*`` (``.service``) by the same exact-or-hyphenated shape."""
+    return (
+        unit == "hermes-serve.service"
+        or unit.startswith("hermes-serve-")
+        # #125297: ``hermes-dashboard*`` units are systemd-supervised dashboard backends — the
+        # same fleet this pass restarts. Leaving them out meant a successful update reported
+        # the dashboard ``deferred`` (still on pre-update code) while nothing ever restarted it.
+        or unit == "hermes-dashboard.service"
+        or unit.startswith("hermes-dashboard-")
+    )
+
+
 def _is_hermes_gateway_unit(unit: str) -> bool:
     """Exact base unit or hyphenated profile family only: ``startswith("hermes-serve")``
     would accept ``hermes-server.service``."""
@@ -743,13 +756,7 @@ def _is_hermes_gateway_unit(unit: str) -> bool:
         # cannot enter the restart path. See #83595.
         unit == "hermes-gateway.service"
         or unit.startswith("hermes-gateway-")
-        or unit == "hermes-serve.service"
-        or unit.startswith("hermes-serve-")
-        # #125297: ``hermes-dashboard*`` units are systemd-supervised dashboard backends — the
-        # same fleet this pass restarts. Leaving them out meant a successful update reported
-        # the dashboard ``deferred`` (still on pre-update code) while nothing ever restarted it.
-        or unit == "hermes-dashboard.service"
-        or unit.startswith("hermes-dashboard-")
+        or _is_serve_or_dashboard_unit(unit)
     )
 
 
@@ -1012,12 +1019,13 @@ _DESKTOP_SERVE_SKIP_REASON = (
     "desktop app owns and respawns this serve backend;"
     " the recovery pass must not restart it out from under its supervisor"
 )
-# NOT a claim that no supervisor exists: a systemd-launched serve sets neither HERMES_SPAWN
-# nor HERMES_PARENT_PID ("manual-serve"). Unit-backed serves are recovered by the fresh
-# child's systemd pass; survivors reported by _surviving_pre_update_serve_runtimes.
+# NOT a claim that no supervisor exists: a unit's MainPID row is classified "systemd" (#141021),
+# and "manual-serve" still covers a process inside some unit's cgroup it is not MainPID of, or
+# unreadable ownership. Unit-backed serves are recovered by the fresh child's systemd pass;
+# survivors reported by _surviving_pre_update_serve_runtimes.
 _SERVE_SKIP_REASON = (
     "no per-profile relaunch command reaches a serve/dashboard runtime; recovered by the fresh"
-    " systemd unit pass when it owns a hermes-serve* unit, else left running for explicit"
+    " systemd unit pass when a hermes-serve*/hermes-dashboard* unit owns it, else left running for explicit"
     " operator restart"
 )
 # A launchd-owned backend (#116503): the fresh child has no per-label kickstart for serve/dashboard

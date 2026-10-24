@@ -77,3 +77,22 @@ def test_edits_and_deletion_are_seen(tmp_path, monkeypatch):
     env.write_bytes(b"KEY=ccc\n")
     assert ss.load_env_file(env) == {"KEY": "ccc"}
     assert len(calls) == 3
+
+
+def test_same_size_rewrite_inside_one_timestamp_tick_is_seen(tmp_path, monkeypatch):
+    """On a kernel stamping mtime/ctime from the coarse (jiffy) clock, an in-place same-size rewrite
+    in the same tick leaves (mtime, size, inode, ctime) unchanged. Simulate that clock: every stat
+    identity collides, so only the bytes tell the versions apart (CI run 39146191939, where
+    ``reload.env`` reported ``{'updated': 0}`` after ``.env`` went from ``one`` to ``two``).
+    """
+    monkeypatch.setattr(ss, "file_signature", lambda st: (0, 0, 0, 0), raising=False)
+    env = tmp_path / ".env"
+    env.write_bytes(b"TUI_RELOAD_PROBE=one\n")
+    calls = _count_parses(monkeypatch)
+    assert ss.load_env_file(env) == {"TUI_RELOAD_PROBE": "one"}
+    assert ss.load_env_file(env) == {"TUI_RELOAD_PROBE": "one"}
+    assert len(calls) == 1  # unchanged bytes still skip the parse
+
+    env.write_bytes(b"TUI_RELOAD_PROBE=two\n")
+    assert ss.load_env_file(env) == {"TUI_RELOAD_PROBE": "two"}
+    assert len(calls) == 2

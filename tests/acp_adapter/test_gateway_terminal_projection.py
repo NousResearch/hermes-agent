@@ -45,13 +45,18 @@ async def test_cancelled_admission_suppresses_only_interrupt_metadata(text, visi
 
 
 @pytest.mark.asyncio
-async def test_replay_gap_is_a_recoverable_projection_failure():
+async def test_refused_reattach_after_a_replay_gap_still_fails_the_pump():
+    """A gap re-attaches that session (test_gateway_replay_gap); a refused re-attach ends the wait as
+    before: the pump fails, the next call redials."""
+    from hermes_cli.gateway_client import GatewayRPCError
     agent = agent_with_admission()
-    with pytest.raises(GatewayClientError, match='session_replay_gap'):
-        await agent._project({
-            'session_id': 's', 'type': 'session.replay_gap',
-            'payload': {'reason': 'subscriber_overflow'},
-        })
+    agent._snapshots['s'] = {'replay_epoch': 'e', 'last_sequence': 9}
+    agent._gateway.events = asyncio.Queue()
+    agent._gateway.events.put_nowait({'method': 'event', 'params': {
+        'session_id': 's', 'type': 'session.replay_gap', 'payload': {'reason': 'subscriber_overflow'}}})
+    agent._gateway.rpc.side_effect = GatewayRPCError('not_found')
+    await asyncio.wait_for(agent._events(), 2)
+    assert isinstance(agent._failure, GatewayRPCError) and str(agent._failure) == 'not_found'
 
 
 @pytest.mark.asyncio

@@ -29,7 +29,7 @@ def test_failed_retirement_preserves_cleanup_and_fences_successor(tmp_path, monk
     agent._session_messages = [{'role': 'user', 'content': 'synthetic memory'}]
     transcript = list(agent._session_messages)
     agent._db_flush_scan_prefix = list(transcript)
-    agent._memory_manager = object()
+    agent._memory_manager = Mock()
     agent.commit_memory_session = Mock(side_effect=lambda messages: events.append(('memory', list(messages))))
     agent.shutdown_memory_provider = Mock()
     agent._close_task_resources = Mock()
@@ -77,6 +77,7 @@ def test_failed_retirement_preserves_cleanup_and_fences_successor(tmp_path, monk
     review.release_clients.assert_not_called()
     review.close.assert_not_called()
     assert agent._active_children == {review}
+    agent._memory_manager.release_soft.assert_called_once()
     agent.shutdown_memory_provider.assert_not_called()
     agent._close_task_resources.assert_not_called()
     assert agent.client is None

@@ -375,6 +375,10 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     tui_server_mod = sys.modules.get("tui_gateway.server")
     if tui_server_mod is not None and hasattr(tui_server_mod, "_served_profile_homes"):
         monkeypatch.setattr(tui_server_mod, "_served_profile_homes", set())
+    # A classic CLI's gateway-session toolset reader is process-global too (``_ensure_gateway_session``).
+    tools_config_mod = sys.modules.get("hermes_cli.tools_config")
+    if tools_config_mod is not None and hasattr(tools_config_mod, "_gateway_plugin_toolsets"):
+        monkeypatch.setattr(tools_config_mod, "_gateway_plugin_toolsets", None)
 
     hermes_state_mod = sys.modules.get("hermes_state")
     if hermes_state_mod is not None and hasattr(hermes_state_mod, "DEFAULT_DB_PATH"):

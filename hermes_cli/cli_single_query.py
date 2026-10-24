@@ -491,11 +491,15 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
     # isn't engaged) and takes the deterministic approvals.single_query_mode path instead of waiting the
     # full timeout. See #86878.
     os.environ["HERMES_SINGLE_QUERY_SESSION"] = "1"
-    from hermes_cli.quiet_single_query import exit_single_query
+    from hermes_cli.quiet_single_query import KANBAN_WORKER_RECLAIMED_EXIT_TRAILER, exit_single_query
     if os.environ.get("HERMES_KANBAN_TASK"):
         from tools.kanban_tools import register_current_worker_from_env
         if not register_current_worker_from_env():
-            # No exit trailer: the task log now belongs to the run that replaced this one.
+            # No rc trailer: the task log now belongs to the run that replaced this one, and a
+            # bare rc=0 could be misattributed to that successor. The pid-scoped marker tells
+            # the dead-worker sweep this death is the registration guard self-exiting — booked
+            # as reclaimed_before_start (no failure, no gave_up), not a crash (t_8ebbdbcf 1952).
+            print(f"{KANBAN_WORKER_RECLAIMED_EXIT_TRAILER} pid={os.getpid()}", file=sys.stderr, flush=True)
             print(t("cli.single_query.kanban_run_reclaimed"), file=sys.stderr)
             sys.exit(0)
     if not cli._claim_active_session("cli", stderr=bool(quiet)):

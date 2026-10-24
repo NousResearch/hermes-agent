@@ -125,3 +125,20 @@ class TestVolcEngineXmlPollution:
         # rest of the pipeline (fuzzy match at 0.7 cutoff) can still
         # recover the obvious target.
         assert repair('"terminal"') == "terminal"
+
+
+class TestSearchWebName:
+    """``search_web`` names the web search tool with its words swapped.
+
+    Fuzzy matching scores ``search_files`` (0.73) above ``web_search``
+    (0.6), so without an explicit mapping a web query ran as a
+    filesystem search.
+    """
+
+    def test_search_web_resolves_to_web_search(self, repair):
+        repair.__self__.valid_tool_names = VALID | {"search_files"}
+        assert repair("search_web") == "web_search"
+
+    def test_search_web_is_not_remapped_when_web_search_is_off(self, repair):
+        repair.__self__.valid_tool_names = (VALID - {"web_search"}) | {"search_files"}
+        assert repair("search_web") is None

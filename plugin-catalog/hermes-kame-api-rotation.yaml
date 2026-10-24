@@ -1,19 +1,19 @@
 name: hermes-kame-api-rotation
 repo: https://github.com/Kame696/kame-api-rotation-for-hermes
-sha: cab5372d18d233da905c9f84a343359d2bc26564
+sha: 30e67f18e198afc7028641a14f19150d09ca337f
 subdir: hermes-kame-api-rotation
-description: "Smart API key rotation: the healthiest key for every call, each 429 / RESOURCE_EXHAUSTED / quota refusal sized from its own evidence. Install with its companion hermes-kame-provider, which hands Hermes this plugin's rotating client through ProviderProfile.create_client (and create_messages_client where Hermes offers it); no core override. Disclosure — /kame-keys add|import|split, and on start a key variable holding several comma-joined keys, write one auth.json pool row per key through Hermes' pool API after a plaintext backup (last 5 kept; switch: resolver_disabled); key-redacted, size-capped owner-only local logs and a status file per profile; the Desktop panel reads that file and queues its settings requests through its own dashboard/plugin_api.py route (GET /state, POST /control, this plugin's plugin-data folder only); while every key is resting, chats (CLI, Desktop, messaging gateway) keep waiting with no total limit (each key's rest capped by max_hold_seconds) and cron runs give up after 300 s with the provider's refusal unless max_total_wait_seconds is set."
+description: "Smart API key rotation: the healthiest key for every call, each 429 / RESOURCE_EXHAUSTED / quota refusal sized from its own evidence. Install with its companion hermes-kame-provider, which hands Hermes this plugin's rotating client through ProviderProfile.create_client (and create_messages_client where Hermes offers it); no core override. When Hermes has a fallback list, a busy, resting or slow model hands the reply to the next model of that list, and a late reply can be raced by the next model of the same provider on the same keys and endpoint (the plugin reads the model and fallback_providers from config.yaml, read-only; no new network destination). Disclosure — /kame-keys add|import|split, and on start a key variable holding several comma-joined keys, write one auth.json pool row per key through Hermes' pool API after a plaintext backup (last 5 kept; switch: resolver_disabled); key-redacted, size-capped owner-only local logs and a status file per profile; the Desktop panel reads that file and queues its settings requests through its own dashboard/plugin_api.py route (GET /state, POST /control, this plugin's plugin-data folder only); while every key is resting, chats (CLI, Desktop, messaging gateway) keep waiting with no total limit (each key's rest capped by max_hold_seconds) and cron runs give up after 300 s with the provider's refusal unless max_total_wait_seconds is set."
 maintainer: Kame696
 tier: community
 category: models
 requires_hermes: ">=0.21.4"
-version: "1.8.2.2"
-docs_url: https://github.com/Kame696/kame-api-rotation-for-hermes/tree/v1.8.2.2#readme
-image: https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/cab5372d18d233da905c9f84a343359d2bc26564/assets/kame-banner.png
+version: "1.8.2.8"
+docs_url: https://github.com/Kame696/kame-api-rotation-for-hermes/tree/v1.8.2.8#readme
+image: https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/30e67f18e198afc7028641a14f19150d09ca337f/assets/kame-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/cab5372d18d233da905c9f84a343359d2bc26564/assets/panel-overview.png
-  - https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/cab5372d18d233da905c9f84a343359d2bc26564/assets/panel-events.png
-  - https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/cab5372d18d233da905c9f84a343359d2bc26564/assets/panel-settings.png
+  - https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/30e67f18e198afc7028641a14f19150d09ca337f/assets/panel-overview.png
+  - https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/30e67f18e198afc7028641a14f19150d09ca337f/assets/panel-events.png
+  - https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/30e67f18e198afc7028641a14f19150d09ca337f/assets/panel-settings.png
 readme: true
 capabilities:
   provides_tools: []

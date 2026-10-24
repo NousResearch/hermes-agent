@@ -1,0 +1,17 @@
+name: hermes-kame-bridge
+repo: https://github.com/Kame696/kame-api-rotation-for-hermes
+sha: aad3f59655db84e5de760ea3da80939e9dc1cb8d
+subdir: hermes-kame-bridge
+description: "Companion to hermes-kame-api-rotation (install all three KAME packages for every feature). Disclosure - this plugin deliberately wraps Hermes core at runtime (catalog rule 9), only on a Hermes that lacks the real seams, until the upstream PRs are merged: notify_turn_status (NousResearch/hermes-agent#133474) puts KAME's live rotation line on the spinner; ProviderProfile.create_messages_client (NousResearch/hermes-agent#133461) lets KAME rotate keys on the Anthropic Messages wire (Anthropic, MiniMax, Kimi coding). It adds one of its own: a short Desktop notice naming the model that answered each reply, and a filter that keeps Hermes' own 'Model fallback' line out of the chat when KAME made the switch on purpose (it wraps agent.turn_api_call.perform_api_call and agent.status_output.StatusOutputMixin._emit_diagnostic_status). Each seam whose real version already ships in Hermes is left alone, so it does nothing once both PRs are merged; remove it then. No network access, no credentials, no files."
+maintainer: Kame696
+tier: community
+category: models
+requires_hermes: ">=0.21.4"
+version: "1.8.2.8"
+docs_url: https://github.com/Kame696/kame-api-rotation-for-hermes/tree/aad3f59655db84e5de760ea3da80939e9dc1cb8d/hermes-kame-bridge#readme
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

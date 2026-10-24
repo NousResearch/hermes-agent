@@ -198,6 +198,32 @@ class TestRegister:
         with pytest.raises(InvalidCredentialsError):
             provider.complete_password_login(username="admin", password="config-pw")
 
+    def test_password_warning_scopes_itself_to_the_process(self, basic, monkeypatch):
+        # A username that resolves from the environment with no password anywhere is
+        # the normal state OUTSIDE the dashboard (the secret is withheld from
+        # subprocess environments), so the message must scope itself to this process
+        # rather than read as a global misconfiguration.
+        monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "admin")
+        monkeypatch.setattr(basic, "_load_config_basic_auth_section", lambda: {})
+        ctx = MagicMock()
+        basic.register(ctx)
+        ctx.register_dashboard_auth_provider.assert_not_called()
+        reason = basic.LAST_SKIP_REASON
+        assert "for this process" in reason
+        assert "from env" in reason
+        assert "does not mean the auth gate is off" in reason
+
+    def test_password_warning_names_config_when_username_comes_from_config(
+        self, basic, monkeypatch
+    ):
+        monkeypatch.setattr(
+            basic, "_load_config_basic_auth_section", lambda: {"username": "admin"}
+        )
+        ctx = MagicMock()
+        basic.register(ctx)
+        ctx.register_dashboard_auth_provider.assert_not_called()
+        assert "from config" in basic.LAST_SKIP_REASON
+
     def test_explicit_secret_makes_sessions_portable(self, basic, monkeypatch):
         # Two providers built from the SAME explicit secret accept each
         # other's tokens (the restart-/multi-worker-survival contract).

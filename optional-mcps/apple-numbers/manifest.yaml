@@ -36,7 +36,11 @@ source: https://github.com/sweetrb/apple-numbers-mcp
 # only). No tool surface change: still 26 tools, all 6 default_enabled
 # entries resolve. Declined: 1.2.5 (dev-only `brace-expansion` floor),
 # 1.2.6 (Dependabot rebuild) and 1.2.7 (dev-only `source-map-js` floor) fix
-# no defect in a default_enabled tool and touch no shipped bytes.
+# no defect in a default_enabled tool and touch no shipped bytes. Also
+# declined: 1.2.8 (Dependabot: bundled MCP SDK 1.31.0 -> 1.32.1, plus lint/
+# type tooling), 1.2.9 (`numbers-parser` 4.19.0 -> 4.21.0 sidecar bump,
+# Dependabot; no default_enabled defect cited) and 1.2.10 (dev-only `vite`
+# floor, not in the shipped bundle).
 #
 # 1.2.3 (2026-09-09) rides along; on its own it was declined under the
 # defect-only carve-out, as it fixes no defect in a default_enabled tool. It

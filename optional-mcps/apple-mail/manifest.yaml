@@ -14,9 +14,9 @@ source: https://github.com/sweetrb/apple-mail-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-mail-mcp@2.20.16`:
+# On macOS, `npx -y apple-mail-mcp@2.20.28`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     2.20.16 — i.e. the bytes npx resolved are the bytes pinned here;
+#     2.20.28 — i.e. the bytes npx resolved are the bytes pinned here;
 #   - returns a full `tools/list` of 52 tools, every one carrying a description;
 #   - resolves all 18 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
@@ -294,16 +294,44 @@ source: https://github.com/sweetrb/apple-mail-mcp
 # in the above (kept out to keep each continuation PR limited to the
 # contributed change): sweetrb/apple-mail-mcp#319, an explicit account-only
 # by-id hint can be silently overridden by a remembered location in a
-# different account on a hit. Tracked upstream, not yet shipped.
+# different account on a hit. Fixed in 2.20.27 (see below).
 # No new tools: still 52 tools, all 18 default_enabled entries resolve
 # (re-verified via a live `initialize` + `tools/list` handshake against
 # apple-mail-mcp@2.20.22, serverInfo.version matching).
+#
+# 2.20.28 (via 2.20.27) is re-pinned on the same footing — the #319 defect
+# named just above, in default_enabled by-id reads, plus a security floor in
+# the shipped bundle:
+#   - `get-message` and the content/source reads sharing its by-id
+#     resolver accept `account` without `mailbox`, but that hint was
+#     discarded the moment a remembered id location existed, even one in
+#     a different account. Numeric ids are per-mailbox
+#     counters, so an unrelated message there could answer to the same
+#     number and be returned silently as the wrong message. A remembered
+#     location is now used only when its account matches an explicitly
+#     supplied `account`; otherwise the lookup falls through to the
+#     account-scoped scan added in 2.20.19 (2.20.27, sweetrb/apple-mail-mcp#319).
+#   - The bundled `ip-address` floor is raised to `>=10.7.4 <11` (medium;
+#     the tree carried 10.7.2/10.7.3 duplicates inside the vulnerable range,
+#     reached via the MCP SDK and `imapflow` -> `socks`, so it ships in the
+#     bundle regardless of default_enabled) (2.20.28). The `build/index.js`
+#     and `build/cli.js` diffs from 2.20.27 are confined to the inlined
+#     `ip-address` module (10.7.2 -> 10.7.4); its `vitest` floor is dev-only.
+# Riding along, none clearing the carve-out on its own: 2.20.23 tightens the
+# outbound-attachment read policy (user `~/Library` treated as protected) and
+# 2.20.26 stops SMTP sends leaving a duplicate Gmail Sent copy, both only on
+# send/mutation tools that are disabled below; 2.20.24 is a Dependabot bump
+# (`nodemailer` 10.0.16 -> 10.1.1, disabled send path, plus lint tooling);
+# 2.20.25 is a dev-only `vite` floor, not in the shipped bundle.
+# No new tools: still 52 tools, all 18 default_enabled entries resolve
+# (re-verified via a live `initialize` + `tools/list` handshake against
+# apple-mail-mcp@2.20.28, serverInfo.version matching).
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-mail-mcp@2.20.22"
+    - "apple-mail-mcp@2.20.28"
 
 # Drives Apple Mail locally via AppleScript; no credentials.
 auth:

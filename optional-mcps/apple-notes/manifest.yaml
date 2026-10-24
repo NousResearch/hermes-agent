@@ -168,10 +168,13 @@ source: https://github.com/sweetrb/apple-notes-mcp
 # Shortcut-consent wording, neither reachable as a default-enabled MCP tool
 # call.) No tool surface change since 2.15.0: still 88 tools, all 20
 # default_enabled entries resolve.
-# Declined, newest first: 2.15.9/2.15.6 are Dependabot dependency bumps
-# (2.15.9 automated, 2.15.6 unrelated to any shipped tool); 2.15.8 is a CLI
+# Declined, newest first: 2.15.10 is a dev-only `vite` floor, not in the
+# shipped bundle; 2.15.9 is a Dependabot bump (bundled MCP SDK 1.31.0 ->
+# 1.32.1, plus lint tooling); 2.15.8 is a CLI
 # `setup --gemini-spark` printer, not a tool call; 2.15.7 fixes
-# `batch-move-notes` preconditions, outside default_enabled; 2.15.5/2.15.4/
+# `batch-move-notes` preconditions, outside default_enabled; 2.15.6 bounds
+# `get-note-tables` responses under a byte budget (#193), outside
+# default_enabled; 2.15.5/2.15.4/
 # 2.15.3/2.15.1 are native-tag/native-write/checklist verification fixes
 # confined to `add-native-tags`/`append-native`/`append-to-note` and the new
 # (deliberately non-default-enabled) `native-checklist-state` tool; 2.15.0

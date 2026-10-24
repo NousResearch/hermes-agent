@@ -59,7 +59,8 @@ source: https://github.com/sweetrb/apple-photos-mcp
 # no default_enabled fix on its own), 2.1.19 (`@modelcontextprotocol/sdk`
 # OAuth-client CVE, unreachable from this stdio server; `source-map-js`
 # floor, dev-only). No tool surface change: still 21 tools, all 13
-# default_enabled entries resolve.
+# default_enabled entries resolve. Declined since: 2.1.21 (Dependabot:
+# bundled MCP SDK 1.31.0 -> 1.32.1, plus lint/type tooling).
 transport:
   type: stdio
   command: "npx"

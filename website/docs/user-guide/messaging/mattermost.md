@@ -6,7 +6,7 @@ description: "Set up Hermes Agent as a Mattermost bot"
 
 # Mattermost Setup
 
-Hermes Agent integrates with Mattermost as a bot, letting you chat with your AI assistant through direct messages or team channels. Mattermost is a self-hosted, open-source Slack alternative — you run it on your own infrastructure, keeping full control of your data. The bot connects via Mattermost's REST API (v4) and WebSocket for real-time events, processes messages through the Hermes Agent pipeline (including tool use, memory, and reasoning), and responds in real time. It supports text, file attachments, images, and slash commands.
+Hermes Agent integrates with Mattermost as a bot, letting you chat with your AI assistant through direct messages or team channels. Mattermost is a self-hosted, open-source Slack alternative — you run it on your own infrastructure, keeping full control of your data. The bot connects via Mattermost's REST API (v4) and WebSocket for real-time events, processes messages through the Hermes Agent pipeline (including tool use, memory, and reasoning), and responds in real time. It supports text, file attachments, images, and slash commands. Inbound attachments are downloaded only for senders the gateway authorizes, and each is capped by `gateway.max_inbound_media_bytes`.
 
 No external Mattermost library is required — the adapter uses `aiohttp`, which is already a Hermes dependency.
 

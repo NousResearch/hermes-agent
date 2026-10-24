@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import threading
+from typing import Any
 from urllib.parse import unquote_plus
 
 # Shared with agent/file_safety's read-block list so the two defenses can't
@@ -1357,6 +1358,36 @@ def _reset_plugin_redaction_patterns() -> None:
     with _registry_lock:
         _PLUGIN_PREFIX_PATTERNS.clear()
         _rebuild_prefix_matcher()
+
+
+def redact_message_text(text: str, *, force: bool = True) -> str:
+    """``text`` masked for a boundary that must never persist or replay a raw credential.
+
+    The same redactor every other boundary uses. ``force`` is on by default here because
+    these callers hand text to something that outlives the process that received it — a
+    stored transcript, or a plugin's own store — so a user's ``security.redact_secrets``
+    preference must not quietly reopen the hole.
+    """
+    return redact_sensitive_text(text, force=force)
+
+
+def redact_message_content(content: Any, *, force: bool = True) -> Any:
+    """Redact the string leaves of a message ``content`` payload, structure intact.
+
+    Accepts plain text or a list of multimodal parts: only ``text`` values are rewritten,
+    so an image part, a ``type`` discriminator and every other payload key survive a
+    round-trip. A false positive here corrupts a transcript silently, which is why the
+    masking is this module's — a caller's own pattern list would drift from it.
+    """
+    if isinstance(content, str):
+        return redact_message_text(content, force=force)
+    if isinstance(content, list):
+        return [
+            {**part, "text": redact_message_text(part["text"], force=force)}
+            if isinstance(part, dict) and isinstance(part.get("text"), str) else part
+            for part in content
+        ]
+    return content
 
 
 class RedactingFormatter(logging.Formatter):

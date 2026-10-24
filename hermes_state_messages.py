@@ -119,6 +119,25 @@ def _stale_holder(row, now: float) -> bool:
     return float(row["expires_at"]) <= now or _compression_lock_holder_process_is_dead(row["holder"])
 
 
+def _durable_content_for_storage(content: Any) -> Any:
+    """``content`` as it lands in the transcript: text masked, everything else untouched.
+
+    Late import: ``agent.redact`` loads the vault registry, which must not run at
+    ``hermes_state`` import time. The masking itself lives beside the redactor so the
+    log path, the dump path, the transcript and the plugin payload cannot drift apart.
+    """
+    from agent.redact import redact_message_content
+
+    return redact_message_content(content)
+
+
+def _durable_api_content(api_content: Any) -> Any:
+    """The ``api_content`` sidecar masked the same way (it is the bytes replay would resend)."""
+    from agent.redact import redact_message_text
+
+    return redact_message_text(api_content) if isinstance(api_content, str) else api_content
+
+
 class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
     """Message append/replace/rewind, reactions, resume conversations, replay dedupe (detached results: the base)."""
 
@@ -272,8 +291,11 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         *keep_reasoning* False NULLs every reasoning column). ``platform_message_id`` falls back to
         ``message_id`` (yuanbao's message-dict convention)."""
         _str_or_none = lambda v: _scrub_surrogates(v) if isinstance(v, str) else None
+        api_content = msg.get("api_content")
+        if isinstance(api_content, str):
+            api_content = _durable_api_content(api_content)
         _reasoning = lambda key: msg.get(key) if keep_reasoning else None
-        encoded_content = self._encode_content(msg.get("content"))
+        encoded_content = self._encode_content(_durable_content_for_storage(msg.get("content")))
         encoded_tool_calls = json.dumps(tool_calls) if tool_calls else None
         encoded_tool_name = _scrub_surrogates(msg.get("tool_name"))
         display_metadata = msg.get("display_metadata")
@@ -295,7 +317,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
               for k in ("reasoning_details", "codex_reasoning_items", "codex_message_items")),
             msg.get("platform_message_id") or msg.get("message_id"),
             1 if msg.get("observed") else 0, 1 if msg.get("_compressed_summary") else 0, 1,
-            _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
+            _str_or_none(api_content), _str_or_none(msg.get("display_kind")),
             display_metadata, self._display_identity(self._display_dedupe_key(identity_row)),
             message_uid_or_none(msg), _absorbed_uids_json(msg),
             _tool_call_uids_json(msg), _tool_call_uid_or_none(msg))

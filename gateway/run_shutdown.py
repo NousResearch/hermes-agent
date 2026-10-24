@@ -1464,7 +1464,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             return
         self._detached_restart_helper_started = True
         current_pid = os.getpid()
-        restart_after_s = max(float(getattr(self, "_restart_drain_timeout", 0.0) or 0.0) + 5.0, 5.0)
+        # This helper starts after the after-turn phase, but must still outlast
+        # the longer drain retained by a planned stop.
+        restart_after_s = max(float(effective_stop_drain_timeout(self)) + 5.0, 5.0)
         if sys.platform == "win32":
             GatewayShutdownMixin._spawn_windows_restart_watcher(hermes_cmd, current_pid, restart_after_s)
             return

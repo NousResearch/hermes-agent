@@ -307,6 +307,17 @@ export function ProjectOverviewRow({
           {expanded && page.more > 0 && (
             <WorkspaceShowMoreRow label={s.showMoreIn(page.more, project.label)} onClick={page.showMore} />
           )}
+          {/* #136091: "Show all" was one-way — once hydrated, only an app
+              restart returned the project to its 3-row preview. */}
+          {expanded && (
+            <WorkspaceShowMoreRow
+              label={s.projects.showFewer}
+              onClick={() => {
+                setExpanded(null)
+                page.reset()
+              }}
+            />
+          )}
         </SidebarRowNest>
       )}
     </div>

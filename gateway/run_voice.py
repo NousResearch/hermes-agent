@@ -269,6 +269,9 @@ class GatewayVoiceMixin:
         member = guild.get_member(int(user_id)) if guild else None
         display_name = getattr(member, "display_name", None)
         user_name = display_name if isinstance(display_name, str) and display_name else None
+        # A bot's typed messages carry author.bot; its speech must too, or bot policy and the bot
+        # loop guard never see it. A cache miss reads as a person, as before.
+        is_bot = getattr(member, "bot", None) is True
         channel = client.get_channel(int(text_ch_id)) if client else None
         if source_data := getattr(adapter, "_voice_sources", {}).get(guild_id):
             source = SessionSource.from_dict(source_data)
@@ -278,6 +281,7 @@ class GatewayVoiceMixin:
                 user_name = source.user_name
             user_name = user_name or GatewayVoiceMixin._cached_user_display_name(client, user_id)
             source.user_id, source.user_name = str(user_id), user_name or str(user_id)
+            source.is_bot = is_bot
             # The bound source is the `/voice join` message's; its id is not this turn's trigger
             # (run.py exports it as HERMES_SESSION_MESSAGE_ID for reply anchoring).
             source.message_id = None
@@ -292,7 +296,7 @@ class GatewayVoiceMixin:
             source = adapter.build_source(
                 chat_id=str(text_ch_id), chat_type="thread" if thread_id else "group", user_id=str(user_id),
                 user_name=user_name or str(user_id), thread_id=thread_id, guild_id=str(guild_id),
-                parent_chat_id=parent_id)
+                parent_chat_id=parent_id, is_bot=is_bot)
         # The stored source is a join-time copy; a typed message reads the channel's current name and
         # topic, so a rename or topic edit would otherwise flip the pinned prompt on every switch.
         if channel is not None and callable(labels := getattr(adapter, "_guild_channel_labels", None)):
@@ -313,6 +317,13 @@ class GatewayVoiceMixin:
         if not text_ch_id:
             return
         source = self._voice_input_source(adapter, guild_id, user_id, text_ch_id)
+        # A bot's speech follows the policy its typed messages do. An utterance carries no @mention,
+        # so it is heard only where a typed bot message needs none: "all" without the inline-mention rule.
+        if source.is_bot is True and (
+                getattr(adapter, "_get_allow_bots", lambda: "none")() != "all"
+                or getattr(adapter, "_discord_bots_require_inline_mention", lambda: True)()):
+            logger.debug("Ignoring voice input from bot user %d (DISCORD_ALLOW_BOTS)", user_id)
+            return
         # The cached source still carries the previous speaker's identity (per-sender routes,
         # #106019): drop the pin so the seam re-resolves for THIS speaker.
         from gateway.session_identity import clear_identity

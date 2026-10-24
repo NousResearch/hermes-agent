@@ -631,7 +631,7 @@ class SearchMixin:
             return None
         rg = self._quote_executable(rg_executable)
         has_meta = bool(re.search(r"[.\[\](){}?*+^$\\|]", pattern))
-        glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
+        glob_expr = f" --glob {self._escape_shell_arg(file_glob, translate_path=False)}" if file_glob else ""
         for flags, template in self._ZERO_MATCH_PROBES:
             if flags == "-F" and not has_meta:
                 continue
@@ -769,7 +769,7 @@ class SearchMixin:
             return [], None
 
         escaped_path = self._escape_shell_arg(path)
-        escaped_pattern = self._escape_shell_arg(pattern)
+        escaped_pattern = self._escape_shell_arg(pattern, translate_path=False)
         q_roots = [escaped_path]
         hidden_prune = self._hidden_prune_expr(q_roots)
         cmd = (
@@ -877,7 +877,7 @@ class SearchMixin:
         )
         base = (f"find -H {' '.join(q_roots)}{protected_prune}{hidden_prune} "
                 f"\\( -type f -o \\( -type d{root_exemptions} \\) \\) "
-                f"! -name '.*' -name {self._escape_shell_arg(search_pattern)}")
+                f"! -name '.*' -name {self._escape_shell_arg(search_pattern, translate_path=False)}")
         if order == "modified":
             cmd = "set -o pipefail; " + base + f" -printf '%T@ %p\\n' 2>/dev/null | sort -rn | head -n {fetch_limit}"
         else:
@@ -962,7 +962,7 @@ class SearchMixin:
         root_args = " ".join(self._escape_native_tool_arg(root) for root in command_roots)
         cd_prefix = f"cd {self._escape_shell_arg(scoped_common)} && " if scoped_common else ""
         # ``--`` terminates options so a dash-prefixed root is never parsed as a flag.
-        rg_cmd = (f"{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
+        rg_cmd = (f"{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern, translate_path=False)}"
                   f"{exclusion_args} -- {root_args}")
         result = self._run_rg_bounded([rg_cmd], fetch_limit, timeout=60, native_ok=not scoped_common,
                                       shell_prefix=f"set -o pipefail; {cd_prefix}")
@@ -1069,7 +1069,7 @@ class SearchMixin:
             cmd_parts.extend(["-C", str(context)])
         cmd_parts.extend(self._rg_exclusion_globs(path))
         if file_glob:
-            cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
+            cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob, translate_path=False)])
         if output_mode in _OUTPUT_MODE_FLAGS:
             cmd_parts.append(_OUTPUT_MODE_FLAGS[output_mode])
         cmd_parts.append(self._escape_shell_arg(pattern, translate_path=False))
@@ -1088,7 +1088,7 @@ class SearchMixin:
         if context > 0:
             parts.extend(["-C", str(context)])
         if file_glob:
-            parts.extend(["--include", self._escape_shell_arg(file_glob)])
+            parts.extend(["--include", self._escape_shell_arg(file_glob, translate_path=False)])
         if output_mode in _OUTPUT_MODE_FLAGS:
             parts.append(_OUTPUT_MODE_FLAGS[output_mode])
         parts.append(self._escape_shell_arg(pattern, translate_path=False))
@@ -1139,6 +1139,6 @@ class SearchMixin:
             find_parts.extend([self._prune_expr(protected_paths), "-o"])
         find_parts.extend([self._hidden_prune_expr([q_root]), "-o", "-type f"])
         if file_glob:
-            find_parts.extend(["-name", self._escape_shell_arg(file_glob)])
+            find_parts.extend(["-name", self._escape_shell_arg(file_glob, translate_path=False)])
         find_parts.extend(["-exec", *grep_parts, "{}", "+", "2>/dev/null"])
         return self._run_search_pipeline(find_parts, output_mode, limit, offset, context, line_cap=True)

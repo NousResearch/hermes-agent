@@ -20,7 +20,7 @@ import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from hermes_cli import gateway_service_owner, setup_platforms
+from hermes_cli import gateway_service_owner, gateway_service_tree, setup_platforms
 
 # UV's bundled Python ships a minimal PATH; ensure launchctl/systemctl are discoverable.
 if os.name == "posix":
@@ -1905,7 +1905,7 @@ def _reaper_exclusion_pids(extra_exclude: set | None) -> set[int]:
         # cover the whole ai.hermes.gateway* fleet — not just the current profile's label — or a sibling
         # profile's launchd gateway is misclassified as an unsupervised orphan and reaped. Same class as the
         # update-sweep fix in #74075.
-        own |= _get_service_pids(all_profiles=True)
+        own |= gateway_service_tree.exclusion_pids(_get_service_pids(all_profiles=True))
     # Exempt the recorded gateway PID and its parent chain (on Windows the Scheduled-Task bootstrap's
     # ``gateway run`` argv matches the scan; killing it takes the gateway down). Use the RAW pidfile +
     # lock records, not only the validated probe: get_running_pid returns None on any validation

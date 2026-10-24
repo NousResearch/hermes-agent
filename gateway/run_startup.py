@@ -1364,6 +1364,8 @@ class GatewayStartupMixin:
             # A live foreign token holder is an ownership conflict, not a blip: retryable only for
             # MID-RUN reconnects; at startup route it non-retryable so the gateway exits 78, not deaf.
             _retryable = adapter.fatal_error_retryable and not is_global_startup_conflict(adapter.fatal_error_code)
+            if is_global_startup_conflict(adapter.fatal_error_code):
+                self._startup_ownership_conflict = True
             self._update_platform_runtime_status(
                 platform.value, platform_state="retrying" if _retryable else "fatal",
                 error_code=adapter.fatal_error_code, error_message=adapter.fatal_error_message,
@@ -1434,7 +1436,10 @@ class GatewayStartupMixin:
         race against the gateway it was replacing, and nothing retried).
         """
         from gateway.run import _write_runtime_status_quiet
-        if connected_count != 0:
+        local_runtime = getattr(self, "session_authority", None) is not None
+        if connected_count != 0 or (
+            local_runtime and not getattr(self, "_startup_ownership_conflict", False)
+        ):
             if startup_nonretryable_errors:
                 # Parked fatal failures never heal on their own, so the platforms still serving must
                 # not be reported as a healthy run. Retryable peers are deliberately left alone: the
@@ -1443,7 +1448,7 @@ class GatewayStartupMixin:
                 logger.error(
                     "%d configured platform(s) failed to start and are parked (fix the reported error, "
                     "then `hermes gateway restart`): %s. The gateway is DEGRADED — it serves the "
-                    "remaining platform(s) with those unserved.",
+                    "remaining platforms and local clients with those unserved.",
                     len(startup_nonretryable_errors), "; ".join(startup_nonretryable_errors),
                 )
             return False
@@ -1661,6 +1666,7 @@ class GatewayStartupMixin:
         startup_nonretryable_errors: list[str] = []
         startup_retryable_errors: list[str] = []
         self._startup_parked_platforms = False  # fresh boot: no platform has failed yet
+        self._startup_ownership_conflict = False
         (
             _aborted, enabled_platform_count, _multiplex_skipped_platforms, _pending_connects
         ) = await self._start_prefilter_platforms()

@@ -65,9 +65,6 @@ export const slashCmdSessionEn = {
       // {0}=effort value, {1}=display mode
       currentWithDisplay: (value: string, display: string) => `reasoning: ${value} · display ${display}`
     },
-    sessions: {
-      busyGuardAction: 'switch sessions'
-    },
     skin: {
       current: (skin: string) => `skin: ${skin}`,
       defaultValue: 'default',

@@ -1087,6 +1087,13 @@ def _status_404(c: _Ctx) -> Verdict:
     verdict = _first_match(c.msg, _404_RULES)
     if verdict is not None:
         return verdict
+    # Anthropic names an unknown model by echoing the id we sent ("model: <id>"), which
+    # matches no _MODEL_NOT_FOUND_PATTERNS entry. Keyed on the echoed id, never on the
+    # not_found_error type: a wrong endpoint path answers "Not found" with no id and
+    # keeps the retryable generic verdict below (#14013).
+    # Match the whole echoed ID: a different model can share the requested prefix.
+    if c.model_slug and re.search(rf"(?<![\w.-])model: {re.escape(c.model_slug)}(?=$|[\s\"',)\]])", c.msg):
+        return _V_MODEL_NOT_FOUND
     # Bare id the catalogue only knows prefixed → malformed id (NVIDIA NIM "404
     # page not found", #78796). A generic 404 (wrong path, proxy glitch) stays
     # unknown so the real error surfaces instead of a silent misreported fallback.

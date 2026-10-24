@@ -663,6 +663,49 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_fallback is False
 
+    def test_404_echoing_the_requested_model_id_is_model_not_found(self):
+        """Anthropic answers an unknown model with the id we sent as the message.
+
+        ``{"type": "not_found_error", "message": "model: <id>"}`` names the exact
+        slug the request carried, so the failure is deterministic: the same call
+        fails identically on every retry and the model is genuinely absent. It
+        must abort to the fallback chain, not burn the retry budget.
+        """
+        body = {
+            "type": "error",
+            "error": {"type": "not_found_error", "message": "model: some-model-id"},
+        }
+        e = MockAPIError("Error code: 404", status_code=404, body=body)
+        result = classify_api_error(e, provider="anthropic", model="some-model-id")
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    @pytest.mark.parametrize("echoed_model", ["some-model-id-extra", "some-model-id.v2", "some-model-id/variant", "some-model-id_2", "some-model-id+variant"])
+    def test_404_echoing_a_different_model_with_requested_prefix_stays_generic(self, echoed_model):
+        body = {
+            "type": "error",
+            "error": {"type": "not_found_error", "message": f"model: {echoed_model}"},
+        }
+        e = MockAPIError("Error code: 404", status_code=404, body=body)
+        result = classify_api_error(e, provider="anthropic", model="some-model-id")
+        assert result.reason == FailoverReason.unknown
+        assert result.retryable is True
+        assert result.should_fallback is False
+
+    def test_404_not_found_error_without_the_model_id_stays_generic(self):
+        """The same ``not_found_error`` type on a wrong path does NOT name a model.
+
+        Anthropic returns ``"Not found"`` for a bad endpoint path, so the type
+        alone cannot mean model-not-found. Treating it that way would undo #14013
+        and hide real routing faults behind a silent fallback.
+        """
+        body = {"type": "error", "error": {"type": "not_found_error", "message": "Not found"}}
+        e = MockAPIError("Error code: 404", status_code=404, body=body)
+        result = classify_api_error(e, provider="anthropic", model="some-model-id")
+        assert result.reason == FailoverReason.unknown
+        assert result.retryable is True
+
     def test_404_bare_model_id_missing_prefix_is_model_not_found(self):
         """A bare id the provider only serves as ``vendor/id`` is malformed.
 

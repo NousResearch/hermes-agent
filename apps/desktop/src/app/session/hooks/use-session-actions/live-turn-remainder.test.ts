@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 
-import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
+import { type ChatMessage, type ChatMessagePart, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
 
 import { mergeLiveAssistantRun } from './live-turn-remainder'
@@ -99,6 +99,63 @@ it('settles a matching partial error without discarding richer local parts or di
     local,
     assistant('distinct', 'Unrelated reply')
   ])
+})
+
+it('folds a narration-led turn in either direction so one `clarify` staging renders once', () => {
+  const userRow: SessionMessage = { id: 1, role: 'user', content: 'Help', timestamp: 1 }
+
+  const clarifyRow = (extra: Partial<SessionMessage> = {}): SessionMessage => ({
+    id: 2,
+    role: 'assistant',
+    content: 'Choose the plan.',
+    timestamp: 2,
+    tool_calls: [
+      {
+        id: 'call-clarify-one',
+        type: 'function',
+        function: {
+          name: 'clarify',
+          arguments: JSON.stringify({ questions: [{ question: 'A?' }, { question: 'B?' }] })
+        }
+      }
+    ],
+    ...extra
+  })
+
+  const projection: Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'> = {
+    session_id: 'runtime',
+    inflight: { user: 'Help', assistant: 'Choose the plan.', streaming: true }
+  }
+
+  // The same open staging must never render twice, whichever side the
+  // narration asymmetry sits on: a window that attached mid-turn missed the
+  // `reasoning.delta` frames, and `appendReasoningDelta`'s replace branch can
+  // attach reasoning to the live row before any text arrives.
+  const runCase = (rows: SessionMessage[], liveParts: (stored: ChatMessage[]) => ChatMessagePart[]) => {
+    const stored = toChatMessages(rows)
+
+    let current: ChatMessage[] = [
+      stored[0],
+      { ...stored[1], id: 'assistant-stream-live', pending: true, parts: liveParts(stored) }
+    ]
+
+    for (let resume = 0; resume < 3; resume++) {
+      current = reconcilePersistedLiveTurn(toChatMessages(rows), current, rows, projection)!
+
+      expect(
+        current.flatMap(row => row.parts).filter(part => part.type === 'tool-call' && part.toolCallId === 'call-clarify-one')
+      ).toHaveLength(1)
+    }
+  }
+
+  runCase([userRow, clarifyRow()], stored => [
+    { type: 'reasoning', text: 'Need user input.' },
+    ...stored[1].parts
+  ])
+
+  runCase([userRow, clarifyRow({ reasoning: 'Internal narration.' })], stored =>
+    stored[1].parts.filter(part => part.type !== 'reasoning')
+  )
 })
 
 it('pairs only the queue projection, preserving equal corrections and different local queued occurrences', () => {

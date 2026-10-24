@@ -30,6 +30,7 @@ from gateway.status_inline_source import (
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
 from hermes_cli._subprocess_compat import pid_exists_stdlib
 from gateway.status_lock_dir import unusable_lock_dir, unusable_lock_dir_recovered
+from gateway.status_platform_ownership import platform_map_for_write
 from utils import atomic_json_write
 
 if sys.platform == "win32":
@@ -1110,16 +1111,10 @@ def _prepare_runtime_status_update(
         previous_payload = _runtime_status_state
         payload = copy.deepcopy(previous_payload)
         current_record = _build_pid_record()
-        payload.setdefault("platforms", {})
-        if not isinstance(payload["platforms"], dict):
-            payload["platforms"] = {}
-        if clear_profile_platforms or drop_profile_platforms:
-            drop_prefix = f"{drop_profile_platforms}:" if drop_profile_platforms else None
-            payload["platforms"] = {
-                k: v for k, v in payload["platforms"].items()
-                if not isinstance(k, str) or ":" not in k
-                or (drop_prefix is not None and not k.startswith(drop_prefix))
-            }
+        payload["platforms"] = platform_map_for_write(
+            payload["platforms"], current_record, previous_payload,
+            clear_profile_platforms=clear_profile_platforms,
+            drop_profile_platforms=drop_profile_platforms)
         payload.update({key: current_record[key] for key in ("kind", "pid", "argv", "start_time")})
         payload["updated_at"] = _utc_now_iso()
         payload.update(_get_code_identity_fields())

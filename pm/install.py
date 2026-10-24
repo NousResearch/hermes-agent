@@ -856,6 +856,9 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
         if evict_incompatible_plugins and (repair or plugins is not None or not explicit):
             raise ValueError("only an explicit sync of the discovered plugin selection may disable plugins")
         shipped, frozen = _feature_policy(extras, repair=repair)
+        from pm.generation_lifecycle import collect_unused
+
+        collect_unused(paths.repo_root())
         package = get_package("venv")
         from hermes_cli.runtime_state import recover_publication
         from pm.publication import StagedPlugin

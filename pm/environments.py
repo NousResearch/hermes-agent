@@ -17,6 +17,11 @@ from pathlib import Path
 from hermes_constants import get_default_hermes_root, project_venv_dir
 
 
+# Installation-scoped boot identity, not the current profile or mutable sys.path.
+# adopt_selected() may change sys.path while loaded modules still need the old tree.
+_BOOT_ENVIRONMENTS: dict[Path, Path | None] = {}
+
+
 def install_key(project_root: Path) -> str:
     canonical = str(Path(project_root).resolve())
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
@@ -36,6 +41,13 @@ def installs_root() -> Path:
 
 def install_state_dir(project_root: Path) -> Path:
     return installs_root() / install_key(project_root)
+
+
+def remember_activation(project: Path, environment: Path | None) -> None:
+    _BOOT_ENVIRONMENTS.setdefault(
+        install_state_dir(project).resolve(),
+        environment.resolve() if environment else None,
+    )
 
 
 def owning_home_root(project_root: Path) -> Path | None:
@@ -444,10 +456,9 @@ def _require_own_dependencies(project_root: Path) -> None:
     """
     import sys
 
-    if sys.prefix != sys.base_prefix:
-        return  # a venv interpreter (developer .venv, test env) carries its own packages
-    if Path(sys.base_prefix).resolve().is_relative_to(store_root(project_root).resolve()):
+    if sys.prefix == sys.base_prefix and Path(sys.base_prefix).resolve().is_relative_to(store_root(project_root).resolve()):
         raise NoCommittedEnvironment("no dependency environment is committed for this install")
+    remember_activation(project_root, None)
 
 
 def activate_dependencies(project_root: Path) -> None:
@@ -490,6 +501,7 @@ def activate_dependencies(project_root: Path) -> None:
             return  # External/Nix interpreter owns its original sys.path.
     if not selected.is_dir():
         raise RuntimeError(f"dependency environment has no site-packages: {selected}")
+    remember_activation(project_root, environment)
     import site
 
     sys.path[:] = [entry for entry in sys.path

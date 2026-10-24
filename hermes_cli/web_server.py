@@ -1141,6 +1141,7 @@ def _on_server_started(
     initial_profile: str,
     start_mcp_discovery_after_bind: bool,
     ssh_lock_path: Optional[Path] = None,
+    external_supervisor: bool = False,
 ) -> None:
     """Post-bind arming on the serving loop right after ``server.startup()``.
 
@@ -1170,6 +1171,8 @@ def _on_server_started(
 
     # No-op for standalone `hermes serve` (no HERMES_PARENT_PID).
     _start_parent_death_watchdog()
+    from hermes_cli.web_server_generation_exit import start_generation_watchdog
+    start_generation_watchdog(server, owned=external_supervisor)
     # SSH-isolated backends are detached from any parent on purpose (#91668); their liveness signal
     # is "does a client still hold a WebSocket" (#101626).
     if getattr(app.state, "ssh_isolated_clients", None) is not None:
@@ -1359,6 +1362,7 @@ def start_server(
     ssh_owner_nonce: Optional[str] = None,
     start_mcp_discovery_after_bind: bool = False,
     ssh_lock_path: Optional[Path] = None,
+    external_supervisor: bool = False,
 ):
     """Start the web UI server.
 
@@ -1458,6 +1462,7 @@ def start_server(
                 initial_profile=initial_profile,
                 start_mcp_discovery_after_bind=start_mcp_discovery_after_bind,
                 ssh_lock_path=ssh_lock_path,
+                **({"external_supervisor": True} if external_supervisor else {}),
             )
             if headless:
                 from hermes_cli.observability.shared_metrics_startup import record_process_ready

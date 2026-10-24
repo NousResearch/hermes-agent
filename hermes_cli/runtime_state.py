@@ -181,14 +181,18 @@ def lease_directory(generation: Path) -> Callable[[], None]:
     return release
 
 
-def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> list[Path]:
-    """Remove unselected lease-managed generations after their readers exit."""
+def collect_generations(project: Path, *, min_age_seconds: float = 86400, wait: bool = True) -> list[Path]:
+    """Remove unselected lease-managed generations after their readers exit.
+
+    ``wait=False`` lets maintenance yield immediately to an installer, including
+    one whose lock this caller inherited. Explicit GC keeps the usual wait.
+    """
     from pm.environments import selected_venv
     removed = []
     root = install_state_dir(project)
     if not root.exists():
         return removed
-    with runtime_lock(project) as held:
+    with (runtime_lock(project) if wait else runtime_lock(project, timeout=0)) as held:
         if not held:
             return removed  # maintenance: another process owns the install, skip rather than queue
         recover_publication(project)

@@ -538,6 +538,21 @@ class WebSocketRelayTransport:
         per-gateway secret was revoked. Terminal: no reconnect."""
         return self._auth_revoked
 
+    @property
+    def delivery_ready(self) -> bool:
+        """A live, authenticated generation may wake a refunded delivery claim."""
+        return (
+            not self._closing
+            and not self._dormant
+            and not self._auth_revoked
+            and self._ws is not None
+            and self._descriptor is not None
+        )
+
+    def set_reconnect_handler(self, handler: Callable[[], None]) -> None:
+        """Register the adapter's scheduler for authenticated re-handshakes."""
+        self._reconnect_handler = handler
+
     def set_inbound_handler(self, handler: InboundHandler) -> None:
         self._inbound = handler
 
@@ -926,12 +941,21 @@ class WebSocketRelayTransport:
             self._descriptors_by_platform[descriptor.platform] = descriptor
         # The FIRST descriptor of this generation is the session default; later
         # arrivals must NOT overwrite it (else last-writer-wins across platforms).
-        if self._descriptor is None:
+        first_descriptor = self._descriptor is None
+        if first_descriptor:
             self._descriptor = descriptor
         # Upgrade auth passed at least once: a LATER 4401 is a revocation.
         self._handshake_succeeded = True
         if self._descriptor_ready is not None and not self._descriptor_ready.done():
             self._descriptor_ready.set_result(descriptor)
+        # A transport-level reconnect keeps the same adapter. Notify once after
+        # authentication, without awaiting a send on this socket's reader.
+        handler = getattr(self, "_reconnect_handler", None)
+        if first_descriptor and self._dial_generation > 1 and handler is not None:
+            try:
+                handler()
+            except Exception:
+                logger.exception("relay reconnect delivery notification failed")
 
     async def _on_inbound(self, frame: dict[str, Any]) -> None:
         if self._inbound is None:

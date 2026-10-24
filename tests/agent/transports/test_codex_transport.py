@@ -1766,6 +1766,26 @@ class TestCodexTransportXaiReasoningEffort:
 
         assert kw["reasoning"]["effort"] == "xhigh"
 
+    @pytest.mark.parametrize(("model", "effort", "expected"), [
+        ("grok-4.7", "low", "low"),
+        ("x-ai/grok-4.7-latest", "medium", "medium"),
+        ("grok-4.7", "high", "high"),
+        ("grok-4.7", "xhigh", "xhigh"),
+        ("grok-4.7", "max", "xhigh"),
+    ])
+    def test_grok_47_sends_reasoning_effort(self, transport, model, effort, expected):
+        """grok-4.7 was missing from the effort allowlist, so ``reasoning.effort`` was
+        silently dropped and xAI applied its default (high) whatever the config said."""
+        kw = transport.build_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            reasoning_config={"enabled": True, "effort": effort},
+        )
+
+        assert kw["reasoning"] == {"effort": expected}
+
     @pytest.mark.parametrize("effort", ["max", "ultra"])
     def test_older_grok_clamps_aliases_to_high(self, transport, effort):
         """Older Grok tops out at high; above-ceiling aliases land there."""
@@ -1833,6 +1853,29 @@ class TestCodexTransportXaiServiceTierStrip:
         )
 
         assert kw.get("service_tier") == "priority"
+
+    @pytest.mark.parametrize("model", ["grok-4.7", "x-ai/grok-4.7-latest"])
+    def test_grok_47_preserves_priority_service_tier(self, transport, model):
+        kw = transport.build_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            request_overrides={"service_tier": "priority"},
+        )
+
+        assert kw.get("service_tier") == "priority"
+
+    def test_grok_47_strips_non_priority_service_tier(self, transport):
+        kw = transport.build_kwargs(
+            model="grok-4.7",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            request_overrides={"service_tier": "flex"},
+        )
+
+        assert "service_tier" not in kw
 
     def test_grok_46_strips_non_priority_service_tier(self, transport):
         kw = transport.build_kwargs(

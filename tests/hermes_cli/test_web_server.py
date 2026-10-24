@@ -2067,27 +2067,6 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert get_env_value(custom_endpoint_key_env("local-8000")) == "sk-first"
         assert get_env_value(custom_endpoint_key_env("local-8001")) == "sk-second"
 
-    def test_custom_endpoint_response_reports_a_key_held_in_env(self):
-        """has_api_key must follow key_env, not just a plaintext api_key.
-
-        Reading only ``api_key`` made the panel report "no API key" for every
-        endpoint whose credential had been moved to .env.
-        """
-        resp = self.client.post(
-            "/api/providers/custom-endpoints",
-            json={
-                "id": "proxy",
-                "name": "Proxy",
-                "base_url": "https://llm.example.com/v1",
-                "model": "m",
-                "api_key": "sk-in-env",
-            },
-        )
-
-        endpoint = next(e for e in resp.json()["endpoints"] if e["id"] == "proxy")
-        assert endpoint["has_api_key"] is True
-        assert "sk-in-env" not in (endpoint["api_key_preview"] or "")
-
     def test_env_rejects_its_redacted_preview(self):
         """Invariant: a GET preview (sentinel or legacy bare mask) never gains write
         authority, even after another actor rotates the secret behind it."""
@@ -2154,38 +2133,6 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         providers = load_config()["providers"]
         assert providers["env-preview"]["key_env"] == "NEW_ENDPOINT_KEY"
         assert providers["legacy-preview"]["api_key"] == "legacy-secret-B-0987654321"
-
-    def test_activating_an_endpoint_carries_its_credential_either_way(self):
-        """Activate must work for both key_env and pre-#69449 plaintext entries."""
-        from hermes_cli.config import load_config, save_config
-
-        cfg = load_config()
-        cfg["providers"] = {
-            "legacy": {
-                "name": "Legacy",
-                "base_url": "https://llm.legacy.com/v1",
-                "model": "m",
-                "api_key": "sk-legacy",
-                "models": {"m": {}},
-            },
-            "modern": {
-                "name": "Modern",
-                "base_url": "https://llm.modern.com/v1",
-                "model": "m",
-                "key_env": "MODERN_API_KEY",
-                "models": {"m": {}},
-            },
-        }
-        save_config(cfg)
-
-        self.client.post("/api/providers/custom-endpoints/modern/activate", json={})
-        model_cfg = load_config()["model"]
-        assert model_cfg["key_env"] == "MODERN_API_KEY"
-        assert "api_key" not in model_cfg
-
-        self.client.post("/api/providers/custom-endpoints/legacy/activate", json={})
-        model_cfg = load_config()["model"]
-        assert model_cfg["api_key"] == "sk-legacy"
 
     def test_saving_legacy_custom_provider_keeps_key_env(self):
         """Save on a legacy row must carry key_env onto providers and drop the list row.

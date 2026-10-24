@@ -56,6 +56,17 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         self.assertEqual(chunks[1].choices, [])
 
 
+    def test_acp_does_not_invent_token_usage(self) -> None:
+        with patch.object(self.client, "_run_prompt", return_value=("answer", "")):
+            for stream in (False, True):
+                with self.subTest(stream=stream):
+                    result = self.client._create_chat_completion(
+                        model="fake-model",
+                        messages=[{"role": "user", "content": "hi"}],
+                        stream=stream,
+                    )
+                    self.assertIsNone(result[-1].usage if stream else result.usage)
+
     def _dispatch(self, message: dict, *, cwd: str) -> dict:
         process = _FakeProcess()
         handled = self.client._handle_server_message(

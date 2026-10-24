@@ -508,6 +508,26 @@ class TestRequestedIdIsNeverRewritten:
         assert "gpt-5.3-codex" in result["message"]  # offered as a suggestion, not applied
 
 
+class TestNativeAnthropicPrefixValidation:
+    """Regression for #140031: an exact omitted ``claude-`` prefix is not a hidden model."""
+
+    def _validate_native(self, model, listing):
+        with patch("hermes_cli.models._fetch_anthropic_models", return_value=listing):
+            return validate_requested_model(
+                model, "anthropic", api_key="test-key", base_url="https://api.anthropic.com")
+
+    def test_omitted_claude_prefix_is_rejected_with_exact_suggestion(self):
+        result = self._validate_native("sonnet-5-5", ["claude-sonnet-5-5"])
+
+        assert (result["accepted"], result["persist"], result["recognized"]) == (False, False, False)
+        assert "claude-sonnet-5-5" in result["message"]
+
+    def test_unlisted_snapshot_id_remains_soft_accepted(self):
+        result = self._validate_native("claude-sonnet-5-5-preview", ["claude-sonnet-5-5"])
+
+        assert (result["accepted"], result["persist"], result["recognized"]) == (True, True, False)
+
+
 class TestValidateCodex900kVariants:
     """`-900k` is a Hermes picker convention: valid variants come from the
     catalog; ineligible aliases are hard-rejected BEFORE the hidden-slug

@@ -159,6 +159,17 @@ Inside the switcher:
 - `Esc` closes the switcher.
 - Select `+new`, type a prompt, and press `Enter` to dispatch a new live session. Press `Tab` first if you want to choose a model just for that new session.
 
+### Resumable sessions: project groups and search
+
+Below the live sessions the switcher lists saved sessions you can resume. They are grouped by project, using the same grouping as the desktop sidebar, so a session lands under the same project in both. Sessions that belong to no project appear under an `Other` group at the end. If the project list cannot be loaded, the switcher shows the plain most-recent-first list instead.
+
+- Project headers are selectable rows. Each group starts showing its first 3 sessions (`▾ project (3/5)`). Press `Enter` (or click) on a header to cycle it: all sessions (`▼`), only the project name (`▸`), then back to the first 3.
+- `g` switches between project groups and the flat most-recent-first list.
+- `/` opens a search box. Every word you type has to match a session's title, preview or id, or its project name, so `alpha fix` finds the "fix" sessions under the `alpha` project and a bare project name keeps that whole project. `Enter` keeps the filter and returns to the list; `Esc` clears the filter first and closes the switcher on the next press.
+- `Enter` on a session resumes it; `d` twice deletes it.
+
+Which groups are collapsed, and whether grouping is on, apply only while the switcher is open.
+
 ## LaTeX math rendering
 
 The TUI's markdown pipeline renders LaTeX math inline: `$E = mc^2$` and `$$\frac{a}{b}$$` render as Unicode-formatted math instead of the raw TeX source. Works for inline and block math; unsupported syntax falls back to showing the literal TeX wrapped in a code span so it remains copyable.

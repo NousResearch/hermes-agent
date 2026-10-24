@@ -114,6 +114,38 @@ def _tool_completed_preview(result: Any, redact_sensitive_text: Callable[..., st
     return preview if len(preview) <= limit else preview[: limit - 3] + "..."
 
 
+# Full tool result for clients rendering the whole output; bounded so one tool cannot flood the stream.
+_TOOL_COMPLETED_RESULT_MAX_CHARS = 100_000
+
+
+def _tool_completed_result(result: Any, redact_sensitive_text: Callable[..., str]) -> str | None:
+    if result is None:
+        return None
+    # Parse JSON strings so redaction runs per leaf and cannot eat a closing quote.
+    if isinstance(result, str):
+        with suppress(ValueError):
+            parsed = json.loads(result)
+            if isinstance(parsed, (dict, list)):
+                result = parsed
+    if isinstance(result, str):
+        text = redact_sensitive_text(result, force=True)
+    else:
+        text = json.dumps(_redacted_tool_args(result, redact_sensitive_text), ensure_ascii=False)
+    limit = _TOOL_COMPLETED_RESULT_MAX_CHARS
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _redacted_tool_args(value: Any, redact_sensitive_text: Callable[..., str]) -> Any:
+    # Redact every string leaf so the structure stays valid JSON.
+    if isinstance(value, str):
+        return redact_sensitive_text(value, force=True)
+    if isinstance(value, dict):
+        return {str(k): _redacted_tool_args(v, redact_sensitive_text) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redacted_tool_args(v, redact_sensitive_text) for v in value]
+    return value if value is None or isinstance(value, (bool, int, float)) else str(value)
+
+
 _RUN_STREAM_SUBSCRIBER_OVERFLOW = object()
 _RUN_STREAM_WRITE_TIMEOUT = 5.0
 
@@ -339,9 +371,14 @@ def _make_run_event_callback(self, run_id: str, loop: asyncio.AbstractEventLoop,
         fields = _FIXED_EVENT_FIELDS.get(event_type)
         if fields is not None:
             event_fields = fields(tool_name, preview, kwargs)
+            if event_type == "tool.started" and isinstance(args, dict):
+                event_fields["args"] = _redacted_tool_args(args, redact_sensitive_text)
             if event_type == "tool.completed":
                 event_fields["preview"] = _tool_completed_preview(
                     kwargs.get("result"), redact_sensitive_text)
+                result = _tool_completed_result(kwargs.get("result"), redact_sensitive_text)
+                if result is not None:
+                    event_fields["result"] = result
             _push(_run_event(run_id, event_type, **event_fields))
         elif event_type in {"subagent.start", "subagent.complete"}:
             event = _run_event(run_id, event_type)
@@ -1076,7 +1113,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             def _tool_complete(call_id, name, args, result):
                 from agent.display import _detect_tool_failure
                 is_error, _ = _detect_tool_failure(name, result)
-                tool_cb("tool.completed", name, None, args, tool_call_id=call_id, is_error=bool(is_error))
+                tool_cb("tool.completed", name, None, args, tool_call_id=call_id, is_error=bool(is_error),
+                        result=result)
 
             with observe_api_controls(run.admission, _control_cb):
                 result, usage = await observe_api_turn(

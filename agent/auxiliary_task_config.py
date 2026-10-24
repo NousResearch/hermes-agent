@@ -51,19 +51,38 @@ def _get_auxiliary_task_config(task: str, _seen: frozenset = frozenset()) -> dic
         return {}
     config = _task_config(str(task), _seen)
     if getattr(task, "route_authoritative", False):
-        return {key: value for key, value in config.items() if key not in _AUX_ROUTE_KEYS}
+        stripped = {key: value for key, value in config.items() if key not in _AUX_ROUTE_KEYS}
+        return _with_read_marker(stripped, config)
     return config
+
+
+def _with_read_marker(task_config: dict[str, Any], source: Any) -> dict[str, Any]:
+    """Keep the config-read-failure marker (opt-in fail-closed policy) on a derived dict, while
+    leaving metadata-only readers free to inspect the last-known-good task settings."""
+    try:
+        from hermes_cli.config import FailedConfigRead
+    except ImportError:
+        return task_config
+    if isinstance(source, FailedConfigRead) and not isinstance(task_config, FailedConfigRead):
+        return FailedConfigRead(task_config, error=source.read_error)
+    return task_config
 
 
 def _task_config(task: str, _seen: frozenset) -> dict[str, Any]:
     aux = _SESSION_AUXILIARY.get()
+    marker = None
     if aux is None:
         try:
             from hermes_cli.config import load_config_readonly
             config = load_config_readonly()
         except ImportError:
             return {}
+        marker = config
         aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
+    return _with_read_marker(_resolve_task_block(task, _seen, aux), marker)
+
+
+def _resolve_task_block(task: str, _seen: frozenset, aux: Any) -> dict[str, Any]:
     task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
     if not isinstance(task_config, dict):
         task_config = {}

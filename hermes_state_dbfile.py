@@ -652,6 +652,31 @@ def has_invalid_sqlite_header_preopen(path: Path, *, probe_bytes: int = 100, for
     return head is not None and not head.startswith(b"SQLite format 3")
 
 
+def probe_hot_wal_recovery(path: Path) -> Optional[bool]:
+    """Verify an invalid main header can still be read from a nonempty hot WAL.
+
+    ``None`` means there is no WAL evidence to preserve. ``False`` means a WAL exists
+    but SQLite could not prove the image readable, so callers must not replace it.
+    """
+    wal_path = Path(str(path) + "-wal")
+    try:
+        if not wal_path.is_file() or wal_path.stat().st_size == 0:
+            return None
+    except OSError:
+        return None
+    conn = None
+    try:
+        conn = sqlite3.connect(read_only_db_uri(path), uri=True, timeout=1.0, isolation_level=None)
+        row = conn.execute("PRAGMA integrity_check").fetchone()
+        return row is not None and row[0] == "ok"
+    except sqlite3.Error:
+        logger.warning("could not verify hot-WAL recovery for %s", path, exc_info=True)
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 @contextlib.contextmanager
 def quarantine_cross_process_lock(path: Path, timeout: float = 5.0):
     """Acquire the cross-process lock for path.quarantine.lock."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -71,8 +72,6 @@ def test_sessiondb_quarantines_page_zero_clobber_before_open(tmp_path, monkeypat
     db = tmp_path / "state.db"
     clobbered = (b"bg_032237_0e4ce7A" * 256)[:4096]
     db.write_bytes(clobbered)
-    (tmp_path / "state.db-wal").write_bytes(b"wal evidence")
-    (tmp_path / "state.db-shm").write_bytes(b"shm evidence")
 
     assert hs.has_invalid_sqlite_header_preopen(db) is True
     assert hs.is_zeroed_state_db(db) is False
@@ -82,8 +81,6 @@ def test_sessiondb_quarantines_page_zero_clobber_before_open(tmp_path, monkeypat
         backups = list(tmp_path.glob("state.db.notadb-*.bak"))
         assert len(backups) == 1
         assert backups[0].read_bytes() == clobbered
-        assert Path(str(backups[0]) + "-wal").read_bytes() == b"wal evidence"
-        assert Path(str(backups[0]) + "-shm").read_bytes() == b"shm evidence"
         assert db.read_bytes().startswith(b"SQLite format 3\x00")
         sdb.create_session(session_id="after-quarantine", source="test")
     finally:
@@ -94,6 +91,68 @@ def test_sessiondb_quarantines_page_zero_clobber_before_open(tmp_path, monkeypat
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     finally:
         conn.close()
+
+
+def test_sessiondb_recovers_hot_wal_after_main_header_damage(tmp_path, monkeypatch):
+    """A readable hot WAL must not be quarantined just because page zero is clobbered (#140056)."""
+    import sqlite3
+
+    import hermes_state as hs
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db = tmp_path / "state.db"
+    source = tmp_path / "crashed-writer"
+    source.mkdir()
+
+    sdb = hs.SessionDB(db_path=db)
+    try:
+        sdb.create_session(session_id="from-hot-wal", source="test")
+        sdb._conn.execute("PRAGMA wal_autocheckpoint=0")
+        sdb._conn.execute("PRAGMA user_version=42")
+        sdb._conn.commit()
+        for suffix in ("", "-wal", "-shm"):
+            shutil.copyfile(Path(str(db) + suffix), source / f"state.db{suffix}")
+    finally:
+        sdb.close()
+
+    for suffix in ("", "-wal", "-shm"):
+        shutil.copyfile(source / f"state.db{suffix}", Path(str(db) + suffix))
+    with db.open("r+b") as handle:
+        handle.write(bytes(16))
+
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+    recovered = hs.SessionDB(db_path=db)
+    try:
+        assert recovered.get_session("from-hot-wal") is not None
+        assert not list(tmp_path.glob("state.db.notadb-*.bak"))
+    finally:
+        recovered.close()
+
+
+def test_sessiondb_preserves_unreadable_hot_wal_after_main_header_damage(tmp_path, monkeypatch):
+    """An unverified hot WAL is evidence to preserve, not a reason to create an empty store (#140056)."""
+    import sqlite3
+
+    import hermes_state as hs
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db = tmp_path / "state.db"
+    clobbered = b"not a sqlite header"
+    db.write_bytes(clobbered)
+    Path(str(db) + "-wal").write_bytes(b"not a valid wal")
+
+    with pytest.raises(sqlite3.DatabaseError, match="unreadable hot WAL"):
+        hs.SessionDB(db_path=db)
+
+    assert db.read_bytes() == clobbered
+    assert Path(str(db) + "-wal").read_bytes() == b"not a valid wal"
+    assert not list(tmp_path.glob("state.db.notadb-*.bak"))
 
 
 def test_is_zeroed_state_db_zero_byte_quarantine(tmp_path, monkeypatch):

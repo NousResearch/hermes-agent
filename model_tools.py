@@ -333,6 +333,11 @@ def _select_tool_names(enabled_toolsets: Optional[list[str]], disabled_toolsets:
     # disabled toolset are strictly stripped out. See issue #17309.
     if disabled_toolsets:
         _apply_toolset_selection(tools, disabled_toolsets, quiet_mode, disable=True)
+    # A dispatcher worker is headless, so clarify can only return "undelivered"
+    # and the question is lost; it asks through kanban_block instead (#32167).
+    from agent.delegation_context import owned_kanban_task
+    if owned_kanban_task():
+        tools.discard("clarify")
     return tools
 
 

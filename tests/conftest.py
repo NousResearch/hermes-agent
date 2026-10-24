@@ -210,17 +210,11 @@ if not HOST_LOCK_DIR_AT_CONFTEST_IMPORT:
     # Deterministic per-PID name, not mkdtemp: the parallel runner SIGKILLs a worker on timeout,
     # which never runs atexit, so a random dir per run leaked one directory per killed worker.
     # A fixed name is reused by the next process with that PID, and dead siblings are swept here.
-    _LOCK_DIR_PREFIX = "hermes-test-gateway-locks-"
+    from tests._fixtures.gateway_lock_dirs import LOCK_DIR_PREFIX as _LOCK_DIR_PREFIX
+    from tests._fixtures.gateway_lock_dirs import sweep_stale_lock_dirs
+
     _LOCK_DIR_ROOT = Path(tempfile.gettempdir())
-    for _stale in _LOCK_DIR_ROOT.glob(f"{_LOCK_DIR_PREFIX}*"):
-        try:
-            _stale_pid = int(_stale.name[len(_LOCK_DIR_PREFIX):])
-        except ValueError:
-            continue
-        try:
-            os.kill(_stale_pid, 0)
-        except OSError:
-            shutil.rmtree(_stale, ignore_errors=True)
+    sweep_stale_lock_dirs(_LOCK_DIR_ROOT, _LOCK_DIR_PREFIX)
     _SESSION_LOCK_DIR = str(_LOCK_DIR_ROOT / f"{_LOCK_DIR_PREFIX}{os.getpid()}")
     shutil.rmtree(_SESSION_LOCK_DIR, ignore_errors=True)
     os.environ["HERMES_GATEWAY_LOCK_DIR"] = _SESSION_LOCK_DIR

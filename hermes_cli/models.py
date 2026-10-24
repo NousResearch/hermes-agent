@@ -1957,6 +1957,14 @@ def _credential_fingerprint(provider: str) -> str:
     not discard an account-scoped catalog, while a real account switch must invalidate it.
     """
     import hashlib
+    from hermes_cli.config import get_env_value_prefer_dotenv
+
+    # Resolve each env var the way the credential resolver does (dotenv
+    # first, environ second), so the fingerprint identifies the same
+    # credentials the API call will use — including keys that live only
+    # in ~/.hermes/.env.
+    def _fp_env(key: str) -> str:
+        return get_env_value_prefer_dotenv(key) or ""
 
     parts: list[str] = []
     try:
@@ -1964,10 +1972,10 @@ def _credential_fingerprint(provider: str) -> str:
         pcfg = PROVIDER_REGISTRY.get(provider)
         if pcfg is not None:
             for ev in getattr(pcfg, "api_key_env_vars", ()) or ():
-                parts.append(f"{ev}={os.environ.get(ev, '')}")
+                parts.append(f"{ev}={_fp_env(ev)}")
             bev = getattr(pcfg, "base_url_env_var", "") or ""
             if bev:
-                parts.append(f"{bev}={os.environ.get(bev, '')}")
+                parts.append(f"{bev}={_fp_env(bev)}")
     except Exception:
         pass
 
@@ -1979,7 +1987,7 @@ def _credential_fingerprint(provider: str) -> str:
         if profile is not None and profile.auth_type == "external_process":
             for ev in (*profile.process_command_env_vars, profile.process_args_env_var):
                 if ev:
-                    parts.append(f"{ev}={os.environ.get(ev, '')}")
+                    parts.append(f"{ev}={_fp_env(ev)}")
     except Exception:
         pass
 

@@ -157,14 +157,29 @@ def extract_gemma4_thinking(content: str) -> tuple[str, str]:
 
     Returns ``(thinking_text, cleaned_content)``.  Empty *thinking_text*
     when no blocks are found.
-    """
-    if not content or _GEMMA4_THINK_OPEN not in content:
-        return "", content or ""
 
-    parts: list[str] = []
-    cleaned = _GEMMA4_THINK_RE.sub(lambda m: (parts.append(m.group(1).strip()), "")[1], content)
-    thinking = "\n\n".join(p for p in parts if p)
-    return thinking, cleaned.strip()
+    Handles two cases:
+    1. Full tokens present: ``<|channel>thought\\n...\\n<channel|>``
+    2. Stripped tokens (Featherless/vLLM): content starts with bare
+       ``thought\\n`` — the ``<|channel>`` and ``<channel|>`` delimiters
+       are gone, so only the prefix is cleaned (no reasoning/answer
+       boundary exists to split on).
+    """
+    if not content:
+        return "", ""
+
+    # Case 1: full tokens present — extract thinking between delimiters.
+    if _GEMMA4_THINK_OPEN in content:
+        parts: list[str] = []
+        cleaned = _GEMMA4_THINK_RE.sub(lambda m: (parts.append(m.group(1).strip()), "")[1], content)
+        thinking = "\n\n".join(p for p in parts if p)
+        return thinking, cleaned.strip()
+
+    # Case 2: stripped tokens — bare "thought\n" prefix leaked through.
+    if content.startswith("thought\n"):
+        cleaned = content[len("thought\n"):]
+        return "", cleaned
+    return "", content
 
 
 def extract_gemma4_tool_calls(

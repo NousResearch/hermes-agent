@@ -250,6 +250,20 @@ class TestExtractGemma4ToolCalls:
         assert thinking == ""
         assert cleaned == ""
 
+    def test_thinking_stripped_tokens_prefix(self):
+        thinking, cleaned = extract_gemma4_thinking(
+            "thought\nThe user wants to calculate 2+2.\n\n2 + 2 = 4"
+        )
+        assert thinking == ""
+        assert cleaned == "The user wants to calculate 2+2.\n\n2 + 2 = 4"
+
+    def test_thinking_stripped_tokens_no_false_positive(self):
+        thinking, cleaned = extract_gemma4_thinking(
+            "I thought about this carefully and the answer is 42."
+        )
+        assert thinking == ""
+        assert cleaned == "I thought about this carefully and the answer is 42."
+
     def test_single_param_code_execution(self):
         tools = [
             {

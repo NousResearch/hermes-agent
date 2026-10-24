@@ -138,10 +138,12 @@ def normalize_model_response(
 
     # Gemma 4 thinking extraction: when the server passes through <|channel>thought
     # tokens, extract thinking content and route it through the reasoning pipeline
-    # so the UI can format it separately from the conversation.
+    # so the UI can format it separately from the conversation.  Also handles
+    # stripped-token case where bare "thought\n" prefix leaks through.
     if (
         assistant_message.content
-        and "<|channel>thought" in assistant_message.content
+        and ("<|channel>thought" in assistant_message.content
+             or assistant_message.content.startswith("thought\n"))
     ):
         from agent.gemma4_text_tool_parser import is_gemma4_model, extract_gemma4_thinking
         if is_gemma4_model(agent.model):
@@ -149,10 +151,11 @@ def normalize_model_response(
             if _g4_thinking:
                 if not getattr(assistant_message, "reasoning", None):
                     assistant_message.reasoning = _g4_thinking
-                assistant_message.content = _g4_content or None
                 logger.info(
                     "Gemma 4 thinking extracted: %d chars", len(_g4_thinking),
                 )
+            if _g4_content != assistant_message.content:
+                assistant_message.content = _g4_content or None
 
     # Gemma 4 text tool-call extraction: when the server strips special tokens
     # (<|tool_call>, <tool_call|>, <|"|>), tool calls arrive as plain text

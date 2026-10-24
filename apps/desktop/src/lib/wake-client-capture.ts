@@ -9,6 +9,11 @@
 
 const TARGET_RATE = 16_000
 const DEFAULT_FRAME = 1280 // 80 ms @ 16 kHz — matches tools/wake_word.py
+// Chromium renders a hidden window's audio graph slower than real time while
+// the graph's output is all zeros, and the capture then loses a third of its
+// PCM — the wake phrase never matches while the window is minimized. A
+// -120 dBFS offset keeps the output non-silent without being audible.
+const KEEP_AWAKE_OFFSET = 1e-6
 
 // Health-monitor tuning for the continuous capture chain. A platform capture
 // failure (macOS PLAS IPC delegate error → StopSourceOnError, #119089) leaves
@@ -150,6 +155,8 @@ export async function startClientWakeCapture(options: ClientWakeCaptureOptions):
   const processor = context.createScriptProcessor(4096, 1, 1)
   const mute = context.createGain()
   mute.gain.value = 0
+  const keepAwake = context.createConstantSource()
+  keepAwake.offset.value = KEEP_AWAKE_OFFSET
 
   let pending = new Float32Array(0)
   let stopped = false
@@ -179,6 +186,8 @@ export async function startClientWakeCapture(options: ClientWakeCaptureOptions):
         processor.disconnect()
         source.disconnect()
         mute.disconnect()
+        keepAwake.stop()
+        keepAwake.disconnect()
       } catch {
         // ignore
       }
@@ -374,6 +383,8 @@ export async function startClientWakeCapture(options: ClientWakeCaptureOptions):
   source.connect(processor)
   processor.connect(mute)
   mute.connect(context.destination)
+  keepAwake.connect(context.destination)
+  keepAwake.start()
 
   if (context.state === 'suspended') {
     await context.resume().catch(() => undefined)

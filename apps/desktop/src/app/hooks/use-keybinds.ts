@@ -16,7 +16,7 @@ import {
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { onReleaseTypingFocus } from '@/components/ui/keyboard-first'
 import { translateNow } from '@/i18n/runtime'
-import { findBarClaimsCombo } from '@/lib/find-in-page'
+import { findBarClaimsChord } from '@/lib/find-in-page'
 import {
   contributedKeybindHandler,
   keybindAction,
@@ -25,7 +25,15 @@ import {
   TAB_SLOT_COUNT
 } from '@/lib/keybinds/actions'
 import { handleApprovalKey, releaseApprovalKey } from '@/lib/keybinds/approval-keys'
-import { actionAllowedInInput, comboFromEvent, IS_MAC, isEditableTarget, isFocusWithin } from '@/lib/keybinds/combo'
+import {
+  actionAllowedInInput,
+  codeComboFromEvent,
+  comboFromEvent,
+  dispatchCombo,
+  IS_MAC,
+  isEditableTarget,
+  isFocusWithin
+} from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { registerBuiltinActionRunner } from '@/lib/keybinds/plugin-actions'
 import { stepReasoningEffort, writeSessionReasoningEffort } from '@/lib/reasoning-step'
@@ -528,13 +536,18 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         return
       }
 
+      // The physical-code twin of the same keydown, consulted by the find-bar
+      // claim and the dispatch fallback below.
+      const codeCombo = codeComboFromEvent(event)
+
       // The open find bar owns ⌘G / ⌘⇧G / Escape. Its own capture-phase
       // listener runs those actions; bail here so the registry doesn't ALSO
       // fire the action bound to the same combo (⌘G = view.toggleReview,
       // Escape = composer.cancel, which would abort a live turn). Both
       // listeners are on `window`, so stopPropagation in the bar can't
-      // suppress this one — the dispatcher has to yield explicitly.
-      if ($findInPage.get().active && findBarClaimsCombo(combo)) {
+      // suppress this one — the dispatcher has to yield explicitly — for
+      // either resolution of the chord.
+      if ($findInPage.get().active && findBarClaimsChord(combo, codeCombo)) {
         return
       }
 
@@ -542,10 +555,14 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         return
       }
 
-      const actionIds = $comboIndex.get().get(combo)
+      // Character priority: the combo the user's layout actually types wins
+      // while something is bound to it (#73015's Dvorak fix); the physical-code
+      // twin only rescues the chord when nothing is bound to the character
+      // combo (#137849).
+      const dispatch = dispatchCombo($comboIndex.get(), combo, codeCombo)
 
       // Unbound printable → type-to-focus. Bound chords (shift+n, …) win above.
-      if (!actionIds) {
+      if (!dispatch) {
         const typeChar = typeToFocusChar(event)
 
         if (typeChar && composerFocusKeysAllowed(event, 'type')) {
@@ -557,21 +574,23 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       }
 
       // Actions bound to the chord, in registration order. The first runs; a
-      // `passthrough` action that declines hands the chord to the next.
-      for (const actionId of actionIds) {
-        if (isEditableTarget(event.target) && !actionAllowedInInput(actionId, combo)) {
+      // `passthrough` action that declines hands the chord to the next. Gates
+      // read `dispatch.combo` — the combo the binding is actually indexed
+      // under, which on the fallback is the physical-code twin.
+      for (const actionId of dispatch.actionIds) {
+        if (isEditableTarget(event.target) && !actionAllowedInInput(actionId, dispatch.combo)) {
           return
         }
 
         // Soft `/` / Enter: gated so dialogs/buttons/terminal keep those keys.
         // Rebound chords fall through to the normal handler.
-        if (actionId === 'composer.focus' && isComposerFocusSoftCombo(combo)) {
-          if (!composerFocusKeysAllowed(event, combo)) {
+        if (actionId === 'composer.focus' && isComposerFocusSoftCombo(dispatch.combo)) {
+          if (!composerFocusKeysAllowed(event, dispatch.combo)) {
             return
           }
 
           event.preventDefault()
-          requestComposerFocus('active', { typeChar: combo === '/' ? '/' : undefined })
+          requestComposerFocus('active', { typeChar: dispatch.combo === '/' ? '/' : undefined })
 
           return
         }

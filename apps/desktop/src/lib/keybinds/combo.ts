@@ -114,9 +114,11 @@ function baseKeyFromEventKey(key: string, shiftKey: boolean): string | null {
   return !shiftKey && PUNCTUATION_KEYS.has(key) ? key : null
 }
 
-// Returns the canonical combo for a keydown, or null while only modifiers are
-// held (so capture mode keeps waiting for a real key).
-export function comboFromEvent(event: KeyboardEvent): string | null {
+// True when a keydown is a real chord both resolutions can act on:
+// composition, bare modifier codes, and IME-synthesized modifier-name keys
+// never resolve to a combo. Shared by `comboFromEvent` and
+// `codeComboFromEvent`.
+function isRealChord(event: KeyboardEvent): boolean {
   // IME composition (Chinese/Japanese/Korean input): the keydown events
   // during composition carry preedit keystrokes and the commit keypress
   // (Enter/Space/Shift for candidate selection). Treating them as combos
@@ -124,23 +126,23 @@ export function comboFromEvent(event: KeyboardEvent): string | null {
   // keydown that dispatched `session.new` and silently opened a new session.
   // Bail out entirely while composing.
   if (event.isComposing || event.key === 'Process') {
-    return null
+    return false
   }
 
   if (MODIFIER_CODES.has(event.code)) {
-    return null
+    return false
   }
 
   // A keydown whose `key` is a modifier name but whose `code` is a regular
   // key is not a real modifier chord — legacy IMEs that synthesize keystrokes
   // (Q9 2002 sends key="Control" with code="KeyW") produce these, and they
   // would canonicalize to phantom combos (Ctrl+W → close active tab). Ignore.
-  if (MODIFIER_KEYS.has(event.key)) {
-    return null
-  }
+  return !MODIFIER_KEYS.has(event.key)
+}
 
-  const base = baseKeyFromEventKey(event.key, event.shiftKey) ?? baseKeyFromCode(event.code)
-
+// Assembles the canonical combo for a keydown that passed the guards,
+// anchored to the given base token.
+function comboForBase(event: KeyboardEvent, base: string | null): string | null {
   if (!base) {
     return null
   }
@@ -168,6 +170,66 @@ export function comboFromEvent(event: KeyboardEvent): string | null {
   parts.push(base)
 
   return parts.join('+')
+}
+
+// Returns the canonical combo for a keydown, or null while only modifiers are
+// held (so capture mode keeps waiting for a real key). Character priority: the
+// character the user's layout actually types wins where it is a token we ship,
+// with the physical code covering dead keys and unshippable glyphs (#73015).
+export function comboFromEvent(event: KeyboardEvent): string | null {
+  if (!isRealChord(event)) {
+    return null
+  }
+
+  return comboForBase(event, baseKeyFromEventKey(event.key, event.shiftKey) ?? baseKeyFromCode(event.code))
+}
+
+// The physical-code twin of `comboFromEvent`: the same chord resolved through
+// `event.code` alone, ignoring what the active layout types. The dispatcher
+// tries it only when nothing is bound to the character combo (#137849), so a
+// binding stays reachable on layouts whose key at a bound code types a
+// different shipped token (Czech/Slovak ';', pt-BR "'" on Backquote) while a
+// chord another action legitimately owns (Italian '\' = flipPanes) is never
+// re-stolen. Capture mode keeps recording `comboFromEvent`.
+export function codeComboFromEvent(event: KeyboardEvent): string | null {
+  if (!isRealChord(event)) {
+    return null
+  }
+
+  return comboForBase(event, baseKeyFromCode(event.code))
+}
+
+// The combo a keydown should dispatch under, with the actions bound to it:
+// the character-priority combo while the index has it, else the physical-code
+// twin when the two differ and the index has that one instead. Null when
+// neither resolution is bound.
+//
+// Character priority keeps #73015's Dvorak fix intact — a chord the layout
+// types that IS bound always wins. The fallback only rescues bindings on
+// layouts whose key at a bound code types a different shipped token
+// (Czech/Slovak ';', pt-BR "'" on Backquote reaching ``mod+` ``) and never
+// re-steals a chord another action legitimately owns (Italian '\' = the
+// flip-panes binding) (#137849).
+export function dispatchCombo(
+  index: ReadonlyMap<string, readonly string[]>,
+  combo: string,
+  codeCombo: string | null
+): { actionIds: readonly string[]; combo: string } | null {
+  const charIds = index.get(combo)
+
+  if (charIds) {
+    return { actionIds: charIds, combo }
+  }
+
+  if (codeCombo != null && codeCombo !== combo) {
+    const codeIds = index.get(codeCombo)
+
+    if (codeIds) {
+      return { actionIds: codeIds, combo: codeCombo }
+    }
+  }
+
+  return null
 }
 
 // Rewrites a binding to the form `comboFromEvent` emits, so it indexes under

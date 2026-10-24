@@ -100,14 +100,17 @@ export function titlebarControlsPosition(
 ) {
   const top = Math.max(0, TITLEBAR_CONTROLS_TOP)
 
-  // No traffic lights to dodge:
-  //   - Windows/Linux: native min/max/close come from titleBarOverlay, usually on
-  //     the right, but Linux follows the desktop's button order and may put them
-  //     on the left (`nativeInsetLeft`, measured from the overlay).
-  //   - macOS fullscreen: traffic lights are hidden.
-  // Pin the cluster to the edge (clear of any left-side overlay) with a small inset.
-  if (windowButtonPosition === null || isFullscreen) {
+  // Windows/Linux: native min/max/close come from titleBarOverlay, usually on
+  // the right, but Linux follows the desktop's button order and may put them on
+  // the left (`nativeInsetLeft`, measured from the overlay). Pin the cluster to
+  // the edge, clear of any left-side controls, with a small inset.
+  if (windowButtonPosition === null) {
     return { left: nativeInsetLeft + TITLEBAR_EDGE_INSET, top }
+  }
+
+  // macOS fullscreen: traffic lights are hidden.
+  if (isFullscreen) {
+    return { left: TITLEBAR_EDGE_INSET, top }
   }
 
   return {

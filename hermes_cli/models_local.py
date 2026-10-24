@@ -19,6 +19,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
+from agent.model_metadata_lmstudio import _lmstudio_loaded_context
+from agent.model_metadata_matching import _lmstudio_model_match_rank
 from agent.secret_scope import get_secret_str
 from hermes_cli.urllib_security import url_origin
 
@@ -424,10 +426,16 @@ def _lmstudio_raw_models_or_none(api_key, base_url, timeout) -> Optional[list[di
 
 
 def _lmstudio_entry_for(raw_models: list, model: str) -> Optional[dict]:
+    best_rank = 0
+    best_entry = None
     for raw in raw_models:
-        if isinstance(raw, dict) and (raw.get("key") == model or raw.get("id") == model):
-            return raw
-    return None
+        if not isinstance(raw, dict):
+            continue
+        rank = _lmstudio_model_match_rank(raw, model)
+        if rank > best_rank:
+            best_rank = rank
+            best_entry = raw
+    return best_entry
 
 
 def probe_lmstudio_models(
@@ -476,19 +484,6 @@ def _positive_int(value: Any) -> Optional[int]:
     return None
 
 
-def _lmstudio_loaded_context(entry: Optional[dict]) -> Optional[int]:
-    """First positive ``loaded_instances[*].config.context_length`` of a model entry."""
-    instances = entry.get("loaded_instances") if entry is not None else None
-    if not isinstance(instances, list):
-        return None
-    for instance in instances:
-        config = instance.get("config") if isinstance(instance, dict) else None
-        parsed = _positive_int(config.get("context_length") if isinstance(config, dict) else None)
-        if parsed is not None:
-            return parsed
-    return None
-
-
 def ensure_lmstudio_model_loaded(
     model: str,
     base_url: Optional[str],
@@ -524,7 +519,7 @@ def ensure_lmstudio_model_loaded(
     if explicit_context is not None and max_ctx is not None and explicit_context > max_ctx:
         return _result(None, rejected=True)
 
-    current_context = _lmstudio_loaded_context(target_entry)
+    current_context = _lmstudio_loaded_context(target_entry, model)
     if current_context is not None:
         return _result(current_context)
 
@@ -532,7 +527,12 @@ def ensure_lmstudio_model_loaded(
     if not isinstance(loaded_instances, list) or loaded_instances:
         return _result(None)
 
-    load_payload: dict[str, Any] = {"model": model, "echo_load_config": True}
+    canonical_model = next(
+        (candidate for candidate in (target_entry.get("key"), target_entry.get("id"))
+         if isinstance(candidate, str) and candidate.strip()),
+        model,
+    )
+    load_payload: dict[str, Any] = {"model": canonical_model, "echo_load_config": True}
     if explicit_context is not None:
         load_payload["context_length"] = explicit_context
     try:
@@ -559,7 +559,7 @@ def ensure_lmstudio_model_loaded(
     refreshed_models = _lmstudio_raw_models_or_none(api_key, base_url, 10)
     if refreshed_models is None:
         return _result(None, load_attempted=True)
-    return _result(_lmstudio_loaded_context(_lmstudio_entry_for(refreshed_models, model)), load_attempted=True)
+    return _result(_lmstudio_loaded_context(_lmstudio_entry_for(refreshed_models, model), model), load_attempted=True)
 
 
 def lmstudio_model_reasoning_options(

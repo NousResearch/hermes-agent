@@ -338,3 +338,15 @@ class TestUnicodeSpaceSiblingRecovery:
         res = await isrc.resolve_image_source(str(requested), isrc.ResolveContext())
         assert res.data == PNG
         assert res.origin == "file"
+
+    @pytest.mark.asyncio
+    async def test_refuses_non_space_typographic_variation(self, tmp_path, monkeypatch):
+        """Typographic non-space differences (e.g. smart quote or em-dash) must NOT be recovered."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        real = tmp_path / "report\u2014final.png"
+        real.write_bytes(PNG)
+        requested = tmp_path / "report--final.png"
+        with pytest.raises(isrc.SourceNotFound):
+            await isrc.resolve_image_source(str(requested), isrc.ResolveContext())
+

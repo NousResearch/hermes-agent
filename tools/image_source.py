@@ -191,8 +191,10 @@ def _unique_space_normalized_sibling(p: Path) -> Optional[Path]:
     """
     from tools.fuzzy_match import UNICODE_MAP
 
+    space_map = {ch: repl for ch, repl in UNICODE_MAP.items() if repl == " "}
+
     def _norm(name: str) -> str:
-        for ch, repl in UNICODE_MAP.items():
+        for ch, repl in space_map.items():
             name = name.replace(ch, repl)
         return name
 

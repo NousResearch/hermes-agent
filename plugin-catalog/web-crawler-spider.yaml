@@ -1,0 +1,22 @@
+name: web-crawler-spider
+repo: https://github.com/mistrysiddh/web-crawler-spider
+sha: b8ca7fa280a23a885664d0ae0965f327eedb8ed9
+title: Web Crawler Spider
+description: 'A small spider that crawls the Hermes Desktop window: it walks between real buttons and links, outlines the element under it, and reacts to the agent (a web that grows with tool calls, helper spiders for subagents, spider-sense for risky commands, walking to the approval button, flies, napping). Desktop-only (desktop/plugin.js inside the plugin SDK surface); no agent tools, hooks, middleware or env vars.'
+maintainer: mistrysiddh
+tier: community
+category: desktop
+version: "1.0.0"
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/mistrysiddh/web-crawler-spider
+image: https://raw.githubusercontent.com/mistrysiddh/web-crawler-spider/b8ca7fa280a23a885664d0ae0965f327eedb8ed9/docs/hero.png
+screenshots:
+  - https://raw.githubusercontent.com/mistrysiddh/web-crawler-spider/b8ca7fa280a23a885664d0ae0965f327eedb8ed9/docs/work-web.png
+  - https://raw.githubusercontent.com/mistrysiddh/web-crawler-spider/b8ca7fa280a23a885664d0ae0965f327eedb8ed9/docs/helpers.png
+  - https://raw.githubusercontent.com/mistrysiddh/web-crawler-spider/b8ca7fa280a23a885664d0ae0965f327eedb8ed9/docs/spider-sense.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

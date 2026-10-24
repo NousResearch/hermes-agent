@@ -107,7 +107,14 @@ def file_digest(path: Path) -> str | None:
 
 
 def durable_write_bytes(path: Path, data: bytes) -> None:
-    """Replace ``path`` atomically and fsync file and directory so a crash keeps old or new bytes."""
+    """Replace ``path`` atomically and fsync file and directory so a crash keeps old or new bytes.
+
+    A symlinked ``path`` (a ``config.yaml`` linked into a version-controlled dotfiles tree) is
+    written through: the rename lands on the link's target, so the link survives, the same
+    contract as ``utils.atomic_replace``.
+    """
+    if os.path.islink(path):
+        path = Path(os.path.realpath(path))
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".publish-")
     try:

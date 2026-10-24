@@ -107,7 +107,9 @@ def recover_publication(project: Path) -> None:
         configs = []
         for entry in entries:
             config = Path(entry["config"])
-            if config.name != "config.yaml" or not config.resolve().is_relative_to(dependency_home_root().resolve()):
+            # The config's directory must lie under Hermes state; the file itself may be a symlink
+            # into a dotfiles tree (rollback writes through it, see pm.filesystem.durable_write_bytes).
+            if config.name != "config.yaml" or not config.parent.resolve().is_relative_to(dependency_home_root().resolve()):
                 raise ValueError("config path is outside Hermes state")
             previous = base64.b64decode(entry["previous"], validate=True) if entry["previous"] is not None else None
             configs.append((config, previous, entry.get("config_after")))

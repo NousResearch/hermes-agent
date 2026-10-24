@@ -68,6 +68,10 @@ class PluginSelection:
         if not self.home.is_relative_to(dependency_home_root().resolve()):
             raise ValueError("config path is outside Hermes state")
         self.path = self.home / "config.yaml"
+        # A symlinked config is written through (pm.filesystem.durable_write_bytes); a dangling one
+        # would make publication create the target and rollback (previous=None) delete the link.
+        if self.path.is_symlink() and not self.path.exists():
+            raise ValueError(f"config.yaml is a dangling symlink; restore its target first: {self.path}")
         self.previous = read_bytes_or_none(self.path)
         expected = selection.get("expected_config")
         actual = hashlib.sha256(self.previous).hexdigest() if self.previous is not None else "missing"

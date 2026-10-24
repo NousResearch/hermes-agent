@@ -14,6 +14,7 @@ Hermes Agent generates images from text prompts via FAL.ai. Eleven models are su
 | Model | Speed | Strengths | Price |
 |---|---|---|---|
 | `fal-ai/flux-2/klein/9b` *(default)* | `<1s` | Fast, crisp text | $0.006/MP |
+| `blackforestlabs/flux-3/klein/text-to-image` | ~3s | FLUX 3 quality at Klein price, edits with up to 10 references | $0.009/image (1K) |
 | `fal-ai/flux-2-pro` | ~6s | Studio photorealism | $0.03/MP |
 | `fal-ai/z-image/turbo` | ~2s | Bilingual EN/CN, 6B params | $0.005/MP |
 | `fal-ai/nano-banana-pro` | ~8s | Gemini 3 Pro, reasoning depth, text rendering | $0.15/image (1K) |
@@ -24,6 +25,7 @@ Hermes Agent generates images from text prompts via FAL.ai. Eleven models are su
 | `fal-ai/qwen-image` | ~12s | LLM-based, complex text | $0.02/MP |
 | `fal-ai/krea/v2/medium/text-to-image` | ~15-25s | Illustration, anime, painting, expressive/artistic styles | $0.030–0.035/image |
 | `fal-ai/krea/v2/large/text-to-image` | ~25-60s | Photorealism, raw textured looks (motion blur, grain, film) | $0.060–0.065/image |
+| `krea/v3/text-to-image` | ~5s | Krea 3: instruction-following edits (up to 8 references), also text-to-image | $0.025/MP |
 
 Prices are FAL's pricing at time of writing; check [fal.ai](https://fal.ai/) for current numbers.
 

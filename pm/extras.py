@@ -53,6 +53,8 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     "vercel": "vercel",
     "google": ("googleapiclient", "google.auth", "google_auth_oauthlib.flow", "google_auth_httplib2"),
     "google-chat": "google.cloud.pubsub_v1",
+    # holographic HRR provider structural-recall dependency (#136707)
+    "holographic": "numpy",
     "google-meet": ("playwright.sync_api", "websockets"),
     "youtube": "youtube_transcript_api",
     "acp": "acp",

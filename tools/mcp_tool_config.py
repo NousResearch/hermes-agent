@@ -697,12 +697,12 @@ def _load_mcp_config() -> dict[str, dict]:
         from utils import env_var_enabled as _env_enabled
         if _env_enabled("HERMES_SAFE_MODE"):
             return {}
-        servers = load_config().get("mcp_servers")
-        try:  # ensure .env vars are available for interpolation
+        try:  # reload rotated .env values before load_config expands and caches header refs
             from hermes_cli.env_loader import load_hermes_dotenv
             load_hermes_dotenv()
         except Exception:
             pass
+        servers = load_config().get("mcp_servers")
         safe_servers: dict[str, dict] = {}
         servers = servers if isinstance(servers, dict) else {}
         kept = _filter_suspicious_mcp_servers(servers)

@@ -470,7 +470,7 @@ def _configure_quiet_agent(agent) -> None:
 def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool = False):
     """``-q``/``--image`` entry: seed an interactive session on a TTY, else run the one-shot turn and exit.
     ``stream_json`` (implies quiet) swaps the plain-text final answer for the JSONL event protocol."""
-    from cli import _SeededQueryMessage, _collect_kanban_task_images, _collect_query_images, _configure_quiet_agent, _finalize_single_query, _route_single_query_images, _run_kanban_goal_loop_chat, _run_quiet_single_query, _should_seed_interactive, _single_query_exit_code
+    from cli import _SeededQueryMessage, _collect_kanban_task_images, _collect_query_images, _configure_quiet_agent, _emit_interrupted_session_end, _finalize_single_query, _route_single_query_images, _run_kanban_goal_loop_chat, _run_quiet_single_query, _should_seed_interactive, _single_query_exit_code
     if _should_seed_interactive(query, image, quiet, oneshot):
         seeded_query, seeded_images = _collect_query_images(query, image)
         logger.info(
@@ -543,7 +543,18 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
         if _query_label:
             cli.console.print(f"[bold blue]{t('cli.single_query.query_label')}[/] {_query_label}")
         cli._show_security_advisories()
-        response = cli.chat(query, images=single_query_images or None)
+        # A SIGINT/SIGTERM during the turn reaches here as KeyboardInterrupt (see
+        # _install_single_query_signal_handlers). Uncaught, the interpreter prints a
+        # "Traceback (most recent call last) ... KeyboardInterrupt" to stderr, which spawners
+        # that store the first stderr line book as the run's error — the Paperclip adapter did
+        # exactly that for every interrupted `hermes -q` run. End the session and exit 130 the
+        # way the quiet path already does.
+        try:
+            response = cli.chat(query, images=single_query_images or None)
+        except KeyboardInterrupt:
+            _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
+            print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
+            exit_single_query(130)
         # Kanban worker: a failed-silently turn used to end the run as rc=0 with no
         # terminal kanban call, so the dispatcher booked a protocol violation and
         # cold-restarted the task from scratch. Retry the authorised turn IN PLACE

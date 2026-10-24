@@ -38,7 +38,7 @@ class TestHandleFunctionCall:
             patch("hermes_cli.plugins.has_hook", return_value=True),
             patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
         ):
-            handle_function_call("web_search", {"q": "test"}, task_id="t1")
+            handle_function_call("web_search", {"query": "test"}, task_id="t1")
 
         kwargs_by_hook = {
             c.args[0]: c.kwargs for c in mock_invoke_hook.call_args_list
@@ -75,6 +75,20 @@ class TestHandleFunctionCall:
 
     def test_tool_request_and_execution_middleware_wrap_registry_dispatch(self, monkeypatch):
         seen = {}
+        from tools.registry import registry
+        original_schema = registry.get_schema
+
+        def extended_schema(name):
+            schema = original_schema(name)
+            if name != "web_search":
+                return schema
+            parameters = schema["parameters"]
+            return {**schema, "parameters": {**parameters, "properties": {
+                **parameters["properties"], "rewritten": {"type": "boolean"}, "wrapped": {"type": "boolean"},
+            }}}
+
+        # Middleware extensions must be declared in the handler's current contract.
+        monkeypatch.setattr(registry, "get_schema", extended_schema)
 
         def fake_invoke_middleware(kind, **kwargs):
             if kind == "tool_request":
@@ -111,16 +125,16 @@ class TestHandleFunctionCall:
         result = json.loads(
             handle_function_call(
                 "web_search",
-                {"q": "test"},
+                {"query": "test"},
                 task_id="task-1",
                 tool_call_id="tool-1",
                 session_id="session-1",
             )
         )
 
-        assert seen["execution_args"] == {"q": "test", "rewritten": True}
-        assert seen["dispatch"][1] == {"q": "test", "rewritten": True, "wrapped": True}
-        assert result["args"] == {"q": "test", "rewritten": True, "wrapped": True}
+        assert seen["execution_args"] == {"query": "test", "rewritten": True}
+        assert seen["dispatch"][1] == {"query": "test", "rewritten": True, "wrapped": True}
+        assert result["args"] == {"query": "test", "rewritten": True, "wrapped": True}
         expected_trace = [{"source": "test-middleware", "reason": "rewrite"}]
         pre_call = next(call for call in hook_calls if call[0] == "pre_tool_call")
         post_call = next(call for call in hook_calls if call[0] == "post_tool_call")
@@ -146,7 +160,7 @@ class TestHandleFunctionCall:
         result = json.loads(
             handle_function_call(
                 "web_search",
-                {"q": "test"},
+                {"query": "test"},
                 task_id="task-1",
                 session_id="session-1",
                 tool_call_id="tool-1",
@@ -254,7 +268,7 @@ class TestPreToolCallBlocking:
         monkeypatch.setattr("tools.file_tools_read_tracking.notify_other_tool_call",
                             lambda task_id: notifications.append(task_id))
 
-        result = json.loads(handle_function_call("web_search", {"q": "test"}, task_id="t1"))
+        result = json.loads(handle_function_call("web_search", {"query": "test"}, task_id="t1"))
         assert result == {"error": "Blocked"}
         assert notifications == []
 

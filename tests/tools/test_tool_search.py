@@ -728,6 +728,22 @@ class TestDeferredCallSchemaProbe:
             toolset=toolset,
         )
 
+    def test_unused_top_level_arguments_are_reported_after_deferred_dispatch(self):
+        import model_tools
+        calls = []
+        name, toolset = "mcp_probe_ignored_argument", "mcp-probe-ignored"
+        self._register_schema(name, toolset, {
+            "type": "object", "properties": {"query": {"type": "string"}},
+            "required": ["query"], "additionalProperties": False,
+        }, calls)
+        result = json.loads(model_tools.handle_function_call(
+            "tool_call", {"name": name, "arguments": {"query": "hello", "invented": True}},
+            enabled_toolsets=[toolset],
+        ))
+        assert calls == [{"query": "hello"}]
+        assert result["ok"] is True
+        assert "invented" in result["_warning"] and "WERE NOT USED" in result["_warning"]
+
     def test_validator_returns_schema_for_missing_required(self):
         from tools.tool_search import validate_deferred_call_args
 

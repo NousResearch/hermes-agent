@@ -36,6 +36,15 @@ import type { ProfileInfo } from '@/types/hermes'
 // Canonical key for a profile: trimmed, empty → "default". Used everywhere we
 // compare a session's owning profile against the live gateway's profile.
 export function normalizeProfileKey(name: string | null | undefined): string {
+  // Defensive: gateway and roster payloads have surfaced profile fields as
+  // OBJECTS (a wrapped registry/roster entry, #93572). Unwrap a string .name
+  // when present and degrade anything else to the default key - a non-string
+  // must never TypeError mid-render (#136202).
+  if (name != null && typeof name !== 'string') {
+    const inner = (name as { name?: unknown }).name
+    name = typeof inner === 'string' ? inner : ''
+  }
+
   const value = (name ?? '').trim()
 
   return value || 'default'
@@ -45,7 +54,10 @@ export function normalizeProfileKey(name: string | null | undefined): string {
 // renamed default profile), else the canonical name. Never used for
 // comparison or routing — canonical `name` remains the identity everywhere.
 export function profileLabel(profile: Pick<ProfileInfo, 'display_name' | 'name'>): string {
-  return (profile.display_name ?? '').trim() || profile.name
+  // Same non-string hardening as normalizeProfileKey (#136202): a display_name
+  // that arrives as an object falls back to the canonical name.
+  const displayName = typeof profile.display_name === 'string' ? profile.display_name : ''
+  return displayName.trim() || profile.name
 }
 
 // The profile the running local backend is actually scoped to (mirrors

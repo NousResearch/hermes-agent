@@ -2,11 +2,13 @@ import { useAui, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { useComposerSurfaceId } from '@/app/chat/composer/scope'
 import { useSessionView } from '@/app/chat/session-view'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { useStoreSelector } from '@/lib/use-session-slice'
+import { requestScrollToBottom } from '@/store/thread-scroll'
 import { $hideThreadTimeline } from '@/store/thread-timeline'
 
 import { messageContentText } from './content'
@@ -40,6 +42,7 @@ export const ThreadTimeline: FC = () => {
 
 const ActiveThreadTimeline: FC = () => {
   const view = useSessionView()
+  const surfaceId = useComposerSurfaceId()
   const { t } = useI18n()
   const history = useTranscriptWindow()
   const historyIndex = useTimelineHistory()
@@ -155,6 +158,14 @@ const ActiveThreadTimeline: FC = () => {
         return
       }
 
+      if (!history.isHistorical && railEntries.length > 0 && railEntries.at(-1)?.id === id) {
+        triggerHaptic('selection')
+        const scrollSessionId = view.$runtimeId.get() ?? surfaceId
+        requestScrollToBottom(scrollSessionId)
+
+        return
+      }
+
       const viewport = ownViewport(root.current)
 
       if (!viewport) {
@@ -236,7 +247,7 @@ const ActiveThreadTimeline: FC = () => {
         }
       }
     },
-    [cancelJump, indexedEntries, indexComplete, indexFailed, loadMore, railEntries]
+    [cancelJump, history.isHistorical, indexedEntries, indexComplete, indexFailed, loadMore, railEntries, surfaceId, view]
   )
 
   useEffect(() => {

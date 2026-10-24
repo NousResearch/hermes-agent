@@ -200,7 +200,7 @@ def install_exit_flush_signal_handlers() -> bool:
 def _transport_is_dead(transport) -> bool:
     # _detached_ws_transport is the post-disconnect drop sentinel. _stdio_transport is the REAL transport for
     # standalone `hermes --tui` and must NOT count as dead.
-    if transport is _detached_ws_transport:
+    if transport is None or transport is _detached_ws_transport:
         return True
     if isinstance(transport, FanoutTransport):
         # A fan-out is never the sentinel and has no ``_closed`` of its own, so without this arm every
@@ -211,7 +211,14 @@ def _transport_is_dead(transport) -> bool:
         # dead. Peers are always leaf transports (attach flattens a fan-out argument instead of nesting it), so
         # this recurses one level at most.
         return all(_transport_is_dead(peer) for peer in transport.transports())
-    return getattr(transport, "_closed", None) is True
+    if getattr(transport, "_closed", None) is True:
+        return True
+    if getattr(transport, "closed", None) is True:
+        return True
+    loop = getattr(transport, "_loop", None)
+    if loop is not None and getattr(loop, "is_closed", lambda: False)():
+        return True
+    return False
 
 
 def _session_is_lru_evictable(sid: str, session: dict) -> bool:

@@ -593,9 +593,15 @@ class CLILoopsMixin:
         TUI slash worker's shadow CLI) main's in-process managers apply."""
         from hermes_cli.gateway_session_store import GatewaySessionStore
         store = getattr(self, "_session_db", None)
-        if not isinstance(store, GatewaySessionStore):
+        # Gateway mode needs BOTH a GatewaySessionStore AND an open gateway session.
+        # Checking the store type alone classified the TUI/Desktop slash worker - a
+        # shadow CLI that holds the store but never opens the session - as "on the
+        # gateway", and every session-bound manager (/goal, /heartbeat, /loop) then
+        # bailed out with "unavailable (no active session)".
+        # This is the same condition gateway_automation.gateway_connection() uses.
+        if not isinstance(store, GatewaySessionStore) or not getattr(self, "_gateway_session_open", False):
             return False, None
-        return True, store.connection if getattr(self, "_gateway_session_open", False) else None
+        return True, store.connection
 
     def _automation_manager(self, attr, label, local, remote):
         gateway, connection = self._automation_connection()

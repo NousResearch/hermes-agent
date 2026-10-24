@@ -262,18 +262,22 @@ def _dashboard_local_update_managed_externally() -> bool:
     ``git`` install (bind-mounted checkout, e.g. the hermes-webui image), where
     the update button is the correct path. pip stays blocked in containers: its
     apply path mutates the running container filesystem.
+
+    The hosted ``/opt/data`` root only marks an outer launcher inside a
+    container. A native install that reuses that path (e.g. a VM migrated from
+    the Docker image) updates itself like any other host install.
     """
     from hermes_cli.web_server import PROJECT_ROOT
     from hermes_cli.config import detect_install_method
-    if _default_hermes_root_is_opt_data():
-        return True
     try:
         from hermes_constants import is_container
 
         if not is_container():
             return False
     except Exception:
-        return False
+        return _default_hermes_root_is_opt_data()
+    if _default_hermes_root_is_opt_data():
+        return True
     try:
         if detect_install_method(PROJECT_ROOT) == "git":
             return False

@@ -11,7 +11,10 @@ provider fails ``test_snapshot_covers_every_provider`` until its wire is reviewe
 
 Intentional wire changes: regenerate and review the JSON diff in the same PR::
 
-    HERMES_UPDATE_WIRE_SNAPSHOT=1 .venv/bin/python -m pytest tests/agent/transports/test_provider_wire_snapshot.py
+    HERMES_UPDATE_WIRE_SNAPSHOT=1 .venv/bin/python -m pytest -n0 tests/agent/transports/test_provider_wire_snapshot.py
+
+Regeneration is a read-merge-write of one JSON file per cell, so it refuses to run under xdist
+(``-n0`` is required) and rewrites the file with only the cells that still exist.
 """
 
 from __future__ import annotations
@@ -120,9 +123,11 @@ def _cells() -> list[tuple[str, str, str]]:
 
 @pytest.fixture
 def offline(monkeypatch):
-    """No network and no ambient AWS profile. Capability probes (Ollama ``/api/show``, LM Studio,
-    catalogs) must take their offline answer, or the recorded wire depends on a live server.
-    Name resolution is blocked too: some clients connect through paths ``socket.connect`` misses."""
+    """No network, no ambient AWS profile and no ambient ``HERMES_*TIMEOUT*`` override.
+    Capability probes (Ollama ``/api/show``, LM Studio, catalogs) must take their offline answer,
+    or the recorded wire depends on a live server. Name resolution is blocked too: some clients
+    connect through paths ``socket.connect`` misses. Timeouts are recorded (request ``timeout``,
+    stream socket timeouts), so a developer's ``HERMES_API_TIMEOUT`` must not reach them."""
     real_connect = socket.socket.connect
 
     def guarded(sock, address, *args, **kwargs):
@@ -138,35 +143,55 @@ def offline(monkeypatch):
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     monkeypatch.setenv("AWS_CONFIG_FILE", os.devnull)
     monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", os.devnull)
+    for name in [n for n in os.environ if n.startswith("HERMES_") and "TIMEOUT" in n]:
+        monkeypatch.delenv(name)
 
 
-def _wire(provider: str, model: str, base_url: str) -> dict[str, Any]:
-    from agent.turn_api_request import build_api_request
+def _scrub(value: Any) -> Any:
+    """JSON round-trip with per-run values (_VOLATILE) masked, as the snapshot stores it."""
+    text = json.dumps(value, sort_keys=True, default=repr)
+    for pattern, replacement in _VOLATILE:
+        text = pattern.sub(replacement, text)
+    return json.loads(text)
+
+
+def _agent(provider: str, model: str, base_url: str, **agent_kwargs: Any):
+    """An offline AIAgent with fresh per-turn state; *agent_kwargs* go to its constructor."""
     from agent.turn_context import _PER_TURN_RESET_STATE
     from run_agent import AIAgent
 
     with patch("model_tools.get_tool_definitions", return_value=TOOLS), \
          patch("model_tools.check_toolset_requirements", return_value={}), \
          patch("agent.process_bootstrap.OpenAI"):
-        agent = AIAgent(provider=provider, model=model, base_url=base_url, api_key="sk-test-0000000000",
-                        quiet_mode=True, skip_context_files=True, skip_memory=True, session_id="wire-snapshot")
+        agent = AIAgent(provider=provider, model=model, base_url=base_url, api_key="sk-tes...0000",
+                        quiet_mode=True, skip_context_files=True, skip_memory=True, session_id="wire-snapshot",
+                        **agent_kwargs)
     for name, value in _PER_TURN_RESET_STATE:
         setattr(agent, name, value)
+    return agent
+
+
+def _request(agent, reasoning: dict[str, Any] | None) -> dict[str, Any]:
+    """The request kwargs ``build_api_request`` produces for MESSAGES under *reasoning*."""
+    from agent.turn_api_request import build_api_request
+
+    agent.reasoning_config = reasoning
+    messages = json.loads(json.dumps(MESSAGES))
+    return build_api_request(
+        agent, api_messages=messages, _moa_prepared_request=None, tools_for_api=agent.tools,
+        system_message=messages[0]["content"], messages=messages,
+        original_user_message=messages[-1]["content"], approx_tokens=0, total_chars=0, retry_count=0,
+        api_call_count=1, api_request_id="req-1", api_start_time=0.0, effective_task_id="task-1",
+        turn_id="turn-1",
+    ).api_kwargs
+
+
+def _wire(provider: str, model: str, base_url: str, *, reasoning_rows: dict[str, Any] = REASONING,
+          **agent_kwargs: Any) -> dict[str, Any]:
+    agent = _agent(provider, model, base_url, **agent_kwargs)
     out: dict[str, Any] = {"api_mode": agent.api_mode}
-    for label, reasoning in REASONING.items():
-        agent.reasoning_config = reasoning
-        messages = json.loads(json.dumps(MESSAGES))
-        built = build_api_request(
-            agent, api_messages=messages, _moa_prepared_request=None, tools_for_api=agent.tools,
-            system_message=messages[0]["content"], messages=messages,
-            original_user_message=messages[-1]["content"], approx_tokens=0, total_chars=0, retry_count=0,
-            api_call_count=1, api_request_id="req-1", api_start_time=0.0, effective_task_id="task-1",
-            turn_id="turn-1",
-        )
-        text = json.dumps(built.api_kwargs, sort_keys=True, default=repr)
-        for pattern, replacement in _VOLATILE:
-            text = pattern.sub(replacement, text)
-        out[label] = json.loads(text)
+    for label, reasoning in reasoning_rows.items():
+        out[label] = _scrub(_request(agent, reasoning))
     return out
 
 
@@ -186,38 +211,46 @@ def _first_divergence(expected: Any, actual: Any, path: str = "") -> str:
     return f"{path}: expected {json.dumps(expected)[:200]} got {json.dumps(actual)[:200]}"
 
 
-def _load() -> dict[str, Any]:
-    return json.loads(SNAPSHOT.read_text(encoding="utf-8")) if SNAPSHOT.exists() else {}
+def _load(snapshot: Path = SNAPSHOT) -> dict[str, Any]:
+    return json.loads(snapshot.read_text(encoding="utf-8")) if snapshot.exists() else {}
 
 
 CELLS = _cells()
 BASE_URL_CELLS = [(key, model, url) for key, (model, url) in BASE_URL_ONLY.items()]
+CELL_KEYS = frozenset({c[0] for c in CELLS} | set(BASE_URL_ONLY))
 
 
-def _check(key: str, actual: dict[str, Any], model: str, base_url: str) -> None:
+def _check(key: str, actual: dict[str, Any], meta: dict[str, Any], snapshot: Path = SNAPSHOT,
+           cell_keys: frozenset[str] = CELL_KEYS) -> None:
+    """Compare *actual* with the recorded cell; *meta* (the cell's inputs) is stored beside it, not compared.
+
+    Under HERMES_UPDATE_WIRE_SNAPSHOT the cell is written instead, and entries outside *cell_keys*
+    (the snapshot's current cells) are dropped."""
     if UPDATE:
-        golden = _load()
-        golden[key] = {"model": model, "base_url": base_url, **actual}
-        SNAPSHOT.write_text(json.dumps(dict(sorted(golden.items())), indent=1, sort_keys=True) + "\n",
+        if os.environ.get("PYTEST_XDIST_WORKER"):
+            pytest.fail("HERMES_UPDATE_WIRE_SNAPSHOT rewrites one shared file per cell; run it with -n0")
+        golden = {k: v for k, v in _load(snapshot).items() if k in cell_keys}
+        golden[key] = {**meta, **actual}
+        snapshot.write_text(json.dumps(dict(sorted(golden.items())), indent=1, sort_keys=True) + "\n",
                             encoding="utf-8")
         return
-    expected = _load().get(key)
+    expected = _load(snapshot).get(key)
     assert expected is not None, f"{key} has no recorded wire; regenerate the snapshot (module docstring)"
-    expected = {k: v for k, v in expected.items() if k not in ("model", "base_url")}
+    expected = {k: v for k, v in expected.items() if k not in meta}
     assert actual == expected, f"{key} wire changed — {_first_divergence(expected, actual)}"
 
 
 @pytest.mark.parametrize("provider,model,base_url", CELLS, ids=[c[0] for c in CELLS])
 def test_provider_wire_matches_snapshot(offline, provider, model, base_url):
-    _check(provider, _wire(provider, model, base_url), model, base_url)
+    _check(provider, _wire(provider, model, base_url), {"model": model, "base_url": base_url})
 
 
 @pytest.mark.parametrize("key,model,base_url", BASE_URL_CELLS, ids=[c[0] for c in BASE_URL_CELLS])
 def test_base_url_only_wire_matches_snapshot(offline, key, model, base_url):
-    _check(key, _wire("", model, base_url), model, base_url)
+    _check(key, _wire("", model, base_url), {"model": model, "base_url": base_url})
 
 
 def test_snapshot_covers_every_provider():
-    recorded, current = set(_load()), {c[0] for c in CELLS} | set(BASE_URL_ONLY)
+    recorded, current = set(_load()), set(CELL_KEYS)
     assert current <= recorded, f"providers without a recorded wire: {sorted(current - recorded)}"
     assert recorded <= current, f"snapshot entries for providers that no longer exist: {sorted(recorded - current)}"

@@ -32,6 +32,27 @@ export class McpOAuthCancelled extends Error {
 const defaultSleep = (milliseconds: number) => new Promise<void>(resolve => window.setTimeout(resolve, milliseconds))
 const UPDATE_BACKEND = 'Update the Hermes backend to support Desktop MCP OAuth callbacks.'
 
+function isLoopbackCallbackUri(redirectUri: string | null): boolean {
+  try {
+    const redirect = new URL(redirectUri || '')
+    const host = redirect.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+
+    return (
+      redirect.protocol === 'http:' &&
+      ['127.0.0.1', 'localhost', '::1'].includes(host) &&
+      Boolean(redirect.port) &&
+      Number(redirect.port) !== 0 &&
+      redirect.pathname === '/callback' &&
+      !redirect.username &&
+      !redirect.password &&
+      !redirect.search &&
+      !redirect.hash
+    )
+  } catch {
+    return false
+  }
+}
+
 /** Remote gateways require the Desktop callback bridge. An explicitly local
  *  gateway can host its own loopback listener when that capability is absent. */
 export async function completeMcpDesktopOAuth({
@@ -98,32 +119,22 @@ export async function completeMcpDesktopOAuth({
     // authorization URL whose DCR/PKCE flow points at a different machine.
     const redirectUri = new URL(authUrl).searchParams.get('redirect_uri')
 
-    if (listener && redirectUri !== listener.redirectUri) {
-      throw new Error(UPDATE_BACKEND)
-    }
+    const relayToDesktop = Boolean(listener && redirectUri === listener.redirectUri)
 
-    if (!listener) {
-      // Match the existing backend-hosted listener, not an arbitrary local URL.
-      const redirect = new URL(redirectUri || '')
-
-      if (
-        redirect.protocol !== 'http:' ||
-        redirect.hostname !== '127.0.0.1' ||
-        !redirect.port ||
-        Number(redirect.port) === 0 ||
-        redirect.pathname !== '/callback' ||
-        redirect.username ||
-        redirect.password ||
-        redirect.search ||
-        redirect.hash
-      ) {
-        throw new Error('OAuth server did not provide a local loopback callback URL')
+    // Pre-registered clients use the backend's configured loopback listener.
+    // That is safe only for a local backend: a remote backend cannot receive a
+    // browser callback sent to the Desktop machine's loopback interface.
+    if (!relayToDesktop && (!isLoopbackCallbackUri(redirectUri) || scope.connectionId !== 'local')) {
+      if (listener) {
+        throw new Error(UPDATE_BACKEND)
       }
+
+      throw new Error('OAuth server did not provide a local loopback callback URL')
     }
 
     const flowId = sessionId
 
-    if (bridge && listener) {
+    if (bridge && listener && relayToDesktop) {
       void bridge
         .wait(listener.id)
         .then(async callback => {

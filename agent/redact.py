@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import threading
+from collections import OrderedDict
 from urllib.parse import unquote_plus
 
 # Shared with agent/file_safety's read-block list so the two defenses can't
@@ -34,31 +35,44 @@ REDACT_WALK_DEPTH_MARKER = "[redacted: nesting limit]"
 # output with profile A's passwords (which would also confirm to B that the bytes exist), and
 # bounded per profile: a fill-heavy session evicts its oldest entries rather than growing forever.
 _VAULT_REDACTION_MAX_PER_PROFILE = 64
-_VAULT_REDACTION_VALUES: dict = {}  # profile home → ordered {value: None}
+_MIN_SECRET_LINE_CHARS = 24
+_VAULT_REDACTION_VALUES: dict = {}  # profile home key → ordered {value: tuple of exact fragments}
 _VAULT_REDACTION_LOCK = threading.Lock()
 
 
-def _vault_scope() -> str:
-    from hermes_constants import get_hermes_home
-    return str(get_hermes_home())
+def _vault_scope(home=None) -> str:
+    from hermes_constants import hermes_home_key
+    return hermes_home_key(home)
 
 
-def register_vault_redaction_value(value) -> None:
-    """Register an exact vault secret value for model-facing redaction.
+def register_vault_redaction_value(value, *, home=None) -> None:
+    """Register an exact secret value for model-facing redaction.
 
     Called by the vault fill path BEFORE the injection happens, so no later browser tool result
-    can echo the value back into model context. Also registers the form a text input normalizes
-    it to (CR/LF stripped), since that is what the page holds.
+    can echo the value back into model context, and by the secret-source apply funnel. Also
+    registers the form a text input normalizes it to (CR/LF stripped), since that is what the
+    page holds, and each line of a multi-line value: line-oriented output (``env | sort``,
+    ``grep -v key``, ``sed -n 2,4p`` of a key file) separates a PEM body from its markers, so
+    only the exact line can still be recognised. Armor lines (``-----BEGIN …``) and lines under
+    ``_MIN_SECRET_LINE_CHARS`` are never registered on their own: the scrub is an unanchored
+    substring replace, and those would blank out innocent text (key body lines are 64 chars).
+
+    All fragments form ONE unit for the per-profile bound, so a 50-line key never evicts its own
+    early lines or older entries one at a time. ``home`` scopes the unit to a profile that is not
+    the ambient one (multiplex hydration resolves profile B with no home override bound).
     """
     if not isinstance(value, str) or not value:
         return
-    normalized = value.replace("\r", "").replace("\n", "")
+    lines = [line.strip() for line in value.splitlines()] if ("\n" in value or "\r" in value) else []
+    fragments = tuple(dict.fromkeys(
+        f for f in (value, value.replace("\r", "").replace("\n", ""),
+                    *(ln for ln in lines if len(ln) >= _MIN_SECRET_LINE_CHARS and not ln.startswith("-----")))
+        if f
+    ))
     with _VAULT_REDACTION_LOCK:
-        bucket = _VAULT_REDACTION_VALUES.setdefault(_vault_scope(), {})
-        for v in (value, normalized):
-            if v:
-                bucket.pop(v, None)  # re-registering refreshes recency
-                bucket[v] = None
+        bucket = _VAULT_REDACTION_VALUES.setdefault(_vault_scope(home), OrderedDict())
+        bucket.pop(value, None)  # re-registering refreshes recency
+        bucket[value] = fragments
         while len(bucket) > _VAULT_REDACTION_MAX_PER_PROFILE:
             del bucket[next(iter(bucket))]
 
@@ -75,7 +89,11 @@ def redact_registered_vault_values(text: str) -> str:
         return text
     with _VAULT_REDACTION_LOCK:
         bucket = _VAULT_REDACTION_VALUES.get(_vault_scope())
-        values = sorted(bucket, key=len, reverse=True) if bucket else ()  # longest first: a substring never shadows its superstring
+        values = sorted(
+            (value for unit in bucket.values() for value in unit),
+            key=len,
+            reverse=True,
+        ) if bucket else ()  # longest first: a substring never shadows its superstring
     for value in values:
         if value in text:
             text = text.replace(value, "«redacted-vault-secret»")
@@ -519,6 +537,10 @@ _SECRET_HEADER_RE = re.compile(rf"({_SECRET_HEADER_NAMES}\s*:\s*)(\S+)", re.IGNO
 _TELEGRAM_RE = re.compile(r"(?<!\d)(bot)?(\d{8,}):([-A-Za-z0-9_]{30,})")
 
 _PRIVATE_KEY_RE = re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----")
+# A partial print keeps only one armor line: ``head`` of a key file has BEGIN + body, ``tail``
+# has body + END. The full-block pattern needs both, so those body lines leaked verbatim.
+_PRIVATE_KEY_ARMOR_RE = re.compile(r"-----(BEGIN|END)[A-Z ]*PRIVATE KEY-----")
+_PEM_BODY_LINE_RE = re.compile(r"[ \t]*[A-Za-z0-9+/=]{16,}[ \t]*")
 
 # Database connection strings: protocol://user:PASSWORD@host. The userinfo and
 # password groups forbid whitespace so a match can never span a line break (a
@@ -884,6 +906,31 @@ def _redact_url_credentials(text: str, code_file: bool) -> str:
     return _URL_BARE_TOKEN_RE.sub(lambda m: f"{m.group(1)}{_mask_token(m.group(2))}{m.group(3)}", text)
 
 
+def _redact_partial_private_keys(text: str) -> str:
+    """Mask the base64 body run next to a lone BEGIN (forward) or END (backward) armor line.
+
+    Walks lines instead of regex-backtracking over the run, so a megabyte base64 blob with a
+    stray armor line elsewhere stays linear. A body slice with no armor at all is invisible to
+    any shape rule; secret-source values cover that case through exact-line registration.
+    """
+    lines = text.split("\n")
+    drop: set[int] = set()
+    for i, line in enumerate(lines):
+        m = _PRIVATE_KEY_ARMOR_RE.search(line)
+        if not m:
+            continue
+        step = 1 if m.group(1) == "BEGIN" else -1
+        j = i + step
+        while 0 <= j < len(lines) and j not in drop and _PEM_BODY_LINE_RE.fullmatch(lines[j].rstrip("\r")):
+            drop.add(j)
+            j += step
+        if j != i + step:
+            lines[i] = "[REDACTED PRIVATE KEY]"
+    if not drop:
+        return text
+    return "\n".join(line for k, line in enumerate(lines) if k not in drop)
+
+
 def _redact_phone(m):
     phone = m.group(1)
     keep = 2 if len(phone) <= 8 else 4
@@ -967,8 +1014,9 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _SECRET_HEADER_RE.sub(lambda m: m.group(1) + _mask_token(m.group(2)), text)
         text = _TELEGRAM_RE.sub(lambda m: f"{m.group(1) or ''}{m.group(2)}:***", text)
 
-    if "BEGIN" in text and "-----" in text:
+    if "PRIVATE KEY-----" in text:
         text = _PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
+        text = _redact_partial_private_keys(text)
 
     # Database connection string passwords. With code_file=True, a password group that is a pure ``{...}``
     # brace expression is an f-string template reference (e.g. f"postgresql://{user}:{pass}@{host}"), not a

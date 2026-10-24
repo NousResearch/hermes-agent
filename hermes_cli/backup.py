@@ -336,7 +336,8 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
         kept = [
             d for d in dirnames
             if (d not in _EXCLUDED_DIRS or (d == "hermes-agent" and not is_root))
-            and not _in_excluded_root_dir(rel_dir / d)]
+            and not _in_excluded_root_dir(rel_dir / d)
+            and not d.startswith(_EXCLUDED_PREFIXES)]
         if skipped_dirs is not None:
             skipped_dirs.update(str(rel_dir / d) for d in set(dirnames) - set(kept))
         # No walk may follow a junction.

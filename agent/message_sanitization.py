@@ -14,7 +14,10 @@ import re
 from functools import partial
 from typing import Any, Callable, Iterable, NamedTuple
 
-from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER, hidden_interrupt_placeholder_row
+from agent.agent_runtime_helpers_placeholders import (
+    _INTERRUPTED_PLACEHOLDER,
+    hidden_interrupt_placeholder_row,
+)
 from agent.message_metadata import DB_ROW_SNAPSHOT
 from agent.vision_message_prep import _provider_model_key
 
@@ -22,11 +25,13 @@ logger = logging.getLogger(__name__)
 
 # Lone surrogates are invalid UTF-8 and crash json.dumps in the OpenAI SDK; also used for
 # CLI paste scrubbing.
-_SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 
 # Keys handled explicitly by _sanitize_messages; every OTHER key is swept generically.
 # The durable snapshot is an immutable compare-and-swap version, not message payload.
-_MESSAGE_CORE_KEYS = frozenset({"content", "name", "tool_calls", "role", DB_ROW_SNAPSHOT})
+_MESSAGE_CORE_KEYS = frozenset(
+    {"content", "name", "tool_calls", "role", DB_ROW_SNAPSHOT}
+)
 
 
 def _sanitize_surrogates(text: str) -> str:
@@ -35,7 +40,7 @@ def _sanitize_surrogates(text: str) -> str:
     # regex scan only runs for the (rare) non-ASCII leaf.
     if text.isascii():
         return text
-    return _SURROGATE_RE.sub('\ufffd', text)
+    return _SURROGATE_RE.sub("\ufffd", text)
 
 
 # OpenAI / Anthropic / Responses all bound ``function.name`` to this; one poisoned stored name
@@ -53,7 +58,9 @@ def coerce_tool_name(name: Any, fallback: str = "invalid_tool_call") -> str:
         return fallback
     if _VALID_TOOL_NAME_RE.fullmatch(name):
         return name
-    coerced = re.sub(r"_+", "_", re.sub(r"[^A-Za-z0-9_-]", "_", name.strip())).strip("_")
+    coerced = re.sub(r"_+", "_", re.sub(r"[^A-Za-z0-9_-]", "_", name.strip())).strip(
+        "_"
+    )
     return coerced[:64] or fallback
 
 
@@ -61,7 +68,7 @@ def _strip_non_ascii(text: str) -> str:
     """Drop non-ASCII characters — last resort for ASCII-only system encodings (LANG=C)."""
     if text.isascii():
         return text
-    return text.encode('ascii', errors='ignore').decode('ascii')
+    return text.encode("ascii", errors="ignore").decode("ascii")
 
 
 def _fix_str_field(container: Any, key: Any, fix: Callable[[str], str]) -> bool:
@@ -80,7 +87,13 @@ def _sanitize_structure(payload: Any, fix: Callable[[str], str]) -> bool:
     stack = [payload]
     while stack:
         node = stack.pop()
-        items = node.items() if isinstance(node, dict) else enumerate(node) if isinstance(node, list) else ()
+        items = (
+            node.items()
+            if isinstance(node, dict)
+            else enumerate(node)
+            if isinstance(node, list)
+            else ()
+        )
         for key, value in list(items):
             if isinstance(value, str):
                 found |= _fix_str_field(node, key, fix)
@@ -89,7 +102,9 @@ def _sanitize_structure(payload: Any, fix: Callable[[str], str]) -> bool:
     return found
 
 
-def _sanitize_messages(messages: list, fix: Callable[[str], str], *, deep: bool) -> bool:
+def _sanitize_messages(
+    messages: list, fix: Callable[[str], str], *, deep: bool
+) -> bool:
     """Apply ``fix`` to the string fields of every message dict in-place (content / part text,
     name, tool_call arguments, non-core top-level str fields). ``deep=True`` adds tool_call ids,
     function names, and NESTED non-core fields (``reasoning_details`` from byte-level models)."""
@@ -101,14 +116,22 @@ def _sanitize_messages(messages: list, fix: Callable[[str], str], *, deep: bool)
             continue
         msg_found = False
         content = msg.get("content")
-        parts = [(p, "text") for p in content if isinstance(p, dict)] if isinstance(content, list) else None
+        parts = (
+            [(p, "text") for p in content if isinstance(p, dict)]
+            if isinstance(content, list)
+            else None
+        )
         fields = parts if parts is not None else [(msg, "content")]
         fields.append((msg, "name"))
         tool_calls = msg.get("tool_calls")
         for tc in tool_calls if isinstance(tool_calls, list) else ():
             fn = tc.get("function") if isinstance(tc, dict) else None
             fields += [(tc, "id")] if deep and isinstance(tc, dict) else []
-            fields += ([(fn, "name")] if deep else []) + [(fn, "arguments")] if isinstance(fn, dict) else []
+            fields += (
+                ([(fn, "name")] if deep else []) + [(fn, "arguments")]
+                if isinstance(fn, dict)
+                else []
+            )
         for container, key in fields:
             msg_found |= _fix_str_field(container, key, fix)
         for key, value in [kv for kv in msg.items() if kv[0] not in _MESSAGE_CORE_KEYS]:
@@ -127,9 +150,13 @@ def _sanitize_messages(messages: list, fix: Callable[[str], str], *, deep: bool)
 # In-place sanitizers; each returns True when anything changed. Surrogate repair is deep
 # (tool_call ids, nested reasoning_details); the ASCII-only-locale strip is shallow.
 _sanitize_structure_surrogates = partial(_sanitize_structure, fix=_sanitize_surrogates)
-_sanitize_messages_surrogates = partial(_sanitize_messages, fix=_sanitize_surrogates, deep=True)
+_sanitize_messages_surrogates = partial(
+    _sanitize_messages, fix=_sanitize_surrogates, deep=True
+)
 _sanitize_structure_non_ascii = partial(_sanitize_structure, fix=_strip_non_ascii)
-_sanitize_messages_non_ascii = partial(_sanitize_messages, fix=_strip_non_ascii, deep=False)
+_sanitize_messages_non_ascii = partial(
+    _sanitize_messages, fix=_strip_non_ascii, deep=False
+)
 _sanitize_tools_non_ascii = _sanitize_structure_non_ascii
 
 
@@ -147,7 +174,9 @@ def sanitize_outbound_kwargs(agent: Any, api_kwargs: dict) -> None:
         # before the in-place strip so the retry never rewrites the canonical tool schemas.
         # A structural clone suffices: ``_sanitize_structure`` only rebinds str leaves
         # inside dict/list containers.
-        if api_kwargs.get("tools") is not None and api_kwargs["tools"] is getattr(agent, "tools", None):
+        if api_kwargs.get("tools") is not None and api_kwargs["tools"] is getattr(
+            agent, "tools", None
+        ):
             # Lazy: conversation_loop imports this module (cycle).
             from agent.conversation_loop import _clone_message_for_send
 
@@ -164,7 +193,7 @@ def _escape_invalid_chars_in_json_strings(raw: str) -> str:
     while i < len(raw):
         ch = raw[i]
         if in_string and ch == "\\" and i + 1 < len(raw):
-            out.append(raw[i:i + 2])
+            out.append(raw[i : i + 2])
             i += 2
             continue
         if ch == '"':
@@ -207,7 +236,7 @@ def _rebalance_json_closers(raw: str) -> str | None:
         ch = raw[i]
         if in_string:
             if ch == "\\":
-                out.append(raw[i:i + 2])
+                out.append(raw[i : i + 2])
                 i += 2
                 continue
             if ch == '"':
@@ -243,9 +272,14 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     # Pass 0: strict=False accepts literal control chars inside strings (the most common
     # local-model case) and re-serialises to wire-valid JSON.
     try:
-        reserialised = json.dumps(json.loads(raw_stripped, strict=False), separators=(",", ":"))
+        reserialised = json.dumps(
+            json.loads(raw_stripped, strict=False), separators=(",", ":")
+        )
         if reserialised != raw_stripped:
-            logger.warning("Repaired unescaped control chars in tool_call arguments for %s", tool_name)
+            logger.warning(
+                "Repaired unescaped control chars in tool_call arguments for %s",
+                tool_name,
+            )
         return reserialised
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
@@ -259,14 +293,19 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     fixed = _rebalance_json_closers(fixed) or fixed
     for _ in range(50):
         if _loads_ok(fixed) or not (
-            (fixed.endswith('}') and fixed.count('}') > fixed.count('{'))
-            or (fixed.endswith(']') and fixed.count(']') > fixed.count('['))
+            (fixed.endswith("}") and fixed.count("}") > fixed.count("{"))
+            or (fixed.endswith("]") and fixed.count("]") > fixed.count("["))
         ):
             break
         fixed = fixed[:-1]
 
     if _loads_ok(fixed):
-        logger.warning("Repaired malformed tool_call arguments for %s: %s → %s", tool_name, raw_stripped[:80], fixed[:80])
+        logger.warning(
+            "Repaired malformed tool_call arguments for %s: %s → %s",
+            tool_name,
+            raw_stripped[:80],
+            fixed[:80],
+        )
         return fixed
 
     # Pass 5: escape control chars inside strings (strict=False alone fails when other
@@ -274,13 +313,17 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     escaped = _escape_invalid_chars_in_json_strings(fixed)
     if escaped != fixed and _loads_ok(escaped):
         logger.warning(
-            "Repaired control-char-laced tool_call arguments for %s: %s → %s", tool_name, raw_stripped[:80], escaped[:80],
+            "Repaired control-char-laced tool_call arguments for %s: %s → %s",
+            tool_name,
+            raw_stripped[:80],
+            escaped[:80],
         )
         return escaped
 
     logger.warning(
         "Unrepairable tool_call arguments for %s — replaced with empty object (was: %s)",
-        tool_name, raw_stripped[:_FULL_ARGS_LOG_BOUND],
+        tool_name,
+        raw_stripped[:_FULL_ARGS_LOG_BOUND],
     )
     return "{}"
 
@@ -345,7 +388,11 @@ def serialized_messages_bytes(messages: list) -> int:
     if not isinstance(messages, list) or not messages:
         return 0
     try:
-        return len(json.dumps(messages, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8"))
+        return len(
+            json.dumps(
+                messages, ensure_ascii=False, separators=(",", ":"), default=str
+            ).encode("utf-8")
+        )
     except (TypeError, ValueError):
         return sum(len(str(m)) for m in messages)
 
@@ -371,7 +418,11 @@ def _strip_images_from_messages(messages: list) -> bool:
         content = msg.get("content") if isinstance(msg, dict) else None
         if not isinstance(content, list):
             continue
-        new_parts = [p for p in content if not (isinstance(p, dict) and p.get("type") in _IMAGE_PART_TYPES)]
+        new_parts = [
+            p
+            for p in content
+            if not (isinstance(p, dict) and p.get("type") in _IMAGE_PART_TYPES)
+        ]
         if len(new_parts) < len(content):
             found = True
             if new_parts:
@@ -379,7 +430,9 @@ def _strip_images_from_messages(messages: list) -> bool:
                 # Rewriting a stamped live dict stales its persisted row; pop the marker.
                 msg.pop(_DB_PERSISTED_MARKER, None)
             elif msg.get("role") == "tool" or msg.get("tool_calls"):
-                msg["content"] = "[image content removed — server does not support images]"
+                msg["content"] = (
+                    "[image content removed — server does not support images]"
+                )
                 msg.pop(_DB_PERSISTED_MARKER, None)
             else:
                 to_delete.append(i)
@@ -393,12 +446,20 @@ def _strip_images_from_messages(messages: list) -> bool:
 # unsupported" — the loop then strips images and retries text-only instead of cascading
 # into compression / context-too-large recovery or wedging on retries.
 _IMAGE_REJECTION_PHRASES = (
-    "only 'text' content type is supported", "only text content type is supported",
-    "image_url is not supported", "image content is not supported",
-    "multimodal is not supported", "multimodal content is not supported", "multimodal input is not supported",
-    "vision is not supported", "vision input is not supported",
-    "does not support images", "does not support image input", "does not support multimodal",
-    "does not support vision", "model does not support image",
+    "only 'text' content type is supported",
+    "only text content type is supported",
+    "image_url is not supported",
+    "image content is not supported",
+    "multimodal is not supported",
+    "multimodal content is not supported",
+    "multimodal input is not supported",
+    "vision is not supported",
+    "vision input is not supported",
+    "does not support images",
+    "does not support image input",
+    "does not support multimodal",
+    "does not support vision",
+    "model does not support image",
     # DashScope-style gateways reject non-text blocks with this generic body.
     # Some OpenAI-compatible endpoints (e.g. (issue #57948)
     "unexpected item type in content",
@@ -406,7 +467,8 @@ _IMAGE_REJECTION_PHRASES = (
     # field-path apostrophe so other URL errors don't false-trip.
     "image_url'. expected",
     # DeepSeek's text-only request-body variant error.
-    "unknown variant `image_url`, expected `text`", "unknown variant image_url, expected text",
+    "unknown variant `image_url`, expected `text`",
+    "unknown variant image_url, expected text",
     # OpenRouter HTTP 404 when no upstream endpoint accepts image input (passes the 4xx
     # gate; without this the gateway queue wedges behind the stuck turn).
     # Without this phrase the agent never strips the images, the retry loop re-sends the same rejected
@@ -431,6 +493,7 @@ _IMAGE_CORRUPT_PHRASES = (
     # validation in tools/vision_tools._normalize_to_supported_image)
     "failed to decode image",
 )
+
 
 def strip_images_for_rejecting_model(agent: Any, api_messages: Any) -> bool:
     """Send-path image strip for a model that rejected image content (see turn_recovery).
@@ -459,17 +522,37 @@ def _looks_like_corrupt_image_rejection(error_body: str) -> bool:
 
 
 __all__ = [
-    "_SURROGATE_RE", "_escape_invalid_chars_in_json_strings", "_repair_tool_call_arguments",
-    "_sanitize_messages_non_ascii", "_sanitize_messages_surrogates", "_sanitize_structure_non_ascii",
-    "_sanitize_structure_surrogates", "_sanitize_surrogates", "_sanitize_tools_non_ascii",
-    "_strip_images_from_messages", "_strip_non_ascii", "apply_reasoning_content_policy",
-    "close_interrupted_tool_sequence", "coalesce_tool_call_id", "coerce_tool_name",
-    "deterministic_call_id", "matches_reasoning_echo_family", "needs_reasoning_echo",
-    "normalize_provider_tool_call_ids", "reapply_reasoning_echo", "reasoning_echo_family",
-    "reasoning_replay_route", "record_reasoning_field_rejection", "rejected_reasoning_carriers",
+    "_SURROGATE_RE",
+    "_escape_invalid_chars_in_json_strings",
+    "_repair_tool_call_arguments",
+    "_sanitize_messages_non_ascii",
+    "_sanitize_messages_surrogates",
+    "_sanitize_structure_non_ascii",
+    "_sanitize_structure_surrogates",
+    "_sanitize_surrogates",
+    "_sanitize_tools_non_ascii",
+    "_strip_images_from_messages",
+    "_strip_non_ascii",
+    "apply_reasoning_content_policy",
+    "close_interrupted_tool_sequence",
+    "coalesce_tool_call_id",
+    "coerce_tool_name",
+    "deterministic_call_id",
+    "matches_reasoning_echo_family",
+    "needs_reasoning_echo",
+    "normalize_provider_tool_call_ids",
+    "reapply_reasoning_echo",
+    "reasoning_echo_family",
+    "reasoning_replay_route",
+    "record_reasoning_field_rejection",
+    "rejected_reasoning_carriers",
     "route_reasoning_carriers",
-    "sanitize_outbound_kwargs", "stale_thinking_reaches_wire", "strip_images_for_rejecting_model",
-    "tool_call_id_variants", "tool_result_id_variants", "uniquify_tool_call_ids",
+    "sanitize_outbound_kwargs",
+    "stale_thinking_reaches_wire",
+    "strip_images_for_rejecting_model",
+    "tool_call_id_variants",
+    "tool_result_id_variants",
+    "uniquify_tool_call_ids",
 ]
 
 
@@ -520,7 +603,9 @@ def _expand_tool_id_variants(values: tuple[Any, ...]) -> frozenset[str]:
 
 def tool_call_id_variants(tc: Any) -> frozenset[str]:
     """Return all pairing-id variants carried by a tool-call entry."""
-    return _expand_tool_id_variants(tuple(_tc_field(tc, k) for k in ("call_id", "id", "response_item_id")))
+    return _expand_tool_id_variants(
+        tuple(_tc_field(tc, k) for k in ("call_id", "id", "response_item_id"))
+    )
 
 
 def tool_result_id_variants(tool_call_id: Any) -> frozenset[str]:
@@ -552,25 +637,65 @@ def uniquify_tool_call_ids(tool_calls: list, taken: Iterable[str] = ()) -> list:
     ``build_assistant_message``.
     """
     seen: set = set(taken)
-    for tc in tool_calls or []:
+    for index, tc in enumerate(tool_calls or []):
         # Same coalescing rule as coalesce_tool_call_id, tolerant of non-string ids.
         raw = _tc_field(tc, "call_id") or _tc_field(tc, "id") or ""
         raw = raw.strip() if isinstance(raw, str) else ""
         # Composite Responses ids ("call_x|fc_y") collide on the call half — the pairing key.
         cid = raw.split("|", 1)[0]
         if not cid:
-            continue
+            # Fill the blank with what the storage fallback would assign so the
+            # collision logic below covers it: an id-less call repeated in a later
+            # turn (same name+arguments) would otherwise reuse the deterministic
+            # id verbatim, and the Anthropic transport sends both — 400
+            # ``tool_use ids must be unique`` (#144039). Mirror the fallback's
+            # precedence (id half first, hash only when both halves are blank) so
+            # the provider-mint normalization still sees its prefix; first
+            # occurrence keeps the fallback id byte-for-byte (prompt-cache
+            # stability), and a repeat takes the same ``_d<n>`` suffix as a
+            # reused provider id.
+            raw_id = _tc_field(tc, "id")
+            raw_id = raw_id.strip() if isinstance(raw_id, str) else ""
+            if raw_id:
+                cid = raw_id.split("|", 1)[0]
+                try:
+                    _tc_set(tc, "call_id", cid)
+                except Exception:  # health: allow BLE001 -- exotic tool-call shapes raise AttributeError/TypeError; leave the blank for the storage fallback instead of crashing ingest
+                    continue
+            else:
+                fn = _tc_field(tc, "function")
+                fn_name = _tc_field(fn, "name")
+                arguments = _tc_field(fn, "arguments")
+                cid = deterministic_call_id(
+                    fn_name if isinstance(fn_name, str) else "",
+                    arguments if isinstance(arguments, str) else "{}",
+                    index,
+                )
+                try:
+                    _tc_set(tc, "id", cid)
+                    _tc_set(tc, "call_id", cid)
+                except Exception:  # health: allow BLE001 -- unwritable entry (read-only property, frozen dataclass); leave the blank for the storage-time fallback instead of crashing ingest
+                    # Unwritable entry: leave the blank for the storage-time fallback.
+                    continue
         if cid not in seen:
             seen.add(cid)
             continue
         # range is bounded: at most len(seen) suffixes can already be taken.
-        new_id = next(f"{cid}_d{n}" for n in range(2, len(seen) + 3) if f"{cid}_d{n}" not in seen)
+        new_id = next(
+            f"{cid}_d{n}" for n in range(2, len(seen) + 3) if f"{cid}_d{n}" not in seen
+        )
         seen.add(new_id)
 
         try:
             # Keep a composite id's response-item half so the provider's fc_/item id survives.
             old = _tc_field(tc, "id")
-            _tc_set(tc, "id", f"{new_id}|{old.split('|', 1)[1]}" if isinstance(old, str) and "|" in old else new_id)
+            _tc_set(
+                tc,
+                "id",
+                f"{new_id}|{old.split('|', 1)[1]}"
+                if isinstance(old, str) and "|" in old
+                else new_id,
+            )
             if _tc_field(tc, "call_id"):
                 _tc_set(tc, "call_id", new_id)
         except Exception:
@@ -579,12 +704,16 @@ def uniquify_tool_call_ids(tool_calls: list, taken: Iterable[str] = ()) -> list:
         _fn_name = _tc_field(_tc_field(tc, "function"), "name") or "?"
         logger.warning(
             "Model reused tool call id %s; renamed the duplicate to %s (tool=%s) to keep call/result "
-            "pairing lossless.", cid, new_id, _fn_name,
+            "pairing lossless.",
+            cid,
+            new_id,
+            _fn_name,
         )
     return tool_calls
 
 
 _PROVIDER_TOOL_ID_PREFIXES = ("chatcmpl-tool-",)
+
 
 def normalize_provider_tool_call_ids(tool_calls: list) -> list:
     """Rewrite known provider ids when a parallel batch would be rejected on replay.
@@ -596,9 +725,14 @@ def normalize_provider_tool_call_ids(tool_calls: list) -> list:
         return tool_calls
     # Gate on the effective id serialization and result pairing use (stripped, blank call_id
     # falls back to id), not on raw fields.
-    if not all(coalesce_tool_call_id(tc).startswith(_PROVIDER_TOOL_ID_PREFIXES) for tc in tool_calls):
+    if not all(
+        coalesce_tool_call_id(tc).startswith(_PROVIDER_TOOL_ID_PREFIXES)
+        for tc in tool_calls
+    ):
         return tool_calls
-    logger.warning("Normalized provider-minted parallel tool-call ids for replay compatibility")
+    logger.warning(
+        "Normalized provider-minted parallel tool-call ids for replay compatibility"
+    )
     for tc in tool_calls:
         # Rewrite each field's call half separately: ``id`` may carry the response-item
         # half while ``call_id`` is bare, and that half must survive.
@@ -612,7 +746,9 @@ def normalize_provider_tool_call_ids(tool_calls: list) -> list:
                 continue
             # surrogatepass: provider JSON can carry lone surrogates; strict utf-8 would raise,
             # and errors=replace would collapse distinct ids onto one digest.
-            digest = hashlib.sha256(primary.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+            digest = hashlib.sha256(
+                primary.encode("utf-8", "surrogatepass")
+            ).hexdigest()[:12]
             _set_provider_tool_id(tc, key, f"call_{digest}{sep}{item}")
     return tool_calls
 
@@ -620,7 +756,9 @@ def normalize_provider_tool_call_ids(tool_calls: list) -> list:
 def _set_provider_tool_id(tc: Any, key: str, value: str) -> None:
     # transports.types.ToolCall exposes call_id as a read-only view of provider_data;
     # write the backing value so id and call_id stay in agreement.
-    if isinstance(getattr(type(tc), key, None), property) and isinstance(getattr(tc, "provider_data", None), dict):
+    if isinstance(getattr(type(tc), key, None), property) and isinstance(
+        getattr(tc, "provider_data", None), dict
+    ):
         tc.provider_data[key] = value
     else:
         _tc_set(tc, key, value)
@@ -643,9 +781,27 @@ def _set_provider_tool_id(tc: Any, key: str, value: str) -> None:
 # carrier; only wire copies are shaped here.
 _REASONING_ECHO_RULES: tuple = (
     # (family, exact providers (raw), exact providers (lowered), model substrings (lowered), hosts)
-    ("kimi", frozenset({"kimi-coding", "kimi-coding-cn"}), frozenset(), (), ("api.kimi.com", "moonshot.ai", "moonshot.cn")),
-    ("deepseek", frozenset(), frozenset({"deepseek"}), ("deepseek",), ("api.deepseek.com",)),
-    ("mimo", frozenset(), frozenset({"xiaomi"}), ("mimo",), ("api.xiaomimimo.com", "xiaomimimo.com")),
+    (
+        "kimi",
+        frozenset({"kimi-coding", "kimi-coding-cn"}),
+        frozenset(),
+        (),
+        ("api.kimi.com", "moonshot.ai", "moonshot.cn"),
+    ),
+    (
+        "deepseek",
+        frozenset(),
+        frozenset({"deepseek"}),
+        ("deepseek",),
+        ("api.deepseek.com",),
+    ),
+    (
+        "mimo",
+        frozenset(),
+        frozenset({"xiaomi"}),
+        ("mimo",),
+        ("api.xiaomimimo.com", "xiaomimimo.com"),
+    ),
     # Portal stealth model that 400s on a tool-call turn without reasoning_content (f86276d2ebc).
     ("missingno", frozenset(), frozenset(), ("stealth/missingno",), ()),
 )
@@ -655,21 +811,48 @@ RC, R, RD = "reasoning_content", "reasoning", "reasoning_details"
 REASONING_CARRIERS = (RC, R, RD)
 _ALL_CARRIERS = frozenset(REASONING_CARRIERS)
 _DEFAULT_CARRIERS = frozenset({RC})
-_LOCAL_CARRIERS = frozenset({RC, R})  # llama.cpp/SGLang read reasoning_content, vLLM/Ollama read reasoning
+_LOCAL_CARRIERS = frozenset(
+    {RC, R}
+)  # llama.cpp/SGLang read reasoning_content, vLLM/Ollama read reasoning
 
 _REASONING_CARRIER_ROUTES: tuple = (
     # (carriers, providers (lowered), hosts) — evidence per row in the PR body / FINDINGS.
-    (frozenset(), frozenset({"mistral", "groq", "cerebras", "sambanova"}),
-     ("mistral.ai", "groq.com", "cerebras.ai", "sambanova.ai", "hunyuan.cloud.tencent.com")),
+    (
+        frozenset(),
+        frozenset({"mistral", "groq", "cerebras", "sambanova"}),
+        (
+            "mistral.ai",
+            "groq.com",
+            "cerebras.ai",
+            "sambanova.ai",
+            "hunyuan.cloud.tencent.com",
+        ),
+    ),
     # Fireworks' ChatMessage schema is additionalProperties:false with reasoning_content only.
     (frozenset({RC}), frozenset({"fireworks"}), ("fireworks.ai",)),
     # OpenRouter-format gateways read the unified array, the string and the alias.
-    (_ALL_CARRIERS, frozenset({"openrouter", "kilocode", "ai-gateway", "nous"}),
-     ("openrouter.ai", "kilo.ai", "ai-gateway.vercel.sh", "nousresearch.com")),
+    (
+        _ALL_CARRIERS,
+        frozenset({"openrouter", "kilocode", "ai-gateway", "nous"}),
+        ("openrouter.ai", "kilo.ai", "ai-gateway.vercel.sh", "nousresearch.com"),
+    ),
     # Vendors that document reasoning_details replay next to reasoning_content.
-    (frozenset({RC, RD}), frozenset({"novita", "tencent-tokenhub", "minimax", "minimax-cn"}),
-     ("novita.ai", "tokenhub.tencentmaas.com", "tokenhub-intl.tencentcloudmaas.com", "minimax.io", "minimaxi.com")),
-    (_LOCAL_CARRIERS, frozenset({"ollama-cloud", "custom", "lmstudio", "upstage"}), ("ollama.com", "upstage.ai")),
+    (
+        frozenset({RC, RD}),
+        frozenset({"novita", "tencent-tokenhub", "minimax", "minimax-cn"}),
+        (
+            "novita.ai",
+            "tokenhub.tencentmaas.com",
+            "tokenhub-intl.tencentcloudmaas.com",
+            "minimax.io",
+            "minimaxi.com",
+        ),
+    ),
+    (
+        _LOCAL_CARRIERS,
+        frozenset({"ollama-cloud", "custom", "lmstudio", "upstage"}),
+        ("ollama.com", "upstage.ai"),
+    ),
 )
 
 
@@ -682,16 +865,22 @@ class ReasoningReplayRoute(NamedTuple):
     carriers: frozenset | None
 
 
-def matches_reasoning_echo_family(family: str, provider: Any, model: Any, base_url: Any) -> bool:
+def matches_reasoning_echo_family(
+    family: str, provider: Any, model: Any, base_url: Any
+) -> bool:
     """True when (provider, model, base_url) matches one echo-back family (families can overlap;
     membership is tested independently). Raises KeyError for an unknown family."""
     from utils import base_url_host_matches
 
-    _, raw_providers, lowered_providers, model_subs, hosts = _REASONING_ECHO_RULE_BY_FAMILY[family]
+    _, raw_providers, lowered_providers, model_subs, hosts = (
+        _REASONING_ECHO_RULE_BY_FAMILY[family]
+    )
     model_lower = (model or "").lower()
     return (
-        provider in raw_providers or (provider or "").lower() in lowered_providers
-        or any(sub in model_lower for sub in model_subs) or any(base_url_host_matches(base_url, host) for host in hosts)
+        provider in raw_providers
+        or (provider or "").lower() in lowered_providers
+        or any(sub in model_lower for sub in model_subs)
+        or any(base_url_host_matches(base_url, host) for host in hosts)
     )
 
 
@@ -699,7 +888,14 @@ def reasoning_echo_family(provider: Any, model: Any, base_url: Any) -> str | Non
     """``"kimi"`` / ``"deepseek"`` / ``"mimo"`` (first match in table order) when the endpoint
     enforces reasoning_content echo-back on tool-call turns, else ``None``."""
     families = (rule[0] for rule in _REASONING_ECHO_RULES)
-    return next((f for f in families if matches_reasoning_echo_family(f, provider, model, base_url)), None)
+    return next(
+        (
+            f
+            for f in families
+            if matches_reasoning_echo_family(f, provider, model, base_url)
+        ),
+        None,
+    )
 
 
 def needs_reasoning_echo(provider: Any, model: Any, base_url: Any) -> bool:
@@ -713,15 +909,27 @@ def route_reasoning_carriers(provider: Any, base_url: Any) -> frozenset:
 
     provider_lower = (provider or "").strip().lower()
     carriers = next(
-        (c for c, providers, hosts in _REASONING_CARRIER_ROUTES
-         if provider_lower in providers or any(base_url_host_matches(base_url, h) for h in hosts)),
+        (
+            c
+            for c, providers, hosts in _REASONING_CARRIER_ROUTES
+            if provider_lower in providers
+            or any(base_url_host_matches(base_url, h) for h in hosts)
+        ),
         None,
     )
     if carriers is None:
         from agent.model_metadata import is_local_endpoint
 
-        carriers = _LOCAL_CARRIERS if base_url and is_local_endpoint(str(base_url)) else _DEFAULT_CARRIERS
-    if RD not in carriers and carriers and _profile_declares_native_details(provider_lower):
+        carriers = (
+            _LOCAL_CARRIERS
+            if base_url and is_local_endpoint(str(base_url))
+            else _DEFAULT_CARRIERS
+        )
+    if (
+        RD not in carriers
+        and carriers
+        and _profile_declares_native_details(provider_lower)
+    ):
         carriers = carriers | {RD}
     return carriers
 
@@ -732,11 +940,20 @@ def _profile_declares_native_details(provider_lower: str) -> bool:
         return False
     from providers import get_provider_profile
 
-    return bool(getattr(get_provider_profile(provider_lower), "native_reasoning_details_type", None))
+    return bool(
+        getattr(
+            get_provider_profile(provider_lower), "native_reasoning_details_type", None
+        )
+    )
 
 
 def reasoning_replay_route(
-    api_mode: Any, provider: Any, model: Any, base_url: Any, *, echo_opt_in: bool = False,
+    api_mode: Any,
+    provider: Any,
+    model: Any,
+    base_url: Any,
+    *,
+    echo_opt_in: bool = False,
     rejected: Iterable[str] = (),
 ) -> ReasoningReplayRoute:
     """Replay decision for one route. Deterministic in its inputs, so the wire prefix is byte-stable
@@ -749,7 +966,9 @@ def reasoning_replay_route(
     return ReasoningReplayRoute(pad and RC in carriers, carriers)
 
 
-def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_url: Any) -> bool:
+def stale_thinking_reaches_wire(
+    api_mode: Any, provider: Any, model: Any, base_url: Any
+) -> bool:
     """True when stale assistant reasoning text is actually replayed on the wire for the route.
 
     The single wire-truth predicate the compaction TRIGGER estimator and the tail-budget
@@ -759,7 +978,10 @@ def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_u
     A runtime rejection is not visible here; both sides then over-charge identically.
     """
     if (api_mode or "") == "anthropic_messages":
-        from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
+        from agent.anthropic_thinking_policy import (
+            native_anthropic_preserves_prior_thinking,
+        )
+
         if native_anthropic_preserves_prior_thinking(base_url, model):
             return True
     if not api_mode:
@@ -771,7 +993,9 @@ def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_u
     return bool(route.carriers & {RC, R})
 
 
-def native_anthropic_accounting_projection(messages: Any) -> tuple[Any, tuple[str, ...]]:
+def native_anthropic_accounting_projection(
+    messages: Any,
+) -> tuple[Any, tuple[str, ...]]:
     """Return the native Anthropic wire shadow plus readable replay thinking out-of-band.
 
     Canonical history may retain storage-only reasoning alongside signed replay carriers.
@@ -817,7 +1041,9 @@ def native_anthropic_accounting_projection(messages: Any) -> tuple[Any, tuple[st
         replayed_thinking.extend(
             block["thinking"]
             for block in carrier
-            if block.get("type") == "thinking" and isinstance(block.get("thinking"), str) and block["thinking"]
+            if block.get("type") == "thinking"
+            and isinstance(block.get("thinking"), str)
+            and block["thinking"]
         )
         projected.append(shadow)
     return projected, tuple(replayed_thinking)
@@ -846,7 +1072,10 @@ def _apply_legacy_must_echo_pad(source_msg: dict, api_msg: dict) -> None:
 
 
 def apply_reasoning_content_policy(
-    source_msg: dict, api_msg: dict, needs_thinking_pad: bool, carriers: frozenset | None = None,
+    source_msg: dict,
+    api_msg: dict,
+    needs_thinking_pad: bool,
+    carriers: frozenset | None = None,
 ) -> None:
     """Shape an assistant replay message's reasoning keys for the active route (mutates ``api_msg``).
 
@@ -858,7 +1087,11 @@ def apply_reasoning_content_policy(
     if source_msg.get("role") != "assistant":
         return
     text = _replayable_reasoning_text(source_msg)
-    effective = carriers if carriers is not None else (frozenset({RC}) if needs_thinking_pad else frozenset())
+    effective = (
+        carriers
+        if carriers is not None
+        else (frozenset({RC}) if needs_thinking_pad else frozenset())
+    )
     if carriers is None and needs_thinking_pad:
         _apply_legacy_must_echo_pad(source_msg, api_msg)
     elif RC in effective and (text is not None or needs_thinking_pad):
@@ -876,8 +1109,12 @@ def apply_reasoning_content_policy(
     if carriers is not None and RD not in carriers:
         # Private ``*.native_assistant`` records (Gemini/Copilot carriers) survive: the transport lifts
         # them onto the route that reads them and filters them from every other wire.
-        private = [d for d in api_msg.pop(RD, None) or () if isinstance(d, dict)
-                   and str(d.get("type") or "").endswith(".native_assistant")]
+        private = [
+            d
+            for d in api_msg.pop(RD, None) or ()
+            if isinstance(d, dict)
+            and str(d.get("type") or "").endswith(".native_assistant")
+        ]
         if private:
             api_msg[RD] = private
 
@@ -886,7 +1123,9 @@ def _reasoning_shape(msg: dict) -> tuple:
     return tuple(msg.get(key) for key in REASONING_CARRIERS)
 
 
-def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool, carriers: frozenset | None = None) -> int:
+def reapply_reasoning_echo(
+    api_messages: list, needs_thinking_pad: bool, carriers: frozenset | None = None
+) -> int:
     """Reconcile already-built assistant turns with the ACTIVE route.
 
     ``api_messages`` is built once under the primary; a mid-conversation fallback or a recorded
@@ -909,9 +1148,16 @@ def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool, carrier
 
 # Provider error bodies (lowercased) for "this request carries a key my schema does not know".
 _UNKNOWN_FIELD_PHRASES = (
-    "extra inputs are not permitted", "is unsupported", "no such field", "unknown field",
-    "unrecognized request argument", "unrecognized field", "unknown parameter", "unexpected field",
-    "additional propert", "unknown key",
+    "extra inputs are not permitted",
+    "is unsupported",
+    "no such field",
+    "unknown field",
+    "unrecognized request argument",
+    "unrecognized field",
+    "unknown parameter",
+    "unexpected field",
+    "additional propert",
+    "unknown key",
 )
 _NAMED_FIELD_RES = {
     RC: re.compile(r"(?<![\w])reasoning_content(?![\w])"),
@@ -933,8 +1179,11 @@ def rejected_reasoning_fields(error_body: Any, sent_messages: Any) -> frozenset:
     if not any(phrase in body for phrase in _UNKNOWN_FIELD_PHRASES):
         return frozenset()
     sent = {
-        key for msg in (sent_messages if isinstance(sent_messages, list) else ())
-        if isinstance(msg, dict) and msg.get("role") == "assistant" for key in REASONING_CARRIERS if key in msg
+        key
+        for msg in (sent_messages if isinstance(sent_messages, list) else ())
+        if isinstance(msg, dict) and msg.get("role") == "assistant"
+        for key in REASONING_CARRIERS
+        if key in msg
     }
     named = {key for key in sent if _NAMED_FIELD_RES[key].search(body)}
     if not named:
@@ -965,17 +1214,34 @@ def rejected_reasoning_carriers(agent: Any) -> frozenset:
     """
     routes = agent.__dict__.setdefault("_reasoning_rejecting_routes", {})
     session_id = getattr(agent, "session_id", None)
-    if session_id and getattr(agent, "_reasoning_rejections_loaded_for", None) != session_id:
+    if (
+        session_id
+        and getattr(agent, "_reasoning_rejections_loaded_for", None) != session_id
+    ):
         agent._reasoning_rejections_loaded_for = session_id
-        getter = getattr(getattr(agent, "_session_db", None), "get_session_model_config_value", None)
-        stored = getter(session_id, _REJECTION_MODEL_CONFIG_KEY, []) if callable(getter) else []
+        getter = getattr(
+            getattr(agent, "_session_db", None), "get_session_model_config_value", None
+        )
+        stored = (
+            getter(session_id, _REJECTION_MODEL_CONFIG_KEY, [])
+            if callable(getter)
+            else []
+        )
         for entry in stored if isinstance(stored, list) else ():
-            if isinstance(entry, list) and len(entry) == 4 and isinstance(entry[3], list):
-                routes.setdefault(tuple(entry[:3]), set()).update(k for k in entry[3] if k in _ALL_CARRIERS)
+            if (
+                isinstance(entry, list)
+                and len(entry) == 4
+                and isinstance(entry[3], list)
+            ):
+                routes.setdefault(tuple(entry[:3]), set()).update(
+                    k for k in entry[3] if k in _ALL_CARRIERS
+                )
     return frozenset(routes.get(reasoning_route_key(agent), ()))
 
 
-def record_reasoning_field_rejection(agent: Any, error_body: Any, sent_messages: Any) -> frozenset:
+def record_reasoning_field_rejection(
+    agent: Any, error_body: Any, sent_messages: Any
+) -> frozenset:
     """Remember the reasoning keys this route rejected; returns the NEW ones (empty = no retry).
 
     The next ``build_api_request`` re-shapes ``api_messages`` without them for this
@@ -985,7 +1251,11 @@ def record_reasoning_field_rejection(agent: Any, error_body: Any, sent_messages:
     if getattr(agent, "api_mode", "chat_completions") != "chat_completions":
         return frozenset()
     fields = rejected_reasoning_fields(error_body, sent_messages)
-    if needs_reasoning_echo(getattr(agent, "provider", ""), getattr(agent, "model", ""), getattr(agent, "base_url", "")):
+    if needs_reasoning_echo(
+        getattr(agent, "provider", ""),
+        getattr(agent, "model", ""),
+        getattr(agent, "base_url", ""),
+    ):
         # Must-echo routes 400 on any tool turn WITHOUT reasoning_content; a body naming it is a
         # value complaint ("must not be empty"), never a schema that lacks the field.
         fields -= {RC}
@@ -996,9 +1266,22 @@ def record_reasoning_field_rejection(agent: Any, error_body: Any, sent_messages:
         return frozenset()
     routes = agent._reasoning_rejecting_routes
     routes.setdefault(reasoning_route_key(agent), set()).update(new)
-    patcher = getattr(getattr(agent, "_session_db", None), "patch_session_model_config", None)
-    if callable(patcher) and getattr(agent, "session_id", None) and not getattr(agent, "_persist_disabled", False):
-        patcher(agent.session_id, {_REJECTION_MODEL_CONFIG_KEY: [[*key, sorted(v)] for key, v in sorted(routes.items())]})
+    patcher = getattr(
+        getattr(agent, "_session_db", None), "patch_session_model_config", None
+    )
+    if (
+        callable(patcher)
+        and getattr(agent, "session_id", None)
+        and not getattr(agent, "_persist_disabled", False)
+    ):
+        patcher(
+            agent.session_id,
+            {
+                _REJECTION_MODEL_CONFIG_KEY: [
+                    [*key, sorted(v)] for key, v in sorted(routes.items())
+                ]
+            },
+        )
     return frozenset(new)
 
 

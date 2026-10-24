@@ -1144,6 +1144,31 @@ def _release_fork_clients(review_agent: Any) -> None:
         review_agent.release_clients()
 
 
+def _recover_deleted_session_cwd() -> None:
+    """Fix a fork inheriting a deleted process cwd (kanban worker self-complete rmtree's its
+    scratch workspace before this fork runs; the process cwd then points there and every
+    relative-path touch dies with [Errno 2]). Fix it through the contextvars-scoped session
+    override `resolve_agent_cwd()` honors first — never os.chdir, which is process-global and
+    races sibling forks."""
+    import os
+
+    from agent.runtime_cwd import set_session_cwd
+
+    try:
+        _cwd_is_live = os.path.isdir(os.getcwd())  # getcwd itself raises on a deleted cwd
+    except OSError:
+        _cwd_is_live = False
+    try:
+        if _cwd_is_live:
+            return
+        for fallback in (os.environ.get("HOME"), "/tmp"):
+            if fallback and os.path.isdir(fallback):
+                set_session_cwd(fallback)
+                return
+    except Exception:
+        pass  # best-effort: the outer handler still reports a fork failure normally
+
+
 def _run_review_fork(
     agent: Any, messages_snapshot: list[dict], prompt: str, task_cfg: Optional[dict[str, Any]],
     review_run: Optional[_BackgroundReviewRun], st: _ReviewForkState, review_memory: bool = False,
@@ -1156,6 +1181,14 @@ def _run_review_fork(
     attended, so the unattended-only memory delete gate leaves the full operation set available."""
     st.review_agent, _rt, _routed = build_cache_parity_fork(
         agent, task_cfg, max_iterations=_REVIEW_MAX_ITERATIONS)
+    # Kanban workers self-complete their task before this fork runs; complete_task
+    # rmtree's the scratch workspace, leaving the worker process cwd (and its
+    # TERMINAL_CWD env) pointing at a deleted directory. Every relative-path touch
+    # in the fork then dies with [Errno 2] (and resolve_agent_cwd logs "TERMINAL_CWD
+    # does not exist"). os.chdir is process-global (races sibling forks), so fix the
+    # cwd ONLY through the contextvars-scoped session override that
+    # agent.runtime_cwd.resolve_agent_cwd() honors first — never chdir here.
+    _recover_deleted_session_cwd()
     st.review_agent._review_attended = explicit
     _track_review_fork(agent, st.review_agent, register=True)
     from hermes_cli.plugins import set_thread_tool_whitelist, clear_thread_tool_whitelist

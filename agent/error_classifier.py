@@ -258,6 +258,18 @@ _MEMORY_CEILING_ERROR_CODES = frozenset({
 # Bare "max_tokens" is load-bearing: the output-cap-retry path keys off it;
 # empty-response advisories mentioning it are intercepted earlier. Groups:
 # generic; vLLM; Ollama; llama.cpp; Chinese; Z.AI (1210); Bedrock; Together.
+# OrcaRouter free tier: "This prompt is longer than the free tier allows for a single
+# request. Shorten it, or add credits to use this model without the free-tier cap". The
+# provider returns this per-request SIZE refusal and a spent-QUOTA refusal under the same
+# HTTP 400, and only the size one may route into compression, so the phrase names the size,
+# never the bare tier (#142230). The hyphenated twin covers the provider's own "free-tier"
+# spelling from the same sentence. Unmatched, the refusal read as `unknown` (status-less)
+# or `format_error` (400) and walked the fallback chain instead of compressing. It also
+# sits ahead of the billing patterns in _MESSAGE_TAIL_RULES, where the sentence's
+# "add credits" tail could otherwise shadow the size signal on the status-less path.
+_ORCAROUTER_SIZE_REFUSAL_PATTERNS = (
+    "prompt is longer than the free tier", "prompt is longer than the free-tier")
+
 _CONTEXT_OVERFLOW_PATTERNS = (
     "context length", "context size", "maximum context", "token limit", "too many tokens",
     "reduce the length", "exceeds the limit", "context window", "prompt is too long",
@@ -271,6 +283,7 @@ _CONTEXT_OVERFLOW_PATTERNS = (
     # Together/Fireworks-style: "Input length 131393 exceeds the maximum allowed input length of 131040
     # tokens."  No other pattern in this list matches that wording. (port of anomalyco/opencode#37848)
     "maximum allowed input length",
+    *_ORCAROUTER_SIZE_REFUSAL_PATTERNS,
 )
 
 # Last entry: OpenRouter 404 when no endpoint supports tool calling —
@@ -663,6 +676,9 @@ _MESSAGE_HEAD_RULES = ((_MEMORY_CEILING_PATTERNS, _V_OVERLOADED),
 # instead of rotating; policy block before model_not_found; timeout/connection
 # wording last, classified as transport (never compression).
 _MESSAGE_TAIL_RULES = (
+    # Scoped first: the refusal sentence's "add credits" tail could shadow this size
+    # signal behind the billing patterns below. A pure quota refusal cannot carry it.
+    (_ORCAROUTER_SIZE_REFUSAL_PATTERNS, _V_CONTEXT_OVERFLOW),
     (_OVERLOADED_PATTERNS, _V_OVERLOADED), (_BILLING_PATTERNS, _billing_hints),
     (_RATE_LIMIT_PATTERNS, _V_RATE_LIMIT), (_EMPTY_PROVIDER_RESPONSE_PATTERNS, _V_SERVER_ERROR),
     (_CONTEXT_OVERFLOW_PATTERNS, _V_CONTEXT_OVERFLOW), (_AUTH_PATTERNS, _V_AUTH_ROTATE),

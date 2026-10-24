@@ -286,6 +286,64 @@ class TestConfigSchema:
         assert warnings and "required" in warnings[0]
         assert "plugins.entries.p.settings.token" in warnings[0]
 
+    def test_required_secret_set_in_profile_env_does_not_warn(self, hermes_home, monkeypatch, caplog):
+        """A ``type: secret`` value lives in ``.env``, never in settings; set there, it satisfies required."""
+        monkeypatch.delenv("SECRETIVE_TOKEN", raising=False)
+        _write_plugin(
+            hermes_home / "plugins", "secretive",
+            manifest_extra={
+                "manifest_version": 2,
+                "config_schema": {"token": {"type": "secret", "env": "SECRETIVE_TOKEN", "required": True}},
+            },
+        )
+        _enable(hermes_home, ["secretive"])
+        (hermes_home / ".env").write_text("SECRETIVE_TOKEN=tok-123\n")
+        with caplog.at_level(logging.WARNING):
+            mgr = PluginManager()
+            mgr.discover_and_load()
+        assert mgr._plugins["secretive"].enabled
+        assert "required" not in caplog.text
+
+    def test_required_secret_unset_warns_with_its_env_name(self, hermes_home, monkeypatch, caplog):
+        """Unset, the warning names the ``.env`` variable to set (``<PLUGIN_ID>_<KEY>`` by default)."""
+        monkeypatch.delenv("SECRETIVE_API_TOKEN", raising=False)
+        _write_plugin(
+            hermes_home / "plugins", "secretive",
+            manifest_extra={
+                "manifest_version": 2,
+                "config_schema": {"api_token": {"type": "secret", "required": True}},
+            },
+        )
+        _enable(hermes_home, ["secretive"])
+        with caplog.at_level(logging.WARNING):
+            mgr = PluginManager()
+            mgr.discover_and_load()
+        assert mgr._plugins["secretive"].enabled
+        assert "required" in caplog.text and "SECRETIVE_API_TOKEN" in caplog.text
+        assert "settings.api_token" not in caplog.text
+
+    def test_required_secret_unjudgeable_without_scope_under_multiplex(self, hermes_home, caplog):
+        """The cron worker discovers plugins under multiplexing before binding a secret scope, where
+        ``get_secret`` raises: the advisory check must neither fail discovery nor guess a warning."""
+        from agent.secret_scope import reset_multiplex_context, set_multiplex_context
+        _write_plugin(
+            hermes_home / "plugins", "secretive",
+            manifest_extra={
+                "manifest_version": 2,
+                "config_schema": {"token": {"type": "secret", "required": True}},
+            },
+        )
+        _enable(hermes_home, ["secretive"])
+        token = set_multiplex_context(True)
+        try:
+            with caplog.at_level(logging.WARNING):
+                mgr = PluginManager()
+                mgr.discover_and_load()
+        finally:
+            reset_multiplex_context(token)
+        assert mgr._plugins["secretive"].enabled
+        assert "required" not in caplog.text
+
     def test_valid_settings_produce_no_warnings(self):
         schema = {
             "api_url": {"type": "str"},

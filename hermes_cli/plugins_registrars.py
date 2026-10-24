@@ -46,6 +46,13 @@ _SCOPED_PROVIDER_REGISTRARS: tuple[tuple[str, str, str, str, str, str, dict[str,
      "orchestrator owns ordering/precedence/provenance; the source only fetches. Since dotenv usually "
      "loads before discovery, the manager re-pulls enabled plugin sources afterwards.",
      {"normalize": None, "register": "register_source", "param": "source"}),
+    ("register_login_backend", "login_backend", "agent.vault_backends.registry",
+     "agent.vault_backends.base:LoginBackend", "login backend",
+     "Register a :class:`agent.vault_backends.base.LoginBackend` class. Hermes passes "
+     "``vault.<name>`` to its constructor, checks ``is_available(config)``, and routes opaque handles by its "
+     "unique ``prefix``. Built-in names and overlapping prefixes are rejected.",
+     {"normalize": None, "register": "register_backend", "param": "backend_cls",
+      "class_registration": True}),
     ("register_tts_provider", "tts_provider", "agent.tts_registry",
      "agent.tts_provider:TTSProvider", "TTS provider",
      "Register an :class:`agent.tts_provider.TTSProvider`; ``provider.name`` is matched by "

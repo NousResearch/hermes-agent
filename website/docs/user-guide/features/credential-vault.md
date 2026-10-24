@@ -10,7 +10,7 @@ reaches a sign-in page it has no login for, it asks you, right there, in a
 masked prompt. After that it just works. Passwords are encrypted on this
 machine and injected straight into the page; the model never sees them.
 
-There is nothing to set up.
+There is nothing to set up for the local vault.
 
 ## What it looks like
 
@@ -50,6 +50,9 @@ Sites that ask for a code after the password are handled the same way:
   to type. The agent tells you to complete it on your device and waits for
   the page to move on.
 
+If automatic retrieval reports an error, you can choose manual entry instead. Hermes
+keeps the same saved login and checks its website policy again before asking for the code.
+
 ## Already using 1Password or Bitwarden?
 
 Nothing to enable. If the `op` or `bw` command-line tool is installed and signed
@@ -59,13 +62,36 @@ asks you to unlock the manager with your master password (masked prompt; once
 per session, 30 minutes idle). Hermes hands the master password to the manager's
 CLI through its non-interactive channel (`op signin` on stdin, `bw unlock
 --passwordenv` in the child's environment) and keeps only the session token in
-memory. The agent never sees the master password, the token, or any login.
+memory. The agent never sees the master password, the token, or login passwords.
 A manager item that lists several websites (say `amazon.co.uk`,
 `www.amazon.co.uk` and `eu.account.amazon.com`) fills on each of those exact
-origins; nothing is inferred beyond the URLs saved on the item.
+origins; these built-in backends infer nothing beyond the URLs saved on the item.
 
 Prefer not to use a detected manager? `hermes vault sources --disable bitwarden`,
 or the switch in **Settings → Passwords & Logins**.
+
+## Other password managers
+
+Third-party managers are available through standalone plugins. Install and enable
+the plugin, then enable its credential source in **Settings → Passwords & Logins**
+or with:
+
+```sh
+hermes vault sources --enable <backend-name>
+```
+
+Use the backend name provided by the plugin's documentation. It can differ from
+the plugin's name. This command sets `vault.<backend-name>.enabled: true` in the
+active profile. Third-party sources are disabled by default.
+
+Follow the plugin's authentication instructions. Token-authenticated sources do
+not need a master-password prompt.
+
+Plugins use exact-origin matching unless they define a different login-matching
+policy, such as support for related subdomains. Review that policy before enabling
+the source. It applies to passwords and one-time codes associated with a saved login.
+
+To build an integration, see [Browser Login Backend Plugins](/developer-guide/login-backend-plugin/).
 
 ## Paying and filling addresses
 
@@ -74,8 +100,7 @@ Passwords & Logins → Add**, or `hermes vault add`), bound to the checkout site
 and filled by the agent on that site only. **Every card fill asks you first**,
 with the same approval prompt as a dangerous command; declining writes nothing.
 Headless sessions (cron, webhooks, the API server) cannot confirm and are
-refused, so a prompt injection that reaches a checkout page can ask, but it
-cannot spend. Address fills need no confirmation.
+refused. Address fills need no confirmation.
 
 ## Managing what's saved
 
@@ -84,18 +109,21 @@ cannot spend. Address fills need no confirmation.
 - **CLI**: `hermes vault list`, `hermes vault add`, `hermes vault rm <handle>`,
   `hermes vault sources`.
 
-Items live encrypted under `~/.hermes/vault/` (Fernet key + vault file, both
-`0600`), scoped to the profile. Labels, site origins and login identifiers are
-visible metadata; passwords and card values never leave the vault except into
-the page.
+Local items live encrypted in the active profile's `vault/` directory (Fernet
+key + vault file, both `0600` on POSIX systems). External items remain in their
+password manager. Labels, site origins and login identifiers are visible metadata.
+Passwords and card values are retrieved server-side for filling.
 
 ## Headless sessions
 
 Cron jobs, webhooks, the API server and `hermes chat -q` have nobody to answer a
 prompt. Saved local logins keep working there; a locked password manager reports
 `unavailable_in_this_session` and a missing login reports `prompt_unavailable`.
-Unlock or save from an interactive session first, or give 1Password a service
-account token (`OP_SERVICE_ACCOUNT_TOKEN`).
+Save local logins from an interactive session first. For managers, configure a
+supported non-interactive authentication method, such as a 1Password service account
+token (`OP_SERVICE_ACCOUNT_TOKEN`) or a plugin's token-based authentication.
+Unlocking a manager in a separate CLI process does not unlock it in the process
+running the task.
 
 ```yaml
 vault:
@@ -109,11 +137,16 @@ vault:
 
 ## What this does and does not guarantee
 
-**Does:** the password never enters the model's context through Hermes: not in
-tool results, logs, the session database, or the CLI arguments of any process.
-Fills happen over the supervised browser session's direct CDP socket and are
-refused unless the page origin exactly matches the saved origin, checked again
-inside the page immediately before the write.
+**Does:** Hermes's fill tools send credentials through the supervised browser's
+direct CDP socket, not through tool results or process arguments. Before retrieving
+a password or a saved login’s one-time code, Hermes checks the backend's website policy, which defaults to exact-origin
+matching. The fill script checks the selected origin and inspected fields before
+writing. Navigation to another origin rejects the fill, even if the plugin would
+also allow that destination. Cards and addresses always require exact-origin matching.
+
+**Plugin responsibility:** Native plugins run as trusted code and can access
+credentials. They must keep passwords, tokens, and TOTP seeds out of metadata,
+logs, and errors.
 
 **Does not:** protect against the page itself. Once a password is typed into a
 site, that site (and any script it runs) has it, exactly as when you type it

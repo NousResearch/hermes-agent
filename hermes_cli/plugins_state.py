@@ -63,6 +63,18 @@ def _plugin_settings_entry(config: object, plugin_id: str) -> Mapping[str, Any] 
     return entry if isinstance(entry, Mapping) else None
 
 
+def read_plugin_setting(config: object, plugin_id: str, segments: tuple[str, ...], default: Any) -> Any:
+    """``plugins.entries.<plugin_id>.settings.<segments>``, falling back to the legacy ``config`` subtree."""
+    entry = _plugin_settings_entry(config, plugin_id)
+    if entry is None:
+        return default
+    missing = object()
+    value = _nested_plugin_value(entry.get("settings"), segments, missing)
+    if value is not missing:
+        return value
+    return _nested_plugin_value(entry.get("config"), segments, default)
+
+
 def save_plugin_setting(plugin_id: str, segments: tuple[str, ...], value: Any) -> None:
     """Atomically write one value under ``plugins.entries.<plugin_id>.settings``.
 
@@ -88,6 +100,39 @@ def save_plugin_setting(plugin_id: str, segments: tuple[str, ...], value: Any) -
         # for reads, destructive for read-modify-write.
         config_mod.read_user_config_raw()
         config_mod.save_config(partial, preserve_keys={full_path}, merge_existing=True)
+
+
+def remove_plugin_setting(plugin_id: str, segments: tuple[str, ...]) -> bool:
+    """Delete one key under ``plugins.entries.<plugin_id>.settings``; True when something was removed.
+
+    The deletion counterpart of :func:`save_plugin_setting`, with the same refusals and lock. It
+    also drops the key from the legacy ``config`` subtree, because ``get_config`` falls back there
+    and the key would otherwise reappear. An absent key returns False without writing. Emptied
+    parent mappings stay in place so comments attached to their keys survive.
+    """
+    from hermes_cli import config as config_mod
+    from hermes_cli import managed_scope
+
+    if config_mod.is_managed():
+        raise PermissionError("Plugin settings cannot be changed in a managed install")
+    dotted_path = ".".join(("plugins", "entries", plugin_id, "settings", *segments))
+    if managed_scope.is_key_managed(dotted_path):
+        raise PermissionError(f"Plugin setting {dotted_path!r} is administrator-managed")
+    config_path = config_mod.get_config_path()
+    with _locked_plugin_state(config_path), config_mod._CONFIG_LOCK:
+        # An explicit path reads the live file even in a frozen worker, so the full-state
+        # write below cannot revert profile edits made since the worker's snapshot.
+        raw = config_mod.require_readable_config_before_write(config_path)
+        entry = _plugin_settings_entry(raw, plugin_id)
+        removed = False
+        for subtree in ("settings", "config"):
+            parent = _nested_plugin_value(entry, (subtree, *segments[:-1]), None)
+            if isinstance(parent, dict) and segments[-1] in parent:
+                del parent[segments[-1]]
+                removed = True
+        if removed:
+            config_mod.atomic_config_replace(config_path, raw)
+        return removed
 
 
 def _plugin_data_namespace(plugin_id: str, skill_namespace: str) -> str:

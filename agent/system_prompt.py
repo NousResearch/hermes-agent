@@ -677,6 +677,7 @@ def _coding_parts(agent: Any) -> tuple[list[str], list[str], list[str]]:
     try:
         from agent.coding_context import coding_system_prompt_parts
         if not agent.valid_tool_names:
+            vars(agent).pop("_workspace_snapshot_prefetch", None)  # no snapshot: a later rebuild probes fresh
             return [], [], []
         cwd = resolve_context_cwd()
         cwd_key = _workspace_pin_key()
@@ -685,6 +686,11 @@ def _coding_parts(agent: Any) -> tuple[list[str], list[str], list[str]]:
         pinned = getattr(agent, "_frozen_workspace_snapshot", None)
         # "" is a real pinned value (no workspace here) — only a cwd mismatch re-probes.
         replay = pinned[1] if pinned is not None and pinned[0] == cwd_key else None
+        if replay is None:
+            from agent.workspace_prefetch import take_prefetched_workspace_block
+            replay = take_prefetched_workspace_block(agent, cwd_key)
+            if replay is not None:
+                agent._frozen_workspace_snapshot = (cwd_key, replay)
         parts = coding_system_prompt_parts(platform=agent.platform, cwd=cwd, model=agent.model,
                                            valid_tool_names=agent.valid_tool_names, workspace_block=replay)
         if replay is None:

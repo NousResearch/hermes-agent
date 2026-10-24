@@ -22,6 +22,7 @@ from pm.filesystem import (
     durable_write_bytes as _atomic_bytes,
     file_digest as _digest,
     lock_fd as _lock,
+    open_deletable as _open_deletable,
     read_bytes_or_none as _bytes,
 )
 
@@ -155,7 +156,11 @@ def lease_directory(generation: Path) -> Callable[[], None]:
     _prune_unlocked_leases(leases)
     while True:
         lease = leases / uuid.uuid4().hex
-        fd = os.open(lease, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+        # Share-delete on Windows: a peer's prune unlinks this file in the window
+        # between the create and the lock, and a handle without FILE_SHARE_DELETE
+        # would refuse that unlink (WinError 32) - leaving the claim holding an
+        # unlinked inode no collector can see (#142528).
+        fd = _open_deletable(lease, create=True, mode=0o600)
         try:
             _lock(fd, wait=True)
         except BaseException:
@@ -226,7 +231,10 @@ def _prune_unlocked_leases(leases: Path) -> bool:
     held = False
     for lease in leases.glob("*"):
         try:
-            fd = os.open(lease, os.O_RDWR)
+            # Share-delete on Windows: the unlink below runs while this handle is still open,
+            # and a handle without FILE_SHARE_DELETE would refuse the delete of its own file
+            # (WinError 32) - which is why abandoned leases were never reclaimed (#142528).
+            fd = _open_deletable(lease)
         except FileNotFoundError:
             continue
         except OSError:

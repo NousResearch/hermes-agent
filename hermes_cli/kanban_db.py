@@ -463,24 +463,6 @@ def get_current_board() -> str:
     return DEFAULT_BOARD
 
 
-def set_current_board(slug: str) -> Path:
-    """Persist ``slug`` as the active board; returns the file written. Does NOT
-    check the board exists — callers do (so ``boards switch <typo>`` errors)."""
-    _assert_not_delegated_child_mutation()
-    normed = _require_slug(slug)
-    path = current_board_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(normed + "\n", encoding="utf-8")
-    return path
-
-
-def clear_current_board() -> None:
-    """Remove ``<root>/kanban/current`` so the active board reverts to ``default``."""
-    _assert_not_delegated_child_mutation()
-    with contextlib.suppress(FileNotFoundError):
-        current_board_path().unlink()
-
-
 def board_dir(board: Optional[str] = None) -> Path:
     """``<root>/kanban/boards/<slug>/``. For ``default`` this holds metadata
     only (board.json, workspaces/, logs/) — its DB stays at ``<root>/kanban.db``
@@ -544,16 +526,22 @@ def _board_path(
     pin ONLY where no fence applies (see :func:`_explicit_board_intent_pinned`):
     user-facing cross-board intent (CLI ``--board``, a model tool's ``board=``)
     is honored, but machine flows that enumerate boards (gateway notifier /
-    watcher / dispatcher ticks) and dispatched or delegated workers keep
-    resolving through the pin. Without explicit intent the ``env_var`` override
+    watcher / dispatcher ticks) and dispatched or delegated workers stay on
+    the pin (naming another board raises). Without explicit intent the ``env_var`` override
     pins the file, else legacy ``<root>/<default_parts>`` for the ``default``
     board, else ``board_dir(slug)/leaf``."""
     pin = os.environ.get(env_var, "").strip() if env_var else ""
     slug = _explicit_board_slug(board)
     if pin and (slug is None or _explicit_board_intent_pinned()):
+        if slug is not None and not _PIN_FIRST_BOARD_RESOLUTION.get():
+            _refuse_foreign_board_in_fence(slug, pin, default_parts, leaf)
         return Path(pin).expanduser()
     if slug is None:
         slug = get_current_board()
+    return _unpinned_board_path(slug, default_parts, leaf)
+
+
+def _unpinned_board_path(slug: str, default_parts: tuple[str, ...], leaf: str) -> Path:
     if slug == DEFAULT_BOARD:
         return kanban_home().joinpath(*default_parts)
     return board_dir(slug) / leaf
@@ -4208,11 +4196,14 @@ def current_run_started_ats(conn: sqlite3.Connection, task_ids: Iterable[str]) -
 from hermes_cli.kanban_db_boards import (
     _default_board_display_name,
     _dir_holds_board,
+    _refuse_foreign_board_in_fence,
     board_metadata_path,
+    clear_current_board,
     create_board,
     list_boards,
     read_board_metadata,
     remove_board,
+    set_current_board,
     write_board_metadata,
 )
 from hermes_cli.kanban_db_connect import (

@@ -198,6 +198,11 @@ def worker_route(policy, construct):
     provider and model, so the primary never carries it; the agent's own fallback chain switches them
     together (#139155).
 
+    A key-less launch (every Kanban run) additionally carries the route's credential pool, as the
+    in-process turn's agent gets it: a 401 on an expired OAuth access token then refreshes the entry
+    and retries instead of ending the run non-retryable (Kanban exit 78). A fallback entry's key (and
+    pool) belong to another provider and model, so the primary never carries them.
+
     A primary AuthError walks the chain the agent will actually get: the owner's per-turn
     ``construct_v1`` chain (an ordinary session's refreshed profile fallbacks) when it was sent,
     the frozen snapshot's otherwise (older owner)."""
@@ -215,8 +220,14 @@ def worker_route(policy, construct):
     if (api_mode == 'chat_completions' and runtime.get('provider') != 'custom'
             and not (frozen.get('model') or {}).get('api_mode')):
         api_mode = None
-    return {'api_key': construct['api_key'] or runtime.get('api_key'), 'base_url': runtime.get('base_url'),
-            'api_mode': api_mode}
+    if construct['api_key']:
+        # A bound launch key: the route as merged #144593 resolves it (no pool travels with a bound key).
+        return {'api_key': construct['api_key'], 'base_url': runtime.get('base_url'), 'api_mode': api_mode}
+    # Key-less (every Kanban run): the route's own key AND its credential pool travel together, so a
+    # 401 on an expired OAuth access token refreshes the entry and retries instead of ending the run
+    # non-retryable (Kanban exit 78).
+    return {'api_key': runtime.get('api_key'), 'base_url': runtime.get('base_url'),
+            'api_mode': api_mode, 'credential_pool': runtime.get('credential_pool')}
 
 
 def checkpoint_agent_kwargs(config):

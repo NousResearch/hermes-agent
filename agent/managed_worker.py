@@ -432,6 +432,9 @@ def _construct_agent(frame, factory, policy, **kwargs):
     still books the one-shot exit mapping (quota wall 75, re-login 78) before the crash."""
     try:
         from gateway.session_worker_construct import worker_route
+        # worker_route carries the route's credential pool on a key-less launch (every Kanban run),
+        # so a 401 on an expired OAuth access token refreshes the entry and retries instead of
+        # ending the run non-retryable (Kanban exit 78).
         return factory(**{**kwargs, **worker_route(policy, kwargs)})
     except Exception as exc:
         from gateway.session_kanban import record_start_failure

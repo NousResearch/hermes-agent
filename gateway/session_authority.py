@@ -201,9 +201,14 @@ class SessionAuthority:
                 restore_local_session(self, ref.session_id)
             else:
                 from gateway.session_route_recovery import restore_routed_session
-                if restore_routed_session(self, ref.session_id) is None:
+                from gateway.session_history_mount import mount_history
+                if (restore_routed_session(self, ref.session_id) is None
+                        and not mount_history(self, actor, ref.session_id)):
                     from gateway.session_api import restore_api_session
                     restore_api_session(self, ref.session_id)
+        from gateway.session_history_mount import is_history_mount, require_history_access
+        if is_history_mount(self.sessions[ref.session_id]):
+            require_history_access(self, actor, ref.session_id, capability)
         from gateway.config import Platform
         if self.sessions[ref.session_id].superseded and capability != 'session:read':
             # One gateway owns every session and never crosses them: the lane's route now belongs to

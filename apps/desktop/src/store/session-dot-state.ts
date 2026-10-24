@@ -97,6 +97,25 @@ const STATUS_RANK: Record<SessionStatusBucket, number> = {
 /** Loudest first — what ordering by status sorts on. */
 export const sessionStatusRank = (state?: SessionDotState): number => STATUS_RANK[sessionStatusBucket(state)]
 
+/** The sidebar's "Group by: Status" lanes, split on whose move it is.
+ *  `attention` is every state waiting on the user — a blocked prompt or a
+ *  result they haven't opened; `working` is the agent's move; `idle` is
+ *  nobody's (a draft has had no turn yet, so it is not "done" either). */
+export type SessionAttentionGroup = 'attention' | 'idle' | 'working'
+
+export const SESSION_ATTENTION_GROUP_ORDER: readonly SessionAttentionGroup[] = ['attention', 'working', 'idle']
+
+const ATTENTION_GROUP: Record<SessionStatusBucket, SessionAttentionGroup> = {
+  'needs-input': 'attention',
+  unread: 'attention',
+  working: 'working',
+  draft: 'idle',
+  idle: 'idle'
+}
+
+export const sessionAttentionGroup = (state?: SessionDotState): SessionAttentionGroup =>
+  ATTENTION_GROUP[sessionStatusBucket(state)]
+
 let dotStates: Readonly<Record<string, SessionDotState>> = {}
 
 export const $sessionDotStateById = computed(

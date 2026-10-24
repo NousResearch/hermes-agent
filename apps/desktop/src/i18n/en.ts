@@ -3261,8 +3261,9 @@ export const en: Translations = {
       thisMonth: 'Earlier this month'
     },
     statusDivider: {
+      attention: 'Needs attention',
       working: 'Working',
-      done: 'Done'
+      idle: 'Idle'
     },
     markAllRead: 'Mark all as read'
   },

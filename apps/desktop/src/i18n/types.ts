@@ -2873,8 +2873,9 @@ catalog: CatalogTranslations
       thisMonth: string
     }
     statusDivider: {
+      attention: string
       working: string
-      done: string
+      idle: string
     }
     markAllRead: string
   }

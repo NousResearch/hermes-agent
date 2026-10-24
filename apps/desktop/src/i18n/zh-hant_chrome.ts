@@ -239,8 +239,9 @@ export const zhHantChrome = {
       thisMonth: '本月'
     },
     statusDivider: {
+      attention: '需要注意',
       working: '進行中',
-      done: '已完成'
+      idle: '閒置'
     }
   },
 

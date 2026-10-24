@@ -1781,6 +1781,7 @@ const zhHant: BotsMessages = {
 
 /** Registered via `ctx.i18n.register` at plugin load (disposer tracked). */
 const tr: BotsMessages = {
+  canonical: CANONICAL_GROUP_LOCALES.tr,
   editor: {
     fullConfigHint:
       'Tam yapılandırma daha yeni bir ağ geçidi gerektirir (Hermes’i güncelledikten sonra yeniden başlatın).',
@@ -1927,6 +1928,7 @@ const tr: BotsMessages = {
     descriptionHint: 'Botun adından ve açıklamasından üretmek için boş bırakın.',
     newChatWith: 'Bu botla yeni sohbet',
     openBotChat: 'Bot Sohbetini Aç',
+    openBotChatInNewTab: 'Bot Sohbetini yeni sekmede aç',
     openingChat: 'Sohbet açılıyor…',
     pinToTop: 'Üste sabitle',
     unpin: 'Sabitlemeyi kaldır',
@@ -2132,6 +2134,9 @@ const tr: BotsMessages = {
     portalUnsupported: 'Bu ana makinede kullanılamıyor',
     portalUnavailable: 'Ekranı kullanmak için botun Hermes’ini güncelleyin',
     portalUnavailableManaged: 'Ekran, bu yönetilen Hermes sürümünde henüz kullanılamıyor',
+    managedNotIncludedTitle: 'Ekran bu bota dahil değil',
+    managedNotIncludedBody:
+      'Hermes Cloud, Ekranı 8 GB veya daha fazla belleğe sahip botlara dahil eder. Daha küçük bir bota kurulamaz.',
     unavailableTitle: 'Ekran daha yeni bir Hermes gerektirir',
     autoOpenMenu: 'Bot kullandığında Ekranı aç',
     autoOpenOnToast: name => `${name} botunun Ekranı, masaüstünü kullanmaya başladığında açılır`,

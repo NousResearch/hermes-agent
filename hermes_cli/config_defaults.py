@@ -1651,6 +1651,10 @@ DEFAULT_CONFIG = {
         "require_mention": True,  # require @mention to respond in rooms
         "free_response_rooms": "",  # comma-separated room IDs answered without mention
         "allowed_rooms": "",  # if set, ONLY respond in these room IDs (whitelist)
+        # Per-room ephemeral system prompt keyed by room ID, same shape as Discord/Slack/
+        # Telegram channel_prompts. Applies to turns in that room only; unlisted rooms keep
+        # the plain prompt. Blank entries count as absent.
+        "channel_prompts": {},
     },
     # Approvals for dangerous commands.
     # mode: manual (always prompt) | smart (aux LLM auto-approves low-risk) | off (= --yolo)

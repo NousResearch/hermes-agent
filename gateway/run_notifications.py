@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional, cast
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
+from gateway.platforms.base_media_notes import stage_media_failure_note
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource, SessionStore
@@ -266,23 +267,41 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if image_paths:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
-                    await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
+                    result = await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
+                else:
+                    if not getattr(result, "success", False):
+                        logger.warning("[%s] Post-stream image batch delivery failed: %s",
+                                       adapter.name, getattr(result, "error", "unknown error"))
+                        for image_path in image_paths:
+                            stage_media_failure_note(adapter, event, image_path, result)
+                            await adapter._notify_media_delivery_failure(
+                                chat_id, image_path, metadata=_thread_meta)
             for media_path, is_voice in non_image_media:
                 try:
                     ext = Path(media_path).suffix.lower()
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
+                        result = await adapter.send_voice(
                             chat_id=chat_id, audio_path=media_path, metadata=_thread_meta, is_voice=is_voice,
                         )
                     elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=_thread_meta)
+                        result = await adapter.send_video(
+                            chat_id=chat_id, video_path=media_path, metadata=_thread_meta)
                     else:
-                        await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
+                        result = await adapter.send_document(
+                            chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
-
+                    continue
+                # The send returns the platform's code/message; dropping it made a failed upload
+                # a silent drop (Feishu 99992402 on thread-routed media). Report it both ways.
+                if not getattr(result, "success", False):
+                    logger.warning("[%s] Post-stream media delivery failed for %s: %s",
+                                   adapter.name, media_path, getattr(result, "error", "unknown error"))
+                    stage_media_failure_note(adapter, event, media_path, result)
+                    await adapter._notify_media_delivery_failure(
+                        chat_id, media_path, is_voice=is_voice, metadata=_thread_meta)
 
     async def _deliver_queued_first_response(
         self, response: str, source: SessionSource, adapter,

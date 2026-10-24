@@ -20,6 +20,7 @@ import weakref
 from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import safe_url_for_log
+from gateway.platforms.base_media_notes import media_failure_text, stage_media_failure_note
 
 from utils import normalize_proxy_url
 from agent.i18n import t
@@ -178,17 +179,6 @@ def _reply_anchor_for_event(event) -> str | None:
     if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
         return getattr(event, "reply_to_message_id", None)
     return getattr(event, "message_id", None)
-
-
-_MEDIA_KIND_KEYS = frozenset({"audio", "video", "file", "image"})
-
-
-def _media_failure_text(kind: str, file_name: str | None = None) -> str:
-    """User-facing "couldn't deliver" notice; ``file_name`` is the only name ever shown."""
-    kind_label = t(f"gateway.notify.media_kind.{kind}") if kind in _MEDIA_KIND_KEYS else kind
-    if file_name:
-        return t("gateway.notify.media_delivery_failed_with_name", kind=kind_label, file_name=file_name)
-    return t("gateway.notify.media_delivery_failed", kind=kind_label)
 
 
 def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bool:
@@ -3048,7 +3038,7 @@ class BasePlatformAdapter(ABC):
         logged but NEVER echoed into chat (host layout leak); only the caller's ``file_name`` is
         shown."""
         logger.warning("[%s] %s fallback: native %s send unavailable for %s", self.name, method, kind, path)
-        text = _media_failure_text(kind, file_name)
+        text = media_failure_text(kind, file_name)
         return await self.emit_media_warning(chat_id, text, caption=caption, reply_to=reply_to, metadata=metadata,
                                              shown_metadata=metadata)
 
@@ -3182,11 +3172,11 @@ class BasePlatformAdapter(ABC):
         """
         ext = Path(media_path).suffix.lower()
         if is_voice or should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
-            text = _media_failure_text("audio")
+            text = media_failure_text("audio")
         elif ext in _VIDEO_EXTS:
-            text = _media_failure_text("video")
+            text = media_failure_text("video")
         else:
-            text = _media_failure_text("file", os.path.basename(media_path))
+            text = media_failure_text("file", os.path.basename(media_path))
         try:
             notice = await self.emit_warning(chat_id, text, metadata=metadata)
             problem = None if notice is None or notice.success else notice.error
@@ -4310,6 +4300,7 @@ class BasePlatformAdapter(ABC):
             if not result.success:
                 logger.warning("[%s] Failed to send %s (%s): %s", self.name,
                                "media" if media_tag else "local file", ext, result.error)
+                stage_media_failure_note(self, event, path, result)
                 await self._notify_media_delivery_failure(chat_id, path, is_voice=is_voice, metadata=metadata)
             return result
         queue = [(p, v, True) for p, v in media_files if v or not _as_image(p)]
@@ -4342,6 +4333,13 @@ class BasePlatformAdapter(ABC):
             record_delivery(SendResult(success=False, error=str(batch_err)))
             return
         record_delivery(result)
+        if not getattr(result, "success", False):
+            from urllib.request import url2pathname
+            paths = [(url2pathname(u[7:]) if u.startswith("file://") else u) for u, _alt in images]
+            for path in paths:
+                stage_media_failure_note(self, event, path, result)
+            await self._notify_media_delivery_failure(
+                event.source.chat_id, paths[0] if paths else "", metadata=metadata)
 
     async def send_final_ledgered(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: dict[str, Any], *,

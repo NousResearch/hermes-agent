@@ -432,8 +432,11 @@ def _construct_agent(frame, factory, policy, **kwargs):
     still books the one-shot exit mapping (quota wall 75, re-login 78) before the crash."""
     try:
         if kwargs['api_key'] is None:
-            from gateway.session_worker_construct import worker_api_key
-            kwargs['api_key'] = worker_api_key(policy, kwargs)
+            from gateway.session_worker_construct import worker_runtime
+            runtime = worker_runtime(policy, kwargs)
+            # The pool travels with its key: without it a 401 on an expired OAuth access token
+            # has nothing to refresh, and the run ends non-retryable (Kanban exit 78).
+            kwargs.update(api_key=runtime.get('api_key'), credential_pool=runtime.get('credential_pool'))
         return factory(**kwargs)
     except Exception as exc:
         from gateway.session_kanban import record_start_failure

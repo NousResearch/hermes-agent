@@ -187,8 +187,10 @@ import {
   SidebarSessionSkeletons,
   SidebarStorageCorruptNotice
 } from './section-states'
+import { searchResultToSession, stripFtsMarkers } from './search-text'
 import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
+import { NavTrailingChips } from './nav-trailing'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
 import { useEnteredProjectSessions } from './use-entered-project-sessions'
 import { useServerSessionSearch } from './use-server-session-search'
@@ -282,44 +284,6 @@ const HEADER_NAV_BTN =
 // FTS results cover sessions that aren't in the loaded page; synthesize a
 // minimal SessionInfo so they render in the same row component (resume works
 // by id; the snippet stands in for the preview).
-
-// The backend's FTS layer wraps matched terms in literal '>>>' / '<<<'
-// highlight markers (sqlite snippet() delimiters — see hermes_state_search.py).
-// The sidebar renders the snippet as plain text, so the markers must be
-// stripped or a search for "foo" paints rows titled ">>>foo<<<".
-// Exported for tests.
-export function stripFtsMarkers(snippet: string): string {
-  return snippet.replaceAll('>>>', '').replaceAll('<<<', '')
-}
-
-// The backend already ships the real session title on every search hit
-// (web_routers/sessions.py add_lineage_result enriches each result via
-// get_session_rich_row). Map it onto the synthesized row so the sidebar
-// paints the actual name; the snippet stays as the preview. Untitled
-// sessions keep today's snippet fallback via sessionTitle().
-// Exported for tests.
-export function searchResultToSession(result: SessionSearchResult): SessionInfo {
-  const ts = result.session_started ?? Date.now() / 1000
-
-  return {
-    archived: false,
-    cwd: null,
-    ended_at: null,
-    id: result.session_id,
-    _lineage_root_id: result.lineage_root ?? null,
-    input_tokens: 0,
-    is_active: false,
-    last_active: result.last_active ?? ts,
-    message_count: 0,
-    model: result.model ?? null,
-    output_tokens: 0,
-    preview: stripFtsMarkers(result.snippet ?? '').trim() || null,
-    source: result.source ?? null,
-    started_at: ts,
-    title: result.title?.trim() || null,
-    tool_call_count: 0
-  }
-}
 
 export function mergeSearchResults(
   sortedSessions: readonly SessionInfo[],
@@ -1675,6 +1639,7 @@ export function ChatSidebar({
                         size="sm"
                       />
                     )}
+                    <NavTrailingChips item={item} />
                   </SidebarMenuButton>
                 )
 

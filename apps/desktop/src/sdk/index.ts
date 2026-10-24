@@ -127,6 +127,12 @@ export * from './areas'
 /** The plugin authoring contract (`HermesPlugin`, `PluginContext`, `ctx.*` door types). */
 export type * from './plugin-contract'
 export type { PluginProfileRequestOptions, PluginProfileRoute } from './profile-request'
+import {
+  BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS,
+  DEFAULT_SESSION_HYDRATION_TIMEOUT_MS,
+  HYDRATION_SYNC_BADGE_TIMEOUT_MS
+} from './timeouts'
+export * from './timeouts'
 
 // -- state: readonly views over the app's live atoms -------------------------
 
@@ -250,16 +256,6 @@ const $activeConnectionId = computed($connection, connection => {
   return connection.mode === 'local' ? 'local' : null
 })
 
-/** Ordinary session opens fail fast when their gateway or socket is dead. */
-export const DEFAULT_SESSION_HYDRATION_TIMEOUT_MS = 20_000
-/** Cold Bot profiles get a larger per-attempt budget to start their backend
- *  and paint durable history. Bot Mode opts into one retry, so its effective
- *  ceiling is two bounded attempts rather than an unbounded wait. */
-export const BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS = 60_000
-/** Ceiling on the paint-first "Syncing…" badge. The profile gate it waits on is
- *  not guaranteed to ever fire (see beginHydrationBackgroundSync), so the badge
- *  needs a bound of its own or it outlives the wake it describes. */
-export const HYDRATION_SYNC_BADGE_TIMEOUT_MS = 30_000
 let openSessionGeneration = 0
 /** Which generation's wake most recently set $gatewaySwapTarget. Clearing it
  *  keys off this, not off `generation === openSessionGeneration`, so a
@@ -1655,8 +1651,10 @@ export {
   type RouteContribution,
   ROUTES_AREA,
   SIDEBAR_NAV_AREA,
+  SIDEBAR_NAV_TRAILING_AREA,
   SIDEBAR_PROFILE_GROUP_HEADER_AREA,
   type SidebarNavContribution,
+  type SidebarNavTrailingContribution,
   WORKSPACE_PAGE_HEADER_AREA
 } from '@/app/routes'
 /** Appearance settings' plugin seam: register a render contribution at

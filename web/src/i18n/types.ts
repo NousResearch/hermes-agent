@@ -770,6 +770,17 @@ export interface Translations {
     showArchived: string;
     lanesByProfile: string;
     nudgeDispatcher: string;
+    /** Board pause (#141451) — optional so existing locale bundles keep
+     *  type-checking; each one falls back to English until translated. */
+    pauseBoard?: string;
+    pauseTip?: string;
+    resumeBoard?: string;
+    resumeTip?: string;
+    pausedBadge?: string;
+    /** Plural chip text; `{count}` is substituted by the shell. */
+    pausedBadgeCount?: string;
+    pauseBannerTitle?: string;
+    pauseBannerBody?: string;
     refresh: string;
     selected: string;
     complete: string;

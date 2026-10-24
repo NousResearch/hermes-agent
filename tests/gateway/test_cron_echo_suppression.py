@@ -630,3 +630,37 @@ async def test_a_flattened_ping_from_a_human_still_reaches_the_agent(suppressor)
         message_id="m1", source=_human_source(),
     )
     assert (await runner._hm_admit_event(event))[0] is event
+
+
+@pytest.mark.asyncio
+async def test_a_suppressed_cron_ping_does_not_consume_the_bot_loop_budget(suppressor):
+    """A cron echo must not spend the group's bot-message budget.
+
+    The bot loop guard admits at most ``max_events`` bot messages per window
+    and then cools the whole conversation down. Before the cron-echo gate, a
+    cron delivery was admitted as an ordinary bot message and charged that
+    budget — so a chatty watchdog could push the guard over its limit and get
+    genuine traffic (including the watchdog's own next page) dropped.
+
+    The gate returns before the guard's admission call, so a suppressed echo
+    costs nothing. Pin that ordering: the gate must run FIRST.
+    """
+    from gateway.platforms.event import MessageEvent
+
+    runner = _runner(suppressor)
+    charged = []
+
+    def _admit(source, **kwargs):
+        charged.append(source)
+        return True
+
+    runner._admit_bot_message_for_source = _admit
+
+    event = MessageEvent(text=_envelope(), message_id="m1", source=_bot_source())
+    assert await runner._hm_admit_event(event) is None
+    assert charged == [], "the cron-echo gate must run before the bot-loop budget is charged"
+
+    # A NON-cron bot message still pays the budget — the gate did not disable it.
+    normal = MessageEvent(text="a real question", message_id="m2", source=_bot_source())
+    await runner._hm_admit_event(normal)
+    assert len(charged) == 1

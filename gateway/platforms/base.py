@@ -1163,7 +1163,7 @@ def _validated_delivery_path(raw_path, session_key: str, label: str,
     safe_path = validate_media_delivery_path(raw, session_key=session_key)
     if not safe_path:
         from gateway.media_fetch import fetch_remote_media
-        safe_path = fetch_remote_media(raw)
+        safe_path = fetch_remote_media(raw, session_key)
     if not safe_path:
         # Say WHY: a path that does not exist on the host is the common case (a model hallucinated or
         # a sandbox path failed to translate) and is not a security rejection.
@@ -2586,6 +2586,17 @@ class BasePlatformAdapter(ABC):
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
+
+    def _delivery_session_id(self, session_key: str) -> Optional[str]:
+        """The session id ``session_key`` routes to, or None (no store, unknown key, lookup error)."""
+        peek = getattr(getattr(self, "_session_store", None), "peek_session_id", None)
+        if not callable(peek):
+            return None
+        try:
+            return peek(session_key) or None
+        except Exception:
+            logger.debug("[%s] Session id lookup failed for %s", self.name, session_key, exc_info=True)
+            return None
 
     def _history_media_paths_for_session(self, session_key: str) -> Optional[set]:
         """Return media paths already delivered in prior turns of this session
@@ -4453,7 +4464,8 @@ class BasePlatformAdapter(ABC):
         pre_extract = response
         # The handler's routed profile scope is gone by now; Docker MEDIA translation and the
         # bare-path validator infer the sandbox from the ACTIVE profile (#109024).
-        with self._media_delivery_scope(event.source):
+        from gateway.media_fetch import session_id_resolver
+        with self._media_delivery_scope(event.source), session_id_resolver(self._delivery_session_id):
             media_files, response = self.extract_media(response)
             media_files = self.filter_media_delivery_paths(media_files, session_key=session_key)
             images, text_content = self.extract_images(response)

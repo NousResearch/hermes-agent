@@ -411,7 +411,7 @@ def _active_profile_line(agent: Any) -> str:
 
 
 def _default_platform_hint(platform_key: str) -> str:
-    """Built-in hint, else the plugin adapter's ``platform_hint``, else ``""``."""
+    """Built-in hint, else the registered adapter's hint, else the live relay hint."""
     hint = PLATFORM_HINTS.get(platform_key, "")
     if not hint and platform_key:
         try:
@@ -426,6 +426,9 @@ def _default_platform_hint(platform_key: str) -> str:
             hint = (_entry and _entry.platform_hint) or ""
         except Exception:
             pass
+    if not hint and platform_key:
+        from gateway.relay.prompt_hint import negotiated_platform_hint
+        hint = negotiated_platform_hint(platform_key)
     if platform_key == "telegram" and hint and _telegram_rich_messages_enabled():
         hint = hint.rstrip() + " " + TELEGRAM_RICH_MESSAGES_HINT
     return hint
@@ -449,7 +452,7 @@ def _cron_delivery_hint(agent: Any) -> str:
 
 
 def platform_hint(agent: Any) -> str:
-    """Built-in/plugin platform hint + Telegram rich-messages opt-in + config
+    """Built-in/plugin/relay platform hint + Telegram rich-messages opt-in + config
     override + desktop TUI clarifier; cron agents also carry their delivery channel's hint."""
     platform_key = (agent.platform or "").lower().strip()
     _effective_hint = _resolve_platform_hint(agent, platform_key, _default_platform_hint(platform_key))

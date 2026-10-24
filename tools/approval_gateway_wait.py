@@ -24,12 +24,19 @@ logger = logging.getLogger("tools.approval")
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("acknowledged", "cancelled", "data", "event", "expired", "reason", "result", "settle")
+    __slots__ = ("acknowledged", "cancelled", "data", "event", "expired", "reason", "result", "settle", "deadline")
 
     def __init__(self, data: dict):
         self.event = threading.Event()
         self.data = dict(data)
         self.data.setdefault("request_id", uuid.uuid4().hex)
+        from gateway.session_api_turn import api_execution
+        execution = api_execution.get()
+        timeout = execution['settings'].get('approval_timeout_s') if execution else None
+        self.deadline = time.monotonic() + timeout if timeout is not None else None
+        if timeout is not None:
+            self.data['timeout_s'] = timeout
+            self.data['expires_at'] = time.time() + timeout
         self.acknowledged = False
         # Surface hook run once when the wait ends by ANY path (answer, timeout, interrupt, /approve from
         # another client): the tui_gateway withdraws its open server→client request through it.
@@ -44,7 +51,7 @@ class _ApprovalEntry:
         self.expired = False
 
 
-def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str) -> str:
+def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str, deadline=None) -> str:
     """Wait on *event* until it fires, the turn is interrupted, or approvals.timeout
     elapses; returns ``"set"`` | ``"interrupted"`` | ``"timeout"``. Polls in ~1s
     slices so activity heartbeats reach the agent's inactivity tracker every ~10s —
@@ -57,7 +64,7 @@ def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str)
     per-thread interrupt-cause channel (``get_interrupt_reason()``, a trusted fixed
     category), never inferred from message text, so the caller can report a
     withdrawn prompt without inventing a user refusal."""
-    deadline = time.monotonic() + max(_ctx._get_approval_timeout(), 0)
+    deadline = deadline if deadline is not None else time.monotonic() + max(_ctx._get_approval_timeout(), 0)
     heartbeat = activity_heartbeat("waiting for user approval")
     with human_wait_window(session_key):
         while True:
@@ -113,7 +120,7 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
     so the caller must issue a fresh prompt. Hooks fire with ``coalesced=True``
     so observers see the follower's lifecycle without a duplicate prompt."""
     _ctx._fire_approval_hook("pre_approval_request", **payload, coalesced=True)
-    state = _poll_event(leader.event, session_key,
+    state = _poll_event(leader.event, session_key, **({'deadline': leader.deadline} if leader.deadline is not None else {}),
                         interrupt_log="Coalesced approval wait interrupted — "
                                       "returning deny for session %s")
     if state == "set" and leader.result is None and leader.expired:
@@ -235,8 +242,10 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
             human.outcome = "notify_failed"
             return {"resolved": False, "choice": None, "notify_failed": True}
 
-        state = _poll_event(entry.event, session_key,
+        state = _poll_event(entry.event, session_key, **({'deadline': entry.deadline} if entry.deadline is not None else {}),
                             interrupt_log="Approval wait interrupted — returning deny for session %s")
+        if state == 'set' and entry.expired:
+            state = 'timeout'
         cancelled = _cancel_cause(state, entry)
         if state == "interrupted":
             # Coalesced followers wake with the cause instead of a deny nobody issued.

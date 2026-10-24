@@ -22,7 +22,7 @@ _TOOL_SINKS = {'tool_start_callback', 'tool_complete_callback'}
 _SETTING_KEYS = ('ephemeral_system_prompt', 'requested_model', 'requested_provider',
                  'model_options', 'route', 'session_model', 'confirmed_runtime_lock',
                  'requested_runtime', 'route_source', 'room_dispatch', 'room_execution_policy',
-                 'session_history_delivery')
+                 'session_history_delivery', 'approval_timeout_s')
 _OWNER_SCOPE_RE = re.compile(r'[0-9a-f]{64}')
 
 
@@ -85,6 +85,9 @@ def api_session_vars():
 
 
 def check_api_settings(adapter, settings):
+    timeout = settings.get('approval_timeout_s')
+    if timeout is not None and (type(timeout) is not int or not 1 <= timeout <= 1800):
+        raise RuntimeStoreError('invalid_params')
     dispatch = settings.get('room_dispatch')
     if dispatch is not None:
         from gateway.hosted_room_peer import HostedMemberDispatch, GatewayRoomCatalog
@@ -151,6 +154,8 @@ def admit_api_steps(adapter, **kwargs):
     sid = authority.logical_owner(sid)
     authority._require_admission_open()
     settings = {key: kwargs.get(key) for key in _SETTING_KEYS}
+    if settings['approval_timeout_s'] is None:
+        settings.pop('approval_timeout_s')  # preserve pre-extension exact retry identities
     # Route credentials remain in the server's configuration, never admission JSON.
     route = settings.get('route')
     if route and route.get('api_key'):
@@ -235,7 +240,7 @@ def _admit_target(session_id, request_id, settings, conn, *, client_key=True):
     turn rather than by the drain on the owner loop (N50)."""
     _one_target(session_id, request_id, conn, client_key=client_key)
     conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-                 (_SETTINGS_PREFIX + session_id, _json(settings)))
+                 (_SETTINGS_PREFIX + session_id, _json({k: v for k, v in settings.items() if k != 'approval_timeout_s'})))
 
 
 def _one_target(session_id, request_id, conn, *, client_key=True):

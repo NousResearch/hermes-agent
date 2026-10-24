@@ -1887,6 +1887,10 @@ DEFAULT_CONFIG = {
         # kanban_create is called from a session with a persistent delivery channel. Disable for
         # profiles that prefer explicit kanban_notify-subscribe calls per task.
         "auto_subscribe_on_create": True,
+        # Child cards inherit the parent's passive (delivery_mode "notify") subscriptions. Set to
+        # false so a chat thread gets one completion line per request instead of one per child
+        # card; wake subscriptions still inherit.
+        "inherit_passive_notify": True,
         # Poll and deliver Kanban subscriptions from this gateway. Disable on profiles that do
         # not own notification subscriptions to avoid an idle five-second board probe.
         "notify_in_gateway": True,

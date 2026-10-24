@@ -1371,6 +1371,10 @@ def _inherit_notify_subs(
     copy EVERY routing/delivery column: dropping ``chat_type`` made DM-originated
     completions wake a fresh group session instead of the originating DM.
 
+    ``kanban.inherit_passive_notify: false`` skips passive ``notify`` subscriptions (wake
+    subscriptions still inherit) so a human thread gets one completion line per request
+    instead of one per child card.
+
     Omitting columns here silently degrades routing: a DM-originated child completion falls back to
     chat_type='group' and wakes a fresh group-scoped session instead of the originating DM (issue #73030).
     """
@@ -1382,6 +1386,12 @@ def _inherit_notify_subs(
     ).fetchone()
     cursor = int(row["cursor"] if row is not None else 0)
     placeholders = ",".join("?" * len(parent_ids))
+    try:
+        from hermes_cli.config import load_config_readonly
+        inherit_passive = (load_config_readonly().get("kanban") or {}).get("inherit_passive_notify", True)
+    except Exception:
+        inherit_passive = True  # unreadable config keeps the historical behaviour
+    passive_filter = "" if inherit_passive is not False else "AND COALESCE(delivery_mode, 'notify') <> 'notify'"
     conn.execute(
         f"""
         INSERT OR IGNORE INTO kanban_notify_subs
@@ -1392,7 +1402,7 @@ def _inherit_notify_subs(
                COALESCE(chat_type, 'dm'), notifier_profile,
                COALESCE(delivery_mode, 'notify'), delivery_metadata, ?, ?
           FROM kanban_notify_subs
-         WHERE task_id IN ({placeholders})
+         WHERE task_id IN ({placeholders}) {passive_filter}
         """,
         (child_id, int(created_at if created_at is not None else time.time()), cursor, *parent_ids),
     )

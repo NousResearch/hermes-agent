@@ -90,6 +90,27 @@ class GatewayNotificationOwnershipMixin:
             return ""
         return target
 
+    async def _foreign_owner_route_verdict(self, current_session_id: str) -> str:
+        """A resumed execution transcript belongs to its current human conversation."""
+        try:
+            current = await self._session_db.get_session(current_session_id)
+        except Exception:
+            logger.debug("Current completion route lookup failed for %s", current_session_id, exc_info=True)
+            return "retry"
+        if current is None:
+            return "retry"
+        if current.get("source") == "subagent":
+            return "terminal"
+        config = current.get("model_config")
+        try:
+            if isinstance(config, str):
+                config = json.loads(config)
+        except (TypeError, ValueError):
+            return "terminal"
+        if config is not None and not isinstance(config, dict):
+            return "terminal"
+        return "terminal" if config and "_delegate_from" in config else "deliver"
+
     async def _lookup_completion_owner(self, session_id: str, current_session_id: str = ""):
         """Nonmutating delegation proof shared by preflight and route resolution.
 
@@ -131,6 +152,10 @@ class GatewayNotificationOwnershipMixin:
                 return "terminal", session_id, None
             if "_delegate_from" not in config:
                 verdict = "terminal" if row.get("source") == "subagent" else "deliver"
+                if verdict == "deliver" and current_session_id and row.get("end_reason") != "compression":
+                    # Own/descendant pins already returned at the exact-route check above.
+                    # Compression still goes through its existing lineage proof below.
+                    verdict = await self._foreign_owner_route_verdict(current_session_id)
                 return verdict, session_id, row
             parent = config["_delegate_from"]
             if not isinstance(parent, str) or not parent.strip() or hops == _MAX_DELEGATE_PROVENANCE_HOPS:

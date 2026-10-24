@@ -10,7 +10,12 @@ import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
-import { publishDesktopTree, withDesktopPluginsRoot, writeDesktopHalfMarker } from './desktop-plugins-root'
+import {
+  PACKAGE_MARKER,
+  publishDesktopTree,
+  withDesktopPluginsRoot,
+  writeDesktopHalfMarker
+} from './desktop-plugins-root'
 import { execGit, hiddenGitSpawnSpec } from './no-console-git'
 
 const GITHUB_BROWSER_SEGMENTS = new Set(['tree', 'blob', 'commit'])
@@ -462,6 +467,12 @@ export async function installDesktopPluginFromGit(
         // half loads default-enabled instead of opt-in.
         await publishDesktopTree(sourceDir, targetDir, async staged => {
           if (!packageName) {
+            // A desktop-only repo is a standalone plugin. A package marker it
+            // ships would name another package's agent half as its own (pairing
+            // it on the Plugins page and letting it render that package's tool
+            // media), so only this installer or the reconcile pass writes one.
+            await fsp.rm(path.join(staged, PACKAGE_MARKER), { force: true })
+
             return
           }
 

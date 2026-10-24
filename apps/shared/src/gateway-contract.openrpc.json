@@ -5076,6 +5076,13 @@
             ],
             "default": null,
             "title": "Settings Schema"
+          },
+          "tools": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tools",
+            "type": "array"
           }
         },
         "required": [

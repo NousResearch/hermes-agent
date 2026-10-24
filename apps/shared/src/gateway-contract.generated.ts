@@ -4443,6 +4443,7 @@ export interface AgentPluginRow {
   update_target?: string | null
   pinned_sha?: string | null
   settings_schema?: PluginSettingField[] | null
+  tools?: string[]
 }
 export interface PluginServerRow {
   name: string

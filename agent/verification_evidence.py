@@ -210,25 +210,48 @@ def _split_shell_segments(command: str, *, posix: bool = True) -> list[_ShellSeg
     return segments if all(s.tokens for s in segments) else []
 
 
-def _exit_status_is_attributable(segments: list[_ShellSegment], match_index: int, exit_code: int) -> bool:
-    """Whether the shell's status proves the matched segment's own status.
+def _segment_status(
+    segments: list[_ShellSegment], match_index: int, exit_code: int,
+    pipeline_status: Optional[list[int]] = None,
+) -> Optional[int]:
+    """The matched segment's own exit status when the shell proves it, else ``None``.
 
-    Only the last ``;``-separated sequence reports its status; backgrounding,
-    pipes and ``||`` hide it; an ``&&`` chain proves each member only on success.
+    Only the last ``;``-separated sequence reports its status; backgrounding and ``||``
+    hide it; an ``&&`` chain proves each member only on success. A pipeline hides every
+    status but the last segment's, unless ``pipeline_status`` (the shell's PIPESTATUS
+    array) is supplied and the match is the pipeline's leading command.
     """
     if not segments or not 0 <= match_index < len(segments) or any(s.following_operator == "&" for s in segments):
-        return False
+        return None
 
     sequence_start = max(
         (i + 1 for i, s in enumerate(segments[:-1]) if s.following_operator == ";"), default=0
     )
     if match_index < sequence_start:
-        return False
+        return None
 
     operators = {segment.following_operator for segment in segments[sequence_start:-1]}
-    if operators & {"|", "|&", "||"}:
-        return False
-    return not operators or (int(exit_code) == 0 and operators == {"&&"})
+    if "||" in operators:
+        return None
+    if operators & {"|", "|&"}:
+        pipeline_start = max(
+            (
+                sequence_start + index + 1
+                for index, operator in enumerate(
+                    segment.following_operator for segment in segments[sequence_start:-1]
+                )
+                if operator not in {"|", "|&"}
+            ),
+            default=sequence_start,
+        )
+        if pipeline_status and match_index == pipeline_start:
+            return pipeline_status[0]
+        return None
+    if not operators:
+        return int(exit_code)
+    if operators == {"&&"}:
+        return int(exit_code) if int(exit_code) == 0 else None
+    return None
 
 
 def _canonical_tokens(canonical: str) -> list[str]:
@@ -239,14 +262,60 @@ def _canonical_tokens(canonical: str) -> list[str]:
         return []
 
 
+_STATUS_PRESERVING_WRAPPERS = {"timeout", "nice", "nohup", "stdbuf"}
+
+
 def _strip_command_prefix(tokens: list[str]) -> list[str]:
-    """Remove harmless command prefixes (env, VAR=x, command/time/noglob)."""
+    """Remove harmless command prefixes: env assignments, command/time/noglob, and
+    status-preserving wrappers with their flags and duration/niceness arguments."""
     i = 1 if tokens and tokens[0] == "env" else 0
     while i < len(tokens) and "=" in tokens[i] and not tokens[i].startswith("-"):
         i += 1
-    while i < len(tokens) and tokens[i] in {"command", "time", "noglob"}:
-        i += 1
+    while i < len(tokens):
+        if tokens[i] in {"command", "time", "noglob"}:
+            i += 1
+        elif tokens[i] in _STATUS_PRESERVING_WRAPPERS:
+            i += 1
+            while i < len(tokens) and (tokens[i].startswith("-") or tokens[i].isdigit()):
+                i += 1
+        else:
+            break
     return list(tokens[i:])
+
+
+def _interpreter_family(token: str) -> Optional[str]:
+    """Family name for an interpreter token wherever it lives, else ``None``.
+
+    ``./venv/bin/python3.12``, ``python3`` and ``/usr/bin/python`` are all ``python``:
+    the detected command is ``pytest`` and the agent runs it through a venv interpreter.
+    """
+    name = token.replace("\\", "/").rsplit("/", 1)[-1]
+    name = _WINDOWS_EXE_SUFFIX_RE.sub("", re.sub(r"^(?:\./)+", "", name))
+    if not _INTERPRETER_NAME_RE.match(name):
+        return None
+    family = re.sub(r"[0-9.]+$", "", name)
+    return "python" if family == "py" else family
+
+
+_INTERPRETER_FLAG_RE = re.compile(r"^-(?:[IBuEsSOd]+|3(?:\.\d+)?|[WX].*)$")
+
+
+def _is_harmless_interpreter_flag(token: str) -> bool:
+    return bool(_INTERPRETER_FLAG_RE.match(token))
+
+
+def _normalize_tokens(tokens: list[str]) -> list[str]:
+    """Comparison form: no leading ``./``, interpreters collapsed, harmless flags dropped."""
+    normalized: list[str] = []
+    i = 0
+    while i < len(tokens):
+        family = _interpreter_family(tokens[i])
+        normalized.append(family or re.sub(r"^(?:\./)+", "", tokens[i]))
+        i += 1
+        if family:
+            while i < len(tokens) and _is_harmless_interpreter_flag(tokens[i]):
+                i += 2 if tokens[i] in {"-W", "-X"} else 1
+    return normalized
 
 
 def _equivalent_needles(needle: list[str]) -> list[list[str]]:
@@ -261,18 +330,25 @@ def _equivalent_needles(needle: list[str]) -> list[list[str]]:
     return candidates
 
 
-def _find_canonical_match(command: str, canonical_commands: list[str], exit_code: int) -> Optional[tuple[str, list[str]]]:
-    """Return ``(canonical, trailing_args)`` for the first detected command."""
+def _find_canonical_match(
+    command: str, canonical_commands: list[str], exit_code: int,
+    pipeline_status: Optional[list[int]] = None,
+) -> Optional[tuple[str, list[str], int]]:
+    """Return ``(canonical, trailing_args, status)`` for the first detected command."""
     segments = _split_shell_segments(command)
     for canonical in canonical_commands:
         needle = _canonical_tokens(canonical)
         if not needle:
             continue
         for index, segment in enumerate(segments):
-            candidate_tokens = _strip_command_prefix(segment.tokens)
+            candidate_tokens = _normalize_tokens(_strip_command_prefix(segment.tokens))
+            status = _segment_status(segments, index, exit_code, pipeline_status)
+            if status is None:
+                continue
             for candidate in _equivalent_needles(needle):
-                if candidate_tokens[:len(candidate)] == candidate and _exit_status_is_attributable(segments, index, exit_code):
-                    return canonical, candidate_tokens[len(candidate):]
+                candidate = _normalize_tokens(candidate)
+                if candidate_tokens[:len(candidate)] == candidate:
+                    return canonical, candidate_tokens[len(candidate):], status
     return None
 
 
@@ -349,7 +425,7 @@ def _find_ad_hoc_match(command: str, root: str | Path | None, exit_code: int = 0
         segments = _split_shell_segments(command, posix=posix)
         for index, segment in enumerate(segments):
             trailing_args = _ad_hoc_script_args(segment.tokens, root)
-            if trailing_args is not None and _exit_status_is_attributable(segments, index, exit_code):
+            if trailing_args is not None and _segment_status(segments, index, exit_code) is not None:
                 return trailing_args
     return None
 
@@ -422,9 +498,14 @@ def _load_changed_paths(raw: Any) -> list[Any]:
 
 
 def classify_verification_command(
-    command: str, *, cwd: str | Path | None = None, session_id: str | None = None, exit_code: int = 0, output: str = ""
+    command: str, *, cwd: str | Path | None = None, session_id: str | None = None, exit_code: int = 0,
+    output: str = "", pipeline_status: Optional[list[int]] = None,
 ) -> Optional[VerificationEvidence]:
     """Classify a terminal command as verification evidence, if applicable.
+
+    ``pipeline_status`` is the shell's ``PIPESTATUS`` array: when the verifier is the
+    leading command of a pipeline, its own status comes from there rather than from the
+    shell's code (which belongs to the last filter).
 
     Ad-hoc temp scripts only count when the project has no canonical verify
     commands at all, so they never shadow a real suite.
@@ -436,30 +517,35 @@ def classify_verification_command(
         return None
 
     verify_commands = list(facts.get("verifyCommands") or [])
-    match = _find_canonical_match(command, verify_commands, int(exit_code))
+    match = _find_canonical_match(command, verify_commands, int(exit_code), pipeline_status)
     if match is not None:
-        canonical, trailing_args = match
+        canonical, trailing_args, status = match
         kind = _kind_for_command(canonical)
         scope = "targeted" if any(map(_looks_like_target, trailing_args)) else "full"
     else:
         if verify_commands or _find_ad_hoc_match(command, facts.get("root"), int(exit_code)) is None:
             return None
         canonical, kind, scope = "ad-hoc verification script", "ad_hoc", "targeted"
+        status = int(exit_code)
     return VerificationEvidence(
         command=command, canonical_command=canonical, kind=kind, scope=scope,
-        status="passed" if int(exit_code) == 0 else "failed", exit_code=int(exit_code),
+        status="passed" if int(status) == 0 else "failed", exit_code=int(exit_code),
         cwd=str(Path(cwd or ".").resolve()), root=_root_for(facts, cwd),
         session_id=str(session_id or "default"), output_summary=_summarize_output(output),
     )
 
 
 def record_terminal_result(
-    *, command: str, cwd: str | Path | None, session_id: str | None, exit_code: int, output: str = ""
+    *, command: str, cwd: str | Path | None, session_id: str | None, exit_code: int, output: str = "",
+    pipeline_status: Optional[list[int]] = None,
 ) -> Optional[dict[str, Any]]:
     """Record a foreground terminal result when it is verification evidence."""
     if not _ledger_enabled():
         return None
-    evidence = classify_verification_command(command, cwd=cwd, session_id=session_id, exit_code=exit_code, output=output)
+    evidence = classify_verification_command(
+        command, cwd=cwd, session_id=session_id, exit_code=exit_code, output=output,
+        pipeline_status=pipeline_status,
+    )
     return None if evidence is None else _insert_evidence(evidence)
 
 

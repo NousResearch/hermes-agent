@@ -15,6 +15,12 @@ from agent.compression_marker import elide
 _MAX_CHANGED_PATHS_IN_NUDGE = 8
 _MAX_STATUS_SUMMARY_CHARS = 1200
 
+_UNPIPED_RUN_WARNING = (
+    " Run the check bare: no `| tail`, `| head`, or `| grep` filter. A piped run's exit "
+    "status belongs to the filter, not the check, so it cannot count as evidence; the "
+    "terminal already truncates long output and spills the rest to a file."
+)
+
 # Prose/data extensions and extension-less prose filenames (case-insensitive) with
 # no verifiable runtime behavior: a turn touching ONLY these suppresses the nudge
 # (a SKILL.md/README edit must never demand a /tmp verification script).
@@ -161,8 +167,12 @@ def build_verify_on_stop_nudge(
     *, session_id: str | None, changed_paths: Iterable[str], attempts: int=0, max_attempts: int=2,
 ) -> str | None:
     """Return a synthetic follow-up when edited code lacks fresh verification."""
-    # Prose-only turns (markdown, skills, README, LICENSE, ...) have nothing to verify.
-    paths = sorted({str(p) for p in changed_paths if p and not _is_non_code_path(p)})
+    # Prose-only turns (markdown, skills, README, LICENSE, ...) have nothing to verify, and
+    # a path under a directory that no longer exists (a removed worktree) is not a workspace.
+    paths = sorted({
+        str(p) for p in changed_paths
+        if p and not _is_non_code_path(p) and Path(p).parent.is_dir()
+    })
     if not paths or attempts >= max_attempts:
         return None
 
@@ -221,8 +231,8 @@ def build_verify_on_stop_nudge(
         "fresh passing verification evidence yet.\n\n"
         f"Verification status: {_status_detail(status)}\n\n"
         f"Changed paths:\n{_format_changed_paths(paths)}\n\n"
-        f"{command_instruction} If verification is not possible, explain the "
-        "concrete blocker instead of claiming the work is fully verified."
+        f"{command_instruction}{_UNPIPED_RUN_WARNING} If verification is not possible, "
+        "explain the concrete blocker instead of claiming the work is fully verified."
         f"{addendum}]"
     )
 

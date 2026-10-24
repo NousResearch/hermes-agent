@@ -51,3 +51,15 @@ def test_continue_worktree_and_skills_flags_work_together(monkeypatch):
         "skills": ["hermes-agent-dev"],
         "command": "chat",
     }
+
+
+def test_gateway_resume_keeps_frozen_skill_selection():
+    import argparse
+    import pytest
+    from hermes_cli.gateway_chat import check_resume_policy, GatewayClientError
+
+    frozen = {"info": {"launch_request": {"skills": ["first", "second"]}}}
+    check_resume_policy(argparse.Namespace(resume="stored"), frozen)
+    check_resume_policy(argparse.Namespace(resume="stored", skills=["first,second"]), frozen)
+    with pytest.raises(GatewayClientError):
+        check_resume_policy(argparse.Namespace(resume="stored", skills=["replacement"]), frozen)

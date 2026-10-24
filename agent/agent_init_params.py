@@ -3,7 +3,7 @@
 # Constructor params stored verbatim under the same name.
 _PASSTHROUGH_PARAMS = (
     "model", "max_iterations", "save_trajectories", "verbose_logging", "quiet_mode",
-    "tool_progress_mode", "ephemeral_system_prompt", "platform", "skip_context_files",
+    "tool_progress_mode", "ephemeral_system_prompt", "preloaded_skills_prompt", "platform", "skip_context_files",
     "load_soul_identity", "pass_session_id", "log_prefix_chars",
     # OpenRouter provider preferences
     "providers_allowed", "providers_ignored", "providers_order", "provider_sort",

@@ -127,6 +127,60 @@ class TestPatchSkillSizeLimit:
         assert "references/data.md" in result["error"]
 
 
+class TestOverHardCapRepair:
+    """Legacy SKILL.md files over the hard cap must be repairable incrementally."""
+
+    def _place_over_limit(self, isolate_skills, name: str, *, extra_chars: int = 8_000):
+        skill_dir = isolate_skills / name
+        skill_dir.mkdir(parents=True)
+        content = _make_skill_content(MAX_SKILL_CONTENT_CHARS + extra_chars)
+        content = content.replace("name: test-skill", f"name: {name}")
+        (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
+        return skill_dir, content
+
+    def test_patch_can_shrink_in_stages_while_still_over_hard_limit(self, isolate_skills):
+        skill_dir, _content = self._place_over_limit(isolate_skills, "repair-in-stages")
+        first = "REPAIR_BLOCK_A_" + ("a" * 2_000)
+        second = "REPAIR_BLOCK_B_" + ("b" * 2_000)
+        with (skill_dir / "SKILL.md").open("a", encoding="utf-8") as f:
+            f.write(f"\n{first}\n{second}\nGROWTH_ANCHOR\n")
+
+        original_size = (skill_dir / "SKILL.md").stat().st_size
+        assert original_size > MAX_SKILL_CONTENT_CHARS
+
+        result = json.loads(skill_manage(
+            action="patch", name="repair-in-stages", old_string=first, new_string=""))
+        assert result["success"] is True, result
+        after_first = (skill_dir / "SKILL.md").stat().st_size
+        assert MAX_SKILL_CONTENT_CHARS < after_first < original_size
+
+        result = json.loads(skill_manage(
+            action="patch", name="repair-in-stages", old_string=second, new_string=""))
+        assert result["success"] is True, result
+        after_second = (skill_dir / "SKILL.md").stat().st_size
+        assert MAX_SKILL_CONTENT_CHARS < after_second < after_first
+
+        # Repair permission is strictly shrink-only while still over the cap.
+        result = json.loads(skill_manage(
+            action="patch", name="repair-in-stages", old_string="GROWTH_ANCHOR",
+            new_string="GROWTH_ANCHOR" + ("g" * 10)))
+        assert result["success"] is False
+        assert "limit" in result["error"]
+        assert (skill_dir / "SKILL.md").stat().st_size == after_second
+
+    def test_edit_can_shrink_over_hard_limit_in_stages(self, isolate_skills):
+        skill_dir, original = self._place_over_limit(isolate_skills, "edit-repair-in-stages")
+        edited = original.replace("x" * 2_000, "x" * 1_000, 1)
+        assert len(edited) > MAX_SKILL_CONTENT_CHARS
+        result = json.loads(skill_manage(
+            action="edit", name="edit-repair-in-stages", content=edited))
+        assert result["success"] is True, result
+        saved = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        assert len(saved) > MAX_SKILL_CONTENT_CHARS
+        assert len(saved) < len(original)
+
+
+
 class TestWriteFileSizeLimit:
     """write_file action enforces both char and byte limits."""
 

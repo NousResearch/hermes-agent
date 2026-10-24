@@ -179,8 +179,15 @@ def _validate_frontmatter(content: str, *, new_skill: bool = False) -> Optional[
     return None
 
 
-def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[str]:
+def _validate_content_size(content: str, label: str = "SKILL.md",
+                           before: Optional[str] = None) -> Optional[str]:
     if len(content) > MAX_SKILL_CONTENT_CHARS:
+        # A legacy SKILL.md can already be over the hard limit. Allow a strictly
+        # shrinking edit even if it is not under the limit yet, otherwise there
+        # is no tool-driven way to repair it incrementally. Growth above the cap
+        # remains blocked; new skills and supporting files keep the same limit.
+        if label == "SKILL.md" and before is not None and len(content) < len(before):
+            return None
         return (
             f"{label} content is {len(content):,} characters (limit: {MAX_SKILL_CONTENT_CHARS:,}). "
             f"Consider splitting into a smaller SKILL.md with supporting files in references/ "
@@ -493,11 +500,18 @@ def _create_skill(name: str, content: str, category: str | None = None) -> dict[
 
 def _edit_skill(name: str, content: str) -> dict[str, Any]:
     """Replace the SKILL.md of any existing skill (full rewrite)."""
-    if err := _validate_frontmatter(content) or _validate_content_size(content):
+    if err := _validate_frontmatter(content):
         return _err(err)
     skill_dir, guard = _locate_for_write(name, "edit")
-    # SKILL.md always exists here (_find_skill requires it), so a blocked scan restores it.
-    if guard := guard or _guarded_write(name, skill_dir, skill_dir / "SKILL.md", "edit", "SKILL.md", content):
+    if guard:
+        return guard
+    if skill_dir is None:  # _locate_for_write returns (dir, None) on success
+        return _err(_skill_not_found_error(name))
+    skill_md = skill_dir / "SKILL.md"
+    before = skill_md.read_text(encoding="utf-8-sig")
+    if err := _validate_content_size(content, before=before):
+        return _err(err)
+    if guard := _guarded_write(name, skill_dir, skill_md, "edit", "SKILL.md", content):
         return guard
     result = {
         "success": True, "message": f"Skill '{name}' updated (full rewrite).",
@@ -540,7 +554,8 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | N
             from tools.fuzzy_match import format_no_match_hint
             match_error += format_no_match_hint(match_error, match_count, old_string, content)
         return _err(match_error) | {"file_preview": _clip(content, 500, "...")}
-    if err := _validate_content_size(new_content, label=target_label):
+    if err := _validate_content_size(
+            new_content, label=target_label, before=content if not file_path else None):
         return _err(err)
     if not file_path and (err := _validate_frontmatter(new_content)):
         return _err(f"Patch would break SKILL.md structure: {err}")

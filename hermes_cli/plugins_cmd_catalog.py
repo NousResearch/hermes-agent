@@ -628,7 +628,7 @@ def repin_catalog_plugin(
     with tempfile.TemporaryDirectory(prefix=".repin-preview-", dir=_plugins_dir()) as preview_tmp:
         preview_root = Path(preview_tmp) / "plugin"
         git_url, subdir = _resolve_git_url(entry.install_identifier)
-        _clone_plugin_repo(preview_root, git_url, entry.sha)
+        _clone_plugin_repo(preview_root, git_url, entry.sha, subdir)
         preview_target = _resolve_subdir_within(preview_root, subdir) if subdir else preview_root
         _consent_gate(_read_manifest_for_install(preview_target), preview_target)
 

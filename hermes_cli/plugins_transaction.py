@@ -144,7 +144,7 @@ def update_plugin(
         try:
             if catalog_entry:
                 git_url, subdir = pc._resolve_git_url(source)
-                revision = pc._clone_plugin_repo(staged, git_url, catalog_entry.sha)
+                revision = pc._clone_plugin_repo(staged, git_url, catalog_entry.sha, subdir)
                 staged = pc._resolve_subdir_within(staged, subdir) if subdir else staged
                 output = f"Updated to catalog pin {revision}"
                 catalog_record = {

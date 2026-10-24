@@ -840,6 +840,8 @@ def resolve_skill_config_values(config_vars: list[dict[str, Any]]) -> dict[str, 
 # description over it and tests/skills/test_authoring_standards.py holds shipped skills to it, so only legacy or
 # hand-edited skills ever reach clip_skill_description().
 SKILL_PROMPT_DESC_LIMIT = 60
+_LAST_WHITESPACE_RE = re.compile(r"\s\S*$")
+_CLIP_TRAIL_RE = re.compile(r"[\s.,;:\-\u2013\u2014(/]+$")
 
 
 def _normalize_skill_description(frontmatter: dict[str, Any]) -> str:
@@ -852,11 +854,11 @@ def clip_skill_description(desc: str) -> str:
     """*desc* fitted to SKILL_PROMPT_DESC_LIMIT, cut at a word boundary so the index never shows a half word."""
     if len(desc) <= SKILL_PROMPT_DESC_LIMIT:
         return desc
-    head = desc[:SKILL_PROMPT_DESC_LIMIT - 2]  # one char past the budget: a space there means the last word is whole
-    cut = head.rfind(" ")
-    if cut <= 0:  # a single word longer than the budget has no boundary to cut at
+    head = desc[:SKILL_PROMPT_DESC_LIMIT - 2]  # one char past the budget: whitespace there means the last word is whole
+    boundary = _LAST_WHITESPACE_RE.search(head)  # any whitespace (tab, NBSP, ...) separates words, not just " "
+    if not boundary or boundary.start() == 0:  # a single word longer than the budget has no boundary to cut at
         return desc[:SKILL_PROMPT_DESC_LIMIT - 3] + "..."
-    return head[:cut].rstrip(" .,;:-\u2013\u2014(/") + "..."
+    return _CLIP_TRAIL_RE.sub("", head[:boundary.start()]) + "..."
 
 
 def extract_skill_description(frontmatter: dict[str, Any]) -> str:

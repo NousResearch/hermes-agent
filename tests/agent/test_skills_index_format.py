@@ -4,7 +4,7 @@ import re
 import pytest
 
 from agent.prompt_builder import build_skills_system_prompt, clear_skills_system_prompt_cache
-from agent.skill_utils import SKILL_PROMPT_DESC_LIMIT
+from agent.skill_utils import SKILL_PROMPT_DESC_LIMIT, clip_skill_description
 from agent.skills_index_delta import index_entries
 
 LONG = "Use when cutting, publishing, or abandoning a hermes-agent release and its notes."
@@ -47,3 +47,11 @@ def test_index_rows_carry_each_name_once_and_never_a_half_word(monkeypatch, tmp_
     assert LONG.startswith(kept) and LONG[len(kept)] in " ,"  # cut lands between words
     # The turn-delta parser reads flattened rows like nested ones.
     assert set(index_entries(prompt)) == {"ascii-art", "pixel-art", "computer-use", "hermes-release"}
+
+
+@pytest.mark.parametrize("sep", ["\t", "\u00a0"], ids=["tab", "nbsp"])
+def test_clip_cuts_at_any_whitespace_never_inside_a_word(sep):
+    desc = f"alpha{sep}" + f"bravo{sep}" * 12
+    shown = clip_skill_description(desc)
+    assert len(shown) <= SKILL_PROMPT_DESC_LIMIT and shown.endswith("...")
+    assert set(shown[:-3].split(sep)) == {"alpha", "bravo"}  # whole words only, no "bra..."

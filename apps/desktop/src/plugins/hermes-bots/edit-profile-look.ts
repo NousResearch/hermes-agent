@@ -1,9 +1,11 @@
+import { normalizeBotRole } from './bot-role'
 import type { BotMeta } from './types'
 
 /** What Edit Profile shows for a bot's look, as opened and as submitted. */
 export interface EditProfileLook {
   color: null | string
   image: null | string
+  role: string
   shape: BotMeta['shape']
   title: string
 }
@@ -35,6 +37,11 @@ export function editedLook(opened: EditProfileLook, current: EditProfileLook): B
 
   if (current.title.trim() !== opened.title.trim()) {
     patch.title = current.title.trim()
+  }
+
+  // An emptied role is written as '': an omitted key would leave the stored one in place.
+  if (normalizeBotRole(current.role) !== normalizeBotRole(opened.role)) {
+    patch.role = normalizeBotRole(current.role)
   }
 
   return Object.keys(patch).length > 0 ? patch : null

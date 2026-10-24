@@ -130,7 +130,7 @@ def is_bot_mode_managed(home: str | os.PathLike | None = None) -> bool:
 
 
 def _role_line(*parts: str) -> str:
-    """'title — description' from the non-empty parts (either may be absent)."""
+    """The non-empty parts joined with ' — ' (any may be absent)."""
     return " — ".join(p for p in parts if p)
 
 
@@ -139,19 +139,29 @@ def _bullet(handle: str, *parts: str) -> str:
     return _role_line(f"- `{handle}`", *parts)
 
 
+# Mirrors BOT_ROLE_MAX in apps/desktop/src/plugins/hermes-bots/bot-role.ts. A hand-edited profile.yaml
+# can carry more; the cap keeps a long role from crowding the description out of the 160-char line.
+_ROLE_MAX = 40
+
+
 def _profile_role(profile_dir: Path) -> str:
-    """Teammate role line: Bot Mode title — profile description; tells a teammate
-    WHO to message for a job. A friendly ``display_name`` (``hermes profile rename``) that
-    differs from both the folder id and the title leads the line, so an untagged
-    "talk to Scribe" maps to the folder handle without a disk search (#100671).
-    Single-line, ≤160 chars, "" when nothing. Never raises."""
+    """Teammate role line: Bot Mode title — role label — profile description; tells a
+    teammate WHO to message for a job. A friendly ``display_name`` (``hermes profile rename``)
+    that differs from both the folder id and the title leads the line, so an untagged
+    "talk to Scribe" maps to the folder handle without a disk search (#100671). The role
+    (``ui_meta['hermes-bots'].role``, a short job label like "Deep Research") sits between
+    the title and the description. Single-line, ≤160 chars, "" when nothing. Never raises."""
     def _role() -> str:
         data = _read_yaml_dict(profile_dir / "profile.yaml") or {}
-        title = str((_bots_meta(data) or {}).get("title") or "").strip()
+        bots = _bots_meta(data) or {}
+        title = str(bots.get("title") or "").strip()
+        raw_role = bots.get("role")
+        # Text only, as the Desktop's normalizeBotRole: a hand-edited list/number/bool is dropped.
+        role = " ".join(raw_role.split())[:_ROLE_MAX] if isinstance(raw_role, str) else ""
         display = str(data.get("display_name") or "").strip()
         if display.lower() in (profile_dir.name.lower(), title.lower()):
             display = ""
-        line = _role_line(display, title, str(data.get("description") or "").strip())
+        line = _role_line(display, title, role, str(data.get("description") or "").strip())
         return " ".join(line.split())[:160]
 
     return _swallow(_role, "")

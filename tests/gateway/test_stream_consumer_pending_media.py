@@ -80,3 +80,13 @@ async def test_prose_with_media_colon_streams_before_the_line_ends():
                              " plus a few forums", " in one long line"])
     interim = [t for t in _shown(adapter) if "in one long line" not in t]
     assert any("Twitter, Mastodon" in t for t in interim), _shown(adapter)
+
+
+@pytest.mark.asyncio
+async def test_partial_tag_after_punctuation_is_never_shown():
+    # A complete tag has no left boundary ("图片：MEDIA:/…" is stripped), so its prefix after
+    # punctuation must be held too; showing "MED" and then removing it breaks prefix-stable frames.
+    adapter = await _stream(["Report attached.\n", "图片：MED", "IA:/home/u/report.pdf"])
+    for text in _shown(adapter):
+        assert "MED" not in text, text
+    assert any("Report attached." in t for t in _shown(adapter))

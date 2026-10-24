@@ -438,14 +438,15 @@ def _is_custom_endpoint(base_url: str) -> bool:
     return bool(normalized) and not base_url_host_matches(normalized, "openrouter.ai")
 
 
-# Host substring -> provider. ".githubcopilot.com" covers api.enterprise./api.business.
-# hosts; models.inference.ai.azure.com (GitHub Models free tier, ~8K per-request cap)
-# is mapped so a targeted hint fires instead of the custom-endpoint path.
+# Hostname -> provider: a key matches that host or its subdomains; a "."/"-" key is a bare suffix
+# (".githubcopilot.com": api.enterprise./api.business.; "-aiplatform...": regional Vertex hosts).
+# models.inference.ai.azure.com (GitHub Models free tier, ~8K cap) gets a targeted hint.
 _URL_TO_PROVIDER: dict[str, str] = {
     "api.openai.com": "openai", "chatgpt.com": "openai", "api.anthropic.com": "anthropic",
     "api.z.ai": "zai", "open.bigmodel.cn": "zai",
     "api.moonshot.ai": "kimi-coding", "api.moonshot.cn": "kimi-coding-cn", "api.kimi.com": "kimi-coding",
-    "api.stepfun.ai": "stepfun", "api.stepfun.com": "stepfun", "api.arcee.ai": "arcee", "api.minimax": "minimax",
+    "api.stepfun.ai": "stepfun", "api.stepfun.com": "stepfun", "api.arcee.ai": "arcee",
+    "api.minimax.io": "minimax", "api.minimaxi.com": "minimax", "api.minimax.chat": "minimax",
     "dashscope.aliyuncs.com": "alibaba", "dashscope-intl.aliyuncs.com": "alibaba", "portal.qwen.ai": "qwen-oauth",
     "openrouter.ai": "openrouter", "generativelanguage.googleapis.com": "gemini",
     "inference-api.nousresearch.com": "nous", "api.deepseek.com": "deepseek",
@@ -455,7 +456,7 @@ _URL_TO_PROVIDER: dict[str, str] = {
     "integrate.api.nvidia.com": "nvidia", "api.xiaomimimo.com": "xiaomi", "xiaomimimo.com": "xiaomi",
     "api.gmi-serving.com": "gmi", "api.novita.ai": "novita",
     "tokenhub.tencentmaas.com": "tencent-tokenhub", "api.lkeap.cloud.tencent.com": "tencent-tokenplan",
-    "ollama.com": "ollama-cloud",
+    "ollama.com": "ollama-cloud", "-aiplatform.googleapis.com": "vertex",
 }
 
 # Auto-extend with provider-profile hostnames not already mapped.
@@ -470,12 +471,11 @@ except Exception:
 
 def _infer_provider_from_url(base_url: str) -> Optional[str]:
     """models.dev provider name for a base URL (custom endpoints need no explicit provider)."""
-    parsed = _parse_base_url(base_url, "https")
-    if parsed is None:
+    host = base_url_hostname(base_url)
+    if not host:
         return None
-    host = parsed.netloc.lower() or parsed.path.lower()
-    for url_part, provider in _URL_TO_PROVIDER.items():
-        if url_part in host:
+    for domain, provider in _URL_TO_PROVIDER.items():
+        if host.endswith(domain) if domain[0] in ".-" else (host == domain or host.endswith("." + domain)):
             return provider
     return None
 

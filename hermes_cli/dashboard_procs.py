@@ -203,9 +203,13 @@ def _launchd_plist_env_home(wrapper_argv: list[str]) -> str | None:
             if not args or args[-1] != jxa:
                 continue
             home = str((data.get("EnvironmentVariables") or {}).get("HERMES_HOME", "")).strip()
-            if home:
+            if home and home not in homes:
                 homes.append(home)
-        if len(homes) == 1:
+        # Same JXA across labels (legacy label migration keeps old plists around)
+        # repeats one home, not two conflicting ones: dedupe before the ambiguity
+        # check so a migrated install still resolves instead of always returning
+        # None, while genuinely different homes per label stay rejected.
+        if len(set(homes)) == 1:
             return homes[0]
     return None
 
@@ -225,6 +229,9 @@ def _wrapper_env_home(pid: int, wrapper_argv: list[str]) -> str | None:
         import psutil
 
         for child in psutil.Process(pid).children(recursive=True):
+            with contextlib.suppress(Exception):
+                if not any("hermes" in str(tok) for tok in (child.cmdline() or [])):
+                    continue
             child_env: dict = {}
             with contextlib.suppress(Exception):
                 child_env = child.environ() or {}

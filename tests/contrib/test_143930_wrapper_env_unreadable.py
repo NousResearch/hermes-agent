@@ -29,7 +29,7 @@ class NoSuch(Exception):
     pass
 
 
-def install_stubs(child_env, plist_home):
+def install_stubs(child_env, plist_home, child_cmdline=None):
     """child_env: dict the wrapper's *child* exposes (wrapper itself: {})."""
     from hermes_cli import dashboard_procs as dp
 
@@ -44,8 +44,9 @@ def install_stubs(child_env, plist_home):
             )
         if pid == CHILD_PID:
             return types.SimpleNamespace(
-                cmdline=lambda: ["/usr/local/bin/hermes", "--run-module",
-                                 "hermes_cli.stderr_timestamp"],
+                cmdline=lambda: list(child_cmdline or
+                                     ["/usr/local/bin/hermes", "--run-module",
+                                      "hermes_cli.stderr_timestamp"]),
                 environ=lambda: dict(child_env or {}),
             )
         raise NoSuch(pid)
@@ -119,6 +120,18 @@ def run_case(dp, name, expect):
     return ok
 
 
+def test_wrapper_env_unreadable() -> None:
+    """Pytest entry: the manual-case battery must stay green.
+
+    ``main()`` reports via ``sys.exit``; a bare ``SystemExit(0)`` still fails a
+    pytest case, so it is caught and asserted instead.
+    """
+    try:
+        main()
+    except SystemExit as e:
+        assert e.code == 0, "wrapper-env battery failed (see captured stdout)"
+
+
 def main():
     results = []
     # Case A (guard): child + plist both silent -> unchanged fail-open fallback to the
@@ -129,6 +142,15 @@ def main():
     # Case B (RED on main): wrapper env unreadable but child carries HERMES_HOME.
     dp = install_stubs(CHILD_ENV, None)
     results.append(run_case(dp, "B.child_env_carries_home", CHILD_ENV["HERMES_HOME"]))
+    # Case D: a non-hermes child carrying HERMES_HOME must NOT be adopted
+    # (the child walk only credits hermes processes). Runs before the plist
+    # case: install_stubs(_, None) does not undo a previous case's plist
+    # stubs, so the no-plist cases must all come first.
+    dp = install_stubs(CHILD_ENV, None,
+                       child_cmdline=["/usr/bin/osascript", "-l", "JavaScript",
+                                      "-e", 'ObjC.import("cocoa"); 1'])
+    results.append(run_case(dp, "D.non_hermes_child_not_adopted",
+                            os.path.expanduser("~/.hermes")))
     # Case C (RED on main): neither wrapper nor child proves it; plist decides.
     dp = install_stubs(None, "/Users/dev/.hermes")
     results.append(run_case(dp, "C.plist_env_carries_home", "/Users/dev/.hermes"))

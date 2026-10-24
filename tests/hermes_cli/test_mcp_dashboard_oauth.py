@@ -1,8 +1,11 @@
 """Dashboard HTTP contract for hosted MCP OAuth."""
 
+import asyncio
 from unittest.mock import patch
 
 import pytest
+import hermes_cli.web_server_mcp as _web_server_mcp
+import hermes_cli.web_server_profiles as _web_server_profiles
 
 
 def _client():
@@ -19,10 +22,10 @@ def _client():
 def _clear_flows():
     from hermes_cli import web_server
 
-    web_server._mcp_oauth_flows.clear()
+    _web_server_mcp._mcp_oauth_flows.clear()
     web_server.app.state.auth_required = False
     yield
-    web_server._mcp_oauth_flows.clear()
+    _web_server_mcp._mcp_oauth_flows.clear()
     web_server.app.state.auth_required = False
 
 
@@ -40,7 +43,7 @@ def test_hosted_auth_start_returns_public_authorization_url(monkeypatch):
 
         asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=s1"))
 
-    monkeypatch.setattr(web_server, "_run_dashboard_mcp_oauth", fake_worker)
+    monkeypatch.setattr(_web_server_mcp, "_run_dashboard_mcp_oauth", fake_worker)
     with patch(
         "hermes_cli.dashboard_auth.prefix.resolve_public_url",
         return_value="https://agent.example",
@@ -51,7 +54,7 @@ def test_hosted_auth_start_returns_public_authorization_url(monkeypatch):
     body = response.json()
     assert body["status"] == "authorization_required"
     assert body["authorization_url"] == "https://idp.example/authorize?state=s1"
-    flow = web_server._mcp_oauth_flows[body["flow_id"]]
+    flow = _web_server_mcp._mcp_oauth_flows[body["flow_id"]]
     assert flow.redirect_uri == "https://agent.example/api/mcp/oauth/callback/reports"
 
 
@@ -75,7 +78,7 @@ def test_hosted_callback_bypasses_gated_cookie_auth(monkeypatch):
             "https://idp.example/authorize?state=expected"
         )
     )
-    web_server._mcp_oauth_flows[flow.flow_id] = flow
+    _web_server_mcp._mcp_oauth_flows[flow.flow_id] = flow
     monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
 
     response = TestClient(web_server.app).get(
@@ -83,7 +86,7 @@ def test_hosted_callback_bypasses_gated_cookie_auth(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert flow._callback == ("abc", "expected")
+    assert flow._callback == ("abc", "expected", None)
 
 
 def test_hosted_auth_allows_same_server_name_in_different_profiles(tmp_path, monkeypatch):
@@ -92,7 +95,7 @@ def test_hosted_auth_allows_same_server_name_in_different_profiles(tmp_path, mon
 
     profile_home = tmp_path / "profiles" / "work"
     profile_home.mkdir(parents=True)
-    monkeypatch.setattr(web_server, "_resolve_profile_dir", lambda _name: profile_home)
+    monkeypatch.setattr(_web_server_profiles, "_resolve_profile_dir", lambda _name: profile_home)
 
     existing = DashboardOAuthFlow(
         flow_id="existing-default",
@@ -101,7 +104,7 @@ def test_hosted_auth_allows_same_server_name_in_different_profiles(tmp_path, mon
         hermes_home=str(tmp_path / "default"),
         redirect_uri="https://agent.example/callback/existing",
     )
-    web_server._mcp_oauth_flows[existing.flow_id] = existing
+    _web_server_mcp._mcp_oauth_flows[existing.flow_id] = existing
 
     def fake_worker(flow, cfg):
         import asyncio
@@ -109,7 +112,7 @@ def test_hosted_auth_allows_same_server_name_in_different_profiles(tmp_path, mon
         asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=work"))
 
     with patch("hermes_cli.mcp_config._get_mcp_servers", return_value={"reports": {"url": "https://mcp.example"}}), \
-         patch.object(web_server, "_run_dashboard_mcp_oauth", fake_worker):
+         patch.object(_web_server_mcp, "_run_dashboard_mcp_oauth", fake_worker):
         response = _client().post("/api/mcp/servers/reports/auth?profile=work")
 
     assert response.status_code != 409
@@ -131,7 +134,7 @@ def test_flow_status_does_not_expose_authorization_code():
     flow.authorization_url = "https://idp.example/authorize"
     flow.status = "approved"
     flow._callback = ("secret-code", "secret-state")
-    web_server._mcp_oauth_flows[flow.flow_id] = flow
+    _web_server_mcp._mcp_oauth_flows[flow.flow_id] = flow
 
     response = _client().get("/api/mcp/oauth/flows/flow-status")
     assert response.status_code == 200
@@ -139,3 +142,24 @@ def test_flow_status_does_not_expose_authorization_code():
     assert body["status"] == "approved"
     assert "secret-code" not in response.text
     assert "secret-state" not in response.text
+
+
+def test_cancel_marks_the_flow_terminal_for_a_retrying_worker():
+    """DELETE /flows/{id} is a user cancellation: the worker's next attempt must not re-mint the
+    flow behind the dashboard's back (it would reopen a URL the user just dismissed)."""
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-cancel-retry",
+        server_name="reports",
+        profile=None,
+        hermes_home="/tmp/hermes-test",
+        redirect_uri="https://agent.example/api/mcp/oauth/callback/reports",
+    )
+    asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=first"))
+    _web_server_mcp._mcp_oauth_flows[flow.flow_id] = flow
+
+    assert _client().delete("/api/mcp/oauth/flows/flow-cancel-retry").json()["ok"] is True
+    with pytest.raises(RuntimeError, match="cancelled"):
+        asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=second"))
+    assert flow.snapshot()["status"] == "error"

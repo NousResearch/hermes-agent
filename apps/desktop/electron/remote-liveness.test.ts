@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import {
+  ensureHealthyPooledRemoteBackendForDispatch,
+  POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS,
+  POWER_RESUME_REVALIDATION_HOLDOFF_MS,
   REMOTE_LIVENESS_FAILURE_LIMIT,
   REMOTE_LIVENESS_FAILURE_WINDOW_MS,
   REMOTE_LIVENESS_TIMEOUT_MS,
+  REMOTE_POOLED_LIVENESS_FAILURE_WINDOW_MS,
   RemoteLivenessTracker,
   RemoteRevalidationCoordinator,
   revalidatePooledRemoteBackends,
@@ -257,6 +261,107 @@ describe('revalidateRemoteConnection', () => {
   })
 })
 
+describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
+  it('covers quiet-box cold-start and stays below the power-resume holdoff', () => {
+    expect(POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS).toBeGreaterThanOrEqual(REMOTE_LIVENESS_TIMEOUT_MS)
+    expect(POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS).toBeGreaterThanOrEqual(8_000)
+    expect(POWER_RESUME_REVALIDATION_HOLDOFF_MS).toBeGreaterThan(POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS)
+  })
+
+  it('returns a healthy cached descriptor without retiring or reconnecting', async () => {
+    const healthy = { baseUrl: 'http://127.0.0.1:49525', mode: 'remote' }
+    const connectionPromise = Promise.resolve(healthy)
+    const retire = vi.fn()
+    const reconnect = vi.fn()
+    const probe = vi.fn().mockResolvedValue({ ok: true })
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise,
+        currentConnectionPromise: () => connectionPromise,
+        probe,
+        reconnect,
+        retire
+      })
+    ).resolves.toBe(healthy)
+
+    expect(probe).toHaveBeenCalledWith(healthy, '/api/health', {
+      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+    })
+    expect(retire).not.toHaveBeenCalled()
+    expect(reconnect).not.toHaveBeenCalled()
+  })
+
+  it('retires a dead cached descriptor and gives dispatch the replacement', async () => {
+    const stale = { baseUrl: 'http://127.0.0.1:49525', mode: 'remote' }
+    const replacement = { baseUrl: 'http://127.0.0.1:53968', mode: 'remote' }
+    const stalePromise = Promise.resolve(stale)
+    let currentPromise: Promise<typeof stale> | null = stalePromise
+
+    const retire = vi.fn(async () => {
+      currentPromise = null
+    })
+
+    const reconnect = vi.fn(async () => {
+      currentPromise = Promise.resolve(replacement)
+
+      return replacement
+    })
+
+    const probe = vi.fn(async connection => {
+      if (connection === stale) {
+        throw new Error('connect ECONNREFUSED 127.0.0.1:49525')
+      }
+    })
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise: stalePromise,
+        currentConnectionPromise: () => currentPromise,
+        probe,
+        reconnect,
+        retire
+      })
+    ).resolves.toBe(replacement)
+
+    expect(probe).toHaveBeenCalledWith(stale, '/api/health', {
+      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+    })
+    expect(retire).toHaveBeenCalledOnce()
+    expect(reconnect).toHaveBeenCalledOnce()
+  })
+
+  it('falls back to /api/status when /api/health returns 404 on older backends', async () => {
+    const legacy = { baseUrl: 'http://127.0.0.1:49525', mode: 'remote' }
+    const legacyPromise = Promise.resolve(legacy)
+
+    const retire = vi.fn()
+    const reconnect = vi.fn()
+
+    const probe = vi.fn(async (_connection, path) => {
+      if (path === '/api/health') {
+        throw new Error('404: Not Found')
+      }
+    })
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise: legacyPromise,
+        currentConnectionPromise: () => legacyPromise,
+        probe,
+        reconnect,
+        retire
+      })
+    ).resolves.toBe(legacy)
+
+    expect(probe).toHaveBeenCalledWith(legacy, '/api/status', {
+      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+    })
+    expect(retire).not.toHaveBeenCalled()
+    expect(reconnect).not.toHaveBeenCalled()
+  })
+})
+
 describe('revalidatePooledRemoteBackends', () => {
   interface TestRemoteConnection {
     authMode?: string
@@ -349,6 +454,56 @@ describe('revalidatePooledRemoteBackends', () => {
 
     await expect(pool.run(tracker)).resolves.toEqual({ dropped: ['coder'] })
     expect(pool.stopBackend).toHaveBeenCalledWith('coder')
+  })
+
+  it('accumulates failures across probes minutes apart under the pooled failure window', async () => {
+    // Regression test for #94381: the pool revalidation tick is driven by the
+    // renderer's reconnect IPC, which fires minutes apart once the primary
+    // connection is healthy — far beyond the primary's 60s failure window.
+    // With that window a dead pooled descriptor's streak reset on every tick
+    // and the drop path was never reached; the pool served ECONNRESETs until
+    // app restart.
+    const pool = harness([['coder', { process: null, remoteBaseUrl: 'https://remote.example.com' }]])
+    pool.unreachable.add('https://remote.example.com')
+
+    let now = 1_000_000
+
+    const tracker = new RemoteLivenessTracker(
+      REMOTE_LIVENESS_FAILURE_LIMIT,
+      REMOTE_POOLED_LIVENESS_FAILURE_WINDOW_MS,
+      () => now
+    )
+
+    for (let attempt = 1; attempt < REMOTE_LIVENESS_FAILURE_LIMIT; attempt += 1) {
+      await expect(pool.run(tracker)).resolves.toEqual({ dropped: [] })
+      expect(pool.stopBackend).not.toHaveBeenCalled()
+      now += 4 * 60_000 // observed production cadence: ~4 minutes between probes
+    }
+
+    await expect(pool.run(tracker)).resolves.toEqual({ dropped: ['coder'] })
+    expect(pool.stopBackend).toHaveBeenCalledWith('coder')
+  })
+
+  it('still resets a genuinely stale streak past the pooled window', async () => {
+    const pool = harness([['coder', { process: null, remoteBaseUrl: 'https://remote.example.com' }]])
+    pool.unreachable.add('https://remote.example.com')
+
+    let now = 1_000_000
+
+    const tracker = new RemoteLivenessTracker(
+      REMOTE_LIVENESS_FAILURE_LIMIT,
+      REMOTE_POOLED_LIVENESS_FAILURE_WINDOW_MS,
+      () => now
+    )
+
+    // Two failures 20 minutes apart (beyond the pooled window): each must
+    // count as a fresh streak of 1, not silently accumulate across outages.
+    await expect(pool.run(tracker)).resolves.toEqual({ dropped: [] })
+    now += 20 * 60_000
+    await expect(pool.run(tracker)).resolves.toEqual({ dropped: [] })
+    now += 4 * 60_000
+    await expect(pool.run(tracker)).resolves.toEqual({ dropped: [] })
+    expect(pool.stopBackend).not.toHaveBeenCalled()
   })
 
   it('clears the streak when the host answers again', async () => {

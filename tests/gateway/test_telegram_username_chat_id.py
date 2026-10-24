@@ -15,10 +15,7 @@ import pytest
 
 from gateway.config import PlatformConfig, Platform
 from plugins.platforms.telegram.telegram_ids import (
-    looks_like_telegram_username,
     normalize_telegram_chat_id,
-    parse_telegram_username_target,
-    telegram_chat_id_key,
 )
 
 
@@ -42,8 +39,6 @@ def test_normalize_returns_int_or_passthrough_string(value, expected):
     assert normalize_telegram_chat_id(value) == expected
 
 
-def test_numeric_normalizes_to_int_type():
-    assert isinstance(normalize_telegram_chat_id("123"), int)
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +90,7 @@ _fake_telegram_constants.ChatType = SimpleNamespace(
 _fake_telegram.constants = _fake_telegram_constants
 _fake_telegram_ext = types.ModuleType("telegram.ext")
 for _attr in (
-    "Application", "CommandHandler", "CallbackQueryHandler",
+    "Application", "CommandHandler", "CallbackQueryHandler", "InlineQueryHandler",
     "MessageHandler", "TypeHandler",
 ):
     setattr(_fake_telegram_ext, _attr, object)

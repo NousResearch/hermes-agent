@@ -1,0 +1,16 @@
+name: prompt-pocket
+repo: https://github.com/xraysight/hermes-prompt-pocket
+sha: 1da1175923393292c798a20cadfdadc6067adee6
+description: "Local prompt library for Hermes Desktop. Save, edit, search, and copy named prompts for manual use, with validated JSON import/export and IndexedDB storage. Does not read or modify composer drafts, send messages, or make network requests."
+maintainer: xraysight
+tier: community
+category: desktop
+docs_url: https://github.com/xraysight/hermes-prompt-pocket#readme
+version: "0.1.1"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

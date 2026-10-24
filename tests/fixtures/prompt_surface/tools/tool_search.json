@@ -1,0 +1,23 @@
+{
+  "description": "Search 7 additional tools that are loaded on demand. Send one keyword query per capability you need; returns matching tool names and descriptions. Then `tool_describe` loads schemas and `tool_call` invokes. Tools already in your tool list need no search. `connectors__` names are tools of the user's app accounts (Gmail, Linear, ...); `manage_connections` checks or authorizes an account.\n\nEvery tool listed below exists: never call it unavailable, and go straight to `tool_describe` when you see the exact name.\n\nDeferred tool catalog (call schemas via `tool_describe`, invoke via `tool_call`):\nbrowser tools (1):\n- browser_vault: Fill saved logins, 2FA codes, cards and addresses on the CURRENT browser page.\ncomputer_use tools (1):\n- computer_use: Drive the desktop via cua-driver: screenshots, mouse, keyboard, scroll, drag.\ncronjob tools (1):\n- cronjob_manage: Schedule recurring or one-off agent tasks (cron jobs): create, list, edit, run.\nimage_gen tools (1):\n- image_generate: Generate or edit images (with reference images) using the configured model.\nsession_search tools (1):\n- session_search: Search or read past Hermes conversations (FTS5), or scroll inside one.\nterminal tools (1):\n- process_manage: Poll, wait on, send input to, or kill terminal(background=true) processes.\ntodo tools (1):\n- todo_list: Track a task list for multi-step work (3+ steps).",
+  "name": "tool_search",
+  "parameters": {
+    "properties": {
+      "limit": {
+        "description": "Max matches per query (default 5).",
+        "type": "integer"
+      },
+      "queries": {
+        "description": "One query per capability: service + action + object keywords (e.g. ['gmail send email', 'github create issue']), never a question; every word must match tool text. Searched in parallel.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "queries"
+    ],
+    "type": "object"
+  }
+}

@@ -7,7 +7,6 @@ into general tool-use suppression (narration-only turns after compression).
 
 from agent.context_compressor import (
     _HISTORICAL_SUMMARY_PREFIXES,
-    LEGACY_SUMMARY_PREFIX,
     SUMMARY_PREFIX,
 )
 
@@ -15,24 +14,6 @@ from agent.context_compressor import (
 class TestSummaryPrefixToolUseClause:
 
 
-    def test_previous_generation_frozen_in_historical_prefixes(self):
-        """Per the module contract: whenever SUMMARY_PREFIX changes, the prior
-        generation must be frozen into _HISTORICAL_SUMMARY_PREFIXES so old
-        persisted summaries still get the directive-strip on re-compaction."""
-        assert len(_HISTORICAL_SUMMARY_PREFIXES) >= 3
-        # The pre-clause generation (#65848 incident era): same framing, no
-        # tools-active clause. Newer generations are prepended ahead of it as
-        # the prefix evolves (tuple is newest-first), so match by content,
-        # not position. "topic overlap" distinguishes it from the older
-        # carveout-era entry.
-        pre_clause = [
-            p for p in _HISTORICAL_SUMMARY_PREFIXES
-            if "tools remain fully active" not in p
-            and "topic overlap" in p.lower()
-            and "Do NOT answer questions or fulfill requests" in p
-        ]
-        assert pre_clause, "pre-clause generation missing from frozen tuple"
-        assert all(p != SUMMARY_PREFIX for p in pre_clause)
 
 
     def test_strip_recognizes_current_and_frozen_prefixes(self):

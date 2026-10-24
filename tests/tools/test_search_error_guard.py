@@ -26,11 +26,8 @@ import shutil
 
 import pytest
 
-from tools.file_operations import (
-    ShellFileOperations,
-    _pattern_has_regex_newline,
-    _split_tool_diagnostics,
-)
+from tools.file_operations import ShellFileOperations
+from tools.file_operations_search import _pattern_has_regex_newline, _split_tool_diagnostics
 from tools.environments.local import LocalEnvironment
 
 

@@ -10,13 +10,16 @@ import {
 } from './link-title-window'
 
 function makeFakeBrowserWindow() {
-  const calls = { audioMuted: [] }
+  const calls = { audioMuted: [], windowOpenHandlers: [] }
 
   const FakeBrowserWindow = function (options) {
     this.options = options
     this.webContents = {
       setAudioMuted(value) {
         calls.audioMuted.push(value)
+      },
+      setWindowOpenHandler(handler) {
+        calls.windowOpenHandlers.push(handler)
       }
     }
   }
@@ -29,6 +32,11 @@ test('linkTitleWindowOptions keeps the offscreen, hardened defaults', () => {
   const options = linkTitleWindowOptions(session)
 
   assert.equal(options.show, false)
+  // #64867: a show:false leak must not be able to cover the chat window.
+  assert.equal(options.x, -20000)
+  assert.equal(options.y, -20000)
+  assert.equal(options.skipTaskbar, true)
+  assert.equal(options.focusable, false)
   assert.equal(options.webPreferences.session, session)
   assert.equal(options.webPreferences.contextIsolation, true)
   assert.equal(options.webPreferences.sandbox, true)
@@ -45,6 +53,35 @@ test('createLinkTitleWindow mutes audio so historical links never autoplay sound
 
   assert.ok(window instanceof FakeBrowserWindow)
   assert.deepEqual(calls.audioMuted, [true])
+  // GHSA-9f4c-93c8-jc8g: a page loaded for its title must not be able to pop a window.
+  assert.equal(calls.windowOpenHandlers.length, 1)
+  assert.deepEqual(calls.windowOpenHandlers[0]({ url: 'https://attacker.test/popup' }), { action: 'deny' })
+})
+
+test('createLinkTitleWindow hides and zeroes opacity so Windows cannot flash a blank frame', () => {
+  // Regression for #64867: tier-2 title fetches for bot-walled URLs run during
+  // browser-tool turns; the window must never paint over the Desktop chat even
+  // if the platform leaks a show:false frame.
+  const calls = { hide: 0, opacity: [] }
+
+  const FakeBrowserWindow = function (options) {
+    this.options = options
+
+    this.webContents = { setAudioMuted() {}, setWindowOpenHandler() {} }
+
+    this.hide = () => {
+      calls.hide += 1
+    }
+
+    this.setOpacity = value => {
+      calls.opacity.push(value)
+    }
+  }
+
+  createLinkTitleWindow(FakeBrowserWindow, { id: 'link-titles' })
+
+  assert.equal(calls.hide, 1)
+  assert.deepEqual(calls.opacity, [0])
 })
 
 test('createLinkTitleWindow still returns the window if muting throws', () => {

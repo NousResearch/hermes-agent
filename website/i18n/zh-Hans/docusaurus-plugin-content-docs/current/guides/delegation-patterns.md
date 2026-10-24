@@ -8,7 +8,7 @@ description: "何时以及如何使用子代理委托——并行研究、代码
 
 Hermes 可以生成隔离的子代理来并行处理任务。每个子代理拥有独立的对话、终端会话和工具集。只有最终摘要会返回——中间工具调用不会进入你的上下文窗口。
 
-完整功能参考，请参阅[子代理委托](/user-guide/features/delegation)。
+完整功能参考，请参阅[子代理委托](../user-guide/features/delegation.md)。
 
 ---
 
@@ -236,4 +236,4 @@ delegation:
 
 ---
 
-*完整的委托参考——所有参数、ACP 集成和高级配置——请参阅[子代理委托](/user-guide/features/delegation)。*
+*完整的委托参考——所有参数、ACP 集成和高级配置——请参阅[子代理委托](../user-guide/features/delegation.md)。*

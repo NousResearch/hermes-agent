@@ -65,7 +65,7 @@ def test_seed_one_refuses_symlinked_destinations(
     script_path = tmp_path / "harness.sh"
     script_path.write_text(script)
 
-    proc = subprocess.run([bash, str(script_path)], capture_output=True, text=True)
+    proc = subprocess.run([bash, str(script_path)], capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr
     assert not outside_env.exists()
     assert (home / ".env").is_symlink()
@@ -104,7 +104,7 @@ def test_seed_one_is_quiet_for_existing_symlinked_files(
     script_path = tmp_path / "harness.sh"
     script_path.write_text(script)
 
-    proc = subprocess.run([bash, str(script_path)], capture_output=True, text=True)
+    proc = subprocess.run([bash, str(script_path)], capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr
     assert outside_env.read_text() == "EXISTING=1\n"
     assert proc.stdout == ""

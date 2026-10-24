@@ -93,7 +93,7 @@ For reliable `op` use with desktop app integration, run sign-in and secret opera
 Note: This is NOT needed when using `OP_SERVICE_ACCOUNT_TOKEN` — the token persists across terminal calls automatically.
 
 ```bash
-SOCKET_DIR="${TMPDIR:-/tmp}/hermes-tmux-sockets"
+SOCKET_DIR="${TMPDIR:-${HERMES_HOME:-$HOME/.hermes}/cache/scratch}/hermes-tmux-sockets"
 mkdir -p "$SOCKET_DIR"
 SOCKET="$SOCKET_DIR/hermes-op.sock"
 SESSION="op-auth-$(date +%Y%m%d-%H%M%S)"

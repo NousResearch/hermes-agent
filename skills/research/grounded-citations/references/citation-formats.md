@@ -53,7 +53,7 @@ consistency is the reason not to reset the ledger between pages of one build.
 
 ## Research papers
 
-Hand off to the `research-paper-writing` skill. Export with
+Hand off to the `grounded-citations` skill. Export with
 `--style bibtex` into `references.bib`, then follow that skill's citation
 verification (it greps `\cite{...}` against the .bib). The ledger's job ends at
 producing verified URL entries; venue formatting is that skill's domain.

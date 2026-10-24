@@ -56,4 +56,46 @@ describe('useMessageStream turn-end todo cleanup', () => {
 
     expect($todosBySession.get()[SID]).toBeUndefined()
   })
+
+  it('applies a dedicated todo snapshot immediately', () => {
+    mountStream()
+
+    act(() =>
+      stream.handleEvent({
+        payload: { revision: 3, todos: [todo('live', 'in_progress')] },
+        session_id: SID,
+        type: 'todo.updated'
+      })
+    )
+
+    expect($todosBySession.get()[SID]?.[0]?.id).toBe('live')
+  })
+})
+
+describe('useMessageStream todo tool naming', () => {
+  afterEach(() => {
+    cleanup()
+    clearSessionTodos(SID)
+  })
+
+  // The backend renamed the tool to `todo_list` (core-tool deferral); the
+  // composer status stack must follow the wire name, not only the legacy alias.
+  it('feeds the task panel from a tool.complete named todo_list', () => {
+    mountStream()
+
+    act(() =>
+      stream.handleEvent({
+        payload: {
+          args: {},
+          name: 'todo_list',
+          result: { revision: 2, todos: [todo('wire', 'in_progress')] },
+          tool_id: 'c1'
+        },
+        session_id: SID,
+        type: 'tool.complete'
+      })
+    )
+
+    expect($todosBySession.get()[SID]?.[0]?.id).toBe('wire')
+  })
 })

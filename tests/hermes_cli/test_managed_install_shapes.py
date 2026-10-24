@@ -113,7 +113,7 @@ def test_a_stamp_can_name_every_managed_system(
     install_tree = tmp_path / "install"
     install_tree.mkdir()
 
-    config_mod.stamp_install_method(managed_value, project_root=install_tree)
+    (install_tree / ".install_method").write_text(managed_value + "\n", encoding="utf-8")
 
     assert config_mod.detect_install_method(install_tree) == managed_value
 

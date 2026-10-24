@@ -79,7 +79,7 @@ HyperFrames requires Node.js >= 22. Check with `node --version`.
 Renders are memory- and disk-hungry. Minimums:
 
 - **RAM:** 4 GB free (8 GB recommended for 60fps / `--quality high`)
-- **Disk:** 2 GB free scratch space — frames are written to `/tmp` during capture
+- **Disk:** 2 GB free scratch space — frames are written to the system temp dir (`$TMPDIR`) during capture
 
 Mitigations:
 - Lower quality: `--quality draft`.

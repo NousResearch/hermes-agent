@@ -1,6 +1,10 @@
 import { atom } from 'nanostores'
 
 import { translateNow } from '@/i18n'
+import { isOutOfSyncRpcParams } from '@/lib/gateway-rpc'
+import { isTimeoutError } from '@/lib/with-timeout'
+import { type ErrorToastCategory, recordFriction } from '@/store/desktop-metrics'
+import { requestBackendRestart, requestRoute } from '@/store/recovery-requests'
 
 export type NotificationKind = 'error' | 'warning' | 'info' | 'success'
 
@@ -24,9 +28,13 @@ export interface AppNotification {
   message: string
   detail?: string
   action?: NotificationAction
+  /** Second, quieter button beside `action` (e.g. "Disable" next to "Sign in"). */
+  secondaryAction?: NotificationAction
   onDismiss?: () => void
   createdAt: number
   placement?: NotificationPlacement
+  /** Survives clearNotifications: a standing offer, not feedback on the last turn. */
+  persistent?: boolean
 }
 
 export interface NotificationInput {
@@ -39,9 +47,11 @@ export interface NotificationInput {
   message: string
   detail?: string
   action?: NotificationAction
+  secondaryAction?: NotificationAction
   onDismiss?: () => void
   durationMs?: number
   placement?: NotificationPlacement
+  persistent?: boolean
 }
 
 let notificationCounter = 0
@@ -88,47 +98,119 @@ export function isDiskFullErrorMessage(message: string): boolean {
   )
 }
 
-const ERROR_SUMMARIES: { test: (msg: string) => boolean; summarize: (msg: string) => string }[] = [
+/** Settings deep links the summariser can attach to a toast. */
+const KEYS_ROUTE = (envKey: string) => `/settings?tab=keys&key=${encodeURIComponent(envKey)}`
+const GATEWAY_SETTINGS_ROUTE = '/settings?tab=gateway'
+const MAINTENANCE_ROUTE = '/command-center?section=maintenance'
+
+/** One-click recoveries reused by several rules. */
+export const RECOVERY_ACTIONS = {
+  openUpdates: (): NotificationAction => ({
+    label: translateNow('notifications.updateHermes'),
+    onClick: () => void import('@/store/updates').then(({ openUpdatesWindow }) => openUpdatesWindow())
+  }),
+  restartHermes: (): NotificationAction => ({
+    label: translateNow('notifications.actions.restartHermes'),
+    onClick: requestBackendRestart
+  }),
+  openKeys: (envKey: string): NotificationAction => ({
+    label: translateNow('notifications.actions.openKeys'),
+    onClick: () => requestRoute(KEYS_ROUTE(envKey))
+  }),
+  openGateways: (): NotificationAction => ({
+    label: translateNow('notifications.actions.openGateways'),
+    onClick: () => requestRoute(GATEWAY_SETTINGS_ROUTE)
+  }),
+  openMaintenance: (): NotificationAction => ({
+    label: translateNow('notifications.actions.openMaintenance'),
+    onClick: () => requestRoute(MAINTENANCE_ROUTE)
+  })
+}
+
+/** Structured storage failure codes the backend puts in RPC/HTTP error data
+ *  (`hermes_state_errors.classify_persistence_error`). */
+const STORAGE_CODE_RE = /['"]code['"]\s*:\s*['"](storage_[a-z_]+|disk_full)['"]/i
+
+interface ErrorSummaryRule {
+  /** The toast's error category for friction telemetry (a closed code-defined set, never the text). */
+  category: ErrorToastCategory
+  test: (msg: string) => boolean
+  summarize: (msg: string) => string
+  /** Recovery button attached to the toast when this rule matches. */
+  action?: (msg: string) => NotificationAction
+}
+
+const ERROR_SUMMARIES: ErrorSummaryRule[] = [
   {
     // Disk full / ENOSPC — session DB write, backend crash, or any path that
     // bubbles "no space left" / SQLITE_FULL through notifyError. Match before
     // generic length truncation so the user gets a clear "free space" toast
     // instead of a silent send or a raw errno dump.
+    category: 'disk_full',
     test: isDiskFullErrorMessage,
-    summarize: () => translateNow('notifications.errors.diskFull')
+    summarize: () => translateNow('notifications.errors.diskFull'),
+    action: () => RECOVERY_ACTIONS.openMaintenance()
   },
   {
+    // Any other classified storage failure (locked, corrupt, read-only …):
+    // the Maintenance panel runs the doctor that names the fix.
+    category: 'storage_failure',
+    test: msg => STORAGE_CODE_RE.test(msg),
+    summarize: () => translateNow('notifications.errors.storageFailure'),
+    action: () => RECOVERY_ACTIONS.openMaintenance()
+  },
+  {
+    category: 'gateway_auth_failed',
     test: msg => /['"]code['"]\s*:\s*['"]gateway_auth_failed['"]/i.test(msg),
-    summarize: () => translateNow('notifications.errors.gatewayAuthFailed')
+    summarize: () => translateNow('notifications.errors.gatewayAuthFailed'),
+    action: () => RECOVERY_ACTIONS.openGateways()
   },
   {
+    category: 'api_key_rejected',
     test: msg => /incorrect api key provided/i.test(msg) || /['"]code['"]\s*:\s*['"]invalid_api_key['"]/i.test(msg),
-    summarize: msg => {
-      const status = msg.match(/(?:error code|status(?:Code)?)[^\d]*(\d{3})/i)?.[1]
-
-      return status
-        ? translateNow('notifications.errors.openaiRejectedApiKeyWithStatus', status)
-        : translateNow('notifications.errors.openaiRejectedApiKey')
-    }
+    summarize: () => translateNow('notifications.errors.openaiRejectedApiKey'),
+    action: () => RECOVERY_ACTIONS.openKeys('OPENAI_API_KEY')
   },
   {
+    category: 'api_key_missing',
     test: msg => /neither voice_tools_openai_key nor openai_api_key is set/i.test(msg),
-    summarize: () => translateNow('notifications.errors.openaiTtsNeedsKey')
+    summarize: () => translateNow('notifications.errors.openaiTtsNeedsKey'),
+    action: () => RECOVERY_ACTIONS.openKeys('OPENAI_API_KEY')
   },
   {
-    test: msg => /ELEVENLABS_API_KEY not set/i.test(msg) || /ElevenLabs STT API error \(HTTP 401\)/i.test(msg),
-    summarize: msg =>
-      /ELEVENLABS_API_KEY not set/i.test(msg)
-        ? translateNow('notifications.errors.elevenLabsNeedsKey')
-        : translateNow('notifications.errors.elevenLabsRejectedKey')
+    category: 'api_key_missing',
+    test: msg => /ELEVENLABS_API_KEY not set/i.test(msg),
+    summarize: () => translateNow('notifications.errors.elevenLabsNeedsKey'),
+    action: () => RECOVERY_ACTIONS.openKeys('ELEVENLABS_API_KEY')
   },
   {
+    category: 'api_key_rejected',
+    test: msg => /ElevenLabs STT API error \(HTTP 401\)/i.test(msg),
+    summarize: () => translateNow('notifications.errors.elevenLabsRejectedKey'),
+    action: () => RECOVERY_ACTIONS.openKeys('ELEVENLABS_API_KEY')
+  },
+  {
+    category: 'method_not_allowed',
     test: msg => /method not allowed/i.test(msg),
-    summarize: () => translateNow('notifications.errors.methodNotAllowed')
+    summarize: () => translateNow('notifications.errors.methodNotAllowed'),
+    action: () => RECOVERY_ACTIONS.restartHermes()
   },
   {
+    category: 'microphone_permission',
     test: msg => /microphone permission/i.test(msg),
     summarize: () => translateNow('notifications.errors.microphonePermission')
+  },
+  {
+    category: 'rpc_out_of_sync',
+    test: msg => isOutOfSyncRpcParams(msg),
+    summarize: () => translateNow('notifications.errors.rpcOutOfSync'),
+    action: () => RECOVERY_ACTIONS.openUpdates()
+  },
+  {
+    category: 'restart_required',
+    test: msg => /Restart required:/i.test(msg),
+    summarize: () => translateNow('notifications.errors.codeSkewRestartRequired'),
+    action: () => RECOVERY_ACTIONS.restartHermes()
   }
 ]
 
@@ -136,26 +218,76 @@ function summarizeErrorMessage(message: string, fallback: string) {
   const rule = ERROR_SUMMARIES.find(r => r.test(message))
 
   if (rule) {
-    return rule.summarize(message)
+    return { action: rule.action?.(message), category: rule.category, message: rule.summarize(message) }
   }
 
-  return message.length > 180 ? fallback : message || fallback
+  return {
+    action: undefined,
+    category: 'unclassified' as const,
+    message: message.length > 180 ? fallback : message || fallback
+  }
+}
+
+// The owner's refusal of an edit, restore or regenerate whose target is not a live user turn
+// (hermes_state_mutations._rewind): invalid_params on target_message_id. Its detail starts with
+// `compacted:` only when compaction summarized the turn; a turn another window already undid, an
+// assistant row or an unknown id is stale for another reason. Every other invalid_params keeps the
+// generic toast.
+function staleRewindRefusal(error: unknown): 'compacted' | 'stale' | null {
+  const data = error && typeof error === 'object' ? (error as { data?: unknown }).data : undefined
+
+  if (!data || typeof data !== 'object') {
+    return null
+  }
+
+  const { detail, field, reason } = data as { detail?: unknown; field?: unknown; reason?: unknown }
+
+  if (reason !== 'invalid_params' || field !== 'target_message_id') {
+    return null
+  }
+
+  return typeof detail === 'string' && detail.startsWith('compacted:') ? 'compacted' : 'stale'
 }
 
 // Exported so flows that surface errors inline (e.g. ConfirmDialog's onConfirm
 // rethrow) can reuse the same IPC-unwrapping + summarizing as notifyError.
-export function readableError(error: unknown, fallback: string): { message: string; detail?: string } {
+export function readableError(
+  error: unknown,
+  fallback: string
+): { message: string; detail?: string; action?: NotificationAction; category: ErrorToastCategory } {
+  const staleRewind = staleRewindRefusal(error)
+
+  if (staleRewind) {
+    const key = staleRewind === 'compacted' ? 'compactedTurnUnavailable' : 'staleTurnUnavailable'
+
+    return { message: translateNow(`promptNotices.${key}`), category: 'other' }
+  }
+
   const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
   const unwrapped = raw.match(/Error invoking remote method '[^']+': Error: (.+)$/)?.[1] ?? raw
   const cleaned = cleanErrorText(unwrapped)
   const detail = cleaned.match(/"detail"\s*:\s*"([^"]+)"/)?.[1] ?? cleaned
   const summary = summarizeErrorMessage(detail, fallback)
 
-  return { message: summary, detail: detail === summary ? undefined : detail }
+  return {
+    message: summary.message,
+    detail: detail === summary.message ? undefined : detail,
+    action: summary.action,
+    category: summary.category
+  }
 }
 
 export function notify(input: NotificationInput): string {
+  return showNotification(input, input.kind === 'error' ? 'other' : null)
+}
+
+function showNotification(input: NotificationInput, errorCategory: ErrorToastCategory | null): string {
   const kind = input.kind ?? 'info'
+
+  if (errorCategory) {
+    recordFriction('error_toast', errorCategory)
+  }
+
   const id = input.id ?? `${Date.now()}-${notificationCounter++}`
 
   const notification: AppNotification = {
@@ -168,14 +300,17 @@ export function notify(input: NotificationInput): string {
     message: input.message,
     detail: input.detail,
     action: input.action,
+    secondaryAction: input.secondaryAction,
     onDismiss: input.onDismiss,
     createdAt: Date.now(),
-    placement: input.placement ?? defaultPlacement(kind, input.action)
+    placement: input.placement ?? defaultPlacement(kind, input.action),
+    persistent: input.persistent
   }
 
   window.clearTimeout(timers.get(id))
   timers.delete(id)
-  $notifications.set([notification, ...$notifications.get().filter(item => item.id !== id)].slice(0, 4))
+  // Visual depth is capped by CardStack, not by discarding queued notifications.
+  $notifications.set([notification, ...$notifications.get().filter(item => item.id !== id)])
 
   const duration = input.durationMs ?? defaultDuration(kind)
 
@@ -189,15 +324,43 @@ export function notify(input: NotificationInput): string {
   return id
 }
 
-export function notifyError(error: unknown, fallback: string): string {
-  const readable = readableError(error, fallback)
+// Toast copy can omit the stack or shorten the message. Keep both in desktop.log.
+function logErrorToDesktopLog(error: unknown, fallback: string): void {
+  try {
+    const label: string = new URLSearchParams(window.location.search).get('win') ?? 'main'
 
-  return notify({
-    kind: 'error',
-    title: fallback,
-    message: readable.message,
-    detail: readable.detail
-  })
+    const raw: string =
+      error instanceof Error ? (error.stack ?? error.message) : typeof error === 'string' ? error : fallback
+
+    window.hermesDesktop?.logLine?.(`[renderer error:${label}] ${fallback}: ${raw}`)
+  } catch {
+    // A missing or closed IPC bridge must not prevent the error toast.
+  }
+}
+
+export function notifyError(
+  error: unknown,
+  fallback: string,
+  options: { action?: NotificationAction; id?: string } = {}
+): string {
+  const readable = readableError(error, fallback)
+  logErrorToDesktopLog(error, fallback)
+
+  const category: ErrorToastCategory =
+    readable.category === 'unclassified' && isTimeoutError(error) ? 'timeout' : readable.category
+
+  return showNotification(
+    {
+      action: options.action ?? readable.action,
+      // A caller that can fire again for the same cause names its toast, so the repeat replaces it.
+      id: options.id,
+      kind: 'error',
+      title: fallback,
+      message: readable.message,
+      detail: readable.detail
+    },
+    category
+  )
 }
 
 export function dismissNotification(id: string) {
@@ -209,15 +372,13 @@ export function dismissNotification(id: string) {
 }
 
 export function clearNotifications() {
-  for (const timer of timers.values()) {
-    window.clearTimeout(timer)
-  }
-
-  timers.clear()
   const all = $notifications.get()
-  $notifications.set([])
+  const cleared = all.filter(item => !item.persistent)
+  $notifications.set(all.filter(item => item.persistent))
 
-  for (const item of all) {
+  for (const item of cleared) {
+    window.clearTimeout(timers.get(item.id))
+    timers.delete(item.id)
     item.onDismiss?.()
   }
 }

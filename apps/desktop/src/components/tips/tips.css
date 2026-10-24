@@ -1,0 +1,42 @@
+/* THE POINTED-AT THING.
+
+   A tip has no scrim and no spotlight — the arrow is the whole mechanism — so
+   the subject gets marked rather than the rest of the app getting dimmed. The
+   host hangs `data-tip-target` on the subject — the arrow's anchor, or the
+   region that anchor defers to — and takes it off when the tip goes. Nothing
+   here knows what that element is.
+
+   `outline` and not a border, ring or glow: it draws outside the box without
+   taking part in layout, so nothing shifts when a tip lands, and it inherits
+   whatever `border-radius` the target already has instead of imposing one.
+   A glow was the first attempt and read as noise at every intensity — the
+   targets sit on busy surfaces, and a soft accent haze looks like more of the
+   same. A hard line does not. */
+
+[data-tip-target] {
+  outline: 2px solid var(--dt-primary);
+  outline-offset: 3px;
+  animation: hermes-tip-outline-pulse 1.8s ease-in-out infinite;
+}
+
+/* A region is a whole area — a nav row, the sidebar, the composer — and those
+   are the elements sitting flush against a scroller or an `overflow-hidden`
+   parent, where an outline drawn 3px OUTSIDE the box is the outline you can't
+   see. Inset it and it always lands on its own surface. Applies whether the
+   region was deferred to or anchored directly. */
+[data-tip-target][data-tip-region] {
+  outline-offset: -2px;
+}
+
+@keyframes hermes-tip-outline-pulse {
+  50% {
+    outline-color: color-mix(in srgb, var(--dt-primary) 45%, transparent);
+  }
+}
+
+/* Marked, not breathing. The outline is the signal; the pulse is only flavour. */
+@media (prefers-reduced-motion: reduce) {
+  [data-tip-target] {
+    animation: none;
+  }
+}

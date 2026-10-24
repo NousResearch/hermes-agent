@@ -363,6 +363,28 @@ def test_canonical_session_deliberately_archived_stays_archived(home):
         db.close()
 
 
+def test_canonical_session_archived_before_reaper_stays_archived(home):
+    """A later automatic teardown must not relabel a live user retirement (#140798)."""
+    db = _db(home)
+    _add_session(db, "retired-before-reap", title="Bot Chat", ts=1000,
+                 text="deliberately retired", hidden=True)
+    db.set_session_archived("retired-before-reap", True)
+    # This mirrors a desktop disconnect after the user archived a still-live chat.
+    db.end_session("retired-before-reap", "ws_orphan_reap")
+    db.close()
+
+    row = _row(_profiles({}), "default")
+    assert row["canonical_session"] is None
+
+    db = _db(home)
+    try:
+        retired = db.get_session("retired-before-reap")
+        assert retired["archived"]
+        assert retired["end_reason"] is None
+    finally:
+        db.close()
+
+
 def test_canonical_session_archived_with_explicit_boundary_stays_archived(home):
     # Explicit boundary reasons (session_reset) are not recoverable either.
     db = _db(home)

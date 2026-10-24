@@ -4376,6 +4376,38 @@ class TestRunConversation:
         unpunctuated = SimpleNamespace(content="Based on the results the best next step is to update the config", tool_calls=None)
         assert agent._should_treat_stop_as_truncated("stop", unpunctuated, [{"role": "tool", "content": "r"}]) is False
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "ចម្លើយបានបញ្ចប់ហើយ។",
+            "លេខកូដ៖ ១២៣៤",
+            "សរុប ១២៣៤៥ ៛",
+        ],
+    )
+    def test_khmer_terminals_are_a_natural_ending(self, text):
+        """Khmer uses ។ ៕ ៖ and Khmer digits instead of ASCII '.' — treat them as finished.
+
+        Without this, a complete Khmer reply that ends with a Khmer full stop (or an
+        amount) looks truncated, so the stop→length rewrite path keeps nudging the
+        model to continue and the user sees duplicated/rambling text.
+        """
+        assert AIAgent._has_natural_response_ending(text) is True
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "ចម្លើយកំពុងត្រូវបានសរសេរបន្តនៅកណ្តាលប្រយោគ",
+            "ខ្ញុំនឹងបន្ត",
+        ],
+    )
+    def test_khmer_text_cut_mid_sentence_is_not_an_ending(self, text):
+        """Accepting Khmer terminals must not swallow genuinely cut-off replies.
+
+        The whole Khmer block (U+1780–U+17FF) must NOT count as an ending — a reply
+        chopped mid-word also ends in a Khmer letter.
+        """
+        assert AIAgent._has_natural_response_ending(text) is False
+
     def test_length_thinking_exhausted_skips_continuation(self, agent):
         """When finish_reason='length' but content is only thinking, skip retries."""
         self._setup_agent(agent)

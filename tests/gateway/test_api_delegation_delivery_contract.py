@@ -111,8 +111,7 @@ async def _fold(db, history):
     async def ensure():
         return db
     run = _RunLaunch(None, "run", None, "s1", None, False, "next", list(history), True,
-                     agent_kwargs={}, request_profile=None, browser_control_principal=None,
-                     browser_control_transport_family=None, fold_deliveries=True)
+                     agent_kwargs={}, request_profile=None, fold_deliveries=True)
     await _fold_caller_history_deliveries(SimpleNamespace(_ensure_session_db_async=ensure), run)
     return run.conversation_history
 

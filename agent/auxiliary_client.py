@@ -9,6 +9,7 @@ in neither chain (undocumented, shifting allow-list): main provider or explicit
 """
 
 import contextlib
+import copy
 import contextvars
 import functools
 import hashlib
@@ -1496,28 +1497,9 @@ class _CodexCompletionsAdapter:
         if isinstance(kwargs.get("extra_headers"), dict) and kwargs["extra_headers"]:
             resp_kwargs["extra_headers"] = dict(kwargs["extra_headers"])
         # The Codex endpoint rejects max_output_tokens/temperature (400) — omit.
-        extra_body = kwargs.get("extra_body") or {}
-        if isinstance(extra_body, dict):
-            # service_tier (fast mode) is a top-level Responses field; xAI's endpoint rejects it.
-            service_tier = extra_body.get("service_tier")
-            if isinstance(service_tier, str) and service_tier.strip() and not is_xai:
-                resp_kwargs["service_tier"] = service_tier.strip()
-            reasoning_cfg = extra_body.get("reasoning")
-            if isinstance(reasoning_cfg, dict):
-                # Shared per-model vocabulary with the main transport ("max" only where the model publishes it; "minimal"/"ultra"
-                # clamp to a listed level; ``()`` = the model takes no ``reasoning`` field at all — gpt-4o/4.1 on api.openai.com,
-                # #76255). ``enabled: False`` goes on the wire as ``effort: none`` where the vocabulary has it,
-                # since an omitted field leaves the model's default effort on (#75227).
-                from agent.reasoning_effort import clamp_effort
-                from agent.transports.codex import _codex_efforts_for_route
-                supported = _codex_efforts_for_route(model, host, is_codex_backend=route.is_codex_backend)
-                if supported and reasoning_cfg.get("enabled") is not False:
-                    # Truthy-only: Codex 400s on e.g. {"effort": null}, so falsy → default.
-                    effort = clamp_effort(reasoning_cfg.get("effort") or "medium", supported)
-                    resp_kwargs["reasoning"] = {"effort": effort, "summary": "auto"}
-                    resp_kwargs["include"] = ["reasoning.encrypted_content"]
-                elif "none" in supported and not is_xai:
-                    resp_kwargs["reasoning"] = {"effort": "none"}
+        from agent.auxiliary_runtime import apply_responses_options
+        apply_responses_options(resp_kwargs, kwargs, model, host,
+                                is_codex_backend=route.is_codex_backend, is_xai=is_xai)
         if wire_tools:
             resp_kwargs["tools"] = wire_tools
         if wire_aliases:
@@ -2762,7 +2744,7 @@ def _runtime_main_value(field: str) -> Any:
 def set_runtime_main(
     provider: str, model: str, *, requested_provider: str = "", base_url: str = "",
     api_key: Any = "", api_mode: str = "", auth_mode: str = "", session_id: str = "",
-    cache_scope: str = "",
+    cache_scope: str = "", reasoning_config: Optional[dict[str, Any]] = None,
 ) -> contextvars.Token:
     """Record the current context's live main runtime for auxiliary routing.
 
@@ -2772,7 +2754,9 @@ def set_runtime_main(
 
     ``cache_scope`` is the rotation-stable logical cache scope (compression- lineage root —
     agent/prompt_cache_scope.py) resolved once per turn by turn_context; auxiliary Responses calls prefer it
-    over ``session_id`` for prompt_cache_key derivation (#79017).
+    over ``session_id`` for prompt_cache_key derivation (#79017). ``reasoning_config`` is the
+    session's live effort snapshot, deep-copied so a later in-session change cannot mutate an
+    in-flight auxiliary attempt that inherited it.
     """
     runtime = {
         "provider": (provider or "").strip().lower(),
@@ -2785,6 +2769,8 @@ def set_runtime_main(
         "session_id": (session_id or "").strip(),
         "cache_scope": (cache_scope or "").strip(),
     }
+    if isinstance(reasoning_config, dict):
+        runtime["reasoning_config"] = copy.deepcopy(reasoning_config)
     # Publish authoritative context before updating the locked mirrors.
     token = _RUNTIME_MAIN_CONTEXT.set(runtime)
     _publish_runtime_main_mirrors(tuple(runtime[field] for field in _MAIN_RUNTIME_FIELDS))
@@ -2810,6 +2796,16 @@ def scoped_runtime_main(main_runtime: Optional[dict[str, Any]]):
         yield runtime
     finally:
         _RUNTIME_MAIN_CONTEXT.reset(token)
+
+
+def get_scoped_runtime_main() -> dict[str, Any]:
+    """Snapshot only the caller's scoped runtime; never consult legacy mirrors or config.
+
+    Producers (the compressor's summary handoff) must not inherit another concurrent
+    session's endpoint or effort through the compat globals — the ContextVar is the only
+    source, normalized the same way ``scoped_runtime_main`` binds it.
+    """
+    return _normalize_main_runtime(_RUNTIME_MAIN_CONTEXT.get() or {})
 
 
 def clear_runtime_main() -> None:
@@ -3103,8 +3099,12 @@ def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
 
 
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
+# ``session_id``/``cache_scope`` key the scoped-runtime handoff (compressor snapshot match,
+# prompt_cache_key derivation); ``reasoning_config`` carries the session's live effort snapshot
+# for tasks that inherit it (compression). Only dict reasoning configs survive normalization —
+# an absent/None effort must stay distinguishable from an explicit one downstream.
 _MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + (
-    "requested_provider", "session_id", "cache_scope",
+    "requested_provider", "session_id", "cache_scope", "reasoning_config",
 )
 
 
@@ -3121,18 +3121,8 @@ def _normalize_main_runtime(main_runtime: Optional[dict[str, Any]]) -> dict[str,
             main_runtime = _compat_runtime_main()
     if not isinstance(main_runtime, dict):
         return {}
-    normalized: dict[str, Any] = {}
-    for field in _MAIN_RUNTIME_CONTEXT_FIELDS:
-        value = main_runtime.get(field)
-        if field == "api_key" and callable(value) and not isinstance(value, str):
-            normalized[field] = value
-        elif isinstance(value, str) and value.strip():
-            normalized[field] = value.strip()
-    for identity_field in ("provider", "requested_provider"):
-        identity = normalized.get(identity_field)
-        if isinstance(identity, str):
-            normalized[identity_field] = identity.lower()
-    return normalized
+    from agent.auxiliary_runtime import normalize_runtime_fields
+    return normalize_runtime_fields(main_runtime, _MAIN_RUNTIME_CONTEXT_FIELDS)
 
 
 def _get_provider_chain() -> list[tuple]:
@@ -6698,6 +6688,8 @@ def _merge_aux_extra_body(
     # Profiles supply route defaults, but an explicit vendor wire control in the task/call config
     # is already provider-specific and must not be replaced by that default.
     merged_extra.update(caller_reasoning_fields)
+    if reasoning_config is None and isinstance((extra_body or {}).get("reasoning"), dict):
+        merged_extra["reasoning"] = dict(extra_body["reasoning"])
     if not projection.handles_reasoning:
         # ``reasoning_config`` is already clamped to the OpenAI-compat wire by _build_call_kwargs.
         from agent.reasoning_effort import generic_nested_reasoning
@@ -7511,6 +7503,11 @@ def _prepare_aux_request(
                          f" at {base_info}" if base_info and "openrouter" not in base_info else "")
     # Client's actual base_url so endpoint-specific temperature overrides work on
     # auto-detected routes (api.moonshot.ai vs api.kimi.com/coding).
+    from agent.auxiliary_runtime import inherited_compression_reasoning
+    reasoning_config = inherited_compression_reasoning(
+        task, reasoning_config, effective_extra_body, resolved_provider, resolved_model,
+        request_provider, final_model, base_info or resolved_base_url or "", main_runtime,
+    )
     kwargs = _build_call_kwargs(
         request_provider, final_model, messages, temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,

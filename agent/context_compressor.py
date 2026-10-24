@@ -39,6 +39,7 @@ from agent.context_compressor_tail import demote_stale_tail_tools, is_demoted_st
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
+from agent.context_compressor_runtime import CompressionRuntimeMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND
 from agent.model_metadata import (
     CHARS_PER_TOKEN, MINIMUM_CONTEXT_LENGTH, get_model_context_length, estimate_messages_tokens_rough, estimate_tokens_rough,
@@ -72,8 +73,12 @@ _SUMMARY_ROUTE_PIN: contextvars.ContextVar[Optional[dict[str, Any]]] = (
     contextvars.ContextVar("hermes_summary_route_pin", default=None)
 )
 
-# ``timeout`` is included so a fallback entry keeps its own deadline.
-_PINNED_ROUTE_FIELDS: tuple[str, ...] = ("provider", "model", "base_url", "api_key", "api_mode", "timeout")
+# ``timeout`` is included so a fallback entry keeps its own deadline; ``reasoning_config``
+# so a pinned stall-fallback route carries its own effort instead of the stalled route's.
+_PINNED_ROUTE_FIELDS: tuple[str, ...] = ("provider", "model", "base_url", "api_key", "api_mode", "timeout", "reasoning_config")
+
+# update_model() sentinel distinguishing "caller left the effort unset" (keep/clear by route
+# change) from an explicit ``reasoning_config=None`` (clear on purpose).
 
 
 @contextlib.contextmanager
@@ -2151,6 +2156,7 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
 
 class ContextCompressor(
     SummaryDispatchMixin, PreLlmSkipMixin, CompressionTelemetryMixin, MicroCompactionMixin,
+    CompressionRuntimeMixin,
     ProactivePruneMixin, ContextEngine,
 ):
     """Default context engine: prune tool results, protect head/tail, summarize the middle
@@ -2679,48 +2685,6 @@ class ContextCompressor(
         """The trigger ``update_model`` would install, without mutating state."""
         return self._derive_trigger(model, context_length, provider)[2]
 
-    def update_model(
-        self, model: str, context_length: int, base_url: str = "", api_key: Any = "", provider: str = "",
-        api_mode: str = "", max_tokens: int | None = None,
-    ) -> None:
-        """Update model info after a model switch or fallback activation."""
-        runtime_changed = (model, provider, base_url, api_mode) != (self.model, self.provider, self.base_url, self.api_mode)
-        self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
-        self.context_length = context_length
-        # max_tokens=None means "unspecified": keep the existing output reservation.
-        # A switch that genuinely changes the output budget passes the new value explicitly. (#43547)
-        if max_tokens is not None:
-            self.max_tokens = self._coerce_max_tokens(max_tokens)
-        if runtime_changed:
-            # The aux ceiling was probed against the previous main runtime (an "auto" aux route follows the
-            # main model); the caller re-runs the feasibility probe. A same-runtime recompute (overflow-reported
-            # window, grown local window, tier cap) keeps it: the summariser did not change (#114707).
-            self._aux_context_ceiling = None
-        self._base_threshold_percent, self.threshold_percent, self.threshold_tokens = self._derive_trigger(
-            model, context_length, provider)
-        self._apply_threshold_tokens_cap()
-        # Reset to None so the property recomputes via the mode-aware path (not the legacy formula).
-        self._tail_token_budget = None
-        _ = self.tail_token_budget  # eager recompute, same timing as before
-        self.max_summary_tokens = min(int(context_length * 0.05), _SUMMARY_TOKENS_CEILING)
-        # Old usage cannot price a new model. Clear it without arming the post-compaction
-        # latch: the next response supplies usage or enables the usage-less fallback.
-        self.last_prompt_tokens = self.last_completion_tokens = self.last_total_tokens = 0
-        self._reset_real_usage_pairing()
-        # Strikes were judged against the previous threshold; void them durably too.
-        self._record_ineffective_compression_verdict(0)
-        self._prellm_skip_count = 0
-        if runtime_changed:
-            self._fallback_compression_streak = 0
-            self._persist_fallback_compression_streak()
-            # Cooldowns are scoped to the failed model/provider; a switch gets an immediate attempt.
-            self._clear_compression_failure_cooldown()
-            # The overload budget rode those cooldowns; a new runtime restarts it too.
-            self._reset_consecutive_overload_aborts()
-        self._verify_compaction_cleared_threshold = self._last_compression_made_progress = False
-        # Runway was computed against the previous model's trigger; clear the durable copy too.
-        self._reset_proactive_prune_rearm()
-        self._clear_durable_proactive_prune_rearm()
 
     # When the MINIMUM_CONTEXT_LENGTH floor binds on a small window, trigger near the top instead.
     _MIN_CTX_TRIGGER_RATIO = 0.85
@@ -2817,8 +2781,13 @@ class ContextCompressor(
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
         custom_providers: list | None = None,
+        reasoning_config: Optional[dict[str, Any]] = None,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
+        # Construction-time effort snapshot (deep copy: the caller's dict may keep mutating);
+        # agent-hosted compressors normally take the owning session's live snapshot via the
+        # scoped runtime instead — see _summary_main_runtime.
+        self.reasoning_config = copy.deepcopy(reasoning_config)
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
         self.tail_mode = tail_mode if tail_mode in ("legacy", "lean") else "lean"
         # Per-model context_length overrides live in custom_providers; without them deferred
@@ -3802,10 +3771,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         _aux_route: dict[str, str] = {}
         call_kwargs: dict[str, Any] = {
             "task": "compression",
-            "main_runtime": {
-                "model": self.model, "provider": self.provider, "base_url": self.base_url, "api_key": self.api_key,
-                "api_mode": self.api_mode,
-            },
+            "main_runtime": self._summary_main_runtime(),
             "messages": [{"role": "user", "content": prompt}], "route_info": _aux_route,
             # NO max_tokens: Anthropic/NIM wires forward it and a hard cap truncates summaries
             # (thinking models burn it on reasoning). Timeout comes from call_llm config.

@@ -287,6 +287,9 @@ def _close_transcript_tail(agent, messages, final_response, interrupted, _recove
 def _micro_compact_after_turn(agent, messages, final_response, logger, task_id) -> None:
     """Post-turn micro-compaction: absorb the oldest uncompacted exchange into the
     rolling summary before persist, amortizing compression across turns."""
+    from agent.auxiliary_client import scoped_runtime_main
+    from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
+
     try:
         _compressor = getattr(agent, "context_compressor", None)
         # Strict `is True` + callable gates: plugin context engines and MagicMock
@@ -303,10 +306,15 @@ def _micro_compact_after_turn(agent, messages, final_response, logger, task_id) 
             and not getattr(agent, "_persist_disabled", False)
         ):
             _before = len(messages)
-            # A rotating compaction earlier in this turn may have moved the agent to a child session.
-            _compacted = _compressor._micro_compact(
-                messages, turn_session_id=getattr(agent, "_inflight_turn_session_id", None),
-            )
+            # A fallback or model switch may have changed the session's reasoning effort
+            # since turn_context published its entry snapshot. The inflight turn identity
+            # also survives a rotating compaction moving the agent to a child session.
+            micro_runtime = agent._current_main_runtime()
+            micro_runtime["cache_scope"] = resolve_prompt_cache_scope_safe(agent) or ""
+            with scoped_runtime_main(micro_runtime):
+                _compacted = _compressor._micro_compact(
+                    messages, turn_session_id=getattr(agent, "_inflight_turn_session_id", None),
+                )
             # Defrag rewrites the newest MICRO marker in place and pops _db_persisted;
             # the compressor flags us to invalidate the flush-scan cursor, else the
             # rewritten row is identity-skipped (stale).

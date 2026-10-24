@@ -164,6 +164,9 @@ def test_compress_context_preserves_ambient_context(monkeypatch):
     monkeypatch.setattr(cc, "compress_context", _fake_compress)
 
     class _Agent:
+        def _current_main_runtime(self):
+            return {"session_id": "segment-after-compaction", "reasoning_config": None}
+
         def _conversation_root_id(self):
             # A rotated segment id must never win over the ambient root.
             return "segment-after-compaction"

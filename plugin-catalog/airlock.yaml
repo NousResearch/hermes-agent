@@ -30,7 +30,7 @@ description: >-
 maintainer: otsoa-dubief
 tier: community
 category: tools
-requires_hermes: ">=0.21.5"
+requires_hermes: ">=0.21.6"
 docs_url: https://github.com/otsoa-dubief/airlock#readme
 image: https://raw.githubusercontent.com/otsoa-dubief/airlock/e379b7a8f9fad21391f477732e8386944ee7d68a/docs/images/social-preview.png
 screenshots:

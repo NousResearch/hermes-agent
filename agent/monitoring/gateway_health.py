@@ -36,6 +36,10 @@ class GatewayHealthSnapshot:
 _RUNNING_PLATFORM_STATES = {"running", "connected", "ok", "ready"}
 _FATAL_PLATFORM_STATES = {"fatal", "degraded", "error", "failed"}
 _KNOWN_GATEWAY_STATES = _RUNNING_PLATFORM_STATES | _FATAL_PLATFORM_STATES | {"starting", "draining", "stopping", "stopped", "startup_failed", "unknown"}
+# Live, serving gateway states -- the local mirror of ``gateway.status._DRAINABLE_GATEWAY_STATES``
+# for hosts that cannot import the gateway package. ``degraded`` is a gateway serving its remaining
+# platforms with one parked, so it is as busy and as drainable as ``running``.
+_SERVING_GATEWAY_STATES = frozenset({"running", "degraded"})
 _KNOWN_PLATFORM_STATES = _RUNNING_PLATFORM_STATES | _FATAL_PLATFORM_STATES | {"connecting", "disconnected", "disabled", "paused", "retrying", "unknown"}
 _SUPERVISION_MODES = {"systemd", "s6", "container", "launchd", "manual", "unknown"}
 _SOURCE_LOGGER_RE = re.compile(r"^gateway(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
@@ -163,7 +167,7 @@ def build_gateway_health_snapshot(
     runtime = runtime or {}
     gateway_state = _bounded_state(runtime.get("gateway_state"), allowed=_KNOWN_GATEWAY_STATES)
     active_agents = _parse_active_agents(runtime.get("active_agents", 0))
-    running = gateway_running and gateway_state == "running"
+    running = gateway_running and gateway_state in _SERVING_GATEWAY_STATES
     busy = _gateway_status(
         "derive_gateway_busy", lambda: bool(running and _parse_active_agents(active_agents) > 0),
         gateway_running=gateway_running, gateway_state=gateway_state, active_agents=active_agents,

@@ -1,0 +1,38 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: ambush
+description: Ambush news streams, with each new alert delivered to Hermes as it happens.
+source: https://app.ambush.ai/developers.md
+
+# Ambush hosts a remote MCP server with OAuth 2.1 + Dynamic Client
+# Registration (Clerk) over Streamable HTTP.
+transport:
+  type: http
+  url: https://api.ambush.ai/mcp
+
+auth:
+  type: oauth
+
+# Ambush offers the feed.emission.created event over MCP Events (webhook
+# delivery), so installing turns on the event tools for this server.
+events: true
+
+suggest:
+  keywords:
+    - ambush
+    - news alerts
+    - news stream
+  hosts:
+    - ambush.ai
+
+post_install: |
+  On first connection, Hermes opens a browser to sign in to Ambush.
+
+  To have alerts arrive as they happen, Ambush posts each one to the
+  gateway's webhook listener, so the listener needs a public HTTPS address:
+    hermes config set platforms.webhook.enabled true
+    hermes config set platforms.webhook.extra.public_url https://<your host>
+  Then ask Hermes to create a stream and subscribe to its alerts. It asks
+  you to approve the subscription and where alerts should go.

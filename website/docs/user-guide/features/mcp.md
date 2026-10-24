@@ -302,6 +302,14 @@ declare it. Optional `applications:` (up to 16 app names), `requires_app: true`
 pill) and `examples:` (up to six one-line outcomes) describe entries that drive
 a desktop application.
 
+### Event metadata (`events:`)
+
+A manifest for a server that offers [MCP Events](#mcp-events-experimental)
+may set `events: true`. Installing the entry then writes `events: true` into its
+`mcp_servers` block, so the event tools are there without editing
+`config.yaml`. The webhook listener still needs its public HTTPS address
+(`platforms.webhook.extra.public_url`) before a subscription can be made.
+
 GitHub is deliberately **not** in the catalog: its hosted MCP requires each
 client to bring its own OAuth app (generic dynamic client registration is
 rejected), and Hermes's bundled `github/*` skills driving the `gh` CLI are a

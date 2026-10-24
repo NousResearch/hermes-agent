@@ -91,6 +91,37 @@ class CustomProfile(ProviderProfile):
             return None
         return super().fetch_models(api_key=api_key, base_url=base_url, timeout=timeout)
 
+    def create_client(self, **client_kwargs: Any) -> Any | None:
+        """Ollama's native ``/api/chat`` client when the endpoint answers ``/api/version`` as Ollama.
+
+        Ollama's OpenAI-compatible ``/v1`` drops ``options.num_ctx`` (the model loads at the server
+        default) and can corrupt streamed tool calls; native ``/api/chat`` honours both (#43900).
+        vLLM, llama.cpp and LM Studio have no ``/api/version``, so they fail the probe and get
+        ``None``: the standard client. The core pops ``ssl_ca_cert`` / ``ssl_verify`` before this
+        hook, so the endpoint's TLS trust is resolved here the way model probes resolve it.
+        """
+        base_url = str(client_kwargs.get("base_url") or "")
+        if not base_url:
+            return None
+        from agent.model_metadata_http import resolve_verify
+        from agent.ollama_native_adapter import OllamaNativeClient, is_native_ollama_base_url
+
+        verify = resolve_verify(base_url)
+        if not is_native_ollama_base_url(
+            base_url, api_key=client_kwargs.get("api_key"), default_headers=client_kwargs.get("default_headers"),
+            default_query=client_kwargs.get("default_query"), verify=verify,
+        ):
+            return None
+        allowed = {"api_key", "base_url", "default_headers", "default_query", "timeout", "http_client"}
+        kwargs = {k: v for k, v in client_kwargs.items() if k in allowed}
+        if kwargs.get("http_client") is None:
+            from agent.process_bootstrap import build_keepalive_http_client
+
+            http_client = build_keepalive_http_client(base_url, verify=verify)
+            if http_client is not None:
+                kwargs["http_client"] = http_client
+        return OllamaNativeClient(**kwargs)
+
 
 custom = CustomProfile(
     name="custom", aliases=("ollama", "local", "vllm", "llamacpp", "llama.cpp", "llama-cpp"),

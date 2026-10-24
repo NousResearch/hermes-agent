@@ -1312,95 +1312,10 @@ def _systemd_cli_bits(system: bool) -> tuple[str, str, str]:
     return ("sudo ", " --system", "") if system else ("", "", "--user ")
 
 
-def _wait_for_systemd_service_restart(
-    *,
-    system: bool = False,
-    previous_pid: int | None = None,
-    timeout: float | None = None,
-    replacement_observed: list[bool] | None = None,
-) -> bool:
-    """Wait for the gateway service to become active after a restart handoff."""
-    svc = get_service_name()
-    scope_label = _service_scope_label(system).capitalize()
-    if timeout is None:
-        timeout = _systemd_restart_wait_timeout(system=system)
-    deadline = time.monotonic() + timeout
-    printed_runtime_wait = False
-
-    while time.monotonic() < deadline:
-        props = _read_systemd_unit_properties(system=system)
-        active_state = props.get("ActiveState", "")
-        sub_state = props.get("SubState", "")
-        try:
-            from gateway.status import get_running_pid
-            new_pid = get_running_pid()
-        except Exception:
-            new_pid = None
-        new_pid = new_pid or _systemd_main_pid_from_props(props)
-
-        runtime_state = _read_gateway_runtime_status()
-        runtime_pid = _runtime_state_pid(runtime_state)
-        if (
-            previous_pid is not None
-            and replacement_observed is not None
-            and not replacement_observed
-            and any(p > 0 and p != previous_pid for p in (new_pid or 0, runtime_pid))
-        ):
-            replacement_observed.append(True)
-
-        if active_state == "active" and new_pid and (previous_pid is None or new_pid != previous_pid):
-            if runtime_pid != new_pid:
-                runtime_state = _read_gateway_runtime_status()
-                if runtime_state and _runtime_state_pid(runtime_state) != new_pid:
-                    runtime_state = None
-            gateway_state = (runtime_state or {}).get("gateway_state")
-            if gateway_state in ("running", "degraded"):
-                print(f"✓ {scope_label} service restarted (PID {new_pid})")
-                if gateway_state == "degraded":
-                    # Serving, but a configured platform is parked or retrying: a real restart, not a
-                    # failure — say so instead of waiting out the timeout and reporting one.
-                    print(f"⚠ {scope_label} gateway is DEGRADED — see `hermes gateway status`")
-                return True
-            if gateway_state == "startup_failed":
-                reason = (runtime_state or {}).get("exit_reason") or "startup failed"
-                print(
-                    f"⚠ {scope_label} service process restarted (PID {new_pid}), but gateway startup failed: {reason}"
-                )
-                return False
-            if not printed_runtime_wait:
-                print(f"⏳ {scope_label} service process started (PID {new_pid}); waiting for gateway runtime...")
-                printed_runtime_wait = True
-
-        if active_state == "activating" and sub_state == "auto-restart":
-            time.sleep(1)
-            continue
-
-        if _systemd_unit_is_start_limited(props):
-            _print_systemd_start_limit_wait(system=system)
-            return False
-
-        time.sleep(2)
-
-    sudo, _, user_flag = _systemd_cli_bits(system)
-    print(
-        f"⚠ {scope_label} service did not become active within {int(timeout)}s.\n"
-        f"  Check status: {sudo}hermes gateway status\n"
-        f"  Check logs:   journalctl {user_flag}-u {svc} -l --since '2 min ago'"
-    )
-    return False
-
-
-def _systemd_restart_wait_timeout(system: bool = False) -> float:
-    """Cover systemd's relaunch delays before applying the runtime wait floor."""
-    from gateway.shutdown_forensics import parse_systemd_duration_to_us
-    props = _read_systemd_unit_properties(system=system, properties=("RestartUSec", "TimeoutStartUSec"))
-    supervisor_budget = 0.0
-    for name in ("RestartUSec", "TimeoutStartUSec"):
-        raw = props.get(name, "")
-        duration_us = int(raw) if raw.isdigit() else parse_systemd_duration_to_us(raw)
-        if duration_us is not None:
-            supervisor_budget += duration_us / 1_000_000
-    return 60.0 + supervisor_budget
+from hermes_cli.gateway_systemd_wait import (
+    _systemd_restart_wait_timeout,
+    _wait_for_systemd_service_restart,
+)
 
 
 def _systemd_unit_is_start_limited(props: dict[str, str]) -> bool:

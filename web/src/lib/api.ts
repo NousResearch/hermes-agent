@@ -675,11 +675,16 @@ export const api = {
       body: JSON.stringify({ yaml_text }),
     }),
   getEnvVars: () => fetchJSON<Record<string, EnvVarInfo>>("/api/env"),
-  setEnvVar: (key: string, value: string) =>
-    fetchJSON<{ ok: boolean }>("/api/env", {
+  // Third argument is OPT-IN: omit it and this is byte-for-byte the old request (the active
+  // profile only). "dry_run" previews the siblings still holding an older value and writes
+  // nothing; "apply" rotates them too and reports per-profile outcomes.
+  setEnvVar: (key: string, value: string, propagate?: EnvPropagateMode) =>
+    fetchJSON<EnvSaveResult>("/api/env", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key, value }),
+      body: JSON.stringify(
+        propagate ? { key, value, propagate_to_profiles: propagate } : { key, value },
+      ),
     }),
   deleteEnvVar: (key: string) =>
     fetchJSON<{ ok: boolean }>("/api/env", {
@@ -2162,6 +2167,43 @@ export interface EnvVarInfo {
   channel_managed?: boolean;
   /** True when this key is set in .env but not in any catalog (user-added custom key). */
   custom?: boolean;
+}
+
+/**
+ * Opt-in multi-profile fan-out mode for a rotated credential.
+ * ``off`` (default) touches the active profile only, exactly as before.
+ */
+export type EnvPropagateMode = "off" | "dry_run" | "apply";
+
+/** One profile's outcome in a credential fan-out (``pending`` = dry run, would update). */
+export interface EnvPropagationRow {
+  profile: string;
+  home: string;
+  status: "updated" | "skipped" | "failed" | "pending";
+  reason: string;
+  /** True when this profile held the value that was just rotated away. */
+  stale: boolean | null;
+  /** ``config.yaml`` mirrors (e.g. ``model.api_key``) this profile's write reconciled. */
+  config_updates: string[];
+}
+
+export interface EnvPropagation {
+  key: string;
+  dry_run: boolean;
+  results: EnvPropagationRow[];
+  updated: number;
+  pending: number;
+  skipped: number;
+  failed: number;
+}
+
+export interface EnvSaveResult {
+  ok?: boolean;
+  key?: string;
+  config_updates?: string[];
+  dry_run?: boolean;
+  /** Present only when the request opted in to the multi-profile fan-out. */
+  propagation?: EnvPropagation;
 }
 
 export interface TelegramOnboardingStartResponse {

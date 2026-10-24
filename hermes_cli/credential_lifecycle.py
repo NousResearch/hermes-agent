@@ -9,13 +9,19 @@ provider credential should route through :func:`save_provider_env_credential` /
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, List
 
 __all__ = [
+    "propagate_env_credential_to_siblings",
     "purge_env_credential_references",
     "remove_provider_env_credential",
     "save_provider_env_credential",
+    "sibling_profiles_with_env_var",
 ]
+
+# Distinguishes "the value is the empty string" from "the key is absent".
+_MISSING = object()
 
 
 def _providers_for_env_var(env_var: str) -> list[str]:
@@ -220,3 +226,210 @@ def remove_provider_env_credential(env_var: str) -> dict[str, Any]:
         "providers": refs["providers"],
         "config_scrubbed": config_scrubbed,
         "found": bool(removed_from_env or refs["pool_pruned"] or config_scrubbed)}
+
+
+# ---------------------------------------------------------------------------
+# Multi-profile fan-out
+#
+# Rotating a key through ``.env`` alone fixes ONE profile. Every sibling keeps
+# the dead value and keeps 401'ing, so a rotation that "succeeded" leaves the
+# install half-broken (real incident: 11 profiles, 10 stale copies, every agent
+# 401'ing plus a memory backend that could no longer authenticate).
+#
+# The fan-out is deliberately narrow:
+#   * sibling     — a real named-profile dir under <root>/profiles, never the
+#                   active home, never a tombstoned (profiles/.deleted/<name>)
+#                   or hidden entry, deduped by resolved path;
+#   * already has — the profile's ``.env`` must ALREADY define the variable.
+#                   Provisioning the key into a profile that deliberately never
+#                   had it would hand a credential to a tenant that opted out.
+#   * opt-in      — enumeration is read-only; nothing is written unless the
+#                   caller asks for ``apply=True``.
+# ---------------------------------------------------------------------------
+
+
+def _canonical_home(path: str | Path) -> Path:
+    """Best-effort absolute path for identity/dedup comparisons (never raises)."""
+    try:
+        return Path(path).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError):  # pragma: no cover - exotic filesystem
+        return Path(path).expanduser()
+
+
+def sibling_profiles_with_env_var(
+    env_var: str, *, active_home: str | Path | None = None
+) -> list[tuple[str, Path]]:
+    """``(name, home)`` for every sibling profile whose ``.env`` defines ``env_var``.
+
+    ``active_home`` defaults to the current (context-scoped) HERMES_HOME — the profile whose
+    key just rotated. Read-only: this never creates a directory, writes a file, or drops a
+    cache, so it is safe to call on every dashboard save to populate the opt-in prompt.
+    """
+    from hermes_cli.profiles import _PROFILE_ID_RE, _get_profiles_root
+    from hermes_constants import (
+        get_hermes_home,
+        named_profile_has_identity,
+        named_profile_is_deleted,
+    )
+
+    try:
+        active = _canonical_home(active_home if active_home is not None else get_hermes_home())
+    except Exception:
+        return []
+    try:
+        root = _get_profiles_root()
+        entries = sorted(root.iterdir()) if root.is_dir() else []
+    except OSError:
+        return []
+
+    from agent.secret_scope import load_env_file
+
+    seen: set[Path] = {active}
+    found: list[tuple[str, Path]] = []
+    for entry in entries:
+        name = entry.name
+        # ``default`` is the install root, not a sibling; hidden dirs (``.deleted``) are
+        # tombstones/scratch; anything off the profile-id grammar is not a profile.
+        if name == "default" or name.startswith(".") or not _PROFILE_ID_RE.match(name):
+            continue
+        try:
+            if not entry.is_dir():
+                continue
+            if named_profile_is_deleted(entry) or not named_profile_has_identity(entry):
+                continue
+            resolved = _canonical_home(entry)
+            if resolved in seen:
+                continue
+            if env_var not in load_env_file(entry / ".env"):
+                continue
+        except OSError:
+            continue
+        seen.add(resolved)
+        found.append((name, entry))
+    return found
+
+
+def _propagation_row(
+    name: str, home: Path, status: str, reason: str, *, stale: bool | None = None,
+    config_updates: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "profile": name,
+        "home": str(home),
+        "status": status,
+        "reason": reason,
+        "stale": stale,
+        "config_updates": list(config_updates or ()),
+    }
+
+
+def _apply_credential_to_home(env_var: str, value: str, home: Path) -> dict[str, Any]:
+    """Write one sibling home's ``.env`` through the audited save path, then verify it.
+
+    ``set_hermes_home_override`` re-points ``get_env_path()`` / ``get_config_path()`` for the
+    block, so this is the SAME writer the active profile uses: atomic replace, identical
+    quoting, the file's existing mode preserved, and the sibling's own ``config.yaml``
+    mirrors of its previous value scrubbed by ``save_provider_env_credential``.
+    """
+    from agent.secret_scope import load_env_file
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    previous = load_env_file(home / ".env").get(env_var, _MISSING)
+    token = set_hermes_home_override(home)
+    try:
+        result = save_provider_env_credential(env_var, value)
+    finally:
+        reset_hermes_home_override(token)
+
+    # Verify before claiming success: the save path refuses (jobs locked by a managed
+    # install / administrator) by RETURNING, which its caller cannot tell from a write.
+    written = load_env_file(home / ".env").get(env_var, _MISSING)
+    if written != value:
+        return _propagation_row(
+            "", home, "failed",
+            f"{env_var} did not land in {home / '.env'} (refused or overwritten)",
+        )
+    config_updates: list[str] = []
+    raw_updates = result.get("config_updates")
+    if isinstance(raw_updates, list):
+        config_updates = [str(path) for path in raw_updates]
+    if config_updates and isinstance(previous, str) and previous and previous != value:
+        try:
+            mirror_text = (home / "config.yaml").read_text(encoding="utf-8")
+        except OSError as exc:
+            return _propagation_row(
+                "", home, "failed", f"config.yaml unreadable after scrub: {exc}",
+            )
+        if previous in mirror_text:
+            return _propagation_row(
+                "", home, "failed",
+                f"stale value still present in {home / 'config.yaml'}",
+            )
+    return _propagation_row("", home, "updated", "updated", config_updates=config_updates)
+
+
+def propagate_env_credential_to_siblings(
+    env_var: str,
+    value: str,
+    *,
+    old_value: str | None = None,
+    active_home: str | Path | None = None,
+    apply: bool = False,
+) -> dict[str, Any]:
+    """Fan a rotated credential out to the sibling profiles that already define it.
+
+    ``apply=False`` (dry run): enumerate + classify only — nothing on disk changes.
+    ``apply=True``: write each eligible sibling's ``.env`` through the audited save path
+    (home-overridden), scrub that home's ``config.yaml`` mirrors of the previous value, and
+    verify each write landed. One profile's failure never aborts the rest.
+
+    A sibling is updated when it already defines ``env_var`` and its value differs from
+    ``value`` (a profile holding the new value is untouched). ``old_value`` — the value the
+    active profile held before the rotation, when the caller knows it — only labels a row as
+    stale (``stale=True``) for reporting; it never changes what gets written.
+
+    Returns ``{"key", "dry_run", "results": [...], "updated", "pending", "skipped", "failed"}``
+    where each row is ``{"profile", "home", "status", "reason", "stale", "config_updates"}``
+    and ``status`` is ``updated`` / ``skipped`` / ``failed`` (``pending`` for a dry run's
+    to-be-updated rows).
+    """
+    results: list[dict[str, Any]] = []
+    from agent.secret_scope import load_env_file
+
+    for name, home in sibling_profiles_with_env_var(env_var, active_home=active_home):
+        current = load_env_file(home / ".env").get(env_var, _MISSING)
+        if current is _MISSING:
+            results.append(_propagation_row(
+                name, home, "failed", f"{env_var} is not readable from {home / '.env'}",
+            ))
+            continue
+        if current == value:
+            results.append(_propagation_row(
+                name, home, "skipped", "already holds the new value", stale=False,
+            ))
+            continue
+        stale = (current == old_value) if old_value is not None else None
+        label = "holds the previous value" if stale else "holds a different value"
+        if not apply:
+            results.append(_propagation_row(name, home, "pending", label, stale=stale))
+            continue
+        try:
+            row = _apply_credential_to_home(env_var, value, home)
+        except Exception as exc:  # one bad home must not abort the others
+            row = _propagation_row(name, home, "failed", f"{type(exc).__name__}: {exc}")
+        row["profile"] = name
+        row["stale"] = stale
+        results.append(row)
+
+    def _count(status: str) -> int:
+        return sum(1 for r in results if r["status"] == status)
+
+    return {
+        "key": env_var,
+        "dry_run": not apply,
+        "results": results,
+        "updated": _count("updated"),
+        "pending": _count("pending"),
+        "skipped": _count("skipped"),
+        "failed": _count("failed"),
+    }

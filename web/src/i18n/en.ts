@@ -546,6 +546,14 @@ export const en: Translations = {
     confirmClearMessage:
       "The stored value for this variable will be removed from your .env file. This cannot be undone from the UI.",
     confirmClearTitle: "Clear this key?",
+    propagationOffer: "Update {count} other profile(s) that still have the old key?",
+    propagationHint:
+      "Each profile keeps its own .env. Only profiles that already had this key are touched, and a failed profile never stops the others.",
+    propagationApply: "Update profiles",
+    propagationDismiss: "Not now",
+    propagationDone: "{count} other profile(s) updated",
+    propagationFailed: "{updated} updated, {failed} failed — see details",
+    propagationResultTitle: "Other profiles",
     description: "Manage API keys and secrets stored in",
     hideAdvanced: "Hide Advanced",
     showAdvanced: "Show Advanced",

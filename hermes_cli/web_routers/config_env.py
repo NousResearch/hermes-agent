@@ -335,19 +335,50 @@ async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     if is_redacted_credential_preview(body.value):
         raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
     with _env_write_errors("PUT /api/env failed"):
-        return await scoped_to_thread(body.profile or profile, lambda: _save_env_credential(body.key, body.value, body.provider_setup))
+        return await scoped_to_thread(
+            body.profile or profile,
+            lambda: _save_env_credential(
+                body.key, body.value, body.provider_setup, body.propagate_to_profiles
+            ),
+        )
 
 
-def _save_env_credential(key: str, value: str, provider_setup: bool = False) -> Any:
-    """Save under the request's profile scope; a new provider API key also counts as a provider setup."""
+def _save_env_credential(
+    key: str, value: str, provider_setup: bool = False, propagate: str = "off"
+) -> Any:
+    """Save under the request's profile scope; a new provider API key also counts as a provider setup.
+
+    ``propagate`` is the opt-in multi-profile fan-out mode (see ``EnvVarUpdate``). ``"off"``
+    returns exactly what this function returned before the fan-out existed — the other
+    profiles' ``.env`` files are the only place a rotation used to stop short.
+    """
     from hermes_cli.config import load_env
-    from hermes_cli.credential_lifecycle import save_provider_env_credential
+    from hermes_cli.credential_lifecycle import (
+        propagate_env_credential_to_siblings,
+        save_provider_env_credential,
+    )
     from hermes_cli.observability.shared_metrics_setup import record_api_key_saved, web_setup_surface
+
+    # Read-only preview: enumerate the siblings still holding an older value WITHOUT
+    # writing anywhere (not even the primary .env — a preview must have no side effects).
+    if propagate == "dry_run":
+        return {
+            "dry_run": True,
+            "key": key,
+            "propagation": propagate_env_credential_to_siblings(key, value, apply=False),
+        }
 
     previous = load_env().get(key)
     result = save_provider_env_credential(key, value)
     record_api_key_saved(key, value, previous, web_setup_surface(), connecting=provider_setup)
-    return result
+    if propagate != "apply":
+        return result
+    return {
+        **result,
+        "propagation": propagate_env_credential_to_siblings(
+            key, value, old_value=previous, apply=True
+        ),
+    }
 
 
 # Live credential probes keyed by env var: (url, auth) where auth is "bearer"

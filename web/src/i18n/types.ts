@@ -567,6 +567,13 @@ export interface Translations {
     notConfigured: string;
     notSet: string;
     providersConfigured: string;
+    propagationApply?: string;
+    propagationDismiss?: string;
+    propagationDone?: string;
+    propagationFailed?: string;
+    propagationHint?: string;
+    propagationOffer?: string;
+    propagationResultTitle?: string;
     replaceCurrentValue: string;
     showAdvanced: string;
     showLess: string;

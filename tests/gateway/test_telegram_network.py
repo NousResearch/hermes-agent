@@ -425,7 +425,8 @@ class TestDiscoverFallbackIps:
         }, system_dns_ips=["149.154.166.110"])
 
         ips = await tnet.discover_fallback_ips()
-        assert ips == ["149.154.166.110", "149.154.167.220"]
+        assert ips[:2] == ["149.154.166.110", "149.154.167.220"]
+        assert len(ips) == len(set(ips))
 
     @pytest.mark.asyncio
     async def test_doh_results_deduplicated(self, monkeypatch):
@@ -435,7 +436,48 @@ class TestDiscoverFallbackIps:
         }, system_dns_ips=["149.154.166.110"])
 
         ips = await tnet.discover_fallback_ips()
-        assert ips == ["149.154.167.220"]
+        assert ips[0] == "149.154.167.220"
+        assert ips.count("149.154.167.220") == 1
+
+    @pytest.mark.asyncio
+    async def test_single_doh_answer_keeps_seed_alternatives(self, monkeypatch):
+        """One DoH answer must not be the only fallback: when that address stops answering, the
+        transport still needs another one to try. DoH answers stay first, seeds follow."""
+        doh_ip = "149.154.167.221"
+        assert doh_ip not in tnet.SEED_FALLBACK_IPS
+        self._patch_doh(monkeypatch, {
+            "https://dns.google": (200, _doh_answer(doh_ip)),
+            "https://cloudflare-dns.com": (200, _doh_answer(doh_ip)),
+        }, system_dns_ips=[doh_ip])
+
+        ips = await tnet.discover_fallback_ips()
+
+        assert ips[0] == doh_ip
+        assert set(tnet.SEED_FALLBACK_IPS) <= set(ips[1:])
+        assert len(ips) == len(set(ips))
+
+    @pytest.mark.asyncio
+    async def test_dead_doh_answer_recovers_through_a_seed(self, monkeypatch):
+        """DoH often answers with the address the hostname already resolves to, so when that address
+        stops answering the hostname path fails with it. The transport built from the discovered list
+        still gets through on a seed address."""
+        doh_ip = "149.154.167.221"
+        self._patch_doh(monkeypatch, {
+            "https://dns.google": (200, _doh_answer(doh_ip)),
+            "https://cloudflare-dns.com": (200, _doh_answer(doh_ip)),
+        }, system_dns_ips=[doh_ip])
+        ips = await tnet.discover_fallback_ips()
+
+        calls = []
+        behavior = {doh_ip: "timeout", "api.telegram.org": "timeout"}
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+        transport = tnet.TelegramFallbackTransport(ips)
+        resp = await transport.handle_async_request(_telegram_request())
+
+        assert resp.status_code == 200
+        assert calls[0]["url_host"] == doh_ip
+        assert calls[-1]["url_host"] in tnet.SEED_FALLBACK_IPS
+        assert transport._sticky_ip == calls[-1]["url_host"]
 
     @pytest.mark.asyncio
     async def test_all_doh_ips_same_as_system_dns_kept(self, monkeypatch):
@@ -452,7 +494,7 @@ class TestDiscoverFallbackIps:
         }, system_dns_ips=["149.154.166.110"])
 
         ips = await tnet.discover_fallback_ips()
-        assert ips == ["149.154.166.110"]
+        assert ips[0] == "149.154.166.110"
 
     @pytest.mark.asyncio
     async def test_hung_system_dns_does_not_gate_doh_results(self, monkeypatch):
@@ -477,5 +519,5 @@ class TestDiscoverFallbackIps:
         ips = await tnet.discover_fallback_ips()
         elapsed = _time.monotonic() - start
 
-        assert ips == ["149.154.167.220"]
+        assert ips[0] == "149.154.167.220"
         assert elapsed < 1.4, f"discovery gated on hung system DNS ({elapsed:.2f}s)"

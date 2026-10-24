@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class NativeSummaryMixin:
     def _native_first_summarize_window(
         self, native_summary: Any, original_messages: list[dict[str, Any]], messages: list[dict[str, Any]],
-        kept_tail_start: int, turns_to_summarize: list[dict[str, Any]], scan: "_HandoffScan",
+        kept_tail_start: int, turns_to_summarize: list[dict[str, Any]], scan: _HandoffScan,
         focus_topic: Optional[str], memory_context: str, bypass_cooldown: bool,
     ) -> Optional[str]:
         """``_summarize_window`` with the native source planned for this one attempt.

@@ -648,6 +648,7 @@ class GatewayConfig:
     # Prune SessionEntry records older than this (a resumed chat gets a fresh session). 0 = off.
     session_store_max_age_days: int = 90
     profile_routes: list = field(default_factory=list)  # gateway/profile_routing.py
+    protected_channel_toolsets: list = field(default_factory=list)  # gateway/protected_channel_tools.py
 
     # Scalar fields serialized verbatim by ``to_dict`` (in output order).
     _SCALAR_DICT_FIELDS = (
@@ -703,6 +704,10 @@ class GatewayConfig:
                 {k: v for k, v in asdict(r).items() if k != "user_id" or v is not None}
                 if is_dataclass(r) and not isinstance(r, type) else r
                 for r in self.profile_routes
+            ],
+            "protected_channel_toolsets": [
+                {**asdict(p), "toolsets": list(p.toolsets)} if is_dataclass(p) else p
+                for p in self.protected_channel_toolsets
             ],
         }
 
@@ -776,6 +781,10 @@ class GatewayConfig:
             session_store_max_age_days = 90
 
         from gateway.profile_routing import parse_profile_routes
+        from gateway.protected_channel_tools import parse_protected_channel_toolsets
+
+        protected_raw = (data["protected_channel_toolsets"] if "protected_channel_toolsets" in data
+                         else nested_gateway.get("protected_channel_toolsets", []))
 
         return cls(
             platforms=by_platform("platforms", PlatformConfig.from_dict, dicts_only=True),
@@ -799,6 +808,7 @@ class GatewayConfig:
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=parse_profile_routes(data.get("profile_routes") or []),
+            protected_channel_toolsets=parse_protected_channel_toolsets(protected_raw),
         )
 
     def _extra_choice(self, platform: Optional[Platform], key: str, choices: set, default: str) -> Optional[str]:

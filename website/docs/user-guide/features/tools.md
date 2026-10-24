@@ -57,6 +57,24 @@ Common toolsets include `web`, `search`, `terminal`, `file`, `browser`, `vision`
 
 See [Toolsets Reference](../../reference/toolsets-reference.md) for the full set, including platform presets such as `hermes-cli`, `hermes-telegram`, and dynamic MCP toolsets like `mcp-<server>`.
 
+### Select tools for one messaging channel
+
+An operator can opt one channel into a smaller tool catalog without changing the bot's other channels. Match the receiving bot profile, platform, workspace, and channel exactly in `config.yaml`:
+
+```yaml
+gateway:
+  protected_channel_toolsets:
+    - platform: slack
+      scope_id: T_WORKSPACE_ID
+      chat_id: C_CHANNEL_ID
+      bot_profile: default
+      toolsets: [web]
+```
+
+For Slack, `scope_id` is the workspace/team ID from the incoming event. A missing or mismatched workspace or receiving bot makes that channel's event ineligible for admission. The selected toolsets also apply to queued turns, and tool calls outside the catalog are refused before dispatch. Ambient MCP servers are not added to protected turns. If a toolset is unavailable at runtime, the protected turn fails instead of inheriting the platform's broader catalog. Protected turns cannot run through a remote proxy agent that cannot enforce this setting.
+
+This is an in-process tool-selection guard, not per-user authorization or a sandbox for untrusted code. The services behind the tools must still check each user's identity and permissions. An absent policy entry restores normal platform behavior, so deployment checks should verify that required entries remain present after configuration changes.
+
 ## Tool result annotations
 
 A few tool behaviors are worth knowing when you read agent transcripts:

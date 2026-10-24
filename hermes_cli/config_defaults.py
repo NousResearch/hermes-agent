@@ -2173,10 +2173,10 @@ DEFAULT_CONFIG = {
         # hand (it is not an opt-out from the one-gateway-per-host model, which has none). Only the
         # AUTOMATIC path reads this: `hermes gateway migrate --multiplex` is explicit and proceeds.
         "auto_multiplex_migration": True,
-        # Route inbound chats of the default profile's bots to another profile
-        # (gateway/profile_routing.py): [{profile, platform, chat_id|user_id|guild_id|...}].
-        # Most-specific match wins; only read by the multiplexing default gateway.
+        # Default-bot profile routes use the most-specific match in multiplex mode.
+        # Shape: [{profile, platform, chat_id|user_id|guild_id|...}].
         "profile_routes": [],
+        "protected_channel_toolsets": [],
         # Scale-to-zero idle TIMEOUT only. When an instance is opted in via the NAS "Labs" toggle
         # (HERMES_SCALE_TO_ZERO env stamp) AND messaging is relay-only/absent AND a wakeUrl is
         # registered, the relay transport goes dormant so the platform (e.g. Fly autostop) can

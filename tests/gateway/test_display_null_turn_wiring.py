@@ -33,6 +33,7 @@ def _wire(user_config):
         _status_adapter=None,
         session_key="",
         user_config=user_config,
+        disabled_toolsets=None,
         source=types.SimpleNamespace(platform="telegram"),
         mute_notification_reply=False,
         _thinking_enabled=False,
@@ -48,6 +49,7 @@ def _wire(user_config):
         _runner=types.SimpleNamespace(
             _service_tier=None,
             _consume_pending_turn_sidecar_notes=lambda key: [],
+            _protected_channel_tool_names=lambda *_: None,
         ),
         _make_bg_review_callbacks=lambda: (lambda message: None, lambda: None),
         _merge_turn_request_overrides=TurnRunner._merge_turn_request_overrides,

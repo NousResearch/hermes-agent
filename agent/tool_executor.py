@@ -708,6 +708,9 @@ def _dispatch_authorized_once(
         elif callback is not None:
             callback()
 
+    allowed = getattr(agent, "_protected_channel_tool_names", None)
+    if allowed is not None and ref.name not in allowed:
+        scope_block = "This tool is unavailable in this channel."
     block_message, block_error_type = scope_block, "tool_scope_block"
     if block_message is None:
         block_error_type = "plugin_block"

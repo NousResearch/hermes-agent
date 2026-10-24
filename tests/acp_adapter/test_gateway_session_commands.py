@@ -164,7 +164,7 @@ async def test_modes_and_the_config_option_set_the_owners_edit_policy():
 async def test_the_editors_own_pick_projected_before_the_mutation_answers_is_harmless():
     """The owner publishes ``session.info`` inside the commit, before ``session.mutate`` answers, so the
     pump may project the editor's own pick first: at most one ``current_mode_update`` of the picked
-    mode, and the pump keeps running."""
+    mode (and its ``config_option_update`` for clients that read ``configOptions``), and the pump keeps running."""
     async def rpc(method, **params):
         if method == 'session.resume':
             return {'revision': 3, 'execution_generation': 7}
@@ -176,7 +176,9 @@ async def test_the_editors_own_pick_projected_before_the_mutation_answers_is_har
     agent._modes['s'] = 'default'
     await agent.set_session_mode('dont_ask', 's')
     shown = [call.kwargs['update'] for call in agent._conn.session_update.await_args_list]
-    assert [(u.session_update, u.current_mode_id) for u in shown] == [('current_mode_update', 'dont_ask')], shown
+    assert [u.session_update for u in shown] == ['current_mode_update', 'config_option_update'], shown
+    assert shown[0].current_mode_id == 'dont_ask'
+    assert shown[1].config_options[0].current_value == 'session', shown[1]
     assert agent._modes['s'] == 'dont_ask' and agent._failure is None
 
 

@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import logging
 import os
 import socket
 from types import SimpleNamespace
@@ -244,6 +245,65 @@ class TestCallbackDispatch:
         await adapter._dispatch_payload({"cmd": cmd, "headers": {"req_id": "req-1"}, "body": {}})
 
         adapter._on_message.assert_awaited_once()
+
+
+class TestHeartbeatAckClassification:
+    """The heartbeat ping's ack carries an empty ``cmd`` and echoes the ping's own
+    ``req_id``. That is expected traffic on every healthy connection, so it must
+    not print the ``Unrouted websocket payload dropped`` INFO line: one entry per
+    ``HEARTBEAT_INTERVAL_SECONDS`` is ~2,880 lines/day per connected bot and
+    pushes real history out of the rotating ``agent.log``. Anything genuinely
+    unrouted must still surface there."""
+
+    _PING_REQ_ID = "ping-4ae1c108dfd84a47a94b66a19b924c93"
+
+    @staticmethod
+    def _adapter():
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        return WeComAdapter(PlatformConfig(enabled=True))
+
+    @staticmethod
+    def _unrouted(caplog):
+        return [r.getMessage() for r in caplog.records if "Unrouted websocket payload dropped" in r.getMessage()]
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_ack_is_not_reported_as_unrouted(self, caplog):
+        adapter = self._adapter()
+
+        with caplog.at_level(logging.INFO):
+            await adapter._dispatch_payload({"cmd": "", "headers": {"req_id": self._PING_REQ_ID}})
+
+        assert self._unrouted(caplog) == []
+
+    @pytest.mark.asyncio
+    async def test_empty_cmd_with_a_non_ping_req_id_is_still_reported(self, caplog):
+        """Only the ack to *our* ping is expected traffic: an empty ``cmd`` under
+        any other ``req_id`` keeps the INFO drop line."""
+        adapter = self._adapter()
+
+        with caplog.at_level(logging.INFO):
+            await adapter._dispatch_payload({"cmd": "", "headers": {"req_id": "req-1"}})
+
+        assert len(self._unrouted(caplog)) == 1
+
+    @pytest.mark.asyncio
+    async def test_unknown_cmd_is_still_reported_even_with_a_ping_req_id(self, caplog):
+        adapter = self._adapter()
+
+        with caplog.at_level(logging.INFO):
+            await adapter._dispatch_payload({"cmd": "aibot_not_implemented", "headers": {"req_id": self._PING_REQ_ID}})
+
+        assert len(self._unrouted(caplog)) == 1
+
+    @pytest.mark.asyncio
+    async def test_ping_echo_stays_silent(self, caplog):
+        adapter = self._adapter()
+
+        with caplog.at_level(logging.INFO):
+            await adapter._dispatch_payload({"cmd": "ping", "headers": {"req_id": "req-1"}})
+
+        assert self._unrouted(caplog) == []
 
 
 class TestPolicyHelpers:

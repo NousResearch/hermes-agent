@@ -54,6 +54,10 @@ APP_CMD_CALLBACK = "aibot_msg_callback"
 APP_CMD_LEGACY_CALLBACK = "aibot_callback"
 APP_CMD_EVENT_CALLBACK = "aibot_event_callback"
 APP_CMD_PING = "ping"
+# The heartbeat ping is sent with `req_id = _new_req_id("ping")` → `ping-<uuid hex>`.
+# WeCom answers it with an ack whose `cmd` is empty and whose `req_id` echoes ours:
+# that pair is expected traffic, not an unrouted payload.
+PING_REQ_ID_PREFIX = APP_CMD_PING + "-"
 
 CALLBACK_COMMANDS = {APP_CMD_CALLBACK, APP_CMD_LEGACY_CALLBACK}
 NON_RESPONSE_COMMANDS = CALLBACK_COMMANDS | {APP_CMD_EVENT_CALLBACK}
@@ -348,7 +352,13 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
                 logger.warning("[%s] Kicked by server (another WS connection established). Suppressing reconnect to avoid mutual kicking. Check for duplicate gateway instances.", self.name)
                 self._running = False
         elif cmd != APP_CMD_PING:
-            logger.info("[%s] Unrouted websocket payload dropped: cmd=%r req_id=%s body_keys=%s", self.name, cmd or "(empty)", req_id or "(none)", list(body_dict.keys()) if body_dict is not None else None)
+            if not cmd and req_id.startswith(PING_REQ_ID_PREFIX):
+                # Expected traffic: the ack to our own heartbeat ping. Kept at DEBUG so the
+                # INFO drop line stays a signal for genuinely unrouted payloads instead of one
+                # entry every HEARTBEAT_INTERVAL_SECONDS (~2,880/day per connected bot).
+                logger.debug("[%s] Dropped heartbeat ack: req_id=%s body_keys=%s", self.name, req_id, list(body_dict.keys()) if body_dict is not None else None)
+            else:
+                logger.info("[%s] Unrouted websocket payload dropped: cmd=%r req_id=%s body_keys=%s", self.name, cmd or "(empty)", req_id or "(none)", list(body_dict.keys()) if body_dict is not None else None)
 
     def _fail_pending_responses(self, exc: Exception) -> None:
         for req_id, future in list(self._pending_responses.items()):

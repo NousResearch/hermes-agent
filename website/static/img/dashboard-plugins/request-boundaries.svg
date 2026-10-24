@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="740" viewBox="0 0 1200 740" role="img" aria-labelledby="title desc">
+  <title id="title">Two Routes, Two Data Rules</title>
+  <desc id="desc">Conceptual request flow on one Dashboard origin. Allowlisted plugin JS, CSS, JSON and HTML are public code for enabled plugins. The fixed HTML page is an API response: the host authenticates first, then checks plugin activation, then serves page.html. Unauthorized requests receive 401 and authenticated requests to a disabled plugin receive 404.</desc>
+  <defs>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#1e293b" stroke-width="0.5"/></pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#94a3b8"/></marker>
+    <style>text{font-family:Arial,Helvetica,sans-serif;fill:#e2e8f0}.mono{font-family:"DejaVu Sans Mono",monospace}.muted{fill:#a8b7cb}.small{font-size:16px}.label{font-size:17px;font-weight:700;letter-spacing:1px}</style>
+  </defs>
+  <rect width="1200" height="740" rx="18" fill="#020617"/>
+  <rect width="1200" height="740" rx="18" fill="url(#grid)"/>
+  <text x="44" y="43" class="label" style="fill:#22d3ee">HERMES / DASHBOARD PLUGIN RECIPE</text>
+  <text x="44" y="93" font-size="34" font-weight="700">Two Routes, Two Data Rules</text>
+  <text x="44" y="126" font-size="18" class="muted">Reuse the Dashboard origin and its gates. Never create a credential shortcut for a custom page.</text>
+  <!-- Request connections are behind the component boxes. -->
+  <path d="M248 294H284V236H324" fill="none" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M248 342H284V420H324" fill="none" stroke="#fb7185" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arrow)"/>
+  <path d="M558 420H602M836 420H880" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M444 480V514M722 480V514" fill="none" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <rect x="44" y="257" width="204" height="121" rx="10" fill="#0f172a" stroke="#22d3ee" stroke-width="1.5"/>
+  <text x="68" y="297" font-size="24" font-weight="700">Browser</text>
+  <text x="68" y="326" class="small muted">Existing Dashboard</text>
+  <text x="68" y="351" class="small muted">Same origin</text>
+  <rect x="330" y="169" width="826" height="131" rx="10" fill="#0f172a" stroke="#22d3ee" stroke-width="1.5"/>
+  <text x="352" y="202" class="label" style="fill:#22d3ee">UI ASSETS / PUBLIC CODE</text>
+  <text x="352" y="235" class="mono" font-size="19">/dashboard-plugins/my-plugin/dist/index.js</text>
+  <text x="352" y="268" font-size="17" class="muted">Enabled plugin + allowlisted JS/CSS/JSON/HTML · No secrets or private data</text>
+  <text x="330" y="345" class="mono" font-size="20">GET /api/plugins/my-plugin/page</text>
+  <rect x="330" y="367" width="228" height="113" rx="10" fill="#0f172a"/>
+  <rect x="330" y="367" width="228" height="113" rx="10" fill="#881337" fill-opacity="0.25" stroke="#fb7185" stroke-width="1.5"/>
+  <text x="350" y="402" font-size="20" font-weight="700">1. Authenticate</text>
+  <text x="350" y="434" class="small muted">Existing host gate</text>
+  <text x="350" y="459" class="small muted">No custom credentials</text>
+  <rect x="608" y="367" width="228" height="113" rx="10" fill="#0f172a"/>
+  <rect x="608" y="367" width="228" height="113" rx="10" fill="#064e3b" fill-opacity="0.25" stroke="#34d399" stroke-width="1.5"/>
+  <text x="628" y="402" font-size="20" font-weight="700">2. Check Plugin</text>
+  <text x="628" y="434" class="small muted">Explicitly enabled</text>
+  <text x="628" y="459" class="small muted">Not explicitly disabled</text>
+  <rect x="886" y="367" width="270" height="113" rx="10" fill="#0f172a" stroke="#34d399" stroke-width="1.5"/>
+  <text x="906" y="402" font-size="20" font-weight="700">3. Serve Fixed HTML</text>
+  <text x="906" y="434" class="mono" font-size="18">pages/page.html</text>
+  <text x="906" y="459" class="small muted">Outside dashboard/</text>
+  <rect x="330" y="518" width="228" height="56" rx="8" fill="#25131f" stroke="#6f334a"/>
+  <text x="350" y="552" font-size="18" style="fill:#fda4af">No session → 401</text>
+  <rect x="608" y="518" width="228" height="56" rx="8" fill="#25131f" stroke="#6f334a"/>
+  <text x="628" y="552" font-size="18" style="fill:#fda4af">Disabled → 404</text>
+  <rect x="44" y="617" width="1112" height="58" rx="10" fill="#0f172a" stroke="#334155"/>
+  <text x="64" y="652" font-size="17" class="muted">Direct page navigation assumes cookie authentication. Token-only loopback users should keep the SDK tab.</text>
+  <text x="44" y="714" class="small muted">CONCEPTUAL DIAGRAM · Not a login test, a live screenshot or an authorization change.</text>
+</svg>

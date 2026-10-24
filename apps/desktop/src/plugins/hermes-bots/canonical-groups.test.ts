@@ -94,3 +94,24 @@ it('creates only same-authority rosters and dispatches exact advertised attempt 
   expect(host.requestProfile).toHaveBeenCalledTimes(count)
   expect(host.request).not.toHaveBeenCalled()
 })
+
+it('reuses the room id when a create is retried after a lost reply, and mints a new one for a new intent', async () => {
+  const route = captureCanonicalGroupRoute()
+
+  const members = [
+    { name: 'alice', handle: 'alice', connectionId: 'source-a' },
+    { name: 'bob', handle: 'bob', connectionId: 'source-a' }
+  ]
+
+  const sentRoomIds = () => host.requestProfile.mock.calls.map(call => call[2].room_id)
+  host.requestProfile.mockImplementation(async (_route, _method, params) => ({ room: { room_id: params.room_id, name: params.name, members: params.members } }))
+  host.requestProfile.mockRejectedValueOnce(new Error('request timed out'))
+
+  await expect(createCanonicalGroup(route, 'Retry room', members)).rejects.toThrow('request timed out')
+  await createCanonicalGroup(route, 'Retry room', members)
+  expect(sentRoomIds()[1]).toBe(sentRoomIds()[0])
+
+  await createCanonicalGroup(route, 'Retry room', members)
+  await createCanonicalGroup(route, 'Renamed room', members)
+  expect(new Set(sentRoomIds()).size).toBe(3)
+})

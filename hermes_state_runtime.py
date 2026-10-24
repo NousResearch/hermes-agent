@@ -822,6 +822,49 @@ def mutate_worker_execution(db, *, epoch, execution_id, session_id, generation,
                                 payload=payload, handlers=handlers)
 
 
+def read_worker_receipt(db, *, epoch, execution_id, session_id, generation, sequence, operation, payload):
+    """Read proof of an exact committed receipt, never create one or revive an assignment.
+
+    One SELECT binds receipt, epoch and current generation/status to the same SQLite
+    snapshot. Absence is unknown (the physical writer may still commit), not noncommit.
+    """
+    if type(sequence) is not int or sequence < 1 or not isinstance(operation, str):
+        raise RuntimeStoreError('invalid_params')
+    encoded = _json(payload)
+    if len(encoded.encode('utf-8', errors='surrogatepass')) > 4 * 1024 * 1024:
+        raise RuntimeStoreError('invalid_params')
+    digest = admission_fingerprint(canonical_target=session_id,
+                                  payload={'operation': operation, 'payload': json.loads(encoded)})
+    with db._read_ctx() as conn:
+        row = conn.execute('''SELECT w.session_id,w.generation,w.owner_epoch,w.status,
+            s.runtime_generation,e.epoch,r.payload_digest,r.result_json
+            FROM worker_executions w JOIN sessions s ON s.id=w.session_id
+            JOIN runtime_epoch e ON e.singleton=1
+            LEFT JOIN worker_receipts r ON r.execution_id=w.execution_id AND r.sequence=?
+            WHERE w.execution_id=?''', (sequence, execution_id)).fetchone()
+    if row is None:
+        raise RuntimeStoreError('unknown_receipt')
+    if type(epoch) is not int or row['epoch'] != epoch or row['owner_epoch'] != epoch:
+        raise RuntimeStoreError('stale_epoch')
+    if (type(generation) is not int or row['generation'] != generation
+            or row['runtime_generation'] != generation or row['status'] not in ('registered', 'running')):
+        raise RuntimeStoreError('stale_generation')
+    if row['payload_digest'] is None:
+        raise RuntimeStoreError('unknown_receipt')
+    if row['payload_digest'] != digest:
+        raise RuntimeStoreError('admission_conflict')
+    from hermes_state_runtime_workers import retired_receipt
+    if retired_receipt(row['result_json']):
+        raise RuntimeStoreError('stale_generation')
+    result = json.loads(row['result_json'])
+    assignment = result.get('worker_assignment') or {}
+    if row['session_id'] != session_id and not (
+            operation == 'compression.publish' and assignment.get('parent') == session_id
+            and assignment.get('session_id') == row['session_id']):
+        raise RuntimeStoreError('permission_denied')
+    return result
+
+
 def apply_worker_receipt(db, *, epoch, execution_id, session_id, generation, sequence,
                          operation, payload, handlers):
     """The one worker receipt transaction every ``worker.persist`` family shares.

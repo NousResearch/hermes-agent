@@ -14,6 +14,9 @@ from pathlib import Path
 import queue
 import sys
 import threading
+import time
+
+from agent.worker_rpc_budget import BoundedIO, WorkerRPCBudget, remaining
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +67,9 @@ class _OwnerLink:
     def __init__(self, ws):
         self.ws = ws
         self.awaiting = None
+        self.identity = None
+        self.progress = None
+        self.on_progress = None
         self.replies = queue.SimpleQueue()
         self.reader = threading.Thread(target=self._read, name='worker-rpc-reader', daemon=True)
         self.reader.start()
@@ -75,23 +81,44 @@ class _OwnerLink:
                     frame = json.loads(self.ws.recv())
                 except ValueError:
                     continue
-                if isinstance(frame, dict) and self.awaiting is not None and frame.get('id') == self.awaiting:
+                if not isinstance(frame, dict):
+                    continue
+                if frame.get('method') == 'worker.persist.progress':
+                    hint = frame.get('params')
+                    if (self.identity is not None and isinstance(hint, dict)
+                            and set(hint) == set(self.identity) | {'phase'}
+                            and all(hint.get(key) == value for key, value in self.identity.items())
+                            and hint.get('phase') in ('storage_pending', 'storage_settled')):
+                        self.progress = dict(hint)
+                        if self.on_progress is not None:
+                            self.on_progress(self.progress)
+                    continue
+                if self.awaiting is not None and frame.get('id') == self.awaiting:
                     self.replies.put(frame)
         except Exception as exc:  # health: allow BLE001 -- handed to the caller, which raises it (ConnectionClosed included)
             self.replies.put(exc)
 
     def send(self, request_id, message):
+        from gateway.session_worker_progress import receipt_identity
         self.awaiting = request_id
+        self.identity = receipt_identity(json.loads(message).get('params', {}))
+        self.progress = None
         self.ws.send(message)
 
     def receive(self, timeout):
-        try:
-            reply = self.replies.get(timeout=timeout)
-        except queue.Empty:
-            raise TimeoutError('worker_receipt_timeout') from None
-        if isinstance(reply, BaseException):
-            raise reply
-        return reply
+        request_id = self.awaiting
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                reply = self.replies.get(timeout=remaining(deadline))
+            except queue.Empty:
+                raise TimeoutError('worker_receipt_timeout') from None
+            if isinstance(reply, BaseException):
+                raise reply
+            # A physically unsettled send can leave its ACK queued after the
+            # caller times out. Recheck at consumption, not only reader enqueue.
+            if reply.get('id') == request_id:
+                return reply
 
 
 class WorkerRPC:
@@ -103,10 +130,38 @@ class WorkerRPC:
     """
     def __init__(self, home):
         self.home = Path(home).resolve()
+        self.budget = WorkerRPCBudget.load(self.home)
         self.lock = threading.Lock()
         self.endpoint = None
         self.link = None
         self.request_id = 0
+        self._call_deadline = None
+        self._recovery = threading.local()
+        self._inflight_io = None
+        self._closing_io = None
+        self.observation = {}
+
+    def _observe(self, phase, params, deadline):
+        # This is a caller observation, NOT owner progress or commit proof.
+        # No payload, secret, raw transport error or result is published.
+        self.observation = {key: params[key] for key in
+                            ('execution_id', 'sequence', 'operation', 'generation', 'epoch') if key in params}
+        self.observation.update(phase=phase, deadline=deadline, observed_at=time.monotonic())
+
+    def _io(self, operation, deadline, phase):
+        flight = self._inflight_io
+        if flight is not None:
+            if not flight.done.is_set():
+                raise WorkerPersistenceError('worker_transport_unsettled')
+            flight.thread.join()
+            self._inflight_io = None
+        flight = self._inflight_io = BoundedIO(operation, phase)
+        try:
+            return flight.wait(deadline)
+        finally:
+            if flight.done.is_set():
+                flight.thread.join()
+                self._inflight_io = None
 
     def _connection(self):
         if self.link is not None:
@@ -139,16 +194,51 @@ class WorkerRPC:
         return self.link
 
     def _drop(self):
+        closing = self._closing_io
+        if closing is not None:
+            if not closing.done.is_set():
+                return False
+            closing.thread.join()
+            self._closing_io = None
+        flight = self._inflight_io
+        if flight is not None and not flight.done.is_set():
+            # Retain physical custody. Closing while connect is still publishing
+            # its link (or send holds the protocol lock) is not cancellation.
+            return False
         link, self.link = self.link, None
-        if link is not None:
-            with contextlib.suppress(OSError):  # a broken socket is already gone
+        if link is None:
+            return True
+        def close_link():
+            with contextlib.suppress(OSError):
                 link.ws.close()
+        closing = self._closing_io = BoundedIO(close_link, 'close')
+        try:
+            closing.wait(time.monotonic() + self.budget.close_timeout_seconds)
+        except TimeoutError:
+            return False
+        self._closing_io = None
+        return True
 
     def close(self):
-        with self.lock:
-            self._drop()
+        if not self.lock.acquire(timeout=self.budget.close_timeout_seconds):
+            return False
+        try:
+            return self._drop()
+        finally:
+            self.lock.release()
+
+    def reconcile_receipt(self, **params):
+        """Read only the exact immutable entry; share the failed call's deadline."""
+        saved = getattr(self._recovery, 'pending', None)
+        identity = json.dumps(params, sort_keys=True, allow_nan=False)
+        deadline = (saved[1] if saved is not None and saved[0] == identity
+                    else time.monotonic() + self.budget.recovery_timeout_seconds)
+        return self._call('worker.persist', dict(params, receipt_only=True), deadline=deadline)
 
     def __call__(self, method, **params):
+        return self._call(method, params)
+
+    def _call(self, method, params, *, deadline=None):
         try:
             asyncio.get_running_loop()
         except RuntimeError:
@@ -158,24 +248,36 @@ class WorkerRPC:
                            method, threading.current_thread().name, _caller_summary())
             raise WorkerPersistenceError('synchronous_rpc_on_event_loop')
         from websockets.exceptions import ConnectionClosed
-        with self.lock:
+        now = time.monotonic()
+        total_deadline = deadline if deadline is not None else now + self.budget.rpc_timeout_seconds
+        reserve = (self.budget.recovery_timeout_seconds
+                   if method == 'worker.persist' and not params.get('receipt_only') else 0)
+        call_deadline = total_deadline - reserve
+        if not self.lock.acquire(timeout=remaining(call_deadline)):
+            raise TimeoutError('worker_receipt_timeout')
+        try:
+            if self._closing_io is not None and not self._drop():
+                raise WorkerPersistenceError('worker_transport_unsettled')
+            self._call_deadline = call_deadline
             self.request_id += 1
             request_id = self.request_id
             message = json.dumps({'jsonrpc': '2.0', 'id': request_id, 'method': method, 'params': params})
             try:
-                link = self._connection()
-                try:
-                    link.send(request_id, message)
-                except ConnectionClosed:
-                    # websockets raises this from send only before a complete frame is written (closed
-                    # on entry, or the socket write failed): the owner closed the link after the idle
-                    # check and never saw this request, so redial and send it once more.
-                    self._drop()
-                    link = self._connection()
-                    link.send(request_id, message)
-                response = link.receive(20)
+                remaining(call_deadline)
+                self._observe('connecting', params, total_deadline)
+                link = self._io(self._connection, call_deadline, 'connect')
+                remaining(call_deadline)
+                # A send error can follow partial or complete transmission. Never
+                # redispatch the mutation; the store can prove an immutable receipt.
+                self._observe('sending', params, total_deadline)
+                self._io(lambda: link.send(request_id, message), call_deadline, 'send')
+                self._observe('awaiting_receipt', params, total_deadline)
+                response = link.receive(remaining(call_deadline))
+                remaining(call_deadline)
             except BaseException:
-                # Outcome unknown once sent: surface the error and never resend; the next call redials.
+                self._observe('unknown', params, total_deadline)
+                if reserve:
+                    self._recovery.pending = (json.dumps(params, sort_keys=True, allow_nan=False), total_deadline)
                 self._drop()
                 raise
             if 'error' in response:
@@ -183,7 +285,11 @@ class WorkerRPC:
             if method in ('worker.register', 'worker.adopt') and params.get('pid') == os.getpid():
                 global _worker_process
                 _worker_process = True
+            self._recovery.pending = None
             return response['result']
+        finally:
+            self._call_deadline = None
+            self.lock.release()
 
 
 from agent.runtime_session_compression import RuntimeSessionCompressionMixin
@@ -304,15 +410,33 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
                 self.failure = str(exc)
                 raise
             self.journal = candidate
-            return self.retry_pending()[0]
+            return self.retry_pending(_new=True)[0]
 
-    def retry_pending(self):
+    def retry_pending(self, *, _new=False):
+        from websockets.exceptions import ConnectionClosed
         with self.lock:
             results = []
             try:
                 while self.journal['pending']:
                     entry = self.journal['pending'][0]
-                    result = self.rpc('worker.persist', **self.scope, **entry)
+                    try:
+                        reconcile = getattr(self.rpc, 'reconcile_receipt', None)
+                        if not _new and reconcile is not None:
+                            # Reopened/failed journals have no non-dispatch proof.
+                            # Start a fresh READ-only observation, never a mutation retry.
+                            result = self.rpc('worker.persist', **self.scope, **entry, receipt_only=True)
+                        else:
+                            result = self.rpc('worker.persist', **self.scope, **entry)
+                    except (TimeoutError, OSError, ConnectionClosed) as exc:
+                        # Only the native transport can prove a lost ACK without dispatching
+                        # the mutation again. Absence or a failed read leaves the journal sticky.
+                        reconcile = getattr(self.rpc, 'reconcile_receipt', None)
+                        if reconcile is None:
+                            raise
+                        try:
+                            result = reconcile(**self.scope, **entry)
+                        except Exception:
+                            raise exc
                     candidate = dict(self.journal, pending=self.journal['pending'][1:])
                     candidate = self._compression_receipt_journal(candidate, result)
                     self._save(candidate)

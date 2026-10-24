@@ -40,6 +40,7 @@ def _execute(tmp_path, monkeypatch, events, *, start_error=None, close_error=Non
             self.finish.set()
         def approval(self, data): pass
         def clarify(self, questions): pass
+        def close(self): pass
 
     frame, _ = assignment(tmp_path, monkeypatch)
     monkeypatch.setattr(worker, 'bind_worker_policy', lambda frame: None)

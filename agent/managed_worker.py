@@ -179,8 +179,64 @@ class WorkerControls:
         self.finish = threading.Event()
         self.clarifications = {}
         self.lock = threading.Lock()
+        self.closing = threading.Event()
         self.reader = threading.Thread(target=self.read, name='managed-controls', daemon=True)
         self.reader.start()
+
+    def close(self):
+        # Fence new prompts and wake existing unlimited waiters atomically.
+        # Cleanup must not invoke arbitrary agent interrupt code after a turn.
+        with self.lock:
+            self.closing.set()
+            for state in self.clarifications.values():
+                state['answer'] = _INTERRUPTED
+                state['event'].set()
+        self.reader.join(2)
+        if self.reader.is_alive():
+            raise RuntimeError('managed_controls_shutdown_timeout')
+
+    def _frames(self):
+        """Cancellable raw pipe reads, including an owner that leaves a partial line.
+
+        Bootstrap also reads the raw stream, so no control bytes are stranded in
+        stdin's BufferedReader. Only this thread reads the descriptor thereafter.
+        """
+        import io
+        fd = sys.stdin.fileno()
+        blocking = os.get_blocking(fd) if os.name != 'nt' else None
+        if blocking is not None:
+            os.set_blocking(fd, False)
+        pending = bytearray()
+        try:
+            while not self.closing.is_set():
+                try:
+                    size = min(65536, MAX_FRAME + 1 - len(pending))
+                    if os.name == 'nt':
+                        import _winapi
+                        import msvcrt
+                        available, _ = _winapi.PeekNamedPipe(msvcrt.get_osfhandle(fd), 0)
+                        if not available:
+                            raise BlockingIOError
+                        size = min(size, available)
+                    chunk = os.read(fd, size)
+                except BlockingIOError:
+                    self.closing.wait(.05)
+                    continue
+                if not chunk:
+                    raise EOFError('managed_worker_pipe_closed')
+                pending.extend(chunk)
+                while b'\n' in pending:
+                    end = pending.index(b'\n') + 1
+                    line = bytes(pending[:end])
+                    del pending[:end]
+                    yield read_frame(io.BytesIO(line))
+                    if self.closing.is_set():
+                        return
+                if len(pending) > MAX_FRAME:
+                    raise ValueError('managed_worker_frame_too_large')
+        finally:
+            if blocking is not None:
+                os.set_blocking(fd, blocking)
 
     def stop(self):
         self.stopped.set()
@@ -195,8 +251,7 @@ class WorkerControls:
     def read(self):
         from tools.approval import resolve_gateway_approval
         try:
-            while True:
-                frame = read_frame(sys.stdin.buffer)
+            for frame in self._frames():
                 if frame == {'type': 'stop'}:
                     self.stop()
                     continue
@@ -257,7 +312,7 @@ class WorkerControls:
         prompt_id = uuid.uuid4().hex
         state = {'event': threading.Event(), 'answer': None}
         with self.lock:
-            if self.stopped.is_set() or len(self.clarifications) >= 16:
+            if self.closing.is_set() or self.stopped.is_set() or len(self.clarifications) >= 16:
                 return _INTERRUPTED
             self.clarifications[prompt_id] = state
         try:
@@ -354,9 +409,9 @@ def execute(frame, channel):
     from gateway.session_worker_construct import checkpoint_agent_kwargs, construct_kwargs, routing_agent_kwargs
     construct = {'ephemeral_system_prompt': policy.skills_prompt, **construct_kwargs(frame)}
     controls = WorkerControls(channel, frame['route'])
-    register_gateway_notify(frame['route'], controls.approval)
     agent = None
     try:
+        register_gateway_notify(frame['route'], controls.approval)
         with policy_scope(policy):
             agent = _construct_agent(frame, AIAgent, policy, model=policy.model, provider=policy.provider, base_url=policy.base_url,
                 api_key=frame['api_key'], session_db=store, session_id=scope['session_id'],
@@ -413,14 +468,19 @@ def execute(frame, channel):
             store.finish()
             channel.send('finished')
     finally:
-        unregister_gateway_notify(frame['route'])
-        if agent is not None:
-            retire_agent(agent)
         try:
-            store.close()
+            unregister_gateway_notify(frame['route'])
+            if agent is not None:
+                retire_agent(agent)
         finally:
-            with contextlib.suppress(Exception):  # a failing socket close never replaces the turn's outcome
-                rpc.close()
+            try:
+                controls.close()
+            finally:
+                try:
+                    store.close()
+                finally:
+                    with contextlib.suppress(Exception):  # a failing socket close never replaces the turn's outcome
+                        rpc.close()
 
 
 def _construct_agent(frame, factory, policy, **kwargs):
@@ -457,7 +517,8 @@ def main():
     logger.propagate = False
     try:
         channel.send('hello', **hello())
-        frame = validate_bootstrap(read_frame(sys.stdin.buffer))
+        # Raw readline never prefetches a control frame into stdin's buffered wrapper.
+        frame = validate_bootstrap(read_frame(sys.stdin.buffer.raw))
         execute(frame, channel)
     except Exception:
         # Runtime exceptions can contain credentials; the owner gets no raw traceback.

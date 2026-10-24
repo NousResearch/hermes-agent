@@ -202,15 +202,25 @@ def persist_worker_delegation(db, *, epoch, execution_id, session_id, generation
 
 async def worker_delegation_request(connection, ref, params):
     """worker.persist delegation-family hook; all authentication stays mandatory."""
-    import asyncio
+    from gateway.session_runtime_workers import tracked_write
     from gateway.session_worker import _SCOPE, _claim, _verify
-    if set(params) != _SCOPE | {'epoch', 'sequence', 'operation', 'payload'}:
+    extra = {'epoch', 'sequence', 'operation', 'payload'}
+    if 'receipt_only' in params:
+        if params['receipt_only'] is not None and type(params['receipt_only']) is not bool:
+            raise RuntimeStoreError('invalid_params')
+        extra = extra | {'receipt_only'}
+    if set(params) != _SCOPE | extra:
         raise RuntimeStoreError('invalid_params')
     claim = _claim(connection, ref, params)
     authority = connection.authority
     if 'worker:adopt' not in connection.actor.capabilities:
         raise RuntimeStoreError('permission_denied')
     _verify(connection, ref, params, claim)
+    if params.get('receipt_only') is True:
+        from hermes_state_runtime import read_worker_receipt
+        return await tracked_write(authority, lambda: read_worker_receipt(authority.db,
+            **{key: params[key] for key in ('epoch', 'execution_id', 'session_id', 'generation',
+                                           'sequence', 'operation', 'payload')}))
 
     def persist_and_publish():
         result = persist_worker_delegation(authority.db,
@@ -227,4 +237,4 @@ async def worker_delegation_request(connection, ref, params):
                 # token-guarded claims arbitrate delivery; never ACK at publication.
                 process_registry.completion_queue.put(event | {'restored': True})
         return result
-    return await asyncio.to_thread(persist_and_publish)
+    return await tracked_write(authority, persist_and_publish)

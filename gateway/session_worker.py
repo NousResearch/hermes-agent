@@ -67,7 +67,12 @@ async def worker_request(connection, ref, params, *, operation):
     if operation == "persist" and isinstance(params.get("operation"), str) and params["operation"].startswith("delegation."):
         from gateway.session_worker_delegation import worker_delegation_request
         return await worker_delegation_request(connection, ref, params)
+    receipt_only = operation == 'persist' and params.get('receipt_only') is True
     extra = {'register': {'kind'}, 'adopt': set(), 'persist': {'epoch', 'sequence', 'operation', 'payload'}}[operation]
+    if operation == 'persist' and 'receipt_only' in params:
+        if params['receipt_only'] is not None and type(params['receipt_only']) is not bool:
+            raise RuntimeStoreError('invalid_params')
+        extra = extra | {'receipt_only'}
     if set(params) != _SCOPE | extra:
         raise RuntimeStoreError('invalid_params')
     claim = _claim(connection, ref, params)
@@ -89,9 +94,17 @@ async def worker_request(connection, ref, params, *, operation):
     if operation == 'adopt':
         return await asyncio.to_thread(adopt_worker_execution, authority.db, epoch=authority.epoch,
                                        **scope, adoption_secret=claim)
-    result = await asyncio.to_thread(mutate_worker_execution, authority.db, epoch=params['epoch'],
-        **scope, sequence=params['sequence'], operation=params['operation'], payload=params['payload'])
-    if params['operation'] == 'execution.finish':
-        # Queued input parked behind this worker; nothing else would restart its FIFO.
-        authority.wake_after_worker(params['session_id'])
-    return result
+    from gateway.session_runtime_workers import tracked_write
+    if receipt_only:
+        from hermes_state_runtime import read_worker_receipt
+        return await tracked_write(authority, lambda: read_worker_receipt(authority.db, epoch=params['epoch'],
+            **scope, sequence=params['sequence'], operation=params['operation'], payload=params['payload']))
+    def persisted(result):
+        if params['operation'] == 'execution.finish':
+            # Keep the wake coupled to physical settlement, even if the observer disconnects.
+            authority.wake_after_worker(params['session_id'])
+        return result
+    from gateway.session_worker_progress import observe_write
+    return await observe_write(connection, params, tracked_write(authority, lambda: mutate_worker_execution(
+        authority.db, epoch=params['epoch'], **scope, sequence=params['sequence'],
+        operation=params['operation'], payload=params['payload']), persisted))

@@ -66,6 +66,7 @@ def test_child_executes_under_finite_policy_and_preserves_receipt(tmp_path, monk
             self.finish.set()
         def approval(self, data): pytest.fail('unexpected approval')
         def clarify(self, questions): pytest.fail('unexpected question')
+        def close(self): pass
 
     monkeypatch.setattr(worker, 'bind_worker_policy', lambda frame: None)
     monkeypatch.setattr(worker, 'discover_profile_mcp', lambda policy: None)

@@ -46496,6 +46496,18 @@
             "additionalProperties": true,
             "title": "Payload",
             "type": "object"
+          },
+          "receipt_only": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Receipt Only"
           }
         },
         "required": [

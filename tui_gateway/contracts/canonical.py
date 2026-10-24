@@ -468,6 +468,7 @@ class WorkerPersistParams(WorkerScopeParams):
     sequence: int
     operation: str
     payload: dict[str, JsonValue]
+    receipt_only: bool | None = None
 
 
 class WorkerPersistResult(OpenModel):

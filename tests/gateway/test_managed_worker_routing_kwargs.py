@@ -45,6 +45,7 @@ def test_managed_worker_agent_gets_the_session_provider_routing(tmp_path, monkey
             self.finish.set()
         def approval(self, data): pass
         def clarify(self, questions): pass
+        def close(self): pass
 
     monkeypatch.setattr(worker, 'bind_worker_policy', lambda frame: None)
     monkeypatch.setattr(worker, 'discover_profile_mcp', lambda policy: None)

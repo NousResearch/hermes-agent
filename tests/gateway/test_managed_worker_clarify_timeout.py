@@ -18,6 +18,8 @@ def _controls():
     controls = worker.WorkerControls.__new__(worker.WorkerControls)  # no stdin reader thread
     controls.channel, controls.route, controls.agent = _Channel(), 'route', None
     controls.stopped, controls.lock, controls.clarifications = threading.Event(), threading.Lock(), {}
+    # _ask reads closing before it waits; a real instance sets it in __init__, which also starts the reader thread this test avoids
+    controls.closing = threading.Event()
     return controls
 
 

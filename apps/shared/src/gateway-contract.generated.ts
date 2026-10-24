@@ -4826,6 +4826,7 @@ export interface WorkerPersistParams {
   sequence: number
   operation: string
   payload: Record<string, unknown>
+  receipt_only?: boolean | null
 }
 /** The operation's durable receipt (``message_id`` for an append, delegation results, …). */
 export type WorkerPersistResult = Record<string, unknown>

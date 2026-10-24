@@ -206,7 +206,27 @@ model_aliases:
     provider: custom
     base_url: https://theta.example.com/v1
     key_env: THETA_API_KEY        # or: api_key: "${THETA_API_KEY}"
+  gpt-fast:
+    model: openai/gpt-5.4:nitro
+    provider: openrouter
+  gpt-cheap:
+    model: openai/gpt-5.4:floor
+    provider: openrouter
 ```
+
+### OpenRouter routing variants
+
+OpenRouter accepts dynamic routing variants at the end of any model ID. Use
+`<model>:nitro` to prefer the highest-throughput provider or `<model>:floor`
+to prefer the lowest-priced provider. Hermes preserves these suffixes, so you
+can switch directly with `/model openai/gpt-5.4:nitro` or keep both variants
+available as separate `model_aliases` entries such as `gpt-fast` and
+`gpt-cheap` above.
+
+The base model and its variants are independent choices: selecting one does
+not alter the others. Throughput, price, and the provider that fulfills a
+request are dynamic OpenRouter routing data; consult the model's OpenRouter
+page when you need current endpoint metrics or pricing.
 
 An alias with its own `base_url` can carry that endpoint's credential via
 `api_key` (a literal, or a `"${VAR}"` reference) or `key_env` (an environment

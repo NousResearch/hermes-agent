@@ -211,7 +211,7 @@ export function ClarifyPrompt({ cols = 80, onCancel, onQuestionAnswer, req, t }:
   const remainingCount = questions.length - answeredCount
 
   const lockActive = (value: string) => {
-    if (activeQuestion) {
+    if (activeQuestion && !req.answerPending) {
       onQuestionAnswer(activeQuestion.qid, value)
       setSel(0)
       setCustom('')
@@ -230,6 +230,10 @@ export function ClarifyPrompt({ cols = 80, onCancel, onQuestionAnswer, req, t }:
     setPicked(current => (current.includes(choice) ? current.filter(v => v !== choice) : [...current, choice]))
 
   useInput((ch, key) => {
+    if (req.answerPending) {
+      return
+    }
+
     if (key.escape) {
       if (typing) {
         setTyping(false)
@@ -304,11 +308,13 @@ export function ClarifyPrompt({ cols = 80, onCancel, onQuestionAnswer, req, t }:
 
   const enterAction = remainingCount === 1 ? T.prompt.clarify.confirmAndContinue : T.prompt.clarify.lockAnswer
 
-  const hint = typing
-    ? T.prompt.clarify.typingHint(enterAction)
-    : multi
-      ? `${T.prompt.clarify.toggle} · ${T.prompt.clarify.hint(enterAction)}`
-      : T.prompt.clarify.hint(enterAction)
+  const hint = req.answerPending
+    ? T.prompt.clarify.lockingAnswer
+    : typing
+      ? T.prompt.clarify.typingHint(enterAction)
+      : multi
+        ? `${T.prompt.clarify.toggle} · ${T.prompt.clarify.hint(enterAction)}`
+        : T.prompt.clarify.hint(enterAction)
 
   return (
     <Box flexDirection="column">

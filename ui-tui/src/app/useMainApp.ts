@@ -56,7 +56,14 @@ import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type SlashHandler, type StateSetter, type TranscriptRow, type UiState } from './interfaces.js'
 import { requestLiveSessions } from './liveSessions.js'
 import { applyControlSnapshot } from './loopStatus.js'
-import { $overlayState, capturePromptResponseGuard, hasSensitivePrompt, patchOverlayState } from './overlayStore.js'
+import {
+  $overlayState,
+  beginClarifyAnswer,
+  capturePromptResponseGuard,
+  hasSensitivePrompt,
+  patchOverlayState,
+  updateClarifyForRequest
+} from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { applyProcessSnapshot, type ProcessEntry } from './processRoster.js'
 import { scrollWithSelectionBy } from './scroll.js'
@@ -916,43 +923,101 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
-      rpc<ClarifyLockResponse>('clarify.lock', {
+      const label = toolTrailLabel('clarify')
+
+      // the final lock wakes the blocked tool before its rpc response arrives
+      // reserve before sending each answer so an early completion is covered
+      if (!beginClarifyAnswer(clarify.requestId)) {
+        return
+      }
+
+      turnController.reservePersistedToolLabel(label, clarify.requestId)
+      const sessionId = getUiState().sid
+
+      gw.request<ClarifyLockResponse>('clarify.lock', {
         answer: answer.trim() ? answer : null,
         question_id: qid,
         request_id: clarify.requestId
-      }).then(r => {
-        if (!r || !fresh()) {
-          return
-        }
-
-        const answers = { ...(clarify.answers ?? {}), [qid]: answer }
-
-        if (r.status === 'expired') {
-          patchOverlayState({ clarify: null })
-
-          return
-        }
-
-        if ((r.remaining ?? []).length > 0) {
-          patchOverlayState({ clarify: { ...clarify, answers } })
-
-          return
-        }
-
-        // Batch complete: persist the whole Q&A set as one user-visible block.
-        const label = toolTrailLabel('clarify')
-        const settled = clarifySettledRows(clarify.questions, answers)
-
-        turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
-        patchTurnState({ turnTrail: turnController.turnTools })
-        turnController.persistedToolLabels.add(label)
-        appendMessage({ kind: 'trail', role: 'system', text: '', tools: [settled.trail] })
-        appendMessage({ role: 'user', text: settled.userText })
-        patchUiState({ status: 'running…' })
-        patchOverlayState({ clarify: null })
       })
+        .then(result => asRpcResult<ClarifyLockResponse>(result))
+        .catch(error => {
+          if (getUiState().sid === sessionId) {
+            sys(`error: ${rpcErrorMessage(error)}`)
+          }
+
+          return null
+        })
+        .then(r => {
+          // A session switch replaces the transcript before an in-flight lock replies.
+          if (getUiState().sid !== sessionId) {
+            turnController.releasePersistedToolLabel(label, clarify.requestId)
+
+            return
+          }
+
+          if (!r) {
+            updateClarifyForRequest(clarify.requestId, () => null)
+
+            turnController.releasePersistedToolLabel(label, clarify.requestId)
+
+            appendMessage({
+              role: 'system',
+              text: formatAbandonedClarify(
+                clarify.questions,
+                clarify.answers ?? {},
+                t('gatewayMsg.clarify.answerUnconfirmed')
+              )
+            })
+
+            return
+          }
+
+          const answers = { ...(clarify.answers ?? {}), [qid]: answer }
+
+          if (r.status === 'expired') {
+            updateClarifyForRequest(clarify.requestId, () => null)
+
+            turnController.releasePersistedToolLabel(label, clarify.requestId)
+
+            appendMessage({
+              role: 'system',
+              text: formatAbandonedClarify(clarify.questions, clarify.answers ?? {}, t('gatewayMsg.clarify.timedOut'))
+            })
+
+            return
+          }
+
+          if ((r.remaining ?? []).length > 0) {
+            updateClarifyForRequest(clarify.requestId, current => ({
+              ...current,
+              answerPending: false,
+              answers: { ...(current.answers ?? {}), [qid]: answer }
+            }))
+
+            turnController.releasePersistedToolLabel(label, clarify.requestId)
+
+            return
+          }
+
+          // Batch complete: persist the whole Q&A set as one user-visible block.
+          const isCurrentRequest = updateClarifyForRequest(clarify.requestId, () => null)
+
+          if (isCurrentRequest) {
+            turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
+            patchTurnState({ turnTrail: turnController.turnTools })
+          }
+
+          const settled = clarifySettledRows(clarify.questions, answers)
+
+          appendMessage({ kind: 'trail', role: 'system', text: '', tools: [settled.trail] })
+          appendMessage({ role: 'user', text: settled.userText })
+
+          if (isCurrentRequest) {
+            patchUiState({ status: 'running…' })
+          }
+        })
     },
-    [appendMessage, overlay.clarify, rpc]
+    [appendMessage, gw, overlay.clarify, rpc, sys]
   )
 
   sysRef.current = sys

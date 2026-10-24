@@ -196,7 +196,13 @@ jobs:
           if [ -n "$display" ]; then
             base="${display%%+*}"
             development="${display#*+}"
-            if [ "$development" = "$display" ]; then distance=0; else distance="${development%%.*}"; fi
+            # A dev build's metadata starts with its commit distance; a canary's
+            # (canary.<stamp>) carries none, and is a release at distance 0.
+            case "$development" in
+              "$display") distance=0 ;;
+              [0-9]*) distance="${development%%.*}" ;;
+              *) distance=0 ;;
+            esac
             identity+=(--base-version "$base" --display-version "$display" --distance "$distance")
           fi
           python3 scripts/write_install_stamp.py --output install-stamp.json \
@@ -280,7 +286,8 @@ jobs:
         run: |
           actual="$(docker run --rm --entrypoint python "${IMAGE_NAME}:test" -c \
             'import json; print(json.load(open("/opt/hermes/install-stamp.json"))["baseVersion"])')"
-          test "$actual" = "$RELEASE_VERSION"
+          # baseVersion is the stable core; a canary carries +canary.<stamp> only in displayVersion.
+          test "$actual" = "${RELEASE_VERSION%%+*}"
 
       # ---------------------------------------------------------------------
       # Release 'test' phase only: hand the EXACT tested bytes to the publish

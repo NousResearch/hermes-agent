@@ -244,8 +244,8 @@ test('protected canary accepts bounded Windows revisions without relaxing stable
       }
     }
   ]
-  f.manifest.request.releaseTag = 'v1.2.4+canary.20260913T001000Z'
-  f.manifest.request.version = f.manifest.request.releaseTag.slice(1)
+  f.manifest.request.releaseTag = 'canary.20260913T001000Z-v1.2.4'
+  f.manifest.request.version = '1.2.4+canary.20260913T001000Z'
   f.manifest.request.windowsVersion = '1.2.4.10'
   f.publish()
   const resolver = new ChannelResolver({ build: f.build, platform: 'win32', arch: 'x64', signer: 'CN=Nous Research' })

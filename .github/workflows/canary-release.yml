@@ -5,20 +5,35 @@ name: Canary Release
 # its protected head is live; only a published canary makes a quiet day a no-op.
 # workflow_dispatch fires one on demand at any time.
 #
-# Source identity is the exact stable version plus build metadata:
-# v<stable>+canary.<YYYYMMDDTHHMMSSZ>. It compares equal to the stable; only
-# the protected R2 canary head moves subscribers. A dispatch queued behind a
+# The canary tag is canary.<YYYYMMDDTHHMMSSZ>-v<stable>; the version it publishes
+# is the stable plus build metadata (<stable>+canary.<stamp>), so it compares
+# equal to the stable and only the protected R2 canary head moves subscribers. A dispatch queued behind a
 # running canary has conclusion=cancelled if a newer one supersedes it; only
 # conclusion=failure is a canary failure signal.
+#
+# The canary build itself is a Stable Release run (stable-release.yml) on the
+# canary tag: the exact job graph a stable release runs, with every lane on
+# (macOS Intel and Termux included; scripts/releases/lanes.py CANARY) except
+# the signed-package upgrade arms -- the canary app cannot upgrade a stable
+# install; install-e2e tests old stable -> this commit -- so the two never drift.
+# It differs only in where it publishes (the canary channels, never the Store or a
+# stable head) and in what gates publication: the scheduled canary publishes once
+# its candidate is built and smoked (--no-require-green) and every other suite
+# reports in the same run; a manual dispatch waits for every suite unless told not to.
 
 on:
   schedule:
     - cron: "41 6 * * *" # daily, 06:41 UTC
   workflow_dispatch:
+    inputs:
+      require_green:
+        description: Hold publication until every suite passes (the schedule never does)
+        type: boolean
+        default: true
 
 permissions:
   contents: write # tag push + release create/delete for prune
-  actions: write # release.py dispatches the desktop build
+  actions: write # release.py dispatches the Stable Release pipeline on the canary tag
 
 concurrency:
   group: canary-release
@@ -41,17 +56,21 @@ jobs:
       - name: Tag and draft
         env:
           GH_TOKEN: ${{ github.token }}
+          # The daily canary publishes once its candidate is built and smoked; the suites report.
+          REQUIRE_GREEN: ${{ github.event_name == 'workflow_dispatch' && inputs.require_green && 'true' || 'false' }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          python3 scripts/release.py --canary --publish --remote origin
+          green=--require-green
+          [ "$REQUIRE_GREEN" = true ] || green=--no-require-green
+          python3 scripts/release.py --canary --publish --remote origin "$green"
 
   prune:
     name: Prune canaries older than 14 days
     runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: tag
     environment: release-signing
-    # Prune even when this run had nothing new to tag. The desktop build
+    # Prune even when this run had nothing new to tag. The release pipeline
     # runs in its own workflow run, so this does not wait on it — the
     # window is 14 days, far wider than any build.
     if: always() && needs.tag.result != 'cancelled' && needs.tag.result != 'skipped'

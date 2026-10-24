@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from hermes_cli.update_channel import (
     _CANARY_TAG_RE, STABLE_TAG_RE, canary_tag_for_date, canary_timestamp,
-    is_canary_tag,
+    is_canary_tag, release_version,
 )
 from scripts.releases.authors import resolve_author
 
@@ -67,18 +67,17 @@ def list_remotes() -> list[str]:
 def dispatch_desktop_build(tag: str, gh_repo: str | None) -> bool:
     """Dispatch the release pipeline after its draft exists.
 
-    Both channels run the default-branch workflow with the tag as an input, so
-    caches share one scope and scripts come from main. A stable run resolves its
-    claim tag to the commit under test. Its gate owns artifact publication and
-    channel promotion. Explicit dispatch also works for tags created by GITHUB_TOKEN.
+    Both channels run the same default-branch Stable Release workflow with the tag
+    as an input, so a canary runs exactly the jobs a stable release does (every
+    lane on), caches share one scope and scripts come from main. Admission resolves
+    the tag to the commit under test and picks the policy that decides where the
+    release publishes. Explicit dispatch also works for tags created by GITHUB_TOKEN.
     """
     canary = _CANARY_TAG_RE.fullmatch(tag) is not None
     if not canary and not STABLE_TAG_RE.fullmatch(tag):
         raise ValueError("Expected an exact stable or canary release tag")
-    workflow = "desktop-bundled-release.yml" if canary else "stable-release.yml"
+    workflow = "stable-release.yml"
     cmd = ["gh", "workflow", "run", workflow, "--ref", "main", "-f", f"tag={tag}"]
-    if canary:
-        cmd += ["-f", "upload_release=true"]
     if gh_repo:
         cmd += ["--repo", gh_repo]
 
@@ -162,15 +161,18 @@ def remote_github_repo(remote: str) -> str | None:
 # Stable tags are matched with STABLE_TAG_RE and canary tags
 # with _CANARY_TAG_RE, both imported from hermes_cli.update_channel — the
 # single authority for both tag shapes (the stable major is capped at three
-# digits so historical CalVer tags like v2026.7.20 never match; the canary
-# identity is the exact stable core plus full UTC build metadata.
+# digits so historical CalVer tags like v2026.7.20 never match; a canary tag is
+# canary.<full UTC stamp>-v<exact stable core>, the same claim shape as rc.N-vX.Y.Z).
 # Second precision allows several canaries per day; the fixed-width UTC stamp
-# sorts chronologically even though SemVer ignores it for precedence.
+# sorts chronologically.
+# The retired vX.Y.Z+canary.<stamp> shape: only --prune-canaries still reads it, to age old
+# canaries out.
+_LEGACY_CANARY_TAG_RE = re.compile(r"^v\d+\.\d+\.\d+\+canary\.(20\d{6})T\d{6}Z$")
 
 
 def get_last_canary_tag():
-    """The newest canonical canary receipt, by embedded build time."""
-    raw = git("tag", "--list", "v*+canary.*")
+    """The newest canonical canary tag, by embedded build time."""
+    raw = git("tag", "--list", "canary.*")
     tags = [tag for tag in (raw.split("\n") if raw else []) if is_canary_tag(tag)]
     return max(tags, key=lambda tag: canary_timestamp(tag) or "", default=None)
 
@@ -462,37 +464,47 @@ def _resume_canary(tag: str, remote: str, repository: str, *, notes_file: Path |
 
     from scripts.releases.versioning import published_channel_identity
     published = published_channel_identity(repository, "canary")
-    if published is not None and published == (tag[1:], commit):
+    if published is not None and published == (release_version(tag), commit):
         print(f"✓ {tag} is already published.")
         return
     if not dispatch_desktop_build(tag, repository):
         raise SystemExit(1)
     print(f"Resumed canary publication for {tag}.")
-    print(f"Workflow: https://github.com/{repository}/actions/workflows/desktop-bundled-release.yml")
-    print("Wait for that workflow to finish. It builds this canary and publishes the draft when the build is green.")
+    print(f"Workflow: https://github.com/{repository}/actions/workflows/stable-release.yml")
+    print("Wait for that run to finish. It runs the full release pipeline on this canary and publishes it "
+          "once its candidate is built and smoked; the other suites report in the same run.")
     print(f"The draft is at {draft_url}.")
 
 
 def cmd_canary(args) -> None:
-    """--canary: tag + draft a canary source identity.
+    """--canary: tag + draft a canary.
 
-    The source identity is the newest stable version plus a full UTC timestamp
-    in SemVer build metadata. It therefore compares equal to that stable; only
-    the R2 canary head moves subscribers. No version-file bump or commit is
-    created — the receipt tag points at HEAD as-is.
+    The tag is ``canary.<full UTC timestamp>-v<newest stable>``; the version it publishes is that
+    stable plus the stamp as SemVer build metadata, so it compares equal to the stable and only
+    the R2 canary head moves subscribers. No version-file bump or commit is created — the tag
+    points at HEAD as-is. Its message is the canary's claim: the lanes it runs (--only/--with/
+    --without, starting from every lane a canary can run) and whether a red suite holds its
+    publication (--require-green, the default; the scheduled canary passes --no-require-green).
 
     Created as a DRAFT prerelease, for the same reason the stable path
     drafts: a published release with no installers attached is a release
-    users can reach and cannot use. The desktop matrix attaches the
-    installers to this draft by tag, and the canary workflow's publish
-    job flips it to published only after that matrix is green. A failed
-    bundle therefore leaves an inspectable draft rather than a broken
-    canary.
+    users can reach and cannot use. Stable Release runs on this tag with
+    every lane on, and its publish-canary job flips the draft to published
+    only after the accepted candidate is built and smoked. A failed bundle
+    therefore leaves an inspectable draft rather than a broken canary.
 
     Exits 0 with "nothing to do" when HEAD is already tagged by the last
     canary — the skip-if-no-new-commits gate lives HERE, not in workflow
     YAML.
     """
+    from scripts.releases import lanes as lane_set
+
+    try:
+        lanes = lane_set.select(only=lane_set.parse_list(args.only),
+                                with_=lane_set.parse_list(args.with_lanes) or (),
+                                without=lane_set.parse_list(args.without_lanes) or (), policy="canary")
+    except ValueError as error:
+        raise SystemExit(f"release: {error}") from error
     date_utc = args.date or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     push_remote = resolve_push_remote(args.remote)
     gh_repo = remote_github_repo(push_remote)
@@ -528,8 +540,11 @@ def cmd_canary(args) -> None:
         print(f"✓ No new commits since {since} — nothing to do.")
         return
 
-    version = tag_name.lstrip("v")
+    version = release_version(tag_name)
     print(f"Canary: {tag_name} ({len(commits)} commits since {since})")
+    print(f"Lanes {lane_set.describe(lanes)}")
+    print("Publication waits for every suite." if args.require_green
+          else "Publication waits only for the built, smoked candidate; suites report.")
     changelog = generate_changelog(
         commits, tag_name, version, prev_tag=since, first_release=False, no_changelog=args.no_changelog
     )
@@ -539,9 +554,16 @@ def cmd_canary(args) -> None:
         print("\nDry run complete. To publish, add --publish")
         return
 
-    tag_result = git_result(
-        "tag", "-a", tag_name, "-m", f"Hermes Agent canary {date_utc}"
-    )
+    claim = json.dumps({
+        "schema": 1,
+        "kind": "canary",
+        "version": stable_version.removeprefix("v"),
+        "commit": git("rev-parse", "HEAD"),
+        "lanes": sorted(lanes),
+        "lanesRevision": lane_set.LANES_REVISION,
+        "requireGreen": bool(args.require_green),
+    }, sort_keys=True, separators=(",", ":"))
+    tag_result = git_result("tag", "-a", tag_name, "-m", claim)
     if tag_result.returncode != 0:
         print(f"✗ Failed to create tag {tag_name}: {tag_result.stderr.strip()}")
         sys.exit(1)
@@ -566,10 +588,12 @@ def cmd_canary(args) -> None:
 
 
 def _canary_date(tag: str) -> str | None:
-    """The YYYYMMDD receipt date for a canonical canary tag."""
-    if not is_canary_tag(tag):
-        return None
-    return tag.split("+canary.", 1)[1][:8]
+    """The YYYYMMDD build date of a canary tag, current or retired shape."""
+    stamp = canary_timestamp(tag)
+    if stamp is not None:
+        return stamp[:8]
+    legacy = _LEGACY_CANARY_TAG_RE.fullmatch(tag)
+    return legacy[1] if legacy else None
 
 
 def prune_old_canaries(args) -> None:
@@ -583,7 +607,7 @@ def prune_old_canaries(args) -> None:
     gh_repo = remote_github_repo(push_remote)
     cutoff = (datetime.now(UTC) - timedelta(days=14)).strftime("%Y%m%d")
 
-    tags = git("tag", "--list", "v*+canary.*", "--sort=-creatordate")
+    tags = git("tag", "--list", "canary.*", "v*+canary.*", "--sort=-creatordate")
     doomed = []
     for tag in (tags.split("\n") if tags else []):
         date = _canary_date(tag)
@@ -617,8 +641,20 @@ def main():
     parser = argparse.ArgumentParser(description="Hermes Agent Release Tool")
     parser.add_argument("--canary", action="store_true",
                         help="Tag + publish a stable-core canary "
-                             "(v<stable>+canary.<YYYYMMDDTHHMMSSZ>); no-op when "
-                             "HEAD has no new commits since the last canary")
+                             "(canary.<YYYYMMDDTHHMMSSZ>-v<stable>); no-op when "
+                             "HEAD has no new commits since the last canary. Takes "
+                             "--only/--with/--without (starting from every lane but upgrade) "
+                             "and --require-green/--no-require-green")
+    parser.add_argument("--only", action="append", metavar="LANES",
+                        help="--canary: start from exactly these lanes (comma-separated, repeatable)")
+    parser.add_argument("--with", dest="with_lanes", action="append", metavar="LANES",
+                        help="--canary: also build or test these lanes")
+    parser.add_argument("--without", dest="without_lanes", action="append", metavar="LANES",
+                        help="--canary: do not build or test these lanes")
+    parser.add_argument("--require-green", action=argparse.BooleanOptionalAction, default=True,
+                        help="Hold publication until every suite passes (default). "
+                             "--no-require-green publishes once the candidate is built and smoked "
+                             "and lets the suites report; stable releases always require green")
     parser.add_argument("--build-commit", type=str, metavar="REV",
                         help="Preview an exact-commit build into releases/commit/<sha>/ on R2. "
                              "Add --publish to dispatch without a tag or release. The same "
@@ -693,8 +729,12 @@ def main():
     stable_commands = {"release": cmd_release, "publish": cmd_publish, "abandon": cmd_abandon,
                        "changelog": cmd_changelog}
     if args.command:
+        if not args.require_green:
+            parser.error("stable releases always require green; --no-require-green is for --canary")
         stable_commands[args.command](args)
         return
+    if not args.canary and (args.only or args.with_lanes or args.without_lanes or not args.require_green):
+        parser.error("--only/--with/--without/--no-require-green need --canary or the release command")
     if validate_arguments(parser, args):
         cmd_channel(args)
         return

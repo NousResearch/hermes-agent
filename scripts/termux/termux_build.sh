@@ -15,7 +15,7 @@
 #
 # Inputs (host mode, all required):
 #   --repo <dir>   hermes-agent checkout to build from (must contain the tag)
-#   --tag <tag>    immutable release tag (vX.Y.Z or vX.Y.Z+canary.<UTC timestamp>)
+#   --tag <tag>    immutable release tag (vX.Y.Z or canary.<UTC timestamp>-vX.Y.Z)
 #   --out <dir>    output dir (wheelhouse/ + index.json + SHA256SUMS land here)
 
 set -Eeuo pipefail

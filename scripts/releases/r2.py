@@ -823,15 +823,20 @@ def get_object(
     return response.text() if response.status < 400 else None
 
 
+# Canary archives named by either tag shape: the current ``canary.<stamp>-vX.Y.Z`` and the retired
+# ``vX.Y.Z+canary.<stamp>``, whose archives age out through the same window.
+_CANARY_KEY_RES = (
+    re.compile(r"canary\.(20\d{6})T\d{6}Z-v\d+\.\d+\.\d+"),
+    re.compile(r"v\d+\.\d+\.\d+\+canary\.(20\d{6})T\d{6}Z"),
+)
+
+
 def canary_doomed_keys(keys: list[str], cutoff: str) -> list[str]:
     """Keys whose own canary date (YYYYMMDD in the name) is before `cutoff`."""
-    from hermes_cli.update_channel import _CANARY_TAG_RE
-
-    tag_re = re.compile(_CANARY_TAG_RE.pattern.strip("^$"))
     doomed = []
     for key in keys:
-        match = tag_re.search(key)
-        if match and match.group(0).split("+canary.", 1)[1][:8] < cutoff:
+        dates = [match[1] for pattern in _CANARY_KEY_RES if (match := pattern.search(key))]
+        if dates and dates[0] < cutoff:
             doomed.append(key)
     return doomed
 
@@ -967,6 +972,17 @@ def prune(
             raise RuntimeError(f"Cannot read Darwin feed {key}; refusing to prune")
         for reference in darwin_module.mac_feed_references(text):
             protected.add(reference)
+
+    # The live canary's own objects (its archive, which its upgrade baseline points into, and its
+    # Termux pool) stay while it is live however old it is: releases/canary/release-candidates.json
+    # names its archive ref, which is in every one of those keys.
+    pointer_key = "releases/canary/release-candidates.json"
+    if pointer_key in keys:
+        text = get_object(creds, base, bucket, pointer_key, now, fetcher=fetcher)
+        live = json.loads(text).get("archive") if text is not None else None
+        if not isinstance(live, str) or not live:
+            raise RuntimeError(f"Cannot read the live canary from {pointer_key}; refusing to prune")
+        protected.update(key for key in keys if live in key)
 
     doomed = [
         key

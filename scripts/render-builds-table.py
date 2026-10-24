@@ -560,7 +560,9 @@ def r2_object_names(tag: str) -> list[str]:
 
     keys = r2_object_names_under(f"releases/tag/{tag}/")
     parsed = parse_attempt_ref(tag)
-    return filter_names_for_version(keys, parsed[0] if parsed else tag.lstrip("v"))
+    from hermes_cli.update_channel import release_version
+
+    return filter_names_for_version(keys, parsed[0] if parsed else (release_version(tag) or tag.lstrip("v")))
 
 
 def splice(body: str, block: str) -> str:

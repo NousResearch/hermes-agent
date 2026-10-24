@@ -100,7 +100,7 @@ def select_variant(prepared: PreparedDesktop, variant: str | None) -> str:
     variant = variant or request.variant
     if variant != request.variant and not (
         {variant, request.variant} == {"bundled", "store"} and request.tag
-        and channel_for_tag(request.tag) == "stable"
+        and channel_for_tag(request.tag) in ("stable", "canary")
     ):
         raise ValueError("requested variant was not prepared")
     return variant

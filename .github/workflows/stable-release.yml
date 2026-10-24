@@ -1,14 +1,26 @@
 name: Stable Release
-run-name: Stable release ${{ inputs.tag }}
+# The stable title is what the sequencer and release.py match runs by (stable.claim_run_title).
+run-name: ${{ startsWith(inputs.tag, 'canary.') && 'Canary' || 'Stable' }} release ${{ inputs.tag }}
 
-# Dispatch on the default branch, like canary: workflows and scripts come from main and
-# Actions caches live in main's scope. The claim tag is an input. Admission resolves it to
-# a commit and every lane that tests or builds the payload is passed that commit.
+# Dispatch on the default branch: workflows and scripts come from main and Actions caches
+# live in main's scope. The claim tag is an input. Admission resolves it to a commit and
+# every lane that tests or builds the payload is passed that commit.
+#
+# This one workflow is also the canary pipeline (canary-release.yml dispatches it with a
+# canary.<stamp>-vX.Y.Z tag), so a canary runs exactly the jobs a stable release does, with
+# every lane on except the signed-package upgrade arms (scripts/releases/lanes.py CANARY;
+# install-e2e covers old stable -> this commit). Admission emits the policy, and a canary
+# differs only in two ways:
+#   - where it publishes: publish-canary moves the canary channels (feeds, Termux APT, the
+#     protected R2 canary head, a GitHub prerelease, the canary Docker aliases). It never runs
+#     publish-bundles, so it never submits to the Store or moves a stable head or alias.
+#   - what green means: publish-canary waits only for the accepted candidate (built, smoked,
+#     staged). Every other suite still runs and turns the run red, but does not hold it back.
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Exact annotated claim tag. Admission resolves it to the commit under test
+        description: Exact annotated claim tag (rc.N-vX.Y.Z), or a canary tag (canary.<stamp>-vX.Y.Z). Admission resolves it to the commit under test
         required: true
         type: string
       baseline-manifest:
@@ -26,8 +38,10 @@ permissions:
 # deployment and exposes `vars`, but leaves `secrets.*` empty
 # (actions/runner#1490). ci.yaml is deliberately excluded — it runs
 # PR-controlled code and must stay secret-free.
+# A canary takes hours; it must never queue a stable release behind it, nor share the stable
+# publication reconciler's lock.
 concurrency:
-  group: stable-release
+  group: ${{ startsWith(inputs.tag, 'canary.') && 'canary-release-pipeline' || 'stable-release' }}
   cancel-in-progress: false
 
 jobs:
@@ -47,11 +61,18 @@ jobs:
       version: ${{ steps.admit.outputs.version }}
       release-id: ${{ steps.admit.outputs.release-id }}
       release-epoch: ${{ steps.admit.outputs.release-epoch }}
+      # stable | canary: selects the publication jobs (lanes.POLICY_JOBS), never a build or test job.
+      policy: ${{ steps.admit.outputs.policy }}
+      # The versioned image tag: the claim tag, or a canary tag with its `+` as `-`.
+      docker-tag: ${{ steps.admit.outputs.docker-tag }}
       # The claim's lanes (scripts/releases/lanes.py): `lanes` is one flag per lane and `jobs`
       # one run flag per lane-controlled job. Every job's `if` reads its own `jobs` entry, so the
       # lane table alone decides what runs and what the gates expect to have skipped.
       lanes: ${{ steps.admit.outputs.lanes }}
       jobs: ${{ steps.admit.outputs.jobs }}
+      # Whether the policy's publication job also waits for acceptance (every suite green).
+      # Always true for a stable release; a canary claim chooses (release.py --[no-]require-green).
+      require-green: ${{ steps.admit.outputs.require-green }}
     steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
@@ -95,7 +116,7 @@ jobs:
       commit: ${{ needs.admit.outputs.commit }}
       release-phase: test
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes)['docker-tests'] }}
-      tag: ${{ needs.admit.outputs.claim-tag }}
+      tag: ${{ needs.admit.outputs.docker-tag }}
       version: ${{ needs.admit.outputs.version }}
 
   nix:
@@ -549,6 +570,7 @@ jobs:
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
           LANES: ${{ needs.admit.outputs.lanes }}
+          POLICY: ${{ needs.admit.outputs.policy }}
 
   publish-docker:
     name: Publish tested Docker image
@@ -561,7 +583,7 @@ jobs:
     with:
       commit: ${{ needs.admit.outputs.commit }}
       release-phase: publish
-      tag: ${{ needs.admit.outputs.claim-tag }}
+      tag: ${{ needs.admit.outputs.docker-tag }}
       version: ${{ needs.admit.outputs.version }}
 
   publish-bundles:
@@ -588,10 +610,73 @@ jobs:
       manifest-sha256: ${{ needs.candidate-manifest.outputs.manifest-sha256 }}
       skip-store: ${{ !fromJSON(needs.admit.outputs.lanes)['windows-store'] }}
 
+  publish-canary:
+    name: Publish the canary to its channels
+    # Canary policy only (lanes.POLICY_JOBS). It publishes the same accepted candidate
+    # publish-bundles would, to the canary channels: verified bytes and the Termux pool
+    # (release_artifacts publish), then the GitHub prerelease, the canary feeds, the canary
+    # candidate pointer and the protected R2 canary head (channel_releases canary). Its claim
+    # decides what it waits for: with require-green it publishes only once acceptance passes
+    # (every suite green), like a stable release; without it, only the accepted candidate
+    # (built and smoked) gates it and a red suite reports without holding the canary back. The
+    # Store bundle is staged in the archive and never submitted.
+    needs: [admit, candidate-manifest, acceptance]
+    if: >-
+      !cancelled() && fromJSON(needs.admit.outputs.jobs)['publish-canary']
+      && needs.candidate-manifest.result == 'success'
+      && (needs.admit.outputs.require-green != 'true' || needs.acceptance.result == 'success')
+    runs-on: blacksmith-32vcpu-ubuntu-2404
+    environment: release-signing
+    timeout-minutes: 120
+    permissions:
+      # The controller publishes the canary's GitHub prerelease.
+      contents: write
+    concurrency:
+      group: canary-channel-publication
+      cancel-in-progress: false
+    env:
+      RELEASE_TAG: ${{ needs.admit.outputs.tag }}
+      RELEASE_TAG_OBJECT: ${{ needs.admit.outputs.claim-object }}
+      RELEASE_COMMIT: ${{ needs.admit.outputs.commit }}
+      HERMES_ARCHIVE_TAG: ${{ needs.admit.outputs.claim-tag }}
+      CANDIDATE_MANIFEST_URL: ${{ needs.candidate-manifest.outputs.manifest-url }}
+      CANDIDATE_MANIFEST_SHA256: ${{ needs.candidate-manifest.outputs.manifest-sha256 }}
+      RELEASE_NEEDS: ${{ toJSON(needs) }}
+      # channel_releases custody re-requires acceptance when the claim requires green.
+      REQUIRE_GREEN: ${{ needs.admit.outputs.require-green }}
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+    steps:
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ github.sha }}
+          # Custody reads the canary tag object and its ancestry on the default branch.
+          fetch-depth: 0
+          filter: blob:none
+          fetch-tags: true
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: false
+      - name: Set up the native identity reader
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: node
+          cache-python: false
+      - name: Verify the accepted packages and stage the Termux pool
+        run: python -m scripts.bundles.release_artifacts publish --root verified
+      - name: Publish the canary and advance its channels
+        # The macOS feed merge parses YAML (hermes_yaml -> ruamel); the node toolchain has none.
+        run: python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- -m scripts.releases.channel_releases canary
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   publication:
     name: All artifact publication succeeded
     if: always()
-    needs: [admit, acceptance, publish-docker, publish-bundles]
+    needs: [admit, acceptance, publish-docker, publish-bundles, publish-canary]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
@@ -600,16 +685,17 @@ jobs:
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
-      - run: python -m scripts.releases.stable gate acceptance publish-docker publish-bundles
+      - run: python -m scripts.releases.stable gate acceptance publish-docker publish-bundles publish-canary
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
           LANES: ${{ needs.admit.outputs.lanes }}
+          POLICY: ${{ needs.admit.outputs.policy }}
 
   complete:
     name: Stable release is green
     if: always()
     needs: [admit, ci, docker, acceptance, candidate-manifest, publication, publish-docker,
-            windows-packaged, macos-packaged-arm64, macos-packaged-x64]
+            publish-canary, windows-packaged, macos-packaged-arm64, macos-packaged-x64]
     # GitHub-hosted with docker/setup-buildx-action, as before the runner migration: on
     # Blacksmith `imagetools create` cannot commit a manifest list to Docker Hub (404 on the
     # index commit, any buildx version): v0.22.3 rc.1-rc.4 died on it in the versioned manifest.
@@ -632,10 +718,38 @@ jobs:
         with:
           toolchain: node
           cache-python: false
+      # A canary's image is public once publish-docker pushed it; its moving aliases follow
+      # whatever the gate below says, exactly like its bundles (publish-canary).
+      - name: Set up Docker Buildx for the canary aliases
+        if: >-
+          ${{ !cancelled() && needs.admit.outputs.policy == 'canary'
+          && needs.publish-docker.result == 'success' && needs.publish-canary.result == 'success' }}
+        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
+        with:
+          # the action's default buildx (v0.23.0) fails to push manifest lists to Docker Hub
+          buildx-version: 0dbe87f36ed472fe36b6796c3f70b4210a731fc5 # v0.38.1
+      - name: Log in to Docker Hub for the canary aliases
+        if: >-
+          ${{ !cancelled() && needs.admit.outputs.policy == 'canary'
+          && needs.publish-docker.result == 'success' && needs.publish-canary.result == 'success' }}
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Point the canary Docker aliases at this canary
+        # Only once the canary itself published: publish-canary already applies the claim's
+        # green policy and lanes, so :canary never names an image whose canary was held back.
+        if: >-
+          ${{ !cancelled() && needs.admit.outputs.policy == 'canary'
+          && needs.publish-docker.result == 'success' && needs.publish-canary.result == 'success' }}
+        run: python -m scripts.releases.docker promote-canary --tag "$DOCKER_TAG"
+        env:
+          DOCKER_TAG: ${{ needs.admit.outputs.docker-tag }}
       - run: python -m scripts.releases.stable gate admit ci docker acceptance candidate-manifest publication publish-docker
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
           LANES: ${{ needs.admit.outputs.lanes }}
+          POLICY: ${{ needs.admit.outputs.policy }}
       - name: Validate the accepted candidate archive
         if: fromJSON(needs.admit.outputs.lanes).bundles
         run: python -m scripts.releases.stable complete
@@ -676,14 +790,19 @@ jobs:
             --archive "$RELEASE_CLAIM_TAG" \
             --candidate-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" --candidate-commit "$RELEASE_COMMIT" \
             "${args[@]}"
+      # Stable only from here: the ordered publication pass moves the stable heads, the
+      # stable/latest Docker aliases and the Store submission. A canary published in publish-canary.
       - name: Set up Docker Buildx for ordered alias promotion
+        if: needs.admit.outputs.policy == 'stable'
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Log in to Docker Hub for ordered alias promotion
+        if: needs.admit.outputs.policy == 'stable'
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Reconcile ordered stable publication
+        if: needs.admit.outputs.policy == 'stable'
         # The macOS feed merge parses YAML (hermes_yaml -> ruamel); the node toolchain has none.
         run: python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- -m scripts.releases.sequencer
         env:

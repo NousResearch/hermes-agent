@@ -332,22 +332,42 @@ Channel and commit builds write annotated post-build receipts such as
 `v0.0.0+commit.<YYYYMMDDTHHMMSSZ>.<run-id>` only after publication succeeds.
 Receipt tags do not create GitHub releases and do not trigger workflows.
 
-Canary source identity is only
-`v<stable>+canary.<YYYYMMDDTHHMMSSZ>`. Build metadata intentionally makes it
-SemVer-equal to its stable core; the protected channel record and embedded UTC
-timestamp decide progression. Desktop clients treat that validated channel
-sequence as the update authority rather than asking SemVer to order build
-metadata. `Canary Release` runs once a day at 06:41 UTC from the default
-branch, and a manual dispatch starts one at any time. Runs queue with
+A canary tag is `canary.<YYYYMMDDTHHMMSSZ>-v<stable>`, the same claim shape as
+a stable `rc.N-v<stable>`, so nothing that lists `v*` release tags mistakes it for
+a release. The tag is the canary's identity everywhere: its GitHub prerelease,
+its archive (`releases/tag/<tag>/`), the tag stamped into its builds and its
+Docker image tag. The version it publishes is `<stable>+canary.<stamp>`. Build
+metadata intentionally makes it SemVer-equal to its stable core; the protected
+channel record and embedded UTC timestamp decide progression. Desktop clients
+treat that validated channel sequence as the update authority rather than
+asking SemVer to order build metadata.
+
+A canary runs the Stable Release pipeline itself. Its tag message is its claim:
+the lanes it runs (`release.py --canary` takes `--only`, `--with` and
+`--without`, starting from every lane except the signed-package upgrade arms,
+which a canary can never run) and whether a red suite holds its publication
+(`--require-green`, the default, or `--no-require-green`). `Canary Release`
+runs once a day at 06:41 UTC from the default branch with `--no-require-green`:
+it publishes once its candidate is built and smoked, and the other suites report
+in the same run. A manual dispatch starts one at any time and waits for every
+suite unless its `require_green` input is off. Runs queue with
 `cancel-in-progress: false`. If `main` has no new commits, the run resumes an
-unpublished canary or does nothing. Historical `-canary.` identities are
-unsupported.
+unpublished canary or does nothing. The retired `v<stable>+canary.<stamp>` and
+`-canary.` identities are no longer produced; old ones age out through
+`--prune-canaries`.
 If a process stops after pushing the canary tag, rerunning the command verifies
 the exact remote tag object, repairs the missing draft, and redispatches until the
 protected canary head receipts that tag.
 The protected publication controller verifies that exact annotated tag object
 before it flips the GitHub prerelease from draft to public, reads both states back,
 and only then advances the R2 head.
+Only Stable Release's `publish-canary` job publishes a canary. A direct dispatch of
+`desktop-bundled-release.yml` refuses a release tag, and the controller refuses
+any other workflow as a canary publisher. The canary Docker aliases (`:canary`,
+`:canary-desktop`) move only after `publish-canary` succeeds, so they follow the
+claim's green policy and lanes like every other canary channel. The canary's
+Termux packages go to `hermes-canary` under a pool prefix named by its tag, just
+as a stable attempt's go to `hermes-stable` under its attempt ref.
 
 ## Canary and one-off desktop identities
 

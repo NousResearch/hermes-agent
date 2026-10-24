@@ -509,12 +509,21 @@ class _CuaDriverSession:
         if name == "start_session" and ok and isinstance(declared_id, str) and declared_id:
             self._declared_session_id = declared_id
         if _is_ended_session_result(result):
+            # The driver retired the ended session's snapshots with it: drop every cached token, whichever call
+            # (token-free or not) noticed the end, so no later element action can send one.
+            self._notify_transport_reset()
             # Revive the stable session and replay the rejected call once; a 2nd rejection surfaces as-is.
             # Never re-runs lifecycle calls -> an end_session result is final.
             session_id = self._declared_session_id
             if session_id and name not in self._LIFECYCLE_CALLS:
                 logger.warning("cua-driver session %s ended during %s; reviving and retrying once", session_id, name)
                 if self._redeclare_session(timeout, "cua-driver session %s could not be revived: %s"):
+                    if "element_token" in args:  # never replay a token from the ended session
+                        message = (f"cua-driver session ended before {name} ran; its element tokens were retired "
+                                   "with it and the call was not replayed. Capture again and use an element index "
+                                   "from that capture.")
+                        return _tool_envelope(message, [], {"ok": False, "code": "element_token_session_ended",
+                                                            "message": message, "operation": name}, True, [])
                     result = self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
         elif name == "end_session" and ok and declared_id == self._declared_session_id:
             self._declared_session_id = None

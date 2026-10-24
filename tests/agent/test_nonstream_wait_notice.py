@@ -94,7 +94,7 @@ def test_resumed_events_clear_only_this_requests_wait_notice(monkeypatch):
                 request.result["response"] = sentinel
 
     monkeypatch.setattr(h.threading, "Thread", Worker)
-    monkeypatch.setattr(h.time, "time", lambda: 1000.0 + ticks[0] * 0.3)
+    monkeypatch.setattr(h.time, "monotonic", lambda: 1000.0 + ticks[0] * 0.3)
     assert request.run() is sentinel
     assert len(notices) == 2
     assert "waiting for the first provider event" in notices[0]

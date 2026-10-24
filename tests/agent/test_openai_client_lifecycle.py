@@ -115,7 +115,12 @@ def test_stale_non_stream_close_is_single_owner(monkeypatch):
     monkeypatch.setattr(
         chat_completion_helpers,
         "time",
-        SimpleNamespace(time=lambda: 1.0 if response_started.is_set() else 0.0),
+        # Both clocks the non-stream stale path reads: `call_start` and the stale
+        # timer now difference time.monotonic(); time.time() stays for absolute stamps.
+        SimpleNamespace(
+            time=lambda: 1.0 if response_started.is_set() else 0.0,
+            monotonic=lambda: 1.0 if response_started.is_set() else 0.0,
+        ),
     )
 
     agent = _build_agent()

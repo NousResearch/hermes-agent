@@ -506,6 +506,7 @@ class CLIInitMixin:
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
         self._agent_running = self._should_exit = False
+        self._tui_shutting_down = False  # _tui_shutdown sets it; the SIGINT handler then ignores repeats
         self._detach_on_exit = False  # Ctrl+D mid-turn: leave the gateway turn running (LC-6b)
         self._last_turn_interrupted = False  # /goal never auto-queues on a Ctrl+C'd turn
         self._terminal_io_broken = False  # stdout EIO: freeze UI paints instead of spinning

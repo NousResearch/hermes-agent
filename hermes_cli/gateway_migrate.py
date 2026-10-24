@@ -1278,6 +1278,12 @@ def maybe_auto_migrate_after_update() -> None:
     resuming = plan.manifest is not None
     if not plan.standalone_secondaries and not resuming:
         return
+    from hermes_cli.gateway_migrate_guards import masked_default_unit
+    masked = None if resuming else masked_default_unit(plan.default_home)
+    if masked is not None:
+        print(f"\n  ℹ Per-profile gateways kept: the default gateway unit is masked ({masked}).\n"
+              f"    Unmask it and run {MIGRATE_COMMAND} to fold them into one gateway.")
+        return
     print()
     auto_blockers = auto_migration_blockers(plan)
     if not resuming and (plan.blocked or auto_blockers):

@@ -228,6 +228,14 @@ def _review_input_token_budget(
 def load_background_review_settings() -> tuple[bool, dict[str, Any]]:
     """Single config read -> ``(enabled, task_cfg)``. Fail-open (``enabled=True``) so a broken
     config never silently disables reviews — but WARN so the cost is visible."""
+    from agent.safe_worker_policy import safe_worker_enabled
+    from gateway.session_finite import finite_turn_required
+
+    # A finite gateway turn (`chat -q` / `-z`) is one-shot like the in-process run, whose exit
+    # takes the daemon review thread with it; the long-lived gateway would otherwise fork a
+    # ~30K-token review after the viewer has already gone.
+    if safe_worker_enabled() or finite_turn_required() is True:
+        return False, {}
     try:
         from hermes_cli.config import load_config_readonly
         from utils import is_truthy_value
@@ -567,7 +575,8 @@ def _preview(text: str, limit: int) -> str:
 
 # Memory op -> (glyph, which field carries the preview, preview length).
 _MEMORY_OP_FORMATS: dict[str, tuple[str, str, int]] = {
-    "add": ("➕", "content", 120), "replace": ("✏️", "content", 120), "remove": ("➖", "old_text", 60)
+    "add": ("➕", "content", 120), "replace": ("✏️", "content", 120), "patch": ("✏️", "content", 120),
+    "remove": ("➖", "old_text", 60)
 }
 
 

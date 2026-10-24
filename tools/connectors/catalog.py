@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # The Advanced modal's own keys (CATALOG-ROW-CONTRACT.md); every other answer key is a credential.
 _OPTION_KEYS = frozenset({"target_profile", "agent_half", "desktop_half", "enable", "force", "ref"})
 _COMMIT_SHA = re.compile(r"^[0-9a-fA-F]{40}$")
-_TIERS = frozenset({"official", "community"})
+_TIERS = frozenset({"official", "verified", "community"})
 
 
 def _flag(value: Optional[str], default: bool) -> bool:
@@ -85,10 +85,10 @@ class HostInstaller:
 
     def refuse(self, entry: Any) -> None:
         """Raise with the installer's own text when the catalog would refuse this entry here."""
-        from hermes_cli.plugins_cmd_catalog import _refuse_unsupported_catalog_platform, raise_if_removed
+        from hermes_cli.plugins_cmd_catalog import raise_if_removed, refuse_incompatible_catalog_entry
 
         raise_if_removed(entry.name, entry.repo)
-        _refuse_unsupported_catalog_platform(entry)
+        refuse_incompatible_catalog_entry(entry)
 
     def install_plugin(self, name: str, *, force: bool, enable: bool, ref: Optional[str],
                        on_step: Callable[[InstallPhase], None]) -> dict[str, Any]:

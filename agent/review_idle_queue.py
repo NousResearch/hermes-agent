@@ -47,7 +47,7 @@ def review_targets_managed_local(agent: Any, task_cfg: Optional[dict[str, Any]])
     supervisor state file; any failure reads False (immediate spawn is the safe default). The cheap
     TTL-cached netloc probe runs FIRST so cloud-only installs skip runtime resolution on the turn's tail."""
     try:
-        from agent.auxiliary_client import _is_managed_local_endpoint, _managed_local_netloc
+        from agent.auxiliary_managed_local import _is_managed_local_endpoint, _managed_local_netloc
 
         if not _managed_local_netloc():
             return False
@@ -201,7 +201,9 @@ def _managed_server_idle() -> bool:
         loaded = [m["id"] for m in _get("/models").get("data", [])
                   if (m.get("status") or {}).get("value") in ("loaded", "ready")]
         return not any(
-            s.get("is_processing") for mid in loaded for s in _get(f"/slots?model={quote(mid)}") if isinstance(s, dict)
+            # autoload=false: a model unloaded since the /models read must not load again for a status read.
+            s.get("is_processing") for mid in loaded
+            for s in _get(f"/slots?model={quote(mid)}&autoload=false") if isinstance(s, dict)
         )
     except Exception:
         return True

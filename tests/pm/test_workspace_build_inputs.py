@@ -193,13 +193,8 @@ def test_legacy_member_is_generated_only_inside_workspace(tmp_path, monkeypatch)
 
 
 @pytest.mark.parametrize("exact", [False, True])
-def test_plugin_cannot_move_any_core_locked_package(tmp_path, monkeypatch, exact):
-    """Core's lock is the vetted set: a plugin moves neither a core pin nor a transitive one.
-
-    Release age is checked when Hermes locks, so a version core's lock never held was never
-    age-checked; a user's machine cannot check it either, since mirrors may serve no upload
-    times (#135589). Before, a transitive core package could move within core's ranges.
-    """
+def test_plugin_can_move_compatible_transitive_but_not_exact_requirement(tmp_path, monkeypatch, exact):
+    import os
     import tomllib
 
     core = tmp_path / "core"
@@ -221,9 +216,8 @@ def test_plugin_cannot_move_any_core_locked_package(tmp_path, monkeypatch, exact
     baseline, first_env = tmp_path / "baseline", tmp_path / "first-env"
     workspace.lock_and_sync([], [], root=baseline, source=core, seed_lock=None,
                             environment=managed_environment(first_env))
-    (core / "uv.lock").write_bytes((baseline / "uv.lock").read_bytes())
-    assert next(p["version"] for p in tomllib.loads((core / "uv.lock").read_text())["package"]
-                if p["name"] == "pkgb") == "1.2"
+    first_lock = (baseline / "uv.lock").read_bytes()
+    assert next(p["version"] for p in tomllib.loads(first_lock.decode())["package"] if p["name"] == "pkgb") == "1.2"
     _fixtures._wheel(wheels, "pkgb", "1.3")
     plugin = tmp_path / "plugin"
     plugin.mkdir()
@@ -231,9 +225,21 @@ def test_plugin_cannot_move_any_core_locked_package(tmp_path, monkeypatch, exact
         '[project]\nname="plugin-proof"\nversion="1"\nrequires-python=">=3.11"\ndependencies=["pkgb==1.3"]\n',
         encoding="utf-8",
     )
-    with pytest.raises(workspace.ResolutionConflict):
-        workspace.lock_and_sync([plugin], [], root=tmp_path / "extended", source=core,
-                                seed_lock=core / "uv.lock", environment=managed_environment(tmp_path / "candidate"))
+    extended, candidate = tmp_path / "extended", tmp_path / "candidate"
+    if exact:
+        with pytest.raises(workspace.ResolutionConflict):
+            workspace.lock_and_sync([plugin], [], root=extended, source=core, seed_lock=baseline / "uv.lock",
+                                    environment=managed_environment(candidate))
+    else:
+        workspace.lock_and_sync([plugin], [], root=extended, source=core, seed_lock=baseline / "uv.lock",
+                                    environment=managed_environment(candidate))
+        installed = tomllib.loads((extended / "uv.lock").read_text(encoding="utf-8"))["package"]
+        assert next(p["version"] for p in installed if p["name"] == "pkgb") == "1.3"
+        python = candidate / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        result = subprocess.run([str(python), "-c", "import pkga, pkgb; print(pkga.__version__, pkgb.__version__)"],
+                                capture_output=True, text=True, check=True, timeout=30)
+        assert result.stdout.strip() == "1.0 1.3"
+    assert (baseline / "uv.lock").read_bytes() == first_lock
 
 
 def test_member_uv_lock_travels_with_its_member(tmp_path):
@@ -276,3 +282,52 @@ def test_nested_dist_travels_but_root_dist_stays_out(tmp_path):
 
     assert (destination / "plugins/kanban/dashboard/dist/index.js").read_text(encoding="utf-8") == "ENTRY\n"
     assert not (destination / "dist").exists(), "root build output never enters the snapshot"
+
+
+def test_tool_store_inside_a_package_stays_out_of_the_snapshot(tmp_path):
+    """The container image keeps PM's tool store in the ``tools`` package directory; each dependency
+    generation copied its interpreters, browser and media binaries (~1.5 GB) into its workspace."""
+    core = tmp_path / "core"
+    tools = core / "tools"
+    (tools / "environments").mkdir(parents=True)
+    (tools / "wakewords").mkdir()
+    for entry in ("python-3.14.7-linux-x64", "chromium-1208", "fetch-abc123"):
+        (tools / entry / "bin").mkdir(parents=True)
+        (tools / entry / "bin" / "payload").write_text("BINARY\n", encoding="utf-8")
+    (tools / "__init__.py").write_text("", encoding="utf-8")
+    (tools / "environments" / "__init__.py").write_text("", encoding="utf-8")
+    (tools / "wakewords" / "hey.onnx").write_text("DATA\n", encoding="utf-8")
+    (tools / "facts.json").write_text(json.dumps({"packages": {
+        "python": {"entry": "python-3.14.7-linux-x64"}, "chromium": {"entry": "chromium-1208"},
+        "venv": {"entry": None}, "escape": {"entry": "../environments"}}}), encoding="utf-8")
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude=["tools", "tools.*"]\n',
+        encoding="utf-8",
+    )
+
+    destination = tmp_path / "stage"
+    workspace._copy_core_inputs(core, destination)
+
+    assert (destination / "tools/environments/__init__.py").is_file()
+    assert (destination / "tools/wakewords/hey.onnx").read_text(encoding="utf-8") == "DATA\n"
+    for entry in ("python-3.14.7-linux-x64", "chromium-1208", "fetch-abc123"):
+        assert not (destination / "tools" / entry).exists(), f"store entry {entry} copied into the snapshot"
+
+
+def test_a_facts_file_without_published_entries_hides_nothing(tmp_path):
+    core = tmp_path / "core"
+    data = core / "agent" / "chromium-1208"
+    data.mkdir(parents=True)
+    (data / "kept.txt").write_text("KEPT\n", encoding="utf-8")
+    (core / "agent" / "facts.json").write_text('{"schema": 1}', encoding="utf-8")
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude=["agent"]\n',
+        encoding="utf-8",
+    )
+
+    destination = tmp_path / "stage"
+    workspace._copy_core_inputs(core, destination)
+
+    assert (destination / "agent/chromium-1208/kept.txt").read_text(encoding="utf-8") == "KEPT\n"

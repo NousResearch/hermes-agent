@@ -1448,22 +1448,47 @@ _READY_INTERVAL_S = 0.4  # gateway_windows._wait_for_gateway_ready's poll interv
 _READY_CONFIRM_S = 2.0   # confirmation window: one hit proves a spawn, not a survived startup
 
 
-def _poll_until_ready(targets: list, deadline: float, taken: set) -> dict:
+def _poll_until_ready(targets: list, deadline: float, taken: set, respawn_window: float | None = None) -> dict:
     """``{key: pids}`` for each ``(key, probe, claim_all)`` target whose gateway stayed visible for
     a whole confirmation window. All targets share one loop, so N targets cost one window, not N:
     one fleet process scan per tick (``probe(scan)`` calls ``scan()`` only if it needs the fleet),
     and each target is credited only on its own hits. *taken* holds, while a target is probed, the
     PIDs earlier targets vouched for (all of a profile's, the first of an unmapped entry's) so one
     gateway never retires two debts. A hit provisional at the deadline still finishes its window;
-    a probe that raises leaves its target unready."""
+    a probe that raises leaves its target unready.
+
+    *respawn_window*: a target's own liveness budget, in two parts. The restart watcher only spawns
+    once the paused PID is gone, and that wait is charged to the *old* process — 25–35 s of a shared
+    30 s deadline on a busy update — while a cold gateway then needs >11 s before its control socket
+    answers. So (a) a target first seen late gets ``respawn_window`` counted from its sighting, and
+    (b) a target the deadline expires on without ever being seen gets ONE extra window, because the
+    spawn it is waiting for may not have happened yet. Charging that wait to the new process is what
+    made an update report "relaunch was not verified alive" for a gateway that was up seconds later;
+    the verdict is committed and never revisited, so the stale debt surfaced as a manual follow-up on
+    the next launch. Both parts are bounded, so a relaunch that truly never happens still fails
+    closed. ``None`` keeps the single shared budget. Each target earns its sighting extension once,
+    and the whole poll stops at the entry deadline plus both windows and one confirmation tick: a
+    replacement that flaps in and out must not renew its budget forever.
+    """
     from hermes_cli.gateway import find_gateway_pids
     ready: dict = {}
     since: dict = {}
     failed: set = set()
+    graced: set = set()
+    first_seen: set = set()
+    hard_stop = deadline + 2 * (respawn_window or 0.0) + _READY_CONFIRM_S + _READY_INTERVAL_S
     while True:
         now = _time.monotonic()
+        if now >= hard_stop:
+            return ready
         pending = [t for t in targets if t[0] not in ready and t[0] not in failed and (now < deadline or t[0] in since)]
         if not pending:
+            starved = [key for key, _probe, _all in targets
+                       if key not in ready and key not in failed and key not in first_seen and key not in graced]
+            if respawn_window is not None and starved:
+                graced.update(starved)
+                deadline = now + respawn_window
+                continue
             return ready
         fleet: list = []
 
@@ -1485,6 +1510,12 @@ def _poll_until_ready(targets: list, deadline: float, taken: set) -> dict:
                 continue
             vouched = pids if claim_all else pids[:1]
             taken.update(vouched)
+            if respawn_window is not None and key not in first_seen:
+                # The replacement did not exist before this tick, so the wait that preceded it belongs
+                # to the process it replaced: this target's budget starts now, not at the shared
+                # deadline's origin.
+                first_seen.add(key)
+                deadline = max(deadline, now + respawn_window)
             if now - since.setdefault(key, now) >= _READY_CONFIRM_S:
                 ready[key] = vouched
         if len(ready) + len(failed) < len(targets):
@@ -1509,7 +1540,7 @@ def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: lis
         home=h, pid_filter=lambda ps: [p for p in ps if int(p) != o]), True) for name, old_pid in sorted(profiles.items())]
     targets += [(("unmapped", i), lambda scan, f=_unmapped_ready_filter(entry, taken): f(scan()), False)
                 for i, entry in enumerate(unmapped)]
-    ready = _poll_until_ready(targets, deadline, taken)
+    ready = _poll_until_ready(targets, deadline, taken, respawn_window=_RELAUNCH_VERIFY_TIMEOUT_S)
     ready_profiles = [name for name in sorted(profiles) if ("profile", name) in ready]
     ready_unmapped = [entry for i, entry in enumerate(unmapped) if ("unmapped", i) in ready]
     ready_pids = [pid for pids in ready.values() for pid in pids]

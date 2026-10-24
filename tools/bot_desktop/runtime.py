@@ -155,7 +155,9 @@ class DesktopStatus:
 def _read(path: Path) -> Optional[str]:
     try:
         return path.read_text(encoding="utf-8-sig").strip() or None
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # UnicodeDecodeError: a file we did not write (or a truncated one) must read as absent, not crash
+        # the status/start path that calls this.
         return None
 
 
@@ -206,7 +208,7 @@ _X_UNIX_TABLE = Path("/proc/net/unix")  # the kernel's list of bound Unix socket
 def _x_lock_pid(num: int) -> Optional[int]:
     try:
         return int((_X_LOCK_DIR / f".X{num}-lock").read_text(encoding="utf-8-sig").strip())
-    except (OSError, ValueError):
+    except (OSError, ValueError, UnicodeDecodeError):
         return None
 
 
@@ -215,7 +217,11 @@ def _x_socket_bound(num: int) -> bool:
     kernel drops it only when the process exits. A /tmp reaper can remove the lock file under a live Xvnc,
     and only this binding then still says the number is taken (a new server on it dies 'already running')."""
     try:
-        lines = _X_UNIX_TABLE.read_text(encoding="utf-8-sig").splitlines()
+        # Bytes, not text: the kernel prints each socket path verbatim and an abstract socket can carry
+        # arbitrary bytes in its name, so the file is not guaranteed to be UTF-8 (one such socket makes
+        # read_text raise and every start() die on it). Only the path column is used, so undecodable bytes
+        # are replaced rather than fatal.
+        lines = _X_UNIX_TABLE.read_bytes().decode("utf-8", "replace").splitlines()
     except OSError:
         return False
     # no-tmp: ok — detects the X server's display socket at the path the X11 protocol fixes

@@ -20,17 +20,18 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
+from gateway.session import SessionSource
 from gateway.platforms.webhook import WebhookAdapter
 from gateway.run import GatewayRunner
 from hermes_cli.tools_config import _get_platform_tools
 
 
-class _Src:
+class _Src(SessionSource):
     def __init__(self, chat_id):
-        self.chat_id = chat_id
         # What _dispatch_agent_run stamps: exactly the authenticated route, no delivery id.
-        self.user_id = chat_id.rsplit(":", 1)[0] if chat_id.startswith("webhook:") else None
+        user_id = chat_id.rsplit(":", 1)[0] if chat_id.startswith("webhook:") else None
+        super().__init__(platform=Platform.WEBHOOK, chat_id=chat_id, user_id=user_id)
 
 
 def _make_adapter(routes):

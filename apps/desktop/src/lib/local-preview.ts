@@ -1,3 +1,4 @@
+import { officePreviewKind } from '@hermes/shared'
 import DOMPurify from 'dompurify'
 
 import { isDesktopFsRemoteMode, readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
@@ -257,9 +258,9 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
     language: LANGUAGE_BY_EXT[ext] || 'text',
     path,
     // Renderer fallback can't stat/sniff without reading; assume text unless
-    // image/html/pdf extension says otherwise. LocalFilePreview still guards
+    // image/html/pdf/office extension says otherwise. LocalFilePreview still guards
     // binary/large files when readFileText/readFileDataUrl returns metadata.
-    previewKind: isHtml ? 'html' : isImage ? 'image' : isPdf ? 'pdf' : 'text',
+    previewKind: isHtml ? 'html' : isImage ? 'image' : isPdf ? 'pdf' : (officePreviewKind(ext) ?? 'text'),
     source: raw,
     url: pathToFileUrl(path)
   }
@@ -271,7 +272,10 @@ async function enrichPreviewTarget(target: PreviewTarget | null): Promise<Previe
     !target ||
     target.kind !== 'file' ||
     target.previewKind === 'image' ||
-    target.previewKind === 'pdf'
+    target.previewKind === 'pdf' ||
+    target.previewKind === 'document' ||
+    target.previewKind === 'presentation' ||
+    target.previewKind === 'spreadsheet'
   ) {
     return target
   }

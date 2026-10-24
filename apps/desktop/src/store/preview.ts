@@ -1,3 +1,4 @@
+import { type OfficePreviewKind, officePreviewKindFromPath } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { dismissTreePane, isPaneVisible } from '@/components/pane-shell/tree/store'
@@ -65,7 +66,7 @@ export interface PreviewTarget {
   /** `directory`/`missing` are typed non-previewable results from main-process
    * normalization (#101683): they never reach `openPreview` — callers branch on
    * them for the native folder action / not-found reporting instead. */
-  previewKind?: 'binary' | 'directory' | 'html' | 'image' | 'missing' | 'pdf' | 'text'
+  previewKind?: 'binary' | 'directory' | 'document' | 'html' | 'image' | 'missing' | 'pdf' | 'presentation' | 'spreadsheet' | 'text'
   renderMode?: PreviewRenderMode
   /** Tombstone set when a read/watch confirmed the file is gone. The tab stays
    *  open for the session showing an explicit "file no longer exists" state,
@@ -130,6 +131,26 @@ function isPreviewTab(value: unknown): value is PreviewTab {
   return typeof r.id === 'string' && (r.id.startsWith('file:') || r.id.startsWith('url:')) && isPreviewTarget(r.target)
 }
 
+function officeKindForTarget(target: PreviewTarget): OfficePreviewKind | null {
+  if (target.kind !== 'file') {
+    return null
+  }
+
+  for (const value of [target.path, target.source]) {
+    const kind = officePreviewKindFromPath(value)
+
+    if (kind) {
+      return kind
+    }
+  }
+
+  try {
+    return officePreviewKindFromPath(decodeURIComponent(new URL(target.url).pathname))
+  } catch {
+    return null
+  }
+}
+
 function isPdfFileTarget(target: PreviewTarget): boolean {
   if (target.kind !== 'file') {
     return false
@@ -150,20 +171,27 @@ function isPdfFileTarget(target: PreviewTarget): boolean {
   }
 }
 
-/** Upgrade tabs persisted by builds that classified PDFs as generic binary.
- * Without this restore-time migration, an already-open PDF keeps taking the
+/** Upgrade tabs persisted by builds that classified PDFs and Office files as generic binary.
+ * Without this restore-time migration, an already-open file keeps taking the
  * obsolete raw-binary path after Desktop itself has been upgraded. */
 export function decodePreviewTabs(raw: string): PreviewTab[] {
   return parseTabList(JSON.parse(raw) as unknown)
 }
 
 function parseTabList(parsed: unknown): PreviewTab[] {
-  const pdfUpgraded = (Array.isArray(parsed) ? parsed.filter(isPreviewTab) : [])
-    .map(tab =>
-      isPdfFileTarget(tab.target) && tab.target.previewKind === 'binary'
-        ? { ...tab, target: { ...tab.target, previewKind: 'pdf' as const } }
-        : tab
-    )
+  const pdfUpgraded = (Array.isArray(parsed) ? parsed.filter(isPreviewTab) : []).map(tab => {
+    if (tab.target.previewKind !== 'binary') {
+      return tab
+    }
+
+    if (isPdfFileTarget(tab.target)) {
+      return { ...tab, target: { ...tab.target, previewKind: 'pdf' as const } }
+    }
+
+    const officeKind = officeKindForTarget(tab.target)
+
+    return officeKind ? { ...tab, target: { ...tab.target, previewKind: officeKind } } : tab
+  })
     // Drop tombstoned file tabs (a previous session confirmed the file is
     // gone). Keeping them would re-probe a known-dead path on every boot.
     .filter(tab => !tab.target.missing)

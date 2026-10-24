@@ -7,6 +7,11 @@ import asyncio
 import contextlib
 from hermes_cli.cli_output import line_input
 from hermes_cli.gateway_host_record import _discard_dead_host_record, _forget_host_gateway_probe
+from hermes_cli.gateway_systemctl import (  # facade re-export: moved verbatim (FILE_LINES ratchet)
+    _run_systemctl,
+    _service_scope_label,
+)
+from hermes_cli.debug_redaction import redact_debug_support_text
 import json
 import logging
 import os
@@ -2534,20 +2539,6 @@ def _systemctl_cmd(system: bool = False) -> list[str]:
     return ["systemctl"] if system else ["systemctl", "--user"]
 
 
-def _run_systemctl(args: list[str], *, system: bool = False, **kwargs) -> subprocess.CompletedProcess:
-    """Run systemctl; raise RuntimeError (not raw FileNotFoundError) if missing, for callers bypassing
-    ``supports_systemd_services()``."""
-    try:
-        return subprocess.run(_systemctl_cmd(system) + args, **kwargs)  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
-    except FileNotFoundError:
-        from hermes_cli.gateway_command_errors import SystemctlUnavailableError
-        raise SystemctlUnavailableError() from None
-
-
-def _service_scope_label(system: bool = False) -> str:
-    return "system" if system else "user"
-
-
 def get_installed_systemd_scopes() -> list[str]:
     scopes: list[str] = []
     seen_paths: set[Path] = set()
@@ -3868,7 +3859,14 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         print()
 
     status_cmd = ["status", svc, "--no-pager"] + (["-l"] if full else [])
-    _run_systemctl(status_cmd, system=system, capture_output=False, timeout=10)
+    # systemctl's own child-process tree prints each child's full command line; an MCP server
+    # launched with a credential argument would leak the live key into shared status output
+    # (#143938). Capture and scrub before display instead of passing the stream through.
+    status_result = _run_systemctl(status_cmd, system=system, timeout=10, **_CAPTURE_TEXT)
+    if status_result.stdout:
+        print(redact_debug_support_text(status_result.stdout), end="")
+    if status_result.stderr:
+        print(redact_debug_support_text(status_result.stderr), end="", file=sys.stderr)
     result = _run_systemctl(["is-active", svc], system=system, timeout=10, **_CAPTURE_TEXT)
     if result.stdout.strip() == "active":
         print(f"✓ {scope_label} gateway service is running")

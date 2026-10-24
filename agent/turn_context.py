@@ -882,6 +882,46 @@ def _merge_gateway_notes(
     )
 
 
+def _append_current_time_note(agent: Any, plugin_user_context: str) -> str:
+    """A fresh "now" for a long-lived session, carried on the user message (cache-safe).
+
+    ``_timestamp_line`` freezes ``Conversation started`` to the session's start DAY so the
+    prompt stays byte-stable across rebuilds (it is part of the prompt-cache key), and its
+    "as of the last context rebuild" line refreshes only at a compaction boundary. A session
+    resumed days later therefore restores those frozen bytes verbatim
+    (``_restore_or_build_system_prompt``), so the only date the model can see is one that is
+    no longer today — the measured failure behind "two days since last visit" when the real
+    gap was five.
+
+    The current user turn is the TAIL of the request, so a fresh timestamp here re-prefills
+    nothing in front of it: this is the same channel the gateway already uses for its per-turn
+    notes ("appending to the ephemeral system prompt forced a full agent rebuild"). Same-day
+    sessions return the context untouched — nothing to correct, and no per-turn cost.
+    """
+    from datetime import datetime
+
+    from agent.system_prompt import _session_start_like, _zone_bits
+    from hermes_time import get_timezone as _hermes_tz, now as _hermes_now, safe_strftime
+
+    now = _hermes_now()
+    start = _session_start_like(agent, now)
+    if not isinstance(start, datetime) or now.strftime("%Y%m%d") == start.strftime("%Y%m%d"):
+        return plugin_user_context
+    # ``_zone_bits`` can repeat the offset when the host tz has no IANA key (a fixed-offset
+    # tzinfo renders ``%Z`` as "UTC+02:00", so the abbreviation slot duplicates the offset
+    # slot); dedupe so the note never reads "(UTC+02:00, UTC+02:00)".
+    _bits = list(dict.fromkeys(_zone_bits(now, _hermes_tz())))
+    _zone_suffix = f" ({', '.join(_bits)})" if _bits else ""
+    _note = (
+        "[System note: the current time is "
+        f"{safe_strftime(now, '%A, %B %d, %Y %H:%M:%S')}{_zone_suffix} — that is \"now\" for this turn. "
+        "The \"Conversation started\" date in the system prompt is when this conversation began, "
+        "not today; do not read it, or the memory block's provenance dates, as the current date. "
+        "On a later turn run `date` for the exact time.]"
+    )
+    return f"{plugin_user_context}\n\n{_note}" if plugin_user_context else _note
+
+
 def _bind_interrupt_scope(agent: Any, ra) -> None:
     """Record the execution thread so interrupt()/clear_interrupt() scope the tool-level
     signal to THIS agent's thread; clear stale state, preserving a pending interrupt."""
@@ -1190,6 +1230,10 @@ def build_turn_context(
     plugin_user_context = _merge_gateway_notes(
         agent, messages, current_turn_user_idx, plugin_user_context
     )
+    # Long-lived session: put a fresh "now" on the tail of the request. The system prompt's
+    # clock is frozen by design, so this is the only cache-safe place for it — see
+    # _append_current_time_note.
+    plugin_user_context = _append_current_time_note(agent, plugin_user_context)
 
     _bind_interrupt_scope(agent, ra)
     ext_prefetch_cache = _memory_turn_start_and_prefetch(agent, original_user_message, turn_author)

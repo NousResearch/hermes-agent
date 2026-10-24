@@ -3150,6 +3150,10 @@ class ContextCompressor(
             return lambda i: native_budget(messages[i])
         return lambda i: _estimate_msg_budget_tokens(messages[i], charge_all_thinking or i == newest_asst_idx)
 
+    def _tail_budget_tokens(self, messages: list[dict[str, Any]], cut_idx: int) -> int:
+        """Count a suffix with the same accounting the tail walk uses."""
+        return sum(map(self._tail_row_pricer(messages), range(max(0, cut_idx), len(messages))))
+
     def _prune_boundary(
         self, result: list[dict[str, Any]], protect_tail_count: int, protect_tail_tokens: int | None,
     ) -> int:
@@ -5025,8 +5029,26 @@ Write only the summary body. Do not include any preamble or prefix."""
         # soft ceiling, anchoring its opening request retains the whole turn and blows the budget by
         # design — then the clean tool-group boundary above wins and that request rides the handoff
         # (#80449). The N-user promise (#70250) is never relaxed.
+        base_cut = cut_idx
         last_user_idx = self._find_last_user_message_idx(messages, head_end)
         user_anchored_cut = self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
+        newest_asst_idx = _last_assistant_index(messages)
+        charge_all_thinking = self._stale_thinking_on_wire()
+        has_oversized_tail_row = any(
+            _estimate_msg_budget_tokens(
+                messages[i], charge_all_thinking or i == newest_asst_idx,
+            ) > soft_ceiling
+            for i in range(user_anchored_cut, n)
+        )
+        has_prunable_inflight_tool = (
+            self._find_inflight_user_task(messages) is not None
+            and any(
+                messages[i].get("role") == "tool"
+                and isinstance(messages[i].get("content"), str)
+                and len(messages[i]["content"]) >= _PRUNE_MIN_CHARS
+                for i in range(last_user_idx, n)
+            )
+        )
         split_oversized_turn = False
         # ``user_anchored_cut < cut_idx`` means the anchor found a real user turn strictly inside the
         # compressible region (see ``_ensure_last_user_message_in_tail``), so ``last_user_idx`` is a
@@ -5046,6 +5068,11 @@ Write only the summary body. Do not include any preamble or prefix."""
             # active turn's own newest group, the pre-anchor cut retains it anyway, so taking the
             # active request out of the tail buys no reclaim and loses the #10896 anchor.
             and any(messages[i].get("tool_calls") for i in range(last_user_idx, cut_idx))
+            # Keep the active request protected when a tool row is eligible for the pressure-prune pass.
+            # Splitting first would hide the request before that row can be reduced. A single row that is
+            # already over the soft ceiling is also indivisible continuity, even for a completed turn.
+            and not has_oversized_tail_row
+            and not has_prunable_inflight_tool
             # ...and only when the anchored region really is over the ceiling: a short transcript
             # (whole session under the budget) anchors for free, so the exception must not fire.
             # Measured with the walk's own accounting (#84371), not a second thought-charge rule.
@@ -5088,12 +5115,45 @@ Write only the summary body. Do not include any preamble or prefix."""
             else:
                 cut_idx = asst_anchored_cut
 
+        # When the user anchor is the only thing making a completed tail unbounded, keep the assistant anchor
+        # and let the summary carry the finished turn. Active asks keep the old anchor behavior.
+        _min_tail_users = getattr(self, "min_tail_user_messages", 1)
+        _single_user_anchor = not (
+            isinstance(_min_tail_users, int)
+            and not isinstance(_min_tail_users, bool)
+            and _min_tail_users > 1
+        )
+        if (
+            _single_user_anchor
+            and user_anchored_cut != base_cut
+            and self._find_inflight_user_task(messages) is None
+        ):
+            # ``base_cut`` is before the user anchor, so this candidate keeps the latest assistant without
+            # pulling a completed user turn and its old tool history back into the protected suffix.
+            assistant_only_cut = self._ensure_last_assistant_message_in_tail(messages, base_cut, head_end)
+            # If the backward-aligned cut landed before a completed tool group, the helper above cannot
+            # advance past that group. A clean boundary at the latest completed assistant reply can keep
+            # the visible answer while leaving the oversized tool group in the summary.
+            latest_assistant_idx = self._find_last_assistant_message_idx(messages, head_end)
+            if latest_assistant_idx > assistant_only_cut:
+                # A text reply right after a finished tool group is already a clean boundary.
+                assistant_only_cut = (
+                    latest_assistant_idx
+                    if not messages[latest_assistant_idx].get("tool_calls")
+                    else self._align_boundary_backward(messages, latest_assistant_idx)
+                )
+            if (
+                self._tail_budget_tokens(messages, cut_idx) > soft_ceiling
+                and assistant_only_cut > head_end
+                and self._tail_budget_tokens(messages, assistant_only_cut) <= soft_ceiling
+                and not has_oversized_tail_row
+            ):
+                cut_idx = assistant_only_cut
+
         # Optional multi-user anchor; n<=1 is gated here (not delegated): re-running the single-user anchor after
         # the assistant anchor could re-trigger its forward turn-pair push. Runs even under the split: the
         # N-user promise (#70250) is a user-facing setting and must outrank the budget, so it pulls the cut
         # back to the Nth user turn — which is why the split only ever relaxes the single-user anchor.
-        # getattr: plugin engines and __new__ doubles skip __init__.
-        _min_tail_users = getattr(self, "min_tail_user_messages", 1)
         if isinstance(_min_tail_users, int) and not isinstance(_min_tail_users, bool) and _min_tail_users > 1:
             cut_idx = self._ensure_last_n_user_messages_in_tail(messages, cut_idx, head_end, _min_tail_users)
 

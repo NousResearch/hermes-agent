@@ -648,6 +648,28 @@ def test_unchanged_model_flag_on_resume_ignores_the_configured_provider(store, m
     assert created["model"] == "my-model" and "provider" not in created, created
 
 
+def test_explicit_provider_without_model_survives_launch_policy(store):
+    """`--provider <entry>` without `-m` resolves its default model; both must reach session.create."""
+    from hermes_cli.cli_init_mixin import CLIInitMixin
+
+    db, client = store
+    host = types.SimpleNamespace(
+        session_id="local-old",
+        _resumed=False,
+        enabled_toolsets=["file"],
+        _session_db=GatewaySessionStore(db.connection),
+        model="cfg-model",
+        _explicit_model_override=False,
+        _explicit_provider="custom:opencode-go",
+        requested_provider="custom:opencode-go"
+    )
+    CLIInitMixin._ensure_gateway_session(host)
+
+    created = [p for m, p in client.calls if m == "session.create"][-1]
+    assert created["provider"] == "custom:opencode-go", created
+    assert created["model"] == "cfg-model", created
+
+
 def test_new_session_keeps_the_runs_launch_policy(store, monkeypatch):
     """CLI-3: `/new` keeps `--max-turns`, `--checkpoints`, `--run-budget`, `-v` and `-s` (main kept one
     AIAgent across /new); only the explicit model route is left to the profile default."""

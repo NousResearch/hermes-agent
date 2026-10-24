@@ -613,6 +613,7 @@ _PER_TURN_RESET_STATE: tuple[tuple[str, Any], ...] = (
     ("_tool_guardrail_halt_decision", None),
     ("_harness_metrics_turn", None),
     ("_iteration_budget_warning_injected", False),
+    ("_first_byte_budget", None),  # fallback.no_first_byte_budget_seconds clock (agent/first_byte_budget.py)
     ("_run_budget_wrapup_injected", False), ("_verification_stop_nudges", 0),
     ("_pre_verify_nudges", 0), ("_lsp_turn_end_notes", 0),
 )

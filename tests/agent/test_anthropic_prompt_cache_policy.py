@@ -217,6 +217,51 @@ class TestThirdPartyAnthropicGateway:
 
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
+    def test_bare_alias_without_capability_warns_once_with_remediation(self, caplog):
+        """Combo/gateway aliases name no model family, so the substring gates all miss and the
+        route silently serves 0% cache hits. The policy must surface that with a one-time warning
+        naming the fix; an explicit capability declaration (true OR false) must stay silent."""
+        agent = _make_agent(
+            provider="custom:anthropic-proxy",
+            base_url="https://gateway.example.com/anthropic",
+            api_mode="anthropic_messages",
+            model="fable",
+        )
+        agent._custom_providers = [
+            {
+                "name": "anthropic-proxy",
+                "base_url": "https://gateway.example.com/anthropic",
+                "models": {"fable": {"context_length": 1_000_000}},
+            }
+        ]
+
+        with caplog.at_level("WARNING"):
+            assert agent._anthropic_prompt_cache_policy() == (False, False)
+            agent._anthropic_prompt_cache_policy()  # second call: warn-once, not per turn
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert "prompt_caching" in warnings[0].getMessage()
+        assert "fable" in warnings[0].getMessage()
+
+        caplog.clear()
+        declared_off = _make_agent(
+            provider="custom:anthropic-proxy",
+            base_url="https://gateway.example.com/anthropic",
+            api_mode="anthropic_messages",
+            model="fable",
+        )
+        declared_off._custom_providers = [
+            {
+                "name": "anthropic-proxy",
+                "base_url": "https://gateway.example.com/anthropic",
+                "models": {"fable": {"prompt_caching": False}},
+            }
+        ]
+        with caplog.at_level("WARNING"):
+            assert declared_off._anthropic_prompt_cache_policy() == (False, False)
+        assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
     def test_capability_on_other_route_does_not_apply(self):
         """prompt_caching declared for a DIFFERENT base_url must not enable
         caching for this agent's route — route isolation at the policy level."""

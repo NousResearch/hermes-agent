@@ -190,5 +190,8 @@ def run_doctor(args):
     with warn_on_error(""):
         from hermes_cli.doctor_live import maybe_run_live_checks
         maybe_run_live_checks(args, total.manual_issues)
+    with warn_on_error(""):
+        from hermes_cli.doctor_turn import maybe_run_turn_check
+        maybe_run_turn_check(args, total.manual_issues)
     _print_summary(should_fix, total)
     return int(bool(total.issues or total.manual_issues))

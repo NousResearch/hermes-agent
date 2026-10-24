@@ -296,8 +296,19 @@ def test_probe_inconclusive_falls_through_to_spawn_error(tmp_path):
                 client._run_prompt("hello", timeout_seconds=1)
 
 
+def test_probe_runs_without_a_console():
+    """The ``--help`` probe must not share the user's console: PATH wrappers such as VS Code
+    Copilot Chat's ``copilot.bat`` (-> PowerShell) prompt "Install GitHub Copilot CLI? (y/N)"
+    straight to the console on every startup model-list warm-up otherwise."""
+    from hermes_cli._subprocess_compat import windows_hide_flags
 
-
+    with _patch(
+        "agent.copilot_acp_client.subprocess.run",
+        return_value=_completed(stdout="Usage: copilot [--acp] [--stdio]"),
+    ) as run_mock:
+        _acp_supported("copilot", ["--acp", "--stdio"])
+    assert run_mock.call_args.kwargs["creationflags"] == windows_hide_flags()
+    assert run_mock.call_args.kwargs["stdin"] is _subprocess.DEVNULL
 
 
 def test_probe_skipped_for_custom_args_without_acp():

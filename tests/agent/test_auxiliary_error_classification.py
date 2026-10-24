@@ -10,6 +10,7 @@ import logging
 import pytest
 
 from agent import auxiliary_client as ac
+from agent import auxiliary_health as ah
 from agent.error_classifier import FailoverReason, classify_api_error
 
 
@@ -32,8 +33,8 @@ def test_openrouter_limit_403_is_billing_for_main_loop_and_aux_ladder(body):
 
 
 def test_absent_credentials_quarantine_is_debug_and_names_the_real_reason(caplog):
-    ac._reset_aux_unhealthy_cache()
-    with caplog.at_level(logging.DEBUG, logger="agent.auxiliary_client"):
+    ah._reset_aux_unhealthy_cache()
+    with caplog.at_level(logging.DEBUG, logger="agent.auxiliary_health"):
         ac._mark_provider_unhealthy("openrouter", ttl=60, reason="OPENROUTER_API_KEY not set", level=logging.DEBUG)
         ac._log_skip_unhealthy("openrouter", "title_generation")
         ac._mark_provider_unhealthy("nous")  # confirmed 402 path keeps the payment wording at WARNING
@@ -42,7 +43,7 @@ def test_absent_credentials_quarantine_is_debug_and_names_the_real_reason(caplog
     assert "OPENROUTER_API_KEY not set" in marks[0].getMessage()
     skip = next(r for r in caplog.records if "skipping" in r.getMessage())
     assert "OPENROUTER_API_KEY not set" in skip.getMessage() and "payment" not in skip.getMessage()
-    ac._reset_aux_unhealthy_cache()
+    ah._reset_aux_unhealthy_cache()
 
 
 def test_vision_fallback_skips_text_only_main_model(monkeypatch):

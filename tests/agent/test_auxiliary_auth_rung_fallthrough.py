@@ -40,6 +40,7 @@ import pytest
 import hermes_yaml as yaml
 
 import agent.auxiliary_client as aux
+import agent.auxiliary_health as ah
 
 AUX_MODEL = "z-ai/glm-5.3-flash"
 FALLBACK_MODEL = "fallback-model"
@@ -267,7 +268,7 @@ def nous_ladder_endpoint(monkeypatch):
     redirected to the loopback server.
     """
     aux.shutdown_cached_clients()
-    aux._reset_aux_unhealthy_cache()
+    ah._reset_aux_unhealthy_cache()
     requests = []
     resolve_address = socket.getaddrinfo
 

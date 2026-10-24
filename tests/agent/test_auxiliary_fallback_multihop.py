@@ -13,14 +13,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agent import auxiliary_client as ac
+from agent import auxiliary_health as ah
 from agent.auxiliary_client import async_call_llm, call_llm
 
 
 @pytest.fixture(autouse=True)
 def _fresh_unhealthy_cache():
-    ac._reset_aux_unhealthy_cache()
+    ah._reset_aux_unhealthy_cache()
     yield
-    ac._reset_aux_unhealthy_cache()
+    ah._reset_aux_unhealthy_cache()
 
 
 def _quota_429(lane: str) -> Exception:
@@ -45,8 +46,8 @@ def _payment_402(lane: str) -> Exception:
 
 
 def _quarantine_remaining(base_url: str) -> float:
-    key = ac._unhealthy_cache_key("custom", base_url)
-    return ac._aux_unhealthy_until[key] - time.time()
+    key = ah._unhealthy_cache_key("custom", base_url)
+    return ah._aux_unhealthy_until[key] - time.time()
 
 
 def _client(base_url: str, create):
@@ -92,8 +93,8 @@ def test_sync_walk_advances_past_quota_limited_candidate_to_next_configured_entr
     assert lane_b.chat.completions.create.call_count == 1
     assert lane_c.chat.completions.create.call_count == 1
     # The quota-limited candidate is really quarantined (per endpoint) so the ordered re-walk skips it.
-    assert ac._is_provider_unhealthy("custom", "http://127.0.0.1:2/v1")
-    assert not ac._is_provider_unhealthy("custom", "http://127.0.0.1:3/v1")
+    assert ah._is_provider_unhealthy("custom", "http://127.0.0.1:2/v1")
+    assert not ah._is_provider_unhealthy("custom", "http://127.0.0.1:3/v1")
 
 
 @pytest.mark.asyncio
@@ -121,7 +122,7 @@ async def test_async_walk_exhausts_every_configured_lane_once_then_raises_primar
 def test_candidate_quarantine_ttl_is_short_for_transient_429_and_long_for_payment(caplog):
     """A per-minute 429 on a candidate hides the lane for seconds, not the 10-minute payment hold,
     and the warning names the real class; a 402 candidate still gets the long hold."""
-    caplog.set_level("WARNING", logger="agent.auxiliary_client")
+    caplog.set_level("WARNING", logger="agent.auxiliary_health")
     primary = _client("http://127.0.0.1:1/v1", MagicMock(side_effect=_plain_429("A")))
     lane_b = _client("http://127.0.0.1:2/v1", MagicMock(side_effect=_plain_429("B")))
     lane_c = _client("http://127.0.0.1:3/v1", MagicMock(side_effect=_payment_402("C")))

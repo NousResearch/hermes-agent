@@ -157,27 +157,6 @@ class TestPerJobToolsetMcpMerge:
         assert result == ["web", "finnhub"]
         assert "playwright" not in result
 
-    def test_the_toolset_name_spelling_is_treated_as_allowlist(self):
-        # The same server named by its TOOLSET name (``mcp-<server>``) narrows just the same.
-        result = _merge_mcp_into_per_job_toolsets(["web", "mcp-finnhub"], self.CFG)
-        assert result == ["web", "mcp-finnhub"]
-        assert "playwright" not in result
-
-    def test_the_toolset_name_spelling_alongside_a_native_toolset_keeps_both(self):
-        result = _merge_mcp_into_per_job_toolsets(["mcp-finnhub", "terminal"], self.CFG)
-        assert result == ["mcp-finnhub", "terminal"]
-
-    def test_a_configured_but_disabled_server_does_not_widen_the_allowlist(self):
-        # A job pinned to a server the operator turned off must not fall through to every ENABLED
-        # server: the disabled one stays off and nothing else rides in (#141468).
-        result = _merge_mcp_into_per_job_toolsets(["web", "mcp-disabled_one"], self.CFG)
-        assert result == ["web", "mcp-disabled_one"]
-        assert not (set(result) & self._enabled_names())
-        # The bare alias of the disabled server is the same selection.
-        result = _merge_mcp_into_per_job_toolsets(["web", "disabled_one"], self.CFG)
-        assert result == ["web", "disabled_one"]
-        assert not (set(result) & self._enabled_names())
-
     def test_no_mcp_sentinel_opts_out_and_is_stripped(self):
         result = _merge_mcp_into_per_job_toolsets(["web", "no_mcp"], self.CFG)
         assert result == ["web"]

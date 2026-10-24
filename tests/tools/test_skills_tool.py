@@ -888,11 +888,13 @@ class TestSkillViewCollisionDetection:
         ("local", "external", "productivity/xdup", "productivity/xdup", "xdup"),
         ("create_dir", "external", "brain/note", "note", "note"),
         ("local", "create_dir", "note", "brain/note", "note"),
-        ("project", "local", "deploy", "ops/deploy", "deploy"),
+        # Yoyodine override: the curated profile tier outranks the repo checkout (tier ladder
+        # profile > create_dir > external > project), so a project copy never shadows a curated one.
+        ("local", "project", "deploy", "ops/deploy", "deploy"),
     ])
     def test_higher_tier_wins_cross_directory_collision(
             self, tmp_path, caplog, winner_tier, loser_tier, winner_rel, loser_rel, lookup):
-        """project > local > create_dir > external: the higher tier loads, the shadowed copy is
+        """profile-local > create_dir > external > project: the higher tier loads, the shadowed copy is
         reported by skills_list neither as a row nor as a guess, and a warning names it."""
         from agent import skill_utils
         tiers = {t: tmp_path / t for t in ("project", "local", "create_dir", "external")}

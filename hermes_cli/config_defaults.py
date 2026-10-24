@@ -1445,6 +1445,12 @@ DEFAULT_CONFIG = {
     # Skills — external skill directories shared across tools/agents. Paths are expanded (~, ${VAR})
     # and resolved; read-only — creation goes to ~/.hermes/skills/ unless create_dir redirects it.
     "skills": {
+        # Flat system-prompt skills index: "dark" (default) suppresses the legacy
+        # `- name: description` list and leaves `skills_list()`/`skill_view()` as the enumeration
+        # and load paths. "flat" restores the retired list for a profile that carries no curated
+        # SOUL surface. Read by agent.prompt_builder.skills_index_dark(); behavioural settings
+        # live here, never in a HERMES_* env var.
+        "index": "dark",
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
         # Where skill_manage-created skills go (empty = profile-local dir). When set, new skills
         # land here AND agent-facing instructions name this path; expanded (~, ${VAR}), relative to

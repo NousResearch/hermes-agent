@@ -208,19 +208,37 @@ class TestSchedulerFailure:
         assert runtime_warnings == []
 
 
+def _lifecycle(sent):
+    return [(u.tool_call_id, u.session_update, u.status) for u in sent]
+
+
+def _expected_lifecycle(requested, status):
+    """Spec order: ``tool_call`` (pending) precedes ``request_permission`` and a terminal
+    ``tool_call_update`` follows the answer. A client that does not upsert from the permission
+    request never saw the bubble (nor its close) without the start."""
+    return [(requested.tool_call_id, "tool_call", "pending"), (requested.tool_call_id, "tool_call_update", status)]
+
+
 class TestPermissionRequestToolCallReachesATerminalStatus:
     """The ``perm-check-N`` / ``edit-approval-N`` ToolCallUpdate attached to ``request_permission``
-    is materialised by clients as a pending bubble; once the user answers it must be closed."""
+    is created as a pending ``tool_call`` BEFORE the request and closed once the user answers."""
 
     @staticmethod
     def _run(factory, outcome, call):
         request_permission = AsyncMock(name="request_permission")
         future = MagicMock(spec=Future)
         future.result.return_value = _make_response(outcome)
-        sent = []
+        sent, sent_before_request = [], []
+
+        def _request_permission(**kwargs):
+            sent_before_request.append([u.session_update for u in sent])
+            return request_permission(**kwargs)
+
         with patch("agent.async_utils.asyncio.run_coroutine_threadsafe", return_value=future):
-            cb = factory(request_permission, MagicMock(spec=asyncio.AbstractEventLoop), "s1", send_update=sent.append)
+            cb = factory(_request_permission, MagicMock(spec=asyncio.AbstractEventLoop), "s1", send_update=sent.append)
             call(cb)
+        # The client must know the tool call exists before it is asked to authorise it.
+        assert sent_before_request == [["tool_call"]]
         requested = request_permission.call_args.kwargs["tool_call"]
         return requested, sent
 
@@ -230,7 +248,9 @@ class TestPermissionRequestToolCallReachesATerminalStatus:
     ])
     def test_command_permission_request_is_closed_per_outcome(self, outcome, status):
         requested, sent = self._run(make_approval_callback, outcome, lambda cb: cb("rm -rf /", "dangerous"))
-        assert [(u.tool_call_id, u.status) for u in sent] == [(requested.tool_call_id, status)]
+        assert _lifecycle(sent) == _expected_lifecycle(requested, status)
+        # The start carries the request's own presentation, so the client renders one bubble, not two.
+        assert (sent[0].title, sent[0].kind, sent[0].content) == (requested.title, requested.kind, requested.content)
 
     def test_denied_edit_approval_request_is_closed_as_failed(self):
         from acp_adapter.edit_approval import EditProposal, make_acp_edit_approval_requester
@@ -239,7 +259,7 @@ class TestPermissionRequestToolCallReachesATerminalStatus:
         requested, sent = self._run(
             make_acp_edit_approval_requester, DeniedOutcome(outcome="cancelled"), lambda cb: cb(proposal),
         )
-        assert [(u.tool_call_id, u.status) for u in sent] == [(requested.tool_call_id, "failed")]
+        assert _lifecycle(sent) == _expected_lifecycle(requested, "failed")
 
     def test_allowed_edit_approval_request_is_closed_as_completed_once(self):
         """Live regression: a client answering with a plain ``selected`` outcome (not the SDK
@@ -260,7 +280,7 @@ class TestPermissionRequestToolCallReachesATerminalStatus:
             decisions.append(requester(proposal))
         requested = request_permission.call_args.kwargs["tool_call"]
         assert decisions == [True]
-        assert [(u.tool_call_id, u.status) for u in sent] == [(requested.tool_call_id, "completed")]
+        assert _lifecycle(sent) == _expected_lifecycle(requested, "completed")
 
 
 def test_default_permission_timeout_follows_approvals_config(monkeypatch):

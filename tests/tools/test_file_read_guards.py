@@ -50,7 +50,7 @@ class _FakeReadResult:
 
 def _make_fake_ops(content="hello\n", total_lines=1, file_size=6):
     fake = MagicMock(env=None)
-    fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
+    fake.read_file = lambda path, offset=1, limit=500, **kwargs: _FakeReadResult(
         content=content, total_lines=total_lines, file_size=file_size,
     )
     return fake
@@ -729,7 +729,7 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
         stub because the mtime comparison saw no change.
         """
         fake = MagicMock(env=None)
-        fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
+        fake.read_file = lambda path, offset=1, limit=500, **kwargs: _FakeReadResult(
             content="original content\n", total_lines=1, file_size=18,
         )
         fake.write_file = lambda path, content: MagicMock(
@@ -746,7 +746,7 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
         write_file_tool(self._tmpfile, "new content\n", task_id="wr")
 
         # 3. Read again — should get full content, NOT dedup stub.
-        fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
+        fake.read_file = lambda path, offset=1, limit=500, **kwargs: _FakeReadResult(
             content="new content\n", total_lines=1, file_size=13,
         )
         r2 = json.loads(read_file_tool(self._tmpfile, task_id="wr"))
@@ -758,7 +758,7 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
     def test_write_invalidates_all_offsets(self, mock_ops):
         """A write invalidates dedup entries for ALL offset/limit combos."""
         fake = MagicMock(env=None)
-        fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
+        fake.read_file = lambda path, offset=1, limit=500, **kwargs: _FakeReadResult(
             content="line1\nline2\nline3\n", total_lines=3, file_size=20,
         )
         fake.write_file = lambda path, content: MagicMock(

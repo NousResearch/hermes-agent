@@ -204,15 +204,23 @@ def test_child_rotation_never_claims_and_parent_reanchors_its_real_lease():
 
 def test_close_holds_lease_until_isolated_turn_settles(monkeypatch):
     interrupts: list[str] = []
-    monkeypatch.setattr(server, "_get_compute_host_supervisor",
-                        lambda *a, **k: types.SimpleNamespace(interrupt=lambda sid, **k: interrupts.append(sid)))
+    supervisor = types.SimpleNamespace(
+        interrupt_if_running=lambda sid, **k: interrupts.append(sid) or True,
+        interrupt=lambda *a, **k: pytest.fail("detached close used the start-capable interrupt path"),
+    )
     monkeypatch.setattr(server, "_load_dashboard_process_isolation_config", lambda *a: {"turn_isolation": True})
     monkeypatch.setattr(server, "_TURN_SETTLE_BEFORE_CLOSE_SECONDS", 0.2)
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
     parent = _seed_parent_lease("A")
     session = _parent_session("sid", "A", parent)
     session["_compute_host_turn_id"] = "turn-1"  # the child is still running this turn
-    session["_closing"] = True
+    session["profile_home"] = os.environ["HERMES_HOME"]
+    target_key = os.path.realpath(session["profile_home"])
+    monkeypatch.setitem(server._compute_host_supervisors, target_key, supervisor)
+    with server._sessions_lock:
+        server._sessions["sid"] = session
+    popped = server._pop_session_by_id("sid")
+    assert popped is session
     try:
         assert server._teardown_popped_session(session, end_reason="tui_close") is True
         assert interrupts == ["sid"]

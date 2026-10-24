@@ -361,7 +361,8 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"status": "confirm_required", "message": message})
     if session and _session_uses_compute_host(session):
         try:
-            ack = _get_compute_host_supervisor().reload_mcp(
+            ack = _compute_host_supervisor_for_session(
+                str(params.get("session_id") or ""), session).reload_mcp(
                 str(params.get("session_id") or ""), request_id=f"reload-mcp-{rid}")
         except Exception as exc:
             return _err(rid, 5019, f"compute-host reload_mcp failed: {exc}")

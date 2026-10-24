@@ -117,6 +117,11 @@ class DispatchResult:
     """Unassigned task ids that had ``kanban.default_assignee`` applied this
     tick before spawning, so telemetry/CLI/dashboard can show the dispatcher
     acting on the fallback rule rather than explicit assignments."""
+    alias_rerouted: list[tuple[str, str, str]] = field(default_factory=list)
+    """``(task_id, from_assignee, to_assignee)`` for non-spawnable assignees
+    rerouted to the mapping target in ``kanban.assignee_aliases`` this tick.
+    Same act-and-surface class as ``auto_assigned_default``: the ownership
+    write persists and the spawn proceeds under the mapped profile."""
     skipped_nonspawnable: list[str] = field(default_factory=list)
     """Ready task ids whose assignee names a control-plane lane (e.g. a Claude
     Code terminal like ``orion-cc``), not a Hermes profile. Expected steady-state
@@ -1686,7 +1691,8 @@ def _is_handoff_event(kind: str, payload: Optional[str]) -> bool:
     if kind != "assigned":
         return True
     data = _kb._json_or(payload, {})
-    if not isinstance(data, dict) or data.get("source") == "kanban.default_assignee":
+    if not isinstance(data, dict) or data.get("source") in (
+            "kanban.default_assignee", "kanban.assignee_aliases"):
         return False
     to = data.get("assignee")
     return bool(to) and "from" in data and data["from"] != to
@@ -2076,21 +2082,32 @@ def _dispatch_lane_task(
     # it by assigning a profile, and health telemetry suppresses "stuck" for it.
     profile_exists = _profile_exists_fn()
     if profile_exists is not None and not profile_exists(assignee):
-        result.skipped_nonspawnable.append(task_id)
-        # Per-task diagnostic so ``show``/``tail`` name the missing profile instead of leaving
-        # the card in ``ready`` with zero board evidence (#122422). Unlike a respawn guard the
-        # condition never expires on its own, so write it once: a repeat only when something
-        # else happened on the card since (reassign, comment) — not one row per tick forever,
-        # and not one row per foreign home per tick on a shared board (#101015).
-        if not dry_run:
-            with _kb.write_txn(conn):
-                last = conn.execute(
-                    "SELECT kind, payload FROM task_events WHERE task_id = ? "
-                    "ORDER BY created_at DESC, id DESC LIMIT 1", (task_id,)).fetchone()
-                if (last is None or last["kind"] != "skipped_nonspawnable"
-                        or last["payload"] != _kb._json_or_null({"assignee": assignee})):
-                    _kb._append_event(conn, task_id, "skipped_nonspawnable", {"assignee": assignee})
-        return False
+        # kanban.assignee_aliases: a board name that maps onto a claimable
+        # profile is rerouted in the same tick (a persona mapped onto the
+        # profile that runs it — such a card is work, not a permanent skip).
+        alias_target = _resolve_alias_target(assignee)
+        if alias_target is not None and profile_exists(alias_target):
+            if not _apply_assignee_alias(conn, task_id, assignee, alias_target, dry_run=dry_run):
+                result.skipped_nonspawnable.append(task_id)
+                return False
+            result.alias_rerouted.append((task_id, assignee, alias_target))
+            assignee = alias_target
+        else:
+            result.skipped_nonspawnable.append(task_id)
+            # Per-task diagnostic so ``show``/``tail`` name the missing profile instead of leaving
+            # the card in ``ready`` with zero board evidence (#122422). Unlike a respawn guard the
+            # condition never expires on its own, so write it once: a repeat only when something
+            # else happened on the card since (reassign, comment) — not one row per tick forever,
+            # and not one row per foreign home per tick on a shared board (#101015).
+            if not dry_run:
+                with _kb.write_txn(conn):
+                    last = conn.execute(
+                        "SELECT kind, payload FROM task_events WHERE task_id = ? "
+                        "ORDER BY created_at DESC, id DESC LIMIT 1", (task_id,)).fetchone()
+                    if (last is None or last["kind"] != "skipped_nonspawnable"
+                            or last["payload"] != _kb._json_or_null({"assignee": assignee})):
+                        _kb._append_event(conn, task_id, "skipped_nonspawnable", {"assignee": assignee})
+            return False
     # Per-profile cap: one profile's local model / API quota / browser pool
     # must not be overwhelmed by a fan-out even with global headroom.
     if per_profile_cap is not None:
@@ -2203,6 +2220,65 @@ def _apply_default_assignee(
         _kb._log.debug(
             "kanban dispatch: failed to apply default_assignee=%r to task %s",
             assignee, task_id, exc_info=True,
+        )
+        return False
+    return True
+
+
+def _resolve_alias_target(assignee: str) -> Optional[str]:
+    """``kanban.assignee_aliases`` target for a non-spawnable assignee.
+
+    Maps a board name onto the profile that actually runs it (e.g. ``chief ->
+    default`` so a card written for a board persona is work, not a silent
+    archive). Read
+    per dispatch step, like ``kanban.dispatch_profiles``, so config edits apply
+    without a daemon restart. Fail-open: an unreadable or malformed value
+    returns ``None`` and the card stays in the pre-existing
+    ``skipped_nonspawnable`` bucket — a typo in the mapping must never change
+    card ownership on its own.
+    """
+    try:
+        from hermes_cli.config_effective import load_user_config_effective
+        kanban = (load_user_config_effective(fail_closed=True) or {}).get("kanban", {})
+    except Exception:
+        return None
+    if not isinstance(kanban, Mapping):
+        return None
+    aliases = kanban.get("assignee_aliases")
+    if not isinstance(aliases, Mapping):
+        return None
+    target = aliases.get((assignee or "").strip())
+    if not isinstance(target, str) or not target.strip():
+        return None
+    return target.strip()
+
+
+def _apply_assignee_alias(
+    conn: sqlite3.Connection, task_id: str, old: str, new: str, *, dry_run: bool,
+) -> bool:
+    """Persist a ``kanban.assignee_aliases`` reroute on a non-spawnable row.
+
+    Mutating the row (routing-around-it would lie on the board) keeps
+    diagnostics and state consistent: the card is legitimately owned by the
+    mapped profile and the spawn in the same tick runs the mapped profile.
+    ``dry_run`` reports without writing. Returns False when the write failed.
+    """
+    if dry_run:
+        return True
+    try:
+        with _kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET assignee = ? WHERE id = ? AND assignee = ?",
+                (new, task_id, old),
+            )
+            _kb._append_event(
+                conn, task_id, "assigned",
+                {"assignee": new, "from": old, "source": "kanban.assignee_aliases"},
+            )
+    except Exception:
+        _kb._log.debug(
+            "kanban dispatch: failed to apply assignee_aliases %r->%r to task %s",
+            old, new, task_id, exc_info=True,
         )
         return False
     return True

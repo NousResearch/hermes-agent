@@ -146,3 +146,75 @@ def test_claim_reclaimed_before_admission_marker_is_refused(tmp_path, monkeypatc
     assert calls == []
     with closing(connect(board='owned')) as conn:
         assert conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='owner_admitted'", (task_id,)).fetchone()[0] == 0
+
+
+# --- worker boot degrades when task skills cannot be resolved -----------------------
+
+def _skills_worker_agent(captured):
+    from types import SimpleNamespace
+
+    def run_conversation(prompt, conversation_history=None):
+        captured["prompt"] = prompt
+        return {"final_response": "done", "messages": []}
+
+    return SimpleNamespace(session_id="s-worker", run_conversation=run_conversation)
+
+
+def test_worker_degrades_when_no_task_skill_resolves(tmp_path, monkeypatch, caplog):
+    """A card whose skills ALL fail to resolve must still run its turn. The old hard
+    raise turned one unloadable name into a dispatcher crash-retry loop, because the
+    skills column is durable state the worker can never fix at boot."""
+    import logging
+    from agent import skill_commands
+    from gateway import session_kanban
+
+    def fake_build(names, task_id=None, **kwargs):
+        return "", [], list(names)
+
+    monkeypatch.setattr(skill_commands, "build_preloaded_skills_prompt", fake_build)
+    captured = {}
+    context = {"skills": ["github-pr-workflow/github-code-review"], "context": "card body",
+               "task_id": "t_poisoned", "run_id": 7, "goal_mode": False}
+    frame = {"policy": {"kanban_json": "{}"}, "text": "do the work"}
+    with caplog.at_level(logging.WARNING):
+        result = session_kanban._run_task_turns(_skills_worker_agent(captured), frame, [], context)
+    assert result["final_response"] == "done"
+    assert "github-pr-workflow/github-code-review" in captured["prompt"]
+    assert "NOT active for this run" in captured["prompt"]
+    assert any("continuing without unloadable skill" in r.message for r in caplog.records)
+
+
+def test_worker_warns_on_prompt_when_some_task_skills_missing(tmp_path, monkeypatch):
+    """Partial resolution keeps running (pre-existing contract) but the worker is now
+    TOLD which names did not load, instead of silently missing context."""
+    from agent import skill_commands
+    from gateway import session_kanban
+
+    def fake_build(names, task_id=None, **kwargs):
+        return "[skill block: good-skill]", ["good-skill"], ["nope-skill"]
+
+    monkeypatch.setattr(skill_commands, "build_preloaded_skills_prompt", fake_build)
+    captured = {}
+    context = {"skills": ["good-skill", "nope-skill"], "context": "", "task_id": "t_partial",
+               "run_id": 1, "goal_mode": False}
+    frame = {"policy": {"kanban_json": "{}"}, "text": "work"}
+    result = session_kanban._run_task_turns(_skills_worker_agent(captured), frame, [], context)
+    assert result["final_response"] == "done"
+    assert "[skill block: good-skill]" in captured["prompt"]
+    assert "nope-skill" in captured["prompt"] and "NOT active for this run" in captured["prompt"]
+
+
+def test_worker_turn_prompt_plain_when_all_skills_load(tmp_path, monkeypatch):
+    from agent import skill_commands
+    from gateway import session_kanban
+
+    monkeypatch.setattr(
+        skill_commands, "build_preloaded_skills_prompt",
+        lambda names, task_id=None, **kwargs: ("[skill block]", list(names), []))
+    captured = {}
+    context = {"skills": ["good-skill"], "context": "card", "task_id": "t_ok", "run_id": 1,
+               "goal_mode": False}
+    frame = {"policy": {"kanban_json": "{}"}, "text": "work"}
+    session_kanban._run_task_turns(_skills_worker_agent(captured), frame, [], context)
+    assert "NOT active for this run" not in captured["prompt"]
+    assert captured["prompt"].startswith("[skill block]")

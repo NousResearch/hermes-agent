@@ -295,6 +295,72 @@ interface StoredRowSlot {
 }
 
 /**
+ * Drop a sealed interim bubble whose turn the refreshed page already carries
+ * as a durable assistant row (#134415). When the completion event never
+ * landed on the client (dropped socket, replayed interim with
+ * `already_streamed: false`), the bubble stays in the window unstored while
+ * the page hydrates the same turn — and the merge below, which never folds
+ * interim rows (`covered`), would trail the bubble behind the durable row and
+ * paint the turn twice.
+ *
+ * A bubble folds only when its turn is provably settled (a durable row
+ * follows it in the window) AND the page carries an assistant row inside the
+ * bubble's durable-row bracket whose text contains the bubble's text. The
+ * bracket plus the containment keep an identical reply delivered in a
+ * different turn (a different bracket) rendered twice, as it must be.
+ * Tool-card interims (no text) are left alone: those ride
+ * `retainCompletedTurnTools`, which merges their completed tool calls into
+ * the final row.
+ */
+function dropSettledInterimTwins(previous: ChatMessage[], refreshedTail: ChatMessage[]): ChatMessage[] {
+  const settled = refreshedTail.filter(
+    message => message.role === 'assistant' && message.rowId !== undefined && Boolean(chatMessageText(message).trim())
+  )
+
+  if (!settled.length) {
+    return previous
+  }
+
+  let followingRowId: number | undefined
+
+  const foldable = new Set<number>()
+
+  for (let index = previous.length - 1; index >= 0; index -= 1) {
+    const message = previous[index]
+
+    if (message.rowId !== undefined) {
+      followingRowId = message.rowId
+
+      continue
+    }
+
+    if (followingRowId === undefined || !message.interim || message.pending || message.error) {
+      continue
+    }
+
+    const text = chatMessageText(message).trim()
+
+    if (!text) {
+      continue
+    }
+
+    let precedingRowId: number | undefined
+
+    for (let earlier = index - 1; earlier >= 0 && precedingRowId === undefined; earlier -= 1) {
+      precedingRowId = previous[earlier].rowId
+    }
+
+    if (settled.some(candidate => candidate.rowId! < followingRowId!
+      && (precedingRowId === undefined || candidate.rowId! > precedingRowId)
+      && chatMessageText(candidate).includes(text))) {
+      foldable.add(index)
+    }
+  }
+
+  return foldable.size ? previous.filter((_, index) => !foldable.has(index)) : previous
+}
+
+/**
  * Stored-id merge for a page that overlaps the window but does not anchor in
  * front of it. A row with no stored id travels with the next stored row after
  * it, so a page-local fold stays in front of the row it preceded. Rows with no
@@ -306,6 +372,8 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
   if (!sharesDurableRow(previous, refreshedTail)) {
     return refreshedTail
   }
+
+  previous = dropSettledInterimTwins(previous, refreshedTail)
 
   const refreshedIds = new Set(refreshedTail.map(message => message.id))
   const refreshedBySource = new Map<number, ChatMessage>()

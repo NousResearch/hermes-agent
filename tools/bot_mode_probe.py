@@ -215,6 +215,59 @@ def _peers(root: Path) -> list[str]:
     return _swallow(_names, [])
 
 
+def bot_mode_scope(home: str | os.PathLike | None, key: str) -> list[str] | None:
+    """``bot_mode.<key>`` (``allowed_targets`` or ``accept_from``) from ``home``'s OWN config.yaml.
+
+    None when unset: the file is absent, never mentions the key, or has no such entry (upstream
+    behaviour). Otherwise the lower-cased entries without a leading ``@``. A key that is present
+    but unreadable, malformed or not a list/string is ``[]``: set, so it denies everything. Read
+    straight from the profile's file, not ``load_config``, so a multiplexed profile never sees
+    another profile's value and the check needs no CLI import. Never raises."""
+    path = _resolve_home(home) / "config.yaml"
+    try:
+        if not path.is_file():
+            return None
+        raw = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return []
+    if key not in raw:
+        return None
+    try:
+        import hermes_yaml
+        from ruamel.yaml.error import YAMLError
+
+        data = hermes_yaml.safe_load(raw)
+    except (YAMLError, ValueError):
+        return []
+    if data is None:
+        return None
+    block = data.get("bot_mode") if isinstance(data, dict) else []
+    if block is None:
+        return None
+    if not isinstance(block, dict):
+        return []
+    if key not in block:
+        return None
+    value = block[key]
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    return list(dict.fromkeys(str(v).strip().lstrip("@").lower() for v in value if str(v).strip()))
+
+
+def scope_allows(scope: list[str] | None, *forms: str) -> bool:
+    """True when ``scope`` is unset (None) or lists any of ``forms`` (case-insensitive, ``@`` ignored)."""
+    return scope is None or any(f.strip().lstrip("@").lower() in scope for f in forms if f)
+
+
+def scope_peers(scope: list[str] | None, peers: list[str]) -> list[str]:
+    """The registered peers a scope reaches: listed bare, or through a ``<peer>/<agent>`` entry."""
+    if scope is None:
+        return list(peers)
+    return [p for p in peers if any(s == p or s.startswith(p + "/") for s in scope)]
+
+
 def _remote_roster(root: Path) -> list[dict]:
     """Desktop relay roster (``tools/bot_relay.py``); [] on any failure."""
     def _read():
@@ -231,7 +284,7 @@ def local_taken_forms(root: Path) -> set[str]:
     return {_handle(name) for name, _d in _roster(root)} | set(local_alias_map(root))
 
 
-def _remote_paragraph(root: Path) -> str:
+def _remote_paragraph(root: Path, scope: list[str] | None = None) -> str:
     """Addendum for agents on OTHER connected machines; only when the relay roster is non-empty."""
     roster = _remote_roster(root)
     if not roster:
@@ -241,7 +294,10 @@ def _remote_paragraph(root: Path) -> str:
     lines = [
         _bullet(f"@{form}", f"on {row['connection_label'] or row['connection_id']}", row["title"], row["description"])
         for row, form in zip(roster, remote_target_forms(roster, local_taken_forms(root)))
+        if scope_allows(scope, form, f"{row['handle']}@{row['connection_id']}")
     ]
+    if not lines:
+        return ""
     return (
         "\n\nTeammates on OTHER connected machines (reachable through the "
         "Desktop relay — message them with message_agent exactly like local "
@@ -250,11 +306,16 @@ def _remote_paragraph(root: Path) -> str:
     )
 
 
-def _peer_paragraph(root: Path) -> str:
+def _peer_paragraph(root: Path, scope: list[str] | None = None) -> str:
     """Addendum for cross-machine DMs — only when peers exist."""
-    peers = _peers(root)
+    peers = scope_peers(scope, _peers(root))
     if not peers:
         return ""
+    if scope is not None:
+        # An allowlist names exact targets: show those, not the open "<peer>/<agent-name>" grammar.
+        granted = ", ".join(f"`{s}`" for s in scope if any(s == p or s.startswith(p + "/") for p in peers))
+        return ("\n\nTeammates on OTHER machines you may message (message_agent target, exactly as written): "
+                + granted + ".")
     listed = ", ".join(f"`{p}`" for p in peers)
     return (
         "\n\nTeammates on OTHER machines: this install also has peer gateways "
@@ -271,8 +332,11 @@ def _build_section(home: Path) -> str:
     if not _any_managed(root):
         return ""
 
-    roster_lines = [_bullet(f"@{_handle(name)}", _profile_role(d)) for name, d in _roster(root) if name != me]
-    roster_block = "\n".join(roster_lines) or "- (no teammates yet)"
+    scope = bot_mode_scope(home, "allowed_targets")
+    roster_lines = [_bullet(f"@{_handle(name)}", _profile_role(d)) for name, d in _roster(root)
+                    if name != me and scope_allows(scope, name, _handle(name))]
+    roster_block = "\n".join(roster_lines) or (
+        "- (none: your allowed_targets lists no teammate)" if scope is not None else "- (no teammates yet)")
 
     return (
         f"{_PROTOCOL_HEADING}\n"
@@ -300,8 +364,8 @@ def _build_section(home: Path) -> str:
         f"You are `@{_handle(me)}`. Your teammates (live roster; roles from their "
         "profiles):\n"
         f"{roster_block}"
-        + _remote_paragraph(home)
-        + _peer_paragraph(root)
+        + _remote_paragraph(home, scope)
+        + _peer_paragraph(root, scope)
     )
 
 
@@ -432,6 +496,10 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     # Peer gateways and the Desktop relay roster are part of the messaging
     # surface too: registering a peer or (dis)connecting a machine must show up.
     surface["peers"] = _peers(root)
+    # Only a set allowlist joins the hash, so an unset install keeps its existing epoch (no rebuild).
+    allowed = bot_mode_scope(resolved, "allowed_targets")
+    if allowed is not None:
+        surface["allowed_targets"] = allowed
     surface["remote_roster"] = sorted(
         f"{r['connection_id']}:{r['profile']}:{r['title']}" for r in _remote_roster(resolved)
     )

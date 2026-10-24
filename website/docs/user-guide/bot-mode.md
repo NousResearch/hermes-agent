@@ -195,6 +195,21 @@ agent:
   bot_mode_protocol: true   # inject the bot-to-bot messaging protocol into canonical Bot Chats
 ```
 
+### Limiting who a Bot can message
+
+By default any Bot Chat agent can `message_agent` every profile on the install and every registered peer. Two optional keys in a profile's own `config.yaml` narrow that for one profile:
+
+```yaml
+bot_mode:
+  allowed_targets: [researcher, spark/coder]   # whom THIS Bot may message
+  accept_from: [researcher]                    # who may message THIS Bot
+```
+
+- `allowed_targets` lists the profile ids or handles, registered peers (`spark` for the peer's main agent, `spark/coder` for one agent) and `handle@connection` forms this Bot may reach. Matching is on the routed target, never a friendly name. The Bot's roster in its system prompt shows only the permitted teammates, and a refused call returns the closed `agent_blocked` reason with nothing written or spawned. The refusal reads the same for a forbidden and a nonexistent target.
+- `accept_from` lists the senders a profile accepts from the local install. Any other local sender is refused before the delivery is queued.
+- Absent keys change nothing. A key that is present but empty, malformed or not a list denies everything for that key, and an empty list is the way to say "nobody". Changing `allowed_targets` rebuilds the Bot's prompt once.
+- Not covered: inbound peer DMs (`hermes peer dm` into the gateway API) and the Desktop `bot_relay.deliver` RPC. Scope the sender to close those.
+
 ### What actually makes a chat a Bot Chat
 
 `agent.bot_mode_protocol` is only the master switch. Before the protocol section — or the `message_agent` tool — is injected, two further conditions must hold, and on a desktop install the Bots pane satisfies both for you the moment it creates a Bot:

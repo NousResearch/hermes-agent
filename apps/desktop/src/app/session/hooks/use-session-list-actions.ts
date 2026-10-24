@@ -9,6 +9,7 @@ import {
   normalizeSessionSource
 } from '@/lib/session-source'
 import { gatewayActivationEpoch } from '@/store/gateway'
+import { currentGatewaySwitchToken, isCurrentGatewaySwitch } from '@/store/gateway-switch'
 import {
   $pinnedSessionIds,
   $sessionsLimit,
@@ -332,6 +333,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
       const requestId = refreshSessionsRequestRef.current + 1
       refreshSessionsRequestRef.current = requestId
+      const switchToken = currentGatewaySwitchToken()
       // The loading flag exists to drive the initial skeletons (they only render
       // while the list is empty). Turn-complete / reconnect refreshes over a
       // populated list used to flip it true→false anyway, churning every
@@ -504,10 +506,15 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
         throw error
       } finally {
-        // Request identity preserves the zero-argument refresh contract across a
-        // failed activation epoch; an explicit owner predicate is stronger and
-        // must never release a newer switch's loading barrier.
-        if (showLoading && shouldPublish() && refreshSessionsRequestRef.current === requestId) {
+        // The newest refresh may inherit discovery over a populated cache, but
+        // a newer switch owns its wipe-raised barrier. Switch generation, not
+        // activation epoch, preserves release after a failed source activation;
+        // an explicit owner predicate can still revoke that right.
+        if (
+          shouldPublish() &&
+          refreshSessionsRequestRef.current === requestId &&
+          isCurrentGatewaySwitch(switchToken)
+        ) {
           setSessionsLoading(false)
         }
       }

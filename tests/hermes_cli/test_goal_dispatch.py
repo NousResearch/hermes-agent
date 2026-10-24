@@ -60,7 +60,7 @@ def _surface(surface, mgr, monkeypatch, prompts=None):
 @pytest.mark.parametrize('command', [
     'show', 'draft', 'draft build it', 'drafting docs', 'wait', 'wait nope',
     'wait {pid} build', 'unwait', 'gate add true', 'gate remove 1',
-    'gate clear', 'gate list', 'pause', 'resume', 'clear', 'stop', 'done',
+    'gate clear', 'gate list', 'pause', 'resume', 'clear', 'stop', 'done', 'cancel',
     'build it\nverify: test passes', 'status', '',
 ])
 def test_surface_goal_state_matches_cli(surface, command, monkeypatch):
@@ -155,3 +155,13 @@ def test_double_dash_sets_control_word_goal_and_announces_the_replace():
     assert 'replaced' not in _dispatch(fresh, 'fresh objective').output
     _dispatch(fresh, '--dry-run the migration')
     assert goals.load_goal(mgr.session_id).goal == '--dry-run the migration'
+
+
+@pytest.mark.parametrize('command', ['cancel', 'Cancel', 'STOP'])
+def test_cancel_and_any_case_stop_clear_the_goal_instead_of_replacing_it(command):
+    goals._DB_CACHE.clear()
+    mgr = goals.GoalManager(session_id='cancel-' + command)
+    mgr.set('original objective')
+    result = _dispatch(mgr, command)
+    state = goals.load_goal(mgr.session_id)
+    assert not result.kickoff and (state.goal, state.status) == ('original objective', 'cleared')

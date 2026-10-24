@@ -32,6 +32,7 @@ _PROPERTIES: dict[str, Any] = {
             "list_apps",
             "list_windows",
             "focus_app",
+            "launch",
         ],
         "description": (
             "Which action to perform. `capture` is free (no side effects). All other actions "
@@ -56,7 +57,7 @@ _PROPERTIES: dict[str, Any] = {
             "Optional. Limit capture/action to one app (name e.g. 'Safari', or bundle ID). Omitted "
             "= frontmost window. app='screen' = composited full-screen grab (image only, no "
             "clickable elements); app='desktop' = the OS desktop/shell surface (wallpaper, icons, "
-            "taskbar) with its elements."
+            "taskbar) with its elements. For action='launch', specifies the application name, bundle ID, AUMID, or launch path."
         ),
     },
     "pid": {
@@ -69,8 +70,19 @@ _PROPERTIES: dict[str, Any] = {
     "window_id": {
         "type": "integer",
         "description": (
-            "Optional exact native window target for action='capture'. Pair with pid when an "
+            "Optional exact native window target for action='capture' (the HWND on Windows). "
+            "Alone, it must match exactly one window from list_windows; pair with pid when an "
             "external cua-driver list_windows lookup has already identified the window."
+        ),
+    },
+    "strategy": {
+        "type": "string",
+        "enum": ["auto", "a11y", "event"],
+        "description": (
+            "Targeting strategy. `auto` (default) uses whichever of element or coordinate you "
+            "pass. `a11y` requires element targeting (`element`, or `from_element`/`to_element` "
+            "for drag) and refuses coordinate-only calls. `event` requires coordinates and drops "
+            "any element, so input goes through pointer events without accessibility resolution."
         ),
     },
     "element": {
@@ -145,6 +157,15 @@ _PROPERTIES: dict[str, Any] = {
         "type": "string",
         "description": (
             "Key combo, e.g. 'cmd+s', 'ctrl+alt+t', 'return', 'escape', 'tab'. Use '+' to combine."
+        ),
+    },
+    "scope": {
+        "type": "string",
+        "enum": ["window", "desktop"],
+        "description": (
+            "action='key' only. 'window' (default) sends the key to the window from the last capture "
+            "and refuses when there is none. 'desktop' sends an OS-level shortcut (e.g. 'win+r') with no "
+            "target window; refused when the connected cua-driver does not accept it."
         ),
     },
     "seconds": {"type": "number", "description": "wait: seconds to pause (max 30)."},

@@ -313,6 +313,7 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
     type_text, key, set_value = _noop_stub("type", "text"), _noop_stub("key", "keys"), _noop_stub("set_value", "value", "element")
     list_apps, list_windows = _noop_stub("list_apps", result=[]), _noop_stub("list_windows", result=[])
     focus_app = _noop_stub("focus_app", "app", "raise_window")
+    launch_app = _noop_stub("launch_app", "app")
 
 # ── Dispatch ────────────────────────────────────────────────────────────────
 def handle_computer_use(args: dict[str, Any], **kwargs) -> Any:
@@ -436,6 +437,10 @@ def _do_scroll(backend, action, args, **delivery):
     return backend.scroll(direction=args.get("direction", "down"), amount=int(args.get("amount", 3)),
                           element=args.get("element"), **_scroll_xy(args), modifiers=args.get("modifiers"), **delivery)
 
+def _do_key(backend, action, args, **delivery):
+    # scope is forwarded only when given, so backends without desktop scope keep their signature.
+    return backend.key(args.get("keys", ""), **({"scope": args["scope"]} if args.get("scope") else {}), **delivery)
+
 def _do_capture(backend, action, args, fence=lambda: None, session_id=None, **_):
     if (mode := str(args.get("mode", "som"))) not in {"som", "vision", "ax"}:
         return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
@@ -469,8 +474,8 @@ _ACTIONS: dict[str, _ActionSpec] = {
     "scroll": _input(_do_scroll, summarize=lambda a, args, fg: f"scroll {args.get('direction', '?')} x{args.get('amount', 3)}{fg}"),
     "type": _input(lambda backend, action, args, **delivery: backend.type_text(args.get("text", ""), **delivery),
                    summarize=lambda a, args, fg: f"type {args.get('text', '')[:60]!r}" + ("..." if len(args.get("text", "")) > 60 else "") + fg),
-    "key": _input(lambda backend, action, args, **delivery: backend.key(args.get("keys", ""), **delivery),
-                  summarize=lambda a, args, fg: f"key {args.get('keys', '')!r}{fg}"),
+    "key": _input(_do_key, summarize=lambda a, args, fg: f"key {args.get('keys', '')!r}"
+                  + (f" ({args['scope']} scope)" if args.get("scope") else "") + fg),
     "set_value": _input(lambda backend, action, args, **_: (
         json.dumps({"error": "set_value requires `value`"}) if args.get("value") is None
         else backend.set_value(value=str(args["value"]), element=args.get("element")))),
@@ -478,6 +483,14 @@ _ACTIONS: dict[str, _ActionSpec] = {
         json.dumps({"error": "focus_app requires `app`"}) if not args.get("app")
         else backend.focus_app(args["app"], raise_window=bool(args.get("raise_window")))), destructive=True,
         summarize=lambda a, args, fg: f"focus {args.get('app', '')!r}" + (" (raise)" if args.get("raise_window") else "")),
+    "launch": _ActionSpec(
+        lambda backend, action, args, **_: (
+            json.dumps({"error": "launch requires `app`"}) if not args.get("app")
+            else backend.launch_app(args["app"])
+        ),
+        destructive=True,
+        summarize=lambda a, args, fg: f"launch {args.get('app', '')!r}{fg}",
+    ),
     "capture": _ActionSpec(_do_capture),
     "wait": _ActionSpec(lambda backend, action, args, **_: _text_response(backend.wait(float(args.get("seconds", 1.0))))),
     "list_apps": _ActionSpec(partial(_do_listing, key="apps")),
@@ -490,7 +503,54 @@ _INPUT_ACTIONS = frozenset(a for a, s in _ACTIONS.items() if s.input)
 _ACTION_SUGGESTIONS = {
     "hotkey": "key", "press_key": "key", "keypress": "key", "key_combo": "key", "shortcut": "key", "type_text": "type",
     "input_text": "type", "screenshot": "capture", "get_window_state": "capture", "left_click": "click", "mouse_click": "click",
+    "open_app": "launch", "start_app": "launch", "run_app": "launch",
 }
+
+def _has_xy(value: Any) -> bool:
+    return isinstance(value, (list, tuple)) and len(value) >= 2 and value[0] is not None and value[1] is not None
+
+# strategy="a11y" admits element addressing only, "event" coordinates only; "auto" leaves the backend to choose.
+# (strategy, action) -> (admits(args), refusal code, message, addressing keys dropped once admitted).
+_StrategyRule = namedtuple("_StrategyRule", "admits code message drop")
+_A11Y_ELEMENT = _StrategyRule(lambda a: a.get("element") is not None, "strategy_a11y_required",
+                              "strategy='a11y' requires targeting by `element`, but no element was provided for {action}.",
+                              ("coordinate",))
+_EVENT_XY = _StrategyRule(lambda a: _has_xy(a.get("coordinate")), "strategy_event_required",
+                          "strategy='event' requires `coordinate=[x, y]` for {action}.", ("element",))
+_STRATEGY_RULES: dict[tuple[str, str], _StrategyRule] = {
+    **{("a11y", a): _A11Y_ELEMENT for a in ("click", "double_click", "right_click", "middle_click", "set_value")},
+    **{("event", a): _EVENT_XY for a in ("click", "double_click", "right_click", "middle_click")},
+    ("a11y", "drag"): _StrategyRule(lambda a: a.get("from_element") is not None and a.get("to_element") is not None,
+                                    "strategy_a11y_required",
+                                    "strategy='a11y' requires `from_element` and `to_element` for drag.",
+                                    ("from_coordinate", "to_coordinate")),
+    ("event", "drag"): _StrategyRule(lambda a: _has_xy(a.get("from_coordinate")) and _has_xy(a.get("to_coordinate")),
+                                     "strategy_event_required",
+                                     "strategy='event' requires `from_coordinate` and `to_coordinate` for drag.",
+                                     ("from_element", "to_element")),
+    ("a11y", "scroll"): _StrategyRule(lambda a: a.get("coordinate") is None or a.get("element") is not None,
+                                      "strategy_a11y_required",
+                                      "strategy='a11y' does not allow coordinate targeting for scroll; use element or "
+                                      "omit coordinates to scroll the window.", ("coordinate",)),
+    ("event", "scroll"): _StrategyRule(lambda a: True, "", "", ("element",)),
+    ("event", "set_value"): _StrategyRule(lambda a: False, "strategy_event_unsupported",
+                                          "strategy='event' is not supported for set_value; set_value is strictly an "
+                                          "accessibility action (use strategy='a11y' or 'auto').", ()),
+}
+
+def _apply_strategy(action: str, args: dict[str, Any]) -> tuple[Optional[str], dict[str, Any]]:
+    """``(refusal JSON, args)``: refuse addressing the requested ``strategy`` excludes, else drop the other form."""
+    strategy = args.get("strategy") or "auto"
+    if strategy not in ("auto", "a11y", "event"):
+        return json.dumps({"ok": False, "action": action, "code": "invalid_strategy",
+                           "error": f"invalid strategy {strategy!r}; must be one of 'auto', 'a11y', 'event'"}), args
+    rule = _STRATEGY_RULES.get((strategy, action))
+    if rule is None:
+        return None, args
+    if not rule.admits(args):
+        return json.dumps({"ok": False, "action": action, "code": rule.code,
+                           "error": rule.message.format(action=action)}), args
+    return None, {k: v for k, v in args.items() if k not in rule.drop}
 
 def _dispatch(backend: ComputerUseBackend, action: str, args: dict[str, Any], fence: Callable[[], None] = lambda: None,
               session_id: Optional[str] = None) -> Any:
@@ -501,6 +561,9 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: dict[str, Any], fe
     if spec is None:
         return json.dumps({"error": f"unknown action {action!r}" + (f" — did you mean {hint!r}? See the action enum in the tool schema."
                                                                  if (hint := _ACTION_SUGGESTIONS.get(str(action))) else "")})
+    refusal, args = _apply_strategy(action, args)
+    if refusal is not None:
+        return refusal
     # app= guard: input goes to the sticky target from the last capture/focus_app and the backend drops app=
     # silently — refuse a clear mismatch rather than type into the wrong window while reporting ok:true.
     if (spec.input and isinstance(requested_app := args.get("app"), str) and requested_app.strip()

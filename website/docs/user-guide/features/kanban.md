@@ -1191,6 +1191,32 @@ EOF
 
 The remediation worker spawns with the original card's summary and metadata (changed files, decisions) already in context, plus the fresh evidence you put in the body.
 
+### Recovering a task whose worktree changed branches
+
+A `worktree` task only dispatches into a checkout that is still a linked
+worktree on the task's recorded branch. If that checkout was detached or
+switched to another branch (for example while someone inspected it), dispatch
+refuses it instead of running the worker on the wrong branch. The refusal is
+recorded as `spawn_failed`, counts toward the task's consecutive-failure limit,
+and blocks the task (`gave_up`) when the limit is reached. Retrying does not
+change the checkout, so recover it by hand:
+
+1. Make sure no worker is running for the task (`hermes kanban show <id>`).
+2. In the task's worktree, check `git status`, `git branch --show-current`
+   (empty output means detached HEAD) and `git log --oneline -5`. Confirm the
+   checkout belongs to this task and not to another task's workspace.
+3. Keep any work: if HEAD is detached with commits of its own, create a branch
+   for them (`git branch <rescue-name>`) before moving HEAD. Uncommitted
+   changes carry over a `git switch` unless they conflict.
+4. Switch back to the recorded branch with a plain `git switch <branch>`. Don't
+   force, reset or clean to get past the check; if Git refuses because changes
+   would be lost, reconcile them first.
+5. Unblock the task (`hermes kanban unblock <id>`). Unblocking resets the failure
+   count; the next dispatch checks the worktree again.
+
+If the occupied path is another task's checkout, leave it alone and point this
+task at the repository root or an unused worktree path instead.
+
 ### Reconciling colliding worker branches
 
 In engineering pipelines (P1/P2 with worktrees), two workers' branches can

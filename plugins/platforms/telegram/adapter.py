@@ -5671,6 +5671,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         #    sit on its own line (any indent), with optional trailing
         #    whitespace and an optional ``\r`` so CRLF-terminated fences
         #    (Windows-authored content) match too.
+        #    Ordered passes, most-unambiguous opener first, so a run that cannot
+        #    plausibly open a block cannot steal the closing fence of one that
+        #    can. "Preceded by lead-in prose" also describes a triple-backtick
+        #    run *quoted inside* a line of text — a progress line printing a
+        #    search pattern, a sentence about fence syntax — and such a run was
+        #    read as an opener and closed by the next real fence: everything
+        #    between the two, including the block whose closing fence it stole,
+        #    was swallowed into one <pre> while the intended block arrived as
+        #    escaped literal backticks.
         def _protect_fenced(m):
             prefix = m.group(1)   # lead-in text / indent before the opening fence
             opening = m.group(2)  # opening ``` (with optional language) and newline
@@ -5679,17 +5688,58 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             body = body.replace('\\', '\\\\').replace('`', '\\`')
             return prefix + _ph(opening + body + closing)
 
+        # ``tag_tail``: the run ends the line, optionally with a language tag (``python``,
+        # ``text/plain``, ``rust,ignore``). Any other backtick-free tail is prose, not an info
+        # string, so it only gets the last pass.
+        _tag_tail = r'```[A-Za-z0-9_+.#/:=,-]*[ \t]*'
+        for _prefix, _tail in (
+            (r'([ \t]*)', _tag_tail),                        # fence on its own line
+            (r'((?:(?!```)[^\n])*)', _tag_tail),             # after lead-in prose, tag-shaped tail
+            (r'((?:(?!```)[^\n])*)', r'```[^`\n]*'),         # backwards-compatible catch-all
+        ):
+            text = re.sub(
+                rf'(?m)^{_prefix}({_tail}\n)([\s\S]*?)(^[ \t]*```)[ \t]*\r?$',
+                _protect_fenced,
+                text,
+            )
+        # 1b-i) A run of two or more backticks is never a MarkdownV2 delimiter — Telegram has no
+        #     multi-backtick code span — except the triple runs the block below handles. The inline
+        #     pass consumes only the fragment it can match, so the rest of such a run stayed raw and
+        #     paired with a later run across the message: every line between the two landed inside
+        #     one <code> entity, rendering a paragraph as monospace with its markdown shown
+        #     literally. Escape every backtick of a run that is not exactly three.
         text = re.sub(
-            r'(?m)^((?:(?!```)[^\n])*)(```[^`\n]*\n)([\s\S]*?)(^[ \t]*```)[ \t]*\r?$',
-            _protect_fenced,
+            r'(?<!\\)(`{2,})',
+            lambda m: m.group(1) if len(m.group(1)) == 3 else _ph('\\`' * len(m.group(1))),
             text,
         )
+        # 1b) Whatever triple-backtick run is still bare is literal text, not a fence: a run quoted
+        #     inside a line, an inline "```x```" span, or an opener with no closing fence. Two such
+        #     runs on DIFFERENT lines must not pair — the inline pass below would render every line
+        #     between them as one code span. Same-line pairs keep the inline-span rendering the
+        #     inline pass gives them today, so only the cross-line shape changes.
+        _runs = list(re.finditer(r'(?<!\\)```', text))
+        _pairs = [(start.span(), end.span()) for start, end in zip(_runs[::2], _runs[1::2])
+                  if "\n" in text[start.end():end.start()]]
+        if _pairs:
+            _parts: list = []
+            _cursor = 0
+            for (_a0, _a1), (_b0, _b1) in _pairs:
+                _parts += [text[_cursor:_a0], _ph('\\`\\`\\`'), text[_a1:_b0], _ph('\\`\\`\\`')]
+                _cursor = _b1
+            _parts.append(text[_cursor:])
+            text = "".join(_parts)
 
         # 2) Protect inline code (`...`)
-        #    Escape \ inside inline code per MarkdownV2 spec.
+        #    Content may contain escaped backticks ("`\`\`\``") — the naive `[^`]+` pattern stopped at
+        #    the first one, stashed a fragment and left the rest raw (see 1b-i), which is how a
+        #    quoted-backtick example broke the whole message. Spans stay on one line: a lone backtick
+        #    with no same-line partner is escaped literal text, the only rendering that cannot spear a
+        #    multi-line <code> entity out of the message.
+        #    Escape \ and ` inside inline code per MarkdownV2 spec.
         text = re.sub(
-            r'(`[^`]+`)',
-            lambda m: _ph(m.group(0).replace('\\', '\\\\')),
+            r'(?<![\\`])`((?:[^`\n]|\\`)+)`(?!`)',
+            lambda m: _ph('`' + m.group(1).replace('\\', '\\\\').replace('`', '\\`') + '`'),
             text,
         )
 

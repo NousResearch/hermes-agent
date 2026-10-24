@@ -593,6 +593,17 @@ _PRIVATE_KEY_RE = re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END
 # terminal path deliberately skips the assignment passes on source-shaped output — so the
 # rule keys on the payload: base64 that decodes to a ``BEGIN … PRIVATE KEY`` header.
 _B64_PEM_RE = re.compile(r"LS0tLS1CRUdJTi[A-Za-z0-9+/=]{60,}")
+# Private-key formats that are not PEM. All three reach the model on their own: PGP's
+# armour carries a \` BLOCK\` suffix so the PEM pattern never matched it, PuTTY's .ppk is
+# base64 under a \`Private-Lines:\` header (the usual SSH key format on Windows), and age
+# writes a bech32 AGE-SECRET-KEY-1… string.
+_PGP_PRIVATE_KEY_RE = re.compile(
+    r"-----BEGIN PGP PRIVATE KEY BLOCK-----[\s\S]*?-----END PGP PRIVATE KEY BLOCK-----"
+)
+_PUTTY_PRIVATE_LINES_RE = re.compile(
+    r"(?m)^(Private-Lines:[ \t]*[0-9]+[ \t]*\n)(?:[A-Za-z0-9+/=]{16,}[ \t]*\n?)+"
+)
+_AGE_SECRET_KEY_RE = re.compile(r"AGE-SECRET-KEY-1[0-9A-Z]{20,}")
 
 
 def _is_b64_pem_key(blob: str) -> bool:
@@ -1192,6 +1203,14 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
             lambda m: "[REDACTED PRIVATE KEY]" if _is_b64_pem_key(m.group(0)) else m.group(0),
             text,
         )
+    if "PGP PRIVATE KEY BLOCK" in text:
+        text = _PGP_PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
+    if "Private-Lines:" in text:
+        text = _PUTTY_PRIVATE_LINES_RE.sub(
+            lambda m: m.group(1) + "[REDACTED PRIVATE KEY]\n", text
+        )
+    if "AGE-SECRET-KEY-1" in text:
+        text = _AGE_SECRET_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
 
     # Database connection string passwords. With code_file=True, a password group that is a pure ``{...}``
     # brace expression is an f-string template reference (e.g. f"postgresql://{user}:{pass}@{host}"), not a

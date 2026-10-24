@@ -64,7 +64,7 @@ class _Model(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
-def _gateway(root, url):
+def _gateway(root, url, **overrides):
     gw = GatewayProc(root=root, base_url=url, tag=f'refine-cold-{root.name}')
     config = {
         '_config_version': 52,
@@ -81,6 +81,7 @@ def _gateway(root, url):
         'platforms': {'chaosfake': {'enabled': True}},
         'platform_toolsets': {'chaosfake': ['terminal', 'memory']},
         'terminal': {'backend': 'local'},
+        **overrides,
     }
     (gw.hermes_home / 'config.yaml').write_text(json.dumps(config))
     (gw.hermes_home / 'prefill.json').write_text(json.dumps([
@@ -144,3 +145,58 @@ def test_messaging_refine_reviews_the_stored_conversation_once_the_cached_agent_
     assert 'WARM_FACT' not in memory and 'COLD_FACT' not in memory and 'KEEP_FACT' in memory, memory
     assert out['warm']['provider'] == {'only': ['probe-route'], 'data_collection': 'deny'}, out
     assert out['cold'] == out['warm'], ('a cold /refine must send what a resident one sends', out)
+
+
+
+@pytest.mark.platforms("linux")  # the chaos harness reaps by POSIX signals
+def test_bare_refine_runs_while_automatic_reviews_are_disabled(tmp_path):
+    """``auxiliary.background_review.enabled: false`` stops only the automatic post-turn fork (#87250):
+    a bare ``/refine`` (no focus) on a resident agent and on a restarted gateway's stored conversation
+    still reviews and reports (#100762)."""
+    import time
+    peer = ThreadingHTTPServer(('127.0.0.1', 0), _Model)
+    peer.requests = []
+    threading.Thread(target=peer.serve_forever, daemon=True).start()
+    url = f'http://127.0.0.1:{peer.server_port}/v1'
+    root = Path(tmp_path) / 'gw'
+    root.mkdir()
+    # nudge_interval 1 makes every turn due an automatic memory review, so the switch is what stops it.
+    overrides = {'auxiliary': {'title_generation': {'enabled': False}, 'background_review': {'enabled': False}},
+                 'memory': {'memory_enabled': True, 'user_profile_enabled': False, 'nudge_interval': 1}}
+    seen = {}
+
+    def bare_refine(gw, label):
+        mark, before = gw.mark(), len(peer.requests)
+        gw.send_user('/refine')
+        summary = gw.wait_for(lambda e: e.ev == 'send' and '💾' in e.data.get('text', ''), 60,
+                              f'{label} bare /refine summary', since=mark)
+        seen[label] = (summary is not None, sum(map(_is_review, peer.requests[before:])), gw.sends_since(mark))
+
+    try:
+        warm = _gateway(root, url, **overrides)
+        try:
+            warm.start()
+            mark = warm.mark()
+            warm.send_user('OPENED_PR_42')
+            assert warm.wait_for(lambda e: e.ev == 'send' and 'ACK_OPENED_PR_42' in e.data.get('text', ''),
+                                 60, 'turn reply', since=mark), warm.log_tail()
+            # health: allow HX013 -- an absence window: a review that never spawns sets no event to wait on
+            time.sleep(5)  # with enabled: true the same turn's automatic review reaches the model well inside this
+            seen['automatic'] = sum(map(_is_review, peer.requests))
+            bare_refine(warm, 'warm')
+        finally:
+            warm.stop()
+        # The loopback review removes WARM_FACT again; put it back so the cold removal has a target.
+        (warm.hermes_home / 'memories' / 'MEMORY.md').write_text('WARM_FACT\n§\nKEEP_FACT')
+        cold = _gateway(root, url, **overrides)  # restarted: no cached agent, the stored conversation
+        try:
+            cold.start()
+            bare_refine(cold, 'cold')
+        finally:
+            cold.stop()
+    finally:
+        peer.shutdown()
+        peer.server_close()
+
+    assert seen['automatic'] == 0, ('enabled: false must stop the automatic review', seen)
+    assert all(seen[leg][0] and seen[leg][1] for leg in ('warm', 'cold')), seen

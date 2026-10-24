@@ -5046,8 +5046,8 @@ export const frOverrides = {
             `Hermes n'a pas pu se connecter à ${provider} pour cette conversation. Réessayez ; si l'échec persiste, vérifiez le fournisseur dans Paramètres.`
         },
         SESSION_NOT_OWNED: {
-          title: 'Conversation ouverte ailleurs',
-          body: "Cette conversation est ouverte dans une autre fenêtre Hermes ou un terminal. Démarrez-en une nouvelle ici, ou fermez-la d'abord là-bas."
+          title: 'Conversation utilisée ailleurs',
+          body: "Une autre fenêtre Hermes ou un terminal retient cette conversation, même si elle n'y est plus ouverte. Fermez-la là-bas ou attendez jusqu'à 15 minutes qu'elle se libère d'elle-même, puis renvoyez votre message, ou démarrez-en une nouvelle ici."
         },
         disk_full: {
           title: 'Votre disque est plein',

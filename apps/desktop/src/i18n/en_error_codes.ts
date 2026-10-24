@@ -136,9 +136,12 @@ export const enErrorCodes: ThreadCopy['errorCodes'] = {
     body: provider =>
       `Hermes couldn't connect to ${provider} for this chat. Retry; if it keeps failing, check the provider in Settings.`
   },
+  // The holder may have no window left: an idle Desktop backend keeps the lease until
+  // the reaper frees it (tui_gateway `_IDLE_LEASE_RELEASE_S` 600 s idle, checked every
+  // `_REAPER_SCAN_S` 300 s, so at most 15 minutes). Never assert a window is open.
   SESSION_NOT_OWNED: {
-    title: 'Chat open somewhere else',
-    body: 'This chat is open in another Hermes window or terminal. Start a new chat here, or close it there first.'
+    title: 'Chat in use elsewhere',
+    body: 'Another Hermes window or terminal is holding this chat, even if it is no longer open there. Close it there, or wait up to 15 minutes for it to free itself, then send again, or start a new chat here.'
   },
   disk_full: {
     title: 'Your disk is full',

@@ -49,8 +49,8 @@ export const zhErrorCodes: Partial<ThreadCopy['errorCodes']> = {
     body: provider => `Hermes 无法为此聊天连接到 ${provider}。请重试；若持续失败，请在设置中检查该服务商。`
   },
   SESSION_NOT_OWNED: {
-    title: '聊天已在别处打开',
-    body: '此聊天已在另一个 Hermes 窗口或终端中打开。请在这里新建聊天，或先在那边关闭它。'
+    title: '聊天正在别处使用',
+    body: '另一个 Hermes 窗口或终端正占用此聊天，即使那边已不再打开它。请在那边关闭它，或等待最多 15 分钟让它自动释放后再发送，或在这里新建聊天。'
   },
   disk_full: {
     title: '磁盘已满',

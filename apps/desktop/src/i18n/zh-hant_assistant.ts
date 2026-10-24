@@ -178,8 +178,8 @@ export const zhHantAssistant = {
           body: provider => `Hermes 無法為此聊天連線到 ${provider}。請重試；若持續失敗，請在設定中檢查服務商。`
         },
         SESSION_NOT_OWNED: {
-          title: '聊天已在別處開啟',
-          body: '此聊天已在另一個 Hermes 視窗或終端機中開啟。請在這裡開始新的聊天，或先在那裡關閉它。'
+          title: '聊天正在別處使用',
+          body: '另一個 Hermes 視窗或終端機正佔用此聊天，即使那裡已不再開啟它。請在那裡關閉它，或等待最多 15 分鐘讓它自動釋放後再傳送，或在這裡開始新的聊天。'
         },
         disk_full: {
           title: '你的磁碟已滿',

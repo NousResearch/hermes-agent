@@ -72,10 +72,27 @@ def process_birth(proc) -> float:
     gateway owner and a freshly spawned worker read different births for the same process, and
     the exact identity match refused every managed worker (#140580). The kernel's own start
     (``monotonic=True``: the unadjusted ``kinfo_proc`` epoch start) is what every process sees.
-    Other platforms keep ``create_time()``: Linux and Windows apply no per-process reference.
+
+    Linux (2026-10-20): ``create_time()`` is ``btime + starttime/HZ`` with ``btime`` cached per
+    process. On WSL2 the host clock steps after boot, so a gateway that cached btime hours ago
+    and a worker spawned minutes ago disagree about the SAME pid by whole seconds — measured
+    1.0s then 3.0s on this host, growing over time. That refused every ``worker.persist``
+    (turn-lease renewal failed → turn hard-interrupted → all Kanban cards died). The kernel's
+    ``starttime`` field (22 in ``/proc/<pid>/stat``, ticks since boot) never moves and is the
+    value every process agrees on, so Linux returns it directly.
     Raises ``psutil.Error`` like ``create_time()``.
     """
     import psutil
+    if sys.platform.startswith("linux"):
+        try:
+            with open(f"/proc/{int(proc.pid)}/stat", "rb") as f:
+                data = f.read().decode("utf-8", "replace")
+            # comm may contain spaces/parens ⇒ cut after the LAST ')'; then field 3 is rest[0]
+            # and kernel field 22 (starttime) is rest[19].
+            rest = data.rsplit(")", 1)[1].split()
+            return float(int(rest[19]))
+        except (OSError, IndexError, ValueError):
+            pass                                   # fall through to create_time()
     if getattr(psutil, "MACOS", False):
         platform_proc = getattr(proc, "_proc", None)
         if platform_proc is not None:

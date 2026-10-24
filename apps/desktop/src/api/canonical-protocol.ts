@@ -674,12 +674,30 @@ export class CanonicalDesktopProtocol {
     return { ...value, session_id: value.ref.session_id }
   }
 
+  // A committed policy mutation raises the session's execution generation (the owner fences the
+  // next one on it). The receipt names the value it reached; adopt it monotonically so this client
+  // never trails its own write. The `session.updated` broadcast carries the same value, but a
+  // viewer that misses that frame would otherwise send the pre-mutation generation on the next
+  // edit and be refused `stale_generation`.
+  private adoptGeneration(params: Record<string, unknown>, value: any): void {
+    if (typeof value.session_id !== 'string' || typeof value.execution_generation !== 'number') {
+      return
+    }
+
+    const owner = canonicalSessionKey(value.session_id, params.profile)
+
+    if (value.execution_generation > (this.generations.get(owner) ?? -1)) {
+      this.generations.set(owner, value.execution_generation)
+    }
+  }
+
   private mutationReceipt(method: string, params: Record<string, unknown>, value: any): any {
     if (value.session_id !== params.session_id) { throw new Error('Metadata receipt destination mismatch') }
 
     this.forgetMutation(params)
     this.settleModelConfirmation(params)
     this.retireSupersededMutations(params, value.revision)
+    this.adoptGeneration(params, value)
 
     if (params.operation === 'model' && value.status === 'confirmation_required' && typeof value.confirm === 'string') {
       // The owner wrote nothing: answer in the legacy handshake (`confirm_required` +

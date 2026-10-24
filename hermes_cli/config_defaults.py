@@ -2704,6 +2704,8 @@ DEFAULT_CONFIG = {
     "local_runtime": {
         # Off = detection-only (Hermes still finds an external llama-server you run).
         "enabled": False,
+        # Absolute path to a user-built llama-server. Empty uses Hermes's PM-managed engine.
+        "binary": "",
         # Engine versions and every dependent library are pinned by pm/lock.json.
         # auto = CUDA on NVIDIA, Metal on macOS, Vulkan on other GPUs, else CPU. Explicit:
         # cuda|metal|vulkan|hip|cpu.

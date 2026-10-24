@@ -713,6 +713,20 @@ def _refuse_dead_board_resurrection(path: Path, board: Optional[str]) -> None:
         raise ValueError(f"kanban board {slug!r} does not exist; create it with `hermes kanban boards create {slug}`")
 
 
+def unpinned_db_path(board: Optional[str] = None) -> Path:
+    """A board's own ``kanban.db`` regardless of env pins or fences (read-side
+    enumeration only: ``boards list`` counts, dashboard board rows,
+    ``count_running_tasks_other_boards``). Those answer "what does each board
+    hold?", which a dispatcher-injected ``HERMES_KANBAN_DB`` pin would collapse
+    into one board's numbers (#108401). Writes and single-board operations keep
+    resolving through :func:`kanban_db.kanban_db_path`, so worker fencing is
+    unchanged. ``board=None`` follows the current board, like ``kanban_db_path``."""
+    slug = _kb.get_current_board() if board is None else _kb._slug_or_default(board)
+    if slug == _kb.DEFAULT_BOARD:
+        return _kb.kanban_home() / "kanban.db"
+    return _kb.board_dir(slug) / "kanban.db"
+
+
 def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB. WAL is (re)enabled on
     every connection so a re-created file stays robust; the first connection

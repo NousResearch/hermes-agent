@@ -1367,11 +1367,15 @@ def _projects_by_id() -> dict[str, Any]:
 
 
 def _board_counts(slug: str) -> dict[str, int]:
-    """``{status: count}`` for a board; ``{}`` on a missing/empty DB."""
+    """``{status: count}`` for a board; ``{}`` on a missing/empty DB.
+
+    Enumeration reads each board's own file (:func:`unpinned_db_path`) so the
+    board list keeps per-board numbers even under an env-pinned worker (#108401)."""
     try:
-        if not kanban_db.kanban_db_path(board=slug).exists():
+        path = kbc.unpinned_db_path(slug)
+        if not path.exists():
             return {}
-        with closing(kbc.connect(board=slug)) as conn:
+        with closing(kbc.connect(db_path=path, board=slug)) as conn:
             rows = conn.execute("SELECT status, COUNT(*) AS n FROM tasks GROUP BY status").fetchall()
             return {r["status"]: int(r["n"]) for r in rows}
     except Exception:

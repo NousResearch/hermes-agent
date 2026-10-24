@@ -164,7 +164,19 @@ function StringControl({ disabled, id, onChange, raw }: ControlProps) {
   )
 }
 
-function NumberControl({ disabled, id, onChange, raw }: ControlProps) {
+/**
+ * The spinner step: 0.1 for fields that hold decimal values (ratios,
+ * fractions), 1 for integers. Without an explicit step the browser defaults
+ * to step=1 and rejects every decimal value with a step-mismatch validation
+ * error, so ratio fields were impossible to adjust via spinner or typed input.
+ */
+function numberStep(field: PluginSettingField, raw: string): string {
+  const reference = Number(raw !== '' ? raw : field.value ?? field.default ?? 0)
+
+  return Number.isFinite(reference) && !Number.isInteger(reference) ? '0.1' : '1'
+}
+
+function NumberControl({ disabled, field, id, onChange, raw }: ControlProps) {
   return (
     <Input
       className={TEXT_CLASS}
@@ -172,6 +184,7 @@ function NumberControl({ disabled, id, onChange, raw }: ControlProps) {
       id={id}
       inputMode="decimal"
       onChange={e => onChange(e.currentTarget.value)}
+      step={numberStep(field, raw)}
       type="number"
       value={raw}
     />

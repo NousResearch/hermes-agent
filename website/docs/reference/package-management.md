@@ -237,10 +237,25 @@ interpreter such as Nix Python. No `CC` default is needed for the current pin.
 
 Clone the repository and select your branch before preparing dependencies:
 
+Linux/macOS:
+
 ```bash
 git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
 ```
+
+Native Windows (PowerShell):
+
+```powershell
+git clone --config core.longpaths=true https://github.com/NousResearch/hermes-agent.git
+cd hermes-agent
+```
+
+Git for Windows needs `core.longpaths` for repository paths that exceed its
+default path-length limit. Passing `--config` to `clone` writes this setting to
+the new repository before the initial checkout, avoiding `Filename too long`
+in deeply nested development directories. The setting remains local to this
+clone for later checkouts and pulls.
 
 For isolated development, select a separate data home before the first PM
 command. Keep the same values when returning to this checkout.

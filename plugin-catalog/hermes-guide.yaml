@@ -5,7 +5,7 @@ description: "Read-only diagnostics for Hermes configuration: /hermes-doctor in-
 maintainer: iap
 tier: community
 category: tools
-requires_hermes: ">=0.21"
+requires_hermes: ">=0.21.0"
 version: "0.8.10"
 platforms: []
 capabilities:

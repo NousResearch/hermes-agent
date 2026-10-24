@@ -37,3 +37,30 @@ test('setJsonRequestHeaders does not set Electron-restricted Content-Length', ()
     false
   )
 })
+
+test('setJsonRequestHeaders derives Origin for a state-changing POST', () => {
+  const headers = []
+  const request = { setHeader: (name, value) => headers.push([name, value]) }
+
+  setJsonRequestHeaders(request, {
+    method: 'POST',
+    url: 'https://gateway.example:3738/hermes/api/auth/ws-ticket'
+  })
+
+  assert.deepEqual(headers, [
+    ['Content-Type', 'application/json'],
+    ['Origin', 'https://gateway.example:3738']
+  ])
+})
+
+test('setJsonRequestHeaders omits Origin for a safe GET', () => {
+  const headers = []
+  const request = { setHeader: (name, value) => headers.push([name, value]) }
+
+  setJsonRequestHeaders(request, {
+    method: 'GET',
+    url: 'https://gateway.example:3738/hermes/api/status'
+  })
+
+  assert.deepEqual(headers, [['Content-Type', 'application/json']])
+})

@@ -126,7 +126,7 @@ _NEVER_TRACK_TOP_LEVEL = frozenset({
     # User-authored and project trees — never auto-delete files inside these just because they happen to be
     # named test_* or tmp_* (#75403, also #32164, #37721). ``workspace``, ``plans`` and ``home`` are the
     # per-profile user trees bootstrapped by ``profiles.py::_PROFILE_DIRS`` (#112859).
-    "patches", "projects", "skins", "themes", "contributors",
+    "patches", "projects", "scripts", "skins", "themes", "contributors",
     "profiles", "backups", "optional-skills", "workspace", "plans", "home",
     # Kanban task attachments/workspaces have their own lifecycle; test_* staging files there are
     # not disposable (#114552).

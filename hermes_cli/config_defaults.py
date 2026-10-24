@@ -4,6 +4,8 @@ Pure-data leaf module — must not import from hermes_cli.config. Comments are t
 docs of config.yaml.
 """
 
+from hermes_cli.config_defaults_code_execution import CODE_EXECUTION_DEFAULTS
+
 
 #: Image every container terminal backend (docker/modal/daytona, the singularity plugin) uses unless the
 #: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
@@ -1965,23 +1967,8 @@ DEFAULT_CONFIG = {
         # profile with a cross-process file lock.
         "turn_wait_seconds": 120,
     },
-    "code_execution": {  # execute_code settings (programmatic tool calls).
-        # project = run in the session cwd with the active venv/conda python so project deps and
-        # relative paths resolve. strict = isolated temp dir with hermes-agent's own python
-        # (sys.executable): max isolation, project deps/relative paths won't work. Env scrubbing
-        # (*_API_KEY, *_TOKEN, *_SECRET, ...) and the tool whitelist apply in both modes.
-        "mode": "project",
-        # Session kernels are always on locally (`kernel_mode` is ignored) and remotely
-        # (tools/code_kernel_remote.py; a backend that cannot spawn a kernel fails open to
-        # per-call). One kernel per (session owner, mode, interpreter, cwd, tool-set) keeps state
-        # across calls and turns; subagents get their own. Kernels die with the session, after
-        # kernel_idle_timeout idle seconds, or by LRU eviction past max_session_kernels. A
-        # timed-out/interrupted cell kills the kernel; env is frozen at spawn (reset=true after
-        # changing passthrough). Tool RPC authority (approval, session, allow-list, call budget) is
-        # rebound per cell — that runtime boundary is the cross-cell enforcement.
-        "kernel_idle_timeout": 1800,
-        "max_session_kernels": 4,
-    },
+    "code_execution": dict(CODE_EXECUTION_DEFAULTS),  # execute_code settings (programmatic tool calls).
+
     # Tool Search replaces deferred tools in the model-facing array with the
     # tool_search / tool_describe / tool_call bridges and surfaces them on demand.
     # Working-set core tools stay eager, while the explicit ``defer`` list below

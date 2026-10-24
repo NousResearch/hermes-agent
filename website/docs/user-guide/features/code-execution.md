@@ -171,6 +171,7 @@ setting is no longer a separate switch.
 | Resource | Limit | Notes |
 |----------|-------|-------|
 | **Timeout** | 5 minutes (300s) | Script is killed with SIGTERM, then SIGKILL after 5s grace |
+| **Memory** | 4 GB per kernel | The cell fails on its own allocation instead of taking the host down. Windows enforces this with a Job Object, POSIX with `RLIMIT_AS` in the runner. The budget is per kernel, not per host: with up to 4 live kernels, a host can still reach ~16 GB of kernel address space |
 | **Stdout** | 50 KB | Shown head-and-tail inline; the full output is saved to `~/.hermes/cache/exec/` and the path is included in the result |
 | **Stderr** | 10 KB | Included in output on non-zero exit for debugging |
 | **Tool calls** | 50 per execution | Error returned when limit reached |
@@ -183,7 +184,10 @@ code_execution:
   mode: project      # project (default) | strict
   timeout: 300       # Max seconds per script (default: 300)
   max_tool_calls: 50 # Max tool calls per execution (default: 50)
+  memory_limit_mb: 4096  # Address-space budget per kernel, in MB (default: 4096, 0 = unlimited)
 ```
+
+The memory budget is read when a kernel spawns, so raising it needs `reset: true` (or a fresh kernel) to take effect. `memory_limit_mb: 0` removes the cap **and** the Windows kill-with-host containment, so an orphaned kernel can outlive the backend - use it only if you know your cells need the headroom.
 
 ## State Between Calls (the session kernel)
 

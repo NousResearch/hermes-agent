@@ -124,6 +124,98 @@ def _model_supports_vision_override(models_cfg: Any, model: str) -> Optional[boo
     return _coerce_capability_bool(per_model.get("supports_vision", per_model.get("vision")))
 
 
+def _model_supports_vision_tool_messages_override(models_cfg: Any, model: str) -> Optional[bool]:
+    """Per-model ``supports_vision_tool_messages`` from a ``models`` mapping.
+
+    ``False`` declares that the endpoint accepts images in USER messages but cannot
+    carry them inside TOOL-RESULT messages — some OpenAI-compatible servers accept a
+    tool-role image part without a 400 and then silently drop the pixels, so the model
+    sees only the envelope's text placeholder. Declaring it lets such an endpoint opt
+    out of the native tool-result lane and fall back to the aux vision LLM.
+    """
+    per_model = _dict_or_empty(_dict_or_empty(models_cfg).get(model))
+    return _coerce_capability_bool(per_model.get("supports_vision_tool_messages"))
+
+
+def _supports_vision_tool_messages_override(
+    cfg: Optional[dict[str, Any]],
+    provider: str,
+    model: str,
+    *,
+    requested_provider: str = "",
+) -> Optional[bool]:
+    """Resolve a user-declared tool-message-image capability from config.yaml; None when unset.
+
+    Mirrors :func:`_supports_vision_override`: ``model.supports_vision_tool_messages``
+    → ``providers.<p>.models.<model>`` → legacy ``custom_providers[].models.<model>``.
+    Named custom providers are rewritten to ``provider="custom"`` at runtime while the
+    config keeps the user's name, so the requested, runtime and config identities are
+    all tried, plus the bare ``<name>`` of any ``custom:<name>``.
+    """
+    if not isinstance(cfg, dict):
+        return None
+    model_cfg = _dict_or_empty(cfg.get("model"))
+    top = _coerce_capability_bool(model_cfg.get("supports_vision_tool_messages"))
+    if top is not None:
+        return top
+
+    candidates: list[str] = []
+    for candidate in filter(None, (requested_provider, provider, _clean_str(model_cfg.get("provider")))):
+        candidates.append(candidate)
+        if candidate.startswith("custom:") and candidate[len("custom:"):]:
+            candidates.append(candidate[len("custom:"):])
+    candidates = list(dict.fromkeys(candidates))
+
+    providers_cfg = _dict_or_empty(cfg.get("providers"))
+    model_maps = [_dict_or_empty(providers_cfg.get(p)).get("models") for p in candidates]
+    model_maps += [entry.get("models") for entry in _custom_provider_entries(cfg, candidates)]
+    return next(
+        (v for v in (_model_supports_vision_tool_messages_override(m, model) for m in model_maps) if v is not None),
+        None,
+    )
+
+
+def lookup_supports_vision_tool_messages(
+    provider: str,
+    model: str,
+    cfg: Optional[dict[str, Any]] = None,
+    *,
+    requested_provider: str = "",
+) -> Optional[bool]:
+    """True/False when the route's tool-message-image support is known, None when unknown.
+
+    ``False`` means the endpoint cannot carry images inside tool-result messages, so the
+    native tool-result lane must not be used (the caller falls back to the aux vision LLM).
+
+    Two independent reasons to veto, and neither can be lifted by config:
+
+    * the provider profile declares ``supports_vision_tool_messages=False`` — the endpoint
+      400s on list-type tool content, and no config can make that shape work;
+    * config.yaml declares ``supports_vision_tool_messages: false`` for this route — the
+      endpoint ACCEPTS a tool-role image part and then silently drops the pixels, so the
+      model would see only the envelope's text placeholder. There is nothing to 400 on, so
+      only the user knows; the config override is the only way to say it.
+    """
+    try:
+        from providers import routed_model_rejects_vision_tool_messages
+
+        if routed_model_rejects_vision_tool_messages(provider, model):
+            return False
+    except Exception:
+        pass
+    if (
+        not requested_provider
+        and _runtime_main("provider").lower() == _clean_str(provider).lower()
+        and _runtime_main("model") == model
+    ):
+        requested_provider = _runtime_main("requested_provider")
+    override = _supports_vision_tool_messages_override(
+        cfg, provider, model, requested_provider=requested_provider)
+    if override is False:
+        return False
+    return None
+
+
 def _custom_provider_entries(cfg: dict[str, Any], names: Iterable[str]) -> Iterable[dict[str, Any]]:
     """Yield legacy ``custom_providers`` entries matching ``names`` (case-insensitive);
     ``names`` is the outer loop so list order cannot let a persisted default shadow the live route."""
@@ -563,4 +655,9 @@ def build_native_content_parts(
     return [{"type": "text", "text": combined_text}, *image_parts], skipped
 
 
-__all__ = ["build_native_content_parts", "decide_image_input_mode", "extract_image_refs"]
+__all__ = [
+    "build_native_content_parts",
+    "decide_image_input_mode",
+    "extract_image_refs",
+    "lookup_supports_vision_tool_messages",
+]

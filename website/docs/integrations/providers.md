@@ -1468,6 +1468,22 @@ model:
 
 The same key is honored on per-named-provider models (`providers.<name>.models.<id>.supports_vision`) and accepts standard YAML booleans (`true/false/yes/no/on/off/1/0`).
 
+**Endpoints that silently drop tool-result images.** Some OpenAI-compatible servers accept an image part inside a *tool-result* message, answer `200`, and then drop the pixels — the model sees only the envelope's text placeholder and answers from imagination. Nothing errors, so no recovery can catch it. Declare `supports_vision_tool_messages: false` on the route and Hermes stops using the native tool-result lane for it; the image is described by the auxiliary vision LLM instead.
+
+```yaml
+model:
+  provider: custom:my-endpoint
+providers:
+  my-endpoint:
+    api: http://localhost:8085/v1
+    models:
+      my-vision-model:
+        supports_vision: true                     # images in USER messages are fine
+        supports_vision_tool_messages: false      # …but tool-result images get dropped
+```
+
+Leave the key unset unless the endpoint actually misbehaves: an unset route keeps the native tool-result lane, and so does every provider that does not opt out. The key is also accepted at the top level (`model.supports_vision_tool_messages`) and takes standard YAML booleans.
+
 A `model_overrides` entry that only corrects metadata (for example `context_window`) for a model the catalog does not know leaves vision and reasoning capability and the output-token limit **unknown** — `vision_analyze`, `video_analyze` and the reasoning-effort picker stay available. Only an explicit `supports_vision: false` / `supports_reasoning: false` in the override marks the model as text-only or non-reasoning.
 
 **Inheriting a catalogued vendor's metadata (`catalog_provider`).** When a named custom provider (a gateway, proxy or reseller) serves models that Hermes already knows under a built-in provider, point the entry at that vendor and its models inherit the catalogued context window, output limit, vision and reasoning flags — no `model_overrides` needed:

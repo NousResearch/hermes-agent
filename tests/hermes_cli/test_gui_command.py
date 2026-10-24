@@ -670,6 +670,105 @@ def test_setup_tcc_identity_untrusted_existing_cert_is_repaired(tmp_path, monkey
     assert any(c[0] == "/usr/bin/security" and c[1] == "add-trusted-cert" for c in calls)
 
 
+def test_codesigning_identity_valid_rejects_a_listing_macos_annotated(monkeypatch):
+    """`security find-identity -v` reports an identity macOS cannot use under the valid heading,
+    with the reason in parentheses — `1) 42E4EA04 "Hermes Local Signing" (Unknown critical cert
+    extension)`. Matching the name alone reports a broken certificate as already done, so the
+    idempotency probe and the postcondition both pass on an identity `codesign --sign` refuses."""
+    listing = (
+        '  1) 42E4EA04D8C4B9A1 "Hermes Local Signing" (Unknown critical cert extension)\n'
+        "     1 valid identities found\n"
+    )
+    monkeypatch.setattr(cli_main.subprocess, "run", lambda cmd, **kw: _fake_proc(cmd, stdout=listing))
+
+    assert main_desktop_tcc._macos_codesigning_identity_valid("/usr/bin/security", "Hermes Local Signing") is False
+
+
+def test_codesigning_identity_valid_accepts_a_clean_listing(monkeypatch):
+    """A usable identity still counts — including when an annotated copy of a *different* identity
+    shares the listing."""
+    listing = (
+        '  1) 42E4EA04D8C4B9A1 "Other Identity" (Unknown critical cert extension)\n'
+        '  2) 42E4EA04D8C4B9A2 "Hermes Local Signing"\n'
+        "     2 valid identities found\n"
+    )
+    monkeypatch.setattr(cli_main.subprocess, "run", lambda cmd, **kw: _fake_proc(cmd, stdout=listing))
+
+    assert main_desktop_tcc._macos_codesigning_identity_valid("/usr/bin/security", "Hermes Local Signing") is True
+
+
+def _run_setup_tcc_identity_with_openssl_version(monkeypatch, tmp_path, version):
+    """Drive `_desktop_macos_setup_tcc_identity` with a fake toolchain whose `openssl version`
+    reports `version`, returning (result, calls, configs_seen_by_req)."""
+    monkeypatch.setattr(
+        cli_main.shutil,
+        "which",
+        lambda name: {"openssl": "/usr/bin/openssl", "security": "/usr/bin/security", "codesign": "/usr/bin/codesign"}.get(name),
+    )
+    monkeypatch.setattr(cli_main.Path, "home", classmethod(lambda cls: tmp_path))
+
+    identity = "Hermes Local Signing"
+    calls = []
+    req_configs = []
+    state = {"trusted": False}
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if list(cmd[:2]) == ["/usr/bin/openssl", "version"]:
+            return _fake_proc(cmd, stdout=version)
+        if list(cmd[:2]) == ["/usr/bin/openssl", "req"] and "-config" in cmd:
+            # The temp dir is removed when the call returns, so read it while openssl has it.
+            req_configs.append(Path(cmd[cmd.index("-config") + 1]).read_text(encoding="utf-8"))
+        if list(cmd[:4]) == ["/usr/bin/security", "find-identity", "-v", "-p"]:
+            if state["trusted"]:
+                return _fake_proc(cmd, stdout=f'  1) ABCD "{identity}"\n     1 valid identities found')
+            return _fake_proc(cmd, stdout="     0 valid identities found")
+        if list(cmd[:2]) == ["/usr/bin/security", "add-trusted-cert"]:
+            state["trusted"] = True
+        return _fake_proc(cmd)
+
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(main_desktop, "_desktop_packaged_executable", lambda d: None)
+    monkeypatch.setattr(main_desktop, "_desktop_macos_relaunchable_fixup", lambda d: True)
+    monkeypatch.setattr("hermes_cli.config.set_config_value", lambda key, value: None)
+
+    result = main_desktop_tcc._desktop_macos_setup_tcc_identity(identity)
+    return result, calls, req_configs
+
+
+@pytest.mark.platforms("macos")
+def test_setup_tcc_identity_suppresses_the_openssl_111_default_extensions(tmp_path, monkeypatch, capsys):
+    """OpenSSL 1.1.x appends `-addext` on top of the toolchain default `x509_extensions = v3_ca`, so
+    the certificate carries `basicConstraints` twice and macOS Security refuses it ("Unknown
+    critical cert extension"): generation must hand `req` a minimal config with no
+    `x509_extensions` left to merge."""
+    result, calls, req_configs = _run_setup_tcc_identity_with_openssl_version(
+        monkeypatch, tmp_path, "OpenSSL 1.1.1v  1 Aug 2023\n")
+
+    assert result is True
+    req = next(c for c in calls if c[:2] == ["/usr/bin/openssl", "req"])
+    assert "-config" in req, "the OpenSSL 1.1.1 duplicate-extensions bug needs a minimal config"
+    assert len(req_configs) == 1
+    assert "[req]" in req_configs[0] and "distinguished_name" in req_configs[0]
+    assert "x509_extensions" not in req_configs[0]
+    # The key, the certificate and the config all live in the temp dir that gets cleaned up.
+    assert not list(tmp_path.glob("hermes-tcc-*"))
+
+
+@pytest.mark.platforms("macos")
+def test_setup_tcc_identity_leaves_a_non_111_openssl_without_a_config(tmp_path, monkeypatch, capsys):
+    """OpenSSL 3 replaces the default extension list instead of merging it, so it already emits one
+    `basicConstraints` — and the config must not be handed to LibreSSL (the `openssl` macOS ships
+    at `/usr/bin/openssl`), which rejects a config without its own objects table."""
+    for version in ("OpenSSL 3.6.5 29 Sep 2026 (Library: OpenSSL 3.6.5 29 Sep 2026)\n", "LibreSSL 3.3.6\n"):
+        result, calls, req_configs = _run_setup_tcc_identity_with_openssl_version(monkeypatch, tmp_path, version)
+
+        assert result is True
+        req = next(c for c in calls if c[:2] == ["/usr/bin/openssl", "req"])
+        assert "-config" not in req, f"{version.split()[0]} must keep the plain invocation"
+        assert req_configs == []
+
+
 
 
 def test_cmd_gui_setup_tcc_identity_exits_before_build(tmp_path, monkeypatch):

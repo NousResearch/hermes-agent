@@ -3,6 +3,16 @@ import pytest
 
 
 @pytest.fixture
+def db(tmp_path):
+    """Create a SessionDB with a temporary database file."""
+    from hermes_state import SessionDB
+
+    session_db = SessionDB(db_path=tmp_path / "test_state.db")
+    yield session_db
+    session_db.close()
+
+
+@pytest.fixture
 def worker(tmp_path):
     """A registered compute worker execution on session ``owned``: ``(db, RuntimeSessionStore)``."""
     # Imported here, not at module level: this conftest loads for every hermes_state test file.

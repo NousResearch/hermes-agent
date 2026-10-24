@@ -115,8 +115,8 @@ async def test_bundled_provider_issuer_subject_owns_durable_receipts(tmp_path, m
     foreign_issuer = await actor(oidc('user-a', '/other'))
     with pytest.raises(RuntimeStoreError, match='permission_denied'):
         await authority.resolve(foreign_issuer, ref)
-    from tui_gateway.methods_browser_control import _principal_digest
-    assert _principal_digest({'provider': oauth.provider, 'issuer': oauth.issuer, 'user_id': oauth.user_id}) != _principal_digest(
+    from gateway.session_identity import authenticated_principal_digest
+    assert authenticated_principal_digest({'provider': oauth.provider, 'issuer': oauth.issuer, 'user_id': oauth.user_id}) != authenticated_principal_digest(
         {'provider': oauth.provider, 'issuer': oauth.issuer + '/other', 'user_id': oauth.user_id})
     runner.adapters = {}
     cold = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='second')

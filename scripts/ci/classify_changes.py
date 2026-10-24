@@ -333,6 +333,7 @@ _UPDATE_DEPENDENCIES = (
     "hermes_cli/desktop_build_lock.py",
     "hermes_cli/memory_provider_migration.py",
     "hermes_cli/left_core_migration.py",  # source_build migrates plugins that left core
+    "hermes_cli/config_version_stamp.py",  # post_update converts legacy AGENT_BROWSER_* before stamping
     "hermes_cli/web_build_limits.py",  # source_build caps the dashboard Node build
     "hermes_cli/desktop_console.py",
     "hermes_cli/bundled_app.py",

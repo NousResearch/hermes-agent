@@ -1761,7 +1761,7 @@ body.guest-pointer-lock :is(webview, iframe) {
    selector ties our `my-*` utility on specificity and wins on source order, so
    paragraph spacing must be reclaimed here at higher specificity. One tight
    top-margin (bottom zeroed to avoid doubling), first child reset to flush. */
-[data-slot='aui_assistant-message-content'] .aui-md :where(p) {
+[data-slot='aui_assistant-message-content'] .aui-md :where(p, [data-tool-media-paragraph]) {
   margin-block: var(--paragraph-gap) 0;
 }
 
@@ -1802,7 +1802,7 @@ body.guest-pointer-lock :is(webview, iframe) {
    text-left. direction is never set, so chrome/layout/list-indent stay LTR (the
    issue asks not to flip the whole UI). Covers assistant prose, user lines, and
    both composers (main + edit share composer-rich-input). */
-[data-slot='aui_assistant-message-content'] .aui-md :where(p, h1, h2, h3, h4, h5, h6, li, blockquote),
+[data-slot='aui_assistant-message-content'] .aui-md :where(p, [data-tool-media-paragraph], h1, h2, h3, h4, h5, h6, li, blockquote),
 [data-slot='aui_user-inline-text'],
 [data-slot='composer-rich-input'] {
   unicode-bidi: plaintext;
@@ -1830,7 +1830,7 @@ body.guest-pointer-lock :is(webview, iframe) {
    every block takes the chosen direction (every line of a multi-line draft
    included). Auto stamps no dir, so nothing here matches. Code and KaTeX keep
    their isolated-LTR rules below. */
-[data-slot='aui_assistant-message-content'] .aui-md[dir] :where(p, h1, h2, h3, h4, h5, h6, li, blockquote),
+[data-slot='aui_assistant-message-content'] .aui-md[dir] :where(p, [data-tool-media-paragraph], h1, h2, h3, h4, h5, h6, li, blockquote),
 [data-slot='aui_user-inline-text'][dir],
 [data-slot='composer-rich-input'][dir] {
   unicode-bidi: normal;

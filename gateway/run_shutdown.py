@@ -1794,7 +1794,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             cleanup_all_environments()
 
         def _cleanup_browsers() -> None:
-            from tools.browser_tool_lifecycle import cleanup_all_browsers
+            from tools.browser_session_lifecycle import cleanup_all_browsers
             cleanup_all_browsers()
 
         _step("cleanup_all_environments", _cleanup_environments)

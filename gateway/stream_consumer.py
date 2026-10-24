@@ -30,6 +30,7 @@ from gateway.config import (
 from gateway.response_filters import (
     is_intentional_silence_response as _is_intentional_silence_response,
     is_partial_silence_marker as _is_partial_silence_marker)
+from gateway.stream_consumer_directives import has_pending_media_directive
 from gateway.stream_consumer_fences import ensure_closed_code_fences
 from gateway.stream_consumer_transport import StreamTransportMixin
 from gateway.stream_consumer_fallback import StreamFallbackMixin
@@ -749,8 +750,12 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                                    and not self._flood_strikes))
         # Defer mid-stream edits while the buffer could still resolve to a silence
         # marker ("NO"→"NO_REPLY"); got_done always resolves the buffer.
-        return should_edit and not _is_partial_silence_marker(
-            self._clean_for_display(self._accumulated))
+        # Likewise defer while a MEDIA:/[[…]] directive is still being typed: the cleaner
+        # only strips complete deliverable tags, so a half-streamed one would be shown, and
+        # a media-only reply cleans to "" at finish, which never edits the bubble away.
+        cleaned = self._clean_for_display(self._accumulated)
+        return (should_edit and not _is_partial_silence_marker(cleaned)
+                and not has_pending_media_directive(cleaned))
 
     async def _split_first_send(self, tick: _Tick) -> bool:
         """No message to edit yet and the buffer overflows: seal only the head chunks; the

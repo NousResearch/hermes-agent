@@ -608,7 +608,7 @@ from hermes_cli.personality import (
 # because callers and tests import these from hermes_cli.config)
 
 from hermes_cli.config_version_stamp import (
-    check_config_version, read_config_version_stamp)
+    check_config_version, note_first_stamp, read_config_version_stamp, stamp_missing_config)
 
 
 # ---- Config Migration System ----
@@ -1290,8 +1290,8 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> dict[str, A
     """Migrate config to latest version, prompting for new required fields."""
     results = {"env_added": [], "config_added": [], "warnings": []}
 
-    # Validate config.yaml before any migration side effect: sanitize_env_file() rewrites .env,
-    # which must not happen when the migration will be refused for malformed YAML.
+    stamp_missing_config()  # a missing config.yaml reads as current below: stamp its legacy browser settings
+    # Validate before any side effect: sanitize_env_file() rewrites .env, never for refused (malformed) YAML.
     stamp, latest_ver = read_config_version_stamp(raise_on_parse_error=True)
     current_ver = 0 if stamp is None else stamp
 
@@ -2127,7 +2127,7 @@ TERMINAL_CONFIG_ENV_MAP = {
         key: f"TERMINAL_{key.upper()}"
         for key in (
             "modal_mode", "degraded_mode", "cwd", "temp_dir", "timeout", "lifetime_seconds",
-            "docker_image", "docker_forward_env", "singularity_image", "modal_image",
+            "docker_image", "docker_forward_env", "modal_image",
             "daytona_image", "vercel_runtime", "vercel_image", "ssh_host", "ssh_user", "ssh_port", "ssh_key",
             "container_cpu", "container_memory", "container_disk", "container_persistent",
             "docker_volumes", "docker_env", "docker_mount_cwd_to_workspace", "docker_network",
@@ -2500,8 +2500,7 @@ def save_config(
         from hermes_cli.config_worker_save import rebase_for_save  # frozen-worker writes + merge_existing
         config = rebase_for_save(config, _raw_for_paths, merge_existing)
 
-        current_normalized = _canonicalize_config(config)
-        normalized = current_normalized
+        normalized = current_normalized = _canonicalize_config(config)
         if _raw_for_paths:
             normalized = _preserve_env_ref_templates(
                 normalized, _canonicalize_config(_raw_for_paths),
@@ -2512,6 +2511,7 @@ def save_config(
             effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
             normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
+        note_first_stamp(config_path.parent, _raw_for_paths, normalized)
         atomic_config_replace(config_path, normalized, extra_content_on_create=_commented_sections_for_save(normalized))
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
@@ -3086,7 +3086,8 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
 
     # A leading underscore on the FIRST segment marks an intentionally non-schema internal key
     # (test harnesses/tooling); only the first segment is exempt so ``agent._max_turns`` is caught.
-    if top.startswith("_") or top in _PLATFORM_CONTAINER_KEYS:
+    from hermes_cli.left_core_migration import LEFT_CORE_TERMINAL_KEYS
+    if top.startswith("_") or top in _PLATFORM_CONTAINER_KEYS or key in LEFT_CORE_TERMINAL_KEYS:
         return True, None
 
     known = _known_top_level_keys()
@@ -3394,15 +3395,6 @@ def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:
         print(color("  (Use --force to skip this notice.)", Colors.DIM))
 
 
-def _unknown_subkey_refusal(key: str, suggestion: Optional[str]) -> str:
-    lines = [color(f"✗ '{key}' is not a recognized config key — nothing was written.", Colors.RED)]
-    if suggestion:
-        lines.append(color(f"  Did you mean: {suggestion}", Colors.YELLOW))
-    lines.append(color(
-        "  (Custom top-level keys are supported; use --force to write this path anyway.)", Colors.DIM))
-    return "\n".join(lines)
-
-
 def set_config_value(key: str, value: str, force: bool = False):
     """Set a configuration value at a dotted ``key``; ``value`` is auto-coerced to bool/int/float.
     ``force`` writes a known key given under the wrong prefix (``gateway.discord.foo`` where
@@ -3457,7 +3449,8 @@ def set_config_value(key: str, value: str, force: bool = False):
     # seeded default. Refuse only the positive wrong-prefix case from #112003; other unknown
     # paths keep the post-write warning so valid runtime settings remain configurable.
     if not is_known and not force and _is_wrong_prefix_suggestion(key, suggestion):
-        _exit_invalid(_unknown_subkey_refusal(key, suggestion))
+        from hermes_cli.config_key_notices import unknown_subkey_refusal
+        _exit_invalid(unknown_subkey_refusal(key, suggestion))
 
     if key == "display.language":
         from hermes_cli.config_language import display_language_error
@@ -3602,8 +3595,7 @@ def unset_config_value(key: str):
 
     if _is_env_config_key(key):
         # Unified lifecycle: also prunes env-seeded credential_pool entries and model-cache rows so
-        # the provider is fully removed instead of left resurrectable.
-        # See #51071.
+        # the provider is fully removed instead of left resurrectable (#51071).
         from hermes_cli.credential_lifecycle import remove_provider_env_credential
 
         try:
@@ -3639,7 +3631,8 @@ def unset_config_value(key: str):
     if legacy_key:
         removed = _unset_nested(user_config, legacy_key) or removed
 
-    env_var = terminal_config_env_var_for_key(key)
+    from hermes_cli.left_core_migration import LEFT_CORE_TERMINAL_KEYS
+    env_var = terminal_config_env_var_for_key(key) or LEFT_CORE_TERMINAL_KEYS.get(key)
     if env_var and key != "terminal.cwd":
         removed = remove_env_value(env_var) or removed
 

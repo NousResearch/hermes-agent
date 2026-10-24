@@ -55,6 +55,137 @@ def _auto_continue_note(prompt: str) -> str:
             f"finish the task. The interrupted request was:]\n\n{prompt}")
 
 
+def _goal_auto_resume_enabled() -> bool:
+    """``goals.auto_resume_on_reconnect`` — opt in to re-entering an active goal after a crash."""
+    goals_cfg = _load_cfg().get("goals")
+    return is_truthy_value((goals_cfg if isinstance(goals_cfg, dict) else {}).get("auto_resume_on_reconnect"),
+                           default=False)
+
+
+def _active_goal_manager_for_session(session: dict, session_key: str):
+    """The session's ``GoalManager`` when its goal is still active, else None (never raises)."""
+    from hermes_cli.goals import GoalManager
+    try:
+        max_turns = _coerce_int_config_value((_load_cfg().get("goals") or {}).get("max_turns"), 20, min_value=1)
+        with _session_profile_runtime_scope(session):
+            manager = GoalManager(session_id=session_key, default_max_turns=max_turns)
+            return manager if manager.is_active() else None
+    except Exception:
+        logger.debug("auto-continue goal lookup failed for %s", session_key, exc_info=True)
+        return None
+
+
+def _schedule_auto_continue_turn(
+    sid: str, session: dict, *, text: str, marker: dict, attempt: int, status: dict,
+    goal_identity: tuple[str, str, float] | None = None) -> bool:
+    """Run the continuation on a session worker after the deferred agent build, so the client that
+    just resumed streams it. ``status`` is the status.update payload announcing the continuation.
+    Returns False when no worker could be started (the caller un-schedules)."""
+    marker_prompt = marker["prompt"]
+
+    def kickoff() -> None:
+        continuation_text = text
+        rid = f"__auto_continue__{int(time.time() * 1000)}"
+        try:
+            _start_agent_build(sid, session)
+            err = _wait_agent(session, rid, timeout=120.0)
+        except Exception:
+            logger.warning("auto-continue agent build failed for %s", sid, exc_info=True)
+            err = {"error": {"message": "agent build failed"}}
+        if err:  # leave the marker: the next resume retries (bounded by attempts)
+            session["_auto_continue_scheduled"] = False
+            return
+        with session["history_lock"]:
+            if session.get("running") or session.get("_turn_cancel_requested") or session.get("_finalized"):
+                session["_auto_continue_scheduled"] = False  # a real user prompt beat us; it clears the marker
+                return
+            session["running"] = True
+            session["last_active"] = time.time()
+        # Ownership admission BEFORE message.start: a sibling backend sharing this HERMES_HOME may have written the
+        # marker and still be mid-turn. Leave the marker so a later resume retries.
+        # Running the continuation anyway would be the double-writer this fence exists to prevent. See
+        # #94778.
+        held_lease = session.get("active_session_lease")
+        if _ensure_active_session_slot(sid, session) is not None:
+            logger.info("auto-continue for %s refused: session has another live owner", sid)
+            with session["history_lock"]:
+                session["running"] = False
+                session["_auto_continue_scheduled"] = False
+            return
+        if goal_identity is not None:
+            # Agent construction can outlive a pause, replacement, or budget exhaustion.
+            # Read the current goal after that wait; never dispatch the captured stale intent.
+            session_key, goal_title, created_at = goal_identity
+            with _session_profile_runtime_scope(session):
+                current = _active_goal_manager_for_session(session, session_key)
+                same_goal = current is not None and (
+                    current.state.goal, current.state.created_at) == (goal_title, created_at)
+                continuation_text = current.continue_after_interruption() if same_goal else None
+            if not continuation_text:
+                if session.get("active_session_lease") is not held_lease:
+                    _release_active_session_slot(session)
+                with session["history_lock"]:
+                    session["running"] = False
+                    session["_auto_continue_scheduled"] = False
+                return
+        with session["history_lock"]:
+            # Marker inputs read back by _run_prompt_submit: attempt count (crash breaker) and the ORIGINAL prompt (no
+            # nested notes). Set here, not at schedule time, so a bail above leaves nothing for a racing user turn.
+            session["_auto_continue_attempt"], session["_auto_continue_prompt"] = attempt, marker_prompt
+        try:
+            from gateway.warning_notifications import render_notification
+            diagnostic = marker.get("notification_category") == "diagnostic"
+            with _session_profile_runtime_scope(session):
+                def announce():
+                    _emit("status.update", sid, status)
+                    _emit("message.start", sid)
+                render_notification(announce, platform="tui", diagnostic=diagnostic)
+                _run_prompt_submit(rid, sid, session, continuation_text, display_kind="auto_continue",
+                    **({"display_metadata": {"notification_category": "diagnostic"}} if diagnostic else {}))
+        except Exception as exc:
+            _notif_log_failure("auto-continue dispatch failed", exc)
+            _notif_release_turn(session)  # rebound from session_notifications
+    return _start_session_work(kickoff, name=f"auto-continue-{sid}") is not None
+
+
+def _goal_auto_continue(
+    sid: str, session: dict, session_key: str, marker: dict, goal_mgr, *,
+    enabled: bool, max_attempts: int) -> dict | None:
+    """Recover a crash-interrupted turn of an ACTIVE goal.
+
+    An active goal is a standing intent, so the freshness window that retires ordinary markers must
+    not silently drop it. Opting into ``goals.auto_resume_on_reconnect`` re-enters the goal with its
+    own structured continuation prompt; by default the goal records the interruption and the resume
+    payload reports it, so the Desktop can offer ``goal.continue`` instead.
+    """
+    home = _session_home(session)
+    title = str(getattr(goal_mgr.state, "goal", "") or "")
+    attempt = marker["attempts"] + 1
+    auto = enabled and _goal_auto_resume_enabled() and marker["attempts"] < max_attempts
+    text = ""
+    if auto and not session.get("_auto_continue_scheduled"):
+        with _session_profile_runtime_scope(session):
+            text = goal_mgr.continue_after_interruption() or ""
+    if not text:
+        # The goal state now carries the interruption; the marker would only re-trigger this branch.
+        with contextlib.suppress(Exception), _session_profile_runtime_scope(session):
+            goal_mgr.mark_interrupted(marker["started_at"])
+        clear_turn_marker(home, session_key)
+        _publish_session_control_snapshot(sid, session)
+        return {"goal_interrupted": True, "goal_title": title, "interrupted_at": marker["started_at"]}
+    session["_auto_continue_scheduled"] = True
+    if not _schedule_auto_continue_turn(
+            sid, session, text=text, marker=marker, attempt=attempt,
+            status={"kind": "goal", "text": f"▶ Goal continuing after restart: {title}"},
+            goal_identity=(session_key, title, goal_mgr.state.created_at)):
+        session["_auto_continue_scheduled"] = False
+        return None
+    logger.info("goal auto-continue scheduled for session %s (attempt %d)", session_key, attempt)
+    # Same shape as the plain scheduled continuation: the turn is already streaming, so the client
+    # needs no goal detail here (the status.update carries the title).
+    return {"attempt": attempt, "interrupted_at": marker["started_at"]}
+
+
 def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> dict | None:
     """Kick off a continuation turn for a crash-interrupted session (session.resume cold paths). Returns a descriptor
     for the resume payload when scheduled, else None. The turn runs on a background thread after the deferred agent
@@ -78,6 +209,10 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
                     marker.get("writer_pid"), os.getpid())
         return None
     enabled, freshness_secs, max_attempts = _auto_continue_config()
+    # An active goal outranks the freshness heuristic: it is durable intent, not one stale prompt.
+    if (goal_mgr := _active_goal_manager_for_session(session, session_key)) is not None:
+        return _goal_auto_continue(sid, session, session_key, marker, goal_mgr,
+                                   enabled=enabled, max_attempts=max_attempts)
     age = time.time() - marker["started_at"]
     if not enabled or age > freshness_secs or marker["attempts"] >= max_attempts:
         clear_turn_marker(home, session_key)  # stale/disabled/crash-looping: a manual message continues
@@ -85,53 +220,10 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
     if session.get("_auto_continue_scheduled"):
         return None
     session["_auto_continue_scheduled"] = True
-    attempt, text = marker["attempts"] + 1, _auto_continue_note(marker["prompt"])
-
-    def kickoff() -> None:
-        rid = f"__auto_continue__{int(time.time() * 1000)}"
-        try:
-            _start_agent_build(sid, session)
-            err = _wait_agent(session, rid, timeout=120.0)
-        except Exception:
-            logger.warning("auto-continue agent build failed for %s", sid, exc_info=True)
-            err = {"error": {"message": "agent build failed"}}
-        if err:  # leave the marker: the next resume retries (bounded by attempts)
-            session["_auto_continue_scheduled"] = False
-            return
-        with session["history_lock"]:
-            if session.get("running") or session.get("_turn_cancel_requested") or session.get("_finalized"):
-                session["_auto_continue_scheduled"] = False  # a real user prompt beat us; it clears the marker
-                return
-            session["running"] = True
-            session["last_active"] = time.time()
-        # Ownership admission BEFORE message.start: a sibling backend sharing this HERMES_HOME may have written the
-        # marker and still be mid-turn. Leave the marker so a later resume retries.
-        # Running the continuation anyway would be the double-writer this fence exists to prevent. See
-        # #94778.
-        if _ensure_active_session_slot(sid, session) is not None:
-            logger.info("auto-continue for %s refused: session has another live owner", session_key)
-            with session["history_lock"]:
-                session["running"] = False
-                session["_auto_continue_scheduled"] = False
-            return
-        with session["history_lock"]:
-            # Marker inputs read back by _run_prompt_submit: attempt count (crash breaker) and the ORIGINAL prompt (no
-            # nested notes). Set here, not at schedule time, so a bail above leaves nothing for a racing user turn.
-            session["_auto_continue_attempt"], session["_auto_continue_prompt"] = attempt, marker["prompt"]
-        try:
-            from gateway.warning_notifications import render_notification
-            diagnostic = marker.get("notification_category") == "diagnostic"
-            with _session_profile_runtime_scope(session):
-                def announce():
-                    _emit("status.update", sid, {"kind": "process", "text": "Resuming interrupted turn…"})
-                    _emit("message.start", sid)
-                render_notification(announce, platform="tui", diagnostic=diagnostic)
-                _run_prompt_submit(rid, sid, session, text, display_kind="auto_continue",
-                    **({"display_metadata": {"notification_category": "diagnostic"}} if diagnostic else {}))
-        except Exception as exc:
-            _notif_log_failure("auto-continue dispatch failed", exc)
-            _notif_release_turn(session)  # rebound from session_notifications
-    if _start_session_work(kickoff, name=f"auto-continue-{sid}") is None:
+    attempt = marker["attempts"] + 1
+    if not _schedule_auto_continue_turn(
+            sid, session, text=_auto_continue_note(marker["prompt"]), marker=marker, attempt=attempt,
+            status={"kind": "process", "text": "Resuming interrupted turn…"}):
         session["_auto_continue_scheduled"] = False
         return None
     logger.info("auto-continue scheduled for session %s (attempt %d, interrupted %.0fs ago, writer pid %s: %s, "
@@ -145,7 +237,7 @@ def _ac_inflight_original(session: dict) -> str:
 
 
 def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[str] | None = None,
-                    turn_author: dict | None = None) -> dict | None:
+                    turn_author: dict | None = None, display_kind: str | None = None) -> dict | None:
     """Queue a message for the next turn. Text-only arrivals share a slot and merge losslessly (like the
     consecutive-user merge in ``repair_message_sequence``); image-bearing and authored ones stay separate
     envelopes so attachment chronology and the sender survive. ``transport`` is pinned so the drained turn
@@ -161,10 +253,12 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[
     if text_only and not turn_author and text.strip() == _ac_inflight_original(session) != "":
         return None
     queued = {"text": text, "transport": transport, **({"image_paths": image_paths} if image_paths else {}),
-              **({"turn_author": turn_author} if turn_author else {})}
+              **({"turn_author": turn_author} if turn_author else {}),
+              **({"display_kind": display_kind} if display_kind else {})}
     existing = session.get("queued_prompt")
     if (existing and text_only and not turn_author and isinstance(existing.get("text"), str)
             and not existing.get("image_paths") and not existing.get("turn_author")
+            and existing.get("display_kind") == display_kind
             and not session.get("queued_prompts")):
         prev = existing["text"]
         existing["text"] = f"{prev}\n\n{text}" if prev and text else (prev or text)
@@ -436,7 +530,8 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
             if image_paths:
                 session["attached_images"] = image_paths + list(session.get("attached_images", []))
             return None
-        envelope = _enqueue_prompt(session, text, transport, image_paths=image_paths, turn_author=turn_author)
+        envelope = _enqueue_prompt(session, text, transport, image_paths=image_paths, turn_author=turn_author,
+                                   display_kind=display_kind)
         # Durable AT ACCEPT (not when the turn runs): a cold resume sees the queued message and a
         # backend restart cannot lose it. Lives on the envelope, never the shared session slot.
         if envelope is not None:
@@ -483,6 +578,9 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     kwargs: dict = {"queued_prompt_generation": queue_generation}
     if queued.get("image_paths"):
         kwargs["image_paths"] = queued["image_paths"]
+    kwargs["user_turn"] = not queued.get("turn_author") and not queued.get("display_kind")
+    if queued.get("display_kind"):
+        kwargs["display_kind"] = queued["display_kind"]
     # Re-place the accept-time rows (if any) at the transcript END before the turn's rows follow
     # them, and slot the dispatching envelope's fresh row for adoption. EVERY queued envelope is
     # re-placed in acceptance order: a later-accepted prompt's row must never sit behind while an

@@ -69,6 +69,9 @@ class GatewayTurnPersistenceMixin:
             _sanitize_gateway_final_response, _should_clear_resume_pending_after_turn,
         )
         response = agent_result.get("final_response") or ""
+
+        # (The outbound text filter is applied in ``_run_agent``, on the same single funnel that
+        # also covers the queued (/queue) follow-up whose reply never reaches this shaping step.)
         # Hidden-reasoning-only retry exhaustion: the loop's sentinel text doubles as final_response
         # and would be delivered verbatim (peer agents would ingest it as a completed turn).
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):

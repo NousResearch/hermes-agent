@@ -34,6 +34,7 @@ from hermes_cli.config import get_hermes_home
 
 from tools.process_registry_notifications import (
     format_process_notification, heartbeat_output_tail, is_child_process_notification, should_surface_notification)
+from tools.process_registry_memory import operator_worker_memory_max_bytes
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_output_log import ProcessOutputLogMixin, open_output_log, record_exit_command, worker_output_log
 from tools.process_registry_termination import ProcessTerminationMixin
@@ -123,28 +124,21 @@ _WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
 
 
 def _worker_memory_max_bytes() -> int:
-    """Finite per-worker cgroup limit that can never widen host risk.
-    ``TERMINAL_LOCAL_MEMORY_MAX_MB`` is honored only when it *tightens* the safe
-    bound (min of the gateway's cgroup-v2 ``memory.max`` and half of physical RAM,
-    capped at 4 GiB), so an oversized override cannot exceed the enclosing slice.
+    """Finite per-worker cgroup limit that never widens host risk.
 
-    The proposed local-memory-guard environment override is honored when it tightens the safe bound, so this
-    isolation composes with PR #57121 instead of inventing a second knob.
+    The ceiling is the minimum of the gateway's own cgroup-v2 ``memory.max`` and
+    (a configurable share of) physical RAM — the hard host-safety caps. An
+    operator may replace the conservative 4 GiB default ceiling with
+    ``terminal.local_memory_max_mb`` in config.yaml (or
+    ``TERMINAL_LOCAL_MEMORY_MAX_MB`` in the environment, which wins), either
+    tightening or *widening* the limit, but the enclosing-slice and half-RAM
+    bounds always still apply, so a mis-sized override can never put the
+    gateway's cgroup at risk. An explicit override also composes with the
+    larger resource-isolation surface (PR #57121 / #97739) instead of inventing
+    a second knob.
     """
-    override_bound: Optional[int] = None
-    override = os.getenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "").strip()
-    if override:
-        try:
-            parsed = int(override) * 1024 * 1024
-        except ValueError:
-            parsed = -1
-        if parsed >= _MIN_WORKER_MEMORY_MAX_BYTES:
-            override_bound = parsed
-        else:
-            logger.warning(
-                "Ignoring invalid TERMINAL_LOCAL_MEMORY_MAX_MB=%r; "
-                "expected an integer representing at least %d MiB",
-                override, _MIN_WORKER_MEMORY_MAX_BYTES // (1024 * 1024))
+    override_bound = operator_worker_memory_max_bytes(
+        min_bytes=_MIN_WORKER_MEMORY_MAX_BYTES)
     candidates: list[int] = []
     try:
         for line in Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines():
@@ -165,8 +159,11 @@ def _worker_memory_max_bytes() -> int:
         physical_bytes = int(os.sysconf("SC_PHYS_PAGES")) * int(
             os.sysconf("SC_PAGE_SIZE")
         )
+        # The operator cap replaces the conservative 4 GiB default as the
+        # per-worker ceiling, but half of physical RAM still binds below it.
+        cap_bytes = override_bound if override_bound is not None else _WORKER_MEMORY_MAX_CAP_BYTES
         physical_bound = min(
-            _WORKER_MEMORY_MAX_CAP_BYTES,
+            cap_bytes,
             max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2),
         )
         candidates.append(physical_bound)

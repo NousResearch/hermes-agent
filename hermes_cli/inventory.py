@@ -542,10 +542,15 @@ def _reasoning_catalog_reader(slug: str):
 def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None) -> None:
     """Attach ``{model: {fast, reasoning, ...}}`` per row. ``reasoning`` defaults True when the catalog is
     silent (the dial is a no-op on models that ignore it; hiding it from a capable model is worse). A
-    serving aggregator's detail overrides models.dev (adds ``can_disable_reasoning``). ``supported_efforts``
-    is deliberately NOT forwarded — it under-reports levels that work."""
+    serving aggregator's detail overrides models.dev. ``reasoning_efforts`` is the normalized, ordered
+    list of distinct levels the picker may offer; it intentionally differs from the upstream field name."""
     from agent.codex_service_tiers import ultrafast_offered
+    from agent.reasoning_effort import EFFORT_LADDER, codex_supported_efforts
     from hermes_cli.models import model_supports_ultrafast, resolve_fast_mode_overrides
+
+    def normalized_efforts(values) -> list[str]:
+        offered = {str(value).strip().lower() for value in (values or [])}
+        return [level for level in EFFORT_LADDER if level != "none" and level in offered]
 
     try:
         from agent.models_dev import get_model_capabilities
@@ -584,6 +589,29 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
                     entry["reasoning"] = False
                 elif detail:
                     entry["can_disable_reasoning"] = not detail.get("mandatory")
+                    if slug.lower() == "openrouter":
+                        advertised = normalized_efforts(detail.get("supported_efforts"))
+                        if advertised:
+                            entry["reasoning_efforts"] = advertised
+
+            if entry["reasoning"] and "reasoning_efforts" not in entry:
+                if slug.lower() == "anthropic":
+                    try:
+                        from agent.anthropic_adapter import anthropic_picker_efforts
+
+                        native = list(anthropic_picker_efforts(model))
+                    except Exception:
+                        native = []
+                    entry["reasoning_efforts"] = native
+                    if not native:
+                        entry["reasoning"] = False
+                elif slug.lower() in {"openai", "openai-api", "openai-codex"}:
+                    accepted = codex_supported_efforts(model)
+                    native = normalized_efforts(accepted)
+                    if native:
+                        entry["reasoning_efforts"] = native
+                    if "none" not in accepted:
+                        entry["can_disable_reasoning"] = False
 
             caps[model] = entry
 

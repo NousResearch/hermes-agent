@@ -26,11 +26,13 @@ afterEach(() => {
 function renderSubmenu(opts: {
   defaultEffort?: string
   effort?: string
+  effortWire?: string
   fastControl: FastControl
   isActive?: boolean
   onSelectModel?: (model: string) => void
   onSetOptions: (patch: { effort?: string; fast?: boolean }) => void
   reasoning: boolean
+  reasoningEfforts?: string[]
 }) {
   return render(
     <DropdownMenu open>
@@ -40,6 +42,7 @@ function renderSubmenu(opts: {
           <ModelEditSubmenu
             defaultEffort={opts.defaultEffort ?? 'medium'}
             effort={opts.effort ?? 'medium'}
+            effortWire={opts.effortWire}
             fastControl={opts.fastControl}
             isActive={opts.isActive ?? true}
             model="m1"
@@ -47,6 +50,7 @@ function renderSubmenu(opts: {
             onSetOptions={opts.onSetOptions}
             provider="p1"
             reasoning={opts.reasoning}
+            reasoningEfforts={opts.reasoningEfforts}
           />
         </DropdownMenuSub>
       </DropdownMenuContent>
@@ -92,6 +96,38 @@ describe('ModelEditSubmenu reports edits without performing them', () => {
     fireEvent.click(screen.getByRole('switch'))
 
     expect(onSetOptions).toHaveBeenCalledWith({ effort: 'high' })
+  })
+
+  it('only offers levels supported by the selected model', () => {
+    renderSubmenu({
+      effort: 'high',
+      fastControl: { kind: 'none' },
+      onSetOptions: vi.fn(),
+      reasoning: true,
+      reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max']
+    })
+
+    expect(screen.queryByRole('menuitemradio', { name: 'Minimal' })).toBeNull()
+    expect(screen.getByRole('menuitemradio', { name: 'Low' })).toBeTruthy()
+    expect(screen.getByRole('menuitemradio', { name: 'Medium' })).toBeTruthy()
+    expect(screen.getByRole('menuitemradio', { name: 'High' })).toBeTruthy()
+    expect(screen.getByRole('menuitemradio', { name: 'Extra High' })).toBeTruthy()
+    expect(screen.getByRole('menuitemradio', { name: 'Max' })).toBeTruthy()
+    expect(screen.queryByRole('menuitemradio', { name: 'Ultra' })).toBeNull()
+  })
+
+  it('selects the supported wire level when the stored effort is unsupported', () => {
+    renderSubmenu({
+      effort: 'xhigh',
+      effortWire: 'max',
+      fastControl: { kind: 'none' },
+      onSetOptions: vi.fn(),
+      reasoning: true,
+      reasoningEfforts: ['low', 'medium', 'high', 'max']
+    })
+
+    expect(screen.queryByRole('menuitemradio', { name: 'Extra High' })).toBeNull()
+    expect(screen.getByRole('menuitemradio', { name: 'Max' }).getAttribute('aria-checked')).toBe('true')
   })
 
   it('variant fast: swaps the model only when the row is active', () => {

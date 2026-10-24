@@ -68,3 +68,32 @@ def test_priority_honors_anthropic_manual_first():
     pool._entries[1] = replace(pool._entries[1], source="env:ANTHROPIC_API_KEY")
     assert pool.move_entry("row1", 0).priority == 1
     assert [e.id for e in pool.entries()] == ["row0", "row1"]
+
+
+def _labelled(*labels):
+    pool = _pool()
+    pool._entries = [replace(e, label=label) for e, label in zip(pool._entries, labels)]
+    return pool
+
+
+@pytest.mark.parametrize("labels, target, expected", [
+    (("2", "1"), "2", (2, "row1")),  # a label "2" does not shadow position 2
+    (("1", "1"), "1", (1, "row0")),  # duplicate digit labels: the advertised index still works
+    (("1", "1"), "row1", (2, "row1")),
+    (("7", "x"), "7", (1, "row0")),  # past the pool size a digit label still resolves
+])
+def test_resolve_target_numbers_name_positions_before_labels(labels, target, expected):
+    index, entry, error = _labelled(*labels).resolve_target(target)
+    assert (index, entry.id, error) == (*expected, None)
+
+
+@pytest.mark.parametrize("target, error", [
+    ("3", "No credential #3."),
+    ("0", "No credential #0."),
+    ("\u00b2", 'No credential matching "\u00b2".'),  # str.isdigit() but not int()-parsable
+    pytest.param("9" * 5000, "No credential matching", id="past-int-digit-cap"),
+])
+def test_resolve_target_reports_unusable_numbers(target, error):
+    index, entry, message = _pool().resolve_target(target)
+    assert (index, entry) == (None, None)
+    assert message.startswith(error)

@@ -261,10 +261,12 @@ class CellAuthority:
         if not self.active:
             return tool_error("No active execute_code cell: the cell this kernel call "
                               "belonged to has settled, so its tool authority is retired.")
-        return self.ctx.run(self._invoke, tool_name, tool_args)
+        from tools.tool_advisories import current_advisory_sink
+        return self.ctx.copy().run(self._invoke, tool_name, tool_args, current_advisory_sink())
 
-    def _invoke(self, tool_name: str, tool_args: dict) -> str:
-        from model_tools import handle_function_call
+    def _invoke(self, tool_name: str, tool_args: dict, advisory_sink=None) -> str:
+        from model_tools import handle_function_call, suppress_post_tool_call_hook, suppress_transform_tool_result_hook
+        from tools.tool_advisories import bind_advisory_sink
         previous = None
         if self._callbacks:
             try:
@@ -274,7 +276,8 @@ class CellAuthority:
             except Exception:
                 previous = None
         try:
-            return handle_function_call(tool_name, tool_args, task_id=self.task_id)
+            with suppress_transform_tool_result_hook(), suppress_post_tool_call_hook(False), bind_advisory_sink(advisory_sink):
+                return handle_function_call(tool_name, tool_args, task_id=self.task_id)
         finally:
             if previous is not None:
                 try:
@@ -898,14 +901,25 @@ def _run_cell(kernel: SessionKernel, key: tuple, code: str, *, task_id: str, chi
                 timeout=timeout, sandbox_tools=sandbox_tools, reused=reused,
                 state_reset=state_reset, exec_start=exec_start,
             )
+            from tools.tool_advisories import take_tool_advisories
+            advisories = take_tool_advisories(kernel.tool_call_log, kernel.cell_log_start)
+            if advisories:
+                result["tool_advisories"] = advisories
             return json.dumps(result, ensure_ascii=False)
         except Exception as exc:  # pragma: no cover - defensive parity with per-call
             from tools.code_execution_tool import _error_result
             logger.error("session kernel failed: %s: %s", type(exc).__name__, exc, exc_info=True)
             _REGISTRY.discard(key, kernel)
-            return _error_result(str(exc), tool_calls_made=kernel.tool_call_counter[0],
-                                 duration=round(time.monotonic() - exec_start, 2))
+            result = json.loads(_error_result(str(exc), tool_calls_made=kernel.tool_call_counter[0],
+                                             duration=round(time.monotonic() - exec_start, 2)))
+            from tools.tool_advisories import take_tool_advisories
+            advisories = take_tool_advisories(kernel.tool_call_log, kernel.cell_log_start)
+            if advisories:
+                result["tool_advisories"] = advisories
+            return json.dumps(result, ensure_ascii=False)
         finally:
             # The cell has settled on every path: its tool authority retires with it, so
             # nothing the cell left running can dispatch under it.
             authority.retire()
+            from tools.tool_advisories import take_tool_advisories
+            take_tool_advisories(kernel.tool_call_log, kernel.cell_log_start)

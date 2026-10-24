@@ -404,6 +404,10 @@ def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task
         "traceback": cell_payload.get("traceback", ""), "tool_calls_made": tool_call_counter[0], "kernel": kernel_info,
         "tool_errors": tool_errors_since(tool_call_log),
     }
+    from tools.tool_advisories import take_tool_advisories
+    advisories = take_tool_advisories(tool_call_log)
+    if advisories:
+        result["tool_advisories"] = advisories
     if cell_status in ("timeout", "protocol-error", "no-result"):
         # No safe way to interrupt one cell in place (same contract as local): kill, report, respawn.
         _REGISTRY.discard(key, kernel)

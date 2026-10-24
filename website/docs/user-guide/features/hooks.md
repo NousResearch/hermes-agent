@@ -1697,7 +1697,54 @@ def register(ctx):
     ctx.register_hook("transform_tool_result", redact_secrets)
 ```
 
-Applies to every tool. For terminal-only rewriting see `transform_terminal_output` below — it is narrower, runs before `transform_tool_result`, and its replacement is still subject to the terminal tool's final output limit.
+For programmatic calls made through `hermes_tools` inside `execute_code`, this
+presentation hook is suppressed: inner results retain their original JSON data
+shape. The outer `execute_code` response still runs through this hook before
+entering model context. Policy and blocking belong in `pre_tool_call`; execution
+middleware and `post_tool_call` continue to run for inner calls.
+
+Plugins that produce advisories independently of presentation can explicitly emit
+typed metadata from `post_tool_call`:
+
+```python
+from tools.tool_advisories import ToolAdvisory, emit_tool_advisory
+
+# Inside a post_tool_call callback, after detecting a real advisory:
+emit_tool_advisory(ToolAdvisory("my-plugin", "rule-id", "Review this construct."))
+```
+
+The bundled `security-guidance` plugin uses this channel for warn mode. Block mode
+still refuses the write through `pre_tool_call`. Arbitrary transform return strings
+and redaction output are never promoted to advisories. This is explicit plugin
+metadata, not a new trust boundary for untrusted plugin code.
+
+Programmatic consumers of the **outer** `execute_code` JSON response can read the
+optional `tool_advisories` array. Each entry contains `tool`, a one-based
+`call_index` within that execution, `source`, `code`, and `message`. For example:
+
+```json
+{"tool_advisories": [{"tool": "write_file", "call_index": 1,
+  "source": "security-guidance", "code": "xml_unsafe_parse",
+  "message": "Security guidance …"}]}
+```
+
+This metadata is included even when the script never prints its inner result.
+`hermes_tools.write_file(...)` itself continues to return its original value;
+there is no wrapper, extra key, or non-JSON suffix in the inner response. Neither
+transport retries a tool after a callback JSON decoding failure.
+
+Collection is scoped to a single RPC call, rebound to that call inside persistent
+kernels, and closed on success or failure. Duplicate identical advisories within
+one call are omitted; separate calls retain separate entries. An execution carries
+at most 32 entries, each with at most 2,048 message characters and 80 characters
+for source/code; excess entries are omitted and long text is clipped. Consumers
+must not treat this bounded list as an exhaustive security audit. Entries are
+drained after each cell so they do not leak into later calls. Background RPCs
+that outlive their cell have their collectors closed at cell completion; late
+emissions are discarded rather than attached to a subsequent cell. Outside RPC
+collection, `emit_tool_advisory` is a no-op and normal transforms remain unchanged.
+
+Applies to every model-facing tool. For terminal-only rewriting see `transform_terminal_output` below — it is narrower, runs before `transform_tool_result`, and its replacement is still subject to the terminal tool's final output limit.
 
 ---
 

@@ -18,6 +18,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 # Ensure project root is importable.
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -228,3 +230,146 @@ class TestRuntimeResolutionTargetModel:
         assert success is True, error
         assert resolve_kwargs["target_model"] == "my-pinned-model"
         assert resolve_kwargs["requested"] == "openrouter"
+
+
+class TestNamedCustomPin:
+    @pytest.mark.parametrize("same_endpoint", [False, True])
+    def test_named_route_survives_default_change_and_unpin(self, tmp_path, monkeypatch, same_endpoint):
+        """Create and edit must retain route B, even when A shares its model/endpoint."""
+        from cron import jobs
+        from cron.scheduler import _CronJobConfig, _resolve_job_runtime
+        from hermes_cli import runtime_provider as rp
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(jobs, "get_hermes_home", lambda: tmp_path)
+        cfg = {
+            "model": {"provider": "route-b", "default": "shared-model"},
+            "custom_providers": [
+                {"name": "route-a", "base_url": ("https://models.example.invalid/v1" if same_endpoint
+                                                  else "https://other.example.invalid/v1"),
+                 "api_key": "synthetic-key-a"},
+                {"name": "route-b", "base_url": "https://models.example.invalid/v1",
+                 "api_key": "synthetic-key-b"},
+            ],
+        }
+        monkeypatch.setattr(rp, "load_config", lambda: cfg)
+        monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **kw: None)
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(json.dumps(cfg))
+        jobs.create_job(prompt="hello", schedule="every 1 hour", pinned=True)
+        edited = jobs.create_job(prompt="hello", schedule="every 1 hour")
+        jobs.update_job(edited["id"], {"pinned": True})
+        # The persisted rows, not the in-memory create response, reach execution.
+        cfg["model"] = {"provider": "route-a", "default": "other-model"}
+        config_path.write_text(json.dumps(cfg))
+        jc = _CronJobConfig(cfg=cfg, model="shared-model", model_cfg=cfg["model"], cron_default_provider="")
+        for saved in jobs.load_jobs():
+            assert saved["provider"] == "route-b"
+            assert saved["base_url"] == "https://models.example.invalid/v1"
+            runtime, model = _resolve_job_runtime(saved, saved["id"], jc)
+            assert (model, runtime["base_url"], runtime["api_key"]) == (
+                "shared-model", "https://models.example.invalid/v1", "synthetic-key-b")
+            released = jobs.update_job(saved["id"], {"pinned": False})
+            assert (released["provider"], released["model"], released["base_url"]) == (None, None, None)
+
+
+@pytest.mark.parametrize(("style", "auth"), [
+    ("providers", "api_key"), ("providers", "key_env"),
+    ("providers", "key_cmd"), ("providers", "headers"),
+    ("custom_providers", "api_key"), ("custom_providers", "key_env"),
+    ("custom_providers", "headers"),
+])
+def test_named_provider_migration_requires_rebinding(tmp_path, monkeypatch, style, auth):
+    """A new service's credentials must never be paired with the job's old endpoint."""
+    from cron import jobs
+    from cron.scheduler import _CronJobConfig, _resolve_job_runtime
+    from hermes_cli import runtime_provider as rp
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(jobs, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **kw: None)
+    monkeypatch.setattr("agent.command_token_source.build_command_token_provider",
+                        lambda command, label: lambda: command)
+
+    def entry(generation):
+        row = {"name": "route-b", "base_url": f"https://{generation}.example.invalid/v1"}
+        credential = f"synthetic-{generation}"
+        if auth == "headers":
+            row["extra_headers"] = {"Authorization": credential}
+        elif auth == "key_env":
+            monkeypatch.setenv("CRON_MIGRATION_KEY", credential)
+            row[auth] = "CRON_MIGRATION_KEY"
+        else:
+            row[auth] = credential
+        return row
+
+    cfg = {"model": {"provider": "route-b", "default": "model-b"}}
+
+    def configure(generation):
+        row = entry(generation)
+        cfg[style] = {"route-b": row} if style == "providers" else [row]
+        (tmp_path / "config.yaml").write_text(json.dumps(cfg))
+
+    # Patch the live config source, keeping frozen_runtime_config effective.
+    monkeypatch.setattr(rp._config_mod, "load_config", lambda: cfg)
+    configure("old")
+    job = jobs.create_job(prompt="hello", schedule="every 1 hour", pinned=True)
+    configure("new")
+    jc = _CronJobConfig(cfg=cfg, model="model-b", model_cfg=cfg["model"], cron_default_provider="")
+    with patch.object(rp, "resolve_runtime_provider", wraps=rp.resolve_runtime_provider) as resolve:
+        with pytest.raises(RuntimeError, match="endpoint.*changed.*rebind"):
+            _resolve_job_runtime(job, job["id"], jc)
+        resolve.assert_not_called()
+    # Rebinding explicitly accepts the provider's new destination and credentials.
+    jobs.update_job(job["id"], {"pinned": False})
+    rebound = jobs.update_job(job["id"], {"pinned": True})
+    runtime, _ = _resolve_job_runtime(rebound, rebound["id"], jc)
+    assert runtime["base_url"] == "https://new.example.invalid/v1"
+    if auth == "headers":
+        assert runtime["extra_headers"]["Authorization"] == "synthetic-new"
+    else:
+        key = runtime["api_key"]
+        assert (key() if callable(key) else key) == "synthetic-new"
+    stored = json.dumps(jobs.load_jobs())
+    assert "synthetic-" not in stored
+    assert "CRON_MIGRATION_KEY" not in stored
+
+
+def test_pin_resolution_keeps_validated_config_when_live_provider_is_replaced(tmp_path, monkeypatch):
+    """Replacing live config after validation cannot mix new credentials with the old URL."""
+    import copy
+    from cron import jobs
+    from cron.scheduler import _CronJobConfig, _resolve_job_runtime
+    from hermes_cli import runtime_provider as rp
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(jobs, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **kw: None)
+    cfg = {
+        "model": {"provider": "route-b", "default": "model-b"},
+        "providers": {"route-b": {
+            "base_url": "https://old.example.invalid/v1", "api_key": "synthetic-old",
+            "extra_headers": {"Authorization": "synthetic-old-header"},
+        }},
+    }
+    monkeypatch.setattr(rp._config_mod, "load_config", lambda: copy.deepcopy(cfg))
+    (tmp_path / "config.yaml").write_text(json.dumps(cfg))
+    job = jobs.create_job(prompt="hello", schedule="every 1 hour", pinned=True)
+    real_resolve = rp.resolve_runtime_provider
+
+    def replace_live_config_then_resolve(**kwargs):
+        cfg["providers"]["route-b"] = {
+            "base_url": "https://new.example.invalid/v1", "api_key": "synthetic-new",
+            "extra_headers": {"Authorization": "synthetic-new-header"},
+        }
+        return real_resolve(**kwargs)
+
+    monkeypatch.setattr(rp, "resolve_runtime_provider", replace_live_config_then_resolve)
+    jc = _CronJobConfig(cfg=cfg, model="model-b", model_cfg=cfg["model"], cron_default_provider="")
+    runtime, model = _resolve_job_runtime(job, job["id"], jc)
+    assert model == "model-b"
+    assert runtime["base_url"] == "https://old.example.invalid/v1"
+    assert runtime["api_key"] == "synthetic-old"
+    assert runtime["extra_headers"]["Authorization"] == "synthetic-old-header"
+    assert rp.load_config()["providers"]["route-b"]["base_url"] == "https://new.example.invalid/v1"
+    assert "synthetic-" not in json.dumps(jobs.load_jobs())

@@ -1652,10 +1652,13 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     return str(resolved)
 
 
-def _main_model_pin() -> tuple[Optional[str], Optional[str]]:
-    """``(provider, model)`` the main agent runs on right now (``model.default`` + the provider it
-    resolves to), for ``pinned=True`` jobs: the lock is a plain per-job pin, so the scheduler needs
-    no second precedence axis. ``(None, None)`` when nothing is configured (the job stays unpinned)."""
+def _main_model_pin() -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Snapshot the main model's routable provider identity, model and endpoint.
+
+    Runtime ``provider`` is a billing class (e.g. ``custom``), not necessarily a credential
+    identity. Keep the requested name so two routes sharing an endpoint retain separate keys.
+    Credentials stay in the profile's provider store, never in the job.
+    """
     from hermes_cli.config_effective import load_user_config_effective
 
     cfg_path = get_hermes_home() / "config.yaml"
@@ -1664,12 +1667,18 @@ def _main_model_pin() -> tuple[Optional[str], Optional[str]]:
     model = model_cfg.get("default") or model_cfg.get("model") if isinstance(model_cfg, dict) else model_cfg
     model = _normalize_job_optional_text(model)
     if not model:
-        return None, None
+        return None, None, None
     provider = None
+    base_url = None
     with contextlib.suppress(Exception):
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        provider = _normalize_job_optional_text(resolve_runtime_provider(requested=None).get("provider"))
-    return (provider.lower() if provider else None), model
+        from hermes_cli.runtime_provider import resolve_requested_provider, resolve_runtime_provider
+        requested = resolve_requested_provider(None)
+        runtime = resolve_runtime_provider(requested=requested, target_model=model)
+        provider = _normalize_job_optional_text(
+            requested if requested != "auto" else runtime.get("provider"))
+        if runtime.get("provider") == "custom":
+            base_url = _normalize_base_url(runtime.get("base_url"))
+    return (provider.lower() if provider else None), model, base_url
 
 
 def _normalize_job_optional_text(
@@ -1862,7 +1871,8 @@ def create_job(
     )
     name = name or label_source[:50].strip()
     if pinned and not f["model"]:
-        f["provider"], f["model"] = _main_model_pin()
+        f["provider"], f["model"], pin_base_url = _main_model_pin()
+        f["base_url"] = f["base_url"] or pin_base_url
     next_run_at = _next_run_or_reject_past_oneshot(parsed_schedule, name, schedule, "")
 
     job = {
@@ -1988,7 +1998,7 @@ def _reject_terminal_activation(job: dict[str, Any], updated: dict[str, Any], jo
 
 def _apply_pin_update(job: dict[str, Any], updates: dict[str, Any]) -> None:
     """``pinned`` is not stored; it rewrites the per-job pin. ``True`` with no explicit model locks
-    the main agent's current provider+model onto the job, ``False`` releases both so the job follows
+    the main agent's current route onto the job, ``False`` releases it so the job follows
     the main model again (an explicit ``model`` in the same update wins over either)."""
     if "pinned" not in updates:
         return
@@ -1997,9 +2007,10 @@ def _apply_pin_update(job: dict[str, Any], updates: dict[str, Any]) -> None:
         return
     if pinned:
         if not _normalize_job_optional_text(job.get("model")):
-            updates["provider"], updates["model"] = _main_model_pin()
+            updates["provider"], updates["model"], pin_base_url = _main_model_pin()
+            updates["base_url"] = updates.get("base_url") or pin_base_url
     else:
-        updates["provider"], updates["model"] = None, None
+        updates["provider"], updates["model"], updates["base_url"] = None, None, None
 
 
 def _normalize_job_updates(job: dict[str, Any], updates: dict[str, Any]) -> None:

@@ -1779,6 +1779,20 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
         }
         if job.get("base_url"):
             runtime_kwargs["explicit_base_url"] = job.get("base_url")
+            if job.get("provider"):
+                from hermes_cli.runtime_provider import frozen_runtime_config, load_config
+                from hermes_cli.runtime_provider_custom import _get_named_custom_provider
+
+                config = load_config()
+                entry = _get_named_custom_provider(requested, config=config, resolve_credentials=False)
+                if entry is not None:
+                    if entry["base_url"].strip().rstrip("/") != job["base_url"].strip().rstrip("/"):
+                        raise RuntimeError(
+                            "Pinned cron provider endpoint has changed; rebind the job's model before running it.")
+                    # Check and resolve the same config: a concurrent provider migration must not
+                    # pair its new credentials (including headers/key_cmd) with the pinned URL.
+                    with frozen_runtime_config(config):
+                        return resolve_runtime_provider(**runtime_kwargs), model
         return resolve_runtime_provider(**runtime_kwargs), model
     except Exception as resolve_exc:
         # Walk the fallback chain on AuthError AND transient network/DNS failures (e.g. during

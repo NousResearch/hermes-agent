@@ -817,6 +817,10 @@ class GatewayBusySessionMixin:
         # Same authorization gate as the cold path, else unauthorized users in shared threads
         # inject messages into a session they don't own.
         from gateway.run import _AGENT_PENDING_SENTINEL
+        # A cron delivery is a machine ping, not a request: drop it before it can steer,
+        # queue, or redirect the running turn. Same decision as the cold path.
+        if self._hm_cron_echo_suppressed(event, event.source):
+            return True
         # See #17775. A primary transport can route a turn into a secondary
         # profile, so authorize in the stamped transport scope.
         if not self._is_user_authorized_for_source(event.source):

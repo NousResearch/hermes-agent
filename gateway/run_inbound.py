@@ -15,12 +15,14 @@ import dataclasses
 import json
 import os
 import re
+import threading
 import time
 from contextlib import suppress
 from pathlib import Path
 
 from agent.i18n import t
 from gateway.config import Platform
+from gateway.cron_echo import CRON_ENVELOPE_HEADER, CronEchoSuppressor
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_busy import approval_input_words
@@ -43,6 +45,10 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+# One suppressor per gateway process. The lock guards creation only — the
+# suppressor has its own lock for its state file.
+_CRON_ECHO_INIT_LOCK = threading.Lock()
 
 
 def discord_triggering_note(message_id: Any) -> str:
@@ -233,6 +239,12 @@ class GatewayInboundMixin:
             return None
         source = event.source
 
+        # A cron delivery is a machine ping, not a request. Drop it here — before any
+        # agent turn exists — so no reply is produced and no turn is recorded. The
+        # suppressor answers a ping only when the job's payload CHANGED.
+        if self._hm_cron_echo_suppressed(event, source):
+            return None
+
         if not self._is_user_authorized_for_source(source):
             if source.user_id is None:
                 # No user identity (Telegram service messages, channel forwards, anonymous admin
@@ -258,6 +270,64 @@ class GatewayInboundMixin:
         if not getattr(event, "_bot_loop_admitted", False) and not self._admit_bot_message_for_source(source):
             return None
         return event, source, False
+
+    def _hm_cron_echo_suppressed(self, event: "MessageEvent", source: SessionSource) -> bool:
+        """Whether this inbound message is a cron delivery that must not become a turn.
+
+        A cron job delivers to a group topic as the owning profile's bot, so the
+        receiving gateway sees a machine ping as an ordinary inbound message and
+        the group agent answers it — every time, even when the job's state has not
+        changed. The ping is dropped here, before a turn exists, so no reply is
+        produced and no turn is recorded.
+
+        The suppressor answers a ping only when the job's payload CHANGED, keyed on
+        a per-job fingerprint in ``<hermes_home>/state/cron-echo/<job>.json``. A
+        payload that carries a genuine escalation is always admitted.
+
+        A human message that merely replies to a cron post is not an envelope (the
+        envelope is only recognised at the START of the body), so it keeps the
+        normal path.
+
+        Only a BOT sender is silenced. A cron delivery always comes from a bot
+        account, so a human who pastes a cron envelope verbatim — forwarding a
+        cron log to ask about it — is a real request and must keep the normal path.
+        """
+        text = getattr(event, "text", None)
+        if not isinstance(text, str) or CRON_ENVELOPE_HEADER not in text:
+            return False
+        # Cheap pre-check: only a message that STARTS with the header can be one.
+        if not text.lstrip().startswith(CRON_ENVELOPE_HEADER):
+            return False
+        # A cron delivery is posted by the owning profile's bot. A human pasting the
+        # same envelope is asking about it, not reporting status — never silence that.
+        if not getattr(source, "is_bot", False):
+            return False
+        try:
+            verdict = self._cron_echo_suppressor_instance().verdict(text)
+        except Exception as exc:
+            # Never let the suppressor break ingress; a failed check admits the message.
+            logger.debug("cron-echo check failed, admitting the message: %s", exc, exc_info=True)
+            return False
+        if not verdict.suppress:
+            return False
+        logger.info(
+            "Suppressed cron echo (no turn, no reply): job=%s reason=%s platform=%s chat=%s user=%s",
+            verdict.job_name or verdict.job_id or "unknown", verdict.reason,
+            getattr(getattr(source, "platform", None), "value", "unknown"),
+            getattr(source, "chat_id", None) or "unknown",
+            getattr(source, "user_name", None) or getattr(source, "user_id", None) or "unknown",
+        )
+        return True
+
+    def _cron_echo_suppressor_instance(self):
+        """The process-wide cron-echo suppressor (created on first use)."""
+        suppressor = getattr(self, "_cron_echo_suppressor", None)
+        if suppressor is None:
+            with _CRON_ECHO_INIT_LOCK:
+                suppressor = getattr(self, "_cron_echo_suppressor", None)
+                if suppressor is None:
+                    suppressor = self._cron_echo_suppressor = CronEchoSuppressor()
+        return suppressor
 
     def _hm_estop_turn_allowed(self, event: "MessageEvent", source: SessionSource) -> bool:
         """Whether a turn may bypass the global emergency stop: pause blocks NEW agent turns, never

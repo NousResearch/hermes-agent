@@ -31,6 +31,23 @@ _INTERPRETER_PREFIXES = tuple({
 _normcase = os.path.normcase
 _INTERPRETER_PREFIX_STRS = tuple(_normcase(os.fspath(p)) for p in _INTERPRETER_PREFIXES)
 
+# The sealed-payload manifest lives BESIDE the checkout, not inside it: a sealed install lays
+# out <root>/manifest.json next to <root>/hermes-agent, and the bootstrap probes for it on
+# every import (``pm.environments.payload_venv``). That probe is a metadata read of a
+# deployment descriptor, not Hermes state — but from a default install the manifest's path
+# IS inside the guarded home, so the probe trips the guard and every test that imports an
+# entry point fails before it runs. Exempt exactly that one file, and only for a metadata
+# read: the guard still refuses a destructive access to it.
+_SEALED_MANIFEST_PATH = _normcase(
+    os.fspath(Path(__file__).resolve().parent.parent.parent / "manifest.json")
+)
+
+# Metadata-only exemptions for EXACT paths (not directory prefixes). Grouped so the
+# check() fast path carries one branch for the whole table, not one per exempt file.
+_METADATA_EXEMPT_EXACT = frozenset({
+    _SEALED_MANIFEST_PATH,
+})
+
 
 def _within(path: str, prefix: str) -> bool:
     """``Path(path).is_relative_to(prefix)`` for two normalized, case-folded absolute strings."""
@@ -84,7 +101,13 @@ class HomeIOGuard:
             roots = tuple(_normcase(os.fspath(r)) for r in self.roots())
             # Resolving the root itself (get_default_hermes_root's relative_to
             # probe) reads no state; only its contents are guarded.
-            if metadata and absolute in roots:
+            #
+            # _METADATA_EXEMPT_EXACT holds EXACT files that are metadata-exempt: the
+            # sealed-payload manifest beside the checkout. The bootstrap probes it on
+            # every import to find a sealed environment's venv. A metadata read of that
+            # deployment descriptor is not Hermes state; a destructive access is still
+            # refused — this exempts the probe, not the file.
+            if metadata and (absolute in roots or absolute in _METADATA_EXEMPT_EXACT):
                 return
             # ``shutil.which`` stats/accesses ``<PATH entry>/<name>``. A developer shell puts
             # PM's tool store (~/.hermes/tools/...) on PATH; probing an executable there is

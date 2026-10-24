@@ -2137,6 +2137,11 @@ DEFAULT_CONFIG = {
         "allow_all_users": False,
         # Bot-to-bot loop guard: admitted bot messages per conversation before a cooldown.
         "bot_loop_guard": {"enabled": True, "max_events": 20, "window_seconds": 300, "cooldown_seconds": 600},
+        # Cron-echo suppression: a cron delivery to a group topic is a machine ping, not a
+        # request. Dropped at ingress (no turn, no reply). reply_on_change_only=False is the
+        # default: the envelope is dropped outright, and an escalation payload is exempt.
+        # State: <hermes_home>/state/cron-echo/<job>.json (per-job content fingerprint).
+        "cron_echo": {"enabled": True, "reply_on_change_only": False, "state_ttl_seconds": 0, "dedupe_seconds": 0},
         # Startup-liveness watchdog: stdlib-only daemon thread armed at process entry that
         # hard-exits 75 if the loop isn't live within the deadline. Armed before config loads, so
         # run_gateway() bridges these to HERMES_STARTUP_WATCHDOG / HERMES_STARTUP_WATCHDOG_TIMEOUT_S

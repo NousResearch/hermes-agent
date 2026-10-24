@@ -35,6 +35,12 @@ def _stored_id(authority, ref) -> str:
     return ref.session_id
 
 
+def _context_id(authority, ref) -> str:
+    """Resolve the current compression segment for a read, without rebinding the runtime id."""
+    stored = _stored_id(authority, ref)
+    return authority.db.get_compression_tip(stored) or stored
+
+
 def _status(authority, ref, live, policy, agent, arg) -> str:
     """``tui_gateway/methods_session.py`` ``session.status`` on main, for the owner's session."""
     from hermes_cli.status_report import build_status_fields, status_lines
@@ -59,7 +65,7 @@ def _status(authority, ref, live, policy, agent, arg) -> str:
 def _context(authority, ref, live, policy, agent, arg) -> str:
     """Main's ``_format_live_context_output``: counts by role, model/provider, then the category
     table off the live agent (``render_context_breakdown_lines(grid=False)``), else the stored usage."""
-    stored = _stored_id(authority, ref)
+    stored = _context_id(authority, ref)
     rows = []
     with contextlib.suppress(Exception):
         rows = authority.db.get_messages_as_conversation(stored, include_ancestors=True, include_row_ids=True)
@@ -70,7 +76,7 @@ def _context(authority, ref, live, policy, agent, arg) -> str:
         with contextlib.suppress(Exception):
             from agent.context_breakdown import (
                 compute_context_details, compute_session_context_breakdown, render_context_breakdown_lines)
-            conversation = authority.db.get_messages_as_conversation(stored, include_ancestors=True)
+            conversation, _display = authority.db.get_resume_conversations(stored)
             payload = compute_session_context_breakdown(agent, conversation)
             details = None
             if arg.strip().lower() in {'all', 'full', 'details'}:
@@ -112,8 +118,8 @@ async def run_tui_read(authority, ref, live, policy, render, arg) -> dict:
 
 async def context_breakdown(connection, ref, params) -> dict:
     """``session.context_breakdown`` on the owner: the category estimate (``compute_session_context_
-    breakdown``) and context-file manifest of this session's resident agent over its stored
-    transcript, built in the session's workspace. Before the agent exists: empty categories plus the
+    breakdown``) and context-file manifest of this session's resident agent over its current model
+    history, built in the session's workspace. Before the agent exists: empty categories plus the
     session's stored usage (the contract's pre-build shape)."""
     from gateway.session_busy_controls import authorize
     from hermes_state_runtime import RuntimeStoreError
@@ -137,20 +143,22 @@ async def context_breakdown(connection, ref, params) -> dict:
                 'model': str(usage.get('model') or '')}
     from gateway.session_authorities import owner_scope
     from gateway.session_commands import _session_workspace
-    stored = _stored_id(authority, ref)
 
     def build():
         from agent.context_breakdown import compute_session_context_breakdown
         from agent.context_file_sources import context_file_sources_for_agent
         with owner_scope(authority), _session_workspace(authority.runner, live.source):
+            stored = _context_id(authority, ref)
             # A revision probe is two indexed reads; the rebuild walks the whole transcript and the
             # system prompt. Reuse the payload while neither the transcript nor the agent moved.
             key = (id(agent), _agent_context_marks(agent),
-                   authority.db.conversation_revision(stored, include_ancestors=True))
+                   authority.db.conversation_revision(stored))
             cached = live.context_breakdown
             if cached is not None and cached[0] == key:
                 return dict(cached[1])
-            conversation = authority.db.get_messages_as_conversation(stored, include_ancestors=True)
+            # Display history includes superseded compression segments; only the model projection
+            # represents the working context (active tip rows, no session_meta, replay repairs).
+            conversation, _display = authority.db.get_resume_conversations(stored)
             payload = compute_session_context_breakdown(agent, conversation)
             payload['context_files'] = context_file_sources_for_agent(agent)
             live.context_breakdown = (key, payload)

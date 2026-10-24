@@ -285,3 +285,91 @@ async def test_context_breakdown_follows_an_in_place_row_rewrite(owner, monkeypa
     assert db.set_user_message_content(stored, row_id, expanded) == 1
     after = await owner.call('session.context_breakdown', session_id=sid)
     assert after['estimated_total'] == len(expanded) > before['estimated_total']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source', ['cli', 'tui', 'gui'])
+async def test_context_breakdown_measures_only_the_compression_tips_model_history(owner, monkeypatch, source):
+    """A stable runtime id may still name the parent; neither old segments nor archived rows
+    nor session bookkeeping belong to the model context shown by the RPC and TUI /context."""
+    from agent import system_prompt
+    from agent.context_breakdown import compute_session_context_breakdown, render_context_breakdown_lines
+    from gateway.session_tui_reads import _stored_id
+
+    sid = (await owner.call('session.create', request_id='lineage', source=source,
+                            cwd=str(owner.workdir)))['session_id']
+    db = owner.authority.db
+    root = _stored_id(owner.authority, SimpleNamespace(session_id=sid))
+    for i in range(8):
+        db.append_message(root, 'user' if i % 2 == 0 else 'assistant', f'old segment {i} ' * 1000)
+    db.end_session(root, 'compression')
+    db.create_session('compressed-tip', source=source, parent_session_id=root)
+    archived = db.append_message('compressed-tip', 'user', 'archived context ' * 1000)
+    db._write_sql('UPDATE messages SET active=0, compacted=1 WHERE id=?', (archived,))
+    db.append_message('compressed-tip', 'session_meta', 'not model input ' * 1000)
+    db.append_message('compressed-tip', 'user', 'summary of prior turns')
+    db.append_message('compressed-tip', 'assistant', 'current answer')
+    # Branch/delegate children of the ended parent must not hijack the context tip.
+    db.create_session('branch', source=source, parent_session_id=root, model_config={'_branched_from': root})
+    db.append_message('branch', 'user', 'unrelated branch ' * 1000)
+    agent = SimpleNamespace(model='fake-model', provider='custom', tools=[],
+                            context_compressor=SimpleNamespace(context_length=128000, last_prompt_tokens=12000))
+    owner.authority.runner._cached_agent_for = lambda route: agent
+    monkeypatch.setattr(system_prompt, 'build_system_prompt_parts', lambda a: {'stable': 'frozen identity'})
+    model, display = db.get_resume_conversations('compressed-tip')
+    assert len(model) == 2 and len(display) > len(model)
+    expected = compute_session_context_breakdown(agent, model)
+    actual = await owner.call('session.context_breakdown', session_id=sid)
+    assert actual['categories'] == expected['categories'], (actual, expected)
+    assert actual['estimated_total'] == expected['estimated_total']
+    assert actual['context_used'] == 12000 and actual['context_source'] == 'provider_usage'
+    assert _stored_id(owner.authority, SimpleNamespace(session_id=sid)) == root
+    assert sid in owner.authority.sessions  # the read never rebinds runtime routing
+    if source == 'tui':
+        text = await _exec(owner, sid, 'context')
+        assert '\n'.join(render_context_breakdown_lines(expected, grid=False)) in text
+
+
+@pytest.mark.asyncio
+async def test_context_breakdown_cache_follows_rotations_and_tip_rewrites(owner, monkeypatch):
+    """The same agent and runtime id survive compression; even an equal-sized child replaces the
+    cached model context. Repeated reads reuse it, then tip appends and rewrites invalidate it."""
+    from agent import context_breakdown, system_prompt
+    from gateway.session_tui_reads import _stored_id
+
+    sid = (await owner.call('session.create', request_id='cache-lineage', source='cli',
+                            cwd=str(owner.workdir)))['session_id']
+    db = owner.authority.db
+    root = _stored_id(owner.authority, SimpleNamespace(session_id=sid))
+    db.append_message(root, 'user', 'old context ' * 1000)
+    agent = SimpleNamespace(model='fake-model', provider='custom', tools=[])
+    owner.authority.runner._cached_agent_for = lambda route: agent
+    monkeypatch.setattr(system_prompt, 'build_system_prompt_parts', lambda a: {'stable': 'frozen identity'})
+    compute = context_breakdown.compute_session_context_breakdown
+    computed = []
+
+    def measure(a, messages):
+        computed.append([m['content'] for m in messages])
+        return compute(a, messages)
+    monkeypatch.setattr(context_breakdown, 'compute_session_context_breakdown', measure)
+    before = await owner.call('session.context_breakdown', session_id=sid)
+    assert await owner.call('session.context_breakdown', session_id=sid) == before
+    assert len(computed) == 1
+    db.end_session(root, 'compression')
+    db.create_session('new-tip', source='cli', parent_session_id=root)
+    row = db.append_message('new-tip', 'user', 'short summary')
+    after = await owner.call('session.context_breakdown', session_id=sid)
+    assert after['estimated_total'] < before['estimated_total']
+    assert computed[-1] == ['short summary'] and len(computed) == 2
+    assert await owner.call('session.context_breakdown', session_id=sid) == after
+    assert len(computed) == 2
+    db.append_message('new-tip', 'assistant', 'reply')
+    await owner.call('session.context_breakdown', session_id=sid)
+    assert computed[-1] == ['short summary', 'reply'] and len(computed) == 3
+    db.set_user_message_content('new-tip', row, 'expanded summary ' * 100)
+    rewritten = await owner.call('session.context_breakdown', session_id=sid)
+    assert rewritten['estimated_total'] > after['estimated_total'] and len(computed) == 4
+    # Changes to display-only ancestry do not invalidate the model-context cache.
+    db._write_sql('UPDATE messages SET content=? WHERE session_id=?', ('edited archived history', root))
+    assert await owner.call('session.context_breakdown', session_id=sid) == rewritten
+    assert len(computed) == 4

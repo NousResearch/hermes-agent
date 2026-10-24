@@ -61,17 +61,18 @@ def _make_card_action_data(
     chat_id: str = "oc_12345",
     open_id: str = "ou_user1",
     token: str = "tok_abc",
+    form_value: dict | None = None,
 ) -> SimpleNamespace:
     """Create a mock Feishu card action callback data object."""
+    action = SimpleNamespace(tag="button", value=action_value)
+    if form_value is not None:
+        action.form_value = form_value
     return SimpleNamespace(
         event=SimpleNamespace(
             token=token,
             context=SimpleNamespace(open_chat_id=chat_id),
             operator=SimpleNamespace(open_id=open_id),
-            action=SimpleNamespace(
-                tag="button",
-                value=action_value,
-            ),
+            action=action,
         ),
     )
 
@@ -265,6 +266,91 @@ class TestNonApprovalCardAction:
         mock_handle.assert_called_once()
         event = mock_handle.call_args[0][0]
         assert "/card button" in event.text
+
+    @pytest.mark.asyncio
+    async def test_form_value_merged_into_payload(self):
+        """Form submissions should include form_value in the synthetic command payload."""
+        adapter = _make_adapter()
+
+        data = _make_card_action_data(
+            action_value={},
+            form_value={"name": "Alice", "email": "a@b.c"},
+            token="tok_form",
+        )
+
+        with (
+            patch.object(
+                adapter, "_resolve_sender_profile", new_callable=AsyncMock,
+                return_value={"user_id": "ou_u", "user_name": "Dave", "user_id_alt": None},
+            ),
+            patch.object(adapter, "get_chat_info", new_callable=AsyncMock, return_value={"name": "Test Chat"}),
+            patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle,
+        ):
+            await adapter._handle_card_action_event(data)
+
+        mock_handle.assert_called_once()
+        event = mock_handle.call_args[0][0]
+        assert "/card button" in event.text
+        # Extract JSON payload from command text
+        payload_str = event.text.split("/card button ", 1)[1]
+        payload = json.loads(payload_str)
+        assert "form_value" in payload
+        assert payload["form_value"] == {"name": "Alice", "email": "a@b.c"}
+
+    @pytest.mark.asyncio
+    async def test_form_value_with_action_value_merged(self):
+        """Form submit + button value should merge both into payload."""
+        adapter = _make_adapter()
+
+        data = _make_card_action_data(
+            action_value={"action": "submit"},
+            form_value={"name": "Alice"},
+            token="tok_both",
+        )
+
+        with (
+            patch.object(
+                adapter, "_resolve_sender_profile", new_callable=AsyncMock,
+                return_value={"user_id": "ou_u", "user_name": "Dave", "user_id_alt": None},
+            ),
+            patch.object(adapter, "get_chat_info", new_callable=AsyncMock, return_value={"name": "Test Chat"}),
+            patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle,
+        ):
+            await adapter._handle_card_action_event(data)
+
+        mock_handle.assert_called_once()
+        event = mock_handle.call_args[0][0]
+        payload_str = event.text.split("/card button ", 1)[1]
+        payload = json.loads(payload_str)
+        assert payload["action"] == "submit"
+        assert payload["form_value"] == {"name": "Alice"}
+
+    @pytest.mark.asyncio
+    async def test_no_form_value_backward_compatible(self):
+        """Plain button click (no form_value) should work as before."""
+        adapter = _make_adapter()
+
+        data = _make_card_action_data(
+            action_value={"action": "refresh"},
+            token="tok_plain",
+        )
+
+        with (
+            patch.object(
+                adapter, "_resolve_sender_profile", new_callable=AsyncMock,
+                return_value={"user_id": "ou_u", "user_name": "Dave", "user_id_alt": None},
+            ),
+            patch.object(adapter, "get_chat_info", new_callable=AsyncMock, return_value={"name": "Test Chat"}),
+            patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle,
+        ):
+            await adapter._handle_card_action_event(data)
+
+        mock_handle.assert_called_once()
+        event = mock_handle.call_args[0][0]
+        payload_str = event.text.split("/card button ", 1)[1]
+        payload = json.loads(payload_str)
+        assert payload == {"action": "refresh"}
+        assert "form_value" not in payload
 
 
 # ===========================================================================

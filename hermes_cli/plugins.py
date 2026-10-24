@@ -116,6 +116,10 @@ VALID_HOOKS: set[str] = {
     # {"action": "continue", "message"} (or Claude-Code Stop {"decision": "block", "reason"}) to keep
     # going; anything else finishes. Bounded by agent.max_verify_nudges.
     "pre_verify", "pre_api_request", "post_api_request", "api_request_error",
+    # pre_turn: fired at the start of each agent turn, AFTER restore_primary_runtime, so a plugin
+    # can walk the fallback chain up to an intermediate model whose rate limit has reset.
+    # Observer (returns ignored); fires only when a plugin registered it.
+    "pre_turn",
     # pre/post_auxiliary_call: once per physical provider attempt of an auxiliary LLM call
     # (agent/auxiliary_hooks.py — titling, compression, MoA, vision, approval, ...). Same payload
     # shape as pre/post_api_request plus ``aux_task``; distinct events so turn-scoped
@@ -277,6 +281,116 @@ class PluginContext:
     def set_config(self, key: str, value: Any) -> None:
         """Atomically write one value in this plugin's ``settings`` subtree."""
         save_plugin_setting(self.plugin_id, self._segments(key), value)
+
+    # ── Fallback-chain walk-up surfaces (model-walker) ─────────────────────────────
+    def _walker_agent(self) -> Any:
+        """The live CLI agent, or ``None`` outside an interactive CLI.
+
+        ``_cli_ref`` is the interactive CLI; the gateway, kanban and headless paths have no CLI
+        attached, so every walker surface degrades to a no-op instead of raising.
+        """
+        return getattr(self._manager._cli_ref, "agent", None)
+
+    def get_fallback_chain(self) -> dict:
+        """Return the active fallback chain and the current position in it.
+
+        Shape::
+
+            {"chain": [{"provider": str, "model": str}, ...],
+             "index": int,                      # active position, -1 when not a chain entry
+             "active": {"provider": str, "model": str}}
+
+        Empty chain when no fallback is configured or no CLI agent is attached. ``index`` is
+        matched on provider+model against the live agent route, so a manual switch outside the
+        chain reports ``-1`` rather than a stale position.
+        """
+        agent = self._walker_agent()
+        if agent is None:
+            return {"chain": [], "index": -1, "active": {"provider": "", "model": ""}}
+        chain = [dict(entry) for entry in (getattr(agent, "_fallback_chain", None) or [])]
+        active_provider = str(getattr(agent, "provider", "") or "")
+        active_model = str(getattr(agent, "model", "") or "")
+        index = -1
+        for i, entry in enumerate(chain):
+            if (str(entry.get("provider", "")).strip().lower() == active_provider.strip().lower()
+                    and str(entry.get("model", "")).strip() == active_model.strip()):
+                index = i
+                break
+        return {"chain": chain, "index": index,
+                "active": {"provider": active_provider, "model": active_model}}
+
+    def switch_model(self, model: str, provider: str) -> bool:
+        """Switch the active model/provider in-place (delegates to ``agent.switch_model``).
+
+        Rebuilds clients, refreshes the compressor and persists ``_primary_runtime`` so the
+        change survives the turn. Returns False when no live agent is attached; a failed swap
+        rolls back inside the core call and raises.
+        """
+        agent = self._walker_agent()
+        if agent is None:
+            return False
+        from agent.agent_runtime_helpers import switch_model as _switch_model
+        _switch_model(agent, model, provider)
+        return True
+
+    def interrupt(self, *, hard: bool = False) -> bool:
+        """Request an interrupt of the agent's current turn.
+
+        ``hard=False`` (default) is a soft stop the compression path may honor; ``hard=True``
+        is an explicit stop. Returns False when no agent is attached or the interrupt failed.
+        """
+        agent = self._walker_agent()
+        if agent is None:
+            return False
+        try:
+            return bool(agent.interrupt(hard_cancel=hard))
+        except Exception:
+            logger.warning("Plugin %s: interrupt() failed", self.plugin_id, exc_info=True)
+            return False
+
+    def steer(self, text: str) -> bool:
+        """Queue a mid-turn steer message: delivered as its own ``role:user`` row after the
+        current tool batch finishes, with no interrupt.
+
+        This is the programmatic equivalent of the ``/steer`` slash command, and the surface a
+        plugin uses to bring a long-running task to a halt before switching model. Delegates to
+        ``interrupt_control.steer``; returns False for empty text or when no agent is attached.
+        """
+        if not text or not text.strip():
+            return False
+        agent = self._walker_agent()
+        if agent is None:
+            return False
+        try:
+            return bool(agent.steer(text.strip()))
+        except Exception:
+            logger.warning("Plugin %s: steer() failed", self.plugin_id, exc_info=True)
+            return False
+
+    def show_popup(
+        self, *, title: str, detail: str,
+        choices: list[tuple[str, str, str]], timeout: float = 30,
+    ) -> str | None:
+        """Open a harness-owned countdown modal and return the operator's choice.
+
+        The panel renders as harness chrome (its own border/title/desc styles) so it is never
+        read as model output. Key bindings: **Enter** = highlighted choice, **ESC** = ``"escape"``,
+        **N** = ``"disable"``, **D** = ``"delay"``, ↑/↓ move the highlight.
+
+        ``choices`` is a list of ``(value, label, description)`` tuples; the FIRST entry is what
+        Enter submits by convention (the plugin's affirmative action). Returns the chosen value,
+        or ``None`` on cancel/timeout, or when no interactive TUI is attached (gateway, kanban,
+        headless) — the caller must treat ``None`` as "no decision".
+        """
+        cli = self._manager._cli_ref
+        if cli is None or not hasattr(cli, "_prompt_plugin_popup"):
+            return None
+        try:
+            return cli._prompt_plugin_popup(
+                title=title, detail=detail, choices=choices, timeout=timeout)
+        except Exception:
+            logger.warning("Plugin %s: show_popup() failed", self.plugin_id, exc_info=True)
+            return None
 
     @cached_property
     def state(self) -> PluginState:

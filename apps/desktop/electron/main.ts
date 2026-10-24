@@ -442,9 +442,9 @@ import {
   FirstRunSetupResetError,
   runPrimaryBackendStartup
 } from './primary-backend-startup'
-import { processCommandLine } from './process-command-line'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { PrimaryProfilePin, resolveLaunchProfile } from './primary-profile-pin'
+import { processCommandLine } from './process-command-line'
 import { applyDesktopIdentity, PRODUCT_IDENTITY } from './product-identity'
 import {
   assertLocalProfileCanStart,

@@ -805,6 +805,7 @@ def relaunch(*args):
 
 os.execv = relaunch
 subprocess.call = relaunch
+venv_sync.call_relaunched = relaunch  # the bootstrap's Windows relaunch
 sys.argv = ["cron.scheduler", "--external-worker-file", str(payload), "--ack-file", str(ack)]
 runpy.run_module("cron.scheduler", run_name="__main__", alter_sys=True)
 """

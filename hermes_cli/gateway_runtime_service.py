@@ -22,9 +22,10 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 
 
 class RuntimeStartError(RuntimeError):
-    def __init__(self, reason: str, state: RuntimeState = "inaccessible"):
+    def __init__(self, reason: str, state: RuntimeState = "inaccessible", detail: str | None = None):
+        # ``reason`` is the stable code callers match on; ``detail`` is what the user reads.
         super().__init__(reason)
-        self.reason, self.state = reason, state
+        self.reason, self.state, self.detail = reason, state, detail
 
 
 def remaining(deadline: float) -> float:

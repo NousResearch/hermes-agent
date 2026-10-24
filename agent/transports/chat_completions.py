@@ -352,12 +352,31 @@ def _pareto_score(raw: Any) -> float | None:
 
 
 def _swap_developer_role(sanitized: list, model_lower: str) -> list:
-    """GPT-5/Codex models take a ``developer`` role instead of ``system``."""
-    if (
-        sanitized and isinstance(sanitized[0], dict) and sanitized[0].get("role") == "system"
-        and any(p in model_lower for p in DEVELOPER_ROLE_MODELS)
-    ):
-        return [{**sanitized[0], "role": "developer"}, *sanitized[1:]]
+    """Normalise the system/developer role name to the target model's dialect.
+
+    GPT-5/Codex models take a ``developer`` role instead of ``system`` (newer
+    OpenAI spelling, same semantics). The reverse direction matters just as
+    much: clients speaking the Responses dialect send ``developer`` in their
+    input items, and older OpenAI-compatible backends (DeepSeek, …) reject the
+    unknown variant with ``422 … unknown variant 'developer'``. Without the
+    fold-back the request fails on the primary and silently falls back to
+    another provider.
+    """
+    if not sanitized or not isinstance(sanitized[0], dict):
+        return sanitized
+
+    supports_developer = any(p in model_lower for p in DEVELOPER_ROLE_MODELS)
+
+    if supports_developer:
+        if sanitized[0].get("role") == "system":
+            return [{**sanitized[0], "role": "developer"}, *sanitized[1:]]
+        return sanitized
+
+    if any(isinstance(m, dict) and m.get("role") == "developer" for m in sanitized):
+        return [
+            {**m, "role": "system"} if isinstance(m, dict) and m.get("role") == "developer" else m
+            for m in sanitized
+        ]
     return sanitized
 
 

@@ -216,7 +216,10 @@ gateway:
   insights:
     invalid_days: "无效的 --days 值：{value}"
     error: "生成洞察时出错：{error}"
+  curator:
+    parse_error: "⚠ Could not parse `/curator` arguments: {error}. Quote a value that contains a space or an apostrophe."
   kanban:
+    parse_error: "⚠ Could not parse `/kanban` arguments: {error}. Quote a value that contains a space or an apostrophe."
     error_prefix: "⚠ kanban 错误：{error}"
     subscribed_suffix: "（已订阅 — 当 {task_id} 完成或被阻塞时将通知您）"
     truncated_suffix: "…（已截断；如需完整输出请在终端运行 `hermes kanban …`）"

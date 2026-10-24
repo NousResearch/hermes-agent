@@ -216,7 +216,10 @@ gateway:
   insights:
     invalid_days: "잘못된 --days 값: {value}"
     error: "인사이트 생성 중 오류: {error}"
+  curator:
+    parse_error: "⚠ Could not parse `/curator` arguments: {error}. Quote a value that contains a space or an apostrophe."
   kanban:
+    parse_error: "⚠ Could not parse `/kanban` arguments: {error}. Quote a value that contains a space or an apostrophe."
     error_prefix: "⚠ kanban 오류: {error}"
     subscribed_suffix: "(구독 중 — {task_id}이(가) 완료되거나 차단되면 알림을 받습니다)"
     truncated_suffix: "… (잘림; 전체 출력을 보려면 터미널에서 `hermes kanban …`을 사용하세요)"

@@ -216,7 +216,10 @@ gateway:
   insights:
     invalid_days: "--days の値が無効です: {value}"
     error: "インサイトの生成中にエラーが発生しました: {error}"
+  curator:
+    parse_error: "⚠ Could not parse `/curator` arguments: {error}. Quote a value that contains a space or an apostrophe."
   kanban:
+    parse_error: "⚠ Could not parse `/kanban` arguments: {error}. Quote a value that contains a space or an apostrophe."
     error_prefix: "⚠ kanban エラー: {error}"
     subscribed_suffix: "(購読しました — {task_id} が完了またはブロックされたときに通知されます)"
     truncated_suffix: "… (切り詰めました; 完全な出力にはターミナルで `hermes kanban …` を使用してください)"

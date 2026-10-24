@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.config import (
@@ -230,17 +231,23 @@ def _tool_filters(cfg: dict) -> tuple[Optional[list], Optional[list]]:
         exclude if isinstance(exclude, list) else None)
 
 
-def _save_mcp_server(name: str, server_config: dict) -> bool:
+def _save_mcp_server(name: str, server_config: dict, *, authorized_pool: str = "") -> bool:
     """Add or update a server entry in config.yaml.
 
     Returns False when a high-signal exfiltration-shaped stdio command is rejected (shell+egress
-    payloads are blocked rather than whitelisting command families).
+    payloads are blocked rather than whitelisting command families). An OAuth identity change
+    (endpoint/client/transport) revokes the credentials the OLD entry resolved to — see
+    :class:`_OAuthPoolTransition` for why that revocation is scoped and deferred past the write.
+    ``authorized_pool`` is the pool an authorization of *server_config* just wrote its grant to
+    (the dashboard/TUI/connector flows save after authorizing): that pool is never revoked.
     """
     if not _validate_or_warn(name, server_config):
         return False
     config = load_config()
+    transition = _OAuthPoolTransition.for_change(
+        name, _get_mcp_servers(config).get(name), server_config, keep_pool=authorized_pool)
     config.setdefault("mcp_servers", {})[name] = server_config
-    save_config(config)
+    _save_with_oauth_transitions(config, [transition])
     return True
 
 
@@ -267,16 +274,137 @@ def _lookup_server(
 
 
 def _remove_mcp_server(name: str) -> bool:
-    """Remove a server from config.yaml.  Returns True if it existed."""
+    """Remove a server from config.yaml and revoke its OAuth state as one governed lifecycle.
+    Returns True if it existed. The pool is deleted and tombstoned only AFTER the config write
+    commits (:class:`_OAuthPoolTransition`), so a failed write leaves the still-configured server
+    with its credentials intact and no rebuild block."""
     config = load_config()
     servers = config.get("mcp_servers") or {}
     if name not in servers:
         return False
+    transition = _OAuthPoolTransition.for_removal(name, servers[name])
     del servers[name]
     if not servers:
         config.pop("mcp_servers", None)
-    save_config(config)
+    _save_with_oauth_transitions(config, [transition])
     return True
+
+
+def _oauth_storage_identity(entry: dict) -> tuple:
+    """What a stored grant is bound to: endpoint, auth mode, transport and the ``oauth:`` block
+    minus the ``share_with_profiles`` export flag and ``flow`` (the export changes WHERE the grant
+    lives and the flow HOW it is obtained, not WHAT it is for, so neither may revoke anything)."""
+    from tools.mcp_oauth import oauth_identity
+
+    oauth = entry.get("oauth")
+    return (entry.get("url"), entry.get("auth"), entry.get("transport"),
+            oauth_identity(oauth) if isinstance(oauth, dict) else {})
+
+
+class _OAuthPoolTransition:
+    """The credential side of one ``mcp_servers`` config mutation, applied after the write commits.
+
+    Two invariants the manager already keeps for LIVE providers must hold for config edits too:
+
+    * **Participant detach is not pool revocation.** A named profile that shares a root-exported
+      pool and changes or removes its own entry LEAVES the pool: its cached provider is evicted,
+      a changed entry resolves a local pool next time, and the root grant survives for root and
+      every sibling. Only a mutation of the pool's OWN home — the root editing/removing its export,
+      or any home changing an identity whose grant lives in its own ``mcp-tokens/`` — deletes the
+      pool, because the new identity must not reload tokens minted for the old one.
+    * **Credentials outlive a failed write.** A provisional quarantine hides the old identity
+      before ``save_config()`` publishes the new one. No credential, epoch or tombstone changes
+      until the save succeeds; failure releases only this writer's quarantine claim.
+
+    ``for_change`` / ``for_removal`` capture the OLD entry's resolved pool while the old config is
+    still on disk (a shared pool is only resolvable through it); ``commit`` targets that captured
+    path explicitly, never re-resolving through the config that has since changed.
+    """
+
+    def __init__(self, name: str, *, home: Path, pool: str = "", revoke: bool = False,
+                 tombstone: bool = False, unblock: bool = False):
+        self.name, self.home, self.pool = name, home, pool
+        self.revoke, self.tombstone, self.unblock = revoke, tombstone, unblock
+        self.quarantine_owner = None
+
+    def prepare(self) -> None:
+        """Hide the old identity before publishing config, without consuming its credentials."""
+        if self.revoke:
+            from tools.mcp_oauth import HermesTokenStorage
+            storage = HermesTokenStorage(self.name, token_dir=Path(self.pool).parent)
+            self.quarantine_owner = storage.quarantine()
+
+    def abort(self) -> None:
+        """A failed config save leaves the old grant and epoch authoritative."""
+        if self.quarantine_owner is not None:
+            from tools.mcp_oauth import HermesTokenStorage
+            HermesTokenStorage(self.name, token_dir=Path(self.pool).parent).cancel_quarantine(self.quarantine_owner)
+
+    @staticmethod
+    def _pools(name: str, home: Path) -> tuple[str, str]:
+        """``(resolved pool under the current on-disk config, this home's own local pool)``."""
+        from tools.mcp_oauth import HermesTokenStorage
+
+        return (HermesTokenStorage(name, hermes_home=home).pool_path,
+                HermesTokenStorage(name, hermes_home=home, token_dir=home / "mcp-tokens").pool_path)
+
+    @classmethod
+    def for_change(cls, name: str, previous: Any, new: dict, *, keep_pool: str = "") -> "_OAuthPoolTransition":
+        """Transition for upserting *new* over *previous* (None when the entry is being added).
+        ``keep_pool`` holds a grant already minted for *new*: when the old identity resolved to that
+        same pool it is not revoked (the tokens there are the new identity's, not the old one's)."""
+        home = get_hermes_home()
+        if not (isinstance(previous, dict) and previous.get("auth") == "oauth"):
+            # A fresh add (or non-OAuth → OAuth) is a deliberate re-add: lift any removal tombstone.
+            return cls(name, home=home, unblock=new.get("auth") == "oauth")
+        if _oauth_storage_identity(previous) == _oauth_storage_identity(new):
+            return cls(name, home=home, unblock=not keep_pool)
+        old_pool, local_pool = cls._pools(name, home)
+        if keep_pool and old_pool == keep_pool:
+            # The pool now holds the new identity's grant: keep it, but drop the cached provider
+            # built for the old identity. Left cached, its stale URL reads as an identity change
+            # on the next connect, and the manager would wipe the grant just authorized.
+            return cls(name, home=home, pool=old_pool)
+        return cls(name, home=home, pool=old_pool, revoke=old_pool == local_pool, unblock=True)
+
+    @classmethod
+    def for_removal(cls, name: str, previous: Any) -> "_OAuthPoolTransition":
+        """Transition for deleting *previous*: the pool is revoked AND tombstoned when it is this
+        home's own (the root removing its export revokes the grant every profile used — the owner's
+        removal is the one case where that is the intent); a participant's removal only detaches."""
+        home = get_hermes_home()
+        if not (isinstance(previous, dict) and previous.get("auth") == "oauth"):
+            return cls(name, home=home)
+        old_pool, local_pool = cls._pools(name, home)
+        owned = old_pool == local_pool
+        return cls(name, home=home, pool=old_pool, revoke=owned, tombstone=owned)
+
+    def commit(self) -> None:
+        """Apply the credential side; the config write has already succeeded."""
+        from tools.mcp_oauth_manager import get_manager
+
+        manager = get_manager()
+        if self.revoke:
+            manager.remove(self.name, hermes_home=self.home, pool_path=self.pool, block_rebuild=self.tombstone,
+                           detach_participants=True, quarantine_owner=self.quarantine_owner)
+        elif self.pool:
+            manager.detach(self.name, hermes_home=self.home)
+        if self.unblock:
+            manager.unblock(self.name, hermes_home=self.home)
+
+
+def _save_with_oauth_transitions(config: dict, transitions: list[_OAuthPoolTransition]) -> None:
+    """Quarantine first, publish config, then revoke; failed publication restores availability."""
+    try:
+        for transition in transitions:
+            transition.prepare()
+        save_config(config)
+    except BaseException:
+        for transition in transitions:
+            transition.abort()
+        raise
+    for transition in transitions:
+        transition.commit()
 
 
 def _replace_mcp_servers(servers: dict[str, dict]) -> tuple[bool, list[str]]:
@@ -284,6 +412,8 @@ def _replace_mcp_servers(servers: dict[str, dict]) -> tuple[bool, list[str]]:
 
     Every entry is validated up front; any suspicious entry rejects the whole save (``(False,
     issues)``) so a bad paste can't be partially applied. An empty map removes the key entirely.
+    OAuth entries that vanish or change identity get the same post-commit credential transition
+    as ``_remove_mcp_server`` / ``_save_mcp_server``.
     """
     issues: list[str] = []
     for name, cfg in servers.items():
@@ -294,11 +424,17 @@ def _replace_mcp_servers(servers: dict[str, dict]) -> tuple[bool, list[str]]:
     if issues:
         return False, issues
     config = load_config()
+    existing = _get_mcp_servers(config)
+    transitions = [
+        _OAuthPoolTransition.for_change(name, previous, servers[name]) if name in servers
+        else _OAuthPoolTransition.for_removal(name, previous)
+        for name, previous in existing.items()]
+    transitions += [_OAuthPoolTransition.for_change(name, None, cfg) for name, cfg in servers.items() if name not in existing]
     if servers:
         config["mcp_servers"] = dict(servers)
     else:
         config.pop("mcp_servers", None)
-    save_config(config)
+    _save_with_oauth_transitions(config, transitions)
     return True, []
 
 
@@ -525,14 +661,17 @@ def _probe_single_server(
     return tools_found
 
 
-def _oauth_tokens_present(name: str) -> bool:
-    """True if an OAuth token file exists for ``name`` (a clean probe alone is not proof of auth)."""
+def _oauth_tokens_present(name: str, *, cfg: dict | None = None) -> bool:
+    """True if an OAuth token file exists for ``name`` (a clean probe alone is not proof of auth).
+    ``cfg`` is the entry being authorized when it is not the saved one yet; its pool is checked.
+    Fails CLOSED: a storage error here would otherwise report "authenticated" for a login that
+    landed no token, and the caller's rollback/hint logic keys off this answer."""
     try:
         from tools.mcp_oauth import HermesTokenStorage
-        return HermesTokenStorage(name).has_cached_tokens()
-    except Exception as exc:  # pragma: no cover — defensive
+        return HermesTokenStorage(name, requested=cfg).has_cached_tokens()
+    except Exception as exc:
         logger.debug("Could not check OAuth tokens for '%s': %s", name, exc)
-        return True  # permissive: don't block a real success
+        return False
 
 
 def _unwrap_exception_group(exc: BaseException) -> Exception:
@@ -552,7 +691,8 @@ def _configure_http_auth(
         oauth_ok = False
         try:
             from tools.mcp_oauth_manager import get_manager
-            if get_manager().get_or_build_provider(name, url, server_config.get("oauth")):
+            if get_manager().get_or_build_provider(name, url, server_config.get("oauth"),
+                                                  transport=server_config.get("transport")):
                 server_config["auth"] = "oauth"
                 _success("OAuth configured (tokens will be acquired on first connection)")
                 oauth_ok = True
@@ -729,16 +869,14 @@ def cmd_mcp_remove(args):
     if not _confirm(f"Remove server '{name}'?", default=True):
         _info("Cancelled.")
         return
+    was_oauth = _get_mcp_servers().get(name, {}).get("auth") == "oauth"
+    # OAuth cleanup rides the config transaction (_OAuthPoolTransition): the pool is resolved
+    # under the OLD config and revoked only after the write commits, and a shared root pool
+    # this profile merely participated in is left for the remaining participants.
     _remove_mcp_server(name)
     _success(f"Removed '{name}' from config")
-    # Route OAuth cleanup through MCPOAuthManager so any provider cached in this process (e.g. from
-    # an earlier `hermes mcp test`) is evicted too.
-    try:
-        from tools.mcp_oauth_manager import get_manager
-        get_manager().remove(name)
+    if was_oauth:
         _success("Cleaned up OAuth tokens")
-    except Exception:
-        pass
 
 
 def cmd_mcp_list(args=None):
@@ -900,21 +1038,35 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
     if selected_flow not in {"browser", "device"}:
         _error("oauth.flow must be browser or device")
         return False
-    try:
-        from tools.mcp_oauth_manager import get_manager
-        if selected_flow == "browser":
-            # Tokens, client registration and the CIMD refusal go; the cached authorization-server
-            # metadata stays. A fresh discovery still overwrites it, but when the metadata document
-            # cannot be re-fetched (WAF-fronted split-host servers) it is the only thing that keeps
-            # the announced authorize URL off the SDK's `{mcp-origin}/authorize` guess (#115329).
-            from tools.mcp_oauth import HermesTokenStorage
-            get_manager().evict(name)
-            HermesTokenStorage(name).remove(keep_metadata=True)
-    except Exception as exc:
-        _warning(f"Could not clear existing OAuth state: {exc}")
+    # Same transaction as the dashboard/TUI re-auth workers: snapshot the pool this home resolves,
+    # clear it so the SDK starts a fresh flow, and put the snapshot back if no new grant lands.
+    # On a root-exported pool that is the shared grant, so a participant's failed login must not
+    # leave root and its siblings logged out — the restore is what keeps them whole.
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import get_manager
+
+    manager = get_manager()
+    manager.unblock(name)  # an explicit login lifts a permanent-removal tombstone
+    storage = HermesTokenStorage(name, requested=server_config)
+    backup = {}
+    if selected_flow == "browser":
+        # Tokens, client registration and the CIMD refusal go; the cached authorization-server
+        # metadata stays. A fresh discovery still overwrites it, but when the metadata document
+        # cannot be re-fetched (WAF-fronted split-host servers) it is the only thing that keeps
+        # the announced authorize URL off the SDK's `{mcp-origin}/authorize` guess (#115329).
+        manager.evict(name)
+        backup = storage.begin_reauthorization(keep_metadata=True)
 
     print()
     _info(f"Starting OAuth flow for '{name}'...")
+    ok = _run_reauth_flow(name, url, server_config, oauth_cfg, selected_flow)
+    if not ok and selected_flow == "browser":
+        storage.restore(backup, only_if_absent=True)
+    return ok
+
+
+def _run_reauth_flow(name: str, url: str, server_config: dict, oauth_cfg: dict, selected_flow: str) -> bool:
+    """Drive one browser or device authorization and verify a token landed; False on any failure."""
 
     # The probe triggers the OAuth flow (browser redirect + callback capture). Its bound must outlast
     # the oauth.timeout callback window (plus headroom for the token exchange), or a user who raised
@@ -959,11 +1111,11 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
         else:
             _success("Authenticated (server reported no tools)")
         return True
-    except Exception as exc:
+    except Exception as exc:  # health: allow BLE001 -- CLI auth boundary reports sanitized failure without token-bearing traceback
         try:
             from tools.mcp_oauth import humanize_oauth_registration_error
             humanized = humanize_oauth_registration_error(name, exc, server_url=url)
-        except Exception:
+        except (TypeError, ValueError, AttributeError):
             humanized = None
         _error(f"Authentication failed: {redact_mcp_probe_text(humanized or exc)}")
         return False

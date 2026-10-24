@@ -9,7 +9,9 @@ import type { CSSProperties } from 'react'
 import { writeClipboardText } from '@/components/ui/copy-button'
 import { triggerHaptic } from '@/lib/haptics'
 import { isComposerChord } from '@/lib/keybinds/chords'
+import { $activeConnectionId } from '@/store/connections'
 import { $previewTarget } from '@/store/preview'
+import { $activeGatewayProfile } from '@/store/profile'
 import { useTheme } from '@/themes/context'
 
 import { $terminalInjection } from '../store'
@@ -923,7 +925,17 @@ export function useTerminalSession({
         // Prefer the prior session's last cwd so a reopened tab lands where the
         // user last `cd`'d; the main side falls back to the launch cwd (then
         // home) if that dir no longer exists.
-        .start({ cols: term.cols, cwd: initialRestoreCwdRef.current || cwd, rows: term.rows })
+        // Carry the Sessions active (gateway, profile) so a new PTY resolves
+        // the SSH tunnel for the gateway the user is LOOKING at — not the
+        // window-backend route, which a Sessions-switch doesn't re-point
+        // (live-switch back to SSH spawned local PowerShell instead of ssh).
+        .start({
+          cols: term.cols,
+          cwd: initialRestoreCwdRef.current || cwd,
+          rows: term.rows,
+          connectionId: $activeConnectionId.get() ?? null,
+          profile: $activeGatewayProfile.get()
+        })
         .then(async session => {
           if (disposed) {
             void terminalApi.dispose(session.id)

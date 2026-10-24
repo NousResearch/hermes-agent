@@ -9563,6 +9563,37 @@ function activeSshTerminalTarget(webContentsId?: number) {
   return state && state.ssh ? { ssh: state.ssh, scope } : 'pending'
 }
 
+// Sessions-active gateway → SSH tunnel for a NEW terminal tab. Same lookup as
+// the window-route path, but keyed by the (connectionId, profile) the renderer
+// was looking at when it spawned the tab — a Sessions switch doesn't re-point
+// the window-backend route, so the window-route lookup alone keeps spawning a
+// local shell after a live switch back to SSH.
+function resolveSshScopeForConnectionId(connectionId: string, profile?: string) {
+  const id = String(connectionId || '').trim()
+
+  if (!id) {
+    return null
+  }
+
+  const route = { connectionId: id, profile: String(profile || '').trim() || 'default', registryScoped: true as const }
+  const scope = registrySshScopeForWindowRoute(route, readDesktopConnectionsRegistry())
+
+  if (!scope) {
+    return null
+  }
+
+  const state = sshConnections.get(scope)
+
+  if (state && state.ssh) {
+    return { ssh: state.ssh, scope }
+  }
+
+  const pooledScope = registrySshPoolScopeByConnectionId(sshConnections, id)
+  const pooledState = pooledScope === null ? null : sshConnections.get(pooledScope)
+
+  return pooledState && pooledState.ssh ? { ssh: pooledState.ssh, scope: pooledScope } : 'pending'
+}
+
 async function ensureTerminalBackend(webContentsId: number) {
   const windowRoute = windowConnectionRoutes.get(webContentsId)
 
@@ -17202,7 +17233,9 @@ const terminalIpc = registerTerminalIpc({
   activeSshTerminalTarget,
   sshBinary: desktopSshBinary,
   ensureBackend: webContentsId => ensureTerminalBackend(webContentsId),
-  getSshConnectionState: scope => sshConnections.get(scope)
+  getSshConnectionState: scope => sshConnections.get(scope),
+  resolveSshScopeForConnection: (connectionId, profile) => resolveSshScopeForConnectionId(connectionId, profile),
+  ensureConnectionBackend: (connectionId, profile) => ensureRegistryBackend(connectionId, profile)
 })
 
 const disposeTerminalSession = terminalIpc.disposeTerminalSession

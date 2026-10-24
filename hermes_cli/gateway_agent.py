@@ -419,6 +419,8 @@ class GatewayAgent:
         gets the same switch: the session's ``show_reasoning`` display flag, sent on each change."""
         self._reasoning_callback = callback
         wanted = (self.session_id, callback is not None)
+        # The owner forgets this live flag on restart; reconnect must restore our preference.
+        self._state().show_reasoning = wanted[1]
         if wanted == self._show_reasoning_sent:  # per session: a rotated id gets its own flag
             return
         try:

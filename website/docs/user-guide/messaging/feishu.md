@@ -601,3 +601,51 @@ WebSocket and per-group ACL settings are configured via `config.yaml` under `pla
 ## Toolset
 
 Feishu / Lark uses the `hermes-feishu` platform preset, which includes the same core tools as Telegram and other gateway-based messaging platforms.
+
+## Opt-in native conversation cards
+
+The bundled platform can render each agent turn into a single CardKit card, including tool
+rounds and durations, MoA reference/aggregation status, and a collapsed final trace. Clarification
+questions use native single/multiple-choice controls or a multiline input form; approval prompts
+keep the existing approval resolver and bind callbacks to the requesting user and pending request.
+Command and system text replies use static cards. File, image, audio, and video delivery continue
+through the existing platform interfaces.
+
+Enable this mode explicitly in `config.yaml`:
+
+```yaml
+platforms:
+  feishu:
+    extra:
+      native_cards: true
+streaming:
+  enabled: true
+  transport: auto
+display:
+  platforms:
+    feishu:
+      streaming: true
+      tool_progress: "off"
+```
+
+The Feishu-specific `tool_progress: "off"` disables duplicate plain-text progress bubbles;
+the native card still receives tool start/completion events through plugin hooks. Other platforms
+keep their display settings. Without `native_cards: true`, the original adapter is used.
+Restart the gateway after changing adapter mode.
+
+The application needs CardKit and IM card permissions and `card.action.trigger` callbacks through
+its configured WebSocket/webhook transport. Remote card updates use the adapter's executor and
+preserve message identity, request UUIDs, and CardKit sequences across retries. If CardKit fails,
+the same IM message can fall back to an interactive-card PATCH; an unknown initial delivery is
+not retried by creating another message. Long output is bounded with an explicit omission notice.
+
+Busy acknowledgements can temporarily appear in the active card when the session, thread, and
+requesting user identify exactly one unfinished turn. Otherwise they follow the normal reply path.
+MoA progress counts actual auxiliary requests observed in the current fan-out; configuration skips
+and failures before a request exists do not invent model rows. Stream handoff is not reported as
+completion. Card labels currently use Chinese, matching the Feishu deployment this mode was
+validated with; Lark English copy is a follow-up.
+
+No new credentials, background service, telemetry, model calls, or external endpoints are introduced.
+The renderer uses Feishu's existing application credentials and services. It does not read credential
+files or change model prompts, approval policy, command dispatch, or tool execution.

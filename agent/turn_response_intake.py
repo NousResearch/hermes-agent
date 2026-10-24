@@ -136,6 +136,32 @@ def normalize_model_response(
     if assistant_message.content is not None and not isinstance(assistant_message.content, str):
         assistant_message.content = _coerce_content_text(assistant_message.content)
 
+    # Gemma 4 text tool-call extraction: when the server strips special tokens
+    # (<|tool_call>, <tool_call|>, <|"|>), tool calls arrive as plain text
+    # "call:name{args}".  Parse them into ToolCall objects before hooks and
+    # metrics see the response.
+    if (
+        not getattr(assistant_message, "tool_calls", None)
+        and assistant_message.content
+        and "call:" in assistant_message.content
+    ):
+        from agent.gemma4_text_tool_parser import is_gemma4_model, extract_gemma4_tool_calls
+        if is_gemma4_model(agent.model):
+            _g4_extracted, _g4_cleaned = extract_gemma4_tool_calls(
+                assistant_message.content,
+                agent_tools=getattr(agent, "tools", None),
+            )
+            if _g4_extracted:
+                assistant_message.tool_calls = _g4_extracted
+                assistant_message.content = _g4_cleaned or None
+                if assistant_message.finish_reason == "stop":
+                    assistant_message.finish_reason = "tool_calls"
+                finish_reason = assistant_message.finish_reason
+                logger.info(
+                    "Gemma 4 text extraction: %d tool call(s) from content",
+                    len(_g4_extracted),
+                )
+
     # Agent-as-provider projection: splice the provider-agent's own tool work in as
     # call/result rows before this turn's assistant message; no-op for ordinary providers.
     splice_provider_projection(agent, response, messages)

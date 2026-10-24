@@ -5,6 +5,7 @@ import time
 import pytest
 
 from hermes_cli.pty_session import RingBuffer
+from tests.waiting import async_wait_until
 
 
 def test_ringbuffer_keeps_everything_under_capacity():
@@ -513,6 +514,30 @@ async def test_close_orphaned_sessions_closes_pty_stranded_by_token_rotation():
 
 
 @pytest.mark.asyncio
+async def test_close_orphaned_sessions_keeps_a_detached_pty_that_is_still_producing():
+    """Regression for #140768: a reconnect must not kill an active detached turn."""
+    from hermes_cli.pty_session import PtySession
+
+    reg = make_registry()
+    producing_bridge = FakeBridge([b"still producing"])
+    current_bridge = FakeBridge([b""])
+    producing = PtySession("old-token\0\0session-a", producing_bridge, buffer_cap=1024, read_timeout=0.01)
+    current = PtySession("new-token\0\0session-a", current_bridge, buffer_cap=1024, read_timeout=0.01)
+    await producing.start()
+    await current.start()
+    await async_wait_until(lambda: producing.buffer.snapshot(), what="PTY output to drain")
+    producing.detach(None)
+    reg._sessions[producing.key] = producing
+    reg._sessions[current.key] = current
+
+    await reg.close_orphaned_sessions("session-a", keep_key=current.key)
+
+    assert not producing_bridge.closed
+    assert reg._sessions[producing.key] is producing
+    await reg.close_all()
+
+
+@pytest.mark.asyncio
 async def test_close_orphaned_sessions_keeps_a_pty_someone_is_viewing():
     from hermes_cli.pty_session import PtySession
 
@@ -734,5 +759,4 @@ async def test_reap_keeps_live_attached_session():
     assert "tok" in reg._sessions
     assert b.closed is False
     await reg.close_all()
-
 

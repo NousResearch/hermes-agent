@@ -14,6 +14,7 @@ from typing import Callable, Dict, Optional, Tuple
 WS_CLOSE_PROCESS_EXITED = 4410
 WS_CLOSE_SUPERSEDED = 4409
 TUI_FORCE_REDRAW = b"\x0c"
+_PRODUCING_OUTPUT_GRACE_S = 120.0
 
 
 class RingBuffer:
@@ -75,6 +76,7 @@ class PtySession:
         self.alive = True
         self.attached = False
         self.last_detached_at: Optional[float] = None
+        self.last_output_at: Optional[float] = None
         self._read_timeout = read_timeout
         self._ws = None
         self._attach_generation = 0
@@ -96,6 +98,7 @@ class PtySession:
                 await asyncio.sleep(0)
                 continue
             self.buffer.append(chunk)
+            self.last_output_at = time.monotonic()
             ws = self._ws
             try:
                 if ws is not None:
@@ -173,6 +176,12 @@ class PtySession:
         except (AttributeError, TypeError, ValueError, OSError):
             return False
         return leader == pid or leader in _process_ancestors(pid)
+
+    def is_producing(self, *, now: Optional[float] = None) -> bool:
+        """Whether the PTY has emitted output recently enough to still be active."""
+        if self.last_output_at is None:
+            return False
+        return (time.monotonic() if now is None else now) - self.last_output_at < _PRODUCING_OUTPUT_GRACE_S
 
     async def close(self) -> None:
         self.alive = False
@@ -311,7 +320,7 @@ class PtySessionRegistry:
         async with self._attach_lock:
             doomed = [
                 key for key, session in self._sessions.items()
-                if key != keep_key and not session.attached
+                if key != keep_key and not session.attached and not session.is_producing()
                 and (_key_segments(key) == target or session.hosts_pid(holder_pid))
             ]
             sessions = [self._sessions.pop(key) for key in doomed]

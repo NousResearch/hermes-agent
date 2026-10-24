@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from hermes_cli.kanban_host_identity import claimer_id as _claimer_id, is_local_lock as _is_local_lock
 from hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
 from toolsets import get_toolset_names
 
@@ -988,21 +989,6 @@ def _new_task_id() -> str:
     """``t_`` + 4 hex bytes (collision ~1e-3 at 100k tasks; 2 bytes would hit 50%
     by 10k). Idempotency belongs to ``idempotency_key``, not id uniqueness."""
     return "t_" + secrets.token_hex(4)
-
-
-def _claimer_id() -> str:
-    """Return a ``host:pid`` string that identifies this claimer."""
-    import socket
-    try:
-        host = socket.gethostname() or "unknown"
-    except Exception:
-        host = "unknown"
-    return f"{host}:{os.getpid()}"
-
-
-def _host_prefix() -> str:
-    """``"<host>:"`` prefix shared by every claim lock issued from this host."""
-    return f"{_claimer_id().split(':', 1)[0]}:"
 
 
 # --- Task creation / mutation ---
@@ -2344,7 +2330,6 @@ def release_stale_claims(
     """
     now = int(time.time())
     reclaimed = 0
-    host_prefix = _host_prefix()
     stale = conn.execute(
         "SELECT id, claim_lock, worker_pid, worker_started_at, claim_expires, last_heartbeat_at, "
         "       assignee "
@@ -2356,7 +2341,7 @@ def release_stale_claims(
     for row in stale:
         if owner_reclaim_blocked(conn, row["id"]):
             continue
-        host_local = (row["claim_lock"] or "").startswith(host_prefix)
+        host_local = _is_local_lock(row["claim_lock"])
         hb = _to_epoch(row["last_heartbeat_at"])
         # Backstop: a heartbeat older than the max-stale threshold means no
         # observable progress — reclaim even if the PID is alive (logic loop).

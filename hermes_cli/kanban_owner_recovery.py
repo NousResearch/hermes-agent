@@ -53,7 +53,7 @@ def _latest_run_event(conn, task_id, kind):
 def _host_local_lock(lock) -> bool:
     """True when ``lock`` was issued by this host — the only pids we can judge."""
     from hermes_cli import kanban_db as kb
-    return bool(lock) and str(lock).startswith(kb._host_prefix())
+    return kb._is_local_lock(lock)
 
 
 def bound_interpreter_gone(conn, task_id):

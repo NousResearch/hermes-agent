@@ -2043,15 +2043,28 @@ def get_xai_oauth_auth_status() -> dict[str, Any]:
 
 
 def _provider_env_base_url(pconfig: ProviderConfig) -> str:
-    if pconfig.id == "actual":
-        from hermes_cli.providers import normalize_provider
+    """Base URL override for an API-key provider, in the order the chat path itself routes.
 
-        model = read_raw_config().get("model")
-        if isinstance(model, dict) and normalize_provider(str(model.get("provider") or "")) == "actual":
-            configured_url = str(model.get("base_url") or "").strip()
-            if configured_url:
-                return configured_url
-    return os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
+    When ``config.yaml``'s ``model.provider`` is this provider and carries a ``model.base_url``,
+    that URL is the one the runtime actually chats through, so credential/model-catalog
+    resolution must use it too — otherwise a provider whose registry default differs from the
+    user's endpoint (e.g. StepFun Step Plan regional ``.com`` vs the international default
+    ``.ai``) authenticates the catalog probe against the wrong host: chat works, but every
+    picker surface shows an empty model list (#stepfun-cn). The explicit env var still wins:
+    it is the documented override hatch, and one profile's ``model.base_url`` must not pin a
+    shared credential resolution for installs that set the env var deliberately.
+    """
+    env_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
+    if env_url:
+        return env_url
+    from hermes_cli.providers import normalize_provider
+
+    model = read_raw_config().get("model")
+    if isinstance(model, dict) and normalize_provider(str(model.get("provider") or "")) == normalize_provider(pconfig.id):
+        configured_url = str(model.get("base_url") or "").strip()
+        if configured_url:
+            return configured_url
+    return ""
 
 
 def get_api_key_provider_status(provider_id: str) -> dict[str, Any]:

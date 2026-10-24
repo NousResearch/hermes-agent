@@ -82,7 +82,7 @@ def _oversize_event(*, user_id="42", text="clip caption"):
     )
 
 
-def _recovery_adapter(*, users=("42",), profiles=("default",)):
+def _recovery_adapter(*, users=("42",), profiles=("default",), chats=("-100200",), threads=("7",)):
     adapter = TelegramAdapter(
         PlatformConfig(
             enabled=True,
@@ -93,6 +93,8 @@ def _recovery_adapter(*, users=("42",), profiles=("default",)):
                     {
                         "users": list(users),
                         "profiles": list(profiles),
+                        "chats": list(chats),
+                        "threads": list(threads),
                         "match": {"oversize_media": True},
                         "skill": "media-recovery",
                     }
@@ -186,6 +188,28 @@ def test_oversize_route_fails_closed_for_wrong_chat_or_thread(route_key, allowed
 
     assert not event.text.startswith("/")
     assert event.auto_skill is None
+
+
+@pytest.mark.parametrize("missing_scope", ["chats", "threads"])
+def test_oversize_route_requires_explicit_chat_and_thread_scope(missing_scope):
+    """A route missing a scope axis is under-scoped, not a wildcard.
+
+    Treating an absent chat/thread list as "any" would let a route configured for
+    one chat fire in every other chat the same user reaches.
+    """
+    adapter = _recovery_adapter()
+    adapter.config.extra["auto_skill_routes"][0].pop(missing_scope)
+    event = _oversize_event()
+
+    adapter._mark_telegram_media_too_large(
+        event,
+        SimpleNamespace(file_size=43_200_000),
+        "video file",
+    )
+
+    assert not event.text.startswith("/")
+    assert event.auto_skill is None
+    assert "telegram_media_recovery" in event.metadata
 
 
 def test_observed_group_source_keeps_transport_identity_for_recovery_route():

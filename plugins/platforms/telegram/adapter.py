@@ -5168,13 +5168,17 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
                 continue
             route_users = self._telegram_route_values(route, "users")
             route_profiles = self._telegram_route_values(route, "profiles")
+            # Every scope axis must be present and non-empty: a route that omits
+            # ``chats``/``threads`` is an under-scoped route, not a wildcard. Failing
+            # open here would let a route configured for one chat fire in every other
+            # chat that the same user reaches.
             if not route_users or not route_profiles:
                 continue
-            predicates = (("chats", route_chat_id), ("threads", route_thread_id))
-            if any(
-                (allowed := self._telegram_route_values(route, key)) and value not in allowed
-                for key, value in predicates
-            ):
+            allowed_chats = self._telegram_route_values(route, "chats")
+            allowed_threads = self._telegram_route_values(route, "threads")
+            if not allowed_chats or not allowed_threads:
+                continue
+            if route_chat_id not in allowed_chats or route_thread_id not in allowed_threads:
                 continue
             if route_user_id not in route_users or route_profile not in route_profiles:
                 continue

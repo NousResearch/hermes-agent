@@ -20,6 +20,7 @@ from hermes_cli.model_switch_providers import (
     _fetch_picker_live_models,
     _NativePickerModelList,
     _save_discovered_models_to_config,
+    list_picker_providers,
 )
 from hermes_cli.providers import resolve_provider_full
 
@@ -1358,6 +1359,37 @@ def test_lmstudio_picker_probes_active_config_base_url(monkeypatch):
     )
 
     assert captured["base_url"] == "http://192.168.1.10:1234/v1"
+
+
+def test_lmstudio_profile_dotenv_stays_in_picker_after_switch(monkeypatch, tmp_path):
+    """A profile's LM Studio endpoint and key must survive switching to another provider."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text(
+        "LM_BASE_URL=http://lm-link:1234/v1\nLM_API_KEY=profile-token\n", encoding="utf-8"
+    )
+    monkeypatch.delenv("LM_BASE_URL", raising=False)
+    monkeypatch.delenv("LM_API_KEY", raising=False)
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def _fake_fetch(api_key=None, base_url=None, timeout=5.0):
+        calls.append((api_key, base_url))
+        return ["qwen3-coder", "local-gpt"]
+
+    monkeypatch.setattr("hermes_cli.models_local.fetch_lmstudio_models", _fake_fetch)
+
+    kwargs = dict(current_provider="openai-codex", current_model="gpt-5.6-sol")
+    text_rows = list_authenticated_providers(**kwargs)
+    picker_rows = list_picker_providers(**kwargs)
+
+    for rows in (text_rows, picker_rows):
+        lmstudio = [row for row in rows if row["slug"] == "lmstudio"]
+        assert len(lmstudio) == 1
+        assert lmstudio[0]["models"] == ["qwen3-coder", "local-gpt"]
+        assert lmstudio[0]["is_current"] is False
+    assert calls == [("profile-token", "http://lm-link:1234/v1")] * 2
 
 
 def test_lmstudio_picker_lm_base_url_env_wins_over_active_config(monkeypatch):

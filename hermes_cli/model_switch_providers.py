@@ -820,7 +820,7 @@ class _PickerBuild:
 
 
 def _lap_lmstudio_row(b: _PickerBuild, user_providers: dict) -> None:
-    """Section 0: the active / ``providers:``-configured LM Studio row from the live catalog.
+    """Section 0: the available LM Studio row from the live catalog.
 
     LM Studio has no models.dev mapping and its overlay row (section 2) needs a credential, so a
     hand-written ``model.provider: lmstudio`` left the slug unclaimed until section 3, where a bare
@@ -834,7 +834,7 @@ def _lap_lmstudio_row(b: _PickerBuild, user_providers: dict) -> None:
     if isinstance(configured, dict) and _entry_base_url(configured, ("base_url", "api", "url")):
         return
     is_current = b.current_provider_norm == "lmstudio"
-    if not (is_current or isinstance(configured, dict)):
+    if not (is_current or isinstance(configured, dict) or b.curated.get("lmstudio")):
         return
     from hermes_cli.model_switch import _declared_model_ids
     configured_models = _declared_model_ids(configured.get("models")) if isinstance(configured, dict) else []
@@ -1207,18 +1207,22 @@ def _build_curated_lists(current_provider: str, current_base_url: str, current_m
     # LM Studio has no static catalog: probe its native endpoint live. Base URL precedence:
     # LM_BASE_URL > active config base_url (when current) > default. On auth rejection /
     # unreachable, fall back to the current model so the picker still shows something offline.
-    # Left live even on the non-blocking path: it is a loopback endpoint with a 1.5s timeout, so it
-    # cannot be the degraded remote provider this path must never wait on.
+    # Left live even on the non-blocking path: a profile-configured LM Studio or LM Link endpoint
+    # has a 1.5s timeout, so the picker remains responsive if it is unavailable.
+    from hermes_cli.model_switch import _scoped_key_env
+
+    lm_api_key = _scoped_key_env("LM_API_KEY")
+    lm_env_base = _scoped_key_env("LM_BASE_URL")
     is_current_lmstudio = current_provider.strip().lower() == "lmstudio"
-    if "lmstudio" not in curated and (os.environ.get("LM_API_KEY") or os.environ.get("LM_BASE_URL") or is_current_lmstudio):
+    if "lmstudio" not in curated and (lm_api_key or lm_env_base or is_current_lmstudio):
         from hermes_cli.models_local import fetch_lmstudio_models
         from hermes_cli.auth import AuthError
         lm_base = (
-            os.environ.get("LM_BASE_URL")
+            lm_env_base
             or (current_base_url if is_current_lmstudio and current_base_url else None)
             or "http://127.0.0.1:1234/v1")
         try:
-            live = fetch_lmstudio_models(api_key=os.environ.get("LM_API_KEY", ""), base_url=lm_base, timeout=1.5)
+            live = fetch_lmstudio_models(api_key=lm_api_key, base_url=lm_base, timeout=1.5)
         except AuthError:
             live = []
         if not live and is_current_lmstudio and current_model:

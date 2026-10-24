@@ -26,6 +26,21 @@ def test_child_attached_after_parent_stop_is_stopped_too():
     assert late.stops == ["stop"]
 
 
+def test_child_attached_after_soft_parent_interrupt_is_left_alone():
+    """A soft parent interrupt (typing while busy) must not stop a late child (#136087)."""
+    import threading
+    parent = SimpleNamespace(
+        _active_children=[],
+        _interrupt_requested=True,
+        _interrupt_message="new user message",
+        _hard_interrupt_requested=threading.Event(),  # not set = soft interrupt
+    )
+    late = _Child()
+    _attach_child(parent, late)
+    assert late in parent._active_children
+    assert late.stops == []
+
+
 def test_child_attached_to_running_parent_is_left_alone():
     parent = SimpleNamespace(_active_children=[], _interrupt_requested=False)
     child = _Child()

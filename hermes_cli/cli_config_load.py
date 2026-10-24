@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import List, Dict, Any
 from utils import fast_safe_load
@@ -138,8 +139,10 @@ def _mirror_config_to_env(defaults, _file_has_terminal_config):
         terminal_config.pop("cwd", None)
 
     # TERMINAL_CWD is force-exported (beats stale .env) except inside a gateway process,
-    # whose config bridge already set it.
-    _is_gateway = os.environ.get("_HERMES_GATEWAY") == "1"
+    # whose config bridge already set it. Ask whether THIS process imported gateway.run:
+    # its _HERMES_GATEWAY env marker is inherited by every shell the gateway's terminal
+    # tool spawns, so a `hermes chat` launched there would keep the gateway's directory.
+    _is_gateway = "gateway.run" in sys.modules
     for config_key, env_var in _TERMINAL_ENV_MAPPINGS.items():
         if config_key not in terminal_config:
             continue

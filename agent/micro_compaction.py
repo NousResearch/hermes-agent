@@ -12,6 +12,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from agent.compaction_events import publish_micro
+from agent.compression_marker import MODEL_ONLY_DISPLAY_METADATA_KEY
 from agent.context_compressor_telemetry import _safe_int
 from agent.message_metadata import record_absorbed_message
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_tokens_rough
@@ -515,7 +516,7 @@ class MicroCompactionMixin:
                 # The originals stay in display history as compacted rows; showing the join too
                 # would paint every merged input twice on resume.
                 prev["display_metadata"] = {**(prev.get("display_metadata") or {}),
-                                            _cc().MODEL_ONLY_DISPLAY_METADATA_KEY: True}
+                                            MODEL_ONLY_DISPLAY_METADATA_KEY: True}
                 # The merge rewrites a live dict that may carry _db_persisted: pop the stamp
                 # and flag the finalizer to invalidate the bounded flush-scan cursor, or the
                 # merged text is identity-skipped and never reaches state.db. Same contract

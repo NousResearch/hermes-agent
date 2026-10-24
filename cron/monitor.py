@@ -18,6 +18,8 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
+from hermes_cron_export_custody import CronCustodyRefused
+
 logger = logging.getLogger(__name__)
 
 # Prompt-injection caps: unified diff, and new-output block (mirrors the 8k context_from truncation
@@ -169,18 +171,27 @@ def check_monitor(job: dict) -> MonitorOutcome:
 
 
 def _persist_monitor_state(job_id: str, new_hash: str, output: str) -> None:
-    from cron.jobs import _hermes_now, update_job
+    from cron.jobs import _hermes_now, _writer_custody_context, update_job
 
-    _write_last_output(job_id, output)
     try:
-        update_job(
-            job_id,
-            {
-                "monitor_state": {
-                    "last_output_hash": new_hash,
-                    "last_changed_at": _hermes_now().isoformat(),
-                }
-            },
-        )
-    except Exception as exc:
+        with _writer_custody_context():
+            _write_last_output(job_id, output)
+            try:
+                update_job(
+                    job_id,
+                    {
+                        "monitor_state": {
+                            "last_output_hash": new_hash,
+                            "last_changed_at": _hermes_now().isoformat(),
+                        }
+                    },
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Monitor: failed to persist state for %r: %s",
+                    job_id,
+                    exc,
+                    exc_info=True,
+                )
+    except (CronCustodyRefused, OSError, TypeError, ValueError) as exc:
         logger.warning("Monitor: failed to persist state for %r: %s", job_id, exc)

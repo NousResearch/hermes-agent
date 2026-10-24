@@ -997,3 +997,559 @@ def apply_worker_receipt(db, *, epoch, execution_id, session_id, generation, seq
             compact_terminal_receipts(conn, execution_id)
         return result
     return db._execute_write(write, patience_s=db._TRANSCRIPT_WRITE_PATIENCE_S)
+
+# Preservation-drain source API. This remains in the state authority so the caller never reads
+# SessionDB tables directly. It returns only bounded control/recovery metadata, not payload/result bodies.
+from contextlib import contextmanager as _snapshot_contextmanager
+import math as _snapshot_math
+import sqlite3 as _snapshot_sqlite3
+import time as _snapshot_time
+
+
+_RUNTIME_SNAPSHOT_SCHEMA = 'runtime-admission-snapshot-v1'
+_RUNTIME_SNAPSHOT_MAX_RECORDS = 2048
+_RUNTIME_SNAPSHOT_MAX_BYTES = 16 * 1024 * 1024
+_RUNTIME_SNAPSHOT_PAGE_SIZE = 64
+_RUNTIME_SNAPSHOT_MAX_TEXT = 4096
+_RUNTIME_SNAPSHOT_MAX_TEXT_BYTES = 16 * 1024
+_RUNTIME_SNAPSHOT_MAX_LINEAGE = 256
+_RUNTIME_SNAPSHOT_MAX_RECEIPT_BYTES = 4 * 1024 * 1024
+_RUNTIME_ADMISSION_STATUSES = ('queued', 'started', 'unknown')
+_RUNTIME_WORKER_STATUSES = ('registered', 'running', 'unknown')
+_RUNTIME_SNAPSHOT_TEXT_SQL_LIMIT = _RUNTIME_SNAPSHOT_MAX_TEXT + 1
+
+
+def _snapshot_invalid(field):
+    raise RuntimeStoreError('snapshot_schema', field=field)
+
+
+def _snapshot_bound(value, field, ceiling):
+    if type(value) is not int or not 1 <= value <= ceiling:
+        raise RuntimeStoreError('invalid_params', field=field)
+    return value
+
+
+def _snapshot_deadline(value):
+    if type(value) not in (int, float) or not _snapshot_math.isfinite(value):
+        raise RuntimeStoreError('invalid_params', field='deadline')
+    deadline = float(value)
+    if deadline <= _snapshot_time.monotonic():
+        raise RuntimeStoreError('snapshot_deadline', field='deadline')
+    return deadline
+
+
+def _snapshot_check_deadline(deadline):
+    if _snapshot_time.monotonic() >= deadline:
+        raise RuntimeStoreError('snapshot_deadline', field='deadline')
+
+
+def _snapshot_text(value, field, *, allow_none=False):
+    if value is None and allow_none:
+        return None
+    if not isinstance(value, str) or not value or len(value) > _RUNTIME_SNAPSHOT_MAX_TEXT:
+        _snapshot_invalid(field)
+    return value
+
+
+def _snapshot_number(value, field, *, minimum=0, allow_none=False):
+    if value is None and allow_none:
+        return None
+    if type(value) is not int or value < minimum:
+        _snapshot_invalid(field)
+    return value
+
+
+def _snapshot_sql_error(exc, deadline):
+    if _snapshot_time.monotonic() >= deadline:
+        raise RuntimeStoreError('snapshot_deadline', field='deadline') from exc
+    message = str(exc).lower()
+    if any(marker in message for marker in (
+        'no such table', 'no such column', 'malformed', 'not a database',
+        'database disk image is malformed', 'datatype mismatch',
+    )):
+        raise RuntimeStoreError('snapshot_schema', detail='runtime schema read failed') from exc
+    raise RuntimeStoreError('snapshot_unavailable', detail='runtime read did not complete') from exc
+
+
+def _snapshot_generation_guard(db):
+    checker = getattr(db, '_raise_if_db_replaced', None)
+    if not callable(checker):
+        raise RuntimeStoreError('snapshot_generation', detail='owner generation guard unavailable')
+    try:
+        checker()
+    except RuntimeStoreError:
+        raise
+    except (OSError, RuntimeError, _snapshot_sqlite3.Error, ValueError) as exc:
+        raise RuntimeStoreError('snapshot_generation', detail='runtime generation changed') from exc
+
+
+def _snapshot_closed(db):
+    return getattr(db, '_conn', None) is None or bool(getattr(db, '_read_conns_closed', False))
+
+
+def _snapshot_require_runtime_tables(conn, deadline):
+    names = ('runtime_epoch', 'session_admissions', 'worker_executions', 'worker_receipts')
+    cursor, _ = _snapshot_execute(
+        conn,
+        '''SELECT 'main' AS schema_name, name, type FROM main.sqlite_master
+           WHERE name COLLATE NOCASE IN (?, ?, ?, ?)
+           UNION ALL
+           SELECT 'temp' AS schema_name, name, type FROM temp.sqlite_master
+           WHERE name COLLATE NOCASE IN (?, ?, ?, ?)
+           LIMIT 9''',
+        names + names,
+        deadline,
+    )
+    found = set()
+    for row in _snapshot_fetchmany(cursor, conn, 9, deadline):
+        name = row['name'].lower()
+        if row['schema_name'] != 'main' or row['type'] != 'table' or name in found:
+            raise RuntimeStoreError(
+                'snapshot_schema', field=name, detail='runtime census requires an unshadowed main table')
+        found.add(name)
+    for name in names:
+        if name not in found:
+            raise RuntimeStoreError('snapshot_schema', field=name, detail='runtime census table missing')
+
+
+@_snapshot_contextmanager
+def _snapshot_owner_read(db, deadline):
+    """Use the existing SessionDB owner connection without reopen or an unbounded lock wait."""
+    _snapshot_check_deadline(deadline)
+    if _snapshot_closed(db):
+        raise RuntimeStoreError('snapshot_closed', detail='state owner is closed')
+    lock = getattr(db, '_lock', None)
+    if lock is None or not hasattr(lock, 'acquire'):
+        raise RuntimeStoreError('snapshot_unavailable', detail='state owner lock unavailable')
+    remaining = deadline - _snapshot_time.monotonic()
+    if remaining <= 0 or not lock.acquire(timeout=remaining):
+        raise RuntimeStoreError('snapshot_deadline', field='deadline')
+    conn = None
+    previous_busy_timeout = None
+    transaction = False
+    try:
+        if _snapshot_closed(db):
+            raise RuntimeStoreError('snapshot_closed', detail='state owner closed while acquiring')
+        _snapshot_check_deadline(deadline)
+        _snapshot_generation_guard(db)
+        _snapshot_check_deadline(deadline)
+        conn = getattr(db, '_conn', None)
+        try:
+            owner_busy = conn is None or conn.in_transaction
+        except _snapshot_sqlite3.ProgrammingError as exc:
+            raise RuntimeStoreError('snapshot_closed', detail='state owner connection is closed') from exc
+        if owner_busy:
+            raise RuntimeStoreError('snapshot_unavailable', detail='state owner is busy')
+        try:
+            previous_busy_timeout = conn.execute('PRAGMA busy_timeout').fetchone()[0]
+            remaining_ms = max(1, int((deadline - _snapshot_time.monotonic()) * 1000))
+            conn.execute(f'PRAGMA busy_timeout={remaining_ms}')
+            conn.execute('BEGIN')
+            transaction = True
+        except _snapshot_sqlite3.Error as exc:
+            _snapshot_sql_error(exc, deadline)
+        _snapshot_require_runtime_tables(conn, deadline)
+        yield conn
+        _snapshot_check_deadline(deadline)
+        try:
+            conn.commit()
+        except _snapshot_sqlite3.Error as exc:
+            _snapshot_sql_error(exc, deadline)
+        transaction = False
+        _snapshot_generation_guard(db)
+    except BaseException:
+        if transaction and conn is not None:
+            try:
+                conn.rollback()
+            except _snapshot_sqlite3.Error:
+                pass
+        raise
+    finally:
+        restoration_error = None
+        if conn is not None and previous_busy_timeout is not None:
+            try:
+                conn.execute(f'PRAGMA busy_timeout={int(previous_busy_timeout)}')
+            except _snapshot_sqlite3.Error:
+                if not _snapshot_closed(db):
+                    restoration_error = RuntimeStoreError(
+                        'snapshot_unavailable', detail='could not restore owner timeout')
+        try:
+            lock.release()
+        finally:
+            if restoration_error is not None:
+                raise restoration_error
+
+
+def _snapshot_capped_text(row, field, *, allow_none=False, error_field=None):
+    error_field = error_field or field
+    value = row[field]
+    actual_bytes = row[f'{field}_bytes']
+    selected_limit = row['_snapshot_text_limit'] if '_snapshot_text_limit' in row.keys() else None
+    if selected_limit is not None:
+        if type(selected_limit) is not int or selected_limit < 0:
+            _snapshot_invalid('snapshot_text_limit')
+        if actual_bytes is not None and actual_bytes > selected_limit:
+            raise RuntimeStoreError('snapshot_limit', field=error_field)
+    if actual_bytes is None:
+        if value is None and allow_none:
+            return None
+        _snapshot_invalid(error_field)
+    if type(actual_bytes) is not int or actual_bytes < 0 or actual_bytes > _RUNTIME_SNAPSHOT_MAX_TEXT_BYTES:
+        raise RuntimeStoreError('snapshot_limit', field=error_field)
+    if value is None:
+        if allow_none:
+            return None
+        _snapshot_invalid(error_field)
+    if not isinstance(value, str) or not value or len(value) > _RUNTIME_SNAPSHOT_MAX_TEXT:
+        _snapshot_invalid(error_field)
+    return value
+
+
+def _snapshot_encode(value, field):
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'),
+                             allow_nan=False).encode('utf-8', errors='surrogatepass')
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise RuntimeStoreError('snapshot_schema', field=field) from exc
+    return encoded
+
+
+def _snapshot_charge(budget, value, field, *, extra_bytes=0):
+    encoded = _snapshot_encode(value, field)
+    if type(extra_bytes) is not int or extra_bytes < 0:
+        _snapshot_invalid(field)
+    if (budget['records'] >= budget['max_records']
+            or budget['bytes'] + len(encoded) + extra_bytes > budget['max_bytes']):
+        raise RuntimeStoreError('snapshot_limit', field='budget')
+    budget['records'] += 1
+    budget['bytes'] += len(encoded) + extra_bytes
+
+
+def _snapshot_execute(conn, sql, params, deadline):
+    _snapshot_check_deadline(deadline)
+    interrupted = False
+
+    def progress():
+        nonlocal interrupted
+        if _snapshot_time.monotonic() >= deadline:
+            interrupted = True
+            return 1
+        return 0
+
+    conn.set_progress_handler(progress, 1000)
+    try:
+        return conn.execute(sql, params), interrupted
+    except _snapshot_sqlite3.Error as exc:
+        if interrupted or _snapshot_time.monotonic() >= deadline:
+            raise RuntimeStoreError('snapshot_deadline', field='deadline') from exc
+        _snapshot_sql_error(exc, deadline)
+    finally:
+        conn.set_progress_handler(None, 0)
+
+
+def _snapshot_fetchmany(cursor, conn, size, deadline):
+    _snapshot_check_deadline(deadline)
+    interrupted = False
+
+    def progress():
+        nonlocal interrupted
+        if _snapshot_time.monotonic() >= deadline:
+            interrupted = True
+            return 1
+        return 0
+
+    conn.set_progress_handler(progress, 1000)
+    try:
+        return cursor.fetchmany(size)
+    except _snapshot_sqlite3.Error as exc:
+        if interrupted or _snapshot_time.monotonic() >= deadline:
+            raise RuntimeStoreError('snapshot_deadline', field='deadline') from exc
+        _snapshot_sql_error(exc, deadline)
+    finally:
+        conn.set_progress_handler(None, 0)
+
+
+def _snapshot_budget_text_limit(budget, text_fields):
+    if type(text_fields) is not int or text_fields < 1:
+        _snapshot_invalid('snapshot_text_fields')
+    remaining = budget['max_bytes'] - budget['bytes']
+    if remaining <= 0:
+        return 0
+    return min(_RUNTIME_SNAPSHOT_TEXT_SQL_LIMIT, remaining // text_fields)
+
+
+def _snapshot_fetch_records(conn, sql, params, *, deadline, budget, convert,
+                            text_limit, text_fields):
+    remaining = max(0, budget['max_records'] - budget['records'])
+    cursor, _ = _snapshot_execute(conn, sql, (*params, remaining + 1), deadline)
+    records = []
+    while True:
+        _snapshot_check_deadline(deadline)
+        row_text_bytes = max(1, text_limit) * text_fields
+        available_bytes = max(1, budget['max_bytes'] - budget['bytes'])
+        budget_page = max(1, available_bytes // row_text_bytes)
+        page_size = min(_RUNTIME_SNAPSHOT_PAGE_SIZE, budget_page, remaining + 1 - len(records))
+        if page_size <= 0:
+            raise RuntimeStoreError('snapshot_limit', field='records')
+        page = _snapshot_fetchmany(cursor, conn, page_size, deadline)
+        if not page:
+            break
+        for row in page:
+            if budget['records'] >= budget['max_records']:
+                raise RuntimeStoreError('snapshot_limit', field='records')
+            record, extra_bytes = convert(row)
+            _snapshot_charge(budget, record, 'snapshot.record', extra_bytes=extra_bytes)
+            records.append(record)
+        if len(page) < page_size:
+            break
+    if len(records) > remaining:
+        raise RuntimeStoreError('snapshot_limit', field='records')
+    return records
+
+
+def _snapshot_epoch_row(conn, deadline):
+    text = _RUNTIME_SNAPSHOT_TEXT_SQL_LIMIT
+    cursor, _ = _snapshot_execute(
+        conn,
+        f'''SELECT singleton, epoch,
+            substr(instance_id,1,{text}) AS instance_id,
+            length(CAST(instance_id AS BLOB)) AS instance_id_bytes,
+            {text} AS _snapshot_text_limit
+            FROM runtime_epoch WHERE singleton=1 LIMIT 2''',
+        (),
+        deadline,
+    )
+    rows = _snapshot_fetchmany(cursor, conn, 2, deadline)
+    if len(rows) != 1:
+        _snapshot_invalid('runtime_epoch')
+    value = rows[0]
+    if value['singleton'] != 1:
+        _snapshot_invalid('runtime_epoch.singleton')
+    epoch = _snapshot_number(value['epoch'], 'runtime_epoch.epoch', minimum=1)
+    instance_id = _snapshot_capped_text(value, 'instance_id', error_field='runtime_epoch.instance_id')
+    return {'epoch': epoch, 'instance_id': instance_id}
+
+
+def _snapshot_admission_row(row):
+    status = _snapshot_capped_text(row, 'status', error_field='admission.status')
+    if status not in _RUNTIME_ADMISSION_STATUSES:
+        _snapshot_invalid('admission.status')
+    owner_epoch = _snapshot_number(row['owner_epoch'], 'admission.owner_epoch', minimum=1, allow_none=True)
+    generation = _snapshot_number(row['generation'], 'admission.generation', allow_none=True)
+    if status in ('started', 'unknown') and (owner_epoch is None or generation is None):
+        _snapshot_invalid('admission.execution_fence')
+    lineage_json = _snapshot_capped_text(row, 'lineage_json', error_field='admission.lineage_json')
+    try:
+        lineage = json.loads(lineage_json)
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise RuntimeStoreError('snapshot_schema', field='admission.lineage_json') from exc
+    if (not isinstance(lineage, list) or not lineage or len(lineage) > _RUNTIME_SNAPSHOT_MAX_LINEAGE
+            or any(not isinstance(item, str) or not item or len(item) > _RUNTIME_SNAPSHOT_MAX_TEXT for item in lineage)
+            or len(set(lineage)) != len(lineage)):
+        _snapshot_invalid('admission.lineage_json')
+    target_session_id = _snapshot_capped_text(row, 'target_session_id', error_field='admission.target_session_id')
+    if target_session_id not in lineage:
+        _snapshot_invalid('admission.lineage.target_session_id')
+    return {
+        'seq': _snapshot_number(row['seq'], 'admission.seq', minimum=1),
+        'admission_id': _snapshot_capped_text(row, 'admission_id', error_field='admission.admission_id'),
+        'request_id': _snapshot_capped_text(row, 'request_id', error_field='admission.request_id'),
+        'principal_id': _snapshot_capped_text(row, 'principal_id', error_field='admission.principal_id'),
+        'target_session_id': target_session_id,
+        'lineage_json': lineage_json,
+        'lineage': lineage,
+        'payload_digest': _snapshot_capped_text(row, 'payload_digest', error_field='admission.payload_digest'),
+        'intent': _snapshot_capped_text(row, 'intent', error_field='admission.intent'),
+        'status': status,
+        'outcome': _snapshot_capped_text(row, 'outcome', allow_none=True, error_field='admission.outcome'),
+        'owner_epoch': owner_epoch,
+        'generation': generation,
+    }, 0
+
+
+def _snapshot_worker_row(row):
+    status = _snapshot_capped_text(row, 'status', error_field='worker.status')
+    if status not in _RUNTIME_WORKER_STATUSES:
+        _snapshot_invalid('worker.status')
+    kind = _snapshot_capped_text(row, 'kind', error_field='worker.kind')
+    if kind not in ('cron', 'child', 'compute', 'kanban'):
+        _snapshot_invalid('worker.kind')
+    return {
+        'execution_id': _snapshot_capped_text(row, 'execution_id', error_field='worker.execution_id'),
+        'session_id': _snapshot_capped_text(row, 'session_id', error_field='worker.session_id'),
+        'kind': kind,
+        'owner_epoch': _snapshot_number(row['owner_epoch'], 'worker.owner_epoch', minimum=1),
+        'generation': _snapshot_number(row['generation'], 'worker.generation'),
+        'status': status,
+        'last_sequence': _snapshot_number(row['last_sequence'], 'worker.last_sequence'),
+    }, 0
+
+
+def _snapshot_receipt_row(row, workers):
+    execution_id = _snapshot_capped_text(row, 'execution_id', error_field='worker_receipt.execution_id')
+    worker = workers.get(execution_id)
+    if worker is None:
+        _snapshot_invalid('worker_receipt.execution_id')
+    result_bytes = _snapshot_number(row['result_bytes'], 'worker_receipt.result_bytes')
+    if result_bytes > _RUNTIME_SNAPSHOT_MAX_RECEIPT_BYTES:
+        _snapshot_invalid('worker_receipt.result_json')
+    sequence = _snapshot_number(row['sequence'], 'worker_receipt.sequence', minimum=1)
+    if sequence > worker['last_sequence']:
+        _snapshot_invalid('worker_receipt.sequence.relation')
+    return {
+        'execution_id': execution_id,
+        'sequence': sequence,
+        'payload_digest': _snapshot_capped_text(row, 'payload_digest', error_field='worker_receipt.payload_digest'),
+        'result_bytes': result_bytes,
+    }, result_bytes
+
+
+def _snapshot_validate_receipt_body(conn, record, deadline):
+    cursor, _ = _snapshot_execute(
+        conn,
+        '''SELECT json_valid(result_json) AS result_valid,
+            CASE WHEN json_valid(result_json) = 1 THEN json_type(result_json) END AS result_type
+            FROM worker_receipts WHERE execution_id=? AND sequence=? LIMIT 2''',
+        (record['execution_id'], record['sequence']),
+        deadline,
+    )
+    rows = _snapshot_fetchmany(cursor, conn, 2, deadline)
+    if len(rows) != 1 or rows[0]['result_valid'] != 1:
+        _snapshot_invalid('worker_receipt.result_json')
+    if rows[0]['result_type'] != 'object':
+        _snapshot_invalid('worker_receipt.result_json.type')
+
+
+def _snapshot_read_epoch(db, deadline):
+    _snapshot_check_deadline(deadline)
+    with _snapshot_owner_read(db, deadline) as conn:
+        return _snapshot_epoch_row(conn, deadline)
+
+
+def snapshot_runtime_admission_workers(
+    db,
+    *,
+    epoch: int,
+    deadline: float,
+    max_records: int = 512,
+    max_bytes: int = 4 * 1024 * 1024,
+) -> dict:
+    """Read one bounded, owner-consistent runtime admission/worker snapshot.
+
+    The query is deliberately global and does not join sessions or any in-memory authority
+    registry: queued, started, and unknown durable admissions remain visible even when an owning
+    authority session has disappeared, and prior-epoch unknown rows are retained. The owner loop
+    supplies one absolute monotonic deadline. Records are paged under one shared count/encoded-byte
+    budget; receipt bodies are validated and charged by their producer-encoded byte length but are
+    never returned. A caller still needs an outer profile owner/drain lease before using this census.
+    """
+    if type(epoch) is not int or epoch < 1:
+        raise RuntimeStoreError('invalid_params', field='epoch')
+    deadline = _snapshot_deadline(deadline)
+    max_records = _snapshot_bound(max_records, 'max_records', _RUNTIME_SNAPSHOT_MAX_RECORDS)
+    max_bytes = _snapshot_bound(max_bytes, 'max_bytes', _RUNTIME_SNAPSHOT_MAX_BYTES)
+    budget = {'max_records': max_records, 'max_bytes': max_bytes, 'records': 0, 'bytes': 0}
+    with _snapshot_owner_read(db, deadline) as conn:
+        opened = _snapshot_epoch_row(conn, deadline)
+        if opened['epoch'] != epoch:
+            raise RuntimeStoreError('stale_epoch')
+        admission_text = _snapshot_budget_text_limit(budget, 9)
+        admission_sql = f'''SELECT seq,
+            substr(admission_id,1,{admission_text}) AS admission_id,
+            length(CAST(admission_id AS BLOB)) AS admission_id_bytes,
+            substr(request_id,1,{admission_text}) AS request_id,
+            length(CAST(request_id AS BLOB)) AS request_id_bytes,
+            substr(principal_id,1,{admission_text}) AS principal_id,
+            length(CAST(principal_id AS BLOB)) AS principal_id_bytes,
+            substr(target_session_id,1,{admission_text}) AS target_session_id,
+            length(CAST(target_session_id AS BLOB)) AS target_session_id_bytes,
+            substr(lineage_json,1,{admission_text}) AS lineage_json,
+            length(CAST(lineage_json AS BLOB)) AS lineage_json_bytes,
+            substr(payload_digest,1,{admission_text}) AS payload_digest,
+            length(CAST(payload_digest AS BLOB)) AS payload_digest_bytes,
+            substr(intent,1,{admission_text}) AS intent,
+            length(CAST(intent AS BLOB)) AS intent_bytes,
+            substr(status,1,{admission_text}) AS status,
+            length(CAST(status AS BLOB)) AS status_bytes,
+            substr(outcome,1,{admission_text}) AS outcome,
+            length(CAST(outcome AS BLOB)) AS outcome_bytes,
+            owner_epoch, generation,
+            {admission_text} AS _snapshot_text_limit
+            FROM session_admissions
+            WHERE status IS NULL OR status != 'terminal'
+            ORDER BY seq LIMIT ?'''
+        admission_records = _snapshot_fetch_records(
+            conn, admission_sql, (), deadline=deadline, budget=budget,
+            convert=_snapshot_admission_row, text_limit=admission_text, text_fields=9)
+        worker_text = _snapshot_budget_text_limit(budget, 4)
+        worker_sql = f'''SELECT
+            substr(execution_id,1,{worker_text}) AS execution_id,
+            length(CAST(execution_id AS BLOB)) AS execution_id_bytes,
+            substr(session_id,1,{worker_text}) AS session_id,
+            length(CAST(session_id AS BLOB)) AS session_id_bytes,
+            substr(kind,1,{worker_text}) AS kind,
+            length(CAST(kind AS BLOB)) AS kind_bytes,
+            owner_epoch, generation,
+            substr(status,1,{worker_text}) AS status,
+            length(CAST(status AS BLOB)) AS status_bytes,
+            last_sequence,
+            {worker_text} AS _snapshot_text_limit
+            FROM worker_executions
+            WHERE status IS NULL OR status != 'terminal'
+            ORDER BY execution_id LIMIT ?'''
+        worker_records = _snapshot_fetch_records(
+            conn, worker_sql, (), deadline=deadline, budget=budget,
+            convert=_snapshot_worker_row, text_limit=worker_text, text_fields=4)
+        workers_by_id = {record['execution_id']: record for record in worker_records}
+        receipt_records = []
+        worker_ids = list(workers_by_id)
+        if worker_ids:
+            receipt_text = _snapshot_budget_text_limit(budget, 2)
+            placeholders = ','.join('?' for _ in worker_ids)
+            receipt_sql = f'''SELECT
+                substr(r.execution_id,1,{receipt_text}) AS execution_id,
+                length(CAST(r.execution_id AS BLOB)) AS execution_id_bytes,
+                r.sequence,
+                substr(r.payload_digest,1,{receipt_text}) AS payload_digest,
+                length(CAST(r.payload_digest AS BLOB)) AS payload_digest_bytes,
+                length(CAST(r.result_json AS BLOB)) AS result_bytes,
+                {receipt_text} AS _snapshot_text_limit
+                FROM worker_receipts AS r
+                WHERE r.execution_id IN ({placeholders})
+                ORDER BY r.execution_id, r.sequence LIMIT ?'''
+            receipt_records = _snapshot_fetch_records(
+                conn, receipt_sql, tuple(worker_ids), deadline=deadline, budget=budget,
+                convert=lambda row: _snapshot_receipt_row(row, workers_by_id),
+                text_limit=receipt_text, text_fields=2)
+            for receipt in receipt_records:
+                _snapshot_validate_receipt_body(conn, receipt, deadline)
+        closed = _snapshot_epoch_row(conn, deadline)
+        if closed != opened:
+            raise RuntimeStoreError('stale_epoch')
+    current = _snapshot_read_epoch(db, deadline)
+    if current != opened:
+        raise RuntimeStoreError('stale_epoch')
+    admission_status_counts = {status: 0 for status in _RUNTIME_ADMISSION_STATUSES}
+    for record in admission_records:
+        admission_status_counts[record['status']] += 1
+    worker_status_counts = {status: 0 for status in _RUNTIME_WORKER_STATUSES}
+    for record in worker_records:
+        worker_status_counts[record['status']] += 1
+    _snapshot_check_deadline(deadline)
+    return {
+        'schema': _RUNTIME_SNAPSHOT_SCHEMA,
+        'epoch': opened['epoch'],
+        'instance_id': opened['instance_id'],
+        'admissions': admission_records,
+        'workers': worker_records,
+        'worker_receipts': receipt_records,
+        'counts': {
+            'admissions': len(admission_records),
+            'workers': len(worker_records),
+            'worker_receipts': len(receipt_records),
+            'admissions_by_status': admission_status_counts,
+            'workers_by_status': worker_status_counts,
+            'records': budget['records'],
+            'encoded_bytes': budget['bytes'],
+        },
+    }

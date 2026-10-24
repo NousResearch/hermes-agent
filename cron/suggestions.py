@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from cron.export_writers import writer_custody_for as _writer_custody_for
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 from utils import atomic_json_write
@@ -46,6 +47,17 @@ def _current_suggestions_file() -> Path:
     return SUGGESTIONS_FILE or (get_hermes_home().resolve() / "cron" / "suggestions.json")
 
 
+def _suggestions_owner_home() -> Path:
+    if SUGGESTIONS_FILE is not None:
+        configured = Path(SUGGESTIONS_FILE).absolute()
+        active = Path(get_hermes_home())
+        canonical = active.resolve() / "cron" / "suggestions.json"
+        if configured == canonical.absolute():
+            return active
+        return configured.parent
+    return Path(get_hermes_home())
+
+
 def _ensure_dir() -> None:
     from cron.jobs import _ensure_cron_dir
 
@@ -70,6 +82,7 @@ def _load_raw() -> dict[str, Any]:
     return {"suggestions": []}
 
 
+@_writer_custody_for(_suggestions_owner_home)
 def _save_raw(suggestions: list[dict[str, Any]]) -> None:
     _ensure_dir()
     payload = {"suggestions": suggestions, "updated_at": _hermes_now().isoformat()}

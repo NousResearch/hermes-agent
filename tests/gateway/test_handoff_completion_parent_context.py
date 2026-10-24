@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import json
 import re
+import shlex
 import signal
 import sqlite3
 import threading
@@ -50,7 +51,7 @@ class ScriptedModel(BaseHTTPRequestHandler):
                       for c in (m.get('tool_calls') or [])]
             if 'terminal' not in called:
                 # Held open until the handoff has landed: a process that exits first cannot be handed off.
-                return _call('terminal', command=f'while [ ! -e {state.release} ]; do sleep 0.2; done; echo FIRST_DONE',
+                return _call('terminal', command=f'while [ ! -e {shlex.quote(str(state.release))} ]; do sleep 0.2; done; echo FIRST_DONE',
                              background=True, notify_on_complete=True)
             if 'tool_call' not in called:  # process_manage is a deferred tool for the child
                 started = next(str(m['content']) for m in messages if m['role'] == 'tool')

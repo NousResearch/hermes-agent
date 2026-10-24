@@ -257,3 +257,37 @@ def test_a_failed_row_keeps_its_reason_and_try_again_works_while_the_card_is_ope
     (row,) = out["targets"]
     assert out["settled_by"] == "all_resolved"
     assert (row["state"], row["detail"]) == (TargetState.failed.value, "clone failed: network down")
+
+
+def test_a_server_that_failed_without_a_reason_points_at_the_child_log():
+    """#140543: ``unknown error`` was a dead end — the child's output is teed to mcp-stderr.log."""
+
+    class SilentFailureInstaller(FakeInstaller):
+        """The install that connects the plugin but not its MCP server, and says nothing why."""
+
+        def install_plugin(self, name, *, force, enable, ref, on_step):
+            out = super().install_plugin(name, force=force, enable=enable, ref=ref, on_step=on_step)
+            out["activation"]["live_now"]["mcp_servers"] = [
+                {"name": name, "connected": False, "tools": [], "error": ""}]
+            return out
+
+    out = _install([{"kind": "plugin", "id": "blender"}], SilentFailureInstaller([_entry("blender")]),
+                   _card(_approve()))
+    (row,) = out["targets"]
+    assert "unknown error" not in row["detail"]
+    assert "mcp-stderr.log" in row["detail"]
+    assert row["server_errors"] == [{"name": "blender", "error": ""}]
+
+
+def test_a_server_that_failed_with_a_reason_keeps_it():
+    class ReasonedInstaller(FakeInstaller):
+        def install_plugin(self, name, *, force, enable, ref, on_step):
+            out = super().install_plugin(name, force=force, enable=enable, ref=ref, on_step=on_step)
+            out["activation"]["live_now"]["mcp_servers"] = [
+                {"name": name, "connected": False, "tools": [], "error": "the server did not connect"}]
+            return out
+
+    out = _install([{"kind": "plugin", "id": "blender"}], ReasonedInstaller([_entry("blender")]),
+                   _card(_approve()))
+    (row,) = out["targets"]
+    assert row["detail"].endswith("not connected: the server did not connect")

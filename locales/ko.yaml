@@ -3779,7 +3779,7 @@ tips:
   t237: "제공자가 HTTP 402(결제 필요)를 반환하면 보조 클라이언트는 자동으로 다음 제공자로 대체해요."
   t238: "agent.tool_use_enforcement는 도구를 호출하지 않고 행동을 설명만 하는 모델을 바로잡아요 — GPT/Codex에는 자동 적용돼요."
   t239: "agent.restart_after_turn_timeout은 /restart가 stop()에 들어가기 전에 진행 중인 턴을 끝내게 해요; restart_drain_timeout은 stop() 시작 후 강제 중단까지의 여유 시간일 뿐이에요."
-  t240: "agent.api_max_retries(기본값 3)는 오류를 표시하기 전에 실패한 API 호출을 몇 번 재시도할지 정해요 — 빠른 대체를 원하면 낮추세요."
+  t240: "agent.api_max_retries(기본값 3)는 오류를 표시하기 전에 실패한 API 호출을 몇 번 시도할지 정해요 — 빠른 폴백을 원하면 낮추세요."
   t241: "게이트웨이는 세션별로 AIAgent 인스턴스를 캐시해요 — 이 캐시를 없애면 Anthropic 프롬프트 캐싱이 깨져요."
   t242: "어떤 웹사이트든 /.well-known/skills/index.json으로 스킬을 공개할 수 있어요 — 스킬 허브가 자동으로 찾아내요."
   t243: "~/.hermes/skills/.hub/audit.log의 스킬 감사 로그는 모든 설치와 제거 작업을 기록해요."

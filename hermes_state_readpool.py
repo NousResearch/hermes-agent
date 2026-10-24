@@ -66,10 +66,10 @@ _process_read_permits = threading.BoundedSemaphore(_READ_POOL_PROCESS_MAX)
 _read_open_denied_fd_headroom = 0
 
 _fd_usage_lock = threading.Lock()
-_fd_usage_cache: "tuple[float, Optional[int]]" = (0.0, None)
+_fd_usage_cache: tuple[float, Optional[int]] = (0.0, None)
 
 
-def _proc_fd_targets(pid: int) -> "Iterator[tuple[str, str]]":
+def _proc_fd_targets(pid: int) -> Iterator[tuple[str, str]]:
     """Yield ``(readlink target, fd path)`` for every entry in /proc/<pid>/fd (unreadable
     links skipped). Raises OSError when the fd directory itself cannot be listed."""
     fd_dir = f"/proc/{pid}/fd"
@@ -154,7 +154,7 @@ class _PathReadBudget:
         self.permits = threading.BoundedSemaphore(_READ_POOL_MAX)
         self._lock = threading.Lock()
         # Weak: a SessionDB dropped without close() must not pin peers' budget.
-        self._members: "weakref.WeakSet[SessionDB]" = weakref.WeakSet()
+        self._members: weakref.WeakSet[SessionDB] = weakref.WeakSet()
         self._duplicate_handles_warned = False
 
     def register(self, db: "SessionDB") -> None:
@@ -163,7 +163,10 @@ class _PathReadBudget:
             # Only writable handles carry the cost the warning names (writer connection, write
             # lock, close-time checkpoint). Read-only attaches (dashboard routers, status/lookup
             # one-shots) open per request by design and must not trip it.
-            handles = sum(1 for member in self._members if not member.read_only)
+            handles = sum(
+                1 for member in self._members
+                if not member.read_only and member._conn is not None
+            )
             warn = (handles > _HANDLES_PER_PATH_WARN and not self._duplicate_handles_warned)
             if warn:
                 self._duplicate_handles_warned = True
@@ -186,6 +189,11 @@ class _PathReadBudget:
                 "Created at: %s",
                 handles, db.db_path, _READ_POOL_MAX, creation_sites,
             )
+
+    def unregister(self, db: "SessionDB") -> None:
+        """Remove a closed writer from duplicate-handle diagnostics immediately."""
+        with self._lock:
+            self._members.discard(db)
 
     def acquire(self, requester: "SessionDB") -> bool:
         """Take a permit for a new read connection, or refuse (caller degrades to the
@@ -229,7 +237,7 @@ class _PathReadBudget:
 
 # canonical db path -> permits for that file. Weak values: the budget lives only
 # while some SessionDB on the path holds it, so tmp_path churn can't grow this.
-_read_budgets: "weakref.WeakValueDictionary[str, _PathReadBudget]" = (weakref.WeakValueDictionary())
+_read_budgets: weakref.WeakValueDictionary[str, _PathReadBudget] = (weakref.WeakValueDictionary())
 _read_budgets_lock = threading.Lock()
 
 

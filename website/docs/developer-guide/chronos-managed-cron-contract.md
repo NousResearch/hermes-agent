@@ -166,6 +166,10 @@ There is deliberately no in-dashboard execution fallback. The verifier is
   - invalid/missing/forged/expired/wrong-aud/wrong-purpose token → **401**, no
     execution.
   - missing `job_id` → **400**.
+  - gateway still starting (a scale-to-zero wake) → the fire waits up to 7 s,
+    counted from receipt, for the gateway to finish starting. If it doesn't, or
+    a drain begins meanwhile → **503** `{"error": "gateway unreachable; retry"}`
+    with `Retry-After: 60`, nothing claimed (NAS retries).
   - valid → **202 `{"status": "accepted", "job_id": "..."}`** immediately, and
     the job runs in the background. 202-before-run means a long agent turn never
     trips the relay's HTTP timeout.
@@ -218,6 +222,20 @@ credentials. For hosted agents NAS sets these at provision time:
 If `callback_url` / `portal_url` is blank or the agent has no Nous login,
 `is_available()` returns False and the resolver falls back to the built-in
 in-process ticker — cron never loses its trigger.
+
+**Identity rejection at runtime (`403 invalid_client`).** `is_available()` is
+config-only, so it cannot tell whether the stored Nous token is the identity NAS
+maps to a provisioned instance (hop 1 above). When `provision` answers 403
+`invalid_client` — the token in `auth.json` is a plain `hermes-cli` user login
+rather than the `hermes-cli-vps` bootstrap session or an `agent:*` client — the
+rejection is deterministic for the life of that credential: every arm, re-arm
+and `list` would fail the same way, and a `hermes auth` re-login makes it
+permanent (it *replaces* the bootstrap session; only NAS can re-mint one). The
+provider therefore logs ONE warning naming that remedy, stops calling NAS, and
+starts the built-in ticker for the rest of the process so jobs keep firing on
+time instead of only through the late misfire sweep
+(`cron.misfire_grace_minutes`). Transient failures (5xx, transport) do not
+degrade; the next reconcile retries them.
 
 ## Escape hatch (not default)
 

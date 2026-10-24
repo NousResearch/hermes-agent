@@ -19,11 +19,14 @@ it('renders legacy and current process completions as tool disclosures without i
 
   for (const display of [
     {},
-    { display_kind: 'process_complete', display_metadata: { display_text: 'Background Process Finished: node verify.mjs' } }
+    {
+      display_kind: 'process_complete',
+      display_metadata: { display_text: 'Background Process Finished: node verify.mjs' }
+    }
   ]) {
-    const messages = toChatMessages([
-      { role: 'user', content, timestamp: 1, ...display } as SessionMessage
-    ]).map(toRuntimeMessage)
+    const messages = toChatMessages([{ role: 'user', content, timestamp: 1, ...display } as SessionMessage]).map(
+      toRuntimeMessage
+    )
 
     const { container, getByRole, unmount } = render(
       <ThreadRuntime messages={messages}>

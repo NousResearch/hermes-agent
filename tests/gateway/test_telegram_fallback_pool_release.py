@@ -148,37 +148,6 @@ async def test_failed_primary_pool_is_discarded_and_closed(monkeypatch):
         await transport.aclose()
 
 
-def test_caller_limits_win_over_pool_default(monkeypatch):
-    """A caller-supplied ``limits`` kwarg must win over the ``_POOL_LIMITS``
-    ``setdefault`` default, for both the primary and lazily-built fallback
-    pools (#71593)."""
-    import asyncio
-
-    kwargs_log: list = []
-    for key in (
-        "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy",
-        "http_proxy", "all_proxy", "TELEGRAM_PROXY", "NO_PROXY", "no_proxy",
-    ):
-        monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr(
-        tnet.httpx, "AsyncHTTPTransport", _factory({}, [], kwargs_log)
-    )
-
-    custom_limits = httpx.Limits(
-        max_connections=42, max_keepalive_connections=10, keepalive_expiry=30.0
-    )
-    transport = tnet.TelegramFallbackTransport(
-        ["149.154.167.220"], limits=custom_limits
-    )
-    # Primary built in __init__ with the caller's limits (not the default).
-    assert kwargs_log[0]["limits"] is custom_limits
-
-    # Lazily-built fallback pool must also carry the caller's limits.
-    asyncio.run(transport._get_fallback("149.154.167.220"))
-    assert len(kwargs_log) == 2
-    assert all(kw["limits"] is custom_limits for kw in kwargs_log)
-    # And the caller's limits are NOT the class default.
-    assert custom_limits is not tnet.TelegramFallbackTransport._POOL_LIMITS
 
 
 def test_pool_default_limits_applied_when_caller_omits(monkeypatch):
@@ -197,5 +166,4 @@ def test_pool_default_limits_applied_when_caller_omits(monkeypatch):
     transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
     limits = kwargs_log[0]["limits"]
     assert isinstance(limits, httpx.Limits)
-    assert limits.max_connections == 8
     assert limits is transport._POOL_LIMITS

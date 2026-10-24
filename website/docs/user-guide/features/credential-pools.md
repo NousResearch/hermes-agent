@@ -16,7 +16,7 @@ Provider-side prompt caches (Anthropic, OpenAI, OpenRouter) are scoped to the ac
 :::
 
 :::tip
-Credential pools are mainly for API-key providers (OpenRouter, Anthropic). A single [Nous Portal](/integrations/nous-portal) OAuth covers 300+ models, so most users don't need a pool when on Portal.
+Credential pools are mainly for API-key providers (OpenRouter, Anthropic). A single [Nous Portal](../../integrations/nous-portal.md) OAuth covers 300+ models, so most users don't need a pool when on Portal.
 :::
 
 ## How It Works
@@ -37,6 +37,13 @@ Your request
   → 401 auth expired?
       → Try refreshing the token (OAuth)
       → Refresh failed → rotate to next pool key
+  → 400 "model is not supported when using Codex with a ChatGPT account"?
+      → Bench this key for that model only, rotate to the next key (other models stay usable)
+      → Every key rejects the model → fallback_model; the model is skipped for the session
+  → HTTP 200 but `response.status: failed` (ChatGPT/Codex reports usage limits this way)?
+      → Same rules as above, keyed on the embedded error code/message:
+        quota/billing/auth → pool rotation first, provider fallback only once the pool is exhausted;
+        content-policy and other failures → no rotation
   → Success → continue normally
 ```
 
@@ -109,6 +116,8 @@ anthropic supports both API keys and OAuth login.
 Type [1/2]:
 ```
 
+Each `hermes auth add openai-codex` login becomes its own pool entry, but only **different** OpenAI accounts rotate independently: two logins of the same account share one token family upstream, so OpenAI revokes the older one and the second entry adds no quota. Hermes warns at add time (`warning: this login is the same OpenAI account as openai-codex credential #N`) — log into a different account, or keep just one.
+
 ## CLI Commands
 
 | Command | Description |
@@ -119,10 +128,11 @@ Type [1/2]:
 | `hermes auth add <provider>` | Add a credential (prompts for type and key) |
 | `hermes auth add <provider> --type api-key --api-key <key>` | Add an API key non-interactively |
 | `hermes auth add <provider> --type oauth` | Add an OAuth credential via browser login |
+| `hermes auth add openai-codex --browser` | Codex only: sign in with the browser authorization-code + PKCE flow on `localhost:1455` instead of the default device code (for orgs that disable device-code grants); falls back to device code when the port is busy. Default for every Codex login via `auth.codex_login_flow: browser` |
 | `hermes auth add <provider> --priority 0` | Add a credential and place it first in the `fill_first` order |
 | `hermes auth priority <provider> <target> <n>` | Move a credential to priority `n` (0 = tried first); the rest are renumbered |
 | `hermes auth remove <provider> <index>` | Remove credential by 1-based index |
-| `hermes auth reset <provider>` | Clear all cooldowns/exhaustion status |
+| `hermes auth reset <provider>` | Clear all cooldowns/exhaustion status (applies to running sessions too: a live gateway or chat picks the reset up on its next request instead of writing its stale cooldown back) |
 | `hermes auth reset <provider> <target>` | Clear the cooldown on one credential by index, id, or label |
 | `hermes auth refresh <provider> [target]` | Refresh one OAuth credential's tokens and return it to rotation (proves the grant is alive; the next request re-checks quota) |
 
@@ -142,7 +152,10 @@ position when that rule changes it. Other strategies may override priority, and
 reordering does not rebind credentials already held by a running session.
 
 Every successful pool selection increments `request_count`, regardless of strategy.
-Refresh-only lookups and peeks do not count. These are selection counters, not
+Refresh-only lookups and peeks do not count. Status reads (`hermes doctor`, the `/model`
+picker's provider rows, dashboard auth cards) are peeks: they never refresh, rotate, or
+bench a pool credential, so a token endpoint hiccup while the picker is open cannot hide
+a provider that is still serving requests. These are selection counters, not
 billing totals or a count of every inference request: a cached credential can serve
 multiple requests. Counts remain in memory until the next existing pool write
 (for example rotation, exhaustion, refresh, or an administrative change); this does
@@ -163,6 +176,27 @@ credential_pool_strategies:
 | `least_used` | Always pick the key with the lowest request count |
 | `random` | Random selection among healthy keys |
 
+### Demoting a healthy credential {#demoting-a-healthy-credential}
+
+The pool only benches a credential *after* the provider rejects it (429/402/401). To keep a
+credential you are actively using elsewhere — for example a Codex login whose weekly window
+you want to save for interactive work — out of the gateway's first pick *before* it runs dry,
+move it to the back of the `fill_first` order instead of removing it:
+
+```bash
+hermes auth list openai-codex                 # find the index, id or label
+hermes auth priority openai-codex 1 99        # 1-based index, entry id, or exact label; large n = last
+hermes auth priority openai-codex work-seat 0 # ...and back to the front later
+```
+
+`hermes auth priority <provider> <target> <priority>` reorders one credential and renumbers the
+others, then persists the new order to `auth.json`. The demoted entry stays healthy: it is not
+exhausted, so it is never touched by the Codex quota-reset probe and there is nothing for
+`hermes auth reset` to clear; it is not refreshed on a timer, and it is still used once every
+credential ahead of it is benched.
+Sessions that already hold a credential keep it until they rotate; new sessions (and the next
+gateway start) follow the new order.
+
 ## Error Recovery
 
 The pool handles different errors differently:
@@ -172,11 +206,19 @@ The pool handles different errors differently:
 | **429 Rate Limit** | Retry same key once (transient). Second consecutive 429 rotates to next key | 1 hour |
 | **402 Billing/Quota** | Immediately rotate to next key | 1 hour |
 | **401 Auth Expired** | Try refreshing the OAuth token first. Rotate only if refresh fails | 5 minutes |
+| **400 Codex model entitlement** (`The '<model>' model is not supported when using Codex with a ChatGPT account.`) | Bench this key for the rejected model only and rotate to the next key; other models keep using the key. Other 400s never rotate | Until `hermes auth reset` (per model; an entitlement is a plan property, not a window) |
 | **All keys exhausted** | Fall through to `fallback_model` if configured | — |
 
 Provider-supplied `reset_at` timestamps override these default cooldowns.
 
 The `has_retried_429` flag resets on every successful API call, so a single transient 429 doesn't trigger rotation.
+
+**Quota benches are temporary for the live session too.** When a 429/402 rotates a session off a
+credential, that session checks at the start of each turn whether the benched credential is back in
+rotation and moves back to it as soon as its cooldown lifts — the same choice a new session would make.
+A long-running chat (the gateway keeps agents cached) therefore returns to a subscription seat once
+its window reopens instead of billing the metered fallback for the rest of its life. A `401` bench
+does not trigger this; an explicit `/model` switch cancels a pending switch-back.
 
 **Anthropic 429s are per model.** Anthropic enforces its rate limits per model, so a generic 429 for
 one Claude model cools that credential down for *that model only* — the same key keeps serving every
@@ -185,11 +227,28 @@ cooldown. Billing (`402`, usage-limit) and auth (`401`) failures still bench the
 
 **A dead OAuth login is reported, not benched.** When a refresh token is rejected for good
 (`invalid_grant`, `invalid_token`, `refresh_token_reused` — the token was revoked, or another program
-holding the same login rotated it first), the pool logs one WARNING naming the entry and the repair
+holding the same login rotated it first — or, for Nous, the profile holds no Portal login or token
+pair to refresh with), the pool logs one WARNING naming the entry and the repair
 command (`hermes auth add <provider>`), and the credential leaves rotation — marked `dead`, or dropped
 when it only mirrored a token file the pool has just cleared — until you sign in again. This applies to Anthropic, Codex, xAI
 and Nous OAuth logins alike. A dead credential never re-enters rotation on a timer, so a lost login
 shows up once in the log instead of failing quietly every hour.
+
+**Every Codex login in an always-on home is dead: sign in again, do not wait for adoption.** Hermes
+imports the Codex CLI's `~/.codex/auth.json` automatically only to *repair a login it already has*
+— when its own refresh of the `openai-codex` entry fails and `auth.adopt_external_logins` is on
+(see [Borrowed CLI logins](../security.md#borrowed-cli-logins)). A pool whose Codex entries are
+all `dead` (or removed) has nothing left to repair, so a headless gateway or cron profile stays
+without a Codex credential until you run `hermes auth add openai-codex` in *that* home
+(`hermes -p <profile> auth add openai-codex` for a named profile), which offers the Codex CLI import
+interactively. Profiles that should share one login can point at the same `HERMES_HOME` instead of
+each holding a copy of a single-use refresh token.
+
+**A cooling-down or dead credential is not a blank install.** When a configured profile starts the
+CLI while its only credential is benched or quarantined, startup prints the failure and, for a bench,
+the remaining cooldown (or the `hermes auth add <provider>` re-login for a dead one) — the first-run
+"No inference provider is configured yet" wizard is offered only when the resolver finds nothing
+configured at all.
 
 ## Custom Endpoint Pools
 
@@ -260,7 +319,7 @@ This means subagents benefit from the same rate-limit resilience as the parent, 
 
 The credential pool uses a threading lock for all state mutations (`select()`, `mark_exhausted_and_rotate()`, `try_refresh_current()`, `mark_used()`). This ensures safe concurrent access when the gateway handles multiple chat sessions simultaneously.
 
-Across processes (many subagents, a gateway plus a CLI, cron jobs), OAuth refreshes are serialized through a file lock on `auth.json`. When one shared OAuth grant expires under many concurrent processes, exactly one process performs the refresh; the others detect that the on-disk token no longer matches the one that failed and adopt it instead of rotating the single-use refresh token again. A process that loses the lock race keeps its entry healthy and retries — lock contention is never recorded as a credential failure.
+Across processes (many subagents, a gateway plus a CLI, cron jobs), OAuth refreshes are serialized through a file lock on `auth.json`. When one shared OAuth grant expires under many concurrent processes, exactly one process performs the refresh; the others detect that the on-disk token no longer matches the one that failed and adopt it instead of rotating the single-use refresh token again. A process that loses the lock race keeps its entry healthy and retries — lock contention is never recorded as a credential failure. A session or process still holding an older copy of the pool never writes that copy's tokens back over a pair another one rotated since; it keeps the newer pair on disk and adopts it.
 
 ## Architecture
 

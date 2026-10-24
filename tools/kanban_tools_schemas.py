@@ -3,9 +3,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from hermes_cli.kanban_workflow import ARCHIVED, DEFAULT_WORKFLOW
+
 _DESC_TASK_ID_DEFAULT = (
-    "Task id. If omitted, defaults to HERMES_KANBAN_TASK from the env "
-    "(the task the dispatcher spawned you to work on)."
+    "Task id. If omitted, defaults to HERMES_KANBAN_TASK from the env — the "
+    "task the dispatcher spawned you to work on. That default only exists for "
+    "a dispatcher-spawned worker; any other caller has no default and must "
+    "pass an explicit task_id (use kanban_list to discover ids)."
 )
 
 _DESC_BOARD = (
@@ -43,12 +47,13 @@ def _schema(name: str, description: str, properties: dict[str, Any], required: l
 KANBAN_SHOW_SCHEMA = _schema(
     "kanban_show",
     (
-        "Read a task's full state — title, body, assignee, parent task "
-        "handoffs, your prior attempts on this task if any, comments, "
-        "and recent events. Use this to (re)orient yourself before "
+        "Read a task's full state: body, assignee, parent handoffs, attempts, comments. "
+        "It also carries the title and recent events. Use this to (re)orient yourself before "
         "starting work, especially on retries. The response includes a "
         "pre-formatted ``worker_context`` string suitable for inclusion "
-        "verbatim in your reasoning."
+        "verbatim in your reasoning. Outside a dispatcher-spawned worker "
+        "there is no default task: a bare call returns a pointer to "
+        "``kanban_list`` instead of task state."
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
@@ -59,8 +64,7 @@ KANBAN_SHOW_SCHEMA = _schema(
 KANBAN_LIST_SCHEMA = _schema(
     "kanban_list",
     (
-        "List Kanban task summaries so an orchestrator profile can discover "
-        "work to route. Supports the same core filters as the CLI: assignee, "
+        "List Kanban task summaries so an orchestrator can discover work to route. Supports the same core filters as the CLI: assignee, "
         "status, tenant, include_archived, and limit. Returns compact rows "
         "with ids, title, status, assignee, priority, parent/child ids, and "
         "counts. Bounded to 50 rows by default, 200 max, with truncation "
@@ -72,10 +76,7 @@ KANBAN_LIST_SCHEMA = _schema(
         "assignee": _prop("string", "Optional assignee/profile filter."),
         "status": {
             "type": "string",
-            "enum": [
-                "triage", "todo", "ready", "running",
-                "blocked", "done", "archived",
-            ],
+            "enum": [*DEFAULT_WORKFLOW.keys(), ARCHIVED],
             "description": "Optional task status filter.",
         },
         "tenant": _prop("string", "Optional tenant/project namespace filter."),
@@ -88,8 +89,7 @@ KANBAN_LIST_SCHEMA = _schema(
 KANBAN_COMPLETE_SCHEMA = _schema(
     "kanban_complete",
     (
-        "Mark your current task done with a structured handoff for "
-        "downstream workers and humans. Prefer ``summary`` for a "
+        "Mark your current task done with a structured handoff for others. Prefer ``summary`` for a "
         "human-readable 1-3 sentence description of what you did; put "
         "machine-readable facts in ``metadata`` (changed_files, "
         "tests_run, decisions, findings, etc). At least one of "
@@ -146,8 +146,8 @@ KANBAN_COMPLETE_SCHEMA = _schema(
                 "Optional list of absolute paths to deliverable "
                 "files you produced during this run — generated "
                 "charts, PDFs, spreadsheets, images, archives. "
-                "Examples: [\"/tmp/q3-revenue.png\", "
-                "\"/tmp/report.pdf\"]. The gateway notifier "
+                "Examples: [\"~/.hermes/cache/scratch/q3-revenue.png\", "
+                "\"~/.hermes/cache/scratch/report.pdf\"]. The gateway notifier "
                 "uploads each path as a native attachment to the "
                 "subscribed chat (images embed inline, everything "
                 "else uploads as a file) so the deliverable "
@@ -190,20 +190,38 @@ KANBAN_BLOCK_SCHEMA = _schema(
             "enum": ["dependency", "needs_input", "capability", "transient"],
             "description": (
                 "Why you're blocked. 'dependency' waits in todo and "
-                "resumes automatically; the others surface to a human. "
-                "Omit only if none apply."
+                "resumes automatically when an incomplete parent finishes; "
+                "if no parent is open it is recorded as needs_input instead. "
+                "The others surface to a human. Omit only if none apply."
             ),
         },
     },
     ["reason"],
 )
 
+KANBAN_SCHEDULE_SCHEMA = _schema(
+    "kanban_schedule",
+    (
+        "Park your task as 'scheduled' while it waits for a time or external event. This ends the current run and makes the "
+        "task non-dispatchable until an orchestrator unblocks it; it does not "
+        "create a timer. Put any wake-up marker such as "
+        "``SCHEDULED_UNTIL=<ISO8601>`` in ``reason``."
+    ),
+    {
+        "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+        "reason": _prop("string", (
+            "Optional reason or machine-readable wake-up marker recorded on "
+            "the completed run and scheduled event."
+        )),
+    },
+    [],
+)
+
+
 KANBAN_REQUEST_REVIEW_SCHEMA = _schema(
     "kanban_request_review",
     (
-        "Hand the task off for review: implementation, self-review, and "
-        "verification are complete and you want a human (or reviewer) to "
-        "look before it is marked done. Moves the task to the 'review' "
+        "Hand a finished, self-verified task to a human or reviewer before it is done. Moves the task to the 'review' "
         "column and notifies the subscriber. Unlike ``kanban_block`` this is "
         "NOT a blocker — it never counts toward unblock-loop detection, so a "
         "task can cycle through review across follow-ups without ever being "
@@ -236,7 +254,7 @@ KANBAN_REQUEST_REVIEW_SCHEMA = _schema(
                 "Optional list of absolute paths to deliverable "
                 "files this handoff names — generated charts, "
                 "PDFs, spreadsheets, images, archives. Examples: "
-                "['/tmp/q3-revenue.png', '/tmp/report.pdf']. "
+                "['~/.hermes/cache/scratch/q3-revenue.png', '~/.hermes/cache/scratch/report.pdf']. "
                 "A review handoff is the last implementer "
                 "transition, so the kernel copies these into the "
                 "task's durable attachments before the reviewer's "
@@ -254,8 +272,7 @@ KANBAN_REQUEST_REVIEW_SCHEMA = _schema(
 KANBAN_REQUEST_CHANGES_SCHEMA = _schema(
     "kanban_request_changes",
     (
-        "Reviewer verdict: return the current review run to the original "
-        "implementer with concrete required changes. This closes the review "
+        "Reviewer verdict: send the task back to its implementer with required changes. This closes the review "
         "run, reapplies parent dependency gating, and requeues the task without "
         "using block-loop accounting. Only use from a task claimed from the "
         "review column; use kanban_block only for a genuine external blocker."
@@ -273,8 +290,7 @@ KANBAN_REQUEST_CHANGES_SCHEMA = _schema(
 KANBAN_HEARTBEAT_SCHEMA = _schema(
     "kanban_heartbeat",
     (
-        "Signal that you're still alive during a long operation "
-        "(training, encoding, large crawls). Call every few minutes so "
+        "Signal you're still alive during a long operation (training, encoding, crawls). Call every few minutes so "
         "humans see liveness separately from PID checks. Pure side "
         "effect — no work changes."
     ),
@@ -299,7 +315,9 @@ KANBAN_COMMENT_SCHEMA = _schema(
     {
         "task_id": _prop("string", (
                 "Task id. Required (may be your own task or "
-                "another's — comment threads are per-task)."
+                "another's — comment threads are per-task). Outside a "
+                "dispatcher-spawned worker there is no default; use "
+                "kanban_list to discover ids."
         )),
         "body": _prop("string", "Markdown-supported comment body."),
     },
@@ -334,8 +352,7 @@ KANBAN_ATTACH_SCHEMA = _schema(
 KANBAN_ATTACH_URL_SCHEMA = _schema(
     "kanban_attach_url",
     (
-        "Attach a file to a task by URL — Hermes downloads it server-side "
-        "and stores it as a real attachment (capped at 25 MB). Use when "
+        "Attach a file to a task by URL (Hermes downloads it server-side, max 25 MB). Use when "
         "you have a link rather than the bytes. Only http/https URLs are "
         "accepted."
     ),
@@ -357,8 +374,8 @@ KANBAN_ATTACH_URL_SCHEMA = _schema(
 KANBAN_ATTACHMENTS_SCHEMA = _schema(
     "kanban_attachments",
     (
-        "List the files attached to a task: id, filename, content_type, "
-        "size, who uploaded it, and the absolute on-disk path you can read."
+        "List a task's attached files, with the absolute on-disk path you can read. "
+        "Rows carry id, filename, content_type, size and uploader."
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
@@ -369,8 +386,7 @@ KANBAN_ATTACHMENTS_SCHEMA = _schema(
 KANBAN_CREATE_SCHEMA = _schema(
     "kanban_create",
     (
-        "Create a new kanban task, optionally as a child of the current "
-        "one (pass the current task id in ``parents``). Used by "
+        "Create a kanban task, optionally a child of the current one (via ``parents``). Used by "
         "orchestrator workers to fan out — decompose work into child "
         "tasks with specific assignees, link them into a pipeline, "
         "then complete your own task. The dispatcher picks up the new "
@@ -523,7 +539,9 @@ KANBAN_LINK_SCHEMA = _schema(
     (
         "Add a parent→child dependency edge after both tasks already "
         "exist. The child won't promote to 'ready' until all parents "
-        "are 'done'. Cycles and self-links are rejected."
+        "are 'done'. Cycles and self-links are rejected. A running child "
+        "is rejected unless the active owning worker is linking its own "
+        "card for a dependency handoff."
     ),
     {
         "parent_id": {"type": "string", "description": "Parent task id."},

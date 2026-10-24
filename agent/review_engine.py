@@ -35,7 +35,7 @@ _REVIEW_GOAL = (
 )
 
 
-def _message_text(message: Dict[str, Any]) -> str:
+def _message_text(message: dict[str, Any]) -> str:
     """Display text of a message; multimodal parts are joined, non-text parts noted."""
     content = message.get("content")
     if isinstance(content, str):
@@ -47,10 +47,10 @@ def _message_text(message: Dict[str, Any]) -> str:
     return ""
 
 
-def snapshot_recent_messages(messages: List[Dict[str, Any]], limit: int = DEFAULT_CONTEXT_MESSAGES) -> List[Dict[str, str]]:
+def snapshot_recent_messages(messages: list[dict[str, Any]], limit: int = DEFAULT_CONTEXT_MESSAGES) -> list[dict[str, str]]:
     """Last ``limit`` user/assistant messages with text as {role, text}, oldest first (system, tool and
     pure tool-call stubs excluded)."""
-    out: List[Dict[str, str]] = []
+    out: list[dict[str, str]] = []
     for message in reversed(list(messages or [])):
         if not isinstance(message, dict):
             continue
@@ -67,11 +67,11 @@ def snapshot_recent_messages(messages: List[Dict[str, Any]], limit: int = DEFAUL
     return out
 
 
-def collect_parent_loaded_skills(parent_agent, messages: List[Dict[str, Any]], limit: int = 8) -> List[str]:
+def collect_parent_loaded_skills(parent_agent, messages: list[dict[str, Any]], limit: int = 8) -> list[str]:
     """Skills the parent was operating under: launch-preloaded (marker in ``ephemeral_system_prompt``)
     first, then ``skill_view`` loads from history, deduped, capped at ``limit`` (a reviewer told to load 30
     skills would burn its budget before working)."""
-    names: List[str] = []
+    names: list[str] = []
     prompt = str(getattr(parent_agent, "ephemeral_system_prompt", "") or "")
     candidates = [m.group(1) for m in re.finditer(r'with the "([^"]+)" skill\s+preloaded', prompt)]
     for message in messages or []:
@@ -96,7 +96,7 @@ def collect_parent_loaded_skills(parent_agent, messages: List[Dict[str, Any]], l
     return names[:limit]
 
 
-def build_review_task(snapshot: List[Dict[str, str]], user_prompt: str = "", loaded_skills: Optional[List[str]] = None) -> tuple:
+def build_review_task(snapshot: list[dict[str, str]], user_prompt: str = "", loaded_skills: Optional[list[str]] = None) -> tuple:
     """Compose a viewer-friendly goal and the complete reviewer briefing."""
     focus = " ".join(user_prompt.split())
     goal = f"Review: {focus}" if focus else "Review recent work"
@@ -136,7 +136,7 @@ def build_review_task(snapshot: List[Dict[str, str]], user_prompt: str = "", loa
     return goal, "\n".join(lines)
 
 
-def _load_review_credentials_cfg() -> Optional[Dict[str, Any]]:
+def _load_review_credentials_cfg() -> Optional[dict[str, Any]]:
     """``auxiliary.review`` as a delegation-credentials dict, or None when unconfigured (provider auto/empty
     and no model/base_url) so the reviewer inherits the parent's credentials."""
     try:
@@ -155,7 +155,7 @@ def _load_review_credentials_cfg() -> Optional[Dict[str, Any]]:
     return cfg
 
 
-def start_review(parent_agent, messages: List[Dict[str, Any]], user_prompt: str = "") -> Dict[str, Any]:
+def start_review(parent_agent, messages: list[dict[str, Any]], user_prompt: str = "") -> dict[str, Any]:
     """Dispatch the reviewer subagent; returns the parsed ``delegate_task`` dict (``status: "dispatched"`` +
     ``delegation_id``, or the synchronous result on channels without async completions). Raises ValueError
     when there is nothing to review or the dispatch is rejected/errored."""
@@ -181,7 +181,7 @@ def start_review(parent_agent, messages: List[Dict[str, Any]], user_prompt: str 
     return result
 
 
-def format_dispatch_note(result: Dict[str, Any], user_prompt: str = "") -> str:
+def format_dispatch_note(result: dict[str, Any], user_prompt: str = "") -> str:
     """Human-facing one-liner for a successful dispatch. Shared by surfaces."""
     if result.get("status") == "dispatched":
         return "Review started. Results will return here."

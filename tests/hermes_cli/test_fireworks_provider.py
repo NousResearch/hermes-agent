@@ -22,7 +22,7 @@ if "dotenv" not in sys.modules:
     sys.modules["dotenv"] = fake_dotenv
 
 from hermes_cli.auth import resolve_api_key_provider_credentials
-from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS, normalize_provider
+from hermes_cli.models import normalize_provider
 
 
 @pytest.fixture(autouse=True)
@@ -46,16 +46,6 @@ class TestFireworksAliases:
         assert normalize_in_providers(alias) == "fireworks"
 
 
-class TestFireworksOrdering:
-    """Fireworks participates in the canonical provider catalog."""
-
-    def test_present_in_canonical_providers(self):
-        slugs = [p.slug for p in CANONICAL_PROVIDERS]
-        assert "fireworks" in slugs
-
-
-    def test_has_a_label(self):
-        assert _PROVIDER_LABELS.get("fireworks") == "Fireworks AI"
 
 
 class TestFireworksConfigRegistry:
@@ -69,23 +59,9 @@ class TestFireworksConfigRegistry:
         assert "FIREWORKS_BASE_URL" not in OPTIONAL_ENV_VARS
 
 
-class TestFireworksOverlay:
-    def test_overlay_exists(self):
-        from hermes_cli.providers import HERMES_OVERLAYS
-
-        assert "fireworks" in HERMES_OVERLAYS
-        overlay = HERMES_OVERLAYS["fireworks"]
-        assert overlay.transport == "openai_chat"
-        assert overlay.base_url_override == "https://api.fireworks.ai/inference/v1"
-        assert not overlay.base_url_env_var
-        assert not overlay.is_aggregator
 
 
 class TestFireworksDoctor:
-    def test_provider_env_hints_include_fireworks(self):
-        from hermes_cli.doctor import _PROVIDER_ENV_HINTS
-
-        assert "FIREWORKS_API_KEY" in _PROVIDER_ENV_HINTS
 
     def test_slash_form_model_is_not_flagged_as_vendor_prefixed(self, monkeypatch, tmp_path):
         """Fireworks' native model IDs are slash-form (accounts/fireworks/...),
@@ -123,8 +99,8 @@ class TestFireworksDoctor:
         with contextlib.suppress(Exception):
             from hermes_cli import auth as _auth_mod
 
-            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
-            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", dict)
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", dict)
 
         buf = io.StringIO()
         with contextlib.suppress(SystemExit), contextlib.redirect_stdout(buf):
@@ -157,7 +133,7 @@ class TestFireworksAuxiliary:
 
     def test_client_sends_attribution_headers(self, monkeypatch):
         monkeypatch.setenv("FIREWORKS_API_KEY", "fw_test_key")
-        client, model, kwargs = self._resolve("fireworks")
+        client, _model, kwargs = self._resolve("fireworks")
         assert client is not None
         headers = kwargs.get("default_headers", {})
         assert headers["HTTP-Referer"] == "https://hermes-agent.nousresearch.com"

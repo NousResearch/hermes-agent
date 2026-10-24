@@ -12,6 +12,7 @@ from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OpenModel, ProfileParams, SessionLiveInfo
+from .connectors_operation import CatalogAppState, CatalogTier
 from .registry import method
 
 
@@ -98,7 +99,10 @@ method("tools.configure", params=ToolsConfigureParams, result=ToolsConfigureResu
 
 
 class ReloadEnvParams(Params):
-    pass
+    """The shared owner serves ``/reload`` for one session the caller controls (``session_id``)."""
+
+    session_id: str | None = None
+    profile: str | None = None
 
 
 class ReloadEnvResult(Result):
@@ -124,13 +128,26 @@ class ReloadMcpStatus(WireEnum):
     reloaded = "reloaded"
 
 
+class ReloadMcpSession(WireEnum):
+    applied = "applied"
+    unchanged = "unchanged"
+    busy = "busy"
+
+
 class ReloadMcpResult(Result):
+    """``session``: what the calling local session's MCP servers did (a new policy generation, nothing to
+    change, or deferred while a turn runs or waits); ``unavailable``: configured servers that did not connect
+    beside what did apply; ``session_servers``: the MCP servers that session's committed policy runs."""
+
     status: ReloadMcpStatus
     message: str | None = None
     loaded_rev: str | None = None
     coalesced: bool | None = None
     turn_isolation: bool | None = None
     host_ack: JsonValue | None = None
+    session: ReloadMcpSession | None = None
+    unavailable: list[str] | None = None
+    session_servers: list[str] | None = None
 
 
 method("reload.mcp", params=ReloadMcpParams, result=ReloadMcpResult,
@@ -204,7 +221,11 @@ method("skills.manage", params=SkillsManageParams, result=SkillsManageResult,
 
 
 class SkillsReloadParams(Params):
-    pass
+    """``session_id`` binds the rescan to that session's profile and workspace (project skills);
+    ``profile`` scopes a session-less rescan."""
+
+    session_id: str | None = None
+    profile: str | None = None
 
 
 class SkillCommandRef(Result):
@@ -262,7 +283,7 @@ class LearningNodeRow(Result):
     id: str
     glyph: str
     label: str
-    fullLabel: str  # noqa: N815 — wire key from learning_graph_render._bucket_rows
+    fullLabel: str
     meta: str
     body: str
     style: str
@@ -339,6 +360,7 @@ method("learning.edit", params=LearningEditParams, result=LearningMutationResult
 class McpCatalogEntry(Result):
     name: str
     description: str
+    connector_slug: str | None = None
     installed: bool
     enabled: bool
     requires: list[str]
@@ -351,6 +373,11 @@ class McpCatalogResult(Result):
 
 method("mcp.catalog", params=ProfileParams, result=McpCatalogResult,
        doc="Curated MCP presets with per-profile installed/enabled state and the env keys each needs.")
+
+
+class McpServerSource(WireEnum):
+    config = "config"
+    plugin = "plugin"
 
 
 class McpServerSummary(Result):
@@ -366,6 +393,8 @@ class McpServerSummary(Result):
     oauth_tokens_present: bool | None = None
     enabled: bool
     tools: JsonValue | None = None
+    source: McpServerSource
+    plugin: str | None = None
 
 
 class McpServersListResult(Result):
@@ -394,6 +423,8 @@ class McpServerRuntimeRow(Result):
     connected: bool
     disabled: bool
     status: McpRuntimeStatus
+    source: McpServerSource
+    plugin: str | None = None
 
 
 class McpServersStatusResult(Result):
@@ -556,10 +587,25 @@ class LegacyPluginRow(Result):
     name: str
     version: str
     enabled: bool
+    # The canonical gateway's rows also carry the load details the classic CLI's /plugins prints.
+    key: str | None = None
+    tools: int | None = None
+    hooks: int | None = None
+    commands: int | None = None
+    error: str | None = None
+
+
+class PluginToolsetRow(Result):
+    key: str
+    label: str
+    description: str
 
 
 class PluginsListResult(Result):
     plugins: list[LegacyPluginRow]
+    # The canonical gateway's plugin toolsets and portable MCP servers (the classic CLI's /tools reads them).
+    toolsets: list[PluginToolsetRow] | None = None
+    portable_mcp_servers: list[str] | None = None
 
 
 method("plugins.list", params=PluginsListParams, result=PluginsListResult,
@@ -571,11 +617,19 @@ class PluginsAction(WireEnum):
     toggle = "toggle"
     install = "install"
     update = "update"
+    remove = "remove"
+    settings = "settings"
+    onboarding = "onboarding"
+    presence = "presence"
 
 
 class PluginsManageParams(ProfileParams):
     """``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``
-    (+ ``force``, ``enable``, ``ref``); ``update``: ``name``."""
+    (+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin
+    that widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose
+    security scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only);
+    ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);
+    ``presence``: ``names`` (catalog names, answered in that order)."""
 
     action: PluginsAction = PluginsAction.list
     key: str | None = None
@@ -586,6 +640,53 @@ class PluginsManageParams(ProfileParams):
     catalog_name: str | None = None
     force: bool | None = None
     ref: str | None = None
+    accept_capabilities: bool | None = None
+    values: dict[str, JsonValue] | None = None
+    names: list[str] | None = None
+
+
+class PluginSettingFieldType(WireEnum):
+    string = "string"
+    number = "number"
+    boolean = "boolean"
+    enum = "enum"
+    secret = "secret"
+    json = "json"
+
+
+class PluginSettingField(Result):
+    """One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub
+    (``hermes_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env``
+    names the ``.env`` variable and ``has_value`` whether it is set."""
+
+    key: str
+    type: PluginSettingFieldType
+    label: str
+    description: str
+    required: bool
+    value: JsonValue | None = None
+    default: JsonValue | None = None
+    choices: list[str] | None = None
+    env: str | None = None
+    has_value: bool | None = None
+
+
+class PluginServerState(WireEnum):
+    connected = "connected"
+    app_not_running = "app_not_running"
+    hermes_not_connected = "hermes_not_connected"
+    endpoint_unavailable = "endpoint_unavailable"
+    no_interactive_session = "no_interactive_session"
+    version_too_old = "version_too_old"
+    missing_app = "missing_app"
+    unsupported_gpu = "unsupported_gpu"
+    unknown = "unknown"
+
+
+class PluginServerRow(Result):
+    name: str
+    state: PluginServerState
+    sentence: str
 
 
 class AgentPluginRow(Result):
@@ -600,34 +701,187 @@ class AgentPluginRow(Result):
     portable: bool
     install_dir: str
     has_desktop_half: bool
+    servers: list[PluginServerRow]
     catalog_name: str | None = None
     catalog_tier: str | None = None
     installed_sha: str | None = None
     catalog_sha: str | None = None
     catalog_version: str | None = None
     update_available: bool | None = None
+    # git installs: what the last update check found to move to, a commit or a feed version
+    # (``update_available`` is then True).
+    update_target: str | None = None
     pinned_sha: str | None = None
+    settings_schema: list[PluginSettingField] | None = None
+
+
+class PluginLiveServer(Result):
+    """One plugin MCP server connected at activation: its callable tool names, or the reason it did not connect."""
+
+    name: str
+    connected: bool
+    tools: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+
+class PluginLiveSkill(Result):
+    """One plugin skill usable now through ``skill_view`` (qualified ``<plugin>:<skill>``)."""
+
+    name: str
+    description: str = ""
+
+
+class PluginLiveNow(Result):
+    mcp_servers: list[PluginLiveServer] = Field(default_factory=list)
+    skills: list[PluginLiveSkill] = Field(default_factory=list)
+
+
+class PluginRestartTarget(WireEnum):
+    gateway = "gateway"
+    backend = "backend"
+
+
+class PluginActivation(Result):
+    """What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``
+    kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``
+    language-pack layers), ``gateway_transforms`` / ``hooks`` (hook
+    names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded
+    (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the
+    error) and skills, usable in every open chat of the profile from its next turn — the chats also get a
+    note listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)
+    apply from the next session. ``missing_dependencies``: the plugin's declared Python requirements a
+    running process cannot import (installed after it booted, or never); ``missing_in`` names which
+    processes (``gateway``, ``backend`` = the Desktop / dashboard process) — only restarting them loads them."""
+
+    name: str
+    key: str
+    activated_now: dict[str, list[str]] = Field(default_factory=dict)
+    live_now: PluginLiveNow | None = None
+    deferred: dict[str, list[str]] = Field(default_factory=dict)
+    missing_dependencies: list[str] = Field(default_factory=list)
+    missing_in: list[PluginRestartTarget] = Field(default_factory=list)
+
+
+class OnboardingCatalogPlugin(Result):
+    """A catalog plugin curated for the onboarding card (``onboarding: true``) that this OS runs.
+    ``app_state`` is the pinned ``plugin.json`` declaration judged on this host; ``sentence`` names what
+    is missing (empty when present or unknown)."""
+
+    name: str
+    title: str
+    description: str
+    tier: CatalogTier
+    platforms: list[str]
+    app_state: CatalogAppState
+    sentence: str
+
+
+class CatalogPluginPresence(Result):
+    """A named catalog plugin this OS runs. ``state`` is the pinned ``plugin.json`` app declaration judged
+    on this host; ``sentence`` names what is missing (empty when present or unknown); ``disclosure`` is the
+    catalog description's ``Disclosure:`` sentence (empty when it has none)."""
+
+    name: str
+    title: str
+    state: CatalogAppState
+    sentence: str
+    disclosure: str
+
+
+class PluginScanFinding(Result):
+    """One security-scan finding (``tools.plugin_guard``) on a plugin tree the scan blocked."""
+
+    pattern_id: str
+    severity: str
+    category: str
+    file: str
+    line: int
+    description: str
 
 
 class PluginsManageResult(Result):
-    """``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``name``/``plugin``;
-    ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``update`` →
-    ``ok``/``unchanged``/``sha``."""
+    """``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name``
+    (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s
+    ok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the
+    running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is
+    live now vs deferred, so ``restart_required`` is True only when no gateway answered or the running
+    gateway/backend cannot import the plugin's Python dependencies (``activation.missing_dependencies``); ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the
+    ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the
+    client retries with ``accept_capabilities`` — or ``ok=false`` + ``scan_blocked`` with ``scan_verdict`` /
+    ``scan_findings`` (retry a caution verdict with ``force``); ``remove`` → ``ok``/``name`` plus
+    ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``."""
 
     plugins: list[AgentPluginRow] | None = None
     user_count: int | None = None
     bundled_count: int | None = None
     ok: bool | None = None
     unchanged: bool | None = None
+    restart_required: bool | None = None
+    gateway_reloaded: bool | None = None
+    activation: PluginActivation | None = None
+    cleared_memory_provider: bool | None = None
     name: str | None = None
     plugin: AgentPluginRow | None = None
     plugin_name: str | None = None
     warnings: list[str] | None = None
     missing_env: list[str] | None = None
+    # ``install`` → the manifest's ``python_dependencies`` the installer applied (``[]`` when none).
+    python_dependencies: list[str] | None = None
+    # ``install`` from the catalog → the entry's informational ``known_issues`` (``[]`` when none).
+    known_issues: list[str] | None = None
     after_install_path: str | None = None
     enabled: bool | None = None
     sha: str | None = None
+    consent_required: bool | None = None
+    delta: dict[str, list[str]] | None = None
+    delta_lines: list[str] | None = None
+    # ``update`` of a git install whose new code the security scan blocked: nothing changed. A ``caution``
+    # verdict can be retried with ``force`` once the user saw ``scan_findings``; ``dangerous`` cannot.
+    scan_blocked: bool | None = None
+    scan_verdict: str | None = None
+    scan_findings: list[PluginScanFinding] | None = None
+    error: str | None = None
+    written: list[str] | None = None
+    # ``onboarding`` → the curated catalog plugins for the onboarding card.
+    onboarding: list[OnboardingCatalogPlugin] | None = None
+    # ``presence`` → the named catalog plugins this OS runs, in the order asked; unknown names dropped.
+    presence: list[CatalogPluginPresence] | None = None
 
 
 method("plugins.manage", params=PluginsManageParams, result=PluginsManageResult,
-       doc="Plugins Hub backend: list installed plugins, toggle, git-install or re-pin a catalog install.")
+       doc="Plugins Hub backend: list installed plugins, toggle, git-install, re-pin a catalog install, "
+           "or remove a user install.")
+
+
+class PluginCatalogLookupStatus(WireEnum):
+    found = "found"
+    invalid_name = "invalid_name"
+    unknown = "unknown"
+    unavailable = "unavailable"
+
+
+class PluginCatalogLookupParams(ProfileParams):
+    name: str
+
+
+class PluginCatalogLookupEntry(Result):
+    """The fields an install needs: the same ones the embedded catalog picker posts on a pick."""
+
+    name: str
+    repo: str
+    sha: str
+    subdir: str
+    tier: str = "community"
+
+
+class PluginCatalogLookupResult(Result):
+    """``found`` carries ``entry``. ``unknown`` covers a name the catalog doesn't list and one it removed;
+    ``unavailable`` means neither the live catalog nor the in-tree fallback could be read."""
+
+    status: PluginCatalogLookupStatus
+    entry: PluginCatalogLookupEntry | None = None
+
+
+method("plugins.catalog.lookup", params=PluginCatalogLookupParams, result=PluginCatalogLookupResult,
+       doc="One curated plugin-catalog entry by name, from the backend's live catalog (cached, with the "
+           "in-tree fallback and kill list); backs hermes://plugin/install?catalog= deep links.")

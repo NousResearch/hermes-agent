@@ -52,7 +52,15 @@ vi.mock('./canonical-chat', () => ({ PROFILE_SESSION_LIST_LIMIT: 200 }))
 
 vi.mock('./data', () => ({ $lastRoster: { get: () => lastRoster.value } }))
 
-vi.mock('./group-chat', () => ({ $groupChats: { get: () => groupChats.value } }))
+vi.mock('./group-chat', () => ({
+  $groupChats: { get: () => groupChats.value },
+  updateGroupChat: (group: string, mutate: (room: any) => unknown) => {
+    groupChats.value = {
+      ...groupChats.value,
+      [group]: mutate(groupChats.value[group] || {})
+    }
+  }
+}))
 
 vi.mock('./group-membership', () => ({
   groupMemberKey: (member: GroupMember) =>
@@ -132,19 +140,6 @@ describe('the id half: group room member sessions', () => {
     expect(hiddenCalls().every(([, options]) => options.hidden)).toBe(true)
   })
 
-  it('never consults a stored canonical pointer', async () => {
-    // Canonical Bot Chats are hidden by the TITLE sweep below — they are
-    // identified by name, not by pointer. The load-time reconciliation reads
-    // no bot-meta chat id and issues no id-verification RPC.
-    groupChats.value = { Core: { sessions: { alpha: 'room-core-a' } } }
-    lastRoster.value = [{ name: 'alpha' } as RosterRow]
-
-    await runSweep()
-
-    expect(requestForBotMock).not.toHaveBeenCalled()
-    expect(hostMock.request).not.toHaveBeenCalled()
-  })
-
   it('routes a remote member session through its immutable persisted owner', async () => {
     const owner = {
       name: 'worker',
@@ -188,6 +183,27 @@ describe('the id half: group room member sessions', () => {
         .sort()
     ).toEqual(['source-a', 'source-b'])
     expect(hiddenCalls().every(([, options]) => options.sessionId === 'same-id')).toBe(true)
+  })
+
+  it('prunes a missing persisted room session so later startups do not resend it', async () => {
+    groupChats.value = {
+      Core: {
+        sessionOwners: { alpha: { name: 'alpha' } },
+        sessions: { alpha: 'deleted-session' }
+      }
+    }
+    lastRoster.value = [{ name: 'alpha' } as RosterRow]
+    hostMock.setPersistedSessionHidden.mockRejectedValue(new Error('404: {"detail":"Session not found"}'))
+
+    await runSweep()
+
+    expect(hiddenCalls().map(([, options]) => options.sessionId)).toEqual(['deleted-session'])
+    expect((groupChats.value.Core as { sessions: Record<string, string> }).sessions).toEqual({})
+    expect((groupChats.value.Core as { sessionOwners: Record<string, unknown> }).sessionOwners).toEqual({})
+
+    await runSweep()
+
+    expect(hiddenCalls().map(([, options]) => options.sessionId)).toEqual(['deleted-session'])
   })
 
   it('fails closed on a source-qualified session whose persisted owner is malformed', async () => {

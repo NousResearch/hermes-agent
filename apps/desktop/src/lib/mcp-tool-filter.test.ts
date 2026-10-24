@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { countEnabledTools, isToolEnabled, readToolsFilter, toggleToolInServer } from './mcp-tool-filter'
+import {
+  countEnabledTools,
+  isToolEnabled,
+  readToolsFilter,
+  setDisabledTools,
+  toggleToolInServer
+} from './mcp-tool-filter'
 
 describe('readToolsFilter', () => {
   it('returns empty when no tools object', () => {
@@ -76,6 +82,24 @@ describe('toggleToolInServer', () => {
     const server = { tools: { exclude: ['a'] } }
     toggleToolInServer(server, 'b')
     expect(server.tools.exclude).toEqual(['a'])
+  })
+})
+
+describe('setDisabledTools', () => {
+  it('keeps a stored rule for a tool the current probe did not return', () => {
+    expect(setDisabledTools({ tools: { exclude: ['dangerous_tool'] } }, ['b'], ['a', 'b']).tools).toEqual({
+      exclude: ['b', 'dangerous_tool']
+    })
+
+    expect(setDisabledTools({ tools: { exclude: ['dangerous_tool'] } }, [], ['a', 'b']).tools).toEqual({
+      exclude: ['dangerous_tool']
+    })
+
+    expect(setDisabledTools({ tools: { include: ['a', 'rare_tool'] } }, ['b'], ['a', 'b']).tools).toEqual({
+      include: ['a', 'rare_tool']
+    })
+
+    expect(setDisabledTools({ tools: { exclude: ['b'] } }, [], ['a', 'b']).tools).toBeUndefined()
   })
 })
 

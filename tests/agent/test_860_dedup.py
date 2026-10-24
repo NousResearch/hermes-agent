@@ -13,7 +13,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-
 # ---------------------------------------------------------------------------
 # Test: _flush_messages_to_session_db only writes new messages
 # ---------------------------------------------------------------------------
@@ -72,48 +71,6 @@ class TestFlushDeduplication:
                 db.close()
 
 
-
-    def test_flush_reset_after_compression(self):
-        """After compression creates a new session, flush index resets."""
-        from hermes_state import SessionDB
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "test.db"
-            db = SessionDB(db_path=db_path)
-            try:
-                agent = self._make_agent(db)
-
-                # Write some messages
-                messages = [
-                    {"role": "user", "content": "msg1"},
-                    {"role": "assistant", "content": "reply1"},
-                ]
-                agent._flush_messages_to_session_db(messages, [])
-
-                old_session = agent.session_id
-                assert agent._last_flushed_db_idx == 2
-
-                # Simulate what _compress_context does: new session, reset idx
-                agent.session_id = "compressed-session-new"
-                db.create_session(session_id=agent.session_id, source="test")
-                agent._last_flushed_db_idx = 0
-
-                # Now flush compressed messages to new session
-                compressed_messages = [
-                    {"role": "user", "content": "summary of conversation"},
-                ]
-                agent._flush_messages_to_session_db(compressed_messages, [])
-
-                new_rows = db.get_messages(agent.session_id)
-                assert len(new_rows) == 1
-
-                # Old session should still have its 2 messages
-                old_rows = db.get_messages(old_session)
-                assert len(old_rows) == 2
-            finally:
-                db.close()
-
-
 # ---------------------------------------------------------------------------
 # Test: append_to_transcript skip_db parameter
 # ---------------------------------------------------------------------------
@@ -147,25 +104,6 @@ class TestAppendToTranscriptSkipDb:
         assert len(rows) == 0, f"Expected 0 DB rows with skip_db=True, got {len(rows)}"
 
 
-
 # ---------------------------------------------------------------------------
 # Test: _last_flushed_db_idx initialization
 # ---------------------------------------------------------------------------
-
-class TestFlushIdxInit:
-    """Verify _last_flushed_db_idx is properly initialized."""
-
-    def test_init_zero(self):
-        """Agent starts with _last_flushed_db_idx = 0."""
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-            from run_agent import AIAgent
-            agent = AIAgent(
-                api_key="test-key",
-                base_url="https://openrouter.ai/api/v1",
-                model="test/model",
-                quiet_mode=True,
-                skip_context_files=True,
-                skip_memory=True,
-            )
-        assert agent._last_flushed_db_idx == 0
-

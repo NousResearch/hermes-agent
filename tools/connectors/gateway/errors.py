@@ -7,7 +7,10 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Optional
 
+from tools.connectors.turn import CARD, LINK, SIDE
+
 __all__ = [
+    "SIDE_AGENT_HINT",
     "GatewayAuthError",
     "GatewayUnavailable",
     "IdempotencyConflict",
@@ -48,19 +51,38 @@ class IdempotencyConflict(ToolGatewayError):
     """Never retry a reused idempotency key with a different body."""
 
 
-def parse_gateway_error(status: int, body: Any) -> ToolGatewayError:
-    """Parse every gateway error envelope without raising on a malformed body."""
+class RateLimited(ToolGatewayError):
+    """429 with the gateway's retry hint in seconds; the caller decides whether to wait."""
+
+    def __init__(self, message: str, *, retry_after: float, **kwargs: Any) -> None:
+        super().__init__(message, **kwargs)
+        self.retry_after = retry_after
+
+
+def parse_gateway_error(status: int, body: Any, headers: Optional[Mapping[str, Any]] = None) -> ToolGatewayError:
+    """Parse every gateway error envelope without raising on a malformed body.
+
+    Three envelope shapes exist: ``{error: {code, message}}`` on most routes, ``{error: "<code>"}``
+    on the account routes, and a flat ``{code, message, requestId, retryAfterMs}`` on a 429."""
     code = f"HTTP_{status}"
     message = ""
     request_id = None
+    retry_after_ms: Optional[float] = None
     if isinstance(body, Mapping):
         envelope = body.get("error")
         if isinstance(envelope, Mapping):
             code = str(envelope.get("code") or code)
             message = str(envelope.get("message") or "")
+        elif isinstance(envelope, str) and envelope:
+            code = envelope
+        elif body.get("code"):
+            code = str(body["code"])
+            message = str(body.get("message") or "")
         raw_request_id = body.get("requestId")
         if raw_request_id is not None:
             request_id = str(raw_request_id)
+        if isinstance(body.get("retryAfterMs"), (int, float)):
+            retry_after_ms = float(body["retryAfterMs"])
     elif body:
         message = str(body)[:500]
     if not message:
@@ -77,7 +99,40 @@ def parse_gateway_error(status: int, body: Any) -> ToolGatewayError:
         return GatewayUnavailable(message, **kwargs)
     if status == 409:
         return IdempotencyConflict(message, **kwargs)
+    if status == 429:
+        header = (headers or {}).get("Retry-After") if headers else None
+        retry_after = float(header) if header not in (None, "") else (retry_after_ms or 1000.0) / 1000.0
+        return RateLimited(message, retry_after=retry_after, **kwargs)
     return ToolGatewayError(message, retryable=status >= 500, **kwargs)
+
+
+SIDE_AGENT_HINT = (
+    "This app is not connected. Only the main agent can connect it, so report that back "
+    "instead of trying to connect it here."
+)
+
+CARD_HINT = (
+    "This app is not connected. Call manage_connections to open a connection card for it; "
+    "there is no link to show the user."
+)
+
+# CONNECTION_EXPIRED: the account exists but the vendor no longer accepts it.
+EXPIRED_SIDE_AGENT_HINT = (
+    "This app's connection expired. Only the main agent can reconnect it, so report that back "
+    "instead of trying to reconnect it here."
+)
+
+EXPIRED_CARD_HINT = (
+    "This app's connection expired. Call manage_connections with action 'reconnect' to open a "
+    "connection card for it; there is no link to show the user."
+)
+
+EXPIRED_LINK_HINT = "The connection expired. Show the user the connect_url to reconnect, then retry the call."
+
+_HINTS = {
+    "CONNECTION_REQUIRED": {SIDE: SIDE_AGENT_HINT, CARD: CARD_HINT},
+    "CONNECTION_EXPIRED": {SIDE: EXPIRED_SIDE_AGENT_HINT, CARD: EXPIRED_CARD_HINT, LINK: EXPIRED_LINK_HINT},
+}
 
 
 def render_connection_required(
@@ -86,25 +141,37 @@ def render_connection_required(
     message: Optional[str] = None,
     connect_url: Optional[str] = None,
     hint: Optional[str] = None,
-    card: bool = False,
+    surface: str = LINK,
+    code: str = "CONNECTION_REQUIRED",
 ) -> dict[str, Any]:
-    """Single shared CONNECTION_REQUIRED shape. With a card the link stays on the panel and the
-    model is told a connect card is available; without one the model relays the link."""
+    """The model-facing shape for an app the call cannot use until the user connects it.
+
+    ``code`` is CONNECTION_REQUIRED or CONNECTION_EXPIRED; both keep the card and link behaviour,
+    the expired one with reconnect wording."""
+    hints = _HINTS.get(code, _HINTS["CONNECTION_REQUIRED"])
     payload: dict[str, Any] = {
-        "code": "CONNECTION_REQUIRED",
-        "message": message
-        or (
-            f"The {connector} connector is not connected for this account."
-            if connector
-            else "This connector is not connected for this account."
-        ),
+        "code": code,
+        "message": message or _default_message(code, connector),
     }
     if connector:
         payload["connector"] = connector
-    if card:
+    if surface == SIDE:
+        payload["hint"] = hints[SIDE]
+        return payload
+    if surface == CARD:
         payload["connect_card_available"] = True
-    elif connect_url:
+        payload["hint"] = hints[CARD]
+        return payload
+    if connect_url:
         payload["connect_url"] = connect_url
+        hint = hint or hints.get(LINK)
     if hint:
         payload["hint"] = hint
     return payload
+
+
+def _default_message(code: str, connector: Optional[str]) -> str:
+    app = f"The {connector} connector" if connector else "This connector"
+    if code == "CONNECTION_EXPIRED":
+        return f"{app} connection for this account has expired and must be reconnected."
+    return f"{app} is not connected for this account."

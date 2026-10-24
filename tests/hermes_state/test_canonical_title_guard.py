@@ -142,3 +142,35 @@ def test_auto_titler_can_rename_visible_derived_bot_chat(db):
         source=SessionDB.TITLE_SOURCE_LLM,
     )
     assert db.get_session("visible")["title"] == "Renamed by titler"
+
+
+def test_numbered_branch_never_shadows_the_canonical_chat(db):
+    """Title resolution must land on the canonical Bot Chat, never on a "#N" sibling.
+
+    Every DM transport resolves the target bot by that exact name
+    (``hermes -p <bot> chat --in ~ -c "Bot Chat"``: message_agent, bot_relay, cron
+    delivery). A numbered sibling — a Desktop branch, which is visible and NOT
+    Bot-Mode-managed — would otherwise swallow each teammate's message into a
+    session whose bot has no message_agent and cannot answer.
+    """
+    canonical = _make_canonical(db, "forever")
+    db.create_session("branch", source="desktop", parent_session_id=canonical)
+    assert db._set_session_title(
+        "branch",
+        f"{SessionDB.CANONICAL_BOT_CHAT_TITLE} #2",
+        source=SessionDB.TITLE_SOURCE_DERIVED,
+    )
+    assert db.set_session_hidden("branch", False)
+
+    assert db.resolve_session_by_title(SessionDB.CANONICAL_BOT_CHAT_TITLE) == canonical
+
+
+def test_numbered_continuation_still_wins_for_ordinary_titles(db):
+    # Control: the "#N continuation" preference is the point of the lookup — it
+    # stays intact for every non-Bot-Chat title.
+    db.create_session("plain", source="cli")
+    assert db.set_session_title("plain", "My session")
+    db.create_session("plain2", source="cli")
+    assert db.set_session_title("plain2", "My session #2")
+
+    assert db.resolve_session_by_title("My session") == "plain2"

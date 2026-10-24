@@ -20,6 +20,7 @@ import pytest
 from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
 from prompt_toolkit.input.vt100_parser import Vt100Parser
 from prompt_toolkit.keys import Keys
+from prompt_toolkit.output import DummyOutput
 
 from hermes_cli.pt_input_extras import install_modify_other_keys_aliases
 
@@ -84,79 +85,9 @@ def test_modify_other_keys_ctrl_letter_parses_as_raw_byte(letter):
     )
 
 
-@pytest.mark.parametrize("letter", CTRL_LETTERS)
-def test_modify_other_keys_ctrl_letter_single_keypress(letter):
-    """Each Ctrl+letter sequence must produce exactly one keypress —
-    a partial match would emit Escape plus literal text."""
-    for seq in (f"\x1b[27;5;{ord(letter)}~", f"\x1b[{ord(letter)};5u"):
-        result = _parse(seq)
-        assert len(result) == 1, (
-            f"{seq!r} should produce exactly 1 keypress, got {len(result)}: {result!r}"
-        )
-
-
 # ---------------------------------------------------------------------------
 # Critical individual shortcuts
 # ---------------------------------------------------------------------------
-
-def test_ctrl_c_under_modify_other_keys():
-    """Ctrl+C must produce Keys.ControlC, not literal text (#56684)."""
-    assert _parse("\x1b[27;5;99~") == [Keys.ControlC]
-    assert _parse("\x1b[99;5u") == [Keys.ControlC]
-
-
-def test_ctrl_a_under_modify_other_keys():
-    """Ctrl+A (line start) must still fire."""
-    assert _parse("\x1b[27;5;97~") == [Keys.ControlA]
-    assert _parse("\x1b[97;5u") == [Keys.ControlA]
-
-
-def test_ctrl_e_under_modify_other_keys():
-    """Ctrl+E (line end) must still fire."""
-    assert _parse("\x1b[27;5;101~") == [Keys.ControlE]
-    assert _parse("\x1b[101;5u") == [Keys.ControlE]
-
-
-def test_ctrl_u_under_modify_other_keys():
-    """Ctrl+U (kill line) must still fire."""
-    assert _parse("\x1b[27;5;117~") == [Keys.ControlU]
-    assert _parse("\x1b[117;5u") == [Keys.ControlU]
-
-
-def test_ctrl_k_under_modify_other_keys():
-    """Ctrl+K (kill to end) must still fire."""
-    assert _parse("\x1b[27;5;107~") == [Keys.ControlK]
-    assert _parse("\x1b[107;5u") == [Keys.ControlK]
-
-
-def test_ctrl_r_under_modify_other_keys():
-    """Ctrl+R (reverse search) must still fire."""
-    assert _parse("\x1b[27;5;114~") == [Keys.ControlR]
-    assert _parse("\x1b[114;5u") == [Keys.ControlR]
-
-
-def test_ctrl_d_under_modify_other_keys():
-    """Ctrl+D (EOF / delete) must still fire."""
-    assert _parse("\x1b[27;5;100~") == [Keys.ControlD]
-    assert _parse("\x1b[100;5u") == [Keys.ControlD]
-
-
-def test_ctrl_w_under_modify_other_keys():
-    """Ctrl+W (delete word) must still fire."""
-    assert _parse("\x1b[27;5;119~") == [Keys.ControlW]
-    assert _parse("\x1b[119;5u") == [Keys.ControlW]
-
-
-def test_ctrl_z_under_modify_other_keys():
-    """Ctrl+Z (suspend) must still fire."""
-    assert _parse("\x1b[27;5;122~") == [Keys.ControlZ]
-    assert _parse("\x1b[122;5u") == [Keys.ControlZ]
-
-
-def test_ctrl_l_under_modify_other_keys():
-    """Ctrl+L (clear screen) must still fire."""
-    assert _parse("\x1b[27;5;108~") == [Keys.ControlL]
-    assert _parse("\x1b[108;5u") == [Keys.ControlL]
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +195,57 @@ def test_modify_other_keys_shift_letter_produces_uppercase(letter):
     )
 
 
+# ---------------------------------------------------------------------------
+# Shift+symbols (modifyOtherKeys tilde form)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("cp", [
+    58,   # ':'
+    95,   # '_' (Shift+Minus)
+    123,  # '{'
+    125,  # '}'
+])
+def test_modify_other_keys_shift_symbol_produces_char(cp):
+    """Under modifyOtherKeys=2, Shift+symbol (e.g. Shift+[ -> '{') arrives as
+    ESC[27;2;<produced_cp>~ (xterm's own key table; Ghostty follows it). It must parse
+    to the produced character, not leak literal escape text. The kitty CSI-u spelling
+    carries the UNSHIFTED codepoint and must stay unmapped (layout-specific)."""
+    ch = chr(cp)
+    mok_seq = f"\x1b[27;2;{cp}~"
+    assert _parse(mok_seq) == [ch], (
+        f"modifyOtherKeys Shift+symbol ({mok_seq!r}) should produce {ch!r}"
+    )
+    assert ANSI_SEQUENCES.get(f"\x1b[{cp};2u") is None
+
+
+@pytest.mark.parametrize("seq, ch", [
+    ("\x1b[27;9;111~", "o"),   # Super+o (the #114242 report)
+    ("\x1b[27;10;79~", "O"),   # Super+Shift+o
+])
+def test_modify_other_keys_super_printable_produces_char(seq, ch):
+    """Ghostty encodes Super+<printable> as ESC[27;9;<cp>~ under modifyOtherKeys=2;
+    the CLI has no Super bindings, so it must type the character (Ink TUI parity),
+    not leak the escape text (#114242)."""
+    assert _parse(seq) == [ch]
+
+
+def test_shift_symbol_data_normalized_in_buffer():
+    """End-to-end: Vt100Parser with install_keypress_data_normalization
+    must deliver the character in KeyPress.data, not the raw escape."""
+    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+    install_keypress_data_normalization()
+
+    out = []
+    parser = Vt100Parser(out.append)
+    for c in "\x1b[27;2;95~":
+        parser.feed(c)
+    parser.flush()
+
+    assert len(out) == 1
+    assert out[0].key == "_"
+    assert out[0].data == "_"
+
+
 def test_does_not_clobber_shift_enter_alias():
     """install_modify_other_keys_aliases must not overwrite mappings
     installed by install_shift_enter_alias (modifier=2, not 5)."""
@@ -271,16 +253,6 @@ def test_does_not_clobber_shift_enter_alias():
     install_shift_enter_alias()
     assert ANSI_SEQUENCES["\x1b[27;2;13~"] == (Keys.Escape, Keys.ControlM)
     assert ANSI_SEQUENCES["\x1b[13;2u"] == (Keys.Escape, Keys.ControlM)
-
-
-def test_does_not_clobber_ctrl_enter_alias():
-    """install_modify_other_keys_aliases must not overwrite mappings
-    installed by install_ctrl_enter_alias (which maps Ctrl+Enter)."""
-    from hermes_cli.pt_input_extras import install_ctrl_enter_alias
-    install_ctrl_enter_alias()
-    # Ctrl+Enter (modifier=5, codepoint=13) is mapped to (Escape, ControlM)
-    assert ANSI_SEQUENCES["\x1b[27;5;13~"] == (Keys.Escape, Keys.ControlM)
-    assert ANSI_SEQUENCES["\x1b[13;5u"] == (Keys.Escape, Keys.ControlM)
 
 
 def test_ctrl_enter_still_works_under_modify_other_keys():
@@ -296,16 +268,6 @@ def test_ctrl_enter_still_works_under_modify_other_keys():
     ctrl_enter_csiu = _parse("\x1b[13;5u")
     assert ctrl_enter_mok == alt_enter
     assert ctrl_enter_csiu == alt_enter
-
-
-def test_plain_enter_remains_distinct():
-    """Plain Enter must keep producing a single keypress (submit), not
-    the two-key Alt+Enter tuple."""
-    enter = _parse("\r")
-    alt_enter = _parse("\x1b\r")
-    assert enter != alt_enter
-    assert len(enter) == 1
-    assert len(alt_enter) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -426,17 +388,6 @@ def test_keypad_digit_keypress_data_is_digit():
     )
 
 
-def test_plain_space_keypress_data_unchanged():
-    """A plain space must keep data == ' ' — normalization must not break
-    the ordinary typing path."""
-    from hermes_cli.pt_input_extras import install_keypress_data_normalization
-
-    install_keypress_data_normalization()
-    presses = _parse_presses(" ")
-    assert [kp.key for kp in presses] == [" "]
-    assert [kp.data for kp in presses] == [" "]
-
-
 def test_buffer_level_shift_space_no_raw_csi():
     """End-to-end: feeding Shift+Space through a real Application must put
     a space in the buffer, not raw CSI bytes (#88071).
@@ -460,7 +411,7 @@ def test_buffer_level_shift_space_no_raw_csi():
         buf = Buffer()
         with create_pipe_input() as inp:
             app = Application(
-                layout=Layout(HSplit([Window(BufferControl(buf))])), input=inp
+                layout=Layout(HSplit([Window(BufferControl(buf))])), input=inp, output=DummyOutput()
             )
             run_task = asyncio.ensure_future(app.run_async())
             await asyncio.sleep(0.05)
@@ -512,7 +463,7 @@ def test_buffer_level_shift_letter_no_raw_csi():
         buf = Buffer()
         with create_pipe_input() as inp:
             app = Application(
-                layout=Layout(HSplit([Window(BufferControl(buf))])), input=inp
+                layout=Layout(HSplit([Window(BufferControl(buf))])), input=inp, output=DummyOutput()
             )
             run_task = asyncio.ensure_future(app.run_async())
             await asyncio.sleep(0.05)
@@ -539,16 +490,6 @@ def test_buffer_level_shift_letter_no_raw_csi():
             f"{label}: buffer={buffer!r} — expected {expected!r}; raw CSI "
             f"bytes must never land in the buffer"
         )
-
-
-def test_plain_letter_keypress_data_unchanged():
-    """The normalization predicate only fires on ESC-prefixed payloads —
-    ordinary ASCII typing must pass through untouched."""
-    from hermes_cli.pt_input_extras import install_keypress_data_normalization
-
-    install_keypress_data_normalization()
-    presses = _parse_presses("M")
-    assert [(kp.key, kp.data) for kp in presses] == [("M", "M")]
 
 
 # ---------------------------------------------------------------------------

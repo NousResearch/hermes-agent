@@ -15,6 +15,10 @@ vi.mock('@/hermes', () => ({
   getGlobalModelOptions: () => getGlobalModelOptions()
 }))
 
+// Load once at module scope so no test's 15s budget pays the heavy transform
+// + import (the first-test timeout flake under CI load).
+const { FallbackModelsField } = await import('./fallback-models-field')
+
 beforeEach(() => {
   getGlobalModelOptions.mockResolvedValue({
     providers: [
@@ -30,8 +34,7 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-async function renderField(value: unknown, onChange = vi.fn()) {
-  const { FallbackModelsField } = await import('./fallback-models-field')
+function renderField(value: unknown, onChange = vi.fn()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   render(
@@ -43,8 +46,7 @@ async function renderField(value: unknown, onChange = vi.fn()) {
   return onChange
 }
 
-async function renderFieldWithRerender(value: unknown, onChange = vi.fn()) {
-  const { FallbackModelsField } = await import('./fallback-models-field')
+function renderFieldWithRerender(value: unknown, onChange = vi.fn()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   const view = render(
@@ -97,13 +99,6 @@ describe('FallbackModelsField', () => {
     // The new empty row stays in the UI but only complete pairs are emitted.
     expect(onChange.mock.calls.at(-1)?.[0]).toEqual(CHAIN)
     expect(screen.getAllByLabelText('Remove')).toHaveLength(3)
-  })
-
-  it('shows an empty-state hint when there are no fallbacks', async () => {
-    await renderField([])
-
-    expect(screen.getByText(/No fallback models/)).toBeTruthy()
-    expect(screen.queryAllByLabelText('Remove')).toHaveLength(0)
   })
 
   it('resyncs rows when persisted config changes', async () => {

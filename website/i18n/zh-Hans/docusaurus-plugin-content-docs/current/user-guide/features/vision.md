@@ -201,7 +201,7 @@ powershell.exe -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms;
 
 无需手动配置——Hermes 在提供商元数据中查找当前模型的能力并自动选择正确路径。实际效果：你可以在会话中途切换视觉模型与非视觉模型，图像处理"开箱即用"，无需更改工作流。纯文本模型会获得关于图像的连贯上下文，而不是一个会被拒绝的损坏多模态载荷。
 
-处理文本描述路径的辅助模型可在 `auxiliary.vision` 下配置——参见[辅助模型](/user-guide/configuration#auxiliary-models)。
+处理文本描述路径的辅助模型可在 `auxiliary.vision` 下配置——参见[辅助模型](../configuration.md#auxiliary-models)。
 
 ### `vision_analyze` 具有相同的双重行为
 

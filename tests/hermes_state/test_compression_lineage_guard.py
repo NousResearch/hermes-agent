@@ -231,6 +231,29 @@ def test_find_live_compression_child_ignores_non_continuation_children(
     assert child["id"] == "canonical"
 
 
+def test_reset_fork_is_not_a_compression_continuation_for_recovery(db: SessionDB) -> None:
+    """A reset fork (``model_config._reset_from`` bound to the parent) is its own conversation:
+    stale-agent recovery must neither recover to it nor let it block the real continuation or a
+    reopen of a parent that has no continuation (#114271)."""
+    _compression_parent(db)
+    db.create_session("canonical", source="webui", parent_session_id="parent")
+    db.create_session(
+        "reset", source="webui", parent_session_id="parent", model_config={"_reset_from": "parent"},
+    )
+
+    child = db.find_live_compression_child("parent")
+    assert child is not None and child["id"] == "canonical"
+
+    db.end_session("canonical", "startup_orphan_reap")
+    assert db.find_live_compression_child("parent") is None
+
+    _compression_parent(db, "orphan")
+    db.create_session(
+        "orphan-reset", source="webui", parent_session_id="orphan", model_config={"_reset_from": "orphan"},
+    )
+    assert db.reopen_orphaned_compression_session("orphan") is True
+
+
 def test_publish_compression_child_is_atomic_on_handoff_failure(
     db: SessionDB, monkeypatch
 ) -> None:

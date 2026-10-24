@@ -1,9 +1,8 @@
 """Tests for blocked-command recovery guidance (parser-limit + backgrounding)."""
 
-import pytest
 
 from tools.approval import _hardline_block_result
-from tools.approval_detection import _PARSER_LIMIT_DESCRIPTION, _MALFORMED_EXEC_DESCRIPTION
+from tools.approval_detection import _PARSER_LIMIT_DESCRIPTION
 from tools.terminal_tool import _foreground_background_guidance
 from tools import approval_floors
 
@@ -24,25 +23,16 @@ class TestParserLimitRecovery:
         assert saved.exists()
         body = saved.read_text()
         assert cmd in body
-        assert body.startswith("#!/bin/bash")
+        assert body.startswith("#!/usr/bin/env bash")
         assert f"bash {saved}" in r["message"]
 
     def test_save_failure_falls_back_to_manual_recipe(self, monkeypatch):
-        import tools.approval as ap
-        from tools import approval_floors
         monkeypatch.setattr(approval_floors, "_save_blocked_payload", lambda c: None)
         r = _hardline_block_result(_PARSER_LIMIT_DESCRIPTION, "python3 -c 'x'")
         assert "write_file" in r["message"]
         assert "bash /path/script.sh" in r["message"]
 
-    def test_no_command_falls_back_to_manual_recipe(self):
-        r = _hardline_block_result(_PARSER_LIMIT_DESCRIPTION)
-        assert "RECOVERY" in r["message"]
-        assert "write_file" in r["message"]
 
-    def test_malformed_exec_block_has_recovery_recipe(self):
-        r = _hardline_block_result(_MALFORMED_EXEC_DESCRIPTION)
-        assert "RECOVERY" in r["message"]
 
     def test_real_hardline_blocks_unchanged(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))

@@ -121,6 +121,11 @@ _MAX_SSRF_CONNECT_IPS = 8
 # ipaddress — must be blocked explicitly (Tailscale/WireGuard, cloud internal nets).
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
+# RFC 2765 IPv4-translated wrapper ``::ffff:0:a.b.c.d`` — the second form resolvers may use to
+# answer an IPv4 name (on the reporting macOS host, fake-IP TUN DNS returns it alongside the
+# plain address). ``ip.ipv4_mapped`` does not read it; ``_embedded_ipv4`` handles it explicitly.
+_IPV4_TRANSLATED_NETWORK = ipaddress.ip_network("::ffff:0:0:0/96")
+
 # Address classes a ``security.fake_ip_ranges`` declaration can never excuse: a local proxy owns
 # none of them, and a declaration is trusted like ``allow_private_urls`` for whatever it names,
 # so an entry overlapping one of these (including 0.0.0.0/0 and ::/0) would make real internal
@@ -242,7 +247,21 @@ def _getaddrinfo(hostname: str, port: Optional[int] = None):
     return socket.getaddrinfo(hostname, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
 
 
+def _embedded_ipv4(ip: _IPAddress) -> _IPAddress:
+    """The IPv4 address an IPv6 wrapper stands for — IPv4-mapped (``::ffff:x.x.x.x``) or
+    IPv4-translated (``::ffff:0:x.x.x.x``); *ip* unchanged otherwise. ``ipaddress`` reads both
+    wrappers as distinct IPv6 addresses, so every classification must see through them, or a
+    resolver's sentinel / a cloud-metadata answer arrives as unrelated IPv6 space."""
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            return ip.ipv4_mapped
+        if ip in _IPV4_TRANSLATED_NETWORK:
+            return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return ip
+
+
 def _is_always_blocked_ip(ip: _IPAddress) -> bool:
+    ip = _embedded_ipv4(ip)
     return ip in _ALWAYS_BLOCKED_IPS or any(ip in net for net in _ALWAYS_BLOCKED_NETWORKS)
 
 
@@ -250,16 +269,15 @@ def _is_declared_fake_ip(ip: _IPAddress) -> bool:
     """True when *ip* falls in a block declared in ``security.fake_ip_ranges``. The dial still goes
     to the local proxy, which resolves and connects to the real target, so a declared block grants
     no reach an attacker lacks through the proxy's own DNS; undeclared ranges keep the private verdict."""
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
+    ip = _embedded_ipv4(ip)
     return any(ip in net for net in _global_fake_ip_ranges())
 
 
 def _is_blocked_ip(ip: _IPAddress) -> bool:
     """Return True if the IP should be blocked for SSRF protection."""
-    # IPv4-mapped IPv6 (``::ffff:x.x.x.x``) is classified by its embedded IPv4.
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
+    # IPv4-wrapped IPv6 (mapped ``::ffff:x.x.x.x`` or translated ``::ffff:0:x.x.x.x``) is
+    # classified by its embedded IPv4.
+    ip = _embedded_ipv4(ip)
     return (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
             or ip.is_multicast or ip.is_unspecified or ip in _CGNAT_NETWORK)
 
@@ -562,60 +580,3 @@ def redirect_target_from_response(response: Any) -> Optional[str]:
         return urljoin(str(getattr(response, "url", "")), str(location))
     next_request = getattr(response, "next_request", None)
     return str(next_request.url) if next_request else None
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def has_sensitive_query_params(url: str) -> bool:
-    """Return True when ``url`` carries likely credential-bearing query params."""
-    return sensitive_query_param_name(url) is not None
-
-def ssrf_safe_async_http_transport(**kwargs: Any) -> Any:
-    """Return an httpx async transport that pins direct TCP connects to vetted IPs."""
-    import contextvars
-    import httpx
-
-    schemes_by_origin_var = contextvars.ContextVar("hermes_ssrf_async_origin_schemes")
-
-    class _Transport(httpx.AsyncHTTPTransport):
-        def __init__(self, **transport_kwargs: Any):
-            super().__init__(**transport_kwargs)
-            self._pool._network_backend = _SSRFGuardedAsyncNetworkBackend(  # type: ignore[attr-defined]
-                schemes_by_origin_var
-            )
-
-        async def handle_async_request(self, request: Any) -> Any:
-            token = schemes_by_origin_var.set(_origin_scheme_context(request))
-            try:
-                return await super().handle_async_request(request)
-            finally:
-                schemes_by_origin_var.reset(token)
-
-    return _Transport(**kwargs)
-
-def ssrf_safe_http_transport(**kwargs: Any) -> Any:
-    """Return an httpx sync transport that pins direct TCP connects to vetted IPs."""
-    import contextvars
-    import httpx
-
-    schemes_by_origin_var = contextvars.ContextVar("hermes_ssrf_origin_schemes")
-
-    class _Transport(httpx.HTTPTransport):
-        def __init__(self, **transport_kwargs: Any):
-            super().__init__(**transport_kwargs)
-            self._pool._network_backend = _SSRFGuardedNetworkBackend(  # type: ignore[attr-defined]
-                schemes_by_origin_var
-            )
-
-        def handle_request(self, request: Any) -> Any:
-            token = schemes_by_origin_var.set(_origin_scheme_context(request))
-            try:
-                return super().handle_request(request)
-            finally:
-                schemes_by_origin_var.reset(token)
-
-    return _Transport(**kwargs)
-# ---- END PLUGIN-COMPAT ----

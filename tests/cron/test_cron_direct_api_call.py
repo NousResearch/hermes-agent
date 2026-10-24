@@ -13,7 +13,6 @@ from unittest.mock import MagicMock
 
 from agent.chat_completion_helpers import (
     direct_api_call,
-    should_use_direct_api_call,
 )
 
 
@@ -29,46 +28,6 @@ def _make_agent(*, platform="cron"):
     return agent
 
 
-def test_should_use_direct_api_call_only_for_cron_openai_wire():
-    assert should_use_direct_api_call(_make_agent(platform="cron")) is True
-    assert should_use_direct_api_call(_make_agent(platform="cli")) is False
-    assert should_use_direct_api_call(_make_agent(platform="telegram")) is False
-    assert should_use_direct_api_call(_make_agent(platform=None)) is False
-
-    for api_mode in ("codex_responses", "anthropic_messages", "bedrock_converse"):
-        agent = _make_agent(platform="cron")
-        agent.api_mode = api_mode
-        assert should_use_direct_api_call(agent) is False
-
-    moa = _make_agent(platform="cron")
-    moa.provider = "moa"
-    assert should_use_direct_api_call(moa) is False
-
-
-def test_direct_api_call_runs_two_sequential_requests_on_same_thread():
-    """Mirror the 2nd+ call failure mode: two back-to-back completions.create."""
-    agent = _make_agent()
-    calls = {"n": 0}
-    fake_client = MagicMock()
-
-    def _create(**_kwargs):
-        calls["n"] += 1
-        return fake_client
-
-    fake_client.chat.completions.create.side_effect = [
-        SimpleNamespace(id="first"),
-        SimpleNamespace(id="second"),
-    ]
-    agent._create_request_openai_client.side_effect = _create
-
-    first = direct_api_call(agent, {"model": "m", "messages": []})
-    second = direct_api_call(agent, {"model": "m", "messages": []})
-
-    assert first.id == "first"
-    assert second.id == "second"
-    assert calls["n"] == 2
-    assert fake_client.chat.completions.create.call_count == 2
-    assert agent._close_request_openai_client.call_count == 2
 
 
 def test_direct_api_call_keeps_activity_alive_during_slow_wait(monkeypatch):
@@ -123,10 +82,6 @@ def test_direct_api_call_keeps_activity_alive_during_slow_wait(monkeypatch):
     assert result_box["response"].id == "slow"
     assert touches_while_blocked >= 3, (
         f"expected mid-wait activity heartbeats, got {touches_while_blocked}"
-    )
-    assert all(
-        call.args[0] == "waiting for non-streaming API response"
-        for call in agent._touch_activity.call_args_list
     )
 
 

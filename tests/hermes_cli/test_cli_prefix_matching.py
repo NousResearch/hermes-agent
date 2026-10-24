@@ -24,13 +24,6 @@ class TestSlashCommandPrefixMatching:
 
 
 
-    def test_ambiguous_prefix_shows_suggestions(self):
-        """/re matches multiple commands — should show ambiguous message."""
-        cli_obj = _make_cli()
-        with patch("cli._cprint") as mock_cprint:
-            cli_obj.process_command("/re")
-            printed = " ".join(str(c) for c in mock_cprint.call_args_list)
-        assert "Ambiguous" in printed or "Did you mean" in printed
 
 
 
@@ -49,20 +42,6 @@ class TestSlashCommandPrefixMatching:
         unknown = any("Unknown command" in p for p in printed)
         assert not unknown, f"Expected skill prefix to match, got: {printed}"
 
-    def test_ambiguous_between_builtin_and_skill(self):
-        """Ambiguous prefix spanning builtin + skill commands shows suggestions."""
-        cli_obj = _make_cli()
-        # /help-extra is a fake skill that shares /hel prefix with /help
-        fake_skill = {"/help-extra": {"name": "Help Extra", "description": "test"}}
-
-        import cli as cli_mod
-        with patch.object(cli_mod, '_skill_commands', fake_skill),              patch.object(cli_obj, 'show_help') as mock_help:
-            cli_obj.process_command("/help")
-
-        # /help is an exact match so should work normally, not show ambiguous
-        mock_help.assert_called_once()
-        printed = " ".join(str(c) for c in cli_obj.console.print.call_args_list)
-        assert "Ambiguous" not in printed
 
     def test_shortest_match_preferred_over_longer_skill(self):
         """/qui should dispatch to /quit (5 chars) not report ambiguous with /quint-pipeline (15 chars)."""

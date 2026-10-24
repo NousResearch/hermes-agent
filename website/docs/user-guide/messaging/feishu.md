@@ -6,6 +6,10 @@ description: "Set up Hermes Agent as a Feishu or Lark bot"
 
 # Feishu / Lark Setup
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](../../reference/package-management.md#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 Hermes Agent integrates with Feishu and Lark as a full-featured bot. Once connected, you can chat with the agent in direct messages or group chats, receive cron job results in a home chat, and send text, images, audio, and file attachments through the normal gateway flow.
 
 The integration supports both connection modes:
@@ -102,7 +106,7 @@ FEISHU_CONNECTION_MODE=websocket
 
 **Requirements:** The `websockets` Python package must be installed. The SDK handles connection lifecycle, heartbeats, and auto-reconnection internally.
 
-**How it works:** The adapter runs the Lark SDK's WebSocket client in a background executor thread. Inbound events (messages, reactions, card actions) are dispatched to the main asyncio loop. On disconnect, the SDK will attempt to reconnect automatically.
+**How it works:** The adapter runs the Lark SDK's WebSocket client in a background executor thread. Inbound events (messages, reactions, card actions) are dispatched to the main asyncio loop. On disconnect, the SDK will attempt to reconnect automatically. If the link dies outright (the SDK's retry ladder gives up or the client thread exits), Hermes' supervisor rebuilds the client with capped backoff. While a link is down, `hermes gateway status` shows the platform as `retrying` until the connection is re-established.
 
 ### Optional: Webhook mode
 
@@ -398,9 +402,9 @@ The adapter receives and caches the following media types from users:
 | **Video** | .mp4, .mov, .avi, .mkv, .webm, .m4v, .3gp | Downloaded and cached as documents |
 | **Files** | .pdf, .doc, .docx, .xls, .xlsx, .ppt, .pptx, and more | Downloaded and cached as documents |
 
-Media from rich-text (post) messages, including inline images and file attachments, is also extracted and cached.
+Media from rich-text (post) messages is also extracted and cached — both inline images/files inside the post body and attachments the composer sends in the top-level `files` list (a caption plus a file in one bubble). Every attachment is collected; folder entries are skipped, and each one leaves an `[Attachment: <name>]` marker in the text.
 
-For small text-based documents (.txt, .md), the file content is automatically injected into the message text so the agent can read it directly without needing tools.
+For small text-based documents (.txt, .md), the file content is automatically appended after the message text so the agent can read it directly without needing tools — the caption you typed alongside the file stays in place.
 
 ### Outbound (sending)
 
@@ -577,9 +581,9 @@ WebSocket and per-group ACL settings are configured via `config.yaml` under `pla
 
 | Problem | Fix |
 |---------|-----|
-| `lark-oapi not installed` | Install the SDK: `pip install lark-oapi` |
-| `websockets not installed; websocket mode unavailable` | Install websockets: `pip install websockets` |
-| `aiohttp not installed; webhook mode unavailable` | Install aiohttp: `pip install aiohttp` |
+| `lark-oapi not installed` | Install the SDK: `python -c "import pm; pm.sync_venv(['feishu'], explicit=True)"` |
+| `websockets not installed; websocket mode unavailable` | Install websockets: `hermes pm repair` |
+| `aiohttp not installed; webhook mode unavailable` | Install aiohttp: `python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"` |
 | `FEISHU_APP_ID or FEISHU_APP_SECRET not set` | Set both env vars or configure via `hermes gateway setup` |
 | `Another local Hermes gateway is already using this Feishu app_id` | Only one Hermes instance can use the same app_id at a time. Stop the other gateway first. |
 | Bot doesn't respond in groups | Ensure the bot is @mentioned, check `FEISHU_GROUP_POLICY`, and verify the sender is in `FEISHU_ALLOWED_USERS` if policy is `allowlist` |

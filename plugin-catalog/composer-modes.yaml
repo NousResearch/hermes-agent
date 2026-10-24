@@ -1,6 +1,6 @@
 name: composer-modes
 repo: https://github.com/LisandroNahuelH/hermes-composer-modes
-sha: 4f4e1c0b36165d84a9e2db7c71516f5a0c627d72
+sha: de372aa34ecfe6adb424f86c04ca2de924984cb0
 description: Cursor-style composer modes (ask / agent / plan / debug) for the Hermes desktop —
   the mode's operating note reaches the model inside the turn's model-facing bytes, never the
   bubble, transcript or session titles, and ask mode is enforced read-only on the tool side.

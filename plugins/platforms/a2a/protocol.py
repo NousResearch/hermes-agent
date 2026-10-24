@@ -5,6 +5,7 @@ Stdlib only. ``extract_text`` stays tolerant of v0.3 peers."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -12,7 +13,7 @@ import time
 import uuid
 from collections import OrderedDict, defaultdict, deque
 from concurrent.futures import Future
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Optional
 
@@ -53,7 +54,7 @@ def max_pingpong_turns() -> int:
 
 def now_iso() -> str:
     """ISO 8601 UTC timestamp with millisecond precision (A2A v1.0)."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 def build_agent_card(*, name: str, url: str, description: str, skills: Optional[list[dict]] = None,
@@ -79,7 +80,7 @@ def build_agent_card(*, name: str, url: str, description: str, skills: Optional[
     return card
 
 
-def skills_from_toolsets(toolsets: "list[str] | dict[str, list[str]] | None") -> list[dict]:
+def skills_from_toolsets(toolsets: list[str] | dict[str, list[str]] | None) -> list[dict]:
     """A2A skill descriptors from toolset names or a toolset -> tool-names mapping (tool names
     become tags, max 10)."""
     if not isinstance(toolsets, dict):
@@ -125,6 +126,12 @@ def new_task_id() -> str:
 
 def new_context_id() -> str:
     return "ctx-" + uuid.uuid4().hex[:16]
+
+
+def message_context_id(scope: str, message_id: str) -> str:
+    """The context a first message without a ``contextId`` opens. Named by the message, so a retry
+    of that send after a timeout reopens the same context instead of a fresh one."""
+    return "ctx-" + hashlib.sha256(f"{scope}\0{message_id}".encode()).hexdigest()[:16]
 
 
 def text_part(text: str) -> dict:
@@ -174,6 +181,12 @@ def extract_text(message_or_params: dict) -> str:
         elif (data := part.get("data")) is not None:
             chunks.append(f"[data ({part.get('mediaType') or 'application/json'})]\n{_json_or_str(data)}")
     return "\n".join(chunks).strip()
+
+
+def extract_message_id(params: dict) -> str:
+    """v1.0 puts messageId inside the Message; a peer retrying a send repeats it."""
+    msg = params.get("message") or {}
+    return str(msg.get("messageId") or "") if isinstance(msg, dict) else ""
 
 
 def extract_context_id(params: dict) -> str:
@@ -296,7 +309,7 @@ class TaskStore:
     _MAX_TERMINAL = 500
 
     def __init__(self) -> None:
-        self._tasks: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+        self._tasks: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._watchers: dict[str, list[Future]] = {}
         self._lock = threading.Lock()
 
@@ -321,9 +334,11 @@ class TaskStore:
         return {"configId": rec.get("push_config_id") or "", "taskId": rec["task_id"],
                 "createdAt": rec.get("created_iso", ""), "pushNotificationConfig": {"url": rec.get("push_url") or ""}}
 
-    def create(self, task_id: str, context_id: str, peer: str, agent_slug: str = "", tenant: str = "") -> dict:
+    def create(self, task_id: str, context_id: str, peer: str, agent_slug: str = "", tenant: str = "",
+               input_id: str = "") -> dict:
+        """``input_id``: the owner admission a forwarded task was sent as (empty for local tasks)."""
         rec = {"task_id": task_id, "context_id": context_id, "peer": peer, "agent_slug": agent_slug or "", "tenant": tenant or "",
-               "state": STATE_SUBMITTED, "reply": "", "created_at": time.time(), "created_iso": now_iso(), "push_url": "", "push_config_id": ""}
+               "input_id": input_id, "state": STATE_SUBMITTED, "reply": "", "created_at": time.time(), "created_iso": now_iso(), "push_url": "", "push_config_id": ""}
         with self._lock:
             self._tasks[task_id] = rec
         return dict(rec)
@@ -435,80 +450,42 @@ def _conv_path(context_id: str) -> Path:
     return get_hermes_home() / "a2a_conversations" / f"{safe}.jsonl"
 
 
-def persist_message(context_id: str, role: str, text: str, task_id: str = "") -> None:
+def persist_message(context_id: str, role: str, text: str, task_id: str = "", input_id: str = "") -> None:
     """Append one message to the context's on-disk conversation log. Never raises."""
     try:
         path = _conv_path(context_id)
         path.parent.mkdir(parents=True, exist_ok=True)
+        entry = {"ts": time.time(), "role": role, "text": text, "task_id": task_id, **({"input_id": input_id} if input_id else {})}
         with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"ts": time.time(), "role": role, "text": text, "task_id": task_id}, ensure_ascii=False) + "\n")
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception:
         pass
+
+
+def logged_input(context_id: str, input_id: str) -> bool:
+    """True when the context's durable log already holds the forwarded input ``input_id``."""
+    # limit=0 slices out[-0:], i.e. every entry.
+    return any(entry.get("input_id") == input_id for entry in load_conversation(context_id, limit=0))
 
 
 def load_conversation(context_id: str, limit: int = 50) -> list[dict]:
     """Last *limit* messages for a context (empty list if none / unreadable)."""
     try:
-        lines = _conv_path(context_id).read_text(encoding="utf-8").splitlines()
+        lines = _conv_path(context_id).read_text(encoding="utf-8-sig").splitlines()
     except Exception:
         return []
     out: list[dict] = []
     for line in lines:
         if line.strip():
             try:
-                out.append(json.loads(line))
+                entry = json.loads(line)
             except json.JSONDecodeError:
-                pass
+                continue
+            if isinstance(entry, dict):
+                out.append(entry)
     return out[-limit:]
 
 
 def list_conversations() -> list[str]:
     """Context-ids that have persisted conversations."""
     return sorted(p.stem for p in (get_hermes_home() / "a2a_conversations").glob("*.jsonl"))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import copy  # noqa: F401,E402
-
-ERR_PUSH_NOT_SUPPORTED = -32003    # A2A spec: PushNotificationNotSupportedError
-
-STATE_AUTH_REQUIRED = "TASK_STATE_AUTH_REQUIRED"
-
-def data_part(data: Any, media_type: str = "application/json") -> dict:
-    """Build a v1.0 data Part (structured data, no ``kind`` field)."""
-    return {"data": data, "mediaType": media_type}
-
-def file_part(url: str = "", raw: str = "", filename: str = "",
-              media_type: str = "application/octet-stream") -> dict:
-    """Build a v1.0 file Part.
-
-    Either ``url`` (file reference) or ``raw`` (base64-encoded bytes) must be
-    provided. Discrimination is by member presence — no ``kind`` field.
-    """
-    part: dict[str, Any] = {"mediaType": media_type}
-    if filename:
-        part["filename"] = filename
-    if url:
-        part["url"] = url
-    elif raw:
-        part["raw"] = raw
-    return part
-
-def message_with_parts(role: str, parts: list[dict], context_id: str = "") -> dict:
-    """Build an A2A v1.0 Message with arbitrary Parts (text, file, data)."""
-    msg: dict[str, Any] = {
-        "role": role,
-        "parts": parts,
-        "messageId": uuid.uuid4().hex,
-    }
-    if context_id:
-        msg["contextId"] = context_id
-    return msg
-
-def stream_message(message: dict) -> dict:
-    """v1.0 StreamResponse with a message member."""
-    return {"message": message}
-# ---- END PLUGIN-COMPAT ----

@@ -44,6 +44,7 @@ vi.mock('@/store/profile', () => ({
   $showAllProfiles: atom(false),
   ALL_PROFILES: '__all__',
   normalizeProfileKey: (name: string) => name,
+  prewarmProfilePick: vi.fn(),
   profileLabel: (profile: { name: string }) => profile.name,
   refreshActiveProfile: vi.fn().mockResolvedValue(undefined),
   selectProfile: (name: string) => selectProfile(name),
@@ -59,7 +60,9 @@ vi.mock('@/store/connections', () => ({
 }))
 
 vi.mock('@/store/profile-share', () => ({ runImportProfileFlow: vi.fn() }))
-vi.mock('./use-profile-prewarm', () => ({ useProfilePrewarm: () => ({ cancelPrewarm: vi.fn(), startPrewarm: vi.fn() }) }))
+vi.mock('./use-profile-prewarm', () => ({
+  useProfilePrewarm: () => ({ cancelPrewarm: vi.fn(), startPrewarm: vi.fn() })
+}))
 vi.mock('./use-fleet-roster', () => ({ useFleetRoster: () => undefined }))
 vi.mock('../../profiles/create-profile-dialog', () => ({ CreateProfileDialog: () => null }))
 

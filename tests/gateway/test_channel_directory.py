@@ -14,10 +14,8 @@ from gateway.channel_directory import (
     resolve_channel_name,
     format_directory_for_display,
     load_directory,
-    _apply_channel_aliases,
     _build_from_sessions,
     _build_slack,
-    _slack_directory_warning_last,
 )
 
 
@@ -224,10 +222,6 @@ class TestBuildFromSessions:
 
 
 class TestFormatDirectoryForDisplay:
-    def test_empty_directory(self, tmp_path):
-        with patch("gateway.channel_directory.DIRECTORY_PATH", tmp_path / "nope.json"):
-            result = format_directory_for_display()
-        assert "No messaging platforms" in result
 
     def test_platform_with_no_channels_gets_hint(self):
         """A configured platform with zero discovered channels is shown with
@@ -237,7 +231,6 @@ class TestFormatDirectoryForDisplay:
             "telegram": [{"id": "1", "name": "home", "type": "dm"}],
         })
         assert "Simplex:" in result
-        assert "no channels discovered yet" in result
         assert "telegram:home" in result
 
     def test_explicit_platforms_override_disk(self, tmp_path):

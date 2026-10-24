@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
+
 
 def test_gateway_failure_writer_preserves_accepted_turn_identity(tmp_path):
     root = Path(__file__).resolve().parents[2]
@@ -20,10 +22,14 @@ def test_gateway_failure_writer_preserves_accepted_turn_identity(tmp_path):
         text=True,
         stdin=subprocess.DEVNULL,
         timeout=90,
+        check=False,
     )
     assert receipt.exists(), result.stdout + result.stderr
     data = json.loads(receipt.read_text())
     assert all(row["reached"] for row in data["observations"]), data
+    # A startup lazy install would download over the real network on a
+    # background thread and pollute the archive case's process-wide tracemalloc window.
+    assert data["blocked_external_attempts"] == [], data["blocked_external_attempts"]
     assert data["passed"] == data["total"], data["observations"]
     assert result.returncode == 0, result.stdout + result.stderr
 
@@ -103,12 +109,12 @@ def test_failure_owner_follows_only_live_lineage_markers(tmp_path):
             # leaves an open user tail on the live route — never anything else.
             assert db.message_count() == before + (not owned) + ((not owned) or open_tail), location
             assert store.has_input_owner(sid, owner), location
-            assert runner._PARTIAL_FAILED_TURN_NOTICE in reply
+            assert PARTIAL_FAILED_TURN_NOTICE in reply
             live_messages = db.get_messages(child)
             assert not live_messages or live_messages[-1]["role"] != "user", location
             assert sum(m["role"] == "assistant" for m in live_messages) <= 1, location
             if not owned:
-                assert live_messages[-1]["content"] == runner._PARTIAL_FAILED_TURN_NOTICE
+                assert live_messages[-1]["content"] == PARTIAL_FAILED_TURN_NOTICE
                 persisted_user = live_messages[-2]
                 assert persisted_user["content"] == prepared.persist_user_message
                 assert persisted_user["display_metadata"]["gateway_input_owner"] == owner
@@ -185,9 +191,9 @@ def test_context_overflow_error_reply_carries_no_partial_effect_notice():
         err, MessageEvent(text="x", source=source), source, None, "k", prepared,
     ))
 
-    from gateway.run import _CONTEXT_OVERFLOW_REPLY
-    assert reply == _CONTEXT_OVERFLOW_REPLY
-    assert runner._PARTIAL_FAILED_TURN_NOTICE not in reply
+    from gateway.run import _context_overflow_reply
+    assert reply == _context_overflow_reply()
+    assert PARTIAL_FAILED_TURN_NOTICE not in reply
 
 
 def test_fresh_session_agent_flushed_failed_turn_is_closed(tmp_path):
@@ -226,9 +232,61 @@ def test_fresh_session_agent_flushed_failed_turn_is_closed(tmp_path):
                 response="x", agent_failed_early=True, hidden_reasoning_incomplete=False,
                 is_context_overflow_failure=False,
             )
-        roles = [m["role"] for m in db.get_messages(sid) if m["role"] != "session_meta"]
-        assert roles == ["user", "assistant"]
+        rows = [m for m in db.get_messages(sid) if m["role"] != "session_meta"]
+        assert [m["role"] for m in rows] == ["user", "assistant"]
+        # Typed like the core closer's row, or Desktop reads the boundary as the model's reply.
+        assert rows[-1]["display_kind"] == FAILED_TURN_DISPLAY_KIND
         assert store.transcript_tail_role(sid) == "assistant"
+        db.close()
+
+    asyncio.run(check())
+
+
+def test_failed_turn_whose_tail_is_a_tool_row_is_closed(tmp_path):
+    """A turn that failed after its tool ran leaves the tool row as the durable tail. That tail is
+    as open as a bare user row: the gateway closer must land the boundary, once."""
+    import asyncio
+    from gateway.config import GatewayConfig, Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource, SessionStore
+
+    async def check():
+        store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        runner = object.__new__(GatewayRunner)
+        runner.session_store = store
+        runner._session_db = object()  # agent_persisted defaults True
+
+        async def noop(*args, **kwargs):
+            return None
+
+        runner._refresh_agent_cache_message_count = noop
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="tool-tail", user_id="u")
+        entry = store.get_or_create_session(source)
+        sid = entry.session_id
+        db = store._db_for_session_id(sid)
+        call = {"id": "call-1", "type": "function", "function": {"name": "reset_password", "arguments": "{}"}}
+        db.append_message(sid, "user", "reset the password", platform_message_id="m-1")
+        db.append_message(sid, "assistant", "", tool_calls=[call])
+        db.append_message(sid, "tool", "Password reset", tool_call_id="call-1")
+        failed = {"failed": True, "final_response": "429", "error": "429", "history_offset": 0,
+                  "last_prompt_tokens": 0, "messages": [
+                      {"role": "user", "content": "reset the password"},
+                      {"role": "assistant", "content": "", "tool_calls": [call]},
+                      {"role": "tool", "tool_call_id": "call-1", "content": "Password reset"},
+                  ]}
+        for _ in range(2):  # second pass = platform redelivery of the same failed message
+            await runner._hmwa_persist_turn_transcript(
+                event=MessageEvent(text="reset the password", source=source, message_id="m-1"),
+                source=source, session_entry=entry, session_key=entry.session_key, agent_result=failed,
+                agent_messages=failed["messages"],
+                prepared=runner._PreparedTurn([], "", "reset the password", None, None, None, sid, "o"),
+                response="x", agent_failed_early=True, hidden_reasoning_incomplete=False,
+                is_context_overflow_failure=False,
+            )
+        rows = [m for m in db.get_messages(sid) if m["role"] != "session_meta"]
+        assert [m["role"] for m in rows] == ["user", "assistant", "tool", "assistant"]
+        assert (rows[-1]["content"], rows[-1]["display_kind"]) == (PARTIAL_FAILED_TURN_NOTICE, FAILED_TURN_DISPLAY_KIND)
         db.close()
 
     asyncio.run(check())

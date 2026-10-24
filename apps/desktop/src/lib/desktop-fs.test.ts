@@ -4,8 +4,10 @@ import { setApiRequestConnection } from '@/api/client'
 import { $connection } from '@/store/session'
 
 import {
+  createRemoteDir,
   desktopDefaultCwd,
   desktopFileDiff,
+  DesktopFileMissingError,
   desktopFsCacheKey,
   desktopGitRoot,
   readDesktopDir,
@@ -17,8 +19,8 @@ import {
 } from './desktop-fs'
 
 const readDir = vi.fn(async () => ({ entries: [{ name: 'local', path: '/local', isDirectory: true }] }))
-const readFileText = vi.fn(async () => ({ path: '/local/file.txt', text: 'local', byteSize: 5 }))
-const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,bG9jYWw=')
+const readFileText = vi.fn(async (): Promise<unknown> => ({ path: '/local/file.txt', text: 'local', byteSize: 5 }))
+const readFileDataUrl = vi.fn(async (): Promise<unknown> => 'data:text/plain;base64,bG9jYWw=')
 const gitRoot = vi.fn(async () => '/local')
 const selectPaths = vi.fn(async () => ['/local'])
 
@@ -41,6 +43,10 @@ const api = vi.fn(async ({ path }: { path: string }) => {
 
   if (path === '/api/fs/default-cwd') {
     return { cwd: '/backend/project', branch: 'main' }
+  }
+
+  if (path === '/api/files/mkdir') {
+    return { ok: true, path: '/home/user/new folder' }
   }
 
   if (path.startsWith('/api/git/file-diff?')) {
@@ -115,6 +121,19 @@ describe('desktop filesystem facade', () => {
     expect(readFileText).not.toHaveBeenCalled()
     expect(readFileDataUrl).not.toHaveBeenCalled()
     expect(gitRoot).not.toHaveBeenCalled()
+  })
+
+  it('creates remote folders through the backend mkdir route for the active profile', async () => {
+    $connection.set({ mode: 'remote', profile: 'team-remote' } as never)
+
+    await expect(createRemoteDir('/home/user/new folder')).resolves.toBe('/home/user/new folder')
+
+    expect(api).toHaveBeenCalledWith({
+      body: { path: '/home/user/new folder' },
+      method: 'POST',
+      path: '/api/files/mkdir',
+      profile: 'team-remote'
+    })
   })
 
   it('does not retry the same unreadable path through the local facade', async () => {
@@ -317,5 +336,41 @@ describe('desktop filesystem facade', () => {
 
     expect(remoteSelect).toHaveBeenCalledWith({ directories: true, multiple: false })
     expect(selectPaths).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a missing-file bridge result as a thrown error (not an object)', async () => {
+    $connection.set({ mode: 'local' } as never)
+
+    // The main process answers "file not on disk" with a structured result
+    // instead of rejecting the IPC call (so a restored preview tab pointing at
+    // a deleted file doesn't spam Electron's console). The facade converts it
+    // back into a rejection so every existing try/catch caller keeps working.
+    readFileText.mockResolvedValueOnce({
+      ok: false,
+      error: 'ENOENT',
+      message: 'Text preview failed: file does not exist.',
+      path: '/gone.txt'
+    })
+
+    await expect(readDesktopFileText('/gone.txt')).rejects.toThrow('Text preview failed: file does not exist.')
+
+    readFileDataUrl.mockResolvedValueOnce({
+      ok: false,
+      error: 'ENOENT',
+      message: 'Text preview failed: file does not exist.'
+    })
+
+    await expect(readDesktopFileDataUrl('/gone.png')).rejects.toThrow('Text preview failed: file does not exist.')
+
+    // The rejection is the typed missing-file error, so callers can tell
+    // expected absence apart from real failures without string matching.
+    readFileText.mockResolvedValueOnce({
+      ok: false,
+      error: 'ENOENT',
+      message: 'gone',
+      path: '/gone.txt'
+    })
+
+    await expect(readDesktopFileText('/gone.txt')).rejects.toBeInstanceOf(DesktopFileMissingError)
   })
 })

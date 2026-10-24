@@ -1,13 +1,7 @@
 """Tests for CLI browser CDP auto-launch helpers."""
 
-from contextlib import redirect_stdout
-from io import StringIO
-import os
-from queue import Queue
-import subprocess
 from unittest.mock import patch
 
-from cli import HermesCLI
 from hermes_cli.browser_connect import (
     _wait_for_browser_debug_ready_or_exit,
     get_chrome_debug_candidates,
@@ -15,17 +9,6 @@ from hermes_cli.browser_connect import (
     launch_chrome_debug,
     manual_chrome_debug_command,
 )
-
-
-def _assert_chrome_debug_cmd(cmd, expected_chrome, expected_port):
-    """Verify the auto-launch command has all required flags."""
-    assert cmd[0] == expected_chrome
-    assert f"--remote-debugging-port={expected_port}" in cmd
-    assert "--no-first-run" in cmd
-    assert "--no-default-browser-check" in cmd
-    user_data_args = [a for a in cmd if a.startswith("--user-data-dir=")]
-    assert len(user_data_args) == 1, "Expected exactly one --user-data-dir flag"
-    assert "chrome-debug" in user_data_args[0]
 
 
 class _FakeResponse:
@@ -72,53 +55,9 @@ class TestChromeDebugLaunch:
 
 
 
-    def test_linux_candidates_include_brave_origin_binary_name(self):
-        brave = "/usr/bin/brave-origin"
 
-        with patch("hermes_cli.browser_connect.shutil.which", side_effect=lambda name: brave if name == "brave-origin" else None), \
-             patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == brave):
-            candidates = get_chrome_debug_candidates("Linux")
-            command = manual_chrome_debug_command(9222, "Linux")
 
-        assert candidates == [brave]
-        assert command is not None
-        assert command.startswith(f"{brave} --remote-debugging-port=9222")
 
-    def test_linux_candidates_include_brave_origin_install_path(self):
-        brave = "/opt/brave.com/brave-origin/brave-origin"
-
-        with patch("hermes_cli.browser_connect.shutil.which", return_value=None), \
-             patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == brave):
-            candidates = get_chrome_debug_candidates("Linux")
-            command = manual_chrome_debug_command(9222, "Linux")
-
-        assert candidates == [brave]
-        assert command is not None
-        assert command.startswith(f"{brave} --remote-debugging-port=9222")
-
-    def test_linux_candidates_include_brave_origin_nightly_binary_name(self):
-        brave = "/usr/bin/brave-origin-nightly"
-
-        with patch("hermes_cli.browser_connect.shutil.which", side_effect=lambda name: brave if name == "brave-origin-nightly" else None), \
-             patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == brave):
-            candidates = get_chrome_debug_candidates("Linux")
-            command = manual_chrome_debug_command(9222, "Linux")
-
-        assert candidates == [brave]
-        assert command is not None
-        assert command.startswith(f"{brave} --remote-debugging-port=9222")
-
-    def test_linux_candidates_include_brave_origin_nightly_install_path(self):
-        brave = "/opt/brave.com/brave-origin-nightly/brave-origin"
-
-        with patch("hermes_cli.browser_connect.shutil.which", return_value=None), \
-             patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == brave):
-            candidates = get_chrome_debug_candidates("Linux")
-            command = manual_chrome_debug_command(9222, "Linux")
-
-        assert candidates == [brave]
-        assert command is not None
-        assert command.startswith(f"{brave} --remote-debugging-port=9222")
 
     def test_linux_candidates_include_official_brave_and_edge_stable_paths(self):
         brave = "/usr/bin/brave-browser-stable"

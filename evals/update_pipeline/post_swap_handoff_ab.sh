@@ -16,7 +16,7 @@
 # on PATH (skips Node/web/Desktop work) and --no-gateway-restart (never touches your fleet).
 set -euo pipefail
 REPO=$1; SHA=$2; LABEL=$3
-ROOT=$(mktemp -d /tmp/hermes-post-swap-ab.XXXXXX)
+ROOT=$(mktemp -d -t hermes-post-swap-ab.XXXXXX)
 echo "== [$LABEL] scratch: $ROOT (installed at ${SHA:0:10})"
 git clone -q --bare --shared "$REPO" "$ROOT/origin.git"
 git --git-dir="$ROOT/origin.git" update-ref refs/heads/main "$SHA"

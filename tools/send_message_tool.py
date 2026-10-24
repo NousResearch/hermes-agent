@@ -5,19 +5,25 @@ import asyncio
 import json
 import logging
 import os
-from functools import partial
+import re
 
 from agent.secret_scope import get_secret
 
 logger = logging.getLogger(__name__)
 
-from tools.send_message_targets import _HOME_CHANNEL_ENV_OVERRIDES, _SLACK_USER_ID_RE, resolve_send_target
+from tools.send_message_targets import (
+    _HOME_CHANNEL_ENV_OVERRIDES, resolve_send_target, unknown_platform_error,
+)
 from tools.send_message_senders import (
     _AUDIO_EXTS, _DEFAULT_CAPTION_LIMIT, _IMAGE_EXTS, _NO_DELIVERABLE, _VIDEO_EXTS, _VOICE_EXTS,
     _adapter_media_method, _error, _live_adapter, _media_caption_split, _plugin_standalone_sender,
-    _registry_standalone_send, _resolve_slack_user_target, _sanitize_error_text, _send_bluebubbles,
-    _send_matrix_via_adapter, _send_qqbot, _send_signal, _send_telegram, _send_weixin, _send_yuanbao)
+    _registry_standalone_send, _resolve_slack_user_target, _sanitize_error_text,
+    _send_matrix_via_adapter, _send_telegram)
 from tools.registry import tool_error
+
+# A bare Slack user id (session metadata / home-channel config) is opened as a DM; same shape the
+# slack plugin's target parser turns into ``user:U...``.
+_SLACK_USER_ID_RE = re.compile(r"^\s*(U[A-Z0-9]{8,})\s*$")
 
 # NOTE: ``send_message`` is intentionally NOT registered as an agent-callable model tool
 # (the agent must not fire cross-platform messages on its own); cron delivery, the
@@ -114,7 +120,7 @@ def _authorize_relay_target(platform_name: str, chat_id, thread_id=None, *,
             )
         logger.debug("relay target authorization unavailable", exc_info=True)
         return None
-    except Exception:  # noqa: BLE001 - the module is THERE and broke; FAIL CLOSED
+    except Exception:
         logger.exception(
             "relay egress module failed to import for %s — refusing the send",
             platform_name,
@@ -138,7 +144,7 @@ def _authorize_relay_target(platform_name: str, chat_id, thread_id=None, *,
         return authorize_relay_target(
             platform_name, chat_id, thread_id, native_token=native_token
         )
-    except Exception:  # noqa: BLE001 - the guard faulted; FAIL CLOSED
+    except Exception:
         logger.exception(
             "relay target authorization FAILED for %s — refusing the send",
             platform_name,
@@ -203,6 +209,15 @@ def _handle_send(args):
     target, message = args.get("target", ""), args.get("message", "")
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
+    # Lone surrogates reach the outbound body via surrogateescape-decoded argv
+    # (`hermes send` MESSAGE) and crash the UTF-8 marshal inside platform SDK
+    # request bodies (feishu/lark, #113799). Every send_message caller (model tool
+    # call, `hermes send`, dashboard console) enters here, so scrub once before the
+    # media extraction, the session mirror and the platform sender see the text.
+    # Model output delivered by the gateway/cron is already scrubbed upstream
+    # (``agent/turn_finalizer.py::finalize_turn``, ``gateway/run.py``).
+    from agent.message_sanitization import _sanitize_surrogates
+    message = _sanitize_surrogates(message)
     platform_name, chat_id, thread_id, resolution_error = _resolve_tool_target(target)
     if resolution_error:
         return tool_error(resolution_error)
@@ -221,7 +236,8 @@ def _handle_send(args):
     # Capture [[as_document]] before extract_media strips it (images keep original bytes via send_document).
     force_document_attachments = "[[as_document]]" in message
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    media_dropped: list = []
+    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files, dropped=media_dropped)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
     used_home_channel = not chat_id
     if used_home_channel:
@@ -254,8 +270,13 @@ def _handle_send(args):
 
     try:
         from model_tools import _run_async
-        # Only custom plugin handlers receive the complete typed request.
+        # Only custom plugin handlers receive the complete typed request. ``mentions`` is only for platforms
+        # whose StandaloneSendPolicy declares it (WhatsApp; the CLI rejects it elsewhere); other platforms'
+        # standalone senders don't accept the kwarg.
         handler_args = {"args": args} if entry is not None and entry.send_message_handler is not None else {}
+        mentions = args.get("mentions")
+        if mentions and entry is not None and entry.standalone_send is not None and entry.standalone_send.mentions:
+            handler_args["mentions"] = [mentions] if isinstance(mentions, str) else list(mentions)
         result = _run_async(_send_to_platform(platform, pconfig, chat_id, cleaned_message, thread_id=thread_id,
                                               media_files=media_files, force_document=force_document_attachments,
                                               **handler_args))
@@ -264,6 +285,15 @@ def _handle_send(args):
                 result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
             if mirror_text and _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):
                 result["mirrored"] = True
+            if media_dropped:
+                # The text went out but an attachment the caller asked for did not: a script reading
+                # ``success`` / exit 0 must not book a delivery that never happened (#115908).
+                result["success"] = False
+                result["partial_success"] = True
+                result["error"] = (f"Delivery incomplete: {len(media_dropped)} requested MEDIA attachment(s) "
+                                   "dropped before delivery (see media_dropped)")
+        if isinstance(result, dict) and media_dropped:
+            result["media_dropped"] = media_dropped
         if isinstance(result, dict) and "error" in result:
             result["error"] = _sanitize_error_text(result["error"])
         return json.dumps(result)
@@ -287,7 +317,7 @@ def _resolve_platform_config(platform_name, config):
     from gateway.platform_registry import platform_registry
     entry = platform_registry.get(platform_name)
     if entry is None and platform_name not in {member.value for member in Platform}:
-        return None, None, None, f"Unknown or unregistered plugin platform: {platform_name}"
+        return None, None, None, unknown_platform_error(platform_name)
     platform, err = _platform_enum(platform_name)
     if err:
         return None, None, None, err
@@ -295,9 +325,76 @@ def _resolve_platform_config(platform_name, config):
     if not pconfig or not pconfig.enabled:
         pconfig = _weixin_env_pconfig() if platform_name == "weixin" else None
     if pconfig is None:
-        return None, None, None, (f"Platform '{platform_name}' is not configured. Set up credentials in "
-                                  "~/.hermes/config.yaml or environment variables.")
+        return None, None, None, _not_configured_error(platform_name, platform, entry)
     return platform, pconfig, entry, None
+
+
+def _not_configured_error(platform_name, platform, entry):
+    """Name the resolved home and what each credential source held, so the user edits the file this
+    process actually read (a hardcoded ``~/.hermes`` does not exist on a Windows or profile home)."""
+    from agent.secret_scope import load_env_file
+    from gateway.config import _getenv
+    from gateway.config_env import _ENV_ENABLE_CREDENTIALS
+    from hermes_constants import get_hermes_home
+    home = get_hermes_home()
+    env_names = list(_ENV_ENABLE_CREDENTIALS.get(platform) or (entry.required_env if entry else ()))
+    names = "/".join(env_names) or "credentials"
+    env_path, config_path = home / ".env", home / "config.yaml"
+    dotenv_keys = load_env_file(env_path)
+    dotenv_state = (f"{names} present" if any(n in dotenv_keys for n in env_names) else f"no {names}") \
+        if env_path.exists() else "missing"
+    try:
+        from hermes_cli.config_effective import load_user_config_effective
+        user_config = load_user_config_effective(config_path) or {}
+        block = user_config.get("platforms", {}).get(platform_name)
+    except Exception:
+        user_config, block = {}, None
+    if not config_path.exists():
+        config_state = "missing"
+    elif not isinstance(block, dict):
+        config_state = f"no platforms.{platform_name} block"
+    elif block.get("enabled") is False:
+        config_state = f"platforms.{platform_name}.enabled: false"
+    else:
+        config_state = f"platforms.{platform_name} has no token"
+    env_state = f"{names} set" if any(_getenv(n) for n in env_names) else f"{names} unset"
+    msg = (f"Platform '{platform_name}' is not configured. Looked in: {env_path} ({dotenv_state}), "
+           f"{config_path} ({config_state}), environment ({env_state}), "
+           f"external secret sources ({_secret_sources_state(user_config)}).")
+    # The gateway can hold a token only in its own process environment; a fresh CLI cannot see it. A
+    # gateway started from the default root (the reporter's shell had HERMES_HOME=<root>/profiles/<p>)
+    # never reads this profile's .env at all.
+    try:
+        from gateway.status import read_runtime_status, runtime_status_pid_is_live
+        from hermes_constants import get_default_hermes_root, hermes_home_key
+        root = get_default_hermes_root()
+        gateways = [(home, read_runtime_status())]
+        if hermes_home_key(root) != hermes_home_key(home):
+            gateways.append((root, read_runtime_status(root / "gateway_state.json")))
+        for gw_home, record in gateways:
+            state = ((record or {}).get("platforms") or {}).get(platform_name, {}).get("state")
+            if state != "connected" or "present" in dotenv_state or not runtime_status_pid_is_live(record):
+                continue
+            msg += f" A gateway (pid {record.get('pid')}) running from {gw_home} has {platform_name} connected"
+            msg += (f", so its credentials live only in that process's environment; add {names} to {env_path}."
+                    if gw_home is home else
+                    f"; this shell is scoped to profile home {home} whose .env has no {names}.")
+    except Exception:
+        pass
+    return msg
+
+
+def _secret_sources_state(user_config):
+    """``name: enabled|disabled`` for every registered secret source with a ``secrets.<name>`` section,
+    or ``none configured``; names only, never values."""
+    try:
+        from agent.secret_sources.registry import list_sources
+        secrets_cfg = user_config.get("secrets") if isinstance(user_config.get("secrets"), dict) else {}
+        states = [f"{s.name}: {'enabled' if s.is_enabled(secrets_cfg[s.name]) else 'disabled'}"
+                  for s in list_sources() if isinstance(secrets_cfg.get(s.name), dict)]
+    except Exception:
+        states = []
+    return ", ".join(states) or "none configured"
 
 
 def _home_chat_id(config, platform, platform_name):
@@ -457,11 +554,11 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
             metadata = {**({"thread_id": thread_id} if thread_id else {}),
                         **({"publish_topic": chat_id} if platform_name == "ntfy" and chat_id else {})} or None
             if media_files:  # always a dict result, returned as-is below
-                make_coro = lambda: _send_live_adapter_media(  # noqa: E731
+                make_coro = lambda: _send_live_adapter_media(
                     adapter, chat_id, chunk, media_files, thread_id=thread_id, metadata=metadata,
                     force_document=force_document)
             else:
-                make_coro = lambda: adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)  # noqa: E731
+                make_coro = lambda: adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
             result = await _dispatch_on_gateway_loop(
                 runner, make_coro, f"send_message: failed to schedule{' media send' if media_files else ''} on gateway loop")
         except asyncio.CancelledError:
@@ -474,8 +571,8 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
             return {"success": True, "message_id": result.message_id}
         return {"error": f"Adapter send failed: {_bounded_send_error(result.error)}"}
     try:
-        from gateway.platform_registry import platform_registry
-        sender = platform_registry.get(platform_name).standalone_sender_fn
+        # Discover first: a fresh process (cron/CLI) has not registered plugin platforms yet.
+        sender, _ = _plugin_standalone_sender(platform_name)
     except Exception:
         sender = None
     if sender is None:
@@ -511,15 +608,7 @@ async def _send_chunks(chunks, send_one):
 
 
 def _platform_max_length(platform):
-    """Chunking limit: Signal's adapter constant (its raw JSON-RPC path bypasses the adapter's
-    chunking), the registry's ``max_message_length`` for plugins, else None (no chunking)."""
-    from gateway.config import Platform
-    if platform == Platform.SIGNAL:
-        try:
-            from gateway.platforms.signal import MAX_MESSAGE_LENGTH
-            return MAX_MESSAGE_LENGTH
-        except ImportError:
-            return 8000
+    """Chunking limit: the registry's ``max_message_length`` for plugins, else None (no chunking)."""
     try:
         from gateway.platform_registry import platform_registry
         entry = platform_registry.get(platform.value)
@@ -528,31 +617,44 @@ def _platform_max_length(platform):
         return None
 
 
-# Plugin platforms whose media (Discord: all) sends deliberately bypass the live adapter for the
-# registry ``standalone_sender_fn`` (Discord: forums/threads/multipart; Slack: files_upload_v2;
-# WhatsApp: Baileys /send-media). platform -> (error label, run discover_plugins first,
-# caption-capable, media_files sentinel for non-final chunks, forward force_document)
-_PLUGIN_STANDALONE_MEDIA = {"discord": ("Discord", False, True, [], False), "feishu": ("Feishu", True, False, None, False),
-                            "slack": ("Slack", True, True, [], False), "whatsapp": ("WhatsApp", True, True, None, True)}
+def _standalone_send_policy(platform_name):
+    """The plugin's ``StandaloneSendPolicy`` (None = generic routing). Cron calls
+    ``_send_to_platform`` directly, so discover first when the name is not yet registered
+    (idempotent manifest scan; only this platform's adapter is materialized)."""
+    from gateway.platform_registry import platform_registry
+    if not platform_registry.is_registered(platform_name):
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()
+    entry = platform_registry.get(platform_name)
+    return entry.standalone_send if entry is not None else None
 
 
 async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files, *, thread_id,
-                                  max_len, force_document):
+                                  max_len, force_document, mentions=None):
     """Chunked send through a plugin's standalone_sender_fn; one captionable file + short text
-    rides as the media caption."""
-    label, discover, captionable, empty_media, pass_force = _PLUGIN_STANDALONE_MEDIA[platform_name]
-    sender, err = _plugin_standalone_sender(platform_name, label=label, discover=discover)
+    rides as the media caption. WhatsApp re-pings recipients on every message that carries
+    ``mentions``, so only the first payload of a logical send gets them."""
+    from gateway.platforms.send_targets import StandaloneSendPolicy
+    policy = _standalone_send_policy(platform_name) or StandaloneSendPolicy()
+    sender, err = _plugin_standalone_sender(platform_name, label=policy.label or None)
     if err:
         return err
-    extra = {"force_document": force_document} if pass_force else {}
-    if captionable:
+    extra = {"force_document": force_document} if policy.forward_force_document else {}
+    first_only = {"mentions": mentions} if mentions else {}
+    empty_media = [] if policy.empty_list_between_chunks else None
+    if policy.captionable:
         # Cap on the platform's own message limit so the caption is deliverable.
         caption, _ = _media_caption_split(message, media_files, max_caption_len=(max_len or _DEFAULT_CAPTION_LIMIT))
         if caption is not None:
             return await sender(pconfig, chat_id, "", thread_id=thread_id, media_files=media_files,
-                                caption=caption, **extra)
-    return await _send_chunks(chunks, lambda chunk, is_last: sender(
-        pconfig, chat_id, chunk, thread_id=thread_id, media_files=media_files if is_last else empty_media, **extra))
+                                caption=caption, **extra, **first_only)
+
+    def send_one(chunk, is_last):
+        kwargs = {**extra, **first_only}
+        first_only.clear()
+        return sender(pconfig, chat_id, chunk, thread_id=thread_id,
+                      media_files=media_files if is_last else empty_media, **kwargs)
+    return await _send_chunks(chunks, send_one)
 
 
 def _via_adapter_route(p, pc, cid, chunk, media, tid, fd):
@@ -562,40 +664,28 @@ def _via_adapter_route(p, pc, cid, chunk, media, tid, fd):
 # Native-media chunked routes for built-in platforms; media rides on the final chunk, non-final
 # chunks get the sentinel. platform -> (media required, sentinel, sender(platform, pconfig,
 # chat_id, chunk, media, thread_id, force_document)). Matrix: ALL sends use the native adapter
-# (E2EE text). Signal: attachments ride the JSON-RPC param. Yuanbao / WeCom: media needs the
-# running gateway. Slack text: live adapter (multi-workspace, ignored_channels gates) else the
-# plugin's standalone sender. Names resolve at call time so tests can monkeypatch ``_send_signal``.
+# (E2EE text). WeCom: media needs the running gateway. Slack text: live adapter (multi-workspace, ignored_channels gates) else the
+# plugin's standalone sender. Names resolve at call time so tests can monkeypatch the senders.
 _CHUNKED_ROUTES = {
     "matrix": (False, [], lambda p, pc, cid, chunk, media, tid, fd: _send_matrix_via_adapter(
         pc, cid, chunk, media_files=media, thread_id=tid)),
-    "signal": (True, [], lambda p, pc, cid, chunk, media, tid, fd: _send_signal(
-        pc.extra, cid, chunk, media_files=media)),
-    "yuanbao": (True, None, lambda p, pc, cid, chunk, media, tid, fd: _send_yuanbao(cid, chunk, media_files=media)),
     "slack": (False, [], _via_adapter_route),
     "wecom": (True, None, _via_adapter_route)}
 
-# Text-only senders for built-in platforms (generic path; media is dropped with a
-# warning). Signature: (pconfig, chat_id, chunk, thread_id) -> result.
-_TEXT_SENDERS = {
-    **{name: partial(_registry_standalone_send, name)
-       for name in ("whatsapp", "email", "sms", "dingtalk", "feishu", "wecom")},
-    "signal": lambda pc, cid, chunk, tid: _send_signal(pc.extra, cid, chunk),
-    "bluebubbles": lambda pc, cid, chunk, tid: _send_bluebubbles(pc.extra, cid, chunk),
-    "qqbot": lambda pc, cid, chunk, tid: _send_qqbot(pc, cid, chunk),
-    "yuanbao": lambda pc, cid, chunk, tid: _send_yuanbao(cid, chunk)}
-
-_MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack"
+_MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp, slack and qqbot"
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None,
+                            force_document=False, mentions=None, args=None):
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
     lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
     from gateway.config import Platform
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
     media_files = media_files or []
-    if platform == Platform.WEIXIN:
-        return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
+    if platform_name == "weixin":  # plugin standalone sender only: no other plugin's import can block it
+        return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, [message], media_files,
+                                             thread_id=thread_id, max_len=None, force_document=force_document)
     # Telegram chunks internally on the *formatted* text (escaping inflates length).
     if platform == Platform.TELEGRAM:
         return await _send_telegram(
@@ -604,9 +694,11 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.platforms.base import BasePlatformAdapter
     max_len = _platform_max_length(platform)
     chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
-    if platform_name == "discord" or (media_files and platform_name in _PLUGIN_STANDALONE_MEDIA):
+    policy = _standalone_send_policy(platform_name)
+    if policy is not None and (policy.all_sends or (policy.mentions and mentions) or (media_files and policy.media)):
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files,
-                                             thread_id=thread_id, max_len=max_len, force_document=force_document)
+                                             thread_id=thread_id, max_len=max_len, force_document=force_document,
+                                             mentions=mentions)
     route = _CHUNKED_ROUTES.get(platform_name)
     if route is not None and (media_files or not route[0]):
         _, empty_media, sender = route
@@ -621,9 +713,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                               f"target {platform_name} had only media attachments")}
         warning = (f"MEDIA attachments were omitted for {platform_name}; "
                    f"native send_message media delivery is currently only supported for {_MEDIA_PLATFORMS_NOTE}")
-    text_sender = _TEXT_SENDERS.get(platform_name)
-    if text_sender is not None:
-        send_one = lambda chunk, is_last: text_sender(pconfig, chat_id, chunk, thread_id)  # noqa: E731
+    if policy is not None and policy.text_direct:
+        # Text-only straight to the plugin's standalone sender (media dropped with the warning above).
+        send_one = lambda chunk, is_last: _registry_standalone_send(platform_name, pconfig, chat_id, chunk, thread_id)
     else:
         from gateway.platform_registry import platform_registry
         entry = platform_registry.get(platform_name)
@@ -636,73 +728,10 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             except Exception as e:
                 return {"error": f"Plugin send_message handler failed: {e}"}
         # Plugin platform: live gateway adapter if available, else standalone_sender_fn.
-        send_one = lambda chunk, is_last: _via_adapter_route(  # noqa: E731
+        send_one = lambda chunk, is_last: _via_adapter_route(
             platform, pconfig, chat_id, chunk, media_files if is_last else [], thread_id, force_document)
     last_result = await _send_chunks(chunks, send_one)
     if (warning and isinstance(last_result, dict) and last_result.get("success")
             and not last_result.get("media_delivered")):
         last_result["warnings"] = [*last_result.get("warnings", []), warning]
     return last_result
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import re  # noqa: F401,E402
-import time  # noqa: F401,E402
-
-SEND_MESSAGE_SCHEMA = {
-    "name": "send_message",
-    "description": (
-        "Send a message to a connected messaging platform, or list available targets.\n\n"
-        "IMPORTANT: When the user asks to send to a specific channel or person "
-        "(not just a bare platform name), call send_message(action='list') FIRST to see "
-        "available targets, then send to the correct one.\n"
-        "If the user just says a platform name like 'send to telegram', send directly "
-        "to the home channel without listing first."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "action": {
-                "type": "string",
-                "enum": ["send", "list", "react", "unreact"],
-                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms. 'react' attaches an emoji reaction to a message (platforms that support it, e.g. photon/iMessage tapbacks). 'unreact' retracts a previously-added reaction."
-            },
-            "target": {
-                "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'ntfy:alerts-channel' (explicit ntfy topic), 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
-            },
-            "message": {
-                "type": "string",
-                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment."
-            },
-            "emoji": {
-                "type": "string",
-                "description": "For action='react': the emoji to react with (e.g. '❤️'). On iMessage, ❤️👍👎😂‼️❓ render as native tapbacks; other emoji use custom-emoji reactions."
-            },
-            "message_id": {
-                "type": "string",
-                "description": "For action='react'/'unreact': id of the message to react to. Omit to target the most recent message received in that chat (usually the one being replied to)."
-            }
-        },
-        "required": []
-    }
-}
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'redact_sensitive_text': ('agent.redact', 'redact_sensitive_text'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

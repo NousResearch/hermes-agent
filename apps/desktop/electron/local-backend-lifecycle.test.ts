@@ -4,6 +4,7 @@ import { once } from 'node:events'
 
 import { test, vi } from 'vitest'
 
+import { isExpectedTransition } from './crash-forensics'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
 import { createLocalBackendLifecycle } from './local-backend-lifecycle'
 import { runPrimaryBackendStartup } from './primary-backend-startup'
@@ -178,4 +179,18 @@ test('a child spawned before claim remains owned after the routing entry disappe
       await once(child, 'exit')
     }
   }
+})
+
+test('the quit abort sentinel is marked as an expected shutdown transition', async () => {
+  const lifecycle = createLocalBackendLifecycle({
+    stopChild: () => {},
+    waitForExit: async () => {},
+    cancelSetup: () => {}
+  })
+
+  await lifecycle.shutdown()
+
+  assert.equal(lifecycle.signal.aborted, true)
+  assert.equal(isExpectedTransition(lifecycle.signal.reason), true)
+  assert.equal((lifecycle.signal.reason as Error).message, 'Hermes Desktop is quitting.')
 })

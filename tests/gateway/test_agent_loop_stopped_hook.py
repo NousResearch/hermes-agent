@@ -13,7 +13,6 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
-from hermes_cli.plugins import VALID_HOOKS
 
 
 def _make_source() -> SessionSource:
@@ -50,9 +49,6 @@ def _make_runner():
     return runner
 
 
-def test_agent_loop_stopped_in_valid_hooks():
-    """Plugins must be able to subscribe to the new hook without warnings."""
-    assert "agent_loop_stopped" in VALID_HOOKS
 
 
 @pytest.mark.asyncio

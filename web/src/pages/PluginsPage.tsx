@@ -3,6 +3,8 @@ import { ExternalLink, RefreshCw, Trash2, Eye, EyeOff } from "lucide-react";
 import type { Translations } from "@/i18n/types";
 import { Link } from "react-router";
 import { api } from "@/lib/api";
+import { runDashboardPluginUpdate } from "@/lib/plugin-update";
+import { setupHasDetails, setupHasInstallableSteps } from "@/lib/memory-provider-setup";
 import type {
   CatalogEntry,
   CatalogRemovedEntry,
@@ -11,7 +13,6 @@ import type {
   MemoryProviderConfig,
   MemoryProviderField,
   MemoryProviderInfo,
-  MemoryProviderSetupInfo,
   MemoryProviderSetupResult,
   PluginsHubResponse,
 } from "@/lib/api";
@@ -28,6 +29,7 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 import { PluginSlot } from "@/plugins";
 import { cn } from "@/lib/utils";
 import { usePageHeader } from "@/contexts/usePageHeader";
@@ -63,23 +65,6 @@ function fieldIsVisible(field: MemoryProviderField, values: Record<string, Memor
     const current = values[key];
     return String(current ?? "") === String(expected);
   });
-}
-
-function setupHasDetails(setup?: MemoryProviderSetupInfo) {
-  if (!setup) return false;
-  return Boolean(
-    setup.external_dependencies?.length ||
-      setup.pip_dependencies?.length ||
-      setup.required_env?.length,
-  );
-}
-
-function setupHasInstallableSteps(setup?: MemoryProviderSetupInfo) {
-  if (!setup) return false;
-  return Boolean(
-    setup.external_dependencies?.some((dep) => dep.install) ||
-      setup.pip_dependencies?.length,
-  );
 }
 
 function SetupCommandBlock({ code, label }: { code: string; label: string }) {
@@ -1123,8 +1108,13 @@ function PluginRowCard(props: PluginRowCardProps) {
                 size="sm"
                 onClick={() => {
                   void setRuntimeLoading(row.name, async () => {
-                    await api.disableAgentPlugin(row.name);
-                    showToast(t.pluginsPage.disableRuntime, "success");
+                    const res = await api.disableAgentPlugin(row.name);
+                    showToast(
+                      res.restart_required
+                        ? t.pluginsPage.toggleTakesEffectAfterRestart
+                        : t.pluginsPage.disableRuntime,
+                      "success",
+                    );
                   });
                 }}
               >
@@ -1137,8 +1127,13 @@ function PluginRowCard(props: PluginRowCardProps) {
                 size="sm"
                 onClick={() => {
                   void setRuntimeLoading(row.name, async () => {
-                    await api.enableAgentPlugin(row.name);
-                    showToast(t.pluginsPage.enableRuntime, "success");
+                    const res = await api.enableAgentPlugin(row.name);
+                    showToast(
+                      res.restart_required
+                        ? t.pluginsPage.toggleTakesEffectAfterRestart
+                        : t.pluginsPage.enableRuntime,
+                      "success",
+                    );
                   });
                 }}
               >
@@ -1168,8 +1163,13 @@ function PluginRowCard(props: PluginRowCardProps) {
                 size="sm"
                 onClick={() => {
                   void setRuntimeLoading(row.name, async () => {
-                    await api.updateAgentPlugin(row.name);
-                    showToast(t.pluginsPage.updateGit, "success");
+                    const pp = t.pluginsPage;
+                    const applied = await runDashboardPluginUpdate(row.name, {
+                      consentBody: pp.updateConsentBody ?? en.pluginsPage.updateConsentBody!,
+                      scanBody: pp.updateScanBody ?? en.pluginsPage.updateScanBody!,
+                      scanBlocked: pp.updateScanBlocked ?? en.pluginsPage.updateScanBlocked!,
+                    });
+                    if (applied) showToast(pp.updateGit, "success");
                   });
                 }}
               >
@@ -1298,7 +1298,7 @@ function CatalogEntryCard(props: CatalogEntryCardProps) {
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
             <span className="truncate font-semibold">{entry.name}</span>
 
-            <Badge tone={entry.tier === "official" ? "success" : "secondary"}>
+            <Badge tone={entry.tier === "community" ? "secondary" : "success"}>
               {entry.tier}
             </Badge>
 

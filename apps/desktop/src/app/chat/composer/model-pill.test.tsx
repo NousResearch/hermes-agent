@@ -1,13 +1,16 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { useContext } from 'react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatBarState } from '@/app/chat/composer/types'
 import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
+import { registry } from '@/contrib/registry'
+import { formatModelPillLabel } from '@/lib/model-status-label'
 import { $activeSessionId, $currentModel, setCurrentModel, setCurrentModelSource } from '@/store/session'
 
+import { COMPOSER_AREAS, type ComposerModelPillContext, type ComposerModelPillProvider } from './contrib'
 import { requestModelMenuToggle } from './focus'
 import { ModelPill } from './model-pill'
 import { RICH_INPUT_SLOT } from './rich-editor'
@@ -144,6 +147,8 @@ describe('ModelPill per-surface model label', () => {
       $model: atom('tile/claude-sonnet'),
       $provider: atom('anthropic'),
       $reasoningEffort: atom('high'),
+      $reasoningEffortPending: atom(false),
+      $reasoningEffortWire: atom(''),
       $runtimeId: atom('tile-runtime'),
       $storedId: atom('stored-tile'),
       $turnStartedAt: atom<number | null>(null)
@@ -160,5 +165,105 @@ describe('ModelPill per-surface model label', () => {
 
     expect(screen.getByText('Sonnet')).toBeTruthy()
     expect(screen.queryByText(/primary/i)).toBeNull()
+  })
+})
+
+// #49340: long model names ("DeepSeek V4 Flash · Med") were truncated with a
+// finite `max-w-*` cap even when the composer row had room to spare. The pill
+// now sizes to its content and only gives width back (shrink + min-w-0) under
+// real space pressure, so the label never clips unless the row is actually
+// out of room.
+describe('ModelPill width', () => {
+  it('imposes no finite width cap on the label', () => {
+    setCurrentModel('deepseek/deepseek-v4-flash')
+    $activeSessionId.set(null)
+
+    render(<ModelPill disabled={false} model={modelState({ model: 'deepseek/deepseek-v4-flash' })} />)
+
+    const pill = screen.getByRole('button')
+    expect(pill.className).not.toMatch(/\bmax-w-/)
+    // The squeeze path (collapse stages) still has to work: the pill must keep
+    // yielding width, not overflow the composer row.
+    expect(pill.className).toMatch(/\bmin-w-0\b/)
+    expect(pill.className).toMatch(/\bshrink\b/)
+  })
+})
+
+// The `composer.modelPill` slot: a provider may override the pill's LABEL
+// (compact reasoning label, custom naming) while the pill keeps its chrome,
+// pin dot, and menu. A declining provider leaves the core label untouched.
+describe('ModelPill label providers', () => {
+  const disposers: Array<() => void> = []
+
+  afterEach(() => {
+    disposers.splice(0).forEach(dispose => dispose())
+  })
+
+  const register = (label: ComposerModelPillProvider['label'], id = 'pill-label') =>
+    disposers.push(
+      registry.register({
+        area: COMPOSER_AREAS.modelPill,
+        data: { label } satisfies ComposerModelPillProvider,
+        id,
+        source: 'disk'
+      })
+    )
+
+  it('renders a provider-supplied label, and the core label once the provider declines', () => {
+    setCurrentModel('deepseek/deepseek-v4-flash')
+
+    const label = vi.fn(
+      ({ model, reasoningEffort }: ComposerModelPillContext) => `${model} · ${reasoningEffort || 'none'}`
+    )
+
+    register(label)
+
+    const { unmount } = render(
+      <ModelPill disabled={false} model={modelState({ model: 'deepseek/deepseek-v4-flash' })} />
+    )
+
+    expect(screen.getByText('deepseek/deepseek-v4-flash · none')).toBeTruthy()
+    expect(label).toHaveBeenCalled()
+    unmount()
+
+    // Floating-composer (compact) mode renders only the chevron: providers are
+    // not consulted at all (the chevron has no text to leak, so only the spy
+    // proves the skip).
+    label.mockClear()
+
+    const compactRender = render(
+      <ModelPill compact disabled={false} model={modelState({ model: 'deepseek/deepseek-v4-flash' })} />
+    )
+
+    expect(label).not.toHaveBeenCalled()
+    compactRender.unmount()
+
+    // Declining provider: the override text is gone, the core label is back.
+    disposers.splice(0).forEach(dispose => dispose())
+    register(() => null)
+
+    render(<ModelPill disabled={false} model={modelState({ model: 'deepseek/deepseek-v4-flash' })} />)
+
+    expect(screen.queryByText(/· none/)).toBeNull()
+    expect(screen.getByText(formatModelPillLabel('deepseek/deepseek-v4-flash', { fastMode: false }))).toBeTruthy()
+  })
+
+  it('falls through on throw and on a non-string return; the first string wins and later providers are not asked', () => {
+    setCurrentModel('deepseek/deepseek-v4-flash')
+
+    register(() => {
+      throw new Error('broken provider')
+    }, 'broken')
+    // A non-string (object/array/number) is not a label: rendering it would
+    // throw inside ModelPill (no error boundary there) and blank the composer.
+    register(() => ({ text: 'object label' }) as unknown as string, 'wrong-type')
+    register(() => 'first wins', 'first')
+    const second = vi.fn(() => 'second loses')
+    register(second, 'second')
+
+    render(<ModelPill disabled={false} model={modelState({ model: 'deepseek/deepseek-v4-flash' })} />)
+
+    expect(screen.getByText('first wins')).toBeTruthy()
+    expect(second).not.toHaveBeenCalled()
   })
 })

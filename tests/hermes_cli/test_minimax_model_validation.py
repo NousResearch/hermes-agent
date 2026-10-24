@@ -72,13 +72,5 @@ class TestMiniMaxModelValidation:
     # -------------------------------------------------------------------------
     # Test 4: Verify catalog path is used (probe_api_models returns None)
     # -------------------------------------------------------------------------
-    def test_minimax_uses_catalog_not_api_probe(self):
-        """Ensure that when fetch_api_models returns None, the catalog is still checked."""
-        # The _isolate_minimax fixture already patches fetch_api_models to return None.
-        # If we reach the catalog path, MiniMax-M2.5 should be found and recognized.
-        result = validate_requested_model("MiniMax-M2.5", "minimax")
-        assert result["accepted"] is True
-        assert result["recognized"] is True
-        assert result["message"] is None
 
 

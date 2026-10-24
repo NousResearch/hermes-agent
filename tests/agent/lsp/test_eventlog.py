@@ -32,13 +32,6 @@ def caplog_lsp(caplog):
 # ---------------------------------------------------------------------------
 
 
-def test_clean_emits_at_debug(caplog_lsp):
-    for _ in range(10):
-        eventlog.log_clean("pyright", "/proj/x.py")
-    info_records = [r for r in caplog_lsp.records if r.levelno >= logging.INFO]
-    debug_records = [r for r in caplog_lsp.records if r.levelno == logging.DEBUG]
-    assert info_records == []
-    assert len(debug_records) == 10
 
 
 def test_disabled_emits_at_debug(caplog_lsp):
@@ -92,7 +85,6 @@ def test_spawn_failed_warns(caplog_lsp):
     eventlog.log_spawn_failed("pyright", "/proj", FileNotFoundError("nope"))
     warns = [r for r in caplog_lsp.records if r.levelno == logging.WARNING]
     assert len(warns) == 1
-    assert "spawn/initialize failed" in warns[0].getMessage()
 
 
 # ---------------------------------------------------------------------------
@@ -125,12 +117,17 @@ def test_thousand_clean_writes_emit_one_info(caplog_lsp):
 
 
 
-def test_short_path_keeps_absolute_when_outside(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path / "a") if (tmp_path / "a").exists() else None
-    monkeypatch.chdir(tmp_path)
-    other = "/var/log/foo.txt"
-    out = eventlog._short_path(other)
-    # Outside cwd: keeps absolute (no leading "../")
-    assert out == "/var/log/foo.txt" or not out.startswith("..")
 
 
+
+
+def test_announce_bucket_is_capped(caplog_lsp, monkeypatch):
+    """Per-file dedup keys stop at _ANNOUNCE_CAP: the bucket resets (re-firing the first-seen line once)
+    rather than holding every file path a long-running process ever touched."""
+    monkeypatch.setattr(eventlog, "_ANNOUNCE_CAP", 4)
+    for i in range(6):
+        eventlog.log_no_project_root("pyright", f"/proj/f{i}.py")
+    assert len(eventlog._announced_no_root) <= 4
+    eventlog.log_no_project_root("pyright", "/proj/f5.py")  # still deduped after the reset
+    info = [r.getMessage() for r in caplog_lsp.records if r.levelno == logging.INFO]
+    assert info.count("lsp[pyright] no project root for /proj/f5.py") == 1

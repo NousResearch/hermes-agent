@@ -68,7 +68,7 @@ def _read_last_output(job_id: str) -> str:
     try:
         path = _snapshot_path(job_id)
         if path.exists():
-            return path.read_text(encoding="utf-8")
+            return path.read_text(encoding="utf-8-sig")
     except Exception as exc:
         logger.warning("Monitor: failed to read last output for %r: %s", job_id, exc)
     return ""
@@ -111,7 +111,8 @@ def _run_monitor_source(job: dict) -> tuple[bool, str]:
         # Same containment + interpreter rules as the existing `script` field.
         from cron.scheduler_script import _run_job_script
 
-        return _run_job_script(monitor_script, workdir=_field(job, "workdir") or None)
+        return _run_job_script(monitor_script, workdir=_field(job, "workdir") or None,
+                               interpreter=job.get("interpreter"))
     monitor_url = _field(job, "monitor_url")
     if monitor_url:
         return _fetch_monitor_url(monitor_url)

@@ -23,7 +23,10 @@ export function AttachmentList({
   onRemove?: (id: string) => void
 }) {
   return (
-    <div className="flex max-w-full flex-wrap gap-1.5 px-1 pt-1" data-slot="composer-attachments">
+    <div
+      className="flex max-w-full flex-shrink-0 flex-wrap gap-1.5 px-1 pt-1 overflow-hidden"
+      data-slot="composer-attachments"
+    >
       {attachments.filter(Boolean).map(attachment => (
         <AttachmentPill
           attachment={attachment}
@@ -55,8 +58,7 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
 
   const canPreview = attachment.kind !== 'folder' && attachment.kind !== 'terminal' && !isUploading
 
-  const detail =
-    attachment.detail && attachment.detail !== attachment.label ? attachment.detail : undefined
+  const detail = attachment.detail && attachment.detail !== attachment.label ? attachment.detail : undefined
 
   // Keep full image bytes out of composer state. New chips read their path only
   // when clicked; previewUrl remains a compatibility fallback for older drafts.
@@ -134,7 +136,7 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
         throw new Error(c.couldNotPreview(attachment.label))
       }
 
-      openPreview(preview, 'manual')
+      openPreview(preview)
     } catch (error) {
       notifyError(error, c.previewUnavailable)
     }

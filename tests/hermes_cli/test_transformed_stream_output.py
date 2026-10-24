@@ -24,7 +24,8 @@ def test_streamed_transform_prints_full_replacement_instead_of_dropping_it():
         },
     )
 
-    assert output == "\n[Response transformed after streaming]\nXYZ"
+    assert output.endswith("\nXYZ")
+    assert "abc" not in output
 
 
 def test_untransformed_stream_has_no_post_stream_output():

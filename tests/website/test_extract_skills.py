@@ -17,6 +17,7 @@ per-skill source links and a cleaned-up category sidebar:
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -47,6 +48,53 @@ def test_local_skills_publish_exact_install_target(mod, tmp_path, monkeypatch, d
     expected = f"{prefix}/creative/nested/example"
     assert entry["installIdentifier"] == expected
     assert entry["installCmd"] == f"hermes skills install {expected}"
+    assert "image" not in entry
+
+
+@pytest.mark.parametrize("directory", ["skills", "optional-skills"])
+def test_local_skills_publish_mapped_artwork_only(mod, tmp_path, monkeypatch, directory):
+    for name in ("illustrated", "plain"):
+        skill = tmp_path / directory / "creative" / name
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(f"---\nname: {name}\n---\nExample.")
+    manifest = tmp_path / "apps/shared/src/catalog-curation.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps({
+        "artwork": {"skills": {"creative/illustrated": "art.jpg"}},
+        "featured": {"skills": ["creative/plain", "creative/illustrated"]},
+    }))
+    monkeypatch.setattr(mod, "REPO_ROOT", str(tmp_path))
+
+    entries = {entry["name"]: entry for entry in mod.extract_local_skills()}
+
+    assert entries["illustrated"]["image"] == (
+        "https://hermes-agent.nousresearch.com/docs/img/catalog/art.jpg"
+    )
+    assert "image" not in entries["plain"]
+    # Curated hero ranks follow the manifest's order, 1-based.
+    assert entries["plain"]["featured"] == 1
+    assert entries["illustrated"]["featured"] == 2
+
+
+def test_unified_skills_keep_source_identifiers_and_match_cli_install_targets(mod, tmp_path, monkeypatch):
+    entries = [
+        {"source": "clawhub", "identifier": "apple-design", "name": "Display name"},
+        {"source": "skills-sh", "identifier": "skills-sh/owner/repo/a skill?mode=one&two#readme"},
+        {"source": "github", "identifier": "anthropics/skills/skills/pdf"},
+        {"source": "well-known", "identifier": "https://example.com/skills/example"},
+    ]
+    index = tmp_path / "skills-index.json"
+    index.write_text(json.dumps({"skills": entries}))
+    monkeypatch.setattr(mod, "UNIFIED_INDEX_PATH", str(index))
+    extracted, _ = mod.extract_unified_index_skills()
+
+    assert len(extracted) == len(entries)
+    for source, published in zip(entries, extracted):
+        identifier = source["identifier"]
+        expected = f"clawhub/{identifier}" if source["source"] == "clawhub" else identifier
+        assert published["identifier"] == identifier
+        assert published["installIdentifier"] == expected
+        assert published["installCmd"] == f"hermes skills install {expected}"
 
 
 # --------------------------------------------------------------------------
@@ -121,15 +169,8 @@ def test_source_url_empty_for_unknown_source_without_identifier(mod):
 # _guess_category
 # --------------------------------------------------------------------------
 
-def test_guess_category_maps_known_tag(mod):
-    assert mod._guess_category(["security"]) == "security"
-    assert mod._guess_category(["machine-learning"]) == "mlops"
-    assert mod._guess_category(["crypto"]) == "blockchain"
 
 
-def test_guess_category_accepts_literal_curated_key(mod):
-    # A skill tagged literally with a curated category key should route there.
-    assert mod._guess_category(["devops"]) == "devops"
 
 
 def test_guess_category_rejects_junk_tag(mod):

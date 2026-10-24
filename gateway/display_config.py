@@ -1,8 +1,11 @@
 """Per-platform display/verbosity resolver (``resolve_display_setting``).
 
-Resolution order, first non-None wins: ``display.platforms.<platform>.<key>`` →
-``display.<key>`` → ``_PLATFORM_DEFAULTS[platform][key]`` (a plugin platform: its registered
-``display_tier`` + ``display_overrides``) → ``_GLOBAL_DEFAULTS[key]``.
+Resolution order, first non-None wins: source-aware callers first check
+``display.platforms.<platform>.chat_types.<chat_type>.<key>`` →
+``display.chat_types.<chat_type>.<key>``, then the ordinary
+``display.platforms.<platform>.<key>`` → ``display.<key>`` →
+``_PLATFORM_DEFAULTS[platform][key]`` (a plugin platform: its registered ``display_tier`` +
+``display_overrides``) → ``_GLOBAL_DEFAULTS[key]``.
 Exception: ``display.streaming`` is CLI-only; gateway streaming follows the top-level
 ``streaming`` config unless a per-platform override sets it. Legacy
 ``display.tool_progress_overrides`` is still read as a ``tool_progress`` fallback.
@@ -25,7 +28,9 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "suppress_warning_notifications": False,
     "long_running_notifications": True,
     "busy_ack_detail": True,
+    "busy_ack_enabled": True,
     "busy_steer_ack_enabled": True,  # busy_input_mode=steer echo; the text still lands in the run
+    "thinking_progress": False,
     # Delete tool-progress / "⏳ Working" bubbles after a SUCCESSFUL final response where deletion is
     # supported (Telegram); failed runs keep them as breadcrumbs.
     "cleanup_progress": False,
@@ -92,6 +97,41 @@ def resolve_display_setting(user_config: dict, platform_key: str, setting: str, 
     return fallback if val is None else val
 
 
+def _configured_chat_type_display_value(
+    user_config: dict, platform_key: str, source: Any, setting: str,
+) -> Any:
+    """Most-specific non-null chat-type value, without introducing defaults."""
+    chat_type = str(getattr(source, "chat_type", "") or "").strip().lower()
+    if not chat_type:
+        return None
+    display_cfg = user_config.get("display")
+    if not isinstance(display_cfg, dict):
+        return None
+
+    platforms = display_cfg.get("platforms")
+    platform_cfg = platforms.get(platform_key) if isinstance(platforms, dict) else None
+    platform_types = platform_cfg.get("chat_types") if isinstance(platform_cfg, dict) else None
+    platform_type_cfg = platform_types.get(chat_type) if isinstance(platform_types, dict) else None
+    if isinstance(platform_type_cfg, dict) and platform_type_cfg.get(setting) is not None:
+        return platform_type_cfg[setting]
+
+    chat_types = display_cfg.get("chat_types")
+    chat_type_cfg = chat_types.get(chat_type) if isinstance(chat_types, dict) else None
+    if isinstance(chat_type_cfg, dict) and chat_type_cfg.get(setting) is not None:
+        return chat_type_cfg[setting]
+    return None
+
+
+def resolve_source_display_setting(
+    user_config: dict, platform_key: str, source: Any, setting: str, fallback: Any = None,
+) -> Any:
+    """Resolve a setting with chat-type overrides layered over platform/global values."""
+    configured = _configured_chat_type_display_value(user_config, platform_key, source, setting)
+    if configured is not None:
+        return _normalise(setting, configured)
+    return resolve_display_setting(user_config, platform_key, setting, fallback)
+
+
 def _configured_display_value(user_config: dict, platform_key: str, setting: str) -> Any:
     """First non-None operator value, without introducing tier defaults."""
     display_cfg = user_config.get("display")
@@ -122,6 +162,16 @@ def resolve_tool_progress(user_config: dict, platform_key: str, env_mode: str | 
     if env_mode:
         return _normalise("tool_progress", env_mode), True
     return resolve_display_setting(user_config, platform_key, "tool_progress"), False
+
+
+def resolve_source_tool_progress(
+    user_config: dict, platform_key: str, source: Any, env_mode: str | None = None,
+) -> tuple[str, bool]:
+    """Source-aware tool-progress mode plus whether the result represents explicit intent."""
+    configured = _configured_chat_type_display_value(user_config, platform_key, source, "tool_progress")
+    if configured is not None:
+        return _normalise("tool_progress", configured), True
+    return resolve_tool_progress(user_config, platform_key, env_mode)
 
 
 # --- Normalisation of YAML quirks (bare ``off`` → False in YAML 1.1, etc.) ---
@@ -188,6 +238,7 @@ _NORMALISERS: dict[str, Any] = {
     "suppress_warning_notifications": _norm_suppress_warning_notifications,
     "long_running_notifications": _norm_long_running,
     "busy_ack_detail": _norm_bool,
+    "busy_ack_enabled": _norm_bool,
     "busy_steer_ack_enabled": _norm_bool,
     "thinking_progress": _norm_bool,
     "cleanup_progress": _norm_cleanup_progress,

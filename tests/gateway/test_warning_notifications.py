@@ -106,6 +106,43 @@ def test_warning_opt_out_preserves_other_delivery(tmp_path, monkeypatch, platfor
     assert all(row[0] == source.chat_id for row in adapter.sent)
 
 
+def test_chat_type_warning_opt_out_reaches_turn_status_and_notice_sinks(tmp_path, monkeypatch):
+    from gateway import run
+
+    config = {
+        "display": {
+            "suppress_warning_notifications": False,
+            "platforms": {
+                "telegram": {
+                    "chat_types": {"group": {"suppress_warning_notifications": True}},
+                },
+            },
+        },
+    }
+    monkeypatch.setattr(run, "_hermes_home", tmp_path)
+    adapter = RecordingAdapter()
+    source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="chat", user_id="user", chat_type="group",
+    )
+    gateway = object.__new__(GatewayRunner)
+    gateway.config = None
+    gateway._delivery_adapter_for = lambda source: adapter
+    ctx = TurnContext(
+        source=source, user_config=config, _run_still_current=lambda: True,
+        _status_adapter=adapter, _status_chat_id=source.chat_id, _status_thread_metadata={},
+    )
+    turn = TurnRunner(gateway, ctx)
+    monkeypatch.setattr(run, "safe_schedule_threadsafe", lambda coro, *a, **k: asyncio.run(coro))
+    emitter = Emitter()
+    emitter.status_callback = turn._status_callback_sync
+    emitter.notice_callback = turn._notice_callback_sync
+
+    emitter._emit_warning("Context overflow blocked")
+    emitter._emit_notice(AgentNotice("Credit access paused", level="error", key="credits.depleted"))
+
+    assert adapter.sent == []
+
+
 @pytest.mark.parametrize("enabled", [True, False])
 def test_direct_warning_delivery_keeps_failure_state(tmp_path, monkeypatch, enabled):
     from gateway import run

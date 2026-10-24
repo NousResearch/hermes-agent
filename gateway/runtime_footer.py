@@ -45,18 +45,31 @@ def _env_cwd() -> str:
     return terminal_env("TERMINAL_CWD", "")
 
 
-def resolve_footer_config(user_config: dict[str, Any] | None, platform_key: str | None = None) -> dict[str, Any]:
+def resolve_footer_config(
+    user_config: dict[str, Any] | None, platform_key: str | None = None, source: Any = None,
+) -> dict[str, Any]:
     """Resolve effective footer config: defaults (enabled=False) <
-    ``display.runtime_footer`` < ``display.platforms.<platform_key>.runtime_footer``."""
+    global < platform < chat type < platform + chat type."""
     resolved = {"enabled": False, "fields": list(_DEFAULT_FIELDS)}
     cfg = (user_config or {}).get("display") or {}
     plat_cfg = (cfg.get("platforms") or {}).get(platform_key) if platform_key else None
-    sections = [cfg.get("runtime_footer"), plat_cfg.get("runtime_footer") if isinstance(plat_cfg, dict) else None]
+    chat_type = str(getattr(source, "chat_type", "") or "").strip().lower()
+    global_types = cfg.get("chat_types")
+    global_type_cfg = global_types.get(chat_type) if chat_type and isinstance(global_types, dict) else None
+    platform_types = plat_cfg.get("chat_types") if isinstance(plat_cfg, dict) else None
+    platform_type_cfg = (
+        platform_types.get(chat_type) if chat_type and isinstance(platform_types, dict) else None)
+    sections = [
+        cfg.get("runtime_footer"),
+        plat_cfg.get("runtime_footer") if isinstance(plat_cfg, dict) else None,
+        global_type_cfg.get("runtime_footer") if isinstance(global_type_cfg, dict) else None,
+        platform_type_cfg.get("runtime_footer") if isinstance(platform_type_cfg, dict) else None,
+    ]
     for section in sections:
         if not isinstance(section, dict):
             continue
-        if "enabled" in section:
-            resolved["enabled"] = bool(section.get("enabled"))
+        if section.get("enabled") is not None:
+            resolved["enabled"] = bool(section["enabled"])
         if isinstance(section.get("fields"), list) and section["fields"]:
             resolved["fields"] = [str(f) for f in section["fields"]]
     return resolved
@@ -106,12 +119,13 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
 def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str | None,
                       model: Optional[str], context_tokens: int, context_length: Optional[int],
                       cwd: Optional[str] = None, turn_seconds: Optional[float] = None,
-                      requested_model: Optional[str] = None, served_model: Optional[str] = None) -> str:
+                      requested_model: Optional[str] = None, served_model: Optional[str] = None,
+                      source: Any = None) -> str:
     """Entry point for gateway/run.py: footer text, or "" when disabled / no data. Callers append it
     to the final response themselves, preserving a single blank line of separation.
     ``turn_seconds`` is the caller-measured (``time.monotonic()``) run duration; ``None`` skips the
     ``latency`` field."""
-    cfg = resolve_footer_config(user_config, platform_key)
+    cfg = resolve_footer_config(user_config, platform_key, source)
     if not cfg.get("enabled"):
         return ""
     return format_runtime_footer(model=model, context_tokens=context_tokens,

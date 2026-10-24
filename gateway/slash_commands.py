@@ -304,6 +304,36 @@ class GatewaySlashCommandsMixin(
         from gateway.run import _gateway_config_home, _platform_config_key
         return _gateway_config_home() / "config.yaml", _platform_config_key(event.source.platform)
 
+    @staticmethod
+    def _display_write_leaf(user_config, platform_key, source, setting_path, default_leaf):
+        """Write the current chat-type layer when it already owns the effective setting."""
+        chat_type = str(getattr(source, "chat_type", "") or "").strip().lower()
+        if not chat_type:
+            return default_leaf
+        display = user_config.get("display") if isinstance(user_config, dict) else None
+        if not isinstance(display, dict):
+            return default_leaf
+        platforms = display.get("platforms")
+        platform_cfg = platforms.get(platform_key) if isinstance(platforms, dict) else None
+        platform_types = platform_cfg.get("chat_types") if isinstance(platform_cfg, dict) else None
+        global_types = display.get("chat_types")
+        scopes = (
+            platform_types.get(chat_type) if isinstance(platform_types, dict) else None,
+            global_types.get(chat_type) if isinstance(global_types, dict) else None,
+        )
+
+        def configured(scope):
+            value = scope
+            for key in setting_path:
+                if not isinstance(value, dict):
+                    return False
+                value = value.get(key)
+            return value is not None
+
+        if any(configured(scope) for scope in scopes):
+            return ("display", "platforms", platform_key, "chat_types", chat_type, *setting_path)
+        return default_leaf
+
     async def _handle_profile_command(self, event: MessageEvent) -> str:
         """Handle /profile — show the profile serving this source and its home.  On a multiplexed
         gateway the process-level profile is the multiplexer's own ("default" in every chat), so
@@ -988,16 +1018,20 @@ class GatewaySlashCommandsMixin(
         # Cycle mode (per-platform), reading the current effective mode via the resolver. ``log``
         # (tool calls to a log file instead of the chat) is a messaging mode: a local client renders
         # every tool event itself.
-        from gateway.display_config import resolve_display_setting
+        from gateway.display_config import resolve_source_display_setting
         cycle = ["off", "new", "all", "verbose"] + ([] if live is not None else ["log"])
         current = (getattr(live, "tool_progress_mode", None) if live is not None else None) or \
-            resolve_display_setting(user_config, platform_key, "tool_progress", "all")
+            resolve_source_display_setting(user_config, platform_key, event.source, "tool_progress", "all")
         new_mode = cycle[(cycle.index(current if current in cycle else "all") + 1) % len(cycle)]
         if live is not None:
             live.tool_progress_mode = new_mode  # what ``config.get verbose`` and the next tool event read
         description = t(f"gateway.verbose.mode_{new_mode}")
         try:
-            _write_raw_config_leaf(config_path, ("display", "platforms", platform_key, "tool_progress"), new_mode)
+            leaf = self._display_write_leaf(
+                user_config, platform_key, event.source, ("tool_progress",),
+                ("display", "platforms", platform_key, "tool_progress"),
+            )
+            _write_raw_config_leaf(config_path, leaf, new_mode)
             return f"{description}\n" + t("gateway.verbose.saved_suffix", platform=platform_key)
         except Exception as e:
             logger.warning("Failed to save tool_progress mode: %s", e)
@@ -1046,7 +1080,7 @@ class GatewaySlashCommandsMixin(
             user_config: dict = _load_gateway_config()
         except Exception as e:
             return t("gateway.config_read_failed", error=e)
-        effective = resolve_footer_config(user_config, platform_key)
+        effective = resolve_footer_config(user_config, platform_key, event.source)
 
         def _state(enabled: bool) -> str:
             return t("gateway.footer.state_on") if enabled else t("gateway.footer.state_off")
@@ -1057,11 +1091,14 @@ class GatewaySlashCommandsMixin(
             return t("gateway.footer.usage")
         new_state = _FOOTER_STATE_BY_ARG[arg] if arg else not effective["enabled"]
         try:
-            # A local session writes the ``cli`` key, as /reasoning show|hide saves: every local
-            # surface reads it (gateway.display_config.local_display_config), so the setting holds
-            # wherever it was set (T7). A chat's /footer keeps the global key it always wrote.
-            leaf = (("display", "platforms", platform_key) if event.source.platform == Platform.LOCAL
-                    else ("display",)) + ("runtime_footer", "enabled")
+            # Local sessions keep their ``cli`` platform key. Messaging chats preserve the historical
+            # global write unless a chat-type override already owns the effective value; then write the
+            # platform+chat-type layer so the command changes what this chat actually sees.
+            default_leaf = (("display", "platforms", platform_key) if event.source.platform == Platform.LOCAL
+                            else ("display",)) + ("runtime_footer", "enabled")
+            leaf = self._display_write_leaf(
+                user_config, platform_key, event.source, ("runtime_footer", "enabled"), default_leaf,
+            )
             _write_raw_config_leaf(config_path, leaf, new_state)
         except Exception as e:
             logger.warning("Failed to save runtime_footer.enabled: %s", e)

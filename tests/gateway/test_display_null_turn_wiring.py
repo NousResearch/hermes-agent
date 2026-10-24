@@ -13,11 +13,13 @@ import types
 import pytest
 
 from gateway.run_turn_runner import TurnRunner
+from gateway.display_config import resolve_source_display_setting
 
 
 def _wire(user_config):
     """Run `_wire_turn_agent_callbacks` over minimal fakes; return the agent."""
     agent = types.SimpleNamespace()
+    source = types.SimpleNamespace(platform="telegram", chat_type="group")
     ctx = types.SimpleNamespace(
         progress_callback=None,
         native_tool_start_callback=None,
@@ -33,7 +35,11 @@ def _wire(user_config):
         _status_adapter=None,
         session_key="",
         user_config=user_config,
-        source=types.SimpleNamespace(platform="telegram"),
+        platform_key="telegram",
+        resolve_display_setting=lambda config, platform_key, setting, fallback=None: (
+            resolve_source_display_setting(config, platform_key, source, setting, fallback)
+        ),
+        source=source,
         mute_notification_reply=False,
         _thinking_enabled=False,
         agent_holder=[None],
@@ -68,3 +74,15 @@ def test_null_or_missing_display_falls_back_to_on(user_config):
 def test_memory_notifications_setting_still_applies():
     agent = _wire({"display": {"memory_notifications": "verbose"}})
     assert agent.memory_notifications == "verbose"
+
+
+def test_memory_notifications_chat_type_override_applies():
+    agent = _wire({
+        "display": {
+            "memory_notifications": "verbose",
+            "platforms": {
+                "telegram": {"chat_types": {"group": {"memory_notifications": "off"}}},
+            },
+        },
+    })
+    assert agent.memory_notifications == "off"

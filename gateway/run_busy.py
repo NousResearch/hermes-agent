@@ -787,14 +787,14 @@ class GatewayBusySessionMixin:
     def _busy_steer_ack_enabled(self, event: MessageEvent, session_key: str) -> bool:
         # Some mobile chat setups want silent steering — keep the behavior, drop the bubble.
         from gateway.run import _load_gateway_config, _platform_config_key
-        from gateway.display_config import resolve_display_setting
+        from gateway.display_config import resolve_source_display_setting
         steer_ack_env = os.environ.get("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED")
         if steer_ack_env is not None:
             steer_ack_enabled = steer_ack_env.strip().lower() in {"1", "true", "yes", "on"}
         else:
             steer_ack_enabled = bool(
-                resolve_display_setting(
-                    _load_gateway_config(), _platform_config_key(event.source.platform),
+                resolve_source_display_setting(
+                    _load_gateway_config(), _platform_config_key(event.source.platform), event.source,
                     "busy_steer_ack_enabled", True,
                 )
             )
@@ -814,13 +814,13 @@ class GatewayBusySessionMixin:
         from gateway.run import (
             _AGENT_PENDING_SENTINEL, _hermes_home, _load_gateway_config, _platform_config_key
         )
-        from gateway.display_config import resolve_display_setting
+        from gateway.display_config import resolve_source_display_setting
 
         # Terse by default; iteration/tool detail opts in via display.platforms.<p>.busy_ack_detail.
         status_parts = []
         busy_ack_detail_enabled = bool(
-            resolve_display_setting(
-                _load_gateway_config(), _platform_config_key(event.source.platform),
+            resolve_source_display_setting(
+                _load_gateway_config(), _platform_config_key(event.source.platform), event.source,
                 "busy_ack_detail", True,
             )
         )
@@ -973,7 +973,17 @@ class GatewayBusySessionMixin:
 
         # Disabled ack: still process input. Checked before debounce so an undelivered ack never
         # stamps the "last ack" timestamp.
-        if os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() != "true":
+        from gateway.run import _load_gateway_config, _platform_config_key
+        from gateway.display_config import resolve_source_display_setting
+        _busy_ack_env = os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED")
+        if _busy_ack_env is not None:
+            _busy_ack_enabled = _busy_ack_env.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            _busy_ack_enabled = bool(resolve_source_display_setting(
+                _load_gateway_config(), _platform_config_key(event.source.platform), event.source,
+                "busy_ack_enabled", True,
+            ))
+        if not _busy_ack_enabled:
             logger.debug("Busy ack suppressed for session %s", session_key)
             return  # input still processed, just no ack sent
 

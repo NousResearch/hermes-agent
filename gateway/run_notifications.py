@@ -1868,11 +1868,13 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 ):
                     message_text = self._format_process_final_message(session_id, session, notify_mode)
                     from gateway.warning_notifications import present_notification
+                    notification_source = self._build_process_event_source(watcher)
                     async with self._completion_event_scope(watcher):
                         # Non-zero exit is the automatic diagnostic; a clean completion is the requested result.
                         await present_notification(
                             lambda: self._send_watcher_message(platform_name, chat_id, thread_id, message_text, watcher),
-                            platform=platform_name, diagnostic=session.exit_code not in {0, None})
+                            platform=platform_name, source=notification_source,
+                            diagnostic=session.exit_code not in {0, None})
                 break
             elif has_new_output and notify_mode == "all" and not agent_notify:
                 # New output — deliver a status update (only in "all" mode; agent_notify watchers

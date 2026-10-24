@@ -33,20 +33,20 @@ from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
-def _make_source() -> SessionSource:
+def _make_source(chat_type: str = "dm") -> SessionSource:
     return SessionSource(
         platform=Platform.TELEGRAM,
         user_id="u1",
         chat_id="c1",
         user_name="tester",
-        chat_type="dm",
+        chat_type=chat_type,
     )
 
 
-def _make_event(text: str) -> MessageEvent:
+def _make_event(text: str, chat_type: str = "dm") -> MessageEvent:
     return MessageEvent(
         text=text,
-        source=_make_source(),
+        source=_make_source(chat_type),
         message_id="m1",
     )
 
@@ -119,6 +119,45 @@ async def test_footer_dispatches_to_handler_when_agent_running():
     assert _BUSY_REJECTION not in (result or ""), (
         "/footer hit the busy catch-all instead of dispatching to its handler"
     )
+
+
+@pytest.mark.asyncio
+async def test_footer_status_uses_current_chat_type_override(tmp_path, monkeypatch):
+    import hermes_yaml as yaml
+    from gateway import run
+
+    runner, _adapter = _make_runner(_session_entry())
+    config = {
+        "display": {
+            "runtime_footer": {"enabled": False},
+            "tool_progress_command": True,
+            "chat_types": {
+                "group": {
+                    "runtime_footer": {"enabled": True},
+                    "tool_progress": "off",
+                    "show_reasoning": True,
+                },
+            },
+        },
+    }
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    monkeypatch.setattr(run, "_hermes_home", tmp_path)
+    event = _make_event("/footer status", "group")
+
+    result = await runner._handle_footer_command(event)
+    assert "ON" in result
+    reasoning_status = await runner._handle_reasoning_command(_make_event("/reasoning", "group"))
+    assert reasoning_status is not None and "**Display:** on" in reasoning_status
+
+    await runner._handle_footer_command(_make_event("/footer off", "group"))
+    await runner._handle_verbose_command(_make_event("/verbose", "group"))
+    await runner._handle_reasoning_command(_make_event("/reasoning hide", "group"))
+
+    saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+    group = saved["display"]["platforms"]["telegram"]["chat_types"]["group"]
+    assert group["runtime_footer"]["enabled"] is False
+    assert group["tool_progress"] == "new"
+    assert group["show_reasoning"] is False
 
 
 if __name__ == "__main__":  # pragma: no cover

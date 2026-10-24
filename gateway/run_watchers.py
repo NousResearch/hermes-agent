@@ -192,7 +192,9 @@ class GatewaySessionWatchersMixin:
                     timeout=_STALL_NOTIFY_SEND_TIMEOUT_SECONDS,
                 )
             async with _async_profile_runtime_scope(self._resolve_profile_home_for_source(source)):
-                presented = await present_notification(send_notice, platform=source.platform)
+                presented = await present_notification(
+                    send_notice, platform=source.platform, source=source,
+                )
             if not presented:
                 notified_map[session_key] = True  # suppressed: latch so the stall is not re-evaluated every tick
                 return False

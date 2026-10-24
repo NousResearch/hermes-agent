@@ -1078,7 +1078,10 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
             scope = (_async_profile_runtime_scope(self._resolve_profile_home_for_source(source))
                      if source is not None else nullcontext())
             async with scope:
-                presented = await present_notification(_send_active, platform=platform, diagnostic=restart_key != dedup_key)
+                presented = await present_notification(
+                    _send_active, platform=platform, source=source,
+                    diagnostic=restart_key != dedup_key,
+                )
             if not presented:
                 notified.add(dedup_key)  # suppressed: latch so the home-channel pass does not re-target it
         if self._restart_requested and restart_source is not None:

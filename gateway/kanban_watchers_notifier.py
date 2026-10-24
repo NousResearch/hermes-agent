@@ -631,7 +631,6 @@ class _KanbanNotification:
     async def wake(self) -> None:
         """Wake the creator session (raises on failure): push adapters get a full SessionSource, non-push a raw self-post."""
         from gateway.wake import deliver_wake
-        sub = self.sub
         if not self.is_push_adapter:
             # A served profile's raw-session wake runs in THAT profile's scope, in-process: the
             # shared listener's /p/<profile>/ self-post would need the profile's own
@@ -643,25 +642,7 @@ class _KanbanNotification:
                                    notification_category="diagnostic" if self.wake_diagnostic else "result")
             self._log_woke()
             return
-        from gateway.session import SessionSource
-        # Rebuild the creator's real session scope from the persisted chat_type:
-        # build_session_key() keys DMs differently from group/thread, so a
-        # hardcoded "group" mis-routed DM/thread creators into a fresh session.
-        # Legacy rows may carry chat_type in delivery_metadata; last resort is
-        # "group". A mismatch only degrades to a fresh session.
-        # Legacy rows written before the column existed may still carry chat_type in delivery_metadata
-        # (#60600 rows) — fall back to that, then to "group" (the historical default that suits the
-        # dashboard/group flows). handle_message() get_or_create_session's the target, so a mismatch only
-        # ever degrades to a fresh session, never an exception.
-        _delivery_meta = sub.get("delivery_metadata") or {}
-        _chat_type = str(sub.get("chat_type") or _delivery_meta.get("chat_type") or "").strip()
-        _source = SessionSource(
-            platform=self.plat, chat_id=sub["chat_id"], chat_type=_chat_type or "group",
-            thread_id=sub.get("thread_id") or None, user_id=sub.get("user_id"), user_id_alt=sub.get("user_id_alt"),
-            profile=self.sub_profile or None, scope_id=_wake_scope_id(self.adapter, sub),
-            parent_chat_id=_delivery_meta.get("parent_chat_id"),
-        )
-        _source._transport_adapter_ref = weakref.ref(self.adapter)
+        _source = self._subscription_source()
         from gateway.run import _async_profile_runtime_scope
         if self.sub_profile and getattr(getattr(self.runner, "config", None), "multiplex_profiles", False):
             from hermes_cli.profiles import profile_exists
@@ -684,7 +665,10 @@ class _KanbanNotification:
         async def send_ping():
             nonlocal _send_res
             _send_res = await adapter.send(sub["chat_id"], msg, metadata=metadata)
-        if not await present_notification(send_ping, platform=self.platform_str, diagnostic=diagnostic_event(ev)):
+        source = self._subscription_source()
+        if not await present_notification(
+            send_ping, platform=self.platform_str, source=source, diagnostic=diagnostic_event(ev),
+        ):
             return False
         # SendResult(success=False) without an exception is a FAILED delivery
         # (else the event is lost); None / non-SendResult keeps the
@@ -707,6 +691,21 @@ class _KanbanNotification:
             except Exception as art_exc:
                 logger.debug("kanban notifier: artifact delivery for %s failed: %s", self.task_id, art_exc)
         return True
+
+    def _subscription_source(self):
+        """Canonical persisted destination source for pings, filtering, and wake admission."""
+        from gateway.session import SessionSource
+        sub = self.sub
+        metadata = sub.get("delivery_metadata") or {}
+        chat_type = str(sub.get("chat_type") or metadata.get("chat_type") or "").strip()
+        source = SessionSource(
+            platform=self.plat, chat_id=sub["chat_id"], chat_type=chat_type or "group",
+            thread_id=sub.get("thread_id") or None, user_id=sub.get("user_id"),
+            user_id_alt=sub.get("user_id_alt"), profile=self.sub_profile or None,
+            scope_id=_wake_scope_id(self.adapter, sub), parent_chat_id=metadata.get("parent_chat_id"),
+        )
+        source._transport_adapter_ref = weakref.ref(self.adapter)
+        return source
 
     async def _send_pings(self) -> bool:
         """Send every text ping; False when a send failed (claim already rewound/dropped)."""
@@ -773,7 +772,9 @@ class _KanbanNotification:
             # All text pings delivered (or skipped for non-push / wake-only).
             original_events = self.d["events"]
             from gateway.warning_notifications import warning_notifications_enabled
-            split = not warning_notifications_enabled(self.platform_str)
+            split = not warning_notifications_enabled(
+                self.platform_str, source=self._subscription_source(),
+            )
             wake_groups = ([original_events] if not split else [
                 [ev for ev in original_events if diagnostic_event(ev)],
                 [ev for ev in original_events if not diagnostic_event(ev)],

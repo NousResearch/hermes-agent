@@ -71,6 +71,9 @@ def _refusal(authority, tip, exc):
     chat is named: a remote sender never binds unowned history, so a bare code would leave the
     peer nothing to act on. The full clause stays in gateway.log."""
     reason = exc.reason
+    if reason == 'handoff_author_required':
+        return reason, ('Handoff refused: a message into a desktop chat must carry a bot author '
+                        '(turn_author with is_bot true and an id starting "bot:") so the chat shows who sent it')
     if reason == 'not_found' and not str(tip.get('chat_id') or '').startswith('local-'):
         from hermes_state_local_migration import validate_legacy_row
         try:
@@ -125,6 +128,20 @@ def bot_chat_tip(authority, session_id):
     return db.get_session(tip)
 
 
+def local_chat_tip(authority, session_id):
+    """The tip row of an owned LOCAL chat (a Desktop/CLI conversation with a bound local policy)
+    when *session_id* is in its lineage, else None. Unowned history is never a handoff target."""
+    db = authority.db
+    tip = db.get_compression_tip(session_id)
+    row = db.get_session(tip) if tip else None
+    if row is None or not str(row.get('chat_id') or '').startswith('local-'):
+        return None
+    from hermes_state_local import POLICY_PREFIX
+    with db._read_ctx() as conn:
+        bound = conn.execute('SELECT 1 FROM state_meta WHERE key=?', (POLICY_PREFIX + row['chat_id'],)).fetchone()
+    return row if bound else None
+
+
 async def admit_peer_turn(runner, session_id, message, author):
     """``(profile home, receipt)`` when *session_id* is the Bot Chat and the turn was admitted to its
     FIFO; None when the target is any other session (the caller runs it as an API turn)."""
@@ -134,8 +151,15 @@ async def admit_peer_turn(runner, session_id, message, author):
     if authority is None:
         return None
     tip = bot_chat_tip(authority, session_id)
+    handoff = None
     if tip is None:
-        return None
+        # Agent-to-desktop-chat handoff: any OTHER owned local chat (a Desktop conversation) takes
+        # the turn through the same FIFO door, shown as coming from the named bot. An API
+        # conversation is not ours to write into here: the caller runs it as an API turn.
+        tip = local_chat_tip(authority, session_id)
+        if tip is None:
+            return None
+        handoff = tip['id']
     home = Path(authority.db.db_path).parent.resolve()
     from gateway.session_bot import displaceable_bot_chat
     if displaceable_bot_chat(authority, authority.db.get_session_by_title('Bot Chat') or tip) is not None:
@@ -150,6 +174,8 @@ async def admit_peer_turn(runner, session_id, message, author):
                           frozenset({'session:submit', 'session:read'}), 'api-peer-dm')
     key = uuid.uuid4().hex
     params = dict(id=key, profile=served_profile_name(home), message=message)
+    if handoff is not None:
+        params['target_session'] = handoff
     if author is not None:
         params['author'] = dict(author)
     try:

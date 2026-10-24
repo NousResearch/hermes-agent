@@ -67,6 +67,31 @@ _RESPAWN_BLOCKER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Positive transient evidence only; generic quota/billing text is not enough.
+_RESPAWN_TRANSIENT_RE = re.compile(
+    r"\b(?:HTTP\s+429|rate[\s_\-]?limit(?:ed|ing)?|"
+    r"too many requests|(?:the )?usage limit has been reached)\b", re.IGNORECASE,
+)
+# Quota and explicit credential/permission failures. Unlike bare auth words,
+# these stay diagnostic even inside a crashed worker's captured output.
+_RESPAWN_CRASH_BLOCKER_RE = re.compile(
+    r"\b(?:quota|rate[\s_\-]?limit|429|billing|subscription)\b", re.IGNORECASE,
+)
+_RESPAWN_CREDENTIAL_RE = re.compile(
+    r"\b(?:401|403|credentials?|unauthorized|forbidden|"
+    r"access[\s_]denied|permission[\s_]denied|"
+    r"(?:missing|invalid|revoked|expired|no)\s+(?:api[\s_]?key|credentials?|tokens?))\b",
+    re.IGNORECASE,
+)
+_RESPAWN_CRASH_VETO_RE = re.compile(
+    r"\bbilling\b|" + _RESPAWN_CREDENTIAL_RE.pattern, re.IGNORECASE,
+)
+_RESPAWN_AUTH_RE = re.compile(
+    r"\b(?:auth|authenticat(?:e|es|ed|ing|ion)|authoriz(?:e|es|ed|ing|ation)|"
+    r"authoris(?:e|es|ed|ing|ation)|authz|billing)\b|" + _RESPAWN_CREDENTIAL_RE.pattern,
+    re.IGNORECASE,
+)
+
 # Within this window a completed run counts as "recent proof"; don't re-spawn.
 _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 
@@ -1562,11 +1587,13 @@ def check_respawn_guard(
     Called per ready/review row before any claim attempt. Priority order:
     ``"infrastructure_cooldown"`` (latest run is a ``spawn_failed`` the host
     refused — no restart-safe scope — within the cooldown; never counted),
-    ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
-    checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
-    ``last_failure_error`` that would otherwise park the task forever — that
-    path never increments ``consecutive_failures``), ``"blocker_auth"``
-    (quota/auth pattern; the breaker still trips eventually), then for the
+    ``"rate_limit_cooldown"`` (latest execution is typed ``rate_limited`` or
+    a positively identified quota crash within the cooldown). Evidenced
+    workerless administrative blocks do not replace execution provenance.
+    Unknown failure timestamps stay held; real credential errors never expire.
+    Only the transient guard lifts after cooldown; then ``"blocker_auth"``
+    (other quota/auth patterns; for a plain crash, only quota or explicit
+    credential/permission text, never bare auth words), and for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
     (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
@@ -1584,43 +1611,60 @@ def check_respawn_guard(
 
     now = int(time.time())
 
-    # 1. Rate-limit cooldown — see docstring for why this precedes blocker_auth.
-    #    LATEST run only: a newer crash/completion supersedes the rate-limit run.
-    #    An infrastructure spawn refusal (#114720) shares the cooldown: the host
-    #    condition is not the card's, so it retries forever, spaced, and never
-    #    reaches the breaker.
-    rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
+    # Run IDs preserve execution order even when timestamps are absent or tied.
+    # Skip only evidenced workerless administrative blocks, never claimed runs.
     latest_run = conn.execute(
-        "SELECT outcome, ended_at, metadata FROM task_runs "
-        "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY ended_at DESC LIMIT 1",
+        "SELECT r.outcome, r.error, r.ended_at, r.metadata FROM task_runs r "
+        "WHERE r.task_id = ? AND NOT COALESCE(("
+        "r.outcome = 'blocked' AND r.error IS NULL "
+        "AND r.claim_lock IS NULL AND r.worker_pid IS NULL "
+        "AND r.started_at = r.ended_at "
+        "AND EXISTS (SELECT 1 FROM task_events e WHERE e.task_id=r.task_id "
+        "AND e.run_id=r.id AND e.kind='blocked') "
+        "AND NOT EXISTS (SELECT 1 FROM task_events e WHERE e.task_id=r.task_id "
+        "AND e.run_id=r.id AND e.kind='claimed')), 0) "
+        "ORDER BY r.id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
+    # Retain the independent host-infrastructure retry guard.
     if latest_run is not None and latest_run["outcome"] == "spawn_failed":
+        rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
         if rl_cooldown > 0 and _kb._json_dict(latest_run["metadata"]).get("infrastructure"):
             ended_at = _kb._to_epoch(latest_run["ended_at"])
             if ended_at is not None and (now - ended_at) < rl_cooldown:
                 return "infrastructure_cooldown"
-    if latest_run is not None and latest_run["outcome"] == "rate_limited":
-        if rl_cooldown <= 0:
-            # Cooldown disabled — respawn immediately, skipping blocker_auth so
-            # the stamped rate-limit text doesn't re-trap the task.
-            return None
-        ended_at = _kb._to_epoch(latest_run["ended_at"])
-        if ended_at is not None and (now - ended_at) < rl_cooldown:
-            return "rate_limit_cooldown"
-        # Cooldown elapsed — return early so blocker_auth doesn't catch the
-        # stamped rate-limit text; this path intentionally retries forever
-        # (spaced by the cooldown) until quota returns or a real run supersedes it.
-        return None
-
-    # 2. Quota / auth blocker: retrying immediately will not help.  A plain
-    # crash is different: its persisted error includes the worker's last
-    # captured output, which is context rather than a diagnosis and may contain
-    # benign commands such as ``claude auth status`` (#117097).
-    err = _kb._lossy_text(row["last_failure_error"])
+    # A plain crash's persisted error includes the worker's last captured
+    # output, which is context rather than a diagnosis and may contain benign
+    # commands such as ``claude auth status`` (#117097): only positive quota
+    # evidence or an explicit credential/permission failure counts there.
+    err = _kb._lossy_text(row["last_failure_error"]) or ""
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
-    if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
+    transient = False
+    if latest_run is not None:
+        run_error = _kb._lossy_text(latest_run["error"]) or ""
+        # The same rule vetoes crash transience: incidental auth words in the
+        # captured output must not turn a quota crash into a permanent hold.
+        veto_re = (_RESPAWN_CRASH_VETO_RE if latest_outcome == "crashed"
+                   else _RESPAWN_AUTH_RE)
+        transient = (
+            (latest_outcome == "rate_limited"
+             and (not err or not run_error or err == run_error[:500]))
+            or (latest_outcome == "crashed"
+                and bool(_RESPAWN_TRANSIENT_RE.search(run_error))
+                and err == run_error[:500])
+        ) and not veto_re.search(err + " " + run_error)
+    if transient and latest_run is not None:
+        ended_at = _kb._to_epoch(latest_run["ended_at"])
+        if ended_at is None or ended_at <= 0:
+            return "blocker_auth_unknown_provenance"
+        rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
+        if rl_cooldown > 0 and now - ended_at < rl_cooldown:
+            return "rate_limit_cooldown"
+        # Lift only this guard; success/PR guards below still apply.
+    elif err and (
+            _RESPAWN_CRASH_BLOCKER_RE.search(err) or _RESPAWN_CREDENTIAL_RE.search(err)
+            if latest_outcome == "crashed"
+            else _RESPAWN_BLOCKER_RE.search(err) or _RESPAWN_AUTH_RE.search(err)):
         return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL

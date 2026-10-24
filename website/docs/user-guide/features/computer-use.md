@@ -168,6 +168,38 @@ compromise you accept.
 
 </div>
 
+## Remote Desktop/local-tool bridge
+
+When [Hermes Desktop connects to a remote backend](../desktop.md#connecting-to-a-remote-backend), tools normally run on the **backend** machine. If Desktop is on your Mac but the backend is on a VPS, `computer_use` sees the VPS, not your Mac.
+
+Hermes Desktop can manage this automatically for remote backends. When the **Local Computer Use bridge** option is enabled in Desktop's Gateway settings, Desktop starts a loopback-only local bridge, opens an authenticated reverse WebSocket to the remote backend, and the backend routes `computer_use` calls over that channel. The remote backend does not need inbound access to your laptop.
+
+For headless or non-Desktop setups, you can still run the bridge manually. Start an authenticated local bridge on the desktop host:
+
+```bash
+# Local desktop host, e.g. your Mac
+export HERMES_COMPUTER_USE_BRIDGE_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+hermes computer-use bridge --host 127.0.0.1 --port 8765
+```
+
+Then expose that loopback-only bridge to the backend with SSH/VPN tunnelling and point the backend at it. The URL is behavior, so it lives in `config.yaml`; only the shared token is a secret:
+
+```yaml
+# Remote backend host — ~/.hermes/config.yaml
+computer_use:
+  provider: http-bridge
+  bridge_url: http://127.0.0.1:18765
+```
+
+```bash
+# Remote backend host
+ssh -N -L 18765:127.0.0.1:8765 mac-host
+echo 'HERMES_COMPUTER_USE_BRIDGE_TOKEN=<same token>' >> ~/.hermes/.env
+hermes serve --host 0.0.0.0 --port 9119
+```
+
+The bridge is an actuator surface: it can click, type, scroll, and read the local screen through `cua-driver`. Keep the default `127.0.0.1` bind. Desktop's managed bridge keeps the local side loopback-only and uses an outbound reverse channel; for manual mode, tunnel it and only use `--allow-non-loopback` on a trusted VPN with a strong token.
+
 ## `hermes computer-use doctor` — your first triage stop
 
 `hermes computer-use doctor` runs cua-driver's structured
@@ -458,6 +490,9 @@ computer_use:
   provider: local
 ```
 
+`http-bridge` drives a desktop running [`hermes computer-use bridge`](#remote-desktoplocal-tool-bridge)
+at `computer_use.bridge_url`.
+
 A plugin can register other providers — a per-task container pool, a leased
 cloud sandbox — by calling `ctx.register_computer_use_provider()`. Name one
 here to activate it. Registering never activates on its own: an unrecognized
@@ -467,6 +502,14 @@ clicking the user's screen.
 
 `noop` is built in for tests and CI — it records calls and has no side
 effects.
+
+Hermes Desktop's own bridge is the exception and is normally absent from this
+setting. It belongs to a connection rather than to the backend: the same
+gateway process can serve a Desktop client with a bridge, a phone on Telegram,
+and a cron job at once, so it is resolved per session from the socket the app
+authenticated on. Naming `desktop-bridge` here is still meaningful on a shared
+gateway — it pins the answer to "a Desktop I authenticated, or nothing", so a
+cron tick fails instead of falling back to driving the server's own screen.
 
 `HERMES_COMPUTER_USE_BACKEND` did this before `computer_use.provider` existed.
 It still wins where it is set, and warns once per process.

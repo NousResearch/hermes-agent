@@ -315,12 +315,59 @@ def check_macos_tcc_grants() -> None:
                "System Settings, then fully quit & relaunch Hermes once.")
 
 
-def _desktop_app_bundle() -> Path | None:
-    """Locate the locally-built desktop bundle (``apps/desktop/release/mac-<arch>/Hermes.app``), newest first.
+def _running_app_bundle() -> Path | None:
+    """The bundle the running desktop app was launched from, if any.
 
-    The only layout whose ad-hoc re-signed bundle can invalidate TCC grants. ``/Applications/Hermes.app`` is
-    deliberately not probed: it is the separately-signed, certificate-anchored Hermes-Setup launcher.
+    TCC keys a grant to the designated requirement of the bundle the user LAUNCHED, so neither the
+    staging artifact nor a different install can stand in for it. Helper processes
+    (``Hermes Helper.app/Contents/MacOS/Hermes Helper``) are skipped: only the main executable's
+    ``Hermes.app`` is the bundle that owns the grant.
     """
+    if sys.platform != "darwin":
+        return None
+    ps = shutil.which("ps")
+    if not ps:
+        return None
+    try:
+        proc = subprocess.run([ps, "-axo", "command="], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, check=False)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    marker = "/Contents/MacOS/Hermes"
+    for line in (proc.stdout or "").splitlines():
+        executable = line.split(" --", 1)[0].strip()
+        if not executable.endswith(marker):
+            continue
+        bundle = Path(executable[: -len(marker)])
+        if bundle.is_dir():
+            return bundle
+    return None
+
+
+def _installed_app_bundle() -> Path | None:
+    """The desktop app installed for this user: /Applications first, then ~/Applications."""
+    for bundle in (Path("/Applications/Hermes.app"), Path.home() / "Applications" / "Hermes.app"):
+        if (bundle / "Contents" / "Resources" / "app.asar").is_file():
+            return bundle
+    return None
+
+
+def _desktop_app_bundle() -> Path | None:
+    """Locate the desktop bundle whose TCC grants actually matter, in trust order:
+
+    1. the running app — the bundle the user launched and granted permissions to,
+    2. the installed copy — what ``hermes update`` installs and the user relaunches,
+    3. the newest locally-built staging bundle — what a dev running a fresh build launches.
+
+    Probing ``release/`` alone blamed a cdhash-pinned staging artifact for grants the user never made
+    to it, while the installed identifier-pinned app kept them. The staging bundle is still the
+    fallback so a dev who builds and runs from ``release/`` keeps the warning.
+    """
+    running = _running_app_bundle()
+    if running is not None:
+        return running
+    installed = _installed_app_bundle()
+    if installed is not None:
+        return installed
     release_dir = Path(__file__).resolve().parents[1] / "apps" / "desktop" / "release"
     candidates = [p for p in release_dir.glob("mac*/Hermes.app") if p.is_dir()]
     return max(candidates, key=lambda p: p.stat().st_mtime) if candidates else None

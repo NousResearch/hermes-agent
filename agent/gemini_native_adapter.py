@@ -167,6 +167,10 @@ def normalize_gemini_base_url(base_url: Optional[str]) -> str:
     trimmed = re.sub(r"/openai\Z", "", trimmed, flags=re.IGNORECASE).rstrip("/")
     if not trimmed:
         trimmed = DEFAULT_GEMINI_BASE_URL
+    from agent.opencode_go_gemini import OPENCODE_GO_GEMINI_BASE_URL, is_opencode_go_base_url
+    if is_opencode_go_base_url(trimmed):
+        # OpenCode Go serves Gemini only from its Google-wire root: /zen/go 404s on :generateContent.
+        return OPENCODE_GO_GEMINI_BASE_URL
     if is_vertex_express_base_url(trimmed):
         if trimmed.lower().endswith("/publishers/google"):
             return trimmed

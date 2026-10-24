@@ -656,12 +656,14 @@ _skill_gate_bypass: _ctxvars.ContextVar[bool] = _ctxvars.ContextVar(
 
 def _run_write_gate(build_staging):
     """Shared write gate: None to proceed, else a JSON tool result (blocked/staged).
-    ``build_staging(wa) -> (payload, gist)`` runs only when staging. Fails open if
-    write_approval cannot be imported."""
+    ``build_staging(wa) -> (payload, gist)`` runs only when staging. Fails closed (refuses)
+    if write_approval cannot be imported."""
     try:
         from tools import write_approval as wa
     except Exception:
-        return None  # fail open
+        logger.error("write_approval unavailable; refusing skill write", exc_info=True)
+        return tool_error("Skill write refused: the write-approval gate could not be loaded. "
+                          "Nothing was saved.", success=False)
     decision = wa.evaluate_gate(wa.SKILLS)
     if decision.allow:
         return None

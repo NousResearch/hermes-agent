@@ -1106,24 +1106,45 @@ class VoiceReceiver:
 
     def _infer_user_for_ssrc(self, ssrc: int) -> int:
         """Infer user_id for an unmapped SSRC: after a bot rejoin Discord may not resend
-        SPEAKING, so if exactly one allowed user is in the channel, map the SSRC to them."""
+        SPEAKING, so the SSRC stays unmapped forever and every utterance is silently
+        discarded (observed 2026-10-11 21:00). Two inference passes, both skipped for
+        multi-user allowlists (would misattribute speech):
+          1. Sole allowed member actually present in the channel (needs a fresh VoiceState).
+          2. Last resort: the allowlist has exactly one user, so the only possible
+             non-bot speaker is that user — this also covers channel-is-None and the
+             empty-members-without-VoiceState cases that pass 1 can't see.
+        NOTE: no lock taken here — callers (check_silence / flush_pending) already hold
+        self._lock, and it is non-reentrant.
+        """
+        allowed = self._allowed_user_ids
+        candidates = []
         try:
             channel = self._vc.channel
-            if not channel:
-                return 0
-            bot_id = self._vc.user.id if self._vc.user else 0
-            allowed = self._allowed_user_ids
-            candidates = [
-                m.id for m in channel.members
-                if m.id != bot_id and (not allowed or str(m.id) in allowed)
-            ]
-            if len(candidates) == 1:
-                uid = candidates[0]
-                self._ssrc_to_user[ssrc] = uid
-                logger.info("Auto-mapped ssrc=%d -> user=%d (sole allowed member)", ssrc, uid)
-                return uid
+            if channel is not None:
+                bot_id = self._vc.user.id if self._vc.user else 0
+                candidates = [
+                    m.id for m in channel.members
+                    if m.id != bot_id and (not allowed or str(m.id) in allowed)
+                ]
         except Exception:
             pass
+        if len(candidates) == 1:
+            uid = candidates[0]
+            self._ssrc_to_user[ssrc] = uid
+            logger.info("Auto-mapped ssrc=%d -> user=%d (sole allowed member)", ssrc, uid)
+            return uid
+        if allowed and len(allowed) == 1:
+            uid = next(iter(allowed))
+            try:
+                uid = int(uid)
+            except (TypeError, ValueError):
+                return 0
+            self._ssrc_to_user[ssrc] = uid
+            logger.info(
+                "Auto-mapped ssrc=%d -> user=%d (sole allowed user, member inference unavailable)",
+                ssrc, uid,
+            )
+            return uid
         return 0
 
     def check_silence(self) -> list:

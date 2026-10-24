@@ -528,11 +528,60 @@ def balance_fences_across_chunks(chunks: list[str]) -> list[str]:
     out: list[str] = []
     carry_lang = None
     for chunk in chunks:
+        if carry_lang is not None:
+            rest = after_carried_fence_close(chunk)
+            if rest is not None:
+                # The previous chunk's synthetic close already ended the block.
+                carry_lang, chunk = None, rest
+                if not chunk:
+                    continue
         body = f"```{carry_lang}\n{chunk}" if carry_lang is not None else chunk
         in_code, lang = fence_state_after(chunk, carry_lang is not None, carry_lang or "")
+        if in_code and (trimmed := without_trailing_open_fence(body)) is not None:
+            body = trimmed.rstrip("\n")
+            out.append(body)
+            carry_lang = lang
+            continue
         carry_lang = lang if in_code else None
         out.append(body + "\n```" if in_code else body)
     return out
+
+
+def split_outside_inline_code(text: str, split_at: int, cp_limit: int) -> int:
+    """Move ``split_at`` back to a space/newline before an unpaired inline backtick in
+    ``text[:split_at]`` (an unpaired backtick breaks MarkdownV2); unchanged when no safe point."""
+    candidate = text[:split_at]
+    if (candidate.count("`") - candidate.count("\\`")) % 2 == 0:
+        return split_at
+    last_bt = candidate.rfind("`")
+    while last_bt > 0 and candidate[last_bt - 1] == "\\":
+        last_bt = candidate.rfind("`", 0, last_bt)
+    if last_bt > 0:
+        safe_split = max(candidate.rfind(" ", 0, last_bt), candidate.rfind("\n", 0, last_bt))
+        if safe_split > cp_limit // 4:
+            return safe_split
+    return split_at
+
+
+def after_carried_fence_close(text: str) -> Optional[str]:
+    """Text after its first line when that line closes a fence carried over from the previous
+    chunk, else None. Reopening the fence there would emit an empty code block (Roomote#3400)."""
+    stripped = text.lstrip("\n")
+    first, sep, rest = stripped.partition("\n")
+    if not first.strip().startswith("```"):
+        return None
+    return rest.lstrip("\n") if sep else ""
+
+
+def without_trailing_open_fence(text: str) -> Optional[str]:
+    """``text`` minus a trailing fence line that opens a block (caller knows the chunk ends
+    in-code), else None. Closing it at the chunk boundary would emit an empty code block; the
+    next chunk reopens the fence anyway."""
+    body = text.rstrip()
+    head, _, last = body.rpartition("\n")
+    if not last.strip().startswith("```") or not head.strip():
+        return None
+    return head + "\n"
 
 
 def fence_state_after(text: str, in_code: bool = False, lang: str = "") -> tuple[bool, str]:

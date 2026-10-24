@@ -21,6 +21,18 @@ _TRUNCATION_MARKER = "… [truncated]"
 TODO_INJECTION_HEADER = "[Your active task list was preserved across context compression]"
 _STATUS_MARKERS = {"completed": "[x]", "in_progress": "[>]", "pending": "[ ]", "cancelled": "[~]"}
 _ACTIVE_STATUSES = {"pending", "in_progress"}
+# Models trained on other agents' todo tools send these names; without the map a finished
+# step silently became "pending" (replace) or kept its old status (merge).
+_STATUS_ALIASES = {"todo": "pending", "to_do": "pending", "open": "pending",
+                   "inprogress": "in_progress", "active": "in_progress", "doing": "in_progress",
+                   "done": "completed", "complete": "completed", "finished": "completed",
+                   "canceled": "cancelled", "skipped": "cancelled"}
+
+
+def normalize_status(value: Any) -> Optional[str]:
+    """Canonical status for ``value`` (case/separator/alias tolerant), or None if unknown."""
+    key = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return key if key in VALID_STATUSES else _STATUS_ALIASES.get(key)
 
 
 class TodoStore:
@@ -68,8 +80,8 @@ class TodoStore:
                 continue
             if t.get("content"):
                 cur["content"] = self._cap_content(str(t["content"]).strip())
-            if t.get("status") and str(t["status"]).strip().lower() in VALID_STATUSES:
-                cur["status"] = str(t["status"]).strip().lower()
+            if status := normalize_status(t.get("status")):
+                cur["status"] = status
             if "parent" in t:
                 parent = str(t["parent"] or "").strip()
                 if parent:
@@ -149,10 +161,9 @@ class TodoStore:
                 f"Todo item '{item_id}' has empty or missing content. "
                 "Each item must have a non-empty description."
             )
-        status = str(item.get("status", "pending")).strip().lower()
         result = {"id": item_id,
                   "content": TodoStore._cap_content(content),
-                  "status": status if status in VALID_STATUSES else "pending"}
+                  "status": normalize_status(item.get("status")) or "pending"}
         parent = str(item.get("parent") or "").strip()
         if parent and parent != item_id:
             result["parent"] = parent

@@ -107,6 +107,47 @@ class TestUsageCachedAgent:
 class TestUsageAccountSection:
     """Account-limits section appended to /usage output (PR #2486)."""
 
+    def _fresh_topic_runner(self, monkeypatch, gateway_config):
+        """A /usage with no live agent, no persisted route and the given on-disk config."""
+        runner = _make_runner(SK)
+        runner.session_store.get_or_create_session.return_value = MagicMock(session_id="fresh")
+        runner.session_store.load_transcript.return_value = []
+        calls = []
+
+        def fake_fetch(provider, *, base_url=None, api_key=None):
+            calls.append((provider, base_url))
+            return None
+
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: gateway_config)
+        monkeypatch.setattr("gateway.slash_commands_status.fetch_account_usage", fake_fetch)
+        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda markdown=False: [])
+        return runner, calls
+
+    @pytest.mark.asyncio
+    async def test_fresh_topic_uses_configured_provider(self, monkeypatch):
+        """A fresh topic reports the CONFIGURED account, carrying its base_url, never a default."""
+        runner, calls = self._fresh_topic_runner(monkeypatch, {
+            "model": {"provider": "nvidia", "base_url": "https://integrate.api.nvidia.com/v1/"}
+        })
+        await runner._handle_usage_command(MagicMock())
+        assert calls == [("nvidia", "https://integrate.api.nvidia.com/v1/")]
+
+    @pytest.mark.asyncio
+    async def test_fresh_topic_defaults_to_codex_only_when_no_provider_is_available(self, monkeypatch):
+        runner, calls = self._fresh_topic_runner(monkeypatch, {"model": {}})
+        await runner._handle_usage_command(MagicMock())
+        assert calls == [("openai-codex", None)]
+
+    @pytest.mark.asyncio
+    async def test_live_agent_route_outranks_configured_provider(self, monkeypatch):
+        """Authority order: the active route wins even when config names something else."""
+        runner, calls = self._fresh_topic_runner(monkeypatch, {"model": {"provider": "nvidia"}})
+        agent = MagicMock(provider="nous", base_url="https://inference-api.nousresearch.com/v1/",
+                          api_key="k", session_api_calls=0)
+        runner._resident_agent_for = lambda _key: agent
+        await runner._handle_usage_command(MagicMock())
+        assert calls == [("nous", "https://inference-api.nousresearch.com/v1/")]
+
 
     @pytest.mark.asyncio
     async def test_usage_command_uses_persisted_provider_when_agent_not_running(self, monkeypatch):
@@ -305,4 +346,3 @@ class TestUsageContextBreakdown:
         assert "60%" in result     # 6000 / 10000
         # Zero-token category is dropped, not rendered.
         assert "Conversation" not in result
-

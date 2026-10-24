@@ -24,6 +24,19 @@ from cron.jobs import (
 )
 from cron.scheduler import tick
 
+# The completion tail (mark_job_run -> quota_hold / unreachable_retry / occurrences, finish_execution
+# -> incidents / sqlite_util) runs minutes after a job started. Its late imports are the one seam a
+# process spanning an in-place `hermes update` crosses on MIXED code: the new file on disk against
+# this process's cached siblings (`cannot import name 'safe_strftime' from 'hermes_time'`), after
+# the output was written and before it was delivered or recorded. Load them with the package so
+# the whole bookkeeping path is pinned to the generation this process booted on.
+from cron import (  # noqa: E402, F401
+    incidents, lifecycle_guard, notepad, occurrences, quota_hold, scheduler_failure_copy,
+    unreachable_retry,
+)
+from gateway import response_filters  # noqa: E402, F401
+from hermes_cli import sqlite_util  # noqa: E402, F401
+
 __all__ = [
     "JOBS_FILE",
     "create_job",

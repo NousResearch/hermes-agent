@@ -28,6 +28,16 @@ logger = logging.getLogger("gateway.run")
 # Seconds a ``type: exec`` quick command may run before its whole process tree is killed.
 _EXEC_QUICK_COMMAND_TIMEOUT = 30
 
+# The environment variables that carry a quick command's origin. They are cleared before
+# each exec, so an inherited value can never masquerade as the current origin.
+_QUICK_COMMAND_ORIGIN_ENV_VARS = (
+    "HERMES_ORIGIN_PLATFORM",
+    "HERMES_ORIGIN_CHAT_ID",
+    "HERMES_ORIGIN_THREAD_ID",
+    "HERMES_COMMAND_NAME",
+    "HERMES_COMMAND_ARGS",
+)
+
 
 async def _stop_exec_tree(proc) -> None:
     """Kill an exec quick command's shell and everything it started, then reap the shell (bounded).
@@ -175,17 +185,56 @@ class GatewayInboundHooksMixin:
                     return False, None, event.get_command()
         return False, None, None
 
-    async def _hm_run_exec_quick_command(self, command: str, exec_cmd: str, cwd: Optional[str] = None) -> str:
+    def _hm_quick_command_origin_env(self, event: MessageEvent) -> dict:
+        """The originating chat's identity for an ``exec`` quick command.
+
+        A quick command runs in the gateway's own process, so it cannot see which chat
+        asked for it; without this it acts on an unrelated context. Empty values are
+        omitted so a stale inherited variable can never masquerade as this origin."""
+        source = getattr(event, "source", None)
+        platform = getattr(source, "platform", "")
+        origin_platform = getattr(platform, "value", platform)
+        values = {
+            "HERMES_ORIGIN_PLATFORM": origin_platform,
+            "HERMES_ORIGIN_CHAT_ID": getattr(source, "chat_id", None),
+            "HERMES_ORIGIN_THREAD_ID": getattr(source, "thread_id", None),
+        }
+        env = {
+            name: str(value)
+            for name, value in values.items()
+            if value is not None and value != ""
+        }
+        # The command's own name and arguments, as typed.
+        env["HERMES_COMMAND_NAME"] = str(event.get_command() or "")
+        env["HERMES_COMMAND_ARGS"] = str(event.get_command_args() or "").strip()
+        return env
+
+    async def _hm_run_exec_quick_command(
+        self,
+        command: str,
+        exec_cmd: str,
+        cwd: Optional[str] = None,
+        origin_env: Optional[dict] = None,
+    ) -> str:
         """Run a ``type: exec`` quick command as a host shell of the gateway process: sanitized env
         (the gateway process has every API key in os.environ), redacted output, its process tree
         killed after 30 s or when the awaiting task is cancelled (gateway shutdown).
-        ``cwd`` is a local session's folder; None keeps the gateway's own (messaging)."""
+        ``cwd`` is a local session's folder; None keeps the gateway's own (messaging).
+        ``origin_env`` carries the originating chat's identity (platform/chat/thread) so the
+        command can act in the origin's context instead of guessing one."""
         proc = None
         try:
             from tools.environments.local import build_subprocess_env
+            sanitized_env = build_subprocess_env()
+            # The origin variables are this call's to define: drop whatever the gateway's own
+            # environment carried, so an inherited value can never masquerade as this origin.
+            for name in _QUICK_COMMAND_ORIGIN_ENV_VARS:
+                sanitized_env.pop(name, None)
+            if origin_env:
+                sanitized_env.update(origin_env)
             proc = await asyncio.create_subprocess_shell(
                 exec_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                env=build_subprocess_env(), cwd=cwd,
+                env=sanitized_env, cwd=cwd,
                 # Its own process group, so cleanup can reach what the shell started (POSIX;
                 # Windows ignores it and _stop_exec_tree walks the tree with taskkill /T).
                 start_new_session=True,
@@ -230,7 +279,9 @@ class GatewayInboundHooksMixin:
                 exec_cmd = qcmd.get("command", "")
                 if not exec_cmd:
                     return True, t("gateway.quick_command.no_command", command=command), command
-                return True, await self._hm_run_exec_quick_command(command, exec_cmd), command
+                return True, await self._hm_run_exec_quick_command(
+                    command, exec_cmd, origin_env=self._hm_quick_command_origin_env(event)
+                ), command
             if qtype != "alias":
                 return True, t("gateway.quick_command.unsupported_type", command=command), command
             new_command = self._hm_expand_alias_quick_command(event, qcmd)

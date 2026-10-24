@@ -7,6 +7,12 @@ import asyncio
 import contextlib
 from hermes_cli.cli_output import line_input
 from hermes_cli.gateway_host_record import _discard_dead_host_record, _forget_host_gateway_probe
+from hermes_cli.gateway_unit_file import (
+    read_systemd_user_from_unit as _read_systemd_user_from_unit,
+    read_unit_file_text as _read_unit_text,
+    unit_environment_value as _unit_environment_value,
+    unit_home_pinned_by_unit as _hermes_home_pinned_by_unit,
+)
 import json
 import logging
 import os
@@ -1222,30 +1228,6 @@ def _systemctl_show(properties: tuple[str, ...], *, system: bool) -> dict[str, s
     except (RuntimeError, subprocess.TimeoutExpired, OSError):
         return {}
     return _parse_kv_pairs(result.stdout.splitlines()) if result.returncode == 0 else {}
-
-
-def _unit_environment_value(unit_path: Path, name: str) -> str | None:
-    """Value of one ``Environment="NAME=…"`` directive in the unit file at *unit_path*, with
-    systemd's ``\\"``/``\\\\``/``%%`` quoting undone; None when the file or the key is absent."""
-    try:
-        text = unit_path.read_text(encoding="utf-8-sig")
-    except OSError:
-        return None
-    for line in text.splitlines():
-        body = line.strip()
-        if not body.startswith("Environment="):
-            continue
-        body = body[len("Environment=") :].strip()
-        if body.startswith('"') and body.endswith('"'):
-            body = body[1:-1].replace('\\"', '"').replace("\\\\", "\\").replace("%%", "%")
-        if body.startswith(f"{name}="):
-            return body.split("=", 1)[1].strip() or None
-    return None
-
-
-def _hermes_home_pinned_by_unit(unit_path: Path) -> str | None:
-    """``HERMES_HOME`` pinned by the unit file at *unit_path*, or None when absent/unreadable."""
-    return _unit_environment_value(unit_path, "HERMES_HOME")
 
 
 def _hermes_home_from_systemd_unit_file(system: bool = False) -> str | None:
@@ -2756,15 +2738,6 @@ def _system_service_identity(run_as_user: str | None = None) -> tuple[str, str, 
     return username, grp.getgrgid(user_info.pw_gid).gr_name, user_info.pw_dir, user_info.pw_uid
 
 
-def _read_systemd_user_from_unit(unit_path: Path) -> str | None:
-    if not unit_path.exists():
-        return None
-    for line in unit_path.read_text(encoding="utf-8-sig").splitlines():
-        if line.startswith("User="):
-            return line.split("=", 1)[1].strip() or None
-    return None
-
-
 def _default_system_service_user() -> str | None:
     for candidate in (os.getenv("SUDO_USER"), os.getenv("USER"), os.getenv("LOGNAME")):
         candidate = (candidate or "").strip()
@@ -3333,7 +3306,12 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     if not unit_path.exists():
         return False
 
-    installed = unit_path.read_text(encoding="utf-8-sig")
+    installed = _read_unit_text(unit_path)
+    if installed is None:
+        # The unit exists but this user cannot read it (a 0640 root:root system unit is normal).
+        # Unreadable is not proof of stale, and rewriting it needs the same privileges that would
+        # allow reading it, so report "current" instead of nagging about an outdated definition.
+        return True
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
     expected = generate_systemd_unit(system=system, run_as_user=expected_user)
     # Ignore directives older systemd drops (RestartMaxDelaySec, RestartSteps) to avoid a perpetual "outdated" flag.

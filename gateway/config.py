@@ -14,6 +14,11 @@ from enum import Enum
 
 from hermes_cli.config import get_hermes_home
 from agent.secret_scope import current_secret_scope, get_secret as _get_secret
+from gateway.inbound_preprocess_deadline import (
+    DEFAULT_INBOUND_PREPROCESS_TIMEOUT_S,
+    MAX_INBOUND_PREPROCESS_TIMEOUT_S,
+    MIN_INBOUND_PREPROCESS_TIMEOUT_S,
+)
 from gateway.shutdown_watchdog import (
     DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
     DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
@@ -628,6 +633,18 @@ class GatewayConfig:
     loop_watchdog_probe_interval_s: float = DEFAULT_LOOP_WATCHDOG_INTERVAL_S
     loop_watchdog_probe_timeout_s: float = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S
     loop_watchdog_max_strikes: int = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
+    # Wall-clock budget for the PRE-TURN inbound enrichment pipeline (image
+    # pre-analysis, speech-to-text, ``@`` context-reference expansion).
+    #
+    # This stage runs BEFORE ``AIAgent.run_conversation()``, so it sits outside the
+    # turn-liveness watchdog's scope entirely. On 2026-10-23 a hung vision call
+    # here held the whole inbound pipeline for 27 minutes and a user's DM was
+    # received but never answered (kanban t_d2133284). A budget turns that
+    # unbounded wait into a degraded-but-delivered turn.
+    #
+    # 0 opts out (run unbounded, the pre-fix behaviour). Non-positive values other
+    # than 0 are rejected and fall back to the shipped default.
+    inbound_preprocess_timeout_s: float = DEFAULT_INBOUND_PREPROCESS_TIMEOUT_S
     # What happens when the LAST messaging adapter goes down. ``exit`` (default) shuts the gateway
     # down with the failure verdict so a supervising service manager (systemd/launchd) restarts it;
     # ``stay_alive`` keeps the process running and leaves recovery to the reconnect watcher — for
@@ -651,6 +668,7 @@ class GatewayConfig:
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
         "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
+        "inbound_preprocess_timeout_s",
     )
 
     def __post_init__(self) -> None:
@@ -754,6 +772,36 @@ class GatewayConfig:
             value = _coerce_float(pick(key), default)
             return value if math.isfinite(value) and lo <= value <= hi else default
 
+        def preprocess_timeout() -> float:
+            """Resolve the pre-turn enrichment budget.
+
+            0 is a meaningful opt-out (run unbounded, the pre-fix behaviour), so
+            this cannot use ``bounded_float`` — that clamps to the floor. Negative
+            and non-finite values are configuration errors and fall back to the
+            shipped default; anything else is clamped into the sane band.
+            """
+            raw = pick("inbound_preprocess_timeout_s")
+            if raw is None:
+                return DEFAULT_INBOUND_PREPROCESS_TIMEOUT_S
+            value = _coerce_float(raw, math.nan)
+            if not math.isfinite(value):
+                logger.warning(
+                    "Invalid %s=%r — falling back to default %.1fs.",
+                    key_label("inbound_preprocess_timeout_s"), raw,
+                    DEFAULT_INBOUND_PREPROCESS_TIMEOUT_S,
+                )
+                return DEFAULT_INBOUND_PREPROCESS_TIMEOUT_S
+            if value == 0:
+                return 0.0  # explicit opt-out
+            if value < 0:
+                logger.warning(
+                    "Invalid %s=%r — falling back to default %.1fs.",
+                    key_label("inbound_preprocess_timeout_s"), raw,
+                    DEFAULT_INBOUND_PREPROCESS_TIMEOUT_S,
+                )
+                return DEFAULT_INBOUND_PREPROCESS_TIMEOUT_S
+            return min(max(value, MIN_INBOUND_PREPROCESS_TIMEOUT_S), MAX_INBOUND_PREPROCESS_TIMEOUT_S)
+
         room_link_url = data.get("room_link_url")
         max_strikes = _coerce_int(pick("loop_watchdog_max_strikes"), DEFAULT_LOOP_WATCHDOG_MAX_STRIKES)
         if not 1 <= max_strikes <= 1000:
@@ -806,6 +854,7 @@ class GatewayConfig:
             loop_watchdog_probe_interval_s=bounded_float("loop_watchdog_probe_interval_s", DEFAULT_LOOP_WATCHDOG_INTERVAL_S, 1.0, 3600.0),
             loop_watchdog_probe_timeout_s=bounded_float("loop_watchdog_probe_timeout_s", DEFAULT_LOOP_WATCHDOG_TIMEOUT_S, 1.0, 600.0),
             loop_watchdog_max_strikes=max_strikes,
+            inbound_preprocess_timeout_s=preprocess_timeout(),
             on_all_adapters_down=on_all_adapters_down,
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=_normalize_choice(data.get("unauthorized_dm_behavior"), UNAUTHORIZED_DM_BEHAVIORS, "pair"),

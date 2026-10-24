@@ -137,6 +137,7 @@ Platform: cli
 Host: <HOST_OS>
 User home directory: <HOME>
 Current working directory: <HOME>/code
+Hermes config/state directory: <HERMES_HOME> (your own config.yaml, .env, sessions, and skills live here — NOT under the current working directory)
 Scratch directory: <HERMES_HOME>/cache/scratch (TMPDIR points here; write temporary files and probes there, never under the system temp dir; entries idle for 24h are pruned)
 
 <!-- End Hermes runtime environment -->

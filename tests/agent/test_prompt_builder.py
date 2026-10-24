@@ -700,6 +700,23 @@ class TestEnvironmentHints:
         _pb._BACKEND_PROBE_CACHE.clear()
         assert f"Current working directory: {tmp_path}" in _pb.build_environment_hints()
 
+    def test_build_environment_hints_includes_hermes_home(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        import sys, platform
+        from pathlib import Path
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        monkeypatch.setattr(platform, "release", lambda: "6.8.0-generic")
+        monkeypatch.setattr(_pb, "get_hermes_home", lambda: Path("/opt/data"))
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        # The agent must be told where its own config/state lives, not left to
+        # guess a cwd-relative path (#45792).
+        assert "Hermes config/state directory:" in result
+        assert "/opt/data" in result
+
     def test_running_bot_screen_rides_the_environment_hints(self, monkeypatch):
         """#125830: with this profile's Bot Screen up, the local-backend hints must NAME it —
         display number and lease holder — so 'open chrome in screen 20' resolves to the bot's own

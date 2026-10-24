@@ -176,15 +176,21 @@ class StatusOutputMixin:
         """Clear a previously-fired sticky notice by ``key`` (e.g. on recovery)."""
         self._call_callback("notice_clear_callback", key, origin="_emit_notice_clear")
 
-    def _emit_wait_notice(self, text: str) -> None:
+    def _emit_wait_notice(self, text: str, *, touch_activity: bool = True) -> None:
         """Rewrite the live status line (CLI spinner, TUI ``thinking.delta``, gateway activity)
-        so long provider waits are not an anonymous spinner."""
-        self._touch_activity(text)
+        so long provider waits are not an anonymous spinner.
+
+        ``touch_activity=False`` is for terminal diagnostics: once an attempt is declared
+        wedged it must not claim liveness, so the message may still render without refreshing
+        the heartbeat the wedge reclaim reads.
+        """
+        if touch_activity:
+            self._touch_activity(text)
         self._call_callback("thinking_callback", text, origin="_emit_wait_notice")
 
-    def _emit_diagnostic_wait(self, text: str) -> None:
+    def _emit_diagnostic_wait(self, text: str, *, touch_activity: bool = True) -> None:
         from gateway.warning_notifications import DiagnosticText
-        self._emit_wait_notice(DiagnosticText(text))
+        self._emit_wait_notice(DiagnosticText(text), touch_activity=touch_activity)
 
     # ── Buffered retry/fallback status: shown only when every retry/fallback is exhausted, dropped on
     # success. Backend logs are unaffected (every site still logs). ──

@@ -765,6 +765,9 @@ class AIAgent(
         """
         # Automatic-review gates run at enqueue/spawn time; the idle dispatcher re-checks `enabled` at dispatch time.
         if not explicit and focus is None and getattr(self, "_delegate_depth", 0) > 0:
+            if getattr(self, "_delegate_review_skills", False) and review_skills:
+                from agent.delegated_review import queue_delegated_review
+                queue_delegated_review(self, messages_snapshot)
             return
         task_cfg = None
         if not explicit and focus is None:
@@ -1354,6 +1357,9 @@ class AIAgent(
             background=not (getattr(self, "_delegate_depth", 0) > 0), images=function_args.get("images"),
             action=function_args.get("action"),
             subagent_id=function_args.get("subagent_id"), message=function_args.get("message"), parent_agent=self,
+            session_id=function_args.get("session_id"), model=function_args.get("model"),
+            query=function_args.get("query"), limit=function_args.get("limit", 20), _extension_request=function_args,
+            _apply_extension=True,
         )
 
     _invoke_tool = _forward("agent.agent_runtime_helpers", "invoke_tool")

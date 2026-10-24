@@ -705,7 +705,7 @@ def skill_view(
             **readiness_extras}
         if deps_note:
             result["deps_note"] = deps_note
-        _mark_background_review_read(skill_md)
+        _mark_background_review_read(skill_md, content)
         if frontmatter.get("compatibility"):  # agentskills.io optional fields
             result["compatibility"] = frontmatter["compatibility"]
         if isinstance(metadata, dict):

@@ -126,3 +126,12 @@ def test_skill_catalog_seams_are_public_and_drive_the_skills_tools(tmp_path, mon
     monkeypatch.setattr(skills_tool, "find_all_skills", lambda **_kw: [dict(marker)])
     listed = json.loads(skills_tool.skills_list())
     assert [s["name"] for s in listed["skills"] if s["name"] == "seam-probe-skill"] == ["seam-probe-skill"]
+
+
+def test_subagent_extension_is_a_documented_public_contract(tmp_path):
+    from agent.subagent_extension import SubagentExtension
+    assert callable(SubagentExtension.format_fork_history)
+    plugin = _plugin(tmp_path / 'retained', {'policy.py':
+        'from agent.subagent_extension import SubagentExtension\n'
+        'class Policy(SubagentExtension):\n    pass\n'})
+    assert _private_warnings(validate_plugin_dir(plugin)) == []

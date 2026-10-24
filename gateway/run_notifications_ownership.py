@@ -119,6 +119,15 @@ class GatewayNotificationOwnershipMixin:
                 return "terminal", session_id, row
             if session_id == current_session_id:
                 return "deliver", session_id, row
+            # A manually resumed delegate keeps its own compression lineage. Its inherited
+            # marker names an older parent, not permission to leave the selected conversation.
+            from gateway.completion_targets import delegate_route_verdict, is_delegate_target
+            if current_session_id and is_delegate_target(row):
+                verdict = await delegate_route_verdict(session_db, session_id, current_session_id)
+                if verdict == "retry":
+                    return verdict, session_id, None
+                if verdict == "deliver":
+                    return verdict, session_id, row
             config = row.get("model_config")
             try:
                 if isinstance(config, str):

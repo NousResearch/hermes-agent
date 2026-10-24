@@ -96,16 +96,16 @@ def _serve_skill_file(
             raise
         return _fail(f"Failed to read '{file_path}': {exc}")
     if mark_read:
-        _mark_background_review_read(target)
-    return _json({
+        _mark_background_review_read(target, content)
+    return _json({  # _source_path: internal, feeds the repeat-view dedup fingerprint
         "success": True, "name": label, "file": file_path, "content": content,
         "file_type": target.suffix})
 
 
-def _mark_background_review_read(path: Path) -> None:
+def _mark_background_review_read(path: Path, content: str | None = None) -> None:
     try:
         from tools.skill_manager_guards import mark_background_review_skill_read
-        mark_background_review_skill_read(path)
+        mark_background_review_skill_read(path, content=content)
     except Exception:
         logger.debug("Could not record background-review skill read for %s", path, exc_info=True)
 

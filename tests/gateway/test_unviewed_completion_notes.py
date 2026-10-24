@@ -320,7 +320,7 @@ def _compress(runner, authority, ref, parent, child):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('reason', _CLOSES)
-@pytest.mark.parametrize('producer', ['delegation', 'process'])
+@pytest.mark.parametrize('producer', ['delegation', 'process', 'watch'])
 async def test_compressed_then_closed_completion_is_noted_on_the_closed_tip(tmp_path, monkeypatch, producer, reason):
     """Work started before compression stays pinned to the ancestor; the user then closed the compressed
     continuation (exit, /new). The result is a note on that closed tip, not the ancestor, not the replacement."""
@@ -341,7 +341,11 @@ async def test_compressed_then_closed_completion_is_noted_on_the_closed_tip(tmp_
             assert await runner._deliver_async_delegation_group([evt]) is True
         else:
             evt = _process_event(authority, ref, ancestor, name)
-            assert await runner._deliver_completion_notification(f'[finished] RESULT_{name}', evt) is True
+            if producer == 'watch':
+                evt.update(type='watch_match', event_id='watch-1')
+                assert await runner._inject_watch_notification(f'[watch] RESULT_{name}', evt) is True
+            else:
+                assert await runner._deliver_completion_notification(f'[finished] RESULT_{name}', evt) is True
         seen = _turns(runner, authority, 'lc7-tip')
         await authority._drain(ref)
         assert seen == []

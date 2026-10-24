@@ -110,6 +110,15 @@ class ReviewIdleQueue:
         with self._lock:
             return len(self._pending)
 
+    def cancel(self, session_key: str) -> None:
+        """Remove a queued review, releasing any independently owned prepared fork."""
+        with self._lock:
+            item = self._pending.pop(session_key, None)
+        if item is not None:
+            discard = getattr(item.agent, "_discard_background_review", None)
+            if callable(discard):
+                discard()
+
     def _ensure_thread(self) -> None:
         with self._lock:
             if self._thread is None or not self._thread.is_alive():
@@ -165,6 +174,9 @@ class ReviewIdleQueue:
             logger.info(
                 "Deferred background review dropped: reviews were disabled while it was queued (session=%s)",
                 item.session_key[-12:])
+            discard = getattr(item.agent, "_discard_background_review", None)
+            if callable(discard):
+                discard()
             return
         logger.info(
             "Dispatching deferred background review (session=%s, waited=%.0fs, queued=%d)",

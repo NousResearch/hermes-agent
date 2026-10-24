@@ -21,6 +21,7 @@ from tools.delegate_tool_registry import (
     _capture_gateway_steer_authority, _close_subagent_steering, _register_subagent, _unregister_subagent,
 )
 from tools.delegate_tool_results import (
+    _child_route_metadata,
     _extract_output_tail, _looks_like_error_output, _stringify_tool_content, _summarize_tool_arguments,
 )
 
@@ -69,6 +70,7 @@ def _route_report(child: Any) -> Optional[dict[str, Any]]:
 def _fabricated_entry(idx: int, status: str, error: str, child: Any, duration: float = 0) -> dict[str, Any]:
     """Result entry for a child that raised, never finished, or was abandoned."""
     entry = {
+        **_child_route_metadata(child),
         "task_index": idx, "status": status, "summary": None, "error": error, "api_calls": 0,
         "duration_seconds": duration, "_child_role": getattr(child, "_delegate_role", None),
     }
@@ -85,10 +87,18 @@ def _append_missed_steer(entry: dict[str, Any], late_steer: Optional[str]) -> No
 
 def _close_child(child: Any, log_message: str) -> None:
     """Best-effort ``child.close()`` (tool sandboxes, browser daemons, httpx clients)."""
+    if getattr(child, "_delegate_resumable", False) is True:
+        with _quiet("Could not hand off delegated skills review", exc_info=True):
+            from agent.delegated_review import finish_delegated_review
+            finish_delegated_review(child)
     with _quiet(log_message, exc_info=True):
         close = getattr(child, "close", None)
         if callable(close):
             close()
+    if getattr(child, "_delegate_resumable", False) is True:
+        with _quiet("Could not release delegated session", exc_info=True):
+            from tools.delegate_sessions import release_child
+            release_child(child)
 
 def _with_children_lock(parent_agent: Any, op: str, child: Any) -> None:
     """``parent_agent._active_children.<op>(child)`` under the parent's lock when it has one."""
@@ -398,7 +408,7 @@ def _register_child(
         owner_transport, owner_session_record = _capture_gateway_steer_authority(owner_session_id)
     _raw_depth = getattr(child, "_delegate_depth", 1)
     _register_subagent({
-        "subagent_id": _subagent_id,
+        **_child_route_metadata(child),        "subagent_id": _subagent_id,
         "parent_id": _str_or_none(getattr(child, "_parent_subagent_id", None)),
         "depth": max(0, _raw_depth - 1) if isinstance(_raw_depth, int) else 0,
         "goal": goal,
@@ -419,7 +429,7 @@ def _register_child(
     })
     return _subagent_id
 
-def _create_isolated_worktree(parent_agent: Any, parent_task_id: Any, subagent_id: Optional[str]):
+def _create_isolated_worktree(parent_agent: Any, parent_task_id: Any, subagent_id: Optional[str], *, workspace=None):
     """Opt-in worktree isolation: own git worktree off the parent's HEAD (the
     child's terminal starts there). Git-only, local-backend-only; failures
     degrade silently to the shared workspace. Returns the worktree info or None."""
@@ -436,11 +446,11 @@ def _create_isolated_worktree(parent_agent: Any, parent_task_id: Any, subagent_i
             from tools.terminal_tool import get_session_cwd as _gsc
             _parent_cwd = _gsc(parent_task_id)
         return subagent_worktree.create_subagent_worktree(
-            _parent_cwd or _resolve_workspace_hint(parent_agent), subagent_id=subagent_id,
+            workspace or _parent_cwd or _resolve_workspace_hint(parent_agent), subagent_id=subagent_id,
         )
     return None
 
-def _defer_close_after_timeout(child: Any, child_future: Any) -> None:
+def _defer_close_after_timeout(child: Any, child_future: Any) -> bool:
     """Hand ``child.close()`` to a Future done-callback and drain its transports.
 
     The interrupt is cooperative: the worker still runs its finally path, so closing now could close SQLite under its
@@ -450,6 +460,10 @@ def _defer_close_after_timeout(child: Any, child_future: Any) -> None:
     sweep + one delayed re-sweep for a connection opened in between; a worker that still won't settle keeps its
     resources until process exit.
     """
+    retired = False
+    with _quiet("Could not retire abandoned retained child; admission remains busy", exc_info=True):
+        from tools.delegate_sessions import retire_abandoned_child
+        retired = retire_abandoned_child(child)
     child_future.add_done_callback(lambda _done: _close_child(child, "Failed to close timed-out child after worker exit"))
     # Bounded drain (#94248 native half): the deferred close above only fires once the abandoned worker
     # unwinds, but that worker is typically parked inside an in-flight OpenSSL read (Codex / httpx). Never
@@ -459,7 +473,7 @@ def _defer_close_after_timeout(child: Any, child_future: Any) -> None:
     # close.
     _drain = getattr(child, "_drain_transports_after_abandonment", None)
     if not callable(_drain):
-        return
+        return retired
 
     def _drain_once(phase: str) -> None:
         with _quiet("Timed-out child transport drain (%s) failed", phase, exc_info=True):
@@ -469,6 +483,7 @@ def _defer_close_after_timeout(child: Any, child_future: Any) -> None:
     _resweep_timer = threading.Timer(5.0, lambda: None if child_future.done() else _drain_once("resweep"))
     _resweep_timer.daemon = True
     _resweep_timer.start()
+    return retired
 
 def _lease_child_credential(child: Any) -> tuple[Any, Optional[str]]:
     """Lease a credential from the child's pool (if any) and bind it; ``(pool, lease_id)``. The bound entry must
@@ -633,6 +648,7 @@ def _build_result_entry(
     # Result entry contract: see the _run_single_child docstring.
     entry: dict[str, Any] = {
         "task_index": task_index,
+        **_child_route_metadata(child),
         "status": status,
         "summary": summary,
         "api_calls": result.get("api_calls", 0),
@@ -796,6 +812,8 @@ class _ChildRun:
         import uuid as _uuid
         self.child_task_id = self.subagent_id or f"subagent-{self.task_index}-{_uuid.uuid4().hex[:8]}"
         self.parent_task_id = getattr(self.parent_agent, "_current_task_id", None)
+        workspace = (getattr(self.child, "_delegate_workspace", None)
+                     if getattr(self.child, "_delegate_resumable", False) is True else None)
         # Seed the child's cwd record from the parent's: same starting directory,
         # but the child's later `cd`s stay in its own record. Per-session container
         # isolation keys containers by task_id; the child must share the PARENT's.
@@ -806,10 +824,11 @@ class _ChildRun:
             from tools.terminal_tool import get_session_cwd, record_session_cwd, register_container_alias
             parent_cwd = get_session_cwd(self.parent_task_id)
             with child_profile_scope(self.child):
-                record_session_cwd(self.child_task_id, parent_cwd)
+                record_session_cwd(self.child_task_id, workspace or parent_cwd)
             register_container_alias(self.child_task_id, self.parent_task_id)
 
-        self.worktree_info = _create_isolated_worktree(self.parent_agent, self.parent_task_id, self.subagent_id)
+        workspace_kwargs = {"workspace": workspace} if workspace else {}
+        self.worktree_info = _create_isolated_worktree(self.parent_agent, self.parent_task_id, self.subagent_id, **workspace_kwargs)
         if self.worktree_info is not None:
             with _quiet("worktree cwd seed failed: %s"), child_profile_scope(self.child):
                 from tools.terminal_tool import record_session_cwd as _rsc
@@ -903,6 +922,12 @@ class _ChildRun:
         # Resolved after seed_workspace so a multimodal goal's text part carries the worktree note too.
         _images = list(getattr(child, "_delegate_images", None) or [])
         user_message: Any = _build_child_goal_message(self.goal, _images, child) if _images else self.goal
+        from tools.delegate_sessions import assignment_message
+        user_message = assignment_message(child, user_message)
+        history = vars(child).pop("_delegate_resume_history", None)
+        if history is None:
+            history = vars(child).pop("_delegate_fork_history", None)
+        history_kwargs = {"conversation_history": history} if history else {}
 
         def _run_with_thread_capture():
             worker_thread_holder["t"] = threading.current_thread()
@@ -911,7 +936,7 @@ class _ChildRun:
             # A profile-routed child converses as that profile (config, secrets, skills, terminal policy).
             with child_profile_scope(child), delegated_child_context(str(getattr(child, "session_id", "") or "")):
                 return child.run_conversation(
-                    user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
+                    user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text, **history_kwargs,
                 )
 
         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)
@@ -1003,7 +1028,8 @@ class _ChildRun:
             _err += f" Diagnostic: {diagnostic_path}"
         status = "timeout" if is_timeout else "error"
         _error_entry = {
-            "task_index": task_index, "status": status, "summary": None, "error": _err, "exit_reason": status,
+            "task_index": task_index,
+            **_child_route_metadata(child), "status": status, "summary": None, "error": _err, "exit_reason": status,
             "api_calls": child_api_calls, "duration_seconds": duration,
             "timeout_seconds": timeout_cause if is_timeout else None,
             "timed_out_after_seconds": duration if is_timeout else None,
@@ -1016,8 +1042,9 @@ class _ChildRun:
         }
         _error_entry = self.finish_failed(_error_entry, _late_pending_steer, preview=f"Timed out after {duration}s" if is_timeout else str(exc))
         close_deferred = is_timeout and not future.done()
-        if close_deferred:
-            _defer_close_after_timeout(child, future)
+        if close_deferred and _defer_close_after_timeout(child, future):
+            _error_entry["session_status"] = "closed"
+            _error_entry["error"] += " Retained conversation closed to prevent reuse while its worker exits."
         return None, _error_entry, close_deferred
 
     def append_sibling_write_reminder(self, entry: dict[str, Any]) -> None:

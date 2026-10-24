@@ -13,6 +13,23 @@ from tools.delegation_redaction import (
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
+
+def _child_route_metadata(child: Any) -> dict[str, Any]:
+    """Requested route alongside the current runtime (which may have fallen back); no credentials."""
+    fields = {
+        "requested_model": "_delegate_requested_model",
+        "requested_provider": "_delegate_requested_provider", "model": "model", "provider": "provider",
+    }
+    result = {key: value for key, attr in fields.items()
+              if isinstance(value := getattr(child, attr, None), str)}
+    session_id = getattr(child, "_delegate_session_id", None)
+    if isinstance(session_id, str):
+        result["session_id"] = session_id
+    reasoning = getattr(child, "reasoning_config", None)
+    if isinstance(reasoning, dict):
+        result["reasoning_effort"] = reasoning.get("effort") if reasoning.get("enabled", True) else False
+    return result
+
 def _stringify_tool_content(content: Any) -> str:
     """Stable text for tool-result content. Some OpenAI-compatible paths return
     content-block lists; observability must never crash on them."""

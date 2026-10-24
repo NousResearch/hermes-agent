@@ -1101,6 +1101,9 @@ def _review_tool_whitelist(
     # starved the loop (read_file also registers the read with the read-before-write guard).
     # Write tools stay denied — autonomous maintenance goes through skill_manage's validation.
     whitelist |= {"read_file", "search_files"}
+    if getattr(review_agent, "_delegate_skills_only_review", False):
+        whitelist.discard("memory")
+        return whitelist, set()
     # ``extra_tools`` admits named parent tools (e.g. a human-gated proposal tool). The whitelist
     # can only admit, never advertise: a listed tool must already exist in the inherited schema.
     # Read-only file tools are whitelisted too (#61521, #39996): the model naturally reaches for
@@ -1156,6 +1159,16 @@ def _run_review_fork(
     attended, so the unattended-only memory delete gate leaves the full operation set available."""
     st.review_agent, _rt, _routed = build_cache_parity_fork(
         agent, task_cfg, max_iterations=_REVIEW_MAX_ITERATIONS)
+    _execute_review_fork(agent, messages_snapshot, prompt, task_cfg, review_run, st,
+                         routed=_routed, review_memory=review_memory, explicit=explicit)
+
+
+def _execute_review_fork(
+    agent: Any, messages_snapshot: list[dict], prompt: str, task_cfg: Optional[dict[str, Any]],
+    review_run: Optional[_BackgroundReviewRun], st: _ReviewForkState, *, routed: bool,
+    review_memory: bool = False, explicit: bool = False,
+) -> None:
+    """Run a prepared fork; delegated reviews prepare before their child is torn down."""
     st.review_agent._review_attended = explicit
     _track_review_fork(agent, st.review_agent, register=True)
     from hermes_cli.plugins import set_thread_tool_whitelist, clear_thread_tool_whitelist
@@ -1189,7 +1202,7 @@ def _run_review_fork(
                     "management tools. Other tools will be denied "
                     "at runtime — do not attempt them." + prompt_extra
                 ),
-                conversation_history=_digest_history(messages_snapshot) if _routed else messages_snapshot,
+                conversation_history=_digest_history(messages_snapshot) if routed else messages_snapshot,
             )
     finally:
         clear_thread_tool_whitelist()

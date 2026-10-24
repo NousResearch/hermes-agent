@@ -4,13 +4,34 @@ operation may proceed, else a refusal (error dict or message). Origin-owned stat
 so test patches keep working."""
 
 import contextvars as _ctxvars
+import hashlib
 import logging
 import threading
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger("tools.skill_manager_tool")
+_review_cancel_event: _ctxvars.ContextVar[threading.Event | None] = _ctxvars.ContextVar(
+    "skill_review_cancel_event", default=None)
+
+
+@contextmanager
+def background_review_write_scope(cancel_event: threading.Event):
+    """Fence future writes even if a cancelled provider request is slow to unwind."""
+    token = _review_cancel_event.set(cancel_event)
+    try:
+        yield
+    finally:
+        _review_cancel_event.reset(token)
+
+
+def background_review_cancellation_guard() -> dict[str, Any] | None:
+    event = _review_cancel_event.get()
+    if event is not None and event.is_set():
+        return _refusal("This skills review was superseded; further skill changes are cancelled.",
+                        _review_cancelled=True)
+    return None
 
 
 def _refusal(message: str, **extra: Any) -> dict[str, Any]:
@@ -37,22 +58,26 @@ class _BackgroundReviewReadMarks:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._paths: set[str] = set()
+        self._paths: dict[str, tuple[str, bytes]] = {}
 
-    def add(self, path: str) -> None:
+    def add(self, path: str, fingerprint: tuple[str, bytes]) -> None:
         with self._lock:
-            self._paths.add(path)
+            self._paths[path] = fingerprint
 
     def contains(self, path: str) -> bool:
         with self._lock:
             return path in self._paths
+
+    def fingerprint(self, path: str) -> tuple[str, bytes] | None:
+        with self._lock:
+            return self._paths.get(path)
 
 
 _background_review_read_paths: _ctxvars.ContextVar[Optional[_BackgroundReviewReadMarks]] = (
     _ctxvars.ContextVar("background_review_read_paths", default=None))
 
 
-def mark_background_review_skill_read(path: Path) -> None:
+def mark_background_review_skill_read(path: Path, *, content: str | None = None, version: tuple | None = None) -> None:
     """Record that the active background-review fork has read a skill file. The fork must not
     patch content it only inferred from the transcript: skill_view/read_file call this, and
     the write guards require the mark."""
@@ -60,7 +85,13 @@ def mark_background_review_skill_read(path: Path) -> None:
         return
     if (marks := _background_review_read_paths.get()) is None:
         _background_review_read_paths.set(marks := _BackgroundReviewReadMarks())
-    marks.add(_resolved_str(path))
+    if version is not None:
+        fingerprint = ("bytes", version[-1])
+    else:
+        if content is None:
+            content = path.read_text(encoding="utf-8-sig", errors="replace")
+        fingerprint = ("text", hashlib.sha256(content.encode("utf-8")).digest())
+    marks.add(_resolved_str(path), fingerprint)
 
 
 def _background_review_has_read(path: Path) -> bool:
@@ -165,6 +196,8 @@ def _background_review_delete_guard(name: str, skill_dir: Path) -> Optional[dict
     """Refuse autonomous deletes of anything but curator-owned sediment. Content writes are not
     gated by ownership: the review fork exists to improve every skill it learns from, and every
     write is ledgered and reversible, while an archive removes a skill the user relies on."""
+    if cancelled := background_review_cancellation_guard():
+        return cancelled
     if not _is_background_review():
         return None
     refuse = "Refusing background curator delete for"
@@ -211,8 +244,25 @@ def _background_review_delete_guard(name: str, skill_dir: Path) -> Optional[dict
 def _background_review_read_before_write_guard(
     name: str, target: Path, action: str, file_label: str) -> Optional[dict[str, Any]]:
     """Require review forks to load the exact target before mutating it."""
-    if not _is_background_review() or _background_review_has_read(target):
+    if cancelled := background_review_cancellation_guard():
+        return cancelled
+    if not _is_background_review():
         return None
+    marks = _background_review_read_paths.get()
+    fingerprint = marks.fingerprint(_resolved_str(target)) if marks is not None else None
+    if fingerprint is not None:
+        kind, expected = fingerprint
+        try:
+            data = (target.read_bytes() if kind == "bytes" else
+                    target.read_text(encoding="utf-8-sig", errors="replace").encode("utf-8"))
+            if hashlib.sha256(data).digest() == expected:
+                return None
+        except OSError:
+            pass
+        return _refusal(
+            f"Refusing background curator {action} for skill '{name}': {file_label} changed "
+            "since this review read it. Read the current file again, reconcile the intervening "
+            "changes, then retry.", _stale_review_read=True)
     return _refusal(
         f"Refusing background curator {action} for skill '{name}': the current {file_label} "
         f"content has not been loaded in this review turn. Call skill_view(name) for SKILL.md, or "

@@ -264,9 +264,20 @@ def test_accepted_delivery_exports_deterministic_ticket_run_and_cfo_evidence(boa
         assert first == second
         assert first["task"]["accepted_run_id"] == review_run
         assert first["acceptance"]["review_profile"] == "reviewer"
-        assert {phase["kind"] for phase in first["phases"]} >= {
-            "claimed", "review_requested", "artifact_review_acceptance",
-        }
+        assert first["delivery_cycles"] == [{
+            "builder": "builder",
+            "builder_run_id": 1,
+            "builder_claim_event_id": 2,
+            "review_requested_event_id": 4,
+            "reviewer": "reviewer",
+            "reviewer_run_id": review_run,
+            "reviewer_claim_event_id": 5,
+            "disposition": "artifact_review_acceptance",
+            "disposition_event_id": 6,
+        }]
+        assert first["repair_cycles"] == []
+        assert first["external_claims"]["verified"] is False
+        assert first["use_as_acceptance_gate"] is False
         unsigned = {key: value for key, value in first.items() if key != "report_sha256"}
         assert first["report_sha256"] == hashlib.sha256(
             json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
@@ -294,6 +305,80 @@ def test_evidence_export_revalidates_cas_and_cfo_links(board):
             build_artifact_review_evidence(
                 conn, task_id, ticket_ref="ESN-0406",
                 cfo_usage_links=[{"ref": "cfo://usage/1", "receipt_sha256": "b" * 64}],
+            )
+
+
+def test_evidence_export_links_reviewer_rejection_to_builder_repair(board):
+    with connect() as conn:
+        task_id, first_review_run, artifact = _reviewed_task(conn)
+        ok, implementer = kb.request_changes(
+            conn, task_id, reason="Please repair the rejected implementation.",
+            expected_run_id=first_review_run,
+        )
+        assert ok and implementer == "builder"
+        repair = kb.claim_task(conn, task_id, claimer="builder:repair")
+        assert repair is not None
+        assert _record_observation(
+            conn, task_id, repair.current_run_id,
+            _observation("builder", "build-session-2", "a"),
+        )
+        assert kb.request_review(
+            conn, task_id, summary="repaired", metadata={"artifacts": [artifact]},
+            reviewer="reviewer", expected_run_id=repair.current_run_id,
+        )
+        request = next(
+            event for event in reversed(kb.list_events(conn, task_id))
+            if event.kind == "review_requested"
+        )
+        reviewed_artifact = request.payload["artifacts"][0]
+        review = kb.claim_review_task(conn, task_id, claimer="reviewer:2")
+        assert review is not None
+        assert _record_observation(
+            conn, task_id, review.current_run_id,
+            _observation("reviewer", "review-session-2", "b"),
+        )
+        candidate = _candidate(reviewed_artifact)
+        candidate["artifact_review_receipt"]["usage"]["session_id"] = "review-session-2"
+        assert kb.complete_task(
+            conn, task_id, metadata=candidate, expected_run_id=review.current_run_id,
+        )
+
+        report = build_artifact_review_evidence(
+            conn, task_id, ticket_ref="ESN-0406",
+            cfo_usage_links=[{"ref": "cfo://usage/repair", "receipt_sha256": "c" * 64}],
+        )
+        assert len(report["delivery_cycles"]) == 2
+        assert report["repair_cycles"] == [{
+            "rejected_reviewer_run_id": first_review_run,
+            "changes_requested_event_id": report["delivery_cycles"][0]["disposition_event_id"],
+            "repair_builder_run_id": repair.current_run_id,
+        }]
+        assert report["delivery_cycles"][0]["repair_builder_run_id"] == repair.current_run_id
+        assert report["delivery_cycles"][1]["builder_run_id"] == repair.current_run_id
+
+
+def test_evidence_export_rejects_unordered_or_rebound_lifecycle(board):
+    with connect() as conn:
+        task_id, review_run, artifact = _reviewed_task(conn)
+        assert kb.complete_task(
+            conn, task_id, metadata=_candidate(artifact), expected_run_id=review_run,
+        )
+        row = conn.execute(
+            "SELECT id, payload FROM task_events WHERE task_id=? AND kind='review_requested'",
+            (task_id,),
+        ).fetchone()
+        payload = json.loads(row["payload"])
+        payload["reviewer"] = "different-reviewer"
+        conn.execute(
+            "UPDATE task_events SET payload=? WHERE id=?",
+            (json.dumps(payload), row["id"]),
+        )
+        conn.commit()
+
+        with pytest.raises(ValueError, match="reviewer claim"):
+            build_artifact_review_evidence(
+                conn, task_id, ticket_ref="ESN-0406",
+                cfo_usage_links=[{"ref": "cfo://usage/1", "receipt_sha256": "d" * 64}],
             )
 
 

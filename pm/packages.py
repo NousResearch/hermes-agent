@@ -510,8 +510,8 @@ class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
 
     def fetch_url(self, version: str, target: str) -> str:
         if target == "linux-arm64-bionic":
-            # termux's deb carries a -1 revision after the upstream version
-            return f"https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs/nodejs_{version}-1_aarch64.deb"
+            # the termux pool names the deb after the bare upstream version
+            return f"https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs/nodejs_{version}_aarch64.deb"
         plat = _NODE_PLAT[target]
         ext = "zip" if target.startswith("win32") else "tar.xz"
         base = (

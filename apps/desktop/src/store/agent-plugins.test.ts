@@ -78,12 +78,14 @@ describe('normalizeAgentPluginRow', () => {
   })
 })
 
-describe('isDesktopRelevantPlugin (#98861)', () => {
-  it('hides ordinary built-ins but always lists user installs', () => {
+describe('isDesktopRelevantPlugin (#98861, #144485)', () => {
+  it('hides ordinary built-ins but always lists user installs including model providers', () => {
     expect(isDesktopRelevantPlugin(row({ key: 'platforms/discord', source: 'bundled' }))).toBe(false)
+    expect(isDesktopRelevantPlugin(row({ key: 'model-providers/builtin', source: '' }))).toBe(false)
 
-    // User installs are unaffected either way.
+    // User installs are unaffected either way, including user-installed model providers (#144485).
     expect(isDesktopRelevantPlugin(row({ key: 'my-plugin', source: 'user' }))).toBe(true)
+    expect(isDesktopRelevantPlugin(row({ key: 'model-providers/custom-llm', source: 'user' }))).toBe(true)
   })
 })
 

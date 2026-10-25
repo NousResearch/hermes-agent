@@ -746,7 +746,15 @@ export const en: Translations = {
       manage: 'Manage plugins',
       agentSettings: 'Agent settings',
       pageCount: (n: number) => (n === 1 ? '1 page' : `${n} pages`),
-      missing: 'That plugin has no settings page. It may be disabled or uninstalled.'
+      missing: 'That plugin has no settings page. It may be disabled or uninstalled.',
+      statusEnabled: 'Enabled',
+      statusDisabled: 'Disabled',
+      noSettingsBadge: 'No settings',
+      noSettingsDeclared: 'This plugin declares no settings in its manifest.',
+      unresolvableSource: 'This plugin’s declared config source cannot be edited here. Edit the target directly.',
+      configLocation: 'Config source',
+      configureIn: (surface: string) => `Configure in ${surface}`,
+      providerSurfaceNote: (surface: string) => `This provider plugin is configured on the ${surface} settings page.`
     },
     nav: {
       providers: 'Providers',

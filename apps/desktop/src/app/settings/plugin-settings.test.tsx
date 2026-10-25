@@ -156,4 +156,100 @@ describe('Settings ▸ Plugins', () => {
     await waitFor(() => expect(screen.getByText('No plugin has settings yet.')).toBeTruthy())
     expect(screen.getByRole('link', { name: /Manage plugins/ }).getAttribute('href')).toBe('#/capabilities?tab=plugins')
   })
+
+  it('lists installed plugins with zero declared settings, naming known config sources (#144485)', async () => {
+    const hookRow: AgentPluginRow = {
+      config_source: { editable: false, kind: 'config_section', path: 'config.yaml ▸ myhook' },
+      description: 'Pre-tool guardrail hook',
+      key: 'myhook',
+      name: 'myhook',
+      settings_schema: [],
+      source: 'git',
+      status: 'disabled',
+      version: '0.4.2'
+    }
+
+    requestGateway.mockImplementation(async () => ({ plugins: [hookRow] }))
+    render(<Harness />)
+
+    await waitFor(() => expect(screen.getByTestId('plugin-settings-row-agent:myhook')).toBeTruthy())
+    expect(screen.queryByText('No plugin has settings yet.')).toBeNull()
+    const overviewRow = screen.getByTestId('plugin-settings-row-agent:myhook')
+    expect(overviewRow.textContent).toContain('myhook')
+    expect(overviewRow.textContent).toContain('0.4.2')
+    expect(overviewRow.textContent).toContain('git')
+    expect(overviewRow.textContent).toContain('Disabled')
+
+    fireEvent.click(overviewRow)
+    expect(screen.getByText(/declares no settings/i)).toBeTruthy()
+    expect(screen.getByText('config.yaml ▸ myhook')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Save settings' })).toBeNull()
+  })
+
+  it('shows the declared config_source path on editable forms and refuses unresolvable forms (#144485)', async () => {
+    const jsonPlugin: AgentPluginRow = {
+      config_source: { editable: true, kind: 'json_file', path: '$HERMES_HOME/memx.json' },
+      description: 'Sidecar JSON plugin',
+      key: 'memx',
+      name: 'memx',
+      settings_schema: [{ description: '', key: 'workspace', label: 'Workspace', required: false, type: 'string', value: 'team' }],
+      source: 'user',
+      status: 'enabled',
+      version: '1.2.0'
+    }
+
+    const brokenPlugin: AgentPluginRow = {
+      config_source: { editable: false, kind: 'json_file', path: '../escape.json' },
+      description: 'Broken source plugin',
+      key: 'broken',
+      name: 'broken',
+      settings_schema: [{ description: '', key: 'workspace', label: 'Workspace', required: false, type: 'string', value: 'team' }],
+      source: 'user',
+      status: 'enabled',
+      version: '1.0.0'
+    }
+
+    requestGateway.mockImplementation(async () => ({ plugins: [jsonPlugin, brokenPlugin] }))
+    render(<Harness />)
+
+    await waitFor(() => expect(railItem('plugins:agent:memx')).toBeTruthy())
+    fireEvent.click(railItem('plugins:agent:memx')!)
+    expect(screen.getByText('$HERMES_HOME/memx.json')).toBeTruthy()
+    expect((screen.getByLabelText(/Workspace/) as HTMLInputElement).value).toBe('team')
+    expect(screen.getByRole('button', { name: 'Save settings' })).toBeTruthy()
+
+    // Hard rule: editable === false never renders an editable form even if fields are present.
+    fireEvent.click(railItem('plugins:agent:broken')!)
+    expect(screen.getByText('../escape.json')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Save settings' })).toBeNull()
+    expect(screen.queryByLabelText(/Workspace/)).toBeNull()
+  })
+
+  it('deep-links provider plugins to Memory & Context or Providers (#144485)', async () => {
+    const memProvider: AgentPluginRow = {
+      config_source: {
+        editable: false,
+        kind: 'json_file',
+        path: '$HERMES_HOME/supermem/config.json',
+        settings_link: 'memory'
+      },
+      description: 'External memory backend',
+      key: 'supermem',
+      name: 'supermem',
+      settings_schema: [],
+      source: 'user',
+      status: 'enabled',
+      version: '2.0.0'
+    }
+
+    requestGateway.mockImplementation(async () => ({ plugins: [memProvider] }))
+    render(<Harness />)
+
+    await waitFor(() => expect(railItem('plugins:agent:supermem')).toBeTruthy())
+    fireEvent.click(railItem('plugins:agent:supermem')!)
+
+    const link = screen.getByRole('link', { name: /Memory & Context/i })
+    expect(link.getAttribute('href')).toBe('#/settings?tab=config:memory&page=persistent')
+    expect(screen.getByText('$HERMES_HOME/supermem/config.json')).toBeTruthy()
+  })
 })

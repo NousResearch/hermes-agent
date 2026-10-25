@@ -65,8 +65,20 @@ export interface AgentPluginRow {
   install_dir?: string
   /** Manifest `config_schema` rendered as a settings form (with current values). */
   settings_schema?: PluginSettingField[]
+  /** Resolved configuration source and optional Settings deep-link (#144485). */
+  config_source?: PluginConfigSource
   /** Full snapshot of declared application-backed MCP servers. */
   servers?: AgentPluginServer[]
+}
+
+export type PluginConfigSourceKind = 'config_section' | 'env' | 'json_file' | 'plugin_settings'
+export type PluginSettingsLink = 'context' | 'memory' | 'providers'
+
+export interface PluginConfigSource {
+  kind?: PluginConfigSourceKind | null
+  path: string
+  editable: boolean
+  settings_link?: PluginSettingsLink | null
 }
 
 export type PluginSettingFieldType = 'boolean' | 'enum' | 'json' | 'number' | 'secret' | 'string'
@@ -124,6 +136,10 @@ const MANAGEABLE_BUNDLED_KEYS = new Set(['disk-cleanup', 'security-guidance'])
 export const isDesktopRelevantPlugin = (row: AgentPluginRow): boolean => {
   if (row.source === 'bundled') {
     return MANAGEABLE_BUNDLED_KEYS.has(row.key ?? row.name)
+  }
+
+  if (row.source) {
+    return true
   }
 
   const key = row.key

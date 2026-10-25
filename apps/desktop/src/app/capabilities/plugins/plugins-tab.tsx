@@ -291,7 +291,7 @@ function PackageRow({
   // the shortcut to that page (#46600, #87934).
   const settingsPages = useContributions(SETTINGS_PLUGINS_AREA)
   const desktopSettings = Boolean(desktop && settingsPages.some(page => page.source === `plugin:${desktop.id}`))
-  const agentSettings = Boolean(agent?.key) && Boolean(agent?.settings_schema?.length)
+  const agentSettings = Boolean(agent?.key)
   const hasSettings = desktopSettings || agentSettings
 
   const openSettings = () => {

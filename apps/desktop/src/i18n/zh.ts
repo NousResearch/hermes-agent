@@ -516,7 +516,15 @@ export const zhOverrides = {
       manage: '管理插件',
       agentSettings: '智能体设置',
       pageCount: (n: number) => `${n} 个页面`,
-      missing: '该插件没有设置页面，可能已被禁用或卸载。'
+      missing: '该插件没有设置页面，可能已被禁用或卸载。',
+      statusEnabled: '已启用',
+      statusDisabled: '已禁用',
+      noSettingsBadge: '无设置',
+      noSettingsDeclared: '此插件未在其清单中声明任何设置。',
+      unresolvableSource: '此插件声明的配置源无法在此编辑，请直接编辑目标文件。',
+      configLocation: '配置源',
+      configureIn: (surface: string) => `前往 ${surface} 配置`,
+      providerSurfaceNote: (surface: string) => `此提供方插件在“${surface}”设置页面中配置。`
     },
     nav: {
       providers: '提供方',

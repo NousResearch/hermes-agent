@@ -746,7 +746,17 @@ export const deOverrides = {
       manage: 'Plugins verwalten',
       agentSettings: 'Agent-Einstellungen',
       pageCount: (n: number) => (n === 1 ? '1 Seite' : `${n} Seiten`),
-      missing: 'Dieses Plugin hat keine Einstellungsseite. Es ist eventuell deaktiviert oder deinstalliert.'
+      missing: 'Dieses Plugin hat keine Einstellungsseite. Es ist eventuell deaktiviert oder deinstalliert.',
+      statusEnabled: 'Aktiviert',
+      statusDisabled: 'Deaktiviert',
+      noSettingsBadge: 'Keine Einstellungen',
+      noSettingsDeclared: 'Dieses Plugin deklariert keine Einstellungen in seinem Manifest.',
+      unresolvableSource:
+        'Die deklarierte Konfigurationsquelle dieses Plugins kann hier nicht bearbeitet werden. Bearbeiten Sie das Ziel direkt.',
+      configLocation: 'Konfigurationsquelle',
+      configureIn: (surface: string) => `In ${surface} konfigurieren`,
+      providerSurfaceNote: (surface: string) =>
+        `Dieses Anbieter-Plugin wird auf der Einstellungsseite ${surface} konfiguriert.`
     },
     nav: {
       providers: 'Anbieter',

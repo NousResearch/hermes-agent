@@ -750,7 +750,17 @@ export const esOverrides = {
       manage: 'Gestionar plugins',
       agentSettings: 'Ajustes del agente',
       pageCount: (n: number) => (n === 1 ? '1 página' : `${n} páginas`),
-      missing: 'Este plugin no tiene página de ajustes. Puede que esté desactivado o desinstalado.'
+      missing: 'Este plugin no tiene página de ajustes. Puede que esté desactivado o desinstalado.',
+      statusEnabled: 'Activado',
+      statusDisabled: 'Desactivado',
+      noSettingsBadge: 'Sin ajustes',
+      noSettingsDeclared: 'Este plugin no declara ajustes en su manifiesto.',
+      unresolvableSource:
+        'El origen de configuración declarado por este plugin no se puede editar aquí. Edite el destino directamente.',
+      configLocation: 'Origen de configuración',
+      configureIn: (surface: string) => `Configurar en ${surface}`,
+      providerSurfaceNote: (surface: string) =>
+        `Este plugin de proveedor se configura en la página de ajustes ${surface}.`
     },
     nav: {
       providers: 'Proveedores',

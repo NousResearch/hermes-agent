@@ -12,7 +12,15 @@ export const ruPluginSettings = {
     manage: 'Управление плагинами',
     agentSettings: 'Настройки агента',
     pageCount: (n: number) => `Страниц: ${n}`,
-    missing: 'У этого плагина нет страницы настроек. Возможно, он отключён или удалён.'
+    missing: 'У этого плагина нет страницы настроек. Возможно, он отключён или удалён.',
+    statusEnabled: 'Включён',
+    statusDisabled: 'Отключён',
+    noSettingsBadge: 'Нет настроек',
+    noSettingsDeclared: 'Этот плагин не объявляет настроек в своём манифесте.',
+    unresolvableSource: 'Объявленный источник конфигурации плагина нельзя редактировать здесь. Измените файл напрямую.',
+    configLocation: 'Источник конфигурации',
+    configureIn: (surface: string) => `Настроить в разделе «${surface}»`,
+    providerSurfaceNote: (surface: string) => `Этот плагин-провайдер настраивается на странице «${surface}».`
   },
   plugins: {
     title: 'Плагины приложения',

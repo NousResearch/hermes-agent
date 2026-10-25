@@ -84,6 +84,8 @@ export interface PluginSettingsEntry extends PluginSettingsNode {
   order: number
   /** Registering desktop plugin id, when contributed by one. */
   pluginId?: string
+  /** Backing agent-plugin metadata row when installed (#144485). */
+  agentRow?: AgentPluginRow
   children: PluginSettingsNode[]
 }
 
@@ -219,7 +221,7 @@ export function pluginSettingsEntries({
   }
 
   for (const row of rows) {
-    if (!row.key || !row.settings_schema?.length) {
+    if (!row.key) {
       continue
     }
 
@@ -234,7 +236,9 @@ export function pluginSettingsEntries({
     })
 
     if (owner) {
-      if (!owner.children.some(child => child.agentKey)) {
+      owner.agentRow ??= row
+
+      if (!owner.children.some(child => child.agentKey) && (row.settings_schema?.length || row.config_source)) {
         owner.children.push({ agentKey: row.key, id: row.key, title: configTitle })
       }
 
@@ -243,6 +247,7 @@ export function pluginSettingsEntries({
 
     entries.push({
       agentKey: row.key,
+      agentRow: row,
       children: [],
       id: row.key,
       key: row.key,

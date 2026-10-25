@@ -602,8 +602,23 @@ catalog: CatalogTranslations
     resetConfirm: string
     exportFailed: string
     resetFailed: string
-    pluginPages: Record<'agentSettings' | 'blurb' | 'empty' | 'manage' | 'missing', string> & {
+    pluginPages: Record<
+      | 'agentSettings'
+      | 'blurb'
+      | 'configLocation'
+      | 'empty'
+      | 'manage'
+      | 'missing'
+      | 'noSettingsBadge'
+      | 'noSettingsDeclared'
+      | 'statusDisabled'
+      | 'statusEnabled'
+      | 'unresolvableSource',
+      string
+    > & {
+      configureIn: (surface: string) => string
       pageCount: (n: number) => string
+      providerSurfaceNote: (surface: string) => string
     }
     nav: {
       providers: string

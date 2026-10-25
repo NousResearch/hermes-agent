@@ -505,6 +505,30 @@ def _require_valid_memory_provider_name(name: str) -> None:
         raise _unknown_provider(name)
 
 
+def _legacy_as_declared_payload(name: str, provider: Any) -> dict[str, Any]:
+    """Expose a ``provider.get_config_schema()`` surface in Desktop's ``surface=declared`` shape (#144485)."""
+    legacy = _memory_provider_payload(name, provider)
+    kind_map = {"boolean": "bool", "integer": "number"}
+    fields = []
+    for raw in legacy.get("fields") or []:
+        kind = kind_map.get(raw["kind"], raw["kind"])
+        val = raw.get("value")
+        fields.append({
+            "key": raw["key"],
+            "label": raw["label"],
+            "kind": kind,
+            "description": raw.get("description", ""),
+            "info": "",
+            "placeholder": raw.get("placeholder", ""),
+            "inline": True,
+            "group": "",
+            "options": raw.get("options", []),
+            "value": "" if kind == "secret" else _stringify_submitted(val),
+            "is_set": bool(raw.get("is_set")),
+        })
+    return {"name": legacy["name"], "label": legacy["label"], "docs_url": "", "fields": fields}
+
+
 @router.get("/api/memory/providers/{name}/config")
 async def get_memory_provider_config(name: str, surface: Optional[str] = None, profile: Optional[str] = None):
     _require_valid_memory_provider_name(name)
@@ -514,9 +538,12 @@ async def get_memory_provider_config(name: str, surface: Optional[str] = None, p
         # empty schema makes the generic panel render nothing.
         if surface == "declared":
             declared = get_provider_config_schema(name)
-            if declared is None:
+            if declared is not None:
+                return _declared_provider_payload(declared)
+            provider = _load_memory_provider(name)
+            if provider is None:
                 return {"name": name, "label": name, "docs_url": "", "fields": []}
-            return _declared_provider_payload(declared)
+            return _legacy_as_declared_payload(name, provider)
         provider = _load_memory_provider(name)
         if provider is None:
             return {"name": name, "label": name, "fields": [], "setup": _memory_provider_setup_info(name)}
@@ -558,9 +585,14 @@ async def update_memory_provider_config(
     def _run():
         if surface == "declared":
             declared = get_provider_config_schema(name)
-            if declared is None:
+            if declared is not None:
+                _update_memory_provider_config(declared, {k: _stringify_submitted(v) for k, v in values.items()})
+                _invalidate_plugins_hub_cache()
+                return {"ok": True}
+            provider = _load_memory_provider(name)
+            if provider is None:
                 raise _unknown_provider(name)
-            _update_memory_provider_config(declared, {k: _stringify_submitted(v) for k, v in values.items()})
+            _write_memory_provider_config_values(name, provider, values)
             _invalidate_plugins_hub_cache()
             return {"ok": True}
         provider = _load_memory_provider(name)

@@ -689,6 +689,28 @@ class PluginServerRow(Result):
     sentence: str
 
 
+class PluginConfigSourceKind(WireEnum):
+    plugin_settings = "plugin_settings"
+    config_section = "config_section"
+    json_file = "json_file"
+    env = "env"
+
+
+class PluginSettingsLink(WireEnum):
+    memory = "memory"
+    context = "context"
+    providers = "providers"
+
+
+class PluginConfigSource(Result):
+    """Where an installed plugin reads/writes its settings (#144485)."""
+
+    kind: PluginConfigSourceKind | None = None
+    path: str = ""
+    editable: bool = False
+    settings_link: PluginSettingsLink | None = None
+
+
 class AgentPluginRow(Result):
     """``methods_tools._plugin_rows`` + ``plugins_cmd_catalog.catalog_row_fields`` provenance."""
 
@@ -713,6 +735,7 @@ class AgentPluginRow(Result):
     update_target: str | None = None
     pinned_sha: str | None = None
     settings_schema: list[PluginSettingField] | None = None
+    config_source: PluginConfigSource | None = None
     # Exact tool names this package's own code registered (native + its MCP servers' tools):
     # Desktop renders a plugin's tool-media renderer only for these.
     tools: list[str] = Field(default_factory=list)

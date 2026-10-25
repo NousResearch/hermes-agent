@@ -104,7 +104,15 @@ export const zhHantSettings = {
       manage: '管理外掛程式',
       agentSettings: '代理程式設定',
       pageCount: (n: number) => `${n} 個頁面`,
-      missing: '這個外掛程式沒有設定頁面，可能已停用或解除安裝。'
+      missing: '這個外掛程式沒有設定頁面，可能已停用或解除安裝。',
+      statusEnabled: '已啟用',
+      statusDisabled: '已停用',
+      noSettingsBadge: '無設定',
+      noSettingsDeclared: '此外掛程式未在其資訊清單中宣告任何設定。',
+      unresolvableSource: '此外掛程式宣告的設定來源無法在此編輯，請直接編輯目標檔案。',
+      configLocation: '設定來源',
+      configureIn: (surface: string) => `前往 ${surface} 設定`,
+      providerSurfaceNote: (surface: string) => `此提供方外掛程式在「${surface}」設定頁面中設定。`
     },
     nav: {
       providers: '提供方',

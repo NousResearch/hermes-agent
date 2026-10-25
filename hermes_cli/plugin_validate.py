@@ -129,36 +129,45 @@ def _check_requires_hermes(report: ValidationReport, manifest: dict) -> None:
 
 
 def _check_config_spec(report: ValidationReport, manifest: dict) -> None:
-    """Validate the manifest ``config_schema`` mapping (#64165 format)."""
+    """Validate the manifest ``config_schema`` (#64165) and ``config_source`` (#144485) mappings."""
     raw = manifest.get("config_schema")
     if raw in (None, [], {}):
         report.add("config schema", True, "not declared")
-        return
-    problems: list[str] = []
-    if not isinstance(raw, dict):
-        problems.append("config_schema: must be a mapping of key -> spec")
     else:
-        for skey, spec in raw.items():
-            if not isinstance(spec, dict):
-                problems.append(
-                    f"config_schema.{skey}: must be a mapping (e.g. {{type: str}})"
-                )
-                continue
-            typ = spec.get("type")
-            if typ is not None and str(typ).lower() not in _CONFIG_TYPES:
-                problems.append(
-                    f"config_schema.{skey}: type must be one of "
-                    f"{'/'.join(sorted(_CONFIG_TYPES))}"
-                )
-            required = spec.get("required")
-            if required is not None and not isinstance(required, bool):
-                problems.append(
-                    f"config_schema.{skey}: required must be a boolean"
-                )
-    if problems:
-        report.add("config schema", False, "; ".join(problems))
-    else:
-        report.add("config schema", True, "shape valid")
+        problems: list[str] = []
+        if not isinstance(raw, dict):
+            problems.append("config_schema: must be a mapping of key -> spec")
+        else:
+            for skey, spec in raw.items():
+                if not isinstance(spec, dict):
+                    problems.append(
+                        f"config_schema.{skey}: must be a mapping (e.g. {{type: str}})"
+                    )
+                    continue
+                typ = spec.get("type")
+                if typ is not None and str(typ).lower() not in _CONFIG_TYPES:
+                    problems.append(
+                        f"config_schema.{skey}: type must be one of "
+                        f"{'/'.join(sorted(_CONFIG_TYPES))}"
+                    )
+                required = spec.get("required")
+                if required is not None and not isinstance(required, bool):
+                    problems.append(
+                        f"config_schema.{skey}: required must be a boolean"
+                    )
+        if problems:
+            report.add("config schema", False, "; ".join(problems))
+        else:
+            report.add("config schema", True, "shape valid")
+
+    if "config_source" in manifest and manifest.get("config_source") is not None:
+        from hermes_cli.plugins_settings import validate_config_source_spec
+
+        resolved = validate_config_source_spec(manifest.get("config_source"))
+        if resolved.valid:
+            report.add("config source", True, f"{resolved.kind}: {resolved.path}")
+        else:
+            report.add("config source", False, resolved.error)
 
 
 def _check_requires_env(report: ValidationReport, manifest: dict) -> None:
@@ -661,8 +670,11 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
         bool(name),
         "name present" if name else "plugin.json missing required 'name'",
     )
-    from hermes_cli.agent_plugins import manifest_config_schema
-    _check_config_spec(report, {"config_schema": manifest_config_schema(manifest)})
+    from hermes_cli.agent_plugins import manifest_config_schema, manifest_config_source
+    _check_config_spec(
+        report,
+        {"config_schema": manifest_config_schema(manifest), "config_source": manifest_config_source(manifest)},
+    )
     for server_name, config in package.mcp_servers.items():
         if config.get("trust") == "untrusted":
             report.add(f"server trust: {server_name}", True,

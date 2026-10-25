@@ -747,7 +747,17 @@ export const frOverrides = {
       manage: 'Gérer les plugins',
       agentSettings: "Réglages de l'agent",
       pageCount: (n: number) => (n === 1 ? '1 page' : `${n} pages`),
-      missing: "Ce plugin n'a pas de page de réglages. Il est peut-être désactivé ou désinstallé."
+      missing: "Ce plugin n'a pas de page de réglages. Il est peut-être désactivé ou désinstallé.",
+      statusEnabled: 'Activé',
+      statusDisabled: 'Désactivé',
+      noSettingsBadge: 'Aucun réglage',
+      noSettingsDeclared: 'Ce plugin ne déclare aucun réglage dans son manifeste.',
+      unresolvableSource:
+        'La source de configuration déclarée par ce plugin ne peut pas être modifiée ici. Modifiez directement la cible.',
+      configLocation: 'Source de configuration',
+      configureIn: (surface: string) => `Configurer dans ${surface}`,
+      providerSurfaceNote: (surface: string) =>
+        `Ce plugin fournisseur se configure sur la page de paramètres ${surface}.`
     },
     nav: {
       providers: 'Fournisseurs',

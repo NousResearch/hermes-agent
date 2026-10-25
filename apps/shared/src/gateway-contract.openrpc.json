@@ -5077,6 +5077,17 @@
             "default": null,
             "title": "Settings Schema"
           },
+          "config_source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PluginConfigSource"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "tools": {
             "items": {
               "type": "string"
@@ -27239,6 +27250,56 @@
         "title": "PluginCatalogLookupStatus",
         "type": "string"
       },
+      "PluginConfigSource": {
+        "additionalProperties": false,
+        "description": "Where an installed plugin reads/writes its settings (#144485).",
+        "properties": {
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PluginConfigSourceKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "path": {
+            "default": "",
+            "title": "Path",
+            "type": "string"
+          },
+          "editable": {
+            "default": false,
+            "title": "Editable",
+            "type": "boolean"
+          },
+          "settings_link": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PluginSettingsLink"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "title": "PluginConfigSource",
+        "type": "object"
+      },
+      "PluginConfigSourceKind": {
+        "enum": [
+          "plugin_settings",
+          "config_section",
+          "json_file",
+          "env"
+        ],
+        "title": "PluginConfigSourceKind",
+        "type": "string"
+      },
       "PluginLiveNow": {
         "additionalProperties": false,
         "properties": {
@@ -27508,6 +27569,15 @@
           "json"
         ],
         "title": "PluginSettingFieldType",
+        "type": "string"
+      },
+      "PluginSettingsLink": {
+        "enum": [
+          "memory",
+          "context",
+          "providers"
+        ],
+        "title": "PluginSettingsLink",
         "type": "string"
       },
       "PluginToolsetRow": {

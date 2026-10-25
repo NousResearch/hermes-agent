@@ -105,25 +105,25 @@ describe('pluginSettingsEntries', () => {
     expect(entry?.children.map(child => child.title)).toEqual(['Units', 'Alerts'])
   })
 
-  it('gives every agent plugin with a config_schema its own automatic page', () => {
+  it('lists every keyed agent plugin even when it declares zero settings (#144485)', () => {
+    const noSchemaRow = row({ key: 'no-schema', name: 'no-schema', settings_schema: [] })
+    const notesRow = row({ key: 'notes', name: 'notes', settings_schema: [field] })
+
     const entries = pluginSettingsEntries({
       configTitle: 'Agent settings',
       contributions: [],
-      rows: [
-        row({ key: 'no-schema', name: 'no-schema' }),
-        row({ key: 'notes', name: 'notes', settings_schema: [field] }),
-        row({ name: 'keyless', settings_schema: [field] })
-      ]
+      rows: [noSchemaRow, notesRow, row({ name: 'keyless', settings_schema: [field] })]
     })
 
-    expect(entries).toHaveLength(1)
+    expect(entries.map(entry => entry.uid)).toEqual(['agent:no-schema', 'agent:notes'])
     expect(entries[0]).toMatchObject({
-      agentKey: 'notes',
+      agentKey: 'no-schema',
+      agentRow: noSchemaRow,
       children: [],
-      key: 'notes',
+      key: 'no-schema',
       kind: 'agent',
-      title: 'notes',
-      uid: 'agent:notes'
+      title: 'no-schema',
+      uid: 'agent:no-schema'
     })
   })
 

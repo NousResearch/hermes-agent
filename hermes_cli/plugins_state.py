@@ -15,10 +15,29 @@ from hermes_cli.plugins_manifest import _portable_data_namespace
 
 _PLUGIN_SETTING_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _PLUGIN_SETTING_RESERVED_ROOTS = frozenset({"model", "plugins", "security", "settings"})
+_CONFIG_SECTION_RESERVED_ROOTS = frozenset({"approvals", "command_allowlist", "model", "plugins", "security"})
 _PLUGIN_STATE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _PLUGIN_STATE_QUOTA_BYTES = 10 * 1024 * 1024
 _PLUGIN_STATE_LOCKS: dict[str, threading.RLock] = {}
 _PLUGIN_STATE_LOCKS_GUARD = threading.Lock()
+
+
+def _field_segments(key: str) -> tuple[str, ...]:
+    """Validate/split a relative dotted field key for an explicit ``config_source``."""
+    if not isinstance(key, str):
+        raise ValueError("Expected a config key string")
+    segments = tuple(key.split("."))
+    if not key or "/" in key or "\\" in key or not all(_PLUGIN_SETTING_SEGMENT_RE.fullmatch(s) for s in segments):
+        raise ValueError(f"Invalid config key {key!r}")
+    return segments
+
+
+def _config_section_segments(path: str) -> tuple[str, ...]:
+    """Validate/split a ``config.yaml`` section path for ``config_source: {kind: config_section}``."""
+    segments = _field_segments(path)
+    if segments[0].lower() in _CONFIG_SECTION_RESERVED_ROOTS:
+        raise ValueError(f"Config section {path!r} is a reserved Hermes section")
+    return segments
 
 
 def _plugin_relative_segments(key: str) -> tuple[str, ...]:
@@ -88,6 +107,76 @@ def save_plugin_setting(plugin_id: str, segments: tuple[str, ...], value: Any) -
         # for reads, destructive for read-modify-write.
         config_mod.read_user_config_raw()
         config_mod.save_config(partial, preserve_keys={full_path}, merge_existing=True)
+
+
+def _assert_mapping_chain(root: Mapping[str, Any], segments: tuple[str, ...], label: str) -> None:
+    """Refuse to overwrite a scalar or list along *segments* when merging nested settings."""
+    cur: Any = root
+    for idx, seg in enumerate(segments):
+        if not isinstance(cur, Mapping) or seg not in cur or cur[seg] is None:
+            return
+        cur = cur[seg]
+        if not isinstance(cur, Mapping):
+            prefix = ".".join(segments[: idx + 1])
+            raise ValueError(f"Cannot write {label}: {prefix!r} is not a mapping")
+
+
+def save_plugin_section_setting(
+    section_segments: tuple[str, ...], key_segments: tuple[str, ...], value: Any
+) -> None:
+    """Atomically write one value under ``config.yaml`` section *section_segments* (#144485)."""
+    from hermes_cli import config as config_mod
+    from hermes_cli import managed_scope
+
+    if config_mod.is_managed():
+        raise PermissionError("Plugin settings cannot be changed in a managed install")
+    full_path = (*section_segments, *key_segments)
+    dotted_path = ".".join(full_path)
+    if managed_scope.is_key_managed(dotted_path):
+        raise PermissionError(f"Plugin setting {dotted_path!r} is administrator-managed")
+    partial = _nested_plugin_mapping(section_segments, _nested_plugin_mapping(key_segments, value))
+    with _locked_plugin_state(config_mod.get_config_path()), config_mod._CONFIG_LOCK:
+        raw_cfg = config_mod.read_user_config_raw()
+        if isinstance(raw_cfg, Mapping):
+            _assert_mapping_chain(raw_cfg, full_path[:-1], dotted_path)
+        config_mod.save_config(partial, preserve_keys={full_path}, merge_existing=True)
+
+
+def save_plugin_json_settings(target_path: Path, updates: list[tuple[tuple[str, ...], Any]]) -> None:
+    """Atomically merge *updates* into profile-scoped JSON sidecar *target_path* (#144485)."""
+    from hermes_cli import config as config_mod
+    from hermes_constants import mkdir_under_hermes_home
+    from utils import atomic_json_write
+
+    if config_mod.is_managed():
+        raise PermissionError("Plugin settings cannot be changed in a managed install")
+    home_real = get_hermes_home().resolve(strict=False)
+    if target_path.is_symlink() or not target_path.resolve(strict=False).is_relative_to(home_real):
+        raise ValueError(f"Plugin JSON config path must stay inside HERMES_HOME: {target_path}")
+    mkdir_under_hermes_home(target_path.parent)
+    with _locked_plugin_state(target_path):
+        if target_path.is_symlink() or not target_path.resolve(strict=False).is_relative_to(home_real):
+            raise ValueError(f"Plugin JSON config path must stay inside HERMES_HOME: {target_path}")
+        try:
+            with open(target_path, encoding="utf-8-sig") as handle:
+                existing = json.load(handle)
+        except FileNotFoundError:
+            existing = {}
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"Cannot parse plugin config {target_path.name}: {exc}") from exc
+        if not isinstance(existing, dict):
+            raise ValueError(f"Cannot update {target_path.name}: root JSON value must be an object")
+        for segments, value in updates:
+            _assert_mapping_chain(existing, segments[:-1], ".".join(segments))
+            cursor = existing
+            for seg in segments[:-1]:
+                child = cursor.get(seg)
+                if not isinstance(child, dict):
+                    child = {}
+                    cursor[seg] = child
+                cursor = child
+            cursor[segments[-1]] = value
+        atomic_json_write(target_path, existing, mode=0o600)
 
 
 def _plugin_data_namespace(plugin_id: str, data_namespace: str) -> str:

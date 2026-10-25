@@ -62,7 +62,7 @@ from hermes_state_lockowners import log_write_lock_holders
 from hermes_state_dbfile import (
     _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement,
     _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
-    _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen, is_zeroed_state_db, quarantine_cross_process_lock,
+    _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen, is_zeroed_state_db, probe_hot_wal_recovery, quarantine_cross_process_lock,
     quarantine_invalid_state_db,
     RetiredGenerationCaptureError, capture_retired_wal_generation, refuse_deleted_wal_generation,
 )
@@ -777,6 +777,19 @@ class SessionDB(
         raise the clear message instead of opening the zeroed file."""
         if not (self.db_path.exists() and has_invalid_sqlite_header_preopen(self.db_path)):
             return
+        wal_recovery = probe_hot_wal_recovery(self.db_path)
+        if wal_recovery is True:
+            logger.warning("state.db has an invalid main header but a readable hot WAL; preserving %s", self.db_path)
+            return
+        if wal_recovery is False:
+            msg = (
+                f"state.db has an invalid main header and an unreadable hot WAL; preserving the database "
+                f"family at {self.db_path}. Stop all Hermes processes, then run `hermes sessions recover "
+                f"--source {self.db_path} --inspect-only`."
+            )
+            logger.error(msg)
+            _set_last_init_error(msg)
+            raise sqlite3.DatabaseError(msg)
         try:
             zsize = self.db_path.stat().st_size
         except OSError:

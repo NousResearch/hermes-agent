@@ -349,6 +349,9 @@ declare global {
       /** Add a word to the spell-check dictionary of a webview guest's
        *  session (the tag exposes no session API). */
       contextMenuGuestAddWord?: (payload: { webContentsId: number; word: string }) => Promise<void>
+      /** Add/remove ONE validated word in this window's spell-check
+       *  dictionary (`host.spellcheck`); resolves main's verdict. */
+      spellcheckDictionary?: (op: 'add' | 'remove', word: string) => Promise<boolean>
       /** Spell-check facts for the gesture that opened the current menu;
        *  fires shortly after the DOM contextmenu event. */
       onContextMenuSpellcheck?: (
@@ -502,6 +505,19 @@ declare global {
       writeTextFile?: (path: string, content: string) => Promise<{ path: string }>
       // Move a file/folder to the OS trash (recoverable).
       trashPath?: (path: string) => Promise<boolean>
+      /** The plugin SDK's folder-scoped file door (`ctx.files`). Main owns
+       *  grants and checks every path; older shells lack it. */
+      pluginFiles?: {
+        request: (
+          pluginId: string,
+          labels: { buttonLabel: string; title: string }
+        ) => Promise<HermesPluginFilesResult<{ folder: HermesPluginFolderGrant | null }>>
+        grants: (pluginId: string) => Promise<HermesPluginFolderGrant[]>
+        revoke: (pluginId: string, folderId?: string) => Promise<{ ok: true; removed: number }>
+        op: (pluginId: string, request: Record<string, unknown>) => Promise<HermesPluginFilesResult>
+        /** A grant was added or revoked in any window; returns an unsubscribe. */
+        onChanged?: (callback: (change: { pluginId: string }) => void) => () => void
+      }
       // Git-driven worktree management for the "Start work" flow.
       git?: {
         worktreeList: (repoPath: string) => Promise<HermesGitWorktree[]>
@@ -696,6 +712,17 @@ declare global {
     }
   }
 }
+
+export interface HermesPluginFolderGrant {
+  id: string
+  name: string
+  path: string
+  grantedAt: string
+}
+
+export type HermesPluginFilesResult<T extends object = Record<string, unknown>> =
+  | ({ ok: true } & T)
+  | { ok: false; error: string; message: string }
 
 export interface DesktopMarketplaceSearchItem {
   extensionId: string

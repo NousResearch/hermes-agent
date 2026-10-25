@@ -1,29 +1,28 @@
-"""Which delegation backend a session uses: the public API behind a ``/delegation`` command.
+"""Which delegation backend Hermes uses: the public API behind a ``/delegation`` command.
 
-``delegation.backend`` in config.yaml is the global choice. A session may override it (the ``/model``
-convention: session-scoped by default, ``--global`` persists); the override decides routing from the
-session's next ``delegate_task`` call. The ``delegate_task`` schema (a backend's per-task parameters)
-is part of the cached prompt and keeps following config.yaml, so a backend's own task parameters
-appear in sessions started after a global switch. After a session switch the model may still send the
-previous backend's parameters: each such task is refused (naming the session's backend, the parameter,
-and the fix: ``/delegation <backend> --global`` then ``/new``, since ``/new`` starts on the saved backend, or
-``/delegation <saved backend>`` back), never run on the new backend's default route.
+``delegation.backend`` in config.yaml is the saved choice. A session routes on the backend its ``delegate_task``
+schema was built from (``agent._delegation_backend``, captured with its tools and pinned with them to the session
+row), because that schema (a backend's per-task parameters) is cached prompt: a save, or a config.yaml edit,
+changes nothing in a running chat and applies from its next session (``/new``). ``apply_now`` opts into
+rebuilding the calling session's tools at its next turn instead, so routing and schema switch together there:
+one prompt-cache break, the rule every slash command that changes prompt state follows (``--now``). A task
+carrying parameters its session's backend does not declare is still refused (``tools/delegate_tool_routes.py``).
 
-Session keys are the ``session_key`` a plugin command handler receives: the gateway/TUI route key, or
-the session id on the classic in-process CLI. ``delegate_task`` resolves the same key from the turn's
-session context, else from the parent agent's session id.
+Session keys are the ``session_key`` a plugin command handler receives: the gateway/TUI route key, or the
+session id on the classic in-process CLI. A turn resolves the same key from its session context, else from the
+agent's session id.
 """
 
 from __future__ import annotations
 
 import threading
 from dataclasses import asdict, dataclass
-from typing import Any, Mapping, Optional
+from typing import Any
 
 from agent.delegation_registry import DEFAULT_BACKEND, _registry, backend_status, configured_backend
 from agent.provider_registry import lower_key
 
-_session_backends: dict[str, str] = {}
+_rebuild_requests: set[str] = set()
 _lock = threading.Lock()
 
 
@@ -51,39 +50,45 @@ def list_backends() -> list[BackendInfo]:
     return [_info(name) for name in names]
 
 
-def get_session_backend(session_key: str) -> Optional[str]:
-    """The session's override, ``None`` when it follows config.yaml."""
-    with _lock:
-        return _session_backends.get(session_key) if session_key else None
+def saved_backend() -> str:
+    """``delegation.backend`` as config.yaml has it now: what a tool build reads."""
+    from tools.delegate_tool_config import _load_config
+    return configured_backend(_load_config())
 
 
-def set_session_backend(session_key: str, name: Optional[str]) -> None:
-    """Switch one session's backend; ``None``/blank clears the override. Raises ``ValueError`` (with the
-    reason) for a backend that cannot run here, so a typo never leaves the session broken."""
-    if not session_key:
-        raise ValueError("No session to switch: delegation backends are switched per session.")
-    if name is None or not name.strip():
-        with _lock:
-            _session_backends.pop(session_key, None)
-        return
-    key = lower_key(name)
-    info = _info(key)
-    if not info.available:
-        raise ValueError(info.reason)
-    with _lock:
-        _session_backends[session_key] = key
+def _delegate_def(tools: Any) -> Any:
+    return next((t for t in tools or () if isinstance(t, dict)
+                 and (t.get("function") or {}).get("name") == "delegate_task"), None)
 
 
-def set_global_backend(name: str, *, session_key: str = "") -> None:
+def adopt_built_backend(agent: Any, defs: Any, backend: str) -> None:
+    """Record ``backend`` as the session's when the agent's ``delegate_task`` is the one ``defs`` carries (built
+    from ``backend``, or pinned with it); a kept older definition keeps the backend it was built from."""
+    if _delegate_def(getattr(agent, "tools", None)) == _delegate_def(defs):
+        agent._delegation_backend = backend
+
+
+def pinned_backend(agent: Any) -> str:
+    """The backend ``agent``'s ``delegate_task`` was built from; ``""`` for no agent (or one never built), whose
+    tasks route on config.yaml's."""
+    pinned = getattr(agent, "_delegation_backend", None)
+    return pinned if isinstance(pinned, str) else ""
+
+
+def set_global_backend(name: str, *, session_key: str = "", apply_now: bool = False) -> None:
     """Persist ``delegation.backend`` to the active profile's config.yaml (raw user config, never merged
-    defaults) and drop ``session_key``'s override, which would otherwise shadow it. Raises ``PermissionError``
-    on a package-manager-managed install (its config.yaml is not ours to write) and ``ValueError`` for a backend
-    that cannot run."""
+    defaults). Running sessions keep routing on the backend their tools were built from; ``apply_now`` rebuilds
+    ``session_key``'s tools at that session's next turn, so it routes on and offers the new backend's parameters
+    from there (an opt-in prompt-cache break); otherwise sessions pick the switch up from ``/new``. Raises ``PermissionError`` on a package-manager-managed
+    install (its config.yaml is not ours to write) and ``ValueError`` (with the reason) for a backend that cannot
+    run or an ``apply_now`` without a session, before anything is written."""
     from hermes_cli.config import (
         atomic_config_write, format_managed_message, get_config_path, is_managed, read_user_config_raw,
     )
     if is_managed():
         raise PermissionError(format_managed_message("set delegation.backend"))
+    if apply_now and not session_key:
+        raise ValueError("No session to apply the switch to: apply_now needs the command's session_key.")
     key = lower_key(name)
     info = _info(key)
     if not info.available:
@@ -95,36 +100,45 @@ def set_global_backend(name: str, *, session_key: str = "") -> None:
         section = user_config["delegation"] = {}
     section["backend"] = key
     atomic_config_write(path, user_config)
-    if session_key:
-        set_session_backend(session_key, None)
+    if apply_now:
+        with _lock:
+            _rebuild_requests.add(session_key)
 
 
-def _current_session_key(parent_agent: Any) -> str:
+def _current_session_key(agent: Any) -> str:
     from gateway.session_context import get_session_env
-    return get_session_env("HERMES_SESSION_KEY", "") or str(getattr(parent_agent, "session_id", "") or "")
+    return get_session_env("HERMES_SESSION_KEY", "") or str(getattr(agent, "session_id", "") or "")
 
 
-def session_delegation_config(config: Mapping[str, Any], parent_agent: Any) -> Mapping[str, Any]:
-    """``config`` (the ``delegation`` section) with the calling session's backend override applied."""
-    override = get_session_backend(_current_session_key(parent_agent))
-    if override is None or override == configured_backend(config):
-        return config
-    return {**config, "backend": override}
+def apply_requested_tool_rebuild(agent: Any) -> bool:
+    """Turn start, after the session's tools are restored: rebuild ``agent.tools`` (and with it the backend the
+    session routes on) if ``set_global_backend(apply_now=True)`` asked for this session, and pin both to the
+    session row so a later fresh agent restores them. True when the tool list changed. Forks (background review, ``/btw``) and
+    subagents share the session's key but never take its request."""
+    if getattr(agent, "_turn_origin", None) or getattr(agent, "_delegate_depth", 0):
+        return False
+    key = _current_session_key(agent)
+    with _lock:
+        if key not in _rebuild_requests:
+            return False
+        _rebuild_requests.discard(key)
+    from hermes_cli.observability.shared_metrics_efficiency import record_cache_break
+    from tools.mcp_tool_agent import refresh_agent_mcp_tools
+    before = getattr(agent, "tools", None)
+    refresh_agent_mcp_tools(agent, quiet_mode=True, content_aware=True)  # adopts the saved backend, re-pins a change
+    if agent.tools is before:
+        return False
+    record_cache_break(agent, "toolset_change")
+    return True
 
 
 class DelegationBackends:
     """``ctx.delegation_backends``: this API for plugins, as plain data. It is a host remote facade, so a plugin
-    running under ``plugins.isolation: host`` lists and switches the owner process's backends and sessions, not
+    running under ``plugins.isolation: host`` lists and switches the owner process's backend and sessions, not
     copies in its own process."""
 
     def list_backends(self) -> list[dict[str, Any]]:
         return [asdict(info) for info in list_backends()]
 
-    def get_session_backend(self, session_key: str) -> Optional[str]:
-        return get_session_backend(session_key)
-
-    def set_session_backend(self, session_key: str, name: Optional[str]) -> None:
-        set_session_backend(session_key, name)
-
-    def set_global_backend(self, name: str, session_key: str = "") -> None:
-        set_global_backend(name, session_key=session_key)
+    def set_global_backend(self, name: str, *, session_key: str = "", apply_now: bool = False) -> None:
+        set_global_backend(name, session_key=session_key, apply_now=apply_now)

@@ -607,6 +607,8 @@ working but are **deprecated** in favor of the consent flow:
 
 A gate is open when *either* the capability is granted *or* the legacy key is
 set — existing configs keep working unchanged.
+`llm.side_question` has no legacy key: it is open only when declared and
+granted through the consent flow.
 
 :::warning Not a sandbox
 Capabilities are a **consent and audit layer**, not isolation. Plugins run as

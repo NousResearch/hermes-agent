@@ -1893,43 +1893,6 @@ export interface BotRelayReplyParams {
   error?: string | null
   reason?: string | null
 }
-export interface BrowserControllerRegisterParams {
-  session_id: string
-  controller_id: string
-  browser_profile_id: string
-  capabilities?: string[] | null
-  protocol_version?: unknown | null
-  principal_id?: string | null
-}
-export interface BrowserControllerRegisterResult {
-  scope: ControllerScope
-}
-export interface ControllerScope {
-  principal_id: string
-  profile_id: string
-  session_id: string
-  controller_id: string
-  browser_profile_id: string
-  transport_family: string
-  capabilities: string[]
-}
-export interface BrowserControllerResultParams {
-  session_id: string
-  command_id: string
-  ok?: unknown | null
-  result?: unknown | null
-  error?: unknown | null
-}
-export interface BrowserControllerResultResult {
-  accepted: boolean
-}
-/** Every controller call names the session the controller is attached to. */
-export interface BrowserControllerParams {
-  session_id: string
-}
-export interface BrowserControllerDetachResult {
-  detached?: boolean
-}
 export interface I18nLanguagesResult {
   languages: LanguageOption[]
 }
@@ -4028,16 +3991,14 @@ export interface CronRemovedJob {
 export interface BrowserManageParams {
   action?: BrowserAction
   url?: string | null
-  enabled?: boolean | null
   session_id?: string | null
   profile?: string | null
 }
-export type BrowserAction = 'status' | 'connect' | 'disconnect' | 'use'
+export type BrowserAction = 'status' | 'connect' | 'disconnect'
 export interface BrowserManageResult {
   connected: boolean
   url?: string | null
   messages?: string[] | null
-  browser_use?: boolean | null
 }
 /** Handlers that look a live session up with ``_sessions.get(params.get("session_id"))``: an absent / unknown id falls back to the launch profile's config, so it is never required. */
 export interface _SessionScoped {
@@ -4429,7 +4390,7 @@ export interface PluginsManageParams {
   names?: string[] | null
 }
 export type PluginsAction = 'list' | 'toggle' | 'install' | 'update' | 'remove' | 'settings' | 'onboarding' | 'presence'
-/** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name`` (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is live now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the client retries with ``accept_capabilities`` — or ``ok=false`` + ``scan_blocked`` with ``scan_verdict`` / ``scan_findings`` (retry a caution verdict with ``force``); ``remove`` → ``ok``/``name`` plus ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``. */
+/** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name`` (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is live now vs deferred, so ``restart_required`` is True only when no gateway answered or the running gateway/backend cannot import the plugin's Python dependencies (``activation.missing_dependencies``); ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the client retries with ``accept_capabilities`` — or ``ok=false`` + ``scan_blocked`` with ``scan_verdict`` / ``scan_findings`` (retry a caution verdict with ``force``); ``remove`` → ``ok``/``name`` plus ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``. */
 export interface PluginsManageResult {
   plugins?: AgentPluginRow[] | null
   user_count?: number | null
@@ -4482,6 +4443,7 @@ export interface AgentPluginRow {
   update_target?: string | null
   pinned_sha?: string | null
   settings_schema?: PluginSettingField[] | null
+  tools?: string[]
 }
 export interface PluginServerRow {
   name: string
@@ -4503,13 +4465,15 @@ export interface PluginSettingField {
   has_value?: boolean | null
 }
 export type PluginSettingFieldType = 'string' | 'number' | 'boolean' | 'enum' | 'secret' | 'json'
-/** What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now`` kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>`` language-pack layers), ``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the error) and skills, usable in every open chat of the profile from its next turn — the chats also get a note listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids) apply from the next session. */
+/** What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now`` kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>`` language-pack layers), ``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the error) and skills, usable in every open chat of the profile from its next turn — the chats also get a note listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids) apply from the next session. ``missing_dependencies``: the plugin's declared Python requirements a running process cannot import (installed after it booted, or never); ``missing_in`` names which processes (``gateway``, ``backend`` = the Desktop / dashboard process) — only restarting them loads them. */
 export interface PluginActivation {
   name: string
   key: string
   activated_now?: Record<string, string[]>
   live_now?: PluginLiveNow | null
   deferred?: Record<string, string[]>
+  missing_dependencies?: string[]
+  missing_in?: PluginRestartTarget[]
 }
 export interface PluginLiveNow {
   mcp_servers?: PluginLiveServer[]
@@ -4527,6 +4491,7 @@ export interface PluginLiveSkill {
   name: string
   description?: string
 }
+export type PluginRestartTarget = 'gateway' | 'backend'
 /** One security-scan finding (``tools.plugin_guard``) on a plugin tree the scan blocked. */
 export interface PluginScanFinding {
   pattern_id: string
@@ -4672,7 +4637,6 @@ export interface CanonicalSessionInfo {
   enabled_toolsets?: string[] | null
   tool_availability?: Record<string, unknown> | null
   tool_availability_warnings?: string[] | null
-  browser_backend_notice?: string | null
   unknown_toolsets?: string[] | null
   source: string
   model?: string | null
@@ -5016,6 +4980,7 @@ export interface CanonicalSnapshot {
   info: CanonicalSnapshotInfo
   pending_connection?: ConnectionRequestPayload | null
   todo_state?: TodoState | null
+  open_requests?: OpenRequestEntry[] | null
 }
 export interface CanonicalPendingAdmission {
   admission_id: string
@@ -5058,7 +5023,6 @@ export interface CanonicalSnapshotInfo {
   enabled_toolsets?: string[] | null
   tool_availability?: Record<string, unknown> | null
   tool_availability_warnings?: string[] | null
-  browser_backend_notice?: string | null
   unknown_toolsets?: string[] | null
   desktop_protocol: 'hermes-gateway-v1'
   source?: string | null
@@ -5167,6 +5131,7 @@ export interface CanonicalEventsResult {
   truncated: boolean
   snapshot_required: boolean
   count: number
+  open_requests?: OpenRequestEntry[] | null
 }
 export interface CanonicalReplayEvent {
   type: string
@@ -5988,20 +5953,6 @@ export interface BrowserProgressPayload {
   message: string
   level: string
 }
-/** ``gateway/browser_control_broker.py`` FRAME_COMMAND params. */
-export interface BrowserControllerCommandPayload {
-  command_id: string
-  action: string
-  arguments: Record<string, unknown>
-  controller_id?: string | null
-  browser_profile_id?: string | null
-  tool_call_id?: string | null
-}
-/** ``gateway/browser_control_broker.py::_cancel_frame``. */
-export interface BrowserControllerCancelPayload {
-  command_id: string
-  tool_call_id?: string | null
-}
 /** ``methods_voice._vr_on_status``; states come from the recorder (idle / listening / transcribing …). */
 export interface VoiceStatusPayload {
   state: string
@@ -6083,15 +6034,7 @@ export interface RpcMethods {
   'bot_relay.reply': { params: BotRelayReplyParams; result: OkResult }
   /** Replace this gateway's view of agents on other connections; answers the accepted row count. */
   'bot_relay.roster.sync': { params: BotRelayRosterSyncParams; result: BotRelayRosterSyncResult }
-  /** Hard-detach only the controller owned by this authenticated transport. */
-  'browser.controller.detach': { params: BrowserControllerParams; result: BrowserControllerDetachResult }
-  /** Acknowledge a heartbeat only for this transport's own attached controller. */
-  'browser.controller.heartbeat': { params: BrowserControllerParams; result: OkResult }
-  /** Attach this connection as the browser controller for one session; fails closed (4403). */
-  'browser.controller.register': { params: BrowserControllerRegisterParams; result: BrowserControllerRegisterResult }
-  /** Deliver one command result to the broker; accepted is false for unknown or settled command ids. */
-  'browser.controller.result': { params: BrowserControllerResultParams; result: BrowserControllerResultResult }
-  /** Inspect, attach to, or drop the CDP browser the tools use, or switch Browser Use mode (``use``, applies to new sessions); ``messages`` narrate a connect. */
+  /** Inspect, attach to, or drop the CDP browser the tools use; ``messages`` narrate a connect. */
   'browser.manage': { params: BrowserManageParams; result: BrowserManageResult }
   /** Lock one answer of a batch clarify request (editable until every question is locked). */
   'clarify.lock': { params: ClarifyLockParams; result: ClarifyLockResult }
@@ -6588,10 +6531,6 @@ export const RPC_METHODS = [
   'bot_relay.outbox.drain',
   'bot_relay.reply',
   'bot_relay.roster.sync',
-  'browser.controller.detach',
-  'browser.controller.heartbeat',
-  'browser.controller.register',
-  'browser.controller.result',
   'browser.manage',
   'clarify.lock',
   'cli.exec',
@@ -7036,10 +6975,6 @@ export interface BackendGatewayEventMap {
   'billing.step_up.verification': BillingStepUpVerificationPayload
   /** A bot-relay outbox envelope is queued; drain it. */
   'bot_relay.outbox.pending': ChangeSignalPayload
-  /** Withdraw a pending controller command. */
-  'browser.controller.cancel': BrowserControllerCancelPayload
-  /** Dispatch one browser action to the attached controller. */
-  'browser.controller.command': BrowserControllerCommandPayload
   /** Browser (CDP) connect / install progress line. */
   'browser.progress': BrowserProgressPayload
   /** A /btw side question was answered. */
@@ -7193,8 +7128,6 @@ export const GATEWAY_EVENT_TYPES = [
   'background.complete',
   'billing.step_up.verification',
   'bot_relay.outbox.pending',
-  'browser.controller.cancel',
-  'browser.controller.command',
   'browser.progress',
   'btw.complete',
   'connection.request',

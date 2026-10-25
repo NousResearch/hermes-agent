@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
 import type { FreeTierRequester } from '@/store/free-tier'
-import { markOnboardingDecided, setOnboardingSurfaceActive } from '@/store/onboarding-presence'
 import type { AppHandoffStatus } from '@/types/hermes'
 
 const startOAuthLogin = vi.fn()
@@ -210,39 +209,26 @@ describe('free-tier sign-in long-polls', () => {
     expect($freeTierSignIn.get()).toMatchObject({ handoff: retrying, status: 'completed' })
   })
 
-  it('shows the onboarding sign-in result only when it moved apps and nothing is on screen', async () => {
-    const { $freeTierSignIn, showFreeTierSignInResult } = await import('./free-tier-sign-in')
-    const claimed: AppHandoffStatus = { lines: ['Your apps moved.'], state: 'claimed', updated_at: 't2' }
-    markOnboardingDecided()
+  it('a sign-in drops the cached connector reads, and again when a followed move settles', async () => {
+    const { beginFreeTierSignIn } = await import('./free-tier-sign-in')
+    const { queryClient } = await import('@/lib/query-client')
+    const list = ['connectors', 'default', 'list']
+    const stale = () => queryClient.getQueryState(list)?.isInvalidated
+    let settle: (handoff: AppHandoffStatus) => void = () => undefined
+    queryClient.setQueryData(list, [{ slug: 'linear', status: 'connected' }])
+    startOAuthLogin.mockResolvedValueOnce(start('session-moved'))
+    pollOAuthSession.mockResolvedValue(approvedWith(retrying))
+    getNousHandoffStatus.mockReturnValueOnce(new Promise(resolve => (settle = resolve)))
 
-    showFreeTierSignInResult({ handoff_status: null, session_id: 's', status: 'approved' })
-    expect($freeTierSignIn.get()).toEqual({ status: 'closed' })
+    await beginFreeTierSignIn(requestGateway)
+    await vi.advanceTimersByTimeAsync(10)
+    expect(stale()).toBe(true)
 
-    $freeTierSignIn.set({ kind: 'trial', status: 'offer' })
-    showFreeTierSignInResult({ handoff_status: claimed, session_id: 's', status: 'approved' })
-    expect($freeTierSignIn.get()).toEqual({ kind: 'trial', status: 'offer' })
-
-    $freeTierSignIn.set({ status: 'closed' })
-    showFreeTierSignInResult({
-      account_email: 'someone@example.com',
-      handoff_status: claimed,
-      session_id: 's',
-      status: 'approved'
-    })
-    expect($freeTierSignIn.get()).toMatchObject({ email: 'someone@example.com', handoff: claimed, status: 'completed' })
-  })
-
-  it('holds the onboarding sign-in result until onboarding leaves the screen, since it sits above dialogs', async () => {
-    const { $freeTierSignIn, showFreeTierSignInResult } = await import('./free-tier-sign-in')
-    const claimed: AppHandoffStatus = { lines: ['Your apps moved.'], state: 'claimed', updated_at: 't2' }
-    const scope = { connectionId: 'athena', profile: 'work' }
-    markOnboardingDecided()
-    setOnboardingSurfaceActive('onboarding', true)
-
-    showFreeTierSignInResult({ handoff_status: claimed, session_id: 's', status: 'approved' }, scope)
-    expect($freeTierSignIn.get()).toEqual({ status: 'closed' })
-
-    setOnboardingSurfaceActive('onboarding', false)
-    expect($freeTierSignIn.get()).toMatchObject({ handoff: claimed, scope, status: 'completed' })
+    queryClient.setQueryData(list, [])
+    expect(stale()).toBe(false)
+    settle({ lines: ['Your apps moved.'], state: 'claimed', updated_at: 't2' })
+    await vi.advanceTimersByTimeAsync(10)
+    expect(stale()).toBe(true)
+    queryClient.clear()
   })
 })

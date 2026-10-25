@@ -6,6 +6,7 @@ import { frBoot } from './fr_boot'
 import { frClarify } from './fr_clarify'
 import { frConnectorAccounts } from './fr_connector_accounts'
 import { frConnectorCard } from './fr_connector_card'
+import { frErrorCodes } from './fr_error_codes'
 import { frErrorLayers } from './fr_error_layers'
 import { frFirstRun } from './fr_first_run'
 import { frLocalModels } from './fr_local_models'
@@ -14,6 +15,7 @@ import { frModelSettings } from './fr_model_settings'
 import { frNotices } from './fr_notices'
 import { frNotifications } from './fr_notifications'
 import { frOnboarding } from './fr_onboarding'
+import { frPluginPreviewAccess } from './fr_plugin_preview_access'
 import { frPluginUpdate } from './fr_plugin_update'
 import { frProjects } from './fr_projects'
 import { frSharedMetrics } from './fr_shared_metrics'
@@ -2503,6 +2505,7 @@ export const frOverrides = {
         `Épinglé au commit ${sha}. Les mises à jour sont refusées tant qu’il n’est pas réinstallé avec un nouvel épinglage.`,
       pinnedBadge: (sha: string) => `épinglé @ ${sha}`,
       ...frPluginUpdate,
+      ...frPluginPreviewAccess,
       uninstall: 'Désinstaller',
       uninstallTip: (name: string, profile: string) => `Désinstaller ${name} de ${profile}`,
       uninstallConfirmTitle: (name: string) => `Désinstaller ${name} ?`,
@@ -3839,7 +3842,7 @@ export const frOverrides = {
       '/init': 'Générer ou mettre à jour les instructions de projet AGENTS.md à partir d’une analyse du dépôt',
       '/suggestions': 'Examiner les automatisations suggérées (accepter/ignorer)',
       '/blueprint': 'Configurer une automatisation à partir d’un modèle',
-      '/browser': 'Gérer le navigateur de l’agent [connect|disconnect|status|use]',
+      '/browser': 'Gérer le navigateur de l’agent [connect|disconnect|status]',
       '/palette': 'Ouvrir la palette de commandes floue (aussi Ctrl+P)',
       '/usage':
         'Afficher l’utilisation des jetons et les limites de débit ; `reset` utilise une réinitialisation de limite Codex en réserve',
@@ -4894,6 +4897,7 @@ export const frOverrides = {
       responseStopped: 'Réponse interrompue',
       ...frErrorLayers,
       errorCodes: {
+        ...frErrorCodes,
         auth: {
           title: provider => `${provider} a refusé votre connexion`,
           body: provider =>
@@ -4992,14 +4996,6 @@ export const frOverrides = {
         loop_error: {
           title: 'Hermes est resté bloqué dans une boucle',
           body: 'La réponse répétait les mêmes étapes ; Hermes l’a donc arrêtée. Réessayez ou démarrez une nouvelle conversation.'
-        },
-        cron_session_read_only: {
-          title: 'Cette conversation appartient à une tâche planifiée',
-          body: 'Elle n’exécute que cette tâche ; votre message n’a donc pas été exécuté. Démarrez une nouvelle conversation pour l’envoyer.'
-        },
-        workspace_unavailable: {
-          title: 'Le dossier de cette conversation a disparu',
-          body: "Le dossier dans lequel travaille cette conversation a été déplacé ou supprimé ; votre message n'a donc pas été exécuté. Recréez le dossier ou utilisez « Déplacer vers un projet » pour lui en attribuer un autre, puis réessayez."
         },
         SESSION_NOT_OWNED: {
           title: 'Cette conversation est ouverte ailleurs',

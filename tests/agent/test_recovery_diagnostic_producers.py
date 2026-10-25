@@ -26,6 +26,10 @@ class Agent(StatusOutputMixin):
     def _has_stream_consumers(self):
         return False
 
+    def _try_strip_image_parts_from_tool_messages(self, messages, *, remember_model=True):
+        # Diagnostic producer tests use text-only messages.
+        return False
+
     def _compress_context(self, messages, *a, **k):
         return self.compressed, "system"
 

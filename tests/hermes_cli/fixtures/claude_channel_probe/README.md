@@ -65,6 +65,19 @@ ESN0407_WORK_DIR=/PRIVATE_EMPTY_WORK_DIR \
   /PRIVATE_TMP/launch.sh
 ```
 
+5. Send one envelope, at most 4 KiB, over the private Unix socket. It must bind
+   the exact Roots ticket, assignment, attempt, owner, revision and authority
+   event digest; its authority is `answer-only-no-changes`; TTL is at most 30
+   seconds. The envelope must also echo the one-time nonce and pre-registered
+   correlation ID. Ask for a fixed short marker and no action.
+6. Keep the socket open for the correlated reply. For cancellation, send the
+   cancel envelope or close the connection. The Channel cannot retract an event
+   already delivered to Claude; it invalidates the waiter and rejects a late
+   reply instead.
+7. Stop and remove the disposable Claude background session, then remove the
+   private temporary directory. Confirm that the socket, session and dependency
+   directory no longer exist.
+
 Do not add `--bare`. Installed Claude Code 2.1.306 documents that bare mode
 never reads OAuth or the keychain and accepts only `ANTHROPIC_API_KEY` or an API
 key helper. That conflicts with this probe's subscription-only requirement and
@@ -132,19 +145,6 @@ authentication work is recorded in ESN-0407 comment
 This fixture does **not** implement parallel authentication, mint a principal
 credential, load an operator credential, or prove the P-0593/ESN-0030 managed
 bootstrap. It only tests the separate reply-only Channel transport boundary.
-
-5. Send one envelope, at most 4 KiB, over the private Unix socket. It must bind
-   the exact Roots ticket, assignment, attempt, owner, revision and authority
-   event digest; its authority is `answer-only-no-changes`; TTL is at most 30
-   seconds. The envelope must also echo the one-time nonce and pre-registered
-   correlation ID. Ask for a fixed short marker and no action.
-6. Keep the socket open for the correlated reply. For cancellation, send the
-   cancel envelope or close the connection. The Channel cannot retract an event
-   already delivered to Claude; it invalidates the waiter and rejects a late
-   reply instead.
-7. Stop and remove the disposable Claude background session, then remove the
-   private temporary directory. Confirm that the socket, session and dependency
-   directory no longer exist.
 
 ## Permission and transport scope
 

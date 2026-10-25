@@ -61,3 +61,12 @@ def test_long_value_still_masks_verbatim():
     assert redact("pan=4111111111111111 done") == f"pan={MASK} done"
     register("hunter2secret")
     assert redact("hunter2secret used") == f"{MASK} used"
+
+
+@pytest.mark.parametrize("value", ["2024-10", "2024-10-14", "12:35:00"])
+@pytest.mark.parametrize("stamp", ["2024-10-14T12:35:00Z", "2024-10-14T12:35:00.123+02:00", "2024-10-14t12:35"])
+def test_registered_fragment_does_not_eat_an_iso_timestamp(value, stamp):
+    # `\b` fails between the date digits and the `T`, so the plain date/time spans miss an ISO
+    # date-time and a registered prefix (>= 6 chars, substring-matched) used to corrupt it.
+    register(value)
+    assert redact(f"created {stamp} ok") == f"created {stamp} ok"

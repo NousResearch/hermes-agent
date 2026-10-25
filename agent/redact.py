@@ -29,7 +29,11 @@ logger = logging.getLogger(__name__)
 # bounded per profile: a fill-heavy session evicts its oldest entries rather than growing forever.
 _VAULT_REDACTION_MAX_PER_PROFILE = 64
 _VAULT_REDACTION_SHORT_MAX = 6      # values shorter than this are matched with boundary anchors only
-_DATE_TOKEN_RE = re.compile(r"\b\d{1,4}[/-]\d{1,2}[/-]\d{1,4}\b|\b\d{1,2}:\d{2}(?::\d{2})?\b")
+# ISO date-time first: `\b` fails between the date digits and the `T`, so the plain spans miss it.
+_DATE_TOKEN_RE = re.compile(
+    r"\b\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[Zz]|[+-]\d{2}(?::?\d{2})?)?"
+    r"|\b\d{1,4}[/-]\d{1,2}[/-]\d{1,4}\b|\b\d{1,2}:\d{2}(?::\d{2})?\b"
+)
 _VAULT_REDACTION_VALUES: dict = {}  # profile home → ordered {value: None}
 _VAULT_REDACTION_LOCK = threading.Lock()
 

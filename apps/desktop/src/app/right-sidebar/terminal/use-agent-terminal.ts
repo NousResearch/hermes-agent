@@ -6,6 +6,7 @@ import { useEffect, useRef } from 'react'
 
 import { writeClipboardText } from '@/components/ui/copy-button'
 import { triggerHaptic } from '@/lib/haptics'
+import { isWindowsPlatform } from '@/lib/platform'
 import { useTheme } from '@/themes/context'
 
 import { registerAgentTerminalWriter } from './agent-terminal-stream'
@@ -108,9 +109,13 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
     })
 
     term.attachCustomKeyEventHandler(event => {
+      // Real platform flags rather than hardcoded falses: only 'copy' is acted
+      // on here (this mirror has no PTY, so every paste chord is inert either
+      // way), and a lie would bite whoever gives this handler a paste branch.
       const intent = terminalClipboardIntent(event, {
         hasSelection: Boolean(term.getSelection()),
-        isMac: isMacPlatform()
+        isMac: isMacPlatform(),
+        isWindows: isWindowsPlatform()
       })
 
       if (intent !== 'copy') {

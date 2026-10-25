@@ -18,6 +18,7 @@ import pytest
 import pm.environments as pm_environments
 from gateway.config import HomeChannel, Platform
 from tests.gateway.restart_test_helpers import make_restart_runner
+from datetime import UTC
 
 
 def _venv(path, version):
@@ -76,7 +77,7 @@ def test_generation_for_the_running_interpreter_is_activated(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_short_uptime_shutdown_suppresses_home_broadcast():
+async def test_short_uptime_shutdown_suppresses_home_broadcast(monkeypatch):
     """A process that stops seconds after boot is restart churn: no home-channel broadcast.
     One broken spawn loop sent ~975 of these in a night (2026-10-25)."""
     runner, adapter = make_restart_runner()
@@ -86,10 +87,57 @@ async def test_short_uptime_shutdown_suppresses_home_broadcast():
         name="Telegram Home",
     )
     runner._gateway_started_at = time.time() - 10.0
+    monkeypatch.setattr("gateway.status.crash_loop_alert_due", lambda now=None, home=None: False)
 
     await runner._notify_active_sessions_of_shutdown()
 
     assert adapter.sent_calls == []
+
+
+@pytest.mark.asyncio
+async def test_short_uptime_fires_one_crash_loop_alert(monkeypatch):
+    """Suppression must not become silence: one actionable alert per rate-limit slot."""
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-chat",
+        name="Telegram Home",
+    )
+    runner._gateway_started_at = time.time() - 10.0
+    monkeypatch.setattr("gateway.status.crash_loop_alert_due", lambda now=None, home=None: True)
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert len(adapter.sent_calls) == 1
+    chat_id, message, _metadata = adapter.sent_calls[0]
+    assert chat_id == "home-chat"
+    assert "crash-looping" in message
+
+
+def test_crash_loop_alert_slot_is_rate_limited(tmp_path):
+    """The marker file is the rate limit and must be claimed before the send."""
+    from gateway.status import crash_loop_alert_due
+
+    assert crash_loop_alert_due(home=tmp_path) is True
+    assert crash_loop_alert_due(home=tmp_path) is False
+    os.utime(tmp_path / "crash-loop-alert.json", (time.time() - 7200, time.time() - 7200))
+    assert crash_loop_alert_due(home=tmp_path) is True
+
+
+def test_stale_platform_entries_are_pruned():
+    """Entries nothing re-stamped in months are residue (the June-7 whatsapp record),
+    not state: drop them; keep fresh and unversioned records."""
+    from datetime import datetime, timedelta, timezone
+
+    from gateway.status import _prune_stale_platform_entries
+
+    old = {"state": "retrying", "updated_at": (datetime.now(UTC) - timedelta(days=120)).isoformat()}
+    fresh = {"state": "connected", "updated_at": (datetime.now(UTC) - timedelta(days=1)).isoformat()}
+    unversioned = {"state": "disabled"}
+
+    kept = _prune_stale_platform_entries({"whatsapp": old, "telegram": fresh, "ops:x": unversioned})
+
+    assert set(kept) == {"telegram", "ops:x"}
 
 
 @pytest.mark.asyncio

@@ -451,6 +451,16 @@ def _check_python_environment(should_fix: bool, f: Finding) -> None:
     # sys.path. Neither sys.prefix nor a stale PYTHONPATH proves activation.
     staged = _staged_venv_dir()
     if staged is not None:
+        # A committed generation targets ONE interpreter; a launcher running a different
+        # Python must not activate it (native modules fail at import). Surface the drift
+        # here before it ever surfaces as a crash loop.
+        from pm.environments import venv_python_version
+        gen_v = venv_python_version(staged)
+        if gen_v is not None and gen_v != sys.version_info[:2]:
+            check_warn(
+                f"dependency generation targets Python {gen_v[0]}.{gen_v[1]}, interpreter is "
+                f"{sys.version_info[0]}.{sys.version_info[1]}",
+                "run hermes pm repair so the committed generation matches the launching interpreter")
         from pm.environments import site_packages
 
         selected_site = site_packages(staged).resolve()

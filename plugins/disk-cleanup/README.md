@@ -53,6 +53,11 @@ Deletion rules (same as the original PR):
   `skins/`, `themes/`, `contributors/`, `profiles/`, `backups/`) and `kanban/`
   (task attachments/workspaces) are never tracked or swept, even for files
   named `test_*`/`tmp_*`
+- `$HERMES_HOME/scripts/` is durable source — cron `--script` jobs, webhook
+  route scripts and the WhatsApp bridge live there and are loaded by path — so
+  a `test_*`/`tmp_*` file an agent writes there is never tracked or swept,
+  whether or not a git repo tracks it. A stale `test` entry from an older
+  version is dropped by `quick()`, never deleted
 - A tracked *directory* under a protected top level (e.g. `cache/`, which holds
   terminal snapshots) is never removed; only its files age out. Stale entries
   are logged as `SKIPPED` and dropped

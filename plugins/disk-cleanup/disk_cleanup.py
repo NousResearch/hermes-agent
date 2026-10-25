@@ -111,7 +111,10 @@ _EMPTY_DIR_PROTECTED_TOP_LEVEL = frozenset({
     # Per-profile user trees bootstrapped by ``profiles.py::_PROFILE_DIRS`` (#112859).
     "workspace", "plans", "home",
     # Kanban owns its own lifecycle (workspaces GC'd at terminal state, attachments live with the task).
-    "kanban"})
+    "kanban",
+    # ``scripts/`` is durable source (cron/webhook/bridge scripts); an empty dir there is the
+    # operator's, not sweepable scratch.
+    "scripts"})
 
 _EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({
     ".git", "node_modules", "venv", ".venv", "site-packages", "__pycache__"})
@@ -130,7 +133,14 @@ _NEVER_TRACK_TOP_LEVEL = frozenset({
     "profiles", "backups", "optional-skills", "workspace", "plans", "home",
     # Kanban task attachments/workspaces have their own lifecycle; test_* staging files there are
     # not disposable (#114552).
-    "kanban"})
+    "kanban",
+    # ``scripts/`` is a durable, Hermes-owned source tree, not scratch: cron ``--script`` jobs,
+    # webhook route scripts and the WhatsApp bridge all live there and the scheduler/gateway load
+    # them by path. An agent that lands a regression suite next to them names it ``test_*.py``, so
+    # a name-only rule classified real source as disposable and ``quick()`` unlinked it at the end
+    # of the same session (age >= 0). Never track it; a stale ``test`` entry from before this rule
+    # is dropped by quick()'s re-validation instead of deleted.
+    "scripts"})
 
 
 def _is_protected_dir(p: Path) -> bool:
@@ -259,8 +269,9 @@ def dry_run() -> tuple[list[dict], list[dict]]:
     auto, prompt = [], []
     for item, p, age in _live_items(load_tracked(), datetime.now(UTC)):
         cat = item["category"]
-        # Stale cron-output entries and protected dirs are skipped by quick(); omit them here too.
-        if (cat == "cron-output" and guess_category(p) != "cron-output") or _is_protected_dir(p):
+        # Stale entries are skipped by quick(); omit them here too, so a preview never promises a
+        # deletion quick() refuses (a test_* under a now-protected tree, stale cron-output).
+        if (cat in _STALE_SKIP_NOTE and guess_category(p) != cat) or _is_protected_dir(p):
             continue
         if _is_auto_delete(cat, age):
             auto.append(item)

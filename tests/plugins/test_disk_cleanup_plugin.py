@@ -415,6 +415,76 @@ class TestGitWorktreeFilesNeverCleaned:
         assert dg.guess_category(nested) is None
 
 
+class TestScriptsTreeNeverCleaned:
+    """Regression: ``$HERMES_HOME/scripts`` is a durable, Hermes-owned source tree — cron
+    ``--script`` jobs, webhook route scripts and the WhatsApp bridge all live there and are
+    loaded by path. An agent landing a regression suite beside them writes ``test_*.py`` there,
+    so a name-only rule classified real source as scratch and ``quick()`` (``test`` deletes at
+    age >= 0) unlinked it at the end of the same session. Not a git repo, so the git-owned
+    carve-out never applied.
+    """
+
+    def test_scripts_files_are_never_classified_disposable(self, _isolate_env):
+        dg = _load_lib()
+        scripts = _isolate_env / "scripts"
+        scripts.mkdir()
+        for name in ("test_regression.py", "tmp_probe.sh", "worker.test.js"):
+            p = scripts / name
+            p.write_text("x")
+            assert dg.guess_category(p) is None, name
+        # Manual `/disk-cleanup track` is an explicit operator override and still records the
+        # path, but quick() re-validates every "test" entry through guess_category() — see
+        # test_stale_tracked_entry_under_scripts_is_dropped_not_deleted.
+        # Control: the same name at the HERMES_HOME root is still session scratch.
+        scratch = _isolate_env / "test_scratch.py"
+        scratch.write_text("x")
+        assert dg.guess_category(scratch) == "test"
+
+    def test_stale_tracked_entry_under_scripts_is_dropped_not_deleted(self, _isolate_env):
+        """A ``test`` entry written by a pre-fix version of this plugin is re-validated away:
+        quick() drops it, and dry_run() must not advertise a deletion quick() refuses."""
+        dg = _load_lib()
+        f = _isolate_env / "scripts" / "test_health_reboot_advisory.py"
+        f.parent.mkdir()
+        f.write_text("x")
+        dg.save_tracked([{"path": str(f), "category": "test",
+                          "timestamp": datetime.now(UTC).isoformat(), "size": 1}])
+        auto, prompt = dg.dry_run()
+        assert auto == [] and prompt == [], "dry_run must not offer protected source for deletion"
+        result = dg.quick()
+        assert f.exists(), "a test file under scripts/ must never be auto-deleted"
+        assert result["deleted"] == 0
+        assert dg.load_tracked() == [], "the stale entry is dropped from tracking, not kept"
+
+    def test_session_end_hook_leaves_scripts_file_alone(self, _isolate_env):
+        """End-to-end through the real hooks: the write is not tracked, so session end leaves it.
+        A root-level scratch file written in the same session is the control."""
+        pi = _load_plugin_init()
+        dg = _load_lib()
+        keep = _isolate_env / "scripts" / "test_session_suite.py"
+        keep.parent.mkdir()
+        scratch = _isolate_env / "tmp_scratch.py"
+        for p in (keep, scratch):
+            _run_tool(pi, "write_file", {"path": str(p), "content": "x"},
+                      create=lambda p=p: p.write_text("x"), task_id="t_sc", session_id="s_sc")
+        assert dg.guess_category(keep) is None
+        pi._on_session_end(session_id="s_sc", completed=True, interrupted=False)
+        assert keep.exists(), "session-end cleanup must not delete source under scripts/"
+        assert not scratch.exists(), "root-level scratch is still cleaned up"
+
+    def test_empty_dir_sweep_skips_scripts(self, _isolate_env):
+        dg = _load_lib()
+        keep = _isolate_env / "scripts" / "logs"
+        keep.mkdir(parents=True)
+        sweepable = _isolate_env / "pairing"
+        sweepable.mkdir()
+
+        dg._sweep_empty_dirs(_isolate_env)
+
+        assert keep.exists(), "an empty dir inside scripts/ is the operator's, not scratch"
+        assert not sweepable.exists(), "unprotected empty dirs are still swept"
+
+
 class TestStaleCronEntryMigration:
     """Regression tests for #37721 — stale cron-output entries in tracked.json."""
 

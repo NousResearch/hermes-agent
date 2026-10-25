@@ -83,6 +83,7 @@ class _FakeGateway:
     _active_api_run_count = gw_mod.GatewayShutdownMixin._active_api_run_count
     _active_api_worker_count = gw_mod.GatewayShutdownMixin._active_api_worker_count
     _active_deferred_agent_worker_count = gw_mod.GatewayShutdownMixin._active_deferred_agent_worker_count
+    _teardown_all_adapters = gw_mod.GatewayRunner._teardown_all_adapters
 
     def _update_runtime_status(self, *_a, **_kw):
         pass

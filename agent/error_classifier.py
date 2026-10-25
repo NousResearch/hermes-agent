@@ -1134,6 +1134,49 @@ def _status_5xx(c: _Ctx) -> Verdict:
     return _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_SERVER_ERROR
 
 
+def _has_503_billing_evidence(c: _Ctx) -> bool:
+    """A proxy's 503 wrapping an upstream credit/quota rejection."""
+    if any(pattern in c.msg for pattern in _BILLING_PATTERNS):
+        return True
+
+    def has_status(payload: Any) -> bool:
+        if isinstance(payload, dict):
+            return any(
+                str(value).strip() in {"402", "429"}
+                for key, value in payload.items()
+                if str(key).lower() in {"status", "status_code", "http_status", "code"}
+            ) or any(has_status(value) for value in payload.values())
+        if isinstance(payload, list):
+            return any(has_status(value) for value in payload)
+        return False
+
+    def visit(payload: Any) -> bool:
+        if isinstance(payload, dict):
+            fields = {str(key).lower(): value for key, value in payload.items()}
+            limit_source = str(fields.get("limit_source") or "").lower()
+            if any(marker in limit_source for marker in ("credit", "quota")):
+                return True
+            if has_status(fields.get("previous_errors")) or has_status(fields.get("upstream")):
+                return True
+            return any(visit(value) for value in payload.values())
+        if isinstance(payload, list):
+            return any(visit(value) for value in payload)
+        if isinstance(payload, str) and (inner := _json_dict(payload)) is not None:
+            return visit(inner)
+        return False
+
+    if visit(c.body):
+        return True
+    # Some proxies put prefixed/escaped JSON in ``error.message`` rather than a native object.
+    return bool(re.search(r"limit_source.{0,32}(?:credit|quota)", c.msg))
+
+
+def _status_503(c: _Ctx) -> Verdict:
+    if _has_503_billing_evidence(c):
+        return _V_BILLING
+    return _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED
+
+
 def _is_nous_route(c: _Ctx) -> bool:
     """The usage-window 402 code is Nous's: any other upstream sending it keeps main's text rules."""
     if (c.provider or "").strip().lower() == "nous":
@@ -1301,7 +1344,7 @@ _STATUS_HANDLERS: dict[int, Callable[[_Ctx], Verdict]] = {
     403: _status_403, 404: _status_404, 408: lambda c: _V_TIMEOUT, 413: lambda c: _V_PAYLOAD_TOO_LARGE,
     422: lambda c: _classify_image_tool_422(c),
     429: _status_429, 500: _status_5xx, 502: _status_5xx,
-    503: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,
+    503: _status_503,
     529: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,
 }
 

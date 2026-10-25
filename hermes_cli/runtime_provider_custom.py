@@ -298,18 +298,20 @@ def codex_model_provider_id(requested_provider: str) -> Optional[str]:
 # ── identity recovery (bare "custom" -> durable ``custom:<name>``) ─────────────────────────
 
 
-def _find_custom_identity(matches: Callable[[dict[str, Any]], bool]) -> Optional[str]:
-    """First entry in ``providers:`` then legacy ``custom_providers:`` where ``matches(entry)``
-    holds, as its canonical ``custom:<name>`` slug."""
+def _find_custom_identity(matches: Callable[[dict[str, Any]], bool],
+                          config: Optional[dict[str, Any]] = None) -> Optional[str]:
+    """First enabled entry in ``providers:`` then legacy ``custom_providers:`` where ``matches(entry)``
+    holds, as its canonical ``custom:<name>`` slug. *config* defaults to the active profile's."""
+    from hermes_cli.config import is_provider_enabled
     rp = _rp()
     try:
-        config = rp.load_config()
+        config = rp.load_config() if config is None else config
     except Exception:
         return None
     providers = config.get("providers")
     if isinstance(providers, dict):
         for ep_name, entry in providers.items():
-            if isinstance(entry, dict) and matches(entry):
+            if isinstance(entry, dict) and is_provider_enabled(entry) and matches(entry):
                 return custom_provider_slug(str(ep_name), str(ep_name))
     try:
         custom_providers = rp.get_compatible_custom_providers(config)
@@ -341,21 +343,33 @@ def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
     :func:`find_custom_provider_identity` for persistence paths where no base_url survived the
     round-trip (the session row always stores the model name)."""
     target = str(model or "").strip().lower()
-    if not target:
-        return None
+    return _find_custom_identity(lambda entry: _entry_serves_model(entry, target)) if target else None
 
-    def _entry_serves_model(entry: dict[str, Any]) -> bool:
-        if any(_model_id_matches(entry.get(key), target) for key in ("model", "default_model")):
-            return True
-        models = entry.get("models")
-        if isinstance(models, dict):
-            return any(str(mid).strip().lower() == target for mid in models)
-        if isinstance(models, list):
-            return any(_model_id_matches(item.get("id") or item.get("name") if isinstance(item, dict) else item, target)
-                       for item in models)
-        return False
 
-    return _find_custom_identity(_entry_serves_model)
+def _entry_serves_model(entry: dict[str, Any], target: str) -> bool:
+    if any(_model_id_matches(entry.get(key), target) for key in ("model", "default_model")):
+        return True
+    models = entry.get("models")
+    if isinstance(models, dict):
+        return any(str(mid).strip().lower() == target for mid in models)
+    if isinstance(models, list):
+        return any(_model_id_matches(item.get("id") or item.get("name") if isinstance(item, dict) else item, target)
+                   for item in models)
+    return False
+
+
+def routed_custom_identity(base_url: Optional[str], model: Optional[str],
+                           config: Optional[dict[str, Any]] = None) -> Optional[str]:
+    """The configured ``custom:<name>`` entry a bare ``custom`` pick (the billing class every named
+    endpoint reports) names: on *base_url*, the entry also serving *model* beats the first one there;
+    without a URL the model alone names it."""
+    url = _route_key(base_url)
+    target = str(model or "").strip().lower()
+
+    def on_url(entry: dict[str, Any]) -> bool:
+        return not url or _route_key(_entry_url(entry)) == url
+    return ((target and _find_custom_identity(lambda e: on_url(e) and _entry_serves_model(e, target), config))
+            or (url and _find_custom_identity(on_url, config)) or None)
 
 
 def _endpoint_identity(base_url: str) -> Optional[str]:
@@ -373,13 +387,14 @@ def _endpoint_identity(base_url: str) -> Optional[str]:
 
 
 def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider: Optional[str] = None,
-                              model: Optional[str] = None) -> Optional[str]:
+                              model: Optional[str] = None, requested: Optional[str] = None) -> Optional[str]:
     """Recover the durable menu identity for a bare custom provider. Match a configured
     endpoint first, then the ownership-checked managed server, then a configured model or
     provider. Every session persistence/restore path shares this lookup."""
     rp = _rp()
-    identity = _endpoint_identity(base_url) if base_url else None
-    if identity:
+    # The entry the live agent resolved (*requested*) while it still serves base_url, else its owner.
+    identity = session_provider_identity("custom", requested, base_url) if base_url else "custom"
+    if identity != "custom":
         return identity
     identity = find_custom_provider_identity_by_model(model) if model else None
     if identity:

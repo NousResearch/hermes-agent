@@ -284,7 +284,9 @@ from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
 from gateway.whatsapp_identity import normalize_whatsapp_mention_jid, to_whatsapp_jid
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
+    safe_url_for_log,
 )
+from gateway.platforms.base_log_safety import scrub_urls_in_text
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
 from utils import env_int
@@ -1103,24 +1105,25 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 # drops the WHOLE message (RuntimeStoreError: invalid_params), text included. Skip the
                 # entry and let the text through, the way Signal skips a failed attachment.
                 if msg_type not in {MessageType.PHOTO, MessageType.VOICE, MessageType.AUDIO}:
-                    print(f"[{self.name}] Skipping uncached remote {label or msg_type.name.lower()}: {url}", flush=True)
+                    # The URL itself is a capability: WhatsApp CDN links carry oe (expiry) + oh (HMAC).
+                    print(f"[{self.name}] Skipping uncached remote {label or msg_type.name.lower()}: {safe_url_for_log(str(url))}", flush=True)
                     continue
                 cacher, ext = (cache_image_from_url, ".jpg") if msg_type == MessageType.PHOTO else (cache_audio_from_url, ".ogg")
                 try:
                     url = await cacher(url, ext=ext)
                     print(f"[{self.name}] Cached user {label}: {url}", flush=True)
                 except Exception as e:
-                    print(f"[{self.name}] Failed to cache {label}: {e}", flush=True)
+                    # str(e) on an httpx error embeds the signed URL; log it scrubbed, not verbatim.
+                    print(f"[{self.name}] Failed to cache {label} ({type(e).__name__}): {scrub_urls_in_text(str(e))}", flush=True)
                     continue
                 accepted.append((url, mime))
-            elif label is not None and os.path.isabs(url):
-                if _is_allowed_bridge_path(url):
-                    accepted.append((url, mime))
-                    print(f"[{self.name}] Using bridge-cached {label}: {url}", flush=True)
-                else:
-                    print(f"[{self.name}] Rejected bridge {label} path outside cache dir: {url}", flush=True)
+            elif label is not None and os.path.isabs(url) and _is_allowed_bridge_path(url):
+                accepted.append((url, mime))
+                print(f"[{self.name}] Using bridge-cached {label}: {url}", flush=True)
             else:
-                accepted.append((url, "unknown"))
+                # Anything else (a relative path, an absolute path outside the cache dir) must not be
+                # read later by _inject_document_text: a sender-controlled string is not a file handle.
+                print(f"[{self.name}] Ignored {label or 'media'} entry that is not a cached file", flush=True)
         return [u for u, _ in accepted], [m for _, m in accepted]
 
     def _inject_document_text(self, cached_urls: list, body: str) -> tuple[str, list[bool]]:

@@ -55,6 +55,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes_async, cache_image_from_bytes_async, cache_image_from_url,
     cache_video_from_bytes, describe_proxy_error, env_proxy_for_redaction, ssrf_redirect_guard,
 )
+from gateway.platforms.base_log_safety import scrub_urls_in_text
 from gateway.platforms.base_log_safety import safe_url_for_log
 from gateway.platforms.event import MessageEvent
 from gateway.platforms._shared import (
@@ -757,6 +758,34 @@ class DingTalkAdapter(BasePlatformAdapter):
                  if (code := (getattr(obj, key, None) if hasattr(obj, key) else obj.get(key)))]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        self._enforce_media_budget(pairs)
+
+    def _enforce_media_budget(self, pairs) -> None:
+        """Drop attachments past the message's total media budget instead of losing the message.
+
+        Ingress rejects an over-budget message wholesale (``RuntimeStoreError: invalid_params``),
+        text included — the #141932 outcome. Cheaper to shed one attachment here.
+        """
+        import os
+
+        from gateway.platforms.base import get_inbound_media_max_bytes
+
+        budget = get_inbound_media_max_bytes()
+        total = 0
+        for obj, key, _kind in pairs:
+            path = getattr(obj, key, None) if hasattr(obj, key) else obj.get(key)
+            if not isinstance(path, str) or not path:
+                continue
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            if total + size > budget:
+                self._write_media_ref(obj, key, "")
+                logger.warning("[%s] Dropped inbound media: the message exceeds the %s-byte media budget",
+                               self.name, budget)
+                continue
+            total += size
 
     @staticmethod
     def _write_media_ref(obj: Any, key: str, value: str) -> None:
@@ -778,12 +807,16 @@ class DingTalkAdapter(BasePlatformAdapter):
             body = response.body if response else None
             url = getattr(body, "download_url", None) if body else None
             if not url:
-                return logger.warning("[%s] Failed to download media: empty response for code %s", self.name, code)
+                return logger.warning("[%s] Failed to download media: empty response", self.name)
             cached_path = await _cache_dingtalk_media(url, kind, _media_filename(obj))
             logger.info("[%s] Cached inbound %s media at %s", self.name, kind, cached_path)
             self._write_media_ref(obj, key, cached_path)
         except Exception as e:
-            logger.error("[%s] Error caching inbound media code %s: %s", self.name, code, e)
+            # The download code is single-use and str(e) can carry the signed download URL.
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            logger.error("[%s] Error caching inbound %s media (%s%s): %s", self.name, kind,
+                         type(e).__name__, f", HTTP {status}" if status else "",
+                         scrub_urls_in_text(str(e)))
             self._write_media_ref(obj, key, "")
 
     @staticmethod

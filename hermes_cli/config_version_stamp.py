@@ -100,8 +100,9 @@ def stamp_missing_config() -> bool:
     first stamp (:func:`note_first_stamp`) now, before callers trust that shortcut, or the browser those
     settings chose is lost. A home without them stays without a config.yaml. Returns whether one was written."""
     from hermes_cli.config import _secure_file, atomic_config_write, get_config_path, is_managed
+    from hermes_cli.config_backend import config_exists
     path = get_config_path()
-    if path.exists() or is_managed():
+    if config_exists(path) or is_managed():
         return False
     config = {"_config_version": _coerce_config_version(DEFAULT_CONFIG.get("_config_version", 1)) or 1}
     if not note_first_stamp(path.parent, {}, config):

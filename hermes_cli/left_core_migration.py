@@ -521,9 +521,10 @@ def _record_migration(home: Path, feature: LeftCoreFeature) -> None:
     under ``_left_core_scoped`` so a later run never undoes a choice the user made since
     (``hermes tools``). Raises when config.yaml cannot be read or written."""
     from hermes_cli.config import atomic_config_write, read_user_config_raw
+    from hermes_cli.config_backend import config_exists
     from hermes_cli.toolset_validation import parse_platform_toolsets_value
     path = home / "config.yaml"
-    created = not path.exists()
+    created = not config_exists(path)
     config = read_user_config_raw(path)
     installed = plugin_present(feature.plugin, home) and not _marked(config, _INSTALLED_KEY, feature)
     if _scope_kept(config, feature) and not installed:

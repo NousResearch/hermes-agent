@@ -6,12 +6,18 @@ serves the current profile, asks it for a one-use launch link over the control s
 only) and opens that link, so the credential appears in no argv, output or link. On Linux the gateway
 checks that the browser's connection is the user's; on Windows nothing checks it, and the link travels
 only in the browser launcher's command line, which other standard users cannot read. On macOS, the BSDs
-and WSL neither holds, so it prints the one-use link for the user to open instead.
+and illumos neither holds, so it writes the link into a page only the user can read and opens that page:
+the launcher's command line carries only the page's path. Where it cannot open a browser, and on WSL
+(whose Windows browser reaches the gateway through a relay any Windows account can use), it prints the
+link for the user to open instead.
 ``--status`` and ``--sign-out`` talk to a running gateway and never start one.
 """
 from __future__ import annotations
 
+import html
 import json
+import os
+import secrets
 import sys
 import time
 from pathlib import Path
@@ -86,6 +92,45 @@ def _open(url: str) -> bool:
         return bool(webbrowser.open(url))
     except (webbrowser.Error, OSError):
         return False
+
+
+# The page a private launch link reaches the browser in: it moves on to the link at once and names nothing
+# else, so the referrer and any script stay out of it.
+_LAUNCH_PAGE = ('<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer">'
+                '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'">'
+                '<meta http-equiv="refresh" content="0;url={url}"><title>Opening Hermes</title>'
+                '<p><a href="{url}">Open Hermes Webapp</a></p>\n')
+
+
+def _open_privately(target: Path, url: str) -> bool:
+    """Open *url*, a launch link nobody checks the redeemer of, in a browser without handing it to the
+    browser launcher, whose command line other local users can read: write it into a page in *target*'s
+    user-only ``webapp`` folder, readable by this OS user alone, and open that page. Pages of earlier
+    launches go first, so at most one is left, and its link stops working within the link's lifetime.
+    False, leaving no page, on WSL (the Windows browser cannot read the page as this user only), when the
+    folder or page cannot be kept user-only, or when no browser opens it."""
+    from gateway.webapp_listener import TOKEN_PATH, _close_to_other_users, _readable_by_other_users
+    from hermes_constants import is_wsl
+    if os.name == "nt" or is_wsl():
+        return False
+    folder = Path(target) / TOKEN_PATH.parent
+    try:
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        _close_to_other_users(folder)
+        if _readable_by_other_users(folder):
+            return False
+        for earlier in folder.glob("launch-*.html"):
+            earlier.unlink(missing_ok=True)
+        page = folder / f"launch-{secrets.token_hex(8)}.html"
+        fd = os.open(page, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(_LAUNCH_PAGE.format(url=html.escape(url, quote=True)))
+    except OSError:
+        return False
+    if _open(page.as_uri()):
+        return True
+    page.unlink(missing_ok=True)
+    return False
 
 
 def _profile_choice(home: Path, target: Path) -> dict:
@@ -295,8 +340,12 @@ def cmd_webapp(args) -> int:
             print(f"Open the Webapp and sign in with your dashboard account: {link['url']}")
         return 0
     if link.get("private"):
-        # macOS, the BSDs, WSL: nothing checks who redeems this one-use link, so it is for the user to
-        # open, never for a browser launcher whose arguments other processes can read.
+        # macOS, the BSDs, illumos, WSL: nothing checks who redeems this one-use link, so it never goes to a
+        # browser launcher, whose arguments other users' processes can read. A page only this user can read
+        # carries it to the browser; failing that, the user opens it by hand.
+        if not args.no_open and _open_privately(target, link["url"]):
+            print("Opened the Webapp in your browser.")
+            return 0
         print(f"Open this link in your browser within {link['expires_in_seconds']} seconds. It works "
               "once and signs the browser in as you, so keep it private:")
         print(f"  {link['url']}")

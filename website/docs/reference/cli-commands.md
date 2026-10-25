@@ -1939,9 +1939,11 @@ The link is valid for 60 seconds and works once; the browser exchanges it for th
 that tab. Only your own OS user can get a link: the gateway answers this command over its private
 control socket. On Linux the gateway checks that the browser's connection belongs to your OS user; on
 Windows it checks nothing, and the link travels only in the browser launcher's command line, which other
-standard users cannot read. On macOS, the BSDs and WSL neither holds, so the command prints the link
-for you to open and never passes it to a browser launcher. Until it is
-used it signs a browser in as you, so keep it private.
+standard users cannot read. On macOS, the BSDs and illumos neither holds, so the command never passes
+the link to a browser launcher: it writes it into a page only your OS user can read
+(`webapp/launch-*.html` in the gateway home) and opens that page. Where it cannot open a browser, and
+on WSL, it prints the link for you to open. Until it is used it signs a browser in as you, so keep it
+private.
 
 For a named profile served by the default gateway (`hermes -p work webapp`), the Webapp opens on that
 profile.

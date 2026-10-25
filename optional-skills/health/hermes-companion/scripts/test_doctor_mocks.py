@@ -37,42 +37,33 @@ class TestDoctorMocks(unittest.TestCase):
         self.tmpdir.cleanup()
 
     @patch("sys.platform", "linux")
-    def test_linux_environment_fails_with_clear_remedy(self) -> None:
-        """Verify non-macOS environments fail OS check with explicit guidance."""
+    def test_linux_environment_supports_direct_connection(self) -> None:
+        """Verify non-macOS environments pass OS check with Direct Connection support."""
         results = companion.check_environment_diagnostics(str(self.tmp_path))
         os_results = [r for r in results if r[1] == "Operating System"]
         self.assertEqual(len(os_results), 1)
         status, category, msg, remedy = os_results[0]
-        self.assertEqual(status, "FAIL")
-        self.assertIn("linux is not supported", msg)
-        self.assertIn("Run Hermes directly on macOS", remedy)
-
-        # Ensure doctor command returns error code 1
-        args = companion.build_parser().parse_args(["--doctor"])
-        captured = io.StringIO()
-        with patch("sys.stdout", captured):
-            rc = companion.command_doctor(args)
-        self.assertEqual(rc, 1)
-        self.assertIn("[FAIL]  Operating System", captured.getvalue())
+        self.assertEqual(status, "PASS")
+        self.assertIn("supports Direct Connection", msg)
 
         # Ensure install_launch_agent is refused on non-macOS
         self.assertFalse(companion.install_launch_agent())
 
-        # Ensure missing file explanation highlights macOS requirement
+        # Ensure missing file explanation highlights Direct Connection
         explanation = companion.missing_icloud_explanation([self.tmp_path], "location")
-        self.assertIn("Hermes Companion strictly requires macOS", explanation)
+        self.assertIn("Direct Connection", explanation)
 
     @patch("sys.platform", "darwin")
-    def test_docker_container_detected_and_refused(self) -> None:
-        """Verify Docker / containerized environments are caught even if host reports Darwin."""
+    def test_docker_container_detected_and_supports_direct_connection(self) -> None:
+        """Verify Docker / containerized environments report Direct Connection support."""
         with patch.dict(os.environ, {"CONTAINER": "docker"}):
             results = companion.check_environment_diagnostics(str(self.tmp_path))
             os_results = [r for r in results if r[1] == "Operating System"]
             self.assertEqual(len(os_results), 1)
             status, category, msg, remedy = os_results[0]
-            self.assertEqual(status, "FAIL")
+            self.assertEqual(status, "PASS")
             self.assertIn("Container", msg)
-            self.assertIn("Containers and Linux/Windows cannot access native iCloud Drive", remedy)
+            self.assertIn("supports Direct Connection", msg)
 
     @patch("sys.platform", "darwin")
     def test_missing_icloud_drive_root(self) -> None:

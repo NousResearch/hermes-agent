@@ -4,7 +4,7 @@ description: Companion iPhone app for place, health, and post inbox.
 version: 1.2.0
 author: danielmain
 license: MIT
-platforms: [macos]
+platforms: [macos, linux, windows]
 metadata:
   hermes:
     tags: [Location, Health, iPhone, iCloud, Apple]

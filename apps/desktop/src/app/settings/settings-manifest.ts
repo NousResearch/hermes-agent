@@ -86,6 +86,11 @@ export const SETTINGS_MANIFEST = {
       ['sidebar', 'sessions', 'compact', 'comfortable', 'density'],
       'sessionDensity'
     ),
+    sidebarAlphabetical: {
+      subpage: 'window-layout',
+      keywords: ['sidebar', 'alphabetical', 'alphabetically', 'sort', 'order', 'a-z', 'projects', 'pinned', 'move to project'],
+      copy: t => ({ label: t.sidebar.projects.alphabeticalTitle, description: t.sidebar.projects.alphabeticalDesc })
+    },
     tabStrip: appearanceSetting('window-layout', ['tabs', 'tab bar', 'strip'], 'tabStrip'),
     appActions: appearanceSetting(
       'window-layout',

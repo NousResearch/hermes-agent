@@ -81,5 +81,8 @@ export const enProjects: Translations['sidebar']['projects'] = {
   reorder: label => `Reorder ${label}`,
   toggle: (label, open) => `${open ? 'Show' : 'Hide'} ${label} sessions`,
   showAllCount: count => `Show all ${count} sessions`,
-  back: 'All projects'
+  back: 'All projects',
+  alphabeticalTitle: 'Sort Sidebar Alphabetically',
+  alphabeticalDesc:
+    'List projects, pinned chats and the Move to project menu A–Z instead of by activity or your own drag order. Drag-to-reorder is paused while this is on.'
 }

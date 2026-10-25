@@ -239,7 +239,7 @@ export function rememberMediaImageFailure(key: string): void {
 // Audio/video need a seekable source instead of a whole-file data URL. Keep
 // remote URLs untouched. The Webapp supplies an authenticated HTTP source;
 // Electron's media protocol reads local files or proxies remote gateways.
-export async function resolveMediaPlaybackSrc(path: string, owner?: OwnerScope): Promise<string> {
+export async function resolveMediaPlaybackSrc(path: string, owner?: OwnerScope, sessionId?: string): Promise<string> {
   if (isInlineMediaSrc(path)) {
     return path
   }
@@ -253,7 +253,9 @@ export async function resolveMediaPlaybackSrc(path: string, owner?: OwnerScope):
         connectionId: owner?.connectionId || conn?.connectionId,
         // The gateway OS owns file-URI conversion, including drive letters and UNC hosts.
         path,
-        profile: owner?.profile || conn?.profile
+        profile: owner?.profile || conn?.profile,
+        // A Docker agent's /workspace is its session's own sandbox.
+        ...(sessionId ? { sessionId } : {})
       })
     }
 

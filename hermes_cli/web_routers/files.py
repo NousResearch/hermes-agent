@@ -812,14 +812,19 @@ async def download_managed_file(request: Request, path: str):
 
 @router.get("/api/files/stream")
 @router.head("/api/files/stream")
-async def stream_managed_file(request: Request, path: str, profile: Optional[str] = None):
+async def stream_managed_file(
+    request: Request, path: str, profile: Optional[str] = None, session_id: Optional[str] = None,
+):
     """Stream managed audio/video inline with HTTP Range support — Electron's
     media pipeline may reject an attachment response as an ``<audio>``/
     ``<video>`` source. Browser media elements authenticate with a reusable
     path-bound ``?ticket=``; the session token is never accepted in this URL.
-    Same size cap, sensitive guard and MIME detection as download."""
-    if getattr(request.state, "file_ticket_authority", None) is None and path.lower().startswith("file:"):
-        path = str(await _fs_download_path(path, profile, None))
+    Same size cap, sensitive guard and MIME detection as download. A
+    ``session_id`` resolves ``/workspace`` in that session's own sandbox, as the
+    ticket route does."""
+    if getattr(request.state, "file_ticket_authority", None) is None and (
+            session_id is not None or path.lower().startswith("file:")):
+        path = str(await _fs_download_path(path, profile, session_id))
     return await _managed_file_response(request, path, content_disposition_type="inline", media_only=True)
 
 

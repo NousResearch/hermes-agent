@@ -31,11 +31,13 @@ from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, profile_root_entry
 from hermes_cli.sizefmt import format_bytes as _format_size
 
 from hermes_cli.backup_restore import (
+    _count_kanban_rows,
     _count_session_rows,
     _default_new_file_mode,
     _detect_prefix,
     _extract_member_atomically,
     _import_db_member,
+    _print_replaced_data_warnings,
     _restore_auth_json,
     _restore_destination_epoch,
     _safe_restore_db,
@@ -799,7 +801,7 @@ def run_import(args) -> Optional[int]:
         t0 = time.monotonic()
         from gateway.runtime_ownership import OwnershipConflict
         try:
-            restored, restored_external, errors, skipped_runtime, db_shrunk = _import_members(
+            restored, restored_external, errors, skipped_runtime, db_shrunk, kanban_shrunk = _import_members(
                 zf, members, prefix, hermes_root, file_count)
         except OwnershipConflict as exc:
             print(f"\nImport refused; no files restored: {exc}")
@@ -824,20 +826,7 @@ def run_import(args) -> Optional[int]:
             if len(errors) > 10:
                 print(f"  ... and {len(errors) - 10} more")
 
-        if db_shrunk:
-            # The backup predates work that is now overwritten. Say so: the
-            # reported incident was twelve sessions disappearing with nothing
-            # logged anywhere (issue #100960).
-            print("\n  ⚠ Session data replaced by older backup contents:")
-            for rel, before, after in db_shrunk:
-                print(
-                    f"    {rel}: {before[0]} session(s) / {before[1]} message(s)"
-                    f" -> {after[0]} / {after[1]}"
-                )
-            print(
-                "    Anything recorded after the backup was taken is not in it. "
-                f"{_snapshot_recovery_hint()}"
-            )
+        _print_replaced_data_warnings(db_shrunk, kanban_shrunk, _snapshot_recovery_hint)
 
         if skipped_runtime:
             print(
@@ -913,7 +902,9 @@ def run_import(args) -> Optional[int]:
 
 def _import_members(
     zf: zipfile.ZipFile, members: list[str], prefix: str, hermes_root: Path, file_count: int
-) -> tuple[int, int, list[str], list[str], list[tuple[str, tuple[int, int], tuple[int, int]]]]:
+) -> tuple[int, int, list[str], list[str],
+           list[tuple[str, tuple[int, int], tuple[int, int]]],
+           list[tuple[str, tuple[int, int], tuple[int, int]]]]:
     """Reserve all affected profiles before publishing even the first config file."""
     from gateway.runtime_ownership import exclusive_maintenance
     root_res = hermes_root.resolve()
@@ -963,8 +954,10 @@ def _import_external_member(
 
 def _import_members_exclusive(
     zf: zipfile.ZipFile, members: list[str], prefix: str, hermes_root: Path, file_count: int
-) -> tuple[int, int, list[str], list[str], list[tuple[str, tuple[int, int], tuple[int, int]]]]:
-    """Publish every member; return ``(restored, restored_external, errors, skipped_runtime, db_shrunk)``.
+) -> tuple[int, int, list[str], list[str],
+           list[tuple[str, tuple[int, int], tuple[int, int]]],
+           list[tuple[str, tuple[int, int], tuple[int, int]]]]:
+    """Publish every member; return ``(restored, restored_external, errors, skipped_runtime, db_shrunk, kanban_shrunk)``.
 
     ``db_shrunk`` holds ``(rel, live_counts, imported_counts)`` for every session database the
     import replaced with one holding fewer rows — allowed, but never silently (#100960).
@@ -974,6 +967,7 @@ def _import_members_exclusive(
     restored_external = 0
     skipped_runtime: list[str] = []
     db_shrunk: list[tuple[str, tuple[int, int], tuple[int, int]]] = []
+    kanban_shrunk: list[tuple[str, tuple[int, int], tuple[int, int]]] = []
     home_dir = Path.home().resolve()
     # Resolved once: every member is published via a temp file, and mkstemp
     # would otherwise create newly restored files as 0600.
@@ -1049,10 +1043,16 @@ def _import_members_exclusive(
                 # Count before the write: afterwards the rows this import
                 # drops are gone and there is nothing left to compare.
                 before = _count_session_rows(target)
+                kanban_before = None if before else _count_kanban_rows(target)
                 _import_db_member(zf, member, target, new_file_mode)
                 after = _count_session_rows(target)
                 if before and after and after[1] < before[1]:
                     db_shrunk.append((rel, before, after))
+                kanban_after = _count_kanban_rows(target) if kanban_before else None
+                if kanban_before and kanban_after and (
+                    kanban_after[0] < kanban_before[0] or kanban_after[1] < kanban_before[1]
+                ):
+                    kanban_shrunk.append((rel, kanban_before, kanban_after))
             else:
                 _extract_member_atomically(zf, member, target, new_file_mode)
             if target.name in _SECRET_FILE_NAMES:
@@ -1064,7 +1064,7 @@ def _import_members_exclusive(
         if restored % 500 == 0:
             print(f"  {restored}/{file_count} files ...")
 
-    return restored, restored_external, errors, skipped_runtime, db_shrunk
+    return restored, restored_external, errors, skipped_runtime, db_shrunk, kanban_shrunk
 
 
 def _revive_gateway_after_import(hermes_root: Path) -> None:

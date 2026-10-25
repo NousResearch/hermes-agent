@@ -606,3 +606,66 @@ class TestStaleStagingDirSweep(unittest.TestCase):
                 self.assertFalse(old.exists())
                 self.assertTrue(young.exists())
                 self.assertTrue(bystander.exists())
+
+
+class TestKernelMemoryCap(unittest.TestCase):
+    """A runaway cell must die alone instead of exhausting the host (#136403).
+
+    Before this cap, the only bound on a cell was the 300s wall clock — ample time to allocate
+    hundreds of GB. A single such cell consumed 180.9 GB, which killed the backend, the desktop
+    renderer and unrelated processes, and silently ended an unattended run.
+    """
+
+    def test_limit_resolution(self):
+        from tools.code_kernel import DEFAULT_KERNEL_MEMORY_LIMIT_MB, _kernel_memory_limit_bytes
+
+        with _kernel_config():
+            self.assertEqual(_kernel_memory_limit_bytes(), DEFAULT_KERNEL_MEMORY_LIMIT_MB * 1024 * 1024)
+        with _kernel_config(memory_limit_mb=256):
+            self.assertEqual(_kernel_memory_limit_bytes(), 256 * 1024 * 1024)
+        # 0 (or negative) is an explicit opt-out, not an accidental unbounded default.
+        with _kernel_config(memory_limit_mb=0):
+            self.assertIsNone(_kernel_memory_limit_bytes())
+        # An unparseable value must fall back to the safe default, never to "uncapped".
+        with _kernel_config(memory_limit_mb="not-a-number"):
+            self.assertEqual(_kernel_memory_limit_bytes(), DEFAULT_KERNEL_MEMORY_LIMIT_MB * 1024 * 1024)
+
+    @pytest.mark.platforms("windows")
+    def test_child_is_placed_in_a_memory_capped_job(self):
+        with _kernel_config(memory_limit_mb=512):
+            result = _run("print('spawned')")
+            self.assertEqual(result["status"], "success", result)
+            jobs = [kernel.job for kernel in _KERNELS.values()]
+        self.assertTrue(jobs, "no kernel registered")
+        self.assertTrue(all(job is not None for job in jobs),
+                        "kernel child was not placed in a memory-capped job object")
+
+    def test_runaway_cell_fails_and_the_host_survives(self):
+        """The incident's shape: allocation bounded only by the wall clock, not by a budget.
+
+        Deliberately bounded at 2 GiB rather than truly unbounded: the assertion must still hold if
+        the cap REGRESSES, and a regressed cap should not let this test itself exhaust a CI host.
+        2 GiB comfortably exceeds the 512 MiB budget under test.
+        """
+        with _kernel_config(memory_limit_mb=512):
+            runaway = _run(
+                "blob = []\n"
+                "for _ in range(32):\n"
+                "    blob.append(bytearray(64 * 1024 * 1024))\n"
+                "print('ALLOCATED_EVERYTHING')\n"
+            )
+        # The cell must not succeed ...
+        self.assertNotEqual(runaway["status"], "success", runaway)
+        self.assertNotIn("ALLOCATED_EVERYTHING", str(runaway.get("output", "")))
+        # ... and the host must still be usable. Every assertion below runs AFTER the blow-up, so a
+        # host that lost its memory (or its process) fails here.
+        survivor = _run("print('host survived')")
+        blob = json.dumps(survivor)
+        self.assertIn("host survived", blob, survivor)
+
+    def test_uncapped_kernel_still_runs(self):
+        """memory_limit_mb: 0 must remain a working opt-out for operators who need huge cells."""
+        with _kernel_config(memory_limit_mb=0):
+            result = _run("print('no cap')")
+        self.assertEqual(result["status"], "success", result)
+        self.assertIn("no cap", result["output"])

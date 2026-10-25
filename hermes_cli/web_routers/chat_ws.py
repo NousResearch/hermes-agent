@@ -451,10 +451,13 @@ async def console_ws(ws: WebSocket) -> None:
 
 async def _pty_fail(ws: WebSocket, exc: BaseException) -> None:
     """Tell the user why chat could not start, then close 1011 so the SPA renders
-    "Start new session". The raw exception goes to the server log only."""
+    "Start new session". The raw exception goes to the server log only, but the
+    same user-facing sentence goes into the close-frame reason so the dashboard
+    overlay can show it even when the terminal text was never rendered."""
     _log.warning("pty start failed: %s: %s", type(exc).__name__, exc)
-    await ws.send_text(f"\r\n\x1b[31m{chat_start_failure_message(exc)}\x1b[0m\r\n")
-    await ws.close(code=1011)
+    message = chat_start_failure_message(exc)
+    await ws.send_text(f"\r\n\x1b[31m{message}\x1b[0m\r\n")
+    await ws.close(code=1011, reason=_ws_close_reason(message))
 
 
 def _lease_holder_pid(session_id: Optional[str], *, registry_home: Optional[str] = None) -> Optional[int]:

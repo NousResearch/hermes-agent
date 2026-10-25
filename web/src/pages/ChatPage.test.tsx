@@ -516,6 +516,23 @@ describe("ChatPage", () => {
     expect(labels).toContain("Start new session");
   });
 
+  it("surfaces the server's 1011 close-frame reason in the start-failed overlay", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    const reason = "Chat could not start: Hermes needs Node.js to run the terminal chat.";
+    await act(async () => {
+      FakeWebSocket.instances[0].onclose?.({ code: 1011, reason, wasClean: true });
+    });
+
+    expect(container.textContent).toContain(reason);
+  });
+
   it("offers Start new session and Open logs when the agent process ended", async () => {
     const { default: ChatPage } = await import("./ChatPage");
     await render(

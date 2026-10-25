@@ -509,11 +509,18 @@ export class GatewayClient extends EventEmitter {
 
   hydrateSharedPrompts(snapshot: unknown) {
     if (!this.isCanonical) { return }
-    const result = snapshot as { session_id: string; authority_epoch: number; prompts?: Array<Record<string, unknown>> }
+    const result = snapshot as { session_id: string; authority_epoch: number; prompts?: Array<Record<string, unknown>>;
+      open_requests?: Array<{ id: string; method: string; params?: Record<string, unknown> }> | null }
 
     for (const prompt of result.prompts ?? []) {
       this.publishLocalEvent({ type: `${prompt.kind}.request`, session_id: result.session_id,
         payload: { ...prompt, execution_epoch: String(result.authority_epoch) } } as unknown as AnyGatewayEvent)
+    }
+
+    // The channel delivered these before the reply resolved, and the caller's reset has since cleared
+    // them (a batch clarify form): deliver again under the same id, before held frames are released.
+    for (const req of result.open_requests ?? []) {
+      this.channel.deliverRequest(req.id, req.method, req.params ?? {}, true)
     }
   }
 

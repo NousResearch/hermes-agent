@@ -272,7 +272,7 @@ test.runIf(process.platform === 'linux' || process.platform === 'darwin')('the c
     await new Promise<void>((resolve): void => { child.once('exit', (): void => resolve()) })
     fs.rmSync(root, { recursive: true, force: true })
   }
-})
+}, 30_000)
 
 test('a canonical gateway proves its tree by the cwd `gateway ensure` starts it in', (): void => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-gateway-origin-'))

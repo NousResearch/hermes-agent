@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, statSync, utimesSync } from 'node:fs'
+import { copyFileSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, realpathSync, rmSync, symlinkSync, statSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
@@ -14,7 +14,9 @@ const require = createRequire(import.meta.url)
 const temporary = []
 afterEach(() => { for (const dir of temporary.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 function fixture() {
-  const dir = mkdtempSync(path.join(tmpdir(), 'product builders '))
+  // realpath: on macOS tmpdir() is /var/... but the code under test resolves
+  // symlinks, yielding /private/var/...; normalize so comparisons match.
+  const dir = realpathSync(mkdtempSync(path.join(tmpdir(), 'product builders ')))
   temporary.push(dir)
   return dir
 }

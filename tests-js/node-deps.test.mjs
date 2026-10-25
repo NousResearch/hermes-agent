@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, realpathSync, symlinkSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -34,7 +34,9 @@ function fixture() {
 
 test.each(['npm', 'npm-fixture'])('prepared npm discovers lib/%s without npm_execpath', (directory) => {
   const [node, installedCli] = npmCommand()
-  const root = mkdtempSync(join(tmpdir(), 'npm layout with spaces-'))
+  // realpath: on macOS tmpdir() is /var/... but symlink resolution yields
+  // /private/var/...; normalize so path comparisons match the code under test.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'npm layout with spaces-')))
   roots.push(root)
   mkdirSync(join(root, 'bin'))
   mkdirSync(join(root, 'lib'))

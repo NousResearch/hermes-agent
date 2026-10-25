@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -41,6 +41,45 @@ it('preserves the unsent draft when only the room display name changes', async (
   expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('')
 })
 
+it.each([false, true])('does not describe an ordinary send as restored (lost ACK: %s)', async lostAck => {
+  const binding = { connectionId: 'remote', profile: 'team', roomId: 'ordinary' }
+  let resolveSend!: (value: unknown) => void
+  let rejectSend!: (reason: Error) => void
+  const sending = new Promise<unknown>((resolve, reject) => { resolveSend = resolve; rejectSend = reject })
+  request.mockImplementation(async (_route, method) => method === 'groups.state'
+    ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] }
+      : method === 'groups.send' ? sending : {})
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Hello' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.send')).toBe(true))
+  const entry = await readCanonicalGroupSend(binding)
+  expect(entry?.params.payload.text).toBe('Hello')
+  expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(true)
+  expect(screen.queryByRole('status')).toBeNull()
+
+  await act(async () => {
+    if (lostAck) {rejectSend(new Error('lost ACK'))} else {resolveSend({})}
+  })
+
+  if (lostAck) {
+    await screen.findByText('lost ACK')
+    expect(screen.queryByRole('status')).toBeNull()
+    expect(await readCanonicalGroupSend(binding)).toEqual(entry)
+    request.mockImplementation(async (_route, method) => method === 'groups.state'
+      ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] } : {})
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(async () => expect(await readCanonicalGroupSend(binding)).toBeUndefined())
+    expect(request.mock.calls.filter(call => call[1] === 'groups.send').map(call => call[2]))
+      .toEqual([{ ...entry!.params, profile: 'team' }, { ...entry!.params, profile: 'team' }])
+  }
+
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+  expect(await readCanonicalGroupSend(binding)).toBeUndefined()
+  expect(screen.queryByRole('status')).toBeNull()
+})
+
 it('restores a frozen send after remount and retires only its acknowledged exact retry', async () => {
   const binding = { connectionId: 'remote', profile: 'team', roomId: 'restore' }
   const entry = await prepareCanonicalGroupSend(binding, { text: 'Original', attachments: [{ path: '/owner/image.png', mime_type: 'image/png' }] })
@@ -55,6 +94,7 @@ it('restores a frozen send after remount and retires only its acknowledged exact
   })
   const first = render(<CanonicalGroupWorkspace binding={binding} />)
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Original'))
+  expect(screen.getByRole('status').textContent).toContain('An unconfirmed send was restored')
   expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(true)
   expect(request.mock.calls.some(c => c[1] === 'groups.send')).toBe(false)
   fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
@@ -68,10 +108,22 @@ it('restores a frozen send after remount and retires only its acknowledged exact
   await waitFor(() => expect((screen.getByRole('button', { name: 'Retry' }) as HTMLButtonElement).disabled).toBe(false))
   fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
   await waitFor(async () => expect(await readCanonicalGroupSend(binding)).toBeUndefined())
+  expect(screen.queryByRole('status')).toBeNull()
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Next message' } })
+  let resolveNextSend!: (value: unknown) => void
+  const nextSend = new Promise<unknown>(resolve => { resolveNextSend = resolve })
+  request.mockImplementation(async (_route, method) => method === 'groups.state'
+    ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] }
+      : method === 'groups.send' ? nextSend : {})
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(false))
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(request.mock.calls.filter(c => c[1] === 'groups.send')).toHaveLength(3))
+  expect(screen.queryByRole('status')).toBeNull()
+  await act(async () => { resolveNextSend({}) })
   const sends = request.mock.calls.filter(c => c[1] === 'groups.send')
-  expect(sends).toHaveLength(2)
+  expect(sends).toHaveLength(3)
 
-  for (const call of sends) {
+  for (const call of sends.slice(0, 2)) {
     expect(call[0]).toMatchObject({ connectionId: binding.connectionId, targetProfile: binding.profile })
     expect(call[2]).toEqual({ ...entry.params, profile: binding.profile })
   }

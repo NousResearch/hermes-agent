@@ -493,6 +493,34 @@ class TestInboundMediaCaching:
             == "/tmp/hermes/cache/docs/dingtalk.pdf"
         assert document_cache.await_args.args[1].endswith(".pdf")
 
+    @pytest.mark.asyncio
+    async def test_spoofed_image_content_type_is_rejected(self, monkeypatch):
+        """A CDN that answers ``image/png`` for HTML bytes must be refused, not cached: the shared
+        image helper checks magic bytes, so a lying declared type cannot smuggle an HTML page in
+        as a ``.jpg``."""
+        import plugins.platforms.dingtalk.adapter as dt
+        monkeypatch.setattr(dt, "_fetch_media_bytes",
+                            AsyncMock(return_value=(b"<!DOCTYPE html><html>login</html>", "image/png")))
+        with pytest.raises(ValueError, match="Refusing to cache non-image"):
+            await dt._cache_dingtalk_media("https://oss.example/dl?sig=4", "file", "photo.png")
+
+    @pytest.mark.asyncio
+    async def test_spoofed_image_content_type_clears_entry(self, monkeypatch, caplog):
+        """End to end at the adapter: the refusal is caught, the entry is cleared and the error is
+        logged, so the message degrades to its text instead of carrying an HTML file as a photo."""
+        import plugins.platforms.dingtalk.adapter as dt
+        adapter = self._adapter()
+        response = SimpleNamespace(body=SimpleNamespace(download_url="https://oss.example/dl?sig=5"))
+        monkeypatch.setattr(dt.DingTalkAdapter, "_sdk_call", AsyncMock(return_value=response))
+        monkeypatch.setattr(dt, "_fetch_media_bytes",
+                            AsyncMock(return_value=(b"<script>alert(1)</script>", "image/png")))
+        ext_content = {"downloadCode": "code-5", "fileName": "photo.png"}
+
+        await adapter._fetch_download_url("code-5", "robot", "token", ext_content, "downloadCode", "file")
+
+        assert ext_content["downloadCode"] == ""
+        assert "Refusing to cache non-image" in caplog.text
+
     def test_collect_download_codes_reads_legacy_rich_text_shape(self):
         """``_rich_list`` accepts the legacy ``rich_text`` shape too, so those items are
         resolved instead of reaching media_urls as bare codes."""

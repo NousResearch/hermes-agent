@@ -110,6 +110,7 @@ def run_tool_round(
     assistant_msg, duplicate_previous_interim = stage_tool_call_message(
         agent, assistant_message=assistant_message, finish_reason=finish_reason, messages=messages
     )
+    withhold_held_commentary(agent, assistant_msg)
     append_message(messages, assistant_msg)
 
     # Mixed batch: error-result invalid calls and drop them from execution.
@@ -233,6 +234,15 @@ def run_tool_round(
     return _verdict("continue")
 
 
+def withhold_held_commentary(agent: Any, assistant_msg: dict[str, Any]) -> None:
+    """A held turn never shows commentary live (``_deliver_interim``), and no history load may
+    show it later: type the row ``display_kind="hidden"`` before its first flush. The key never
+    reaches the wire, so the model's context (and its cached prefix) is unchanged."""
+    if (getattr(agent, "_hold_stream", False) and not assistant_msg.get("display_kind")
+            and agent._interim_assistant_visible_text(assistant_msg)):
+        assistant_msg["display_kind"] = "hidden"
+
+
 def stage_tool_call_message(
     agent: Any, *, assistant_message: Any, finish_reason: Any, messages: Any
 ) -> tuple[dict[str, Any], bool]:
@@ -281,7 +291,7 @@ def stage_tool_call_message(
         agent._last_content_tools_all_housekeeping = _line_is_reply
         if _all_housekeeping and agent._has_stream_consumers():
             agent._mute_post_response = True
-        elif agent._should_emit_quiet_tool_messages():
+        elif agent._should_emit_quiet_tool_messages() and not getattr(agent, "_hold_stream", False):
             clean = agent._strip_think_blocks(turn_content).strip()
             if clean:
                 agent._vprint(f"  ┊ 💬 {clean}")

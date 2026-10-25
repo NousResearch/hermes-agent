@@ -515,20 +515,42 @@ def apply_llm_output_transform(
     if platform is None:
         platform = getattr(agent, "platform", None) or ""
     transformed, pre_transform = False, None
-    # First hook to return a string wins; None/empty leaves the text unchanged.
-    for _hook_result in _invoke_hook_safely(
-        "transform_llm_output", logger,
-        response_text=final_response,
-        session_id=agent.session_id or "",
-        model=agent.model,
-        platform=platform,
-        turn_id=turn_id,  # per-turn identity for the hook callback gate
-    ):
-        if isinstance(_hook_result, str) and _hook_result:
-            pre_transform, final_response, transformed = final_response, _hook_result, True
-            break
+    payload = dict(response_text=final_response, session_id=agent.session_id or "", model=agent.model,
+                   platform=platform, turn_id=turn_id)  # turn_id: per-turn identity for the hook callback gate
+    held = getattr(agent, "_held_transforms", None) if getattr(agent, "_hold_stream", False) else None
+    if held:
+        rewrite = _run_held_transforms(held, payload, logger)
+    else:
+        # First hook to return a string wins; None/empty leaves the text unchanged.
+        rewrite = next((r for r in _invoke_hook_safely("transform_llm_output", logger, **payload)
+                        if isinstance(r, str) and r), None)
+    if rewrite:
+        pre_transform, final_response, transformed = final_response, rewrite, True
     agent._llm_output_transform = (turn_id, transformed, pre_transform)
     return final_response, transformed, pre_transform
+
+
+HELD_TRANSFORM_FAILED_REPLY = "This reply was withheld: the plugin that rewrites replies in this session failed."
+
+
+def _run_held_transforms(callbacks, payload: dict, logger) -> Optional[str]:
+    """A held turn runs the transforms captured at its start (``held_stream_transforms``), not the live
+    registry a mid-turn reload empties. When none rewrote and one raised or timed out, the user gets a
+    fixed notice, never the text the plugin had to see first."""
+    from hermes_cli.plugins import get_plugin_manager
+
+    try:
+        rewrite, failed = get_plugin_manager().run_held_transforms(callbacks, **payload)
+    except Exception:  # fail closed: whatever broke dispatch, the original stays withheld
+        logger.warning("held transform_llm_output dispatch failed", exc_info=True)
+        rewrite, failed = None, True
+    return HELD_TRANSFORM_FAILED_REPLY if failed else rewrite
+
+
+def public_pre_transform(agent, pre_transform: Optional[Any]) -> Optional[Any]:
+    """``pre_transform_response`` for a turn result: a held turn's original never leaves the agent
+    (receipts, replay-gap recovery, post-stream suffix painting all see only the rewrite)."""
+    return None if getattr(agent, "_hold_stream", False) else pre_transform
 
 
 def finalize_turn(
@@ -704,7 +726,7 @@ def finalize_turn(
         "partial": False,  # True only when stopped due to invalid tool calls
         "interrupted": interrupted,
         "response_transformed": _response_transformed,
-        "pre_transform_response": _pre_transform_response,
+        "pre_transform_response": public_pre_transform(agent, _pre_transform_response),
         "response_previewed": getattr(agent, "_response_was_previewed", False),
         # The final is byte-for-byte a response this turn already delivered (no footer or
         # explanation appended since): it carries no new text for the client to paint.

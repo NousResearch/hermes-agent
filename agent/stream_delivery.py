@@ -62,8 +62,9 @@ class StreamDeliveryMixin:
         self._stream_reasoning_hooks_enabled = None
 
         def deliver(tail: str) -> None:
-            if tail:
-                self._deliver_to_stream_callbacks(tail)
+            # Recorded only once shown (as ``_fire_stream_delta``): a held tail must not become an
+            # interrupted turn's untransformed partial final.
+            if tail and self._deliver_to_stream_callbacks(tail):
                 self._record_streamed_assistant_text(tail)
 
         # Flush any benign partial-tag tail held by the think scrubber first (#17924): an innocent '<' at

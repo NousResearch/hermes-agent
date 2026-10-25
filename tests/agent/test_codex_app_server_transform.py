@@ -27,6 +27,7 @@ def _codex_agent(final_text: str):
     agent.valid_tool_names = set()
     agent._session_db = None
     agent._llm_output_transform = None
+    agent._hold_stream, agent._held_transforms = False, ()  # turn-start state; the hold has its own tests
     agent.session_id = "sess-codex"
     agent.platform = "cli"
     return agent

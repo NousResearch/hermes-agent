@@ -203,17 +203,19 @@ class Charge:
             yield
 
     def cost_sentence(self) -> str:
+        from agent.i18n import t
         unit, cost = self.policy.unit, self.cost
-        text = (f"Costs about {_qty(cost.high, unit)}" if cost.low == cost.high
-                else f"Costs {_fmt(cost.low)}-{_qty(cost.high, unit)}")
+        text = (t("approval.elicitation.mcp_cost_about", amount=_qty(cost.high, unit)) if cost.low == cost.high
+                else t("approval.elicitation.mcp_cost_range", low=_fmt(cost.low), high=_qty(cost.high, unit)))
         return f"{text} ({cost.note})." if cost.note else f"{text}."
 
     def spend_sentence(self, spent: float) -> str:
+        from agent.i18n import t
         unit, limit = self.policy.unit, self.policy.limit
         if spent > 0:
-            cap = f" (limit {_fmt(limit)})" if limit > 0 else ""
-            return f"This chat has used about {_qty(spent, unit)} on '{self.server}'{cap}."
-        return f"Spend limit for this chat on '{self.server}': {_qty(limit, unit)}." if limit > 0 else ""
+            cap = t("approval.elicitation.mcp_limit_suffix", limit=_fmt(limit)) if limit > 0 else ""
+            return t("approval.elicitation.mcp_spent", amount=_qty(spent, unit), server=self.server, cap=cap)
+        return t("approval.elicitation.mcp_spend_limit", server=self.server, amount=_qty(limit, unit)) if limit > 0 else ""
 
     def lines(self, spent: float) -> list[str]:
         return [s for s in (self.cost_sentence(), self.spend_sentence(spent)) if s]

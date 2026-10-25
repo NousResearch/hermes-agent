@@ -108,6 +108,10 @@ export const zhHantAssistant = {
         workspace_unavailable: {
           title: '此聊天的資料夾已不存在',
           body: '此聊天使用的資料夾已被移動或刪除，因此你的訊息未被執行。請重新建立該資料夾，或使用「Move to project」為聊天指定其他資料夾，然後重試。'
+        },
+        launch_credentials_unavailable: {
+          title: '此聊天的 API 金鑰已變更',
+          body: '此聊天開始時使用的 API 金鑰後來已被變更或刪除，因此你的訊息未送出。開啟中的聊天不會自行切換到其他金鑰。請使用「開始新工作階段」以使用目前的金鑰。'
         }
       },
       errorLayers: {

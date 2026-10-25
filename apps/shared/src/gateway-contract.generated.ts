@@ -2826,6 +2826,13 @@ export interface FileAttachParams {
   path?: string | null
   data_url?: string | null
   name?: string | null
+  staged_upload?: StagedFileUpload | null
+}
+/** Source identity returned by the browser upload route, checked against the live profile. */
+export interface StagedFileUpload {
+  install_id: string
+  path: string
+  profile_home: string
 }
 export interface FileAttachResult {
   attached: boolean
@@ -4443,6 +4450,7 @@ export interface AgentPluginRow {
   update_target?: string | null
   pinned_sha?: string | null
   settings_schema?: PluginSettingField[] | null
+  tools?: string[]
 }
 export interface PluginServerRow {
   name: string

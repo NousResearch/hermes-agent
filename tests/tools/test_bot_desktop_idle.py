@@ -44,7 +44,7 @@ def test_idle_screen_is_stopped_but_a_used_or_held_one_is_not(tmp_path, monkeypa
 
     _age(sd / "activity", 1200)
     monkeypatch.setattr(lease, "get", lambda profile_key=None: lease.Lease(holder=lease.HUMAN, viewer_id="v1"))
-    assert runtime.stop_if_idle() is False and stops == [], "a human mid-login is never timed out"
+    assert runtime.stop_if_idle() is False and stops == [], "a human mid-login is not timed out within four windows"
 
     monkeypatch.setattr(lease, "get", lambda profile_key=None: lease.Lease(holder=lease.AGENT))
     assert runtime.stop_if_idle() is True and stops == [True]

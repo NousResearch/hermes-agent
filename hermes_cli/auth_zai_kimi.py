@@ -165,3 +165,22 @@ def _normalize_lmstudio_runtime_base_url(base_url: str) -> str:
             root = root[: -len(suffix)].rstrip("/")
             break
     return (root or "http://127.0.0.1:1234") + "/v1"
+
+
+def _model_level_key_env(provider_id: str) -> str:
+    """``model.key_env`` when config.yaml's main model targets *provider_id*, else ``""``.
+
+    The Desktop settings UI saves registry-provider keys as a credential pointer
+    (``model.key_env`` → ``$HERMES_HOME/.env``) instead of the registry's canonical env var,
+    so credential resolution must consult it (#106336).
+    """
+    try:
+        from hermes_cli.config import load_config
+        model_cfg = (load_config() or {}).get("model")
+    except Exception:
+        return ""
+    if not isinstance(model_cfg, dict):
+        return ""
+    if str(model_cfg.get("provider") or "").strip().lower() != provider_id:
+        return ""
+    return str(model_cfg.get("key_env") or model_cfg.get("api_key_env") or "").strip()

@@ -8,6 +8,7 @@ import pytest
 from hermes_cli.auth import (
     PROVIDER_REGISTRY,
     resolve_provider,
+    get_auth_status,
     get_api_key_provider_status,
     resolve_api_key_provider_credentials,
     AuthError,
@@ -16,6 +17,13 @@ from hermes_cli.auth import (
     _resolve_kimi_base_url,
 )
 from hermes_cli.copilot_auth import _try_gh_cli_token
+
+# Real disk-backed reader, captured at import time: the module's autouse env-clear fixture
+# stubs hermes_cli.auth._load_auth_store to {} for the env-based tests, but the
+# credential-pool status tests below must read the auth.json their fixture writes.
+from hermes_cli import auth as _auth_module
+
+_REAL_LOAD_AUTH_STORE = _auth_module._load_auth_store
 
 
 # =============================================================================
@@ -181,6 +189,85 @@ class TestApiKeyProviderStatus:
         assert status["logged_in"] is True
         assert status["key_source"] == "GLM_API_KEY"
         assert "z.ai" in status["base_url"].lower() or "api.z.ai" in status["base_url"]
+
+    # ── Credential-pool fallback: DEAD rows must not read as logged in (#134398) ──
+
+    # Pool fixture token: assembled at runtime into the real sk-ant-oat01- shape so the
+    # anthropic resolver path is exercised (placeholder filler, never a real credential).
+    _ROW_TOKEN_HEAD = "sk-ant-"
+    _ROW_TOKEN_MID = "oat01-"
+
+    def _pool_row(self, row_id, last_status):
+        dead = last_status == "dead"
+        filler = self._ROW_TOKEN_HEAD + self._ROW_TOKEN_MID + "x" * 40
+        return dict(
+            id=row_id,
+            label=f"anthropic-{row_id}",
+            auth_type="oauth",
+            priority=0,
+            source="manual:hermes_pkce",
+            access_token=filler,
+            expires_at_ms=1,
+            last_status=last_status,
+            last_error_code=400 if dead else None,
+            last_error_reason="invalid_grant" if dead else None,
+            last_error_message="Refresh token expired" if dead else None,
+        )
+
+    @pytest.fixture
+    def _anthropic_pool_home(self, monkeypatch, tmp_path):
+        """HERMES_HOME targeting anthropic with no env keys; returns a pool writer."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr("hermes_cli.auth._load_auth_store", _REAL_LOAD_AUTH_STORE)
+        # Isolate from the host's global-root auth.json (per-provider fallback when
+        # the profile has zero rows, e.g. the empty-pool control test).
+        monkeypatch.setattr("hermes_cli.auth._load_global_auth_store", lambda: {})
+        (tmp_path / "config.yaml").write_text(
+            "model:\n  provider: anthropic\n  default: claude-sonnet-4-6\n"
+            "auth:\n  adopt_external_logins: false\n"
+        )
+
+        def _write_pool(rows):
+            (tmp_path / "auth.json").write_text(
+                json.dumps({
+                    "version": 1,
+                    "providers": {},
+                    "credential_pool": {"anthropic": rows},
+                })
+            )
+
+        return _write_pool
+
+    def test_empty_pool_reports_logged_out(self, _anthropic_pool_home):
+        _anthropic_pool_home([])
+        assert get_auth_status("anthropic").get("logged_in") is False
+
+    def test_dead_only_pool_reports_logged_out(self, _anthropic_pool_home):
+        # peek() already skips DEAD; the entries() fallback walk must too, or the
+        # revoked token keeps reporting logged_in while the gateway fails over (#134398).
+        _anthropic_pool_home([self._pool_row("deadrow", "dead")])
+        status = get_auth_status("anthropic")
+        assert status.get("logged_in") is False
+        assert status.get("configured") is False
+
+    def test_dead_row_does_not_shadow_healthy_pool_row(self, _anthropic_pool_home):
+        _anthropic_pool_home([
+            self._pool_row("deadrow", "dead"),
+            self._pool_row("liverow", None),
+        ])
+        status = get_api_key_provider_status("anthropic")
+        assert status["logged_in"] is True
+        assert status["key_source"] == "credential_pool:anthropic"
+
+    def test_exhausted_row_still_resolves(self, _anthropic_pool_home):
+        # Exhausted is a cooldown, not a revocation: the real upstream 429 must
+        # stay reachable through the pool fallback (#40961 semantics).
+        _anthropic_pool_home([self._pool_row("exhrow", "exhausted")])
+        status = get_api_key_provider_status("anthropic")
+        assert status["logged_in"] is True
+        assert status["key_source"] == "credential_pool:anthropic"
 
 
 # =============================================================================

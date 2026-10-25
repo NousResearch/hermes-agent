@@ -507,19 +507,13 @@ def capabilities() -> dict[str, dict[str, Any]]:
                     "reason": "a separate app-server client cannot become a second owner of an app-owned live thread",
                 },
                 "hermes_managed_app_server_thread": {
-                    "provider_native": True,
-                    "protocol_candidate": True,
+                    "verified": False,
                     "production_adapter": False,
                     "existing_app_owned_worker": False,
                     "acceptance_evidence": False,
-                    "delivery": "thread/queue/add with clientUserMessageId",
-                    "reply": "app-server item and turn events",
-                    "caller_stop_waiting": True,
-                    "late_reply_invalidation": True,
-                    "delivery_retraction_after_dispatch": False,
                     "reason": (
-                        "one bounded observation was not retained as a raw provider receipt; "
-                        "installed generated schemas omit the experimental queue method"
+                        "installed generated schemas omit the observed experimental queue method, "
+                        "and no raw provider receipt was retained"
                     ),
                 },
             },

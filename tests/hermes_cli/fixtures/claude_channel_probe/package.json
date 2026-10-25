@@ -3,6 +3,10 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "license": "UNLICENSED",
+  "scripts": {
+    "test": "node --test contract.test.mjs"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2"
   }

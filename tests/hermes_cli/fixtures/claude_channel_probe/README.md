@@ -9,6 +9,14 @@ The fixture pins `@modelcontextprotocol/sdk` 1.32.2 from the npm registry:
 
 - source: `https://registry.npmjs.org/@modelcontextprotocol/sdk/-/sdk-1.32.2.tgz`
 - integrity: `sha512-SWsVtH/0vULSQStoZ6xxH2K09Li8fXYTMC64ZeogCdpZ3XSi1eCPOByV1OpuJxuI3OcmHhosDWYyii07tpPsLw==`
+- license: MIT (`@modelcontextprotocol/sdk` package metadata)
+
+`package-lock.json` pins all 95 transitive packages and their registry
+integrities. `prepare.sh` first scrubs API/provider credential environment,
+requires `claude auth status --json` to report first-party `claude.ai`
+subscription authentication, verifies the lock and SDK integrity, then runs
+`npm ci --ignore-scripts --no-audit --no-fund`. API-key, Bedrock, Vertex and
+Foundry fallback are refused.
 
 Claude Code Channels are a research preview. Custom Channels are not on the
 approved allowlist, so the official reference requires this launch gate:
@@ -18,8 +26,9 @@ approved allowlist, so the official reference requires this launch gate:
 ```
 
 That flag is explicit security consent to load unapproved Channel code. The
-operator has not authorized that consent or installing the pinned dependency,
-so the fixture must not be run yet. Team and Enterprise organizations may also
+operator authorized one disposable install and launch on 2026-10-25. An
+independent safety review still holds the launch; do not install or run this
+fixture until that review passes. Team and Enterprise organizations may also
 need an administrator to enable Channels.
 
 Official references:
@@ -29,27 +38,26 @@ Official references:
 
 ## Intended disposable launch
 
-After separate review and authorization:
+After independent review passes:
 
 1. Copy this directory into a private temporary directory with mode `0700`.
-2. Install exactly the pinned dependency there with lifecycle scripts disabled.
+2. Run `./prepare.sh`. It installs exactly the lockfile into that private copy
+   with lifecycle scripts disabled. Do not run `npm install` or update the lock.
 3. Replace every placeholder in `mcp.json.template` from one authenticated
    Roots ticket read. Generate a fresh 256-bit nonce and one correlation ID for
    this single question. Do not write either value to logs or use an operator
    or production project directory.
 4. Launch one background subscription-authenticated Claude session from an
-   empty temporary working directory. Use only the reply tool, refuse inbound
-   cross-session messages, and load only the temporary MCP config:
+   empty temporary working directory. `launch.sh` repeats the credential scrub
+   and subscription-auth check immediately before `exec` so the Claude child
+   cannot fall back to an API or cloud-provider credential. Use only the reply
+   tool, refuse inbound cross-session messages, and load only the temporary MCP
+   config:
 
 ```text
-claude --bg --restricted --permission-mode dontAsk \
-  --setting-sources "" --strict-mcp-config \
-  --mcp-config /PRIVATE_TMP/mcp.json \
-  --settings '{"crossSessionInbound":"refuse"}' \
-  --tools mcp__esn0407_channel__reply \
-  --disable-slash-commands --no-chrome \
-  --dangerously-load-development-channels server:esn0407_channel \
-  --name esn-0407-disposable-channel
+ESN0407_MCP_CONFIG=/PRIVATE_TMP/mcp.json \
+ESN0407_WORK_DIR=/PRIVATE_EMPTY_WORK_DIR \
+  /PRIVATE_TMP/launch.sh
 ```
 
 5. Send one envelope, at most 4 KiB, over the private Unix socket. It must bind

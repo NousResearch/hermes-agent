@@ -1,6 +1,7 @@
 import { isSessionNotOwnedError } from '@/app/session/hooks/use-prompt-actions/utils'
 import { runtimeTranslations, translateNow } from '@/i18n'
 import { textPart } from '@/lib/chat-messages'
+import { MEMORY_RECALL_MESSAGE_ID_PREFIX } from '@/lib/chat-messages/recall'
 import { coerceGatewayText } from '@/lib/chat-runtime'
 import type { ErrorSurface } from '@/lib/error-surface'
 import { errorCardText } from '@/lib/error-surface-copy'
@@ -27,6 +28,17 @@ export function isFallbackSwitchStatus(kind: string | undefined, text: string): 
   }
 
   return /model fallback|provider fallback|switched to fallback|switching to fallback/i.test(text)
+}
+
+// Older runtimes send MemoryManager.describe_recall() as lifecycle text. Keep
+// that narrow compatibility path; new runtimes identify recall by kind instead.
+const LEGACY_MEMORY_RECALL_RE = /^.+ — recalled (?:[1-9]\d* memor(?:y|ies)|relevant memory)$/u
+
+function isMemoryRecallStatus(kind: string | undefined, text: unknown): boolean {
+  return (
+    kind === 'memory_recall' ||
+    (kind === 'lifecycle' && typeof text === 'string' && LEGACY_MEMORY_RECALL_RE.test(text.trim()))
+  )
 }
 
 /** status.update / review.summary / notification.show / notification.clear /
@@ -119,6 +131,26 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       void refreshBackgroundProcesses(sessionId)
     } else if (sessionId && payload?.kind === 'goal') {
       applyGoalStatusText(sessionId, coerceGatewayText(payload?.text))
+    } else if (sessionId && isMemoryRecallStatus(payload?.kind, payload?.text)) {
+      const text = typeof payload?.text === 'string' ? payload.text.trim() : ''
+
+      if (text) {
+        // Recall is not model prose or a transient spinner. Keep the provider's
+        // summary in this session's live transcript, including background chats.
+        flushQueuedDeltas(sessionId)
+        updateSessionState(sessionId, state => ({
+          ...state,
+          messages: [
+            ...state.messages,
+            {
+              id: `${MEMORY_RECALL_MESSAGE_ID_PREFIX}${crypto.randomUUID()}`,
+              role: 'system',
+              parts: [textPart(text, occurredAt)],
+              timestamp: occurredAt
+            }
+          ]
+        }))
+      }
     } else if (sessionId && isFallbackSwitchStatus(payload?.kind, coerceGatewayText(payload?.text))) {
       // A provider/model switch is durable: the TUI paints it on the status rail, but Desktop
       // used to swallow every non-compaction status.update, so the reply came from a different

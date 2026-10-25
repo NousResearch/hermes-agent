@@ -36,6 +36,31 @@ def test_every_profile_subcommand_has_a_dispatch_entry():
 
 
 
+def test_purge_identity_uses_canonical_namespace_for_main(profile_env):
+    import json
+
+    from hermes_cli.profile_identity import _purge_profile_identity
+
+    sessions_dir = profile_env / ".hermes" / "sessions"
+    sessions_dir.mkdir()
+    sessions_file = sessions_dir / "sessions.json"
+    sessions_file.write_text(json.dumps({
+        "_README": "metadata",
+        "agent:main:feishu:dm:default": {"profile": "default"},
+        "agent:main~:feishu:dm:named": {"profile": "main"},
+        "agent:other:feishu:dm:other": {"profile": "other"},
+    }), encoding="utf-8")
+
+    assert _purge_profile_identity("main", live_mux=False)
+
+    data = json.loads(sessions_file.read_text(encoding="utf-8"))
+    assert set(data) == {
+        "_README",
+        "agent:main:feishu:dm:default",
+        "agent:other:feishu:dm:other",
+    }
+
+
 def test_purge_identity_exits_nonzero_when_settlement_stays_pending(
         profile_env, monkeypatch, capsys):
     monkeypatch.setattr("hermes_cli.profile_identity.purge_profile_identity", lambda name: False)

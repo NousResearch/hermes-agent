@@ -2630,6 +2630,7 @@ def _relay_auxiliary_metadata(
 def _relay_sync_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
+    fail_closed: bool = False,
 ) -> Any:
     from agent.auxiliary_wire import prepare_chat_messages, relay_chat_metadata
 
@@ -2642,6 +2643,10 @@ def _relay_sync_completion(
     task = relay_context.get("task")
     relay_context["stream_provider"] = provider or relay_context.get("provider")
     callback = create or (lambda request: _create_with_progress(client, request, task))
+    if fail_closed:
+        # A pinned route cannot expose messages to pre-call plugins or managed Relay,
+        # which may rewrite or forward the request before the provider sees it.
+        return _run_protected_sync_provider_call(callback, kwargs)
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     # Isolate only the provider callback so the owning thread can unwind its lease/DB
     # transaction on hard cancel without touching the shared client.
@@ -2669,12 +2674,15 @@ def _relay_sync_completion(
 async def _relay_async_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
+    fail_closed: bool = False,
 ) -> Any:
     from agent.auxiliary_wire import prepare_chat_messages, relay_chat_metadata
 
     kwargs = prepare_chat_messages(client, kwargs)
     # Async twin of the seam default above (#98466).
     callback = create or (lambda request: _acreate_with_progress(client, request))
+    if fail_closed:
+        return await callback(kwargs)
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return await callback(kwargs)
@@ -7385,11 +7393,45 @@ class _ResolvedAuxRoute(NamedTuple):
     effective_provider: str
 
 
+def _pinned_aux_config(task: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Snapshot an opt-in pin before resolving the client or constructing a request.
+
+    An unreadable config cannot establish that a task is unpinned. Reject the
+    content-bearing call rather than allowing the config loader's defaults or
+    last-known-good fallback to select another provider.
+    """
+    if not task:
+        return None
+    config = _get_auxiliary_task_config(task)
+    from hermes_cli.config import FailedConfigRead
+    if isinstance(config, FailedConfigRead):
+        # A fallback may have lost a newly added pin. Never infer "auto" from
+        # unreadable config for a call carrying user content.
+        raise AuxiliaryClientUnavailable("Auxiliary routing unavailable: config.yaml could not be read")
+    if not config or "fail_closed" not in config or config["fail_closed"] is False:
+        return None
+    if config["fail_closed"] is not True:
+        raise ValueError(f"auxiliary.{task}.fail_closed must be a boolean")
+    if task == "vision":
+        raise ValueError("auxiliary.vision.fail_closed is not supported for text-only pinned routes")
+    if any(config.get(key) not in (None, "") for key in ("base_url", "api_key", "key_env", "api_key_env", "api_mode")):
+        raise ValueError(f"auxiliary.{task}.fail_closed rejects endpoint/auth/transport overrides")
+    if (not isinstance(config.get("provider"), str)
+            or not config["provider"].strip()
+            or config["provider"].strip().lower() == "auto"
+            or not isinstance(config.get("model"), str)
+            or not config["model"].strip()
+            or config["model"].strip().lower() == "auto"):
+        raise ValueError(f"auxiliary.{task}.fail_closed requires an explicit provider and model")
+    return config
+
+
 def _resolve_call_client(
     task: Optional[str], *, provider: Optional[str], model: Optional[str], base_url: Optional[str],
     api_key: Optional[str], resolved_provider: str, resolved_model: Optional[str],
     resolved_base_url: Optional[str], resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str], main_runtime: Optional[dict[str, Any]], async_mode: bool,
+    fail_closed: bool = False,
 ) -> _ResolvedAuxRoute:
     """Resolve the client for one aux call: vision chain, or cached text client with the
     explicit-provider fallback_chain / auto-chain rescue; RuntimeError when nothing is configured."""
@@ -7418,7 +7460,7 @@ def _resolve_call_client(
             # Explicit provider with no credentials: honor the task fallback_chain before
             # raising (fallback entries may use OAuth / credential-pool auth).
             _explicit = (resolved_provider or "").strip().lower()
-            if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
+            if _explicit and _explicit not in {"auto", "openrouter", "custom"} and not fail_closed:
                 fb_client, fb_model, fb_label = _try_configured_fallback_for_unavailable_client(
                     task, _explicit)
                 if fb_client is None:
@@ -7433,12 +7475,28 @@ def _resolve_call_client(
                 effective_provider = resolved_provider
             # Auto/custom with no credentials: walk the full auto chain (not just OpenRouter).
             # model=None so each provider uses its own default.
-            if client is None and not resolved_base_url:
+            if client is None and not resolved_base_url and not fail_closed:
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)
                 client, final_model = _get_cached_client(
                     "auto", async_mode=async_mode, main_runtime=main_runtime, task=task)
                 effective_provider = _effective_provider_for_client(client, "auto")
+    if fail_closed and resolved_provider.strip().lower() in {"privacy-router", "local-privacy"}:
+        # The plugin uses an ephemeral loopback port. Pin the actual wire endpoint,
+        # not just the provider label (named custom providers may shadow that label).
+        from providers import get_provider_profile
+        profile = get_provider_profile(resolved_provider)
+        actual = urlparse(str(getattr(client, "base_url", "")))
+        expected = urlparse(str(profile.base_url if profile else ""))
+        if (actual.scheme != "http" or actual.hostname != "127.0.0.1"
+                or not actual.port or actual.path.rstrip("/") != "/v1"
+                or expected.scheme != "http" or expected.hostname != "127.0.0.1"
+                or actual.port != expected.port or expected.path.rstrip("/") != "/v1"):
+            raise AuxiliaryClientUnavailable(f"auxiliary.{task}: local router endpoint is not pinned")
+    if fail_closed and (
+        effective_provider != resolved_provider or final_model != resolved_model
+    ):
+        raise AuxiliaryClientUnavailable(f"auxiliary.{task}: pinned route was substituted")
     if client is None:
         raise AuxiliaryClientUnavailable(f"No LLM provider configured for task={task} "
                                          f"provider={resolved_provider}. Run: hermes setup")
@@ -7458,6 +7516,7 @@ class _PreparedAuxRequest(NamedTuple):
     effective_timeout: float
     effective_extra_body: dict[str, Any]
     base_info: str
+    fail_closed: bool
 
 
 def _prepare_aux_request(
@@ -7471,8 +7530,21 @@ def _prepare_aux_request(
     """Shared head of call_llm/async_call_llm: resolve route + client, publish it, build request kwargs.
     Sync-only: compression fast lane, per-request ``extra_headers``, and ``base_info`` falling
     back to the resolved base_url when the client exposes none."""
+    pinned = _pinned_aux_config(task)
+    # The normal route resolver reads config again. Compare its entire destination
+    # and transport to this snapshot before any payload can reach a client.
+    if pinned:
+        if ((provider and provider != pinned["provider"])
+                or (model and model != pinned["model"])
+                or base_url is not None or api_key is not None or api_mode is not None):
+            raise ValueError(f"auxiliary.{task}.fail_closed rejects provider/model/endpoint overrides")
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    if pinned:
+        if (resolved_provider != pinned["provider"] or resolved_model != pinned["model"]
+                or resolved_base_url is not None or resolved_api_key is not None
+                or resolved_api_mode is not None):
+            raise AuxiliaryClientUnavailable(f"auxiliary.{task}: pinned route unavailable")
     if api_mode:
         resolved_api_mode = api_mode
     effective_extra_body = _get_task_extra_body(task)
@@ -7482,6 +7554,7 @@ def _prepare_aux_request(
         resolved_provider=resolved_provider, resolved_model=resolved_model,
         resolved_base_url=resolved_base_url, resolved_api_key=resolved_api_key,
         resolved_api_mode=resolved_api_mode, main_runtime=main_runtime, async_mode=async_mode,
+        fail_closed=bool(pinned),
     )
     effective_timeout = _effective_aux_timeout(task, timeout)
     # Codex-Responses-only: real SDK clients reject an unrecognized ``no_progress_timeout``
@@ -7525,7 +7598,7 @@ def _prepare_aux_request(
     return _PreparedAuxRequest(
         client, final_model, kwargs, resolved_provider, request_provider, resolved_model,
         resolved_base_url, resolved_api_key, resolved_api_mode, effective_timeout,
-        effective_extra_body, base_info)
+        effective_extra_body, base_info, bool(pinned))
 
 
 class _LadderStep(NamedTuple):
@@ -8172,6 +8245,8 @@ def _call_llm_impl(
     # Streaming path (MoA aggregator): return the raw SDK stream, skipping validation and
     # the fallback chain (they assume a complete response); the caller owns reassembly/fallback.
     if stream:
+        if req.fail_closed:
+            raise ValueError(f"auxiliary.{task}.fail_closed rejects streaming calls")
         kwargs["stream"] = True
         if stream_options:
             kwargs["stream_options"] = stream_options
@@ -8196,6 +8271,7 @@ def _call_llm_impl(
         return _validate_llm_response(
             _relay_sync_completion(
                 client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode,
+                fail_closed=req.fail_closed,
                 create=lambda request: _create_with_progress(
                     client, request, task,
                     force_stream=_provider_requires_stream(
@@ -8229,6 +8305,8 @@ def _call_llm_impl(
                     _last_transient = retry_transient
             raise _last_transient
     except Exception as first_err:
+        if req.fail_closed:
+            raise
         def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
             if kind == "call":
@@ -8365,7 +8443,7 @@ async def _async_call_llm_impl(
                 _validate_llm_response,
                 await _relay_async_completion(
                     client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode,
-                    create=_acreate),
+                    fail_closed=req.fail_closed, create=_acreate),
                 task, **validate_kw)
         try:
             return await _primary(provider=request_provider, base_url=req.base_info)
@@ -8377,6 +8455,8 @@ async def _async_call_llm_impl(
                         "once on the same provider before fallback: %s", task or "call", transient_err)
             return await _primary()
     except Exception as first_err:
+        if req.fail_closed:
+            raise
         async def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
             if kind == "call":

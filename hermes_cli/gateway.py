@@ -1064,7 +1064,9 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
     (the watcher would die with the CLI console), so ``windows_detach_popen_kwargs()`` supplies flags."""
     if old_pid <= 0 or not run_argv:
         return False
-    from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway, windows_detach_popen_kwargs
+    from hermes_cli._subprocess_compat import (
+        windows_detach_flags, windows_detach_flags_without_breakaway, windows_detach_popen_kwargs,
+    )
 
     # Windows: ``run_argv`` leads with the venv's console ``python.exe`` — the interpreter we want:
     # the watcher respawns it under CREATE_NO_WINDOW detach flags so the gateway owns one hidden
@@ -1176,7 +1178,13 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
     popen_env = {"env": watcher_env} if watcher_env is not None else {}
     # Same detach for the watcher itself, so closing the terminal doesn't kill it.
     try:
-        subprocess.Popen(watcher_argv, **devnull, **popen_env, **windows_detach_popen_kwargs())
+        if sys.platform == "win32":
+            # Inside a terminal command, use an exiting trampoline under the non-member owner
+            # so the watcher leaves both the job and the owner's live tree (see _windows_job_escape).
+            from hermes_cli._windows_job_escape import popen_detached
+            popen_detached(watcher_argv, creationflags=windows_detach_flags(), **popen_env, **devnull)
+        else:
+            subprocess.Popen(watcher_argv, **devnull, **popen_env, **windows_detach_popen_kwargs())
     except OSError:
         # Parent job object rejected CREATE_BREAKAWAY_FROM_JOB; retry without it (Windows only —
         # ``start_new_session=True`` cannot raise OSError on POSIX).

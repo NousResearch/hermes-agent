@@ -13,6 +13,7 @@ import sys
 import tempfile
 import threading
 import time
+import weakref
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -992,8 +993,33 @@ def _kill_known_pids(proc, descendants) -> None:
             target.kill()
 
 
+def _release_win32_job(job) -> None:
+    """Finalizer: release the containment job's owner handle with the Popen.
+
+    The job sets no KILL_ON_JOB_CLOSE limit, so closing the handle terminates
+    nothing — it just stops counting this command's (exited) tree toward the
+    system job quota once the command object is gone."""
+    with contextlib.suppress(Exception):
+        job.close()
+
+
 def _kill_process_windows(proc) -> None:
-    """Identity-checked terminate (start time guards against PID reuse), else kill."""
+    """Identity-checked terminate (start time guards against PID reuse), else kill.
+    Descendants are snapshotted first: ``taskkill /T`` walks the live parent chain, and
+    when it fails or times out the ``proc.kill()`` fallback signals only the bash wrapper,
+    leaving its children running (orphaned once the wrapper dies). Survivors are killed by
+    PID afterwards; psutil's identity-aware Process skips recycled PIDs.
+
+    A membership job (``_run_bash`` attaches one on Windows) is terminated LAST: MSYS
+    fork/exec severs the wrapper's Windows parent chain to a grandchild (grep) once the
+    intermediate stub exits, so neither the psutil snapshot nor taskkill /T can ever
+    reach it. Job membership is ancestry-free, which closes that gap without matching
+    PIDs, names or argv."""
+    try:  # empty on any failure (must never break the kill)
+        import psutil
+        descendants = psutil.Process(proc.pid).children(recursive=True)
+    except Exception:
+        descendants = []
     try:
         from gateway.status import get_process_start_time, terminate_pid
         terminate_pid(proc.pid, force=True, expected_start_time=get_process_start_time(proc.pid))
@@ -1001,6 +1027,15 @@ def _kill_process_windows(proc) -> None:
         proc.kill()
     with contextlib.suppress(subprocess.TimeoutExpired, OSError):
         proc.wait(timeout=2.0)
+    for child in descendants:
+        with contextlib.suppress(Exception):
+            if child.is_running():
+                child.kill()
+    job = getattr(proc, "_hermes_win32_job", None)
+    if job is not None:
+        with contextlib.suppress(Exception):
+            job.terminate()
+            job.close()
 
 
 class LocalEnvironment(BaseEnvironment):
@@ -1106,12 +1141,38 @@ class LocalEnvironment(BaseEnvironment):
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
-        proc = subprocess.Popen(
-            args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
+        popen_kwargs = dict(
+            text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             start_new_session=True, cwd=self.cwd,
             **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
+        if _IS_WINDOWS:
+            # Contain the wrapper in a membership-only job assigned before its first
+            # instruction, so _kill_process_windows can terminate MSYS-handoff orphans
+            # (dead intermediate Windows parent) that no parent-pid walk reaches. No
+            # KILL_ON_JOB_CLOSE: a normally-exiting command leaves `&` children as free
+            # as a bare Popen; the kill path closes the job, and a finalizer releases
+            # it with the Popen itself so handles never outlive the command. Containment
+            # is best-effort: a host where job assignment fails keeps the legacy bare
+            # Popen (the child is CREATE_SUSPENDED when assignment fails, so the retry
+            # never re-runs a command) rather than breaking every terminal call.
+            from hermes_cli.local_runtime.processes import spawn_contained
+            # The job denies breakaway, so Hermes' own intentional detaches (gateway
+            # start/restart, update relaunch) use an exiting trampoline under THIS process:
+            # see hermes_cli/_windows_job_escape.py. This process is never a member.
+            from hermes_cli._windows_job_escape import ANCHOR_ENV, current_anchor
+            with contextlib.suppress(OSError):
+                popen_kwargs["env"][ANCHOR_ENV] = current_anchor()
+            try:
+                proc, job = spawn_contained(args, **popen_kwargs)
+            except OSError:
+                proc = subprocess.Popen(args, **popen_kwargs)
+            else:
+                proc._hermes_win32_job = job
+                weakref.finalize(proc, _release_win32_job, job)
+        else:
+            proc = subprocess.Popen(args, **popen_kwargs)
         if not _IS_WINDOWS:
             with contextlib.suppress(ProcessLookupError):
                 proc._hermes_pgid = os.getpgid(proc.pid)

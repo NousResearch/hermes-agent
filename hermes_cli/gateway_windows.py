@@ -797,10 +797,13 @@ def _spawn_detached(script_path: Path | None = None, home: Path | None = None) -
     stray_log = log_dir / "gateway-stdio.log"
 
     def _popen(breakaway: str, flags: int):
+        # popen_detached: inside a terminal command's membership-only job a denied breakaway is
+        # retried as a child of the job's non-member owner, so the gateway still leaves the job.
+        from hermes_cli._windows_job_escape import popen_detached
         with open(stray_log, "ab", buffering=0) as log_fh:
-            return subprocess.Popen(
+            return popen_detached(
                 argv, cwd=working_dir, env={**env, _WINDOWS_GATEWAY_BREAKAWAY_ENV: breakaway}, creationflags=flags,
-                close_fds=True, stdin=subprocess.DEVNULL, stdout=log_fh, stderr=log_fh,
+                stdin=subprocess.DEVNULL, stdout=log_fh, stderr=log_fh,
             )
 
     try:

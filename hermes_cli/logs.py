@@ -70,7 +70,7 @@ def log_file_path(log_name: str) -> Optional[Path]:
 # "2026-04-05 22:35:00[,123]" at the start of a line; update.log /
 # desktop-update-handoff.log stamp with the shell's ISO-8601 "T" shape
 # ("2026-09-29T21:36:18+08:00", "=== hermes update started 2026-09-29T21:36:18 ===").
-_TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})")
+_TS_RE = re.compile(r"^(?:=== hermes " + "update" + r" (?:started|continued) )?(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})")
 _LEVEL_RE = re.compile(r"\s(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s")
 # Logger name: the token before ":" after the level and optional "[session]" tag,
 # e.g. "INFO gateway.run:" or "INFO [sess_abc] tools.terminal_tool:".
@@ -241,7 +241,7 @@ def tail_log(
     if not follow:
         return
     try:
-        _follow_log(log_path, **filters)
+        _follow_log(log_path, initial_lines=_read_last_record_lines(log_path) if has_filters else None, **filters)
     except KeyboardInterrupt:
         print("\n--- stopped ---")
 
@@ -259,6 +259,11 @@ def _read_tail(path: Path, num_lines: int, *, has_filters: bool = False, **filte
 def _read_all_lines(path: Path) -> list:
     with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
         return f.readlines()
+
+
+def _read_last_record_lines(path: Path, max_lines: int = 256) -> list:
+    """Read a bounded suffix sufficient to seed follow-mode filter state."""
+    return _read_last_n_lines(path, max_lines)
 
 
 def _read_last_n_lines(path: Path, n: int) -> list:
@@ -292,9 +297,11 @@ def _read_last_n_lines(path: Path, n: int) -> list:
         return _read_all_lines(path)[-n:]
 
 
-def _follow_log(path: Path, **filters) -> None:
+def _follow_log(path: Path, *, initial_lines: Optional[list] = None, **filters) -> None:
     """Poll a log file for new content and print matching lines."""
     keep = _LineFilter(**filters)
+    for line in initial_lines or ():
+        keep(line)
     with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
         # Seek to end
         f.seek(0, 2)

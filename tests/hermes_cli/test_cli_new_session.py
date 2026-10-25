@@ -179,6 +179,26 @@ def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path)
 
 
 
+def test_new_session_retires_the_previous_sessions_standing_goal(tmp_path):
+    """A standing /goal is keyed by the session that owns it.
+
+    /new ends that conversation, so the goal must not keep reporting "active"
+    on a session nobody can reach any more.
+    """
+    cli = _prepare_cli_with_active_session(tmp_path)
+    old_session_id = cli.session_id
+
+    from hermes_cli.goals import GoalManager, load_goal
+
+    GoalManager(session_id=old_session_id).set("ship the thing")
+    assert load_goal(old_session_id).status == "active"
+
+    cli.process_command("/new")
+
+    assert cli.session_id != old_session_id
+    assert load_goal(old_session_id).status == "cleared"
+
+
 def test_new_session_delivers_context_engine_boundary_synchronously(tmp_path):
     """The context-engine on_session_end must fire during /new itself.
 

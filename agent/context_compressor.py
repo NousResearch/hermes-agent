@@ -5561,7 +5561,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         head/tail compress at all (#61932); tool-call arguments are never rewritten by pruning."""
         compressed = self._assemble_head(messages, compress_start)
         tail_messages = self._assemble_tail(messages, compress_end, scan.tail_start, scan.summary_indices)
-        summary = with_skill_safety_rule(summary, [*compressed, *tail_messages])
+        summary, compressed, tail_messages = with_skill_safety_rule(summary, compressed, tail_messages)
         summary_role, merge_into_tail, force_user_leading, first_tail_visible_idx = (
             self._summary_placement(compressed, tail_messages, compress_start)
         )

@@ -103,16 +103,25 @@ SKILL_SAFETY_RULE = (
 )
 
 
-def with_skill_safety_rule(summary: str, kept_messages: list[dict[str, Any]]) -> str:
-    """*summary* plus :data:`SKILL_SAFETY_RULE` when it or a message kept beside it carries a prune marker
-    (summary-side ``## Pruned Skills`` markers, Phase-1 and lean-demoted ``skill_view`` stubs); else unchanged."""
+def with_skill_safety_rule(
+    summary: str, head: list[dict[str, Any]], tail: list[dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+    """``(summary, head, tail)`` carrying :data:`SKILL_SAFETY_RULE` exactly once when the summary or a kept row holds a
+    prune marker (summary-side ``## Pruned Skills`` markers, Phase-1 and lean-demoted ``skill_view`` stubs). A kept
+    prune-only stub's copy (:func:`with_pruned_row_skill_safety_rule`) moves onto the handoff: compaction is the
+    sanctioned rewrite, and the token-budget tail often keeps a stub the count-protected prune-only tail ruled."""
     from agent.context_compressor import SKILL_PRUNED_MARKER_PREFIX, _content_text_for_contains
-    if SKILL_SAFETY_RULE in summary:
-        return summary
-    texts = (summary, *(_content_text_for_contains(m.get("content")) for m in kept_messages if isinstance(m, dict)))
-    if not any(SKILL_PRUNED_MARKER_PREFIX in text for text in texts):
-        return summary
-    return f"{summary}{_SKILL_SAFETY_SUFFIX}"
+
+    def unruled(rows):
+        return [{**m, "content": without_skill_safety_rule(m["content"])}
+                if isinstance(m, dict) and m.get("role") != "system" and isinstance(m.get("content"), str)
+                and SKILL_SAFETY_RULE in m["content"] else m for m in rows]
+
+    head, tail = unruled(head), unruled(tail)
+    texts = (summary, *(_content_text_for_contains(m.get("content")) for m in (*head, *tail) if isinstance(m, dict)))
+    if any(SKILL_SAFETY_RULE in text for text in texts) or not any(SKILL_PRUNED_MARKER_PREFIX in t for t in texts):
+        return summary, head, tail
+    return f"{summary}{_SKILL_SAFETY_SUFFIX}", head, tail
 
 
 _SKILL_SAFETY_SUFFIX = f"\n\n{SKILL_SAFETY_RULE}"

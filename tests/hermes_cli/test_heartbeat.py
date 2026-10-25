@@ -146,6 +146,16 @@ def test_due_prompt_fires_once_and_reanchors():
     assert mgr.due_prompt() is None
 
 
+@pytest.mark.parametrize("stop,stored", [("clear", None), ("pause", "paused")])
+def test_a_stale_manager_does_not_fire_a_heartbeat_stopped_since(stop, stored):
+    mgr = HeartbeatManager(session_id=f"hb-stale-{stop}")
+    mgr.set("tick", 600).created_at = time.time() - 700  # due in this manager's snapshot
+    getattr(HeartbeatManager(session_id=f"hb-stale-{stop}"), stop)()  # another driver stops it
+    assert mgr.due_prompt() is None
+    state = load_heartbeat(f"hb-stale-{stop}")
+    assert (state.status if state else None) == stored
+
+
 def test_missed_ticks_coalesce():
     mgr = HeartbeatManager(session_id="hb-coalesce-sid")
     mgr.set("tick", 600)

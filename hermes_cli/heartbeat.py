@@ -227,9 +227,10 @@ class HeartbeatManager:
             if s is None or not s.is_due(now):
                 return None
             # Compare-and-set on the stored row: the gateway poller and a viewer's due_prompt RPC each hold
-            # their own manager over it, and only one may take the tick.
+            # their own manager over it, and only one may take the tick. A row cleared or paused since is lost too.
             stored = load_heartbeat(self.session_id)
-            if stored is not None and (stored.last_fired_at, stored.fire_count) != (s.last_fired_at, s.fire_count):
+            if stored is None or stored.status != "active" or (
+                    stored.last_fired_at, stored.fire_count) != (s.last_fired_at, s.fire_count):
                 self._state = stored
                 return None
             self._last_claim = (s.last_fired_at, s.fire_count)

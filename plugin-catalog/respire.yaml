@@ -11,6 +11,9 @@ docs_url: https://github.com/risense-ai/respire-hermes#readme
 readme: true
 platforms: [linux, macos]
 title: "Respire"
+known_issues:
+  - "macOS: Apple Silicon only; the rsrs CLI does not ship Intel macOS builds."
+  - "Requires the separately installed rsrs CLI (rsrs-cli@1.0.16); without it the provider remains unavailable."
 capabilities:
   provides_tools:
     - respire_recall

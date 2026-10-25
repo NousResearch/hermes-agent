@@ -381,13 +381,17 @@ def _usage_windows(
     """Build windows from ``source[key][used_key]``; ``fraction`` scales values <= 1 to percent."""
     windows: list[AccountUsageWindow] = []
     for key, label in mapping:
-        window = source.get(key) or {}
-        used = window.get(used_key)
-        if used is None:
+        if key not in source:
             continue
-        used = float(used)
-        if fraction and used <= 1:
-            used *= 100
+        raw_window = source.get(key)
+        if raw_window is None:
+            continue
+        window = raw_window if isinstance(raw_window, dict) else {}
+        used = window.get(used_key)
+        if used is not None:
+            used = float(used)
+            if fraction and used <= 1:
+                used *= 100
         windows.append(AccountUsageWindow(
             label=label, used_percent=used, reset_at=_parse_dt(window.get(reset_key)),
             model_prefixes=(model_scopes or {}).get(key, ()),

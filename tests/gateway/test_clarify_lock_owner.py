@@ -122,7 +122,7 @@ async def test_a_reattaching_viewer_gets_the_open_batch_back_and_answers_it(tmp_
         await asyncio.to_thread(worker.join, 5)
         assert out == {'answers': {'q0': 'red', 'q1': 'big'}, 'outcome': 'submitted'}, out
         again = (await second.dispatch({'id': 4, 'method': 'session.resume', 'params': {'session_id': 's'}}))['result']
-        assert 'open_requests' not in again
+        assert not again['open_requests']
     finally:
         await second.close()
 

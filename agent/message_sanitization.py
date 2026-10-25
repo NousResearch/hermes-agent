@@ -913,6 +913,11 @@ _UNKNOWN_FIELD_PHRASES = (
     "unrecognized request argument", "unrecognized field", "unknown parameter", "unexpected field",
     "additional propert", "unknown key",
 )
+# ...and for "two names of ONE schema field arrived in the same message": a Rust/serde gateway
+# whose struct aliases the reasoning carriers ("messages[5]: duplicate field `reasoning`",
+# axum) and Python frameworks ("duplicate key"). Either carrier alone deserializes fine, so
+# the recovery is the same drop-and-retry as an unknown field.
+_DUPLICATE_FIELD_PHRASES = ("duplicate field", "duplicated field", "duplicate key", "duplicated key")
 _NAMED_FIELD_RES = {
     RC: re.compile(r"(?<![\w])reasoning_content(?![\w])"),
     RD: re.compile(r"(?<![\w])reasoning_details(?![\w])"),
@@ -922,15 +927,24 @@ _NAMED_FIELD_RES = {
 
 
 def rejected_reasoning_fields(error_body: Any, sent_messages: Any) -> frozenset:
-    """Reasoning keys to drop after an unknown-field rejection that names one this request carried.
+    """Reasoning keys to drop after a rejection that names one this request carried.
 
-    Strict schemas report one offending key per error, so the drop is widened to the keys the
-    same schema will reject next: a rejected ``reasoning_details`` / ``reasoning`` takes the
-    other non-standard carrier too (``reasoning_content`` still carries the text); a rejected
-    ``reasoning_content`` (the most widely accepted alias) takes all three. One retry, not three.
+    Unknown-field rejections: strict schemas report one offending key per error, so the drop
+    is widened to the keys the same schema will reject next: a rejected ``reasoning_details``
+    / ``reasoning`` takes the other non-standard carrier too (``reasoning_content`` still
+    carries the text); a rejected ``reasoning_content`` (the most widely accepted alias)
+    takes all three. One retry, not three.
+
+    Duplicate-field rejections: the endpoint's schema ALIASES two carrier names onto one
+    field, so a message carrying both dies ("duplicate field `reasoning`") while either alone
+    is accepted. No unknown-field phrase appears in the body, so without this arm every
+    replay of stored reasoning fails non-retryably. Keep ``reasoning_content`` — the de-facto
+    standard, and the carrier the must-echo pad rides — and drop the other side of the pair
+    the message actually carried: the collision is only ours when it did.
     """
     body = str(error_body or "").lower()
-    if not any(phrase in body for phrase in _UNKNOWN_FIELD_PHRASES):
+    duplicate = any(phrase in body for phrase in _DUPLICATE_FIELD_PHRASES)
+    if not duplicate and not any(phrase in body for phrase in _UNKNOWN_FIELD_PHRASES):
         return frozenset()
     sent = {
         key for msg in (sent_messages if isinstance(sent_messages, list) else ())
@@ -939,6 +953,11 @@ def rejected_reasoning_fields(error_body: Any, sent_messages: Any) -> frozenset:
     named = {key for key in sent if _NAMED_FIELD_RES[key].search(body)}
     if not named:
         return frozenset()
+    if duplicate:
+        pair = {RC, R} if RC in sent and R in sent else ({RC, RD} if RC in sent and RD in sent else frozenset())
+        if not pair or not (named & pair):
+            return frozenset()
+        return frozenset(pair - {RC})
     return frozenset(sent & (_ALL_CARRIERS if RC in named else {R, RD}))
 
 

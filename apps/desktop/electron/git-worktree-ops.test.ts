@@ -481,6 +481,20 @@ test('addWorktree: a glob base is not turned into a fetch of every branch', asyn
   }
 })
 
+test('addWorktree: a base ref cannot be a git option', async () => {
+  const { cloneDir, remoteDir } = seedRemoteAndClone('opt-base', [])
+
+  try {
+    await assert.rejects(
+      addWorktree(cloneDir, { base: '--upload-pack=evil', name: 'opt' }, 'git'),
+      /invalid worktree base ref/
+    )
+  } finally {
+    fs.rmSync(remoteDir, { recursive: true, force: true })
+    fs.rmSync(cloneDir, { recursive: true, force: true })
+  }
+})
+
 // A pair of repos: a bare "remote" with `main` and the extra branches in
 // `branches`, plus a clone of it. Returns both paths. The caller must remove
 // them.

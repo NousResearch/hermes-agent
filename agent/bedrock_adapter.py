@@ -838,24 +838,48 @@ def _reasoning_details_blocks(msg: dict, claude: bool, own: bool = False) -> lis
     return blocks
 
 
+def _tool_call_blocks(tool_calls: list) -> list[dict]:
+    """OpenAI ``tool_calls`` → Converse toolUse blocks."""
+    return [
+        _tool_use_block(tc.get("id", ""), fn.get("name", ""), _parse_tool_args(fn.get("arguments", "{}")))
+        for tc in tool_calls if isinstance(tc, dict)
+        for fn in [tc.get("function") or {}]
+    ]
+
+
+def _match_tool_calls(blocks: list[dict], tool_calls: list) -> list[dict]:
+    """Make a replayed carrier's toolUse blocks match ``tool_calls``, which every following toolResult answers.
+    Post-call guardrails (identical-call dedup, delegate cap) drop calls after a carrier was captured, and
+    replaying one sends a toolUse with no toolResult ("Expected toolResult blocks"); a carrier that lost a
+    call sends its toolResult with no toolUse ("number of toolResult blocks exceeds the number of toolUse
+    blocks"). Dropped ids are skipped and lost ones appended, so the carrier still decides the order."""
+    ids = {tc.get("id", "") for tc in tool_calls if isinstance(tc, dict)}
+    kept = [block for block in blocks if "toolUse" not in block or block["toolUse"].get("toolUseId", "") in ids]
+    if not kept:
+        return kept
+    replayed = {block["toolUse"].get("toolUseId", "") for block in kept if "toolUse" in block}
+    return kept + _tool_call_blocks([tc for tc in tool_calls if isinstance(tc, dict) and tc.get("id", "") not in replayed])
+
+
 def _assistant_blocks(msg: dict, content, claude: bool = True, own: bool = False) -> list[dict]:
     """Assistant message → Converse blocks, from the first carrier that yields any: the ordered
     ``bedrock_content_blocks`` sidecar, (Claude only) the ordered ``anthropic_content_blocks`` sidecar,
     else thinking from ``reasoning_details`` followed by text, then tool calls. Anthropic-shaped carriers
-    hold Claude signatures, so other models never read them."""
+    hold Claude signatures, so other models never read them. An ordered carrier decides block order,
+    ``tool_calls`` which toolUse blocks exist."""
+    tool_calls = msg.get("tool_calls") or []
     ordered_blocks = msg.get("bedrock_content_blocks")
-    if isinstance(ordered_blocks, list) and (content_blocks := _replay_ordered_blocks(ordered_blocks)):
+    if isinstance(ordered_blocks, list) and (
+            content_blocks := _match_tool_calls(_replay_ordered_blocks(ordered_blocks), tool_calls)):
         return content_blocks
-    if claude and (content_blocks := _anthropic_ordered_blocks(msg)):
+    if claude and (content_blocks := _match_tool_calls(_anthropic_ordered_blocks(msg), tool_calls)):
         return content_blocks
     content_blocks = _reasoning_details_blocks(msg, claude, own)
     if isinstance(content, str) and content.strip():
         content_blocks.append({"text": content})
     elif isinstance(content, list):
         content_blocks.extend(_convert_content_to_converse(content))
-    for tc in (msg.get("tool_calls", []) or []):
-        fn = tc.get("function", {})
-        content_blocks.append(_tool_use_block(tc.get("id", ""), fn.get("name", ""), _parse_tool_args(fn.get("arguments", "{}"))))
+    content_blocks.extend(_tool_call_blocks(tool_calls))
     return content_blocks
 
 

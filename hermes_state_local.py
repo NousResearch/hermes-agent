@@ -178,8 +178,8 @@ def moved_receipts(conn, target_ids=None):
     rows = conn.execute(
         "SELECT substr(m.key, ?), s.id, s.source FROM state_meta m JOIN sessions s ON s.id IN ("
         "CASE WHEN json_valid(m.value) THEN json_extract(m.value, '$.entry.session_id') END, substr(m.key, ?)) "
-        "WHERE m.key GLOB ? AND s.session_key IS NOT NULL "
-        "AND s.session_key IS NOT json_extract(m.value, '$.route')",
+        "WHERE m.key GLOB ? AND json_valid(m.value) AND s.session_key IS NOT NULL "
+        "AND s.session_key IS NOT CASE WHEN json_valid(m.value) THEN json_extract(m.value, '$.route') END",
         (start, start, POLICY_PREFIX + '*')).fetchall()
     return {owner: (target, source) for owner, target, source in rows
             if target_ids is None or target in target_ids}

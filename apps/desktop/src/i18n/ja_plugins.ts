@@ -41,3 +41,22 @@ export const jaPluginSettings = {
     }
   }
 } satisfies Pick<SettingsOverrides, 'pluginPages' | 'plugins'>
+
+/** Japanese copy for the Capabilities ▸ Plugins tab: the page blurb and a plugin's folder access. */
+export const jaPluginsTab = {
+  pageBlurb:
+    'プラグインはこのアプリ、エージェント、または両方を拡張できます。それぞれに独立したスイッチがあります。',
+  folderAccess: {
+    title: 'フォルダーへのアクセス',
+    hint: (name: string) => `${name} はこれらのフォルダー内のファイルを読み取り、変更できます。取り消しはすぐに反映されます。`,
+    revoke: '取り消す',
+    revokeLabel: (path: string) => `${path} へのアクセスを取り消す`,
+    revoked: (name: string, path: string) => `${name} は ${path} を使用できなくなりました。`,
+    revokeFailed: (name: string) => `${name} のフォルダーアクセスを取り消せませんでした`,
+    pickerTitle: (name: string) => `${name} 用のフォルダーを選択`,
+    pickerButton: 'アクセスを許可',
+    refusedProtected: (name: string) =>
+      `${name} はこのフォルダーを使用できません。Hermes の設定、キー、またはプラグインデータが含まれています。それらを含まないフォルダーを選択してください。`,
+    loadFailed: (name: string) => `${name} と共有しているフォルダーを読み込めませんでした。`
+  }
+} satisfies NonNullable<NonNullable<TranslationOverrides['skills']>['plugins']>

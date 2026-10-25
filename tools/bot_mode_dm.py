@@ -52,6 +52,11 @@ _LIVE_WAIT_SECONDS = 300
 # A live owner may run a turn past one wait window, but each waiting runner holds ~46 MB and the
 # sender's notify slot: past this the runner reports pending (do not resend) and exits.
 _LIVE_WAIT_MAX_SECONDS = 30 * 60
+# A peer-transport delivery turn is one-shot; bound it so a wedged child returns instead of
+# blocking forever (an orphaned runner otherwise holds the delivery lock and DM file
+# indefinitely, and the target profile's turn stays locked). Generous enough for a long
+# implementation reply, but finite.
+_PEER_TURN_MAX_SECONDS = 30 * 60
 
 # '<peer>/<agent>' — peer names are lowercase (``hermes peer`` normalizes them).
 _PEER_TARGET_RE = re.compile(r"^([a-z0-9][a-z0-9_-]{0,63})/([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})$")
@@ -662,7 +667,24 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
             # after subprocess.run returns, not merely after stdin reaches EOF.
             with open(dm_file, "r", encoding="utf-8-sig") as stream:
                 # Passing the file descriptor as stdin bypasses the BOM-aware decoder.
-                return subprocess.run(argv, input=stream.read().encode("utf-8"), check=False, env=env).returncode
+                try:
+                    proc = subprocess.run(
+                        argv, input=stream.read().encode("utf-8"), check=False, env=env,
+                        timeout=_PEER_TURN_MAX_SECONDS)
+                except subprocess.TimeoutExpired:
+                    # A wedged transport must not hold the delivery lock (and the DM file) forever:
+                    # subprocess.run kills the child on timeout, the with-block releases the lock,
+                    # and the finally below unlinks the file — so the target profile's turn lock is
+                    # left free, never parked behind an orphaned runner. The typed reason rides
+                    # stdout so the completion notification carries it back to the sender (#93091);
+                    # delivery_timeout is auto-retryable, so a stuck delivery may be re-run.
+                    from tools.bot_failure_reasons import DELIVERY_TIMEOUT
+
+                    print(json.dumps({"error": f"Peer transport timed out after "
+                                                f"{_PEER_TURN_MAX_SECONDS:.0f}s; the child was killed",
+                                      "reason": DELIVERY_TIMEOUT}))
+                    return 1
+                return proc.returncode
     finally:
         _unlink_dm_file(dm_file)
 

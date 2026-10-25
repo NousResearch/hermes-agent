@@ -851,6 +851,29 @@ def test_peer_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):
     assert not dm_file.exists()
 
 
+def test_peer_delivery_runner_transport_is_bounded_and_reports_delivery_timeout(tmp_path, monkeypatch, capsys):
+    """A wedged peer-transport child must not hold the delivery lock forever: the runner
+    bounds the turn, kills the child, reports the typed delivery_timeout reason on stdout,
+    and still unlinks the DM file."""
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+    child = tmp_path / "hang.py"
+    child.write_text(
+        "import sys, time\n"
+        "assert sys.stdin.read() == 'secret'\n"
+        "time.sleep(30)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(bot_mode_dm, "_PEER_TURN_MAX_SECONDS", 0.5)
+
+    returncode = bot_mode_dm._run_delivery([sys.executable, str(child)], str(dm_file), stdin_file=True)
+
+    assert returncode == 1
+    assert not dm_file.exists()
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["reason"] == "delivery_timeout"
+
+
 def test_local_delivery_runner_surfaces_refusal_and_retains_payload(tmp_path, monkeypatch, capsys):
     """A local delivery with no canonical authority is a FAILURE the sender can
     read — typed reason, payload retained — never a CLI turn of its own."""

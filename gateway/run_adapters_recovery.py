@@ -175,6 +175,7 @@ class GatewaySecondaryReconnectMixin:
         # Lazy + per-attempt: keeps test monkeypatches on these modules live.
         from hermes_cli.profiles import get_profile_dir
         from hermes_cli.env_loader import hydrate_profile_secret_sources
+        from hermes_cli.plugins_discovery import rediscover_plugins_if_changed
         from gateway.config import load_gateway_config
         profile_home = get_profile_dir(profile_name)
         # Hydrate external secret sources off-loop so they cannot starve heartbeats.
@@ -199,6 +200,10 @@ class GatewaySecondaryReconnectMixin:
             # A re-armed plugin import + register() joins its load deadline: run it off the event loop,
             # in this profile's scope (the registry keeps deferred loaders per profile home).
             await self._run_in_executor_with_context(platform_registry.get, platform.value)
+            # The adapter is rebuilt from this profile's platform registration: revalidate the plugin
+            # inputs first, or a reconnect loop keeps rebuilding from the registration made before an
+            # override was placed (a platform that was down across the operator's change) (#144336).
+            rediscover_plugins_if_changed()
             adapter = self._create_adapter(platform, profile_config)
             if adapter is None:
                 if self._adapter_may_heal(platform, profile_config):

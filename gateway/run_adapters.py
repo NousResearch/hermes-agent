@@ -1069,8 +1069,13 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         await asyncio.to_thread(recover_left_core_in, profile_home, hydrate_secrets=False)
         with _profile_runtime_scope(profile_home, hydrate_secrets=False):
             profile_runtime_cfg = _load_gateway_config()
-            from hermes_cli.plugins import discover_plugins, get_plugin_manager
-            discover_plugins()
+            from hermes_cli.plugins import get_plugin_manager
+            from hermes_cli.plugins_discovery import rediscover_plugins_if_changed
+            # A hot re-serve follows an operator action: apply a user platform-plugin override placed
+            # (or removed) since this profile's last sweep instead of rebuilding the profile's adapters
+            # from the cached registration. A config/.env-only re-scan changes no plugin source and
+            # keeps the live registrations (#144336).
+            rediscover_plugins_if_changed()
             self._subscribe_plugin_rewire(get_plugin_manager(), profile_name, profile_home)
             # This profile's `hooks:` block: start() registered before any profile scope existed.
             self._register_config_hooks(

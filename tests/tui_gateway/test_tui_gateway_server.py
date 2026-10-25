@@ -11690,6 +11690,55 @@ def test_image_attach_appends_local_image(monkeypatch):
     assert len(server._sessions["sid"]["attached_images"]) == 1
 
 
+def test_image_attach_accepts_heic_path_with_real_extension_table(monkeypatch, tmp_path):
+    """Regression: an admitted /api/chat/image-upload HEIC path must survive image.attach.
+
+    The chat upload endpoint saves HEIC/HEIF/AVIF uploads with those suffixes
+    (see hermes_cli.web_routers.files). The dashboard routes the returned path
+    through image.attach, which gates on cli._IMAGE_EXTENSIONS — if that set
+    lags behind the upload allowlist, a successful upload still fails to
+    attach ("unsupported image").
+    """
+    from hermes_cli.cli_terminal_input import (
+        _IMAGE_EXTENSIONS as REAL_IMAGE_EXTENSIONS,
+        _detect_file_drop as real_detect_file_drop,
+        _resolve_attachment_path as real_resolve_attachment_path,
+        _split_path_input as real_split_path_input,
+    )
+
+    assert {".heic", ".heif", ".avif"} <= REAL_IMAGE_EXTENSIONS
+
+    photo = tmp_path / "IMG_2968.HEIC"
+    photo.write_bytes(b"\x00\x00\x00\x2cftypheic\x00\x00\x00\x00")
+
+    fake_cli = types.ModuleType("cli")
+    fake_cli._IMAGE_EXTENSIONS = REAL_IMAGE_EXTENSIONS
+    fake_cli._detect_file_drop = real_detect_file_drop
+    fake_cli._resolve_attachment_path = real_resolve_attachment_path
+    fake_cli._split_path_input = real_split_path_input
+    # _detect_file_drop lazily re-imports its helpers from the cli facade.
+    from hermes_cli.cli_terminal_input import (
+        _file_drop_result as real_file_drop_result,
+    )
+
+    fake_cli._file_drop_result = real_file_drop_result
+
+    server._sessions["sid"] = _session()
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.attach",
+            "params": {"session_id": "sid", "path": str(photo)},
+        }
+    )
+
+    assert resp["result"]["attached"] is True
+    assert resp["result"]["name"] == "IMG_2968.HEIC"
+    assert server._sessions["sid"]["attached_images"] == [str(photo)]
+
+
 def test_image_attach_accepts_unquoted_screenshot_path_with_spaces(monkeypatch):
     screenshot = Path("/tmp/Screenshot 2026-04-21 at 1.04.43 PM.png")
     fake_cli = types.ModuleType("cli")

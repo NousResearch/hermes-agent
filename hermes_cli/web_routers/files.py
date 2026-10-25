@@ -438,7 +438,7 @@ def _decode_data_url(data_url: str) -> tuple[bytes, str]:
 
 
 _CHAT_IMAGE_UPLOAD_MAX_BYTES = 25 * 1024 * 1024
-_CHAT_IMAGE_ALLOWED_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
+_CHAT_IMAGE_ALLOWED_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".avif"})
 _CHAT_IMAGE_MAGIC: tuple[tuple[bytes, str], ...] = (
     (b"\x89PNG\r\n\x1a\n", ".png"), (b"\xff\xd8\xff", ".jpg"),
     (b"GIF87a", ".gif"), (b"GIF89a", ".gif"), (b"BM", ".bmp"),
@@ -455,6 +455,14 @@ def _chat_image_extension(data: bytes) -> str | None:
     head = data[:16]
     if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
         return ".webp"
+    # ISO-BMFF (HEIC/HEIF/AVIF): 'ftyp' at bytes 4-8, major brand at 8-12.
+    # Same brand set as agent/image_routing.py's _FTYP_BRANDS.
+    if len(head) >= 12 and head[4:8] == b"ftyp":
+        brand = head[8:12]
+        if brand in {b"avif", b"avis"}:
+            return ".avif"
+        if brand in {b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1", b"heim", b"heis"}:
+            return ".heic"
     for sig, ext in _CHAT_IMAGE_MAGIC:
         if head.startswith(sig):
             return ext

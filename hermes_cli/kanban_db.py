@@ -633,6 +633,7 @@ class Task:
     goal_mode: bool = False
     goal_max_turns: Optional[int] = None
     session_id: Optional[str] = None         # originating HERMES_SESSION_ID; NULL from CLI/dashboard
+    origin: Optional[dict] = None            # structured conversation/message provenance (JSON on disk)
     # VALID_BLOCK_KINDS or None (legacy); kept across unblock so a same-kind re-block reads as a loop.
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
@@ -653,6 +654,7 @@ class Task:
             consecutive_failures=g("consecutive_failures", g("spawn_failures", 0)),
             last_failure_error=g("last_failure_error", g("last_spawn_error")),
             skills=skills_value,
+            origin=_json_or(g("origin")) if g("origin") else None,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
         )
@@ -861,6 +863,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- profile's state.db (kanban_create verifies before stamping). Indexed
     -- so per-session list queries stay cheap on larger boards.
     session_id           TEXT,
+    -- Structured provenance for agent-created cards: profile/session/message
+    -- anchors, route coordinates, a redacted prompt excerpt, and a dashboard
+    -- session link. NULL preserves compatibility for CLI/dashboard/legacy rows.
+    origin               TEXT,
     -- Typed block reason set by ``block_task`` (one of VALID_BLOCK_KINDS, or
     -- NULL for legacy/un-typed blocks). Drives routing: ``dependency`` never
     -- sits in ``blocked`` (goes to ``todo`` for parent-gating); the others go
@@ -1163,7 +1169,8 @@ def create_task(
     max_retries: Optional[int] = None, model_override: Optional[str] = None,
     provider_override: Optional[str] = None, reasoning_effort: Optional[str] = None,
     goal_mode: bool = False, goal_max_turns: Optional[int] = None, initial_status: str = "running",
-    session_id: Optional[str] = None, board: Optional[str] = None, project_id: Optional[str] = None,
+    session_id: Optional[str] = None, origin: Optional[dict] = None,
+    board: Optional[str] = None, project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
@@ -1194,6 +1201,10 @@ def create_task(
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}")
+    if origin is not None and not isinstance(origin, dict):
+        raise ValueError("origin must be an object/dict")
+    from hermes_cli.kanban_db_origin import sanitize_origin
+    origin = sanitize_origin(origin)
     # A project-scoped board anchors every new task to its project's repo
     # (deterministic worktree + branch) without each surface repeating it.
     # An explicit ``scratch`` (or ``project_id=""``) is a request for no project:
@@ -1266,8 +1277,8 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, origin, completion_contract
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1276,7 +1287,9 @@ def create_task(
                         _opt_int(max_runtime_seconds),
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
-                        1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        1 if goal_mode else 0, _opt_int(goal_max_turns), session_id,
+                        json.dumps(origin, ensure_ascii=False, sort_keys=True) if origin is not None else None,
+                        completion_contract,
                     ),
                 )
                 for pid in parents:
@@ -3905,13 +3918,14 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     if not task:
         raise ValueError(f"unknown task {task_id}")
     from hermes_cli.kanban_db_context import (
-        _ctx_attachments, _ctx_comments, _ctx_header, _ctx_parent_results, _ctx_prior_attempts,
+        _ctx_attachments, _ctx_comments, _ctx_header, _ctx_origin, _ctx_parent_results, _ctx_prior_attempts,
         _ctx_role_history,
     )
     # One clock reading so every relative age in this rendering agrees.
     now = int(time.time())
     lines: list[str] = []
     _ctx_header(lines, task)
+    _ctx_origin(lines, task)
     _ctx_attachments(lines, list_attachments(conn, task_id))
     _ctx_prior_attempts(lines, conn, task_id, now)
     _ctx_parent_results(lines, conn, task_id, now)

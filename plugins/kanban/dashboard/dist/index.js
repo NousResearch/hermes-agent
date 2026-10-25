@@ -3992,6 +3992,31 @@
     );
   }
 
+  function OriginMeta(props) {
+    const origin = props.origin;
+    if (!origin || typeof origin !== "object") return null;
+    const session = typeof origin.session_id === "string" ? origin.session_id : "";
+    const profile = typeof origin.profile === "string" ? origin.profile : "";
+    const sessionLabel = [profile, session].filter(Boolean).join(" / ");
+    // Never navigate an arbitrary stored URL (including imported legacy origins).
+    const sessionValue = session
+      ? h("a", { href: "/chat?resume=" + encodeURIComponent(session) + "&profile=" + encodeURIComponent(profile || "default") }, sessionLabel)
+      : sessionLabel;
+    const row = Number.isInteger(origin.message_row_id) && origin.message_row_id > 0
+      ? "session row " + origin.message_row_id : "";
+    const message = typeof origin.message_id === "string" ? origin.message_id : "";
+    const messageValue = message ? message + (row ? " (" + row + ")" : "") : row;
+    const route = [origin.platform, origin.chat_id, origin.thread_id]
+      .filter(function (v) { return typeof v === "string" && v; }).join(" / ");
+    return h(React.Fragment, null,
+      sessionValue ? h(MetaRow, { label: tx(props.i18n, "originSession", "Origin session"), value: sessionValue }) : null,
+      messageValue ? h(MetaRow, { label: tx(props.i18n, "originMessage", "Origin message"), value: messageValue }) : null,
+      route ? h(MetaRow, { label: tx(props.i18n, "originRoute", "Origin route"), value: route }) : null,
+      typeof origin.prompt_excerpt === "string" && origin.prompt_excerpt
+        ? h(MetaRow, { label: tx(props.i18n, "originPrompt", "Origin prompt"), value: origin.prompt_excerpt }) : null,
+    );
+  }
+
   function TaskDetail(props) {
     const { t: i18n } = useI18n();
     const t = props.data.task;
@@ -4039,6 +4064,7 @@
             : "on",
         }) : null,
         t.created_by ? h(MetaRow, { label: tx(i18n, "createdBy", "Created by"), value: t.created_by }) : null,
+        h(OriginMeta, { origin: t.origin, i18n: i18n }),
       ),
       h(StatusActions, {
         task: t,

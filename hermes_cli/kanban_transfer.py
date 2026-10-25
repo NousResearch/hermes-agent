@@ -72,6 +72,10 @@ def _scrub_local_state(conn: sqlite3.Connection) -> None:
     gateway chat ids subscribed to task events). Caller owns the transaction.
     Run on export and again on import (an archive is untrusted input)."""
     conn.execute("DELETE FROM kanban_notify_subs")
+    # Older archives predate structured origin; do not require a migration just
+    # to scrub them. New archives must not retain local conversation coordinates.
+    if "origin" in {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}:
+        conn.execute("UPDATE tasks SET origin = NULL")
     conn.execute(
         """
         UPDATE tasks

@@ -989,8 +989,18 @@ class WebSocketRelayTransport:
             fwd = _passthrough_from_wire(frame.get("forward", {}))
             # Same authenticated-reader proof as _on_inbound, bound to the forward; the
             # adapter moves it onto the event it decodes from this forward.
-            with relay_callback(self, fwd):
-                await self._passthrough_handler(fwd, frame.get("bufferId"))
+            buffer_id = frame.get("bufferId")
+            try:
+                with relay_callback(self, fwd):
+                    await self._passthrough_handler(fwd, buffer_id)
+            except Exception:
+                # Same contract as _on_inbound: keep this reader, withhold the ACK so the
+                # connector redelivers the buffered forward later.
+                logger.exception("relay: passthrough handler failed; forward left unacknowledged")
+                return
+            # ACK only after the handler took it, or every reconnect replays it.
+            if buffer_id:
+                await self._send_inbound_ack(str(buffer_id))
 
     _FRAME_HANDLERS = {
         "descriptor": _on_descriptor,

@@ -241,6 +241,36 @@ def _worker_run_id(task_id: str) -> Optional[int]:
         return None
 
 
+def _reattach_if_orphaned(kb, conn, tid: str, tool_name: str) -> None:
+    """Heal a run the dispatcher closed as dead while this worker was alive.
+
+    A false ``crashed`` verdict (pid probe misread a live, heartbeating worker, 2026-10-25) closes
+    the run and clears ``current_run_id``; every later lifecycle call would then fail the run CAS
+    with ``unknown id or not running`` and the finished card stays stranded. When this worker's
+    ``HERMES_KANBAN_RUN_ID`` is no longer the card's live run, ask the kernel to re-attach it
+    (``kanban_db_dispatch.reattach_orphaned_run``): reattached -> proceed; a live successor ->
+    refuse loudly (the operator sees an ``orphan_worker_refused`` event); anything else falls
+    through to the normal CAS, which reports the real refusal."""
+    run_id = _worker_run_id(tid)
+    if run_id is None:
+        return
+    task = kb.get_task(conn, tid)
+    if task is None or (task.current_run_id == run_id and task.status == "running"):
+        return
+    from hermes_cli.kanban_db_dispatch_liveness import reattach_orphaned_run
+    verdict = reattach_orphaned_run(
+        conn, tid, run_id, pid=os.getpid(), claim_lock=os.environ.get("HERMES_KANBAN_CLAIM_LOCK"))
+    if verdict == "reattached":
+        logger.warning("kanban %s: run %s of task %s had been closed as dead by the dispatcher while this "
+                       "worker (pid %s) was alive; re-attached", tool_name, run_id, tid, os.getpid())
+    elif verdict == "successor_live":
+        raise _Reject(
+            f"{tool_name} refused: the dispatcher closed this worker's run {run_id} on {tid} as "
+            f"crashed and another worker now owns the card (run {task.current_run_id}). Do not "
+            f"mutate it; post your findings with kanban_comment and stop — an operator has been "
+            f"alerted (orphan_worker_refused event).")
+
+
 def _stamp_worker_session_metadata(task_id: str, metadata: Optional[dict]) -> Optional[dict]:
     """Add trusted worker session id metadata for this worker's own task."""
     session_id = _own_task_env(task_id, "HERMES_SESSION_ID")
@@ -576,6 +606,14 @@ def heartbeat_current_worker_from_env() -> bool:
     try:
         from hermes_cli import kanban_db_dispatch as kbd
         with _board(None, quiet_close=True) as (kb, conn):
+            try:
+                # A run the dispatcher wrongly closed as dead heals on the worker's next activity.
+                _reattach_if_orphaned(kb, conn, tid, "auto-heartbeat")
+            except _Reject as exc:
+                logger.warning("auto-heartbeat: %s", exc.args[0])
+                return False
+            except Exception:
+                logger.debug("auto-heartbeat: re-attach probe failed", exc_info=True)
             ops = ((kb.heartbeat_claim, {"claimer": os.environ.get("HERMES_KANBAN_CLAIM_LOCK")}),
                    (kbd.heartbeat_worker, {"note": None, "expected_run_id": _worker_run_id(tid)}))
             succeeded = True
@@ -741,6 +779,7 @@ def _handle_complete(args: dict, **kw) -> str:
     _require_dict_metadata(metadata)
     metadata = _stamp_worker_session_metadata(tid, metadata)
     with _board(args.get("board")) as (kb, conn):
+        _reattach_if_orphaned(kb, conn, tid, "kanban_complete")
         # Goal-mode pre-completion judge gate (Issue #38367). Prevent workers from bypassing the auxiliary
         # judge by calling kanban_complete before acceptance criteria are met. Only enforce when a judge is
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
@@ -818,6 +857,7 @@ def _handle_block(args: dict, **kw) -> str:
     with _board(args.get("board")) as (kb, conn):
         _check(kind is None or kind in kb.VALID_BLOCK_KINDS,
                f"kind must be one of {sorted(kb.VALID_BLOCK_KINDS)} (or omit it)")
+        _reattach_if_orphaned(kb, conn, tid, "kanban_block")
         # The goal loop treats ANY blocked status as terminal, so kanban_block
         # would be an escape hatch around the completion judge: goal_mode tasks
         # may only block on genuine external blockers.
@@ -857,6 +897,7 @@ def _handle_schedule(args: dict, **kw) -> str:
     _check(raw_reason is None or isinstance(raw_reason, str), "reason must be a string")
     reason = _redact(raw_reason.strip()) if raw_reason and raw_reason.strip() else None
     with _board(args.get("board")) as (kb, conn):
+        _reattach_if_orphaned(kb, conn, tid, "kanban_schedule")
         # The goal loop treats ``scheduled`` as terminal like ``blocked``, so
         # parking would bypass the completion judge (see kanban_block, #38696).
         task = kb.get_task(conn, tid)
@@ -897,6 +938,7 @@ def _handle_request_review(args: dict, **kw) -> str:
                f"reviewer profile {reviewer!r} is not installed. "
                f"Installed profiles: {', '.join(list_profile_names())}")
     with _board(args.get("board")) as (kb, conn):
+        _reattach_if_orphaned(kb, conn, tid, "kanban_request_review")
         _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
         try:
             ok, fail_reason = kb.request_review(
@@ -923,6 +965,7 @@ def _handle_request_changes(args: dict, **kw) -> str:
     reason = _redact(
         _require_text(args, "reason", "reason is required — describe the changes needed"))
     with _board(args.get("board")) as (kb, conn):
+        _reattach_if_orphaned(kb, conn, tid, "kanban_request_changes")
         ok, detail = kb.request_changes(
             conn, tid, reason=reason, expected_run_id=_worker_run_id(tid))
         _check(ok, f"could not request changes for {tid}: {detail or 'invalid review state'}")
@@ -937,6 +980,7 @@ def _handle_heartbeat(args: dict, **kw) -> str:
     tid = _worker_guard("kanban_heartbeat", args)
     from hermes_cli import kanban_db_dispatch as kbd
     with _board(args.get("board")) as (kb, conn):
+        _reattach_if_orphaned(kb, conn, tid, "kanban_heartbeat")
         # The dispatcher pins HERMES_KANBAN_CLAIM_LOCK at spawn; the default
         # claimer covers locally-driven workers that bypassed the dispatcher.
         kb.heartbeat_claim(conn, tid, claimer=os.environ.get("HERMES_KANBAN_CLAIM_LOCK"))

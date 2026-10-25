@@ -29,6 +29,13 @@ from hermes_cli.kanban_db_dispatch_reclaim import (
     detect_stale_running,
     reconcile_orphaned_running,
 )
+from hermes_cli.kanban_db_dispatch_liveness import (
+    _process_names_task,
+    _rebind_worker_fingerprint,
+    _terminate_reclaimed_worker,
+    _terminate_worker_process_group,
+    _worker_alive_for_task,
+)
 from hermes_cli.kanban_db_admission import (
     configured_max_active_per_board,
     note_quota_exhausted,
@@ -442,7 +449,20 @@ def _fingerprint_matches(pid: Optional[int], started_at) -> Optional[bool]:
         return None
     if isinstance(started_at, str) and "|" in started_at:
         from gateway.drain_control import current_instantiation_epoch
-        return f"{current_instantiation_epoch()}|{current}" == started_at
+        from gateway.status import start_time_fingerprints_match
+        epoch, _, recorded_start = started_at.partition("|")
+        if epoch != current_instantiation_epoch():
+            return False
+        try:
+            # Drift-tolerant on purpose (START_TIME_DRIFT_TOLERANCE, #117505): on macOS psutil's
+            # ``create_time`` moved with ``kern.boottime`` between the spawn-time record and a later
+            # read (2026-10-25: +2 s in a day-old gateway), and exact equality turned every live,
+            # heartbeating worker into a "recycled PID". A real recycle is never within 2 s of the
+            # original's start. The raw-start-time read now removes the drift; the tolerance keeps
+            # rows recorded by the previous reader matching.
+            return start_time_fingerprints_match(recorded_start, current)
+        except (TypeError, ValueError):
+            return False
     from gateway.status import _start_times_agree
     try:
         return _start_times_agree(current, started_at)
@@ -483,7 +503,7 @@ def _kill_fn(signal_fn) -> Optional[Callable[[int, int], None]]:
     return os.kill if hasattr(os, "kill") else None
 
 
-def _poll_worker_exit(pid: int, started_at: Optional[int] = None) -> bool:
+def _poll_worker_exit(pid: int, started_at=None) -> bool:
     """Poll ~5 s (10 x 0.5 s) for ``pid`` to die; True once it is gone."""
     for _ in range(10):
         if not _worker_alive(pid, started_at):
@@ -500,75 +520,6 @@ def _sigkill(kill, pid: int) -> bool:
         return True
     except (ProcessLookupError, OSError):
         return False
-
-
-def _terminate_reclaimed_worker(
-    pid: Optional[int],
-    claim_lock: Optional[str],
-    *,
-    signal_fn=None,
-    started_at=None,
-) -> dict[str, Any]:
-    """Best-effort host-local worker termination for reclaim paths. ``started_at`` is the spawn-time
-    fingerprint: when the live process no longer matches it, the PID was recycled and nothing is
-    signalled — the worker is gone, which is what the reclaim wanted (``terminated`` = True). An
-    UNVERIFIED spawn (fingerprint capture failed) that is still live is never signalled either, but
-    it is reported as surviving (``signal_refused``) so the reclaim holds the claim instead of
-    spawning a duplicate beside it."""
-    info: dict[str, Any] = {
-        "prev_pid": int(pid) if pid else None,
-        "host_local": False,
-        "termination_attempted": False,
-        "terminated": False,
-        "sigkill": False,
-    }
-    if not pid or pid <= 0 or not claim_lock:
-        return info
-    if not str(claim_lock).startswith(_kb._host_prefix()):
-        return info
-    info["host_local"] = True
-
-    kill = _kill_fn(signal_fn)
-    if kill is None:
-        return info
-    if started_at == UNVERIFIED_WORKER_FINGERPRINT:
-        # Never signal by bare number: a dead PID is "gone" (reclaim proceeds), a live one is held.
-        info["signal_refused"] = True
-        info["terminated"] = not _kb._pid_alive(pid)
-        return info
-    if _kb._pid_alive(pid):
-        verdict = _fingerprint_matches(pid, started_at)
-        if verdict is False:
-            info["terminated"] = True
-            info["pid_recycled"] = True
-            return info
-        if verdict is None:
-            # Live, identity unreadable right now: an unverified process is never signalled, and
-            # the claim is held (not released beside it). The next sweep re-reads.
-            info["signal_refused"] = True
-            info["fingerprint_unreadable"] = True
-            return info
-
-    info["termination_attempted"] = True
-    try:
-        kill(int(pid), signal.SIGTERM)
-    except ProcessLookupError:
-        # Already gone = successful termination. Leaving terminated=False would
-        # make the reclaim guard misread a dead worker as alive and defer forever.
-        info["terminated"] = True
-        return info
-    except OSError:
-        return info
-
-    if _poll_worker_exit(pid, started_at):
-        info["terminated"] = True
-        return info
-    if _worker_alive(pid, started_at):
-        if not _sigkill(kill, pid):
-            return info
-        info["sigkill"] = True
-    info["terminated"] = not _worker_alive(pid, started_at)
-    return info
 
 
 def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[str]:
@@ -758,6 +709,10 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         started_at = _kb._row_get(row, "worker_started_at")
         alive = _kb._pid_alive(pid)
         verdict = _fingerprint_matches(pid, started_at) if alive else True
+        if alive and verdict is False and _process_names_task(pid, tid):
+            # The stored fingerprint drifted (2026-10-25) but the process names this card: it IS
+            # the worker, so the timeout must actually end it. Re-read its identity for the kill.
+            verdict, started_at = True, (_process_fingerprint(pid) or started_at)
         if alive and (started_at == UNVERIFIED_WORKER_FINGERPRINT or verdict is None):
             # Fingerprint capture failed at spawn, or the identity cannot be read right now: we cannot
             # prove this live PID is our worker, so it is neither signalled nor released beside
@@ -1058,7 +1013,8 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
     sweep = _CrashSweep()
     with _kb.write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee "
+            "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee, "
+            "last_heartbeat_at, workspace_path "
             "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
@@ -1072,13 +1028,30 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             started_at = _kb._row_get(row, "started_at")
             if started_at is not None and time.time() - started_at < _kb._resolve_crash_grace_seconds():
                 continue
-            if _worker_alive(row["worker_pid"], _kb._row_get(row, "worker_started_at")):
+            fingerprint = _kb._row_get(row, "worker_started_at")
+            alive, hold = _worker_alive_for_task(
+                row["worker_pid"], fingerprint,
+                task_id=row["id"], last_heartbeat_at=_kb._row_get(row, "last_heartbeat_at"),
+            )
+            if alive:
+                if hold is not None:
+                    # The fingerprint alone would have declared this live, heartbeating worker
+                    # dead (2026-10-25 false "pid not alive" x7). Record why it was held and,
+                    # when the process itself names the card, re-record its identity.
+                    _rebind_worker_fingerprint(conn, row["id"], int(row["worker_pid"]), hold, fingerprint)
                 continue
 
             pid = int(row["worker_pid"])
             dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board)
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
+            if not _kb._pid_alive(pid):
+                # Leader gone: end what is left of its process group before a replacement is
+                # spawned into the same workspace (verified members only — never a recycled number).
+                leftovers = _terminate_worker_process_group(
+                    pid, row["id"], _kb._row_get(row, "workspace_path"))
+                if leftovers:
+                    dead.event_payload["group_terminated"] = leftovers
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "

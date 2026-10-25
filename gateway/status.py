@@ -470,20 +470,11 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
 def _get_process_start_time(pid: int) -> Optional[int]:
     """Return a stable per-process start-time fingerprint, or None.
 
-    Used as a PID-reuse guard: a ``(pid, start_time)`` pair uniquely identifies
-    a process, so a recycled PID (same number, different process) yields a
-    different value and is never mistaken for the original.
-
-    On Linux this is field 22 of ``/proc/<pid>/stat`` (start time in clock
-    ticks since boot, an int).  On platforms without ``/proc`` (macOS, Windows)
-    we fall back to ``psutil.Process(pid).create_time()`` — a float epoch
-    timestamp — quantized to an int (centiseconds) for stable equality.
-
-    The two sources are never mixed on a single platform: ``/proc`` always
-    succeeds first on Linux, and always fails on macOS/Windows so psutil is
-    always used there.  Because the guard only compares the value recorded at
-    spawn against the live value *on the same host*, the differing units across
-    platforms are irrelevant — only same-source equality matters.
+    PID-reuse guard: a ``(pid, start_time)`` pair identifies one process incarnation. Linux: field
+    22 of ``/proc/<pid>/stat`` (clock ticks since boot). No ``/proc`` (macOS, Windows): the kernel's
+    process creation time via psutil (``status_process_identity.raw_create_time``), quantized to
+    centiseconds. Sources are never mixed on one platform and values are only compared on the
+    same host, so the differing units do not matter.
     """
     stat_path = Path(f"/proc/{pid}/stat")
     try:
@@ -497,7 +488,8 @@ def _get_process_start_time(pid: int) -> Optional[int]:
     # of the same process compare equal without float-precision fragility.
     try:
         import psutil  # type: ignore
-        return round(psutil.Process(pid).create_time() * 100)
+        from gateway.status_process_identity import raw_create_time
+        return round(raw_create_time(psutil.Process(pid)) * 100)
     except Exception:
         return None
 

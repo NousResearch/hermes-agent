@@ -2305,10 +2305,17 @@ def release_stale_claims(
         # observable progress — reclaim even if the PID is alive (logic loop).
         heartbeat_stale = hb is not None and (now - int(hb)) > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
         started_at = _row_get(row, "worker_started_at")
-        if (host_local and row["worker_pid"] and _worker_alive(row["worker_pid"], started_at)
-                and not heartbeat_stale):
-            _extend_live_stale_claim(conn, row, now)
-            continue
+        if host_local and row["worker_pid"] and not heartbeat_stale:
+            # Card-level witnesses (command line names the card / fresh heartbeat) override a
+            # fingerprint that drifted (2026-10-25): a live worker is extended, never released beside.
+            alive, hold = _worker_alive_for_task(
+                row["worker_pid"], started_at, task_id=row["id"], last_heartbeat_at=hb)
+            if alive:
+                if hold is not None:
+                    with write_txn(conn):
+                        _rebind_worker_fingerprint(conn, row["id"], int(row["worker_pid"]), hold, started_at)
+                _extend_live_stale_claim(conn, row, now)
+                continue
 
         termination = _terminate_reclaimed_worker(
             row["worker_pid"], row["claim_lock"], signal_fn=signal_fn, started_at=started_at,
@@ -4379,8 +4386,12 @@ from hermes_cli.kanban_db_dispatch import (
     _defer_reclaim_for_live_worker,
     _pid_alive,
     _record_task_failure,
-    _terminate_reclaimed_worker,
     _worker_alive,
     _worker_survived_termination,
     _worker_terminal_timeout_env,
+)
+from hermes_cli.kanban_db_dispatch_liveness import (
+    _rebind_worker_fingerprint,
+    _terminate_reclaimed_worker,
+    _worker_alive_for_task,
 )

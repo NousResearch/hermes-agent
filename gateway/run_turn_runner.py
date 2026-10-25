@@ -28,6 +28,7 @@ from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.base_exec_approval import ea_default_reason_text
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
+from hermes_cli.plugins_dispatch import stream_held
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -230,12 +231,16 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             scfg = StreamingConfig()
         # display.platforms.<plat>.streaming may disable streaming per platform; None = follow global.
         plat_streaming = ctx.resolve_display_setting(ctx.user_config, platform_key, "streaming")
-        want_stream_deltas = not ctx.scheduled_heartbeat and scfg.enabled_for(plat_streaming)
+        # A loaded ``hold_stream`` transform rewrites this session's reply before the user may see it:
+        # no drafts, edits, native stream or commentary bubbles; the rewrite goes out as one plain
+        # final while the typing indicator runs (the agent also withholds every delta).
+        held = stream_held()
+        want_stream_deltas = not held and not ctx.scheduled_heartbeat and scfg.enabled_for(plat_streaming)
         # A finite (`-z`, `chat -q`) viewer prints only the terminal reply, like the classic quiet
         # CLI that never wired commentary. Commentary it cannot see must not be recorded as a
         # delivery, or a final that arrives as commentary (codex app-server) suppresses the reply.
         want_interim_messages = (bool(ctx.interim_assistant_messages_enabled) and not ctx.scheduled_heartbeat
-                                 and not _finite_viewer_turn())
+                                 and not held and not _finite_viewer_turn())
         if want_stream_deltas or want_interim_messages:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer

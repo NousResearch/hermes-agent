@@ -122,6 +122,19 @@ import {
 import { useCodingWorkspace } from './use-coding-workspace'
 import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
 
+/** Grid areas for the menu / input / controls row: one row when roomy, input
+ *  above menu + controls when stacked, and one area per row once two touch-size
+ *  controls no longer fit side by side. */
+function controlRowGridClass(singleColumn: boolean, stacked: boolean): string {
+  if (singleColumn) {
+    return 'grid-cols-[minmax(0,1fr)] gap-(--composer-row-gap) [grid-template-areas:"input"_"menu"_"controls"]'
+  }
+
+  return stacked
+    ? 'grid-cols-[auto_1fr] gap-(--composer-row-gap) [grid-template-areas:"input_input"_"menu_controls"]'
+    : 'grid-cols-[auto_1fr_auto] items-center gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
+}
+
 export function ChatBar({
   busy,
   cwd,
@@ -397,7 +410,7 @@ export function ChatBar({
     return onCancel()
   }, [activeQueueSessionKeyRef, onCancel])
 
-  const { compactPill, foldVoice, minimal, stacked } = useComposerMetrics({
+  const { compactPill, foldVoice, minimal, stacked, singleColumn } = useComposerMetrics({
     composerDockRef,
     composerRef,
     composerSurfaceRef,
@@ -1152,7 +1165,11 @@ export function ChatBar({
       hideModelPill={guidedChat}
       minimal={minimal || chatOnboardingSolo}
       onDictate={dictate}
-      onQueue={queueDraft}
+      onQueue={() => {
+        // Queueing clears the draft too, so the list over it closes with it.
+        closeTrigger()
+        queueDraft()
+      }}
       onSteer={canSteer ? () => steerDraft('steer') : undefined}
       onToggleAutoSpeak={handleToggleAutoSpeak}
       state={state}
@@ -1401,6 +1418,9 @@ export function ChatBar({
                 return
               }
 
+              // The send clears the text an open completion list was built
+              // from; a list left open would take the next Enter or Tab.
+              closeTrigger()
               submitDraft()
             }}
             ref={composerRef}
@@ -1526,14 +1546,7 @@ export function ChatBar({
                       }
                     />
                   )}
-                  <div
-                    className={cn(
-                      'grid w-full',
-                      stacked
-                        ? 'grid-cols-[auto_1fr] gap-(--composer-row-gap) [grid-template-areas:"input_input"_"menu_controls"]'
-                        : 'grid-cols-[auto_1fr_auto] items-center gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
-                    )}
-                  >
+                  <div className={cn('grid w-full', controlRowGridClass(singleColumn, stacked))}>
                     <div className="flex translate-y-[3px] items-start gap-(--composer-control-gap) self-start [grid-area:menu]">
                       {contextMenu}
                       <ContribSlot area={COMPOSER_AREAS.leading} />

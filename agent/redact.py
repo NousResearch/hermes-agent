@@ -559,6 +559,12 @@ _URL_BARE_TOKEN_RE = re.compile(
 # JWTs always start with "eyJ" (base64 "{"); 1-, 2- and 3-part forms.
 _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_=-]{4,}){0,2}")
 
+# Links ``hermes webapp`` prints that sign a browser in as the user: the gateway's browser credential
+# after ``hermes-session=`` and the one-use ticket of a ``/webapp/launch`` link. Both values are
+# URL-safe base64 (43 characters); the 20-character floor leaves placeholders and code (``${token}``).
+_WEBAPP_LINK_CREDENTIAL_RE = re.compile(
+    r"((?<![A-Za-z0-9_-])hermes-session=|/webapp/launch#(?:[^\s#]*?&)?ticket=)[A-Za-z0-9_-]{20,}")
+
 # E.164 phone numbers, 7-15 digits; the lookahead rejects hex strings / identifiers.
 _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
 
@@ -985,6 +991,11 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
 
     if "eyJ" in text:
         text = _JWT_RE.sub(lambda m: _mask_token(m.group(0)), text)
+
+    # A Webapp sign-in link signs a browser in as the user, so its credential is masked whatever the
+    # web-URL policy below.
+    if "hermes-session=" in text or "/webapp/launch#" in text:
+        text = _WEBAPP_LINK_CREDENTIAL_RE.sub(lambda m: m.group(1) + "***", text)
 
     if redact_url_credentials:  # opt-in; known credential shapes in URLs are caught above
         # NOTE: Web-URL redaction (query params + userinfo + HTTP access-log request targets) is

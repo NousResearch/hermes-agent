@@ -1283,12 +1283,23 @@ class TestToolsetInjection:
         fake_toolsets = {
             "hermes-cli": {"tools": [], "description": "CLI", "includes": []},
         }
+        # FIX-2071: isolate the global tool registry like the sibling test
+        # above. Without this, discover_mcp_tools() registers
+        # mcp__good__ping / mcp__broken__ping (+ per-server utility tools)
+        # into the REAL registry and never removes them; their
+        # {path}/required-[path] schemas make the read_file argument
+        # fingerprint ambiguous for every later test file in a
+        # single-process run (measured: 2 reds in
+        # test_tool_call_repair_coverage.py).
+        from tools.registry import ToolRegistry
+        mock_registry = ToolRegistry()
 
         with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
              patch("tools.mcp_tool._servers", fresh_servers), \
              patch("tools.mcp_tool_config._load_mcp_config", return_value=fake_config), \
              patch("tools.mcp_tool_discovery._connect_server", side_effect=flaky_connect), \
-             patch("toolsets.TOOLSETS", fake_toolsets):
+             patch("toolsets.TOOLSETS", fake_toolsets), \
+             patch("tools.registry.registry", mock_registry):
             from tools.mcp_tool_discovery import discover_mcp_tools
 
             # First call: good connects, broken fails

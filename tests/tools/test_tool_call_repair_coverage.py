@@ -71,6 +71,17 @@ _SPECS = [
 
 @pytest.fixture
 def tool_registry():
+    # FIX-2071: snapshot/restore, never a bare deregister. Teardown's
+    # deregister(name) removes whatever entry sits under the name AT THAT
+    # MOMENT: in single-process runs the fixture's register() for the core
+    # names is rejected cross-toolset (real read_file lives in toolset "file",
+    # not "core"), so the entry it then deleted was the REAL core tool —
+    # every later file in the same interpreter lost read_file & friends
+    # ("Unknown tool: read_file"). Restoring the original entry object
+    # (or deleting the stub when the name was absent) keeps the shared
+    # registry exactly as the fixture found it, in both run modes.
+    originals = {name: registry.snapshot_registration(name)
+                 for name, _r, _p, _t in _SPECS}
     for name, required, props, toolset in _SPECS:
         registry.register(
             name=name, toolset=toolset, handler=lambda a, **kw: "{}",
@@ -81,7 +92,21 @@ def tool_registry():
         yield
     finally:
         for name, _r, _p, _t in _SPECS:
-            registry.deregister(name)
+            original = originals[name]
+            current = registry.snapshot_registration(name)
+            if original is None:
+                # Name was absent before the fixture; remove the stub.
+                if current is not None:
+                    registry.deregister(name)
+            elif current is not original:
+                # A stub replaced the original entry; put the original
+                # object back (restore_registration also rebuilds the
+                # affected toolsets' check/alias state and bumps the
+                # snapshot generation).
+                assert current is not None, \
+                    f"fixture: entry for {name!r} was removed during the test"
+                assert registry.restore_registration(name, current, original), \
+                    f"fixture: could not restore original entry for {name!r}"
 
 
 def _naive_parse_fails(payload):

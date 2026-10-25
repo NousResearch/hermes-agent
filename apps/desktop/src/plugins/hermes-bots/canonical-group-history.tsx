@@ -69,28 +69,31 @@ function EventBody({ event, notice }: { event: CanonicalGroupEvent; notice?: str
 // Previews download the whole file over RPC; larger or unsized images keep only Download.
 const IMAGE_PREVIEW_MAX_BYTES = 5 * 1024 * 1024
 
-// Automatic previews share one small download budget across the renderer, in request order;
-// a file already downloading is joined rather than requested again. Manual Download stays outside it.
+// Automatic previews share a small download budget per connection, in request order; a file already
+// downloading is joined rather than requested again. Manual Download stays outside it. The budget is
+// per connection because a remote whose dial hangs holds its slots for good, and must not stall others.
 type Preview = Awaited<ReturnType<typeof fetchCanonicalGroupAttachment>>
+interface PreviewQueue { slots: number; waiters: Array<() => void> }
 const previewDownloads = new Map<string, Promise<Preview>>()
-const previewWaiters: Array<() => void> = []
-let previewSlots = 2
+const previewQueues = new Map<string, PreviewQueue>()
 
-function releasePreviewSlot() {
-  const next = previewWaiters.shift()
+function releasePreviewSlot(queue: PreviewQueue) {
+  const next = queue.waiters.shift()
 
-  if (next) {next()} else {previewSlots++}
+  if (next) {next()} else {queue.slots++}
 }
 
-function queuePreview(key: string, fetch: () => Promise<Preview>, onPreview: (preview: Preview) => void) {
+function queuePreview(connectionId: string, key: string, fetch: () => Promise<Preview>, onPreview: (preview: Preview) => void) {
+  const queue = previewQueues.get(connectionId) ?? { slots: 2, waiters: [] }
+  previewQueues.set(connectionId, queue)
   let cancelled = false
   const deliver = (download: Promise<Preview>) => void download.then(preview => { if (!cancelled) {onPreview(preview)} }, () => undefined)
 
   const run = () => {
     let download = previewDownloads.get(key)
 
-    if (download) {releasePreviewSlot()} else {
-      download = fetch().finally(() => { previewDownloads.delete(key); releasePreviewSlot() })
+    if (download) {releasePreviewSlot(queue)} else {
+      download = fetch().finally(() => { previewDownloads.delete(key); releasePreviewSlot(queue) })
       previewDownloads.set(key, download)
     }
 
@@ -99,14 +102,14 @@ function queuePreview(key: string, fetch: () => Promise<Preview>, onPreview: (pr
 
   const running = previewDownloads.get(key)
 
-  if (running) {deliver(running)} else if (previewSlots > 0) {previewSlots--; run()} else {previewWaiters.push(run)}
+  if (running) {deliver(running)} else if (queue.slots > 0) {queue.slots--; run()} else {queue.waiters.push(run)}
 
   // A preview that leaves before its turn gives up its place without sending a request.
   return () => {
     cancelled = true
-    const at = previewWaiters.indexOf(run)
+    const at = queue.waiters.indexOf(run)
 
-    if (at >= 0) {previewWaiters.splice(at, 1)}
+    if (at >= 0) {queue.waiters.splice(at, 1)}
   }
 }
 
@@ -120,7 +123,8 @@ function ImagePreview({ binding, eventId, attachment, disabled }: {
   const { connectionId, profile, roomId } = binding
   const previewable = !!attachmentId && size !== undefined && size <= IMAGE_PREVIEW_MAX_BYTES
 
-  // History loads the whole room: fetch only near the viewport. Leaving it before the bytes arrive releases the queued slot.
+  // History loads the whole room: fetch only near the viewport. Leaving before its turn gives up the queued place;
+  // a started download runs to completion and is shared if the preview returns.
   useEffect(() => {
     const el = box.current
 
@@ -137,7 +141,7 @@ function ImagePreview({ binding, eventId, attachment, disabled }: {
     const key = JSON.stringify([connectionId, profile, roomId, eventId, attachmentId])
 
     // A failed preview leaves the Download button as the way to the file.
-    const cancel = queuePreview(key, () => fetchCanonicalGroupAttachment({ connectionId, profile, roomId }, eventId, attachmentId), ({ bytes, mime }) => {
+    const cancel = queuePreview(connectionId, key, () => fetchCanonicalGroupAttachment({ connectionId, profile, roomId }, eventId, attachmentId), ({ bytes, mime }) => {
       url = URL.createObjectURL(new Blob([bytes], { type: mime }))
       setSrc(url)
     })

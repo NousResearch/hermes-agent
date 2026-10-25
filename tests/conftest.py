@@ -604,6 +604,19 @@ def _neutralize_macos_keychain_creds(request, monkeypatch):
         lambda *_args, **_kwargs: None,
         raising=False,
     )
+    # Same for the Keychain-only commit and the Keychain metadata read used by refresh writes.
+    monkeypatch.setattr(
+        _mod,
+        "_commit_claude_code_credentials_to_keychain",
+        lambda *_args, **_kwargs: False,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        _mod,
+        "_claude_code_keychain_oauth_metadata",
+        lambda *_args, **_kwargs: {},
+        raising=False,
+    )
     return
 
 

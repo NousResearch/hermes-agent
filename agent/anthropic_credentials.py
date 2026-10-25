@@ -326,14 +326,42 @@ def _keychain_mirror_command(account: str, payload: dict[str, Any]) -> tuple[lis
     The command line goes to ``security -i`` on stdin, with the secret hex-encoded (``-X``):
     a bare ``-w`` prompts twice on /dev/tty when a terminal exists (hangs the CLI) and, with
     no terminal, reads only the first line and stores an EMPTY password when the confirmation
-    read hits EOF — either way the live token must never sit on argv.
+    read hits EOF. Payloads too long for ``security -i`` fall back to ``-X`` on argv (still hex, never
+    ``-w``), the same trade-off Claude Code makes for its own writes.
     """
     def quoted(value: str) -> str:  # the ``security -i`` tokenizer: double quotes, backslash escapes
         return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
     encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8").hex()
     line = f"add-generic-password -U -a {quoted(account)} -s {quoted(_CLAUDE_CODE_KEYCHAIN_SERVICE)} -X {encoded}\n"
-    return ["security", "-i"], line
+    if len(line) <= _SECURITY_INTERACTIVE_LINE_MAX:
+        return ["security", "-i"], line
+    # ``security -i`` reads each command into a 4 KiB line buffer: a longer line is cut, the cut-off hex
+    # is stored as a TRUNCATED (unparsable) item, and the rest runs as an "unknown command" (exit 1).
+    # The mcpOAuth tokens push the payload past that, so long payloads go on argv like Claude Code does.
+    return ["security", "add-generic-password", "-U", "-a", account, "-s", _CLAUDE_CODE_KEYCHAIN_SERVICE,
+            "-X", encoded], ""
+
+
+# Claude Code's own cut-over (``re=4032`` in its keychain store): above this, ``security -i`` truncates.
+_SECURITY_INTERACTIVE_LINE_MAX = 4032
+
+
+def _write_claude_code_keychain_item(account: str, payload: dict[str, Any]) -> None:
+    """Write *payload* to the Claude Code Keychain item and read it back; raises on any failure.
+
+    The read-back catches a write that ``security`` stored differently from what was sent (the
+    ``security -i`` truncation above produced exactly that: an item Claude Code cannot parse)."""
+    argv, line = _keychain_mirror_command(account, payload)
+    result = subprocess.run(
+        argv, input=line, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"security exited {result.returncode}: {(result.stderr or '').strip()[:200]}")
+    stored = _find_claude_code_keychain_item()
+    if stored is None or stored[1] != payload:
+        raise RuntimeError("Keychain read-back does not match the payload that was written")
 
 
 def _read_claude_code_credentials_from_keychain() -> Optional[dict[str, Any]]:
@@ -447,12 +475,18 @@ def _post_oauth_token(
 
 
 def _oauth_token_state(result: dict[str, Any], *, fallback_refresh_token: str = "") -> dict[str, Any]:
-    """Token-endpoint JSON -> ``{access_token, refresh_token, expires_at_ms}`` (expires_in defaults to 3600s)."""
-    return {
+    """Token-endpoint JSON -> ``{access_token, refresh_token, expires_at_ms[, scopes]}`` (expires_in defaults to
+    3600s). ``scopes`` is the granted ``scope`` string split like Claude Code does; Claude Code >=2.1.81 treats a
+    stored login without ``user:inference`` in ``scopes`` as logged out, so a rotation must carry it."""
+    state = {
         "access_token": result.get("access_token", ""),
         "refresh_token": result.get("refresh_token", fallback_refresh_token),
         "expires_at_ms": int(time.time() * 1000) + (result.get("expires_in", 3600) * 1000),
     }
+    scope = result.get("scope")
+    if isinstance(scope, str) and scope.split():
+        state["scopes"] = scope.split()
+    return state
 
 
 def refresh_anthropic_oauth_pure(refresh_token: str, *, use_json: bool = False) -> dict[str, Any]:
@@ -518,7 +552,7 @@ def _refresh_oauth_token(creds: dict[str, Any]) -> Optional[str]:
             try:
                 _write_claude_code_credentials(
                     refreshed["access_token"], refreshed["refresh_token"], refreshed["expires_at_ms"],
-                    spent_refresh_token=refresh_token,
+                    scopes=refreshed.get("scopes"), spent_refresh_token=refresh_token,
                 )
             except Exception as e:
                 logger.error(
@@ -540,28 +574,104 @@ def _refresh_oauth_token(creds: dict[str, Any]) -> Optional[str]:
         return None
 
 
+_CLAUDE_OAUTH_TOKEN_KEYS = ("accessToken", "refreshToken", "expiresAt")
+
+# Scopes of a Claude Code (claude.ai) login, as Claude Code requests them at /login.
+_CLAUDE_CODE_LOGIN_SCOPES = ("user:profile", "user:inference", "user:sessions:claude_code", "user:mcp_servers",
+                             "user:file_upload")
+
+
+def _apply_claude_code_scopes(oauth: dict[str, Any], scopes: Optional[list]) -> None:
+    """Set ``scopes`` on a ``claudeAiOauth`` record Hermes is about to write.
+
+    The token response's scopes win. Without them the stored scopes are kept, and a record that has none
+    with ``user:inference`` gets Claude Code's login scopes: Claude Code >=2.1.81 treats such a record as
+    logged out, so writing it would sign Claude Code out (seen on macOS after the Keychain item lost them).
+    """
+    if scopes:
+        oauth["scopes"] = list(scopes)
+    stored = oauth.get("scopes")
+    if not (isinstance(stored, list) and "user:inference" in stored):
+        oauth["scopes"] = list(_CLAUDE_CODE_LOGIN_SCOPES)
+
+
+def _claude_oauth_metadata(record: Any) -> dict[str, Any]:
+    """Everything in a stored ``claudeAiOauth`` record except the rotated token triple (``scopes``,
+    ``subscriptionType``, ``rateLimitTier``, ``clientId``…)."""
+    if not isinstance(record, dict):
+        return {}
+    return {k: v for k, v in record.items() if k not in _CLAUDE_OAUTH_TOKEN_KEYS}
+
+
+def _claude_code_keychain_oauth_metadata() -> dict[str, Any]:
+    """Metadata of the Claude Code Keychain login (macOS), ``{}`` when there is none. Best-effort."""
+    if platform.system() != "Darwin":
+        return {}
+    item = _find_claude_code_keychain_item()  # already None on every lookup/parse failure
+    return _claude_oauth_metadata(item[1].get("claudeAiOauth")) if item else {}
+
+
+def _commit_claude_code_credentials_to_keychain(
+    access_token: str, refresh_token: str, expires_at_ms: int, *, scopes: Optional[list], spent_refresh_token: str
+) -> bool:
+    """Commit a rotation to the Claude Code Keychain item ONLY (macOS, no ~/.claude/.credentials.json).
+
+    On macOS Claude Code keeps its login in the Keychain and treats ~/.claude/.credentials.json as a
+    plaintext fallback: whenever a Keychain read comes back empty (its ``security`` call has a 2 s
+    timeout, easily hit under load) it adopts the file and, on its next credential write, copies the
+    file's ``claudeAiOauth`` into the Keychain wholesale and deletes the file. A file Hermes created
+    therefore replaces Claude Code's login, so Hermes must not create one when the Keychain holds the
+    login it just rotated. Returns False (nothing written) when that is not the case; raises
+    ``CredentialPersistError`` when the Keychain write itself fails (this is the commit step).
+    """
+    if platform.system() != "Darwin" or not spent_refresh_token:
+        return False
+    item = _find_claude_code_keychain_item()
+    if item is None:
+        return False
+    account, existing = item
+    oauth = existing.get("claudeAiOauth")
+    if not isinstance(oauth, dict) or oauth.get("refreshToken") != spent_refresh_token:
+        return False
+    merged = _merge_keychain_credential_payload(existing, access_token, refresh_token, expires_at_ms)
+    _apply_claude_code_scopes(merged["claudeAiOauth"], scopes)
+    try:
+        _write_claude_code_keychain_item(account, merged)
+    except Exception as e:
+        raise CredentialPersistError("macOS Keychain (Claude Code-credentials)", e) from e
+    return True
+
+
 def _write_claude_code_credentials(
     access_token: str, refresh_token: str, expires_at_ms: int, *, scopes: Optional[list] = None,
     spent_refresh_token: str = "",
 ) -> None:
-    """Commit refreshed credentials to ~/.claude/.credentials.json; ``CredentialPersistError`` on any failure (a
-    corrupt existing file included). *scopes* (or the previously stored scopes) are persisted because Claude Code
-    >=2.1.81 gates on ``"user:inference"`` being present."""
+    """Commit refreshed credentials; ``CredentialPersistError`` on any failure (a corrupt existing file included).
+
+    macOS with the rotated login in the Keychain and no ~/.claude/.credentials.json: Keychain only (see
+    ``_commit_claude_code_credentials_to_keychain``). Otherwise ~/.claude/.credentials.json, mirrored into the
+    Keychain. Every write keeps the stored record's metadata (``scopes`` / ``subscriptionType`` /
+    ``rateLimitTier``…; from the file, else the Keychain) and takes *scopes* from the token response when given,
+    because Claude Code >=2.1.81 gates on ``"user:inference"`` being present in ``scopes``."""
     cred_path = claude_code_credentials_path()
+    if not cred_path.exists() and _commit_claude_code_credentials_to_keychain(
+            access_token, refresh_token, expires_at_ms, scopes=scopes, spent_refresh_token=spent_refresh_token):
+        return
     try:
         existing = json.loads(cred_path.read_text(encoding="utf-8-sig")) if cred_path.exists() else {}
     except (OSError, ValueError) as e:
         logger.error("Failed to write refreshed credentials to %s: %s", cred_path, e)
         raise CredentialPersistError(cred_path, e) from e
-    oauth_data: dict[str, Any] = {"accessToken": access_token, "refreshToken": refresh_token, "expiresAt": expires_at_ms}
-    if scopes is not None:
-        oauth_data["scopes"] = scopes
-    elif "claudeAiOauth" in existing and "scopes" in existing["claudeAiOauth"]:
-        oauth_data["scopes"] = existing["claudeAiOauth"]["scopes"]
+    if not isinstance(existing, dict):
+        existing = {}
+    oauth_data: dict[str, Any] = (_claude_oauth_metadata(existing.get("claudeAiOauth"))
+                                  or _claude_code_keychain_oauth_metadata())
+    oauth_data.update({"accessToken": access_token, "refreshToken": refresh_token, "expiresAt": expires_at_ms})
+    _apply_claude_code_scopes(oauth_data, scopes)
     existing["claudeAiOauth"] = oauth_data
     _commit_private_json(cred_path, existing, "credentials")
     _mirror_claude_code_credentials_to_keychain(
-        access_token, refresh_token, expires_at_ms, spent_refresh_token=spent_refresh_token)
+        access_token, refresh_token, expires_at_ms, spent_refresh_token=spent_refresh_token, scopes=scopes)
 
 
 def _merge_keychain_credential_payload(
@@ -580,7 +690,8 @@ def _merge_keychain_credential_payload(
 
 
 def _mirror_claude_code_credentials_to_keychain(
-    access_token: str, refresh_token: str, expires_at_ms: int, *, spent_refresh_token: str
+    access_token: str, refresh_token: str, expires_at_ms: int, *, spent_refresh_token: str,
+    scopes: Optional[list] = None,
 ) -> None:
     """After a Hermes refresh, write the rotated pair into the Claude Code Keychain item too (#98334).
 
@@ -601,17 +712,11 @@ def _mirror_claude_code_credentials_to_keychain(
         if not isinstance(oauth, dict) or oauth.get("refreshToken") != spent_refresh_token:
             logger.debug("Keychain mirror skipped: item does not hold the pair that was just rotated")
             return
-        argv, line = _keychain_mirror_command(
-            account, _merge_keychain_credential_payload(existing, access_token, refresh_token, expires_at_ms))
-        result = subprocess.run(
-            argv, input=line, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
-            check=False,
-        )
+        merged = _merge_keychain_credential_payload(existing, access_token, refresh_token, expires_at_ms)
+        _apply_claude_code_scopes(merged["claudeAiOauth"], scopes)
+        _write_claude_code_keychain_item(account, merged)
     except Exception as e:  # the file commit already succeeded; a Keychain hiccup must not fail the rotation
-        logger.debug("Keychain mirror skipped (%s)", e)
-        return
-    if result.returncode != 0:
-        logger.debug("Keychain mirror failed (rc=%s): %s", result.returncode, (result.stderr or "").strip()[:200])
+        logger.warning("Claude Code Keychain mirror failed (%s); Claude Code may need /login", e)
 
 
 # ── Resolution ──

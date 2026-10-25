@@ -23,6 +23,14 @@ from agent.i18n import t
 from hermes_cli.cli_agent_setup_mixin import _retire_agent
 
 
+def _turn_allows_skill_triggers(message, images) -> bool:
+    """Only text the person typed may load a skill by trigger: never a background notification
+    (its body is system-authored) and never an image turn (text routing turns it into a string)."""
+    from tools.process_registry_notifications import TimelineNotification
+
+    return not images and not isinstance(message, TimelineNotification)
+
+
 def _resolve_skill_trigger_message(message, session_id):
     """Expand a plain turn matching a skill's trigger phrase into that skill's invocation message."""
     from agent.skill_commands import build_skill_invocation_message, find_triggered_skill_command
@@ -116,6 +124,7 @@ class CLIChatTurnMixin:
             message = _sanitize_surrogates(message)
 
         self._chat_stage_user_message(agent, message)
+        allow_skill_triggers = _turn_allows_skill_triggers(message, images)
         if isinstance(message, TimelineNotification):
             message = str(message)  # UI metadata is on the staged row, never in model content.
 
@@ -126,6 +135,7 @@ class CLIChatTurnMixin:
         from agent.notification_presentation import notification_config_snapshot, notification_policy_snapshot
         with notification_policy_snapshot(agent, "cli", notification_config_snapshot()):
             turn = _ChatTurn()
+            turn.skill_triggers = allow_skill_triggers
             from gateway.warning_notifications import diagnostic_turn_muted
             turn.mute_notification_reply = diagnostic_turn_muted(
                 agent._pending_cli_user_message.get("display_metadata"), "cli", agent._notification_config)
@@ -331,7 +341,8 @@ class CLIChatTurnMixin:
         except Exception:
             reset_current_session_key = None  # type: ignore[assignment]
             _approval_session_token = None
-        agent_message = _resolve_skill_trigger_message(message, self.session_id)
+        agent_message = (_resolve_skill_trigger_message(message, self.session_id)
+                         if getattr(turn, "skill_triggers", True) else message)
         agent_message = turn.voice_prefix + agent_message if turn.voice_prefix else agent_message
         self.agent._voice_turn_pending = bool(turn.voice_prefix)  # auxiliary.voice_chat route
         # One-shot /model and /reload-skills notes; _prepend_note_to_message also handles

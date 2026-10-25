@@ -242,8 +242,9 @@ metadata:
 
 In the **classic CLI**, `What is happening with EUR/USD today?` then loads the
 skill exactly as `/skill-name What is happening…` would, and prints a
-`⚡ Loading skill` notice with the matched phrase. The Ink TUI, Desktop,
-messaging gateway, and ACP do not trigger-match.
+`⚡ Loading skill` notice with the matched phrase. This covers interactive
+chat and `-q`. Quiet one-shots (`-Q`, `--stream-json`), the Ink TUI, Desktop,
+the messaging gateway, and ACP do not trigger-match.
 
 - **Matching:** literal, case-insensitive phrases (no regex, no semantic
   matching). Words need boundaries, so `market` does not match `supermarket`;
@@ -251,11 +252,15 @@ messaging gateway, and ACP do not trigger-match.
 - **Selection:** one skill per turn — the longest matching phrase wins; ties go
   to the longer skill name, then the slash command key. Only skills the current
   scan offers (enabled, platform/environment filters, no collision) are eligible.
-- **Skipped turns:** messages starting with `/`, empty input, and image /
-  content-part turns.
+- **Skipped turns:** messages starting with `/`, empty input, turns with an
+  image attached, and background notification turns (a finished process or
+  subagent): only text you typed can load a skill.
 - **Only `metadata.hermes.triggers` counts.** A top-level `triggers:` list (used by
   some bundled skills as prose) is ignored, so skills without the key behave as before.
 - **Refresh:** after editing a skill's triggers, run `/reload-skills` or start a new session.
+- **Who decides:** a skill's author picks its phrases, so an installed or updated
+  skill can start loading on matching turns. Prefer specific multi-word phrases,
+  and check `metadata.hermes.triggers` when you install a skill.
 - **Opt out:** `skills.auto_triggers: false` in `config.yaml` (default `true`)
   disables all matching; explicit `/skill` loads keep working.
 

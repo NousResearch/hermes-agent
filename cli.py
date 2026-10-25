@@ -871,6 +871,9 @@ class _ChatTurn:
     stop_event: Optional[threading.Event] = None
     tts_normal_exit: bool = False
     voice_prefix: str = ""
+    # Skill trigger matching runs only on text the person typed: never on a background
+    # notification turn, and never on an image turn (text routing turns it into a string).
+    skill_triggers: bool = True
 from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
 
 

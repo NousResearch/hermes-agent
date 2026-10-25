@@ -264,3 +264,136 @@ def test_bundled_skills_with_top_level_triggers_never_auto_load(skills_dir):
             kwargs = _send(message)
             assert kwargs["user_message"] == message, (name, phrase)
             assert kwargs["persist_user_message"] is None, (name, phrase)
+
+
+# (f) expansion shape and pass-through (merged from test_cli_auto_skill_triggers.py) ------------
+
+@pytest.fixture
+def trigger_turn(tmp_path, monkeypatch):
+    from tools import skills_tool
+
+    skills = tmp_path / "skills"
+    skill = skills / "market-watch"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: market-watch\ndescription: Market analysis.\n"
+        "metadata:\n  hermes:\n    triggers: [market, EUR/USD]\n---\n"
+        "Use verified market sources.\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills)
+    monkeypatch.setattr(skill_commands, "_skill_commands_by_key", {})
+    monkeypatch.setattr(skill_commands, "_skill_commands_sig_by_key", {})
+    skill_commands.scan_skill_commands()
+    shell = SimpleNamespace(
+        session_id="trigger-test", agent=SimpleNamespace(run_conversation=MagicMock(return_value={})),
+        conversation_history=[], _sudo_password_callback=None, _approval_callback=None,
+        _secret_capture_callback=None, _flush_credit_notices=lambda: None,
+        _vault_unlock_callback=None, _vault_save_login_callback=None, _vault_code_callback=None,
+    )
+    return shell, SimpleNamespace(voice_prefix="", stream_callback=None, result=None)
+
+
+@pytest.mark.parametrize("voice_prefix", ["", "[Voice input] "])
+def test_trigger_expansion_preserves_original_turn(trigger_turn, voice_prefix):
+    shell, turn = trigger_turn
+    turn.voice_prefix = voice_prefix
+    message = "What is happening with eur/usd today?"
+    prior = {"role": "assistant", "content": "Previous response."}
+    staged = {"role": "user", "content": message}
+    shell.conversation_history = [prior, staged]
+
+    CLIChatTurnMixin._chat_run_agent(shell, turn, message)
+
+    kwargs = shell.agent.run_conversation.call_args.kwargs
+    expanded = kwargs["user_message"]
+    assert "Use verified market sources." in expanded
+    assert expanded.startswith(voice_prefix + "[IMPORTANT:")
+    assert skill_commands.extract_user_instruction_from_skill_message(
+        expanded.removeprefix(voice_prefix)
+    ) == message
+    assert kwargs["persist_user_message"] == message
+    assert kwargs["conversation_history"] == [prior]
+    assert shell.conversation_history == [prior, staged]
+
+
+@pytest.mark.parametrize("message", [
+    "Tell me a joke.", "This supermarket is busy.", "/market-watch market",
+    "", [{"type": "text", "text": "market"}],
+])
+def test_non_trigger_turns_pass_through(trigger_turn, message):
+    shell, turn = trigger_turn
+    shell.conversation_history = [{"role": "user", "content": message}]
+
+    CLIChatTurnMixin._chat_run_agent(shell, turn, message)
+
+    kwargs = shell.agent.run_conversation.call_args.kwargs
+    assert kwargs["user_message"] == message
+    assert kwargs["persist_user_message"] is None
+
+
+# (g) which turns may match ----------------------------------------------------------------------
+
+@pytest.mark.parametrize("message,images,allowed", [
+    ("market update please", None, True),
+    ("market update please", ["/tmp/chart.png"], False),  # text routing turns an image turn into a string
+])
+def test_only_typed_text_turns_are_matched(message, images, allowed):
+    from hermes_cli.cli_chat_turn_mixin import _turn_allows_skill_triggers
+
+    assert _turn_allows_skill_triggers(message, images) is allowed
+
+
+def test_a_background_notification_never_loads_a_skill(trigger_turn):
+    from tools.process_registry_notifications import TimelineNotification
+    from hermes_cli.cli_chat_turn_mixin import _turn_allows_skill_triggers
+
+    shell, turn = trigger_turn
+    note = "[process finished] report: EUR/USD market outlook is flat"
+    timeline = TimelineNotification(note, "Process finished", "process")
+    assert _turn_allows_skill_triggers(timeline, None) is False
+
+    turn.skill_triggers = False  # what chat() sets for that turn
+    shell.conversation_history = [{"role": "user", "content": note}]
+    CLIChatTurnMixin._chat_run_agent(shell, turn, note)
+
+    kwargs = shell.agent.run_conversation.call_args.kwargs
+    assert kwargs["user_message"] == note
+    assert kwargs["persist_user_message"] is None
+
+
+def test_quiet_one_shot_does_not_match_triggers(trigger_turn):
+    """-Q / stream-json one-shots run outside chat(): the documented scope excludes them."""
+    from hermes_cli.cli_single_query import _run_quiet_single_query
+
+    class _Sent(Exception):
+        pass
+
+    seen = {}
+
+    def run_conversation(user_message, conversation_history, **_kw):
+        seen["user_message"] = user_message
+        raise _Sent
+
+    cli = SimpleNamespace(session_id="quiet", conversation_history=[],
+                          agent=SimpleNamespace(run_conversation=run_conversation))
+    with pytest.raises(_Sent):
+        _run_quiet_single_query(cli, "What is the EUR/USD market outlook?")
+
+    assert seen["user_message"] == "What is the EUR/USD market outlook?"
+
+
+def test_no_triggered_skill_means_no_config_read_on_a_plain_turn(skills_dir, monkeypatch):
+    _write_skill(skills_dir, "plain", "", "Plain body.")
+    skill_commands.scan_skill_commands()
+    skill_commands.get_plugin_skill_commands()
+
+    def boom():
+        raise AssertionError("a plain turn must not read config when no skill declares triggers")
+
+    monkeypatch.setattr(skill_commands, "_load_skills_config", boom)
+    assert skill_commands.find_triggered_skill_command("market outlook please") is None
+
+    _write_skill(skills_dir, "market", "metadata:\n  hermes:\n    triggers: [market outlook]\n", "Market body.")
+    skill_commands.scan_skill_commands()
+    monkeypatch.setattr(skill_commands, "_load_skills_config", dict)
+    assert skill_commands.find_triggered_skill_command("market outlook please")[0] == "/market"

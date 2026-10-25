@@ -1,5 +1,6 @@
 """Shared slash command helpers for skills (CLI and gateway both invoke /skill-name)."""
 
+import functools
 import json
 import logging
 import os
@@ -277,6 +278,7 @@ def _extract_skill_triggers(frontmatter: dict[str, Any]) -> list[str]:
     return normalized
 
 
+@functools.lru_cache(maxsize=1024)
 def _compile_skill_trigger_pattern(trigger: str) -> re.Pattern[str]:
     """Build a boundary-aware regex for a skill trigger phrase."""
     normalized = re.sub(r"\s+", " ", trigger.strip())
@@ -288,6 +290,25 @@ def _compile_skill_trigger_pattern(trigger: str) -> re.Pattern[str]:
     return re.compile(pattern, re.IGNORECASE)
 
 
+def _no_scanned_skill_declares_triggers() -> bool:
+    """True when the skill and plugin maps were already scanned and none declares triggers.
+
+    Reads only the in-memory caches (no config read, no dir-signature walk), so a plain turn on an
+    install without triggered skills pays nothing. Before the first scan it answers False and the
+    full path runs once. A skill given triggers later is picked up by the next rescan
+    (``/reload-skills``, a new session, or any palette/completion refresh), as documented.
+    """
+    with _publish_lock:
+        skill_maps = list(_skill_commands_by_key.values())
+        plugin_map, plugin_scanned = _plugin_skill_commands, _plugin_skill_commands_tag is not None
+    if not skill_maps or not plugin_scanned:
+        return False
+    for commands in (*skill_maps, plugin_map):
+        if any(info.get("triggers") for info in commands.values()):
+            return False
+    return True
+
+
 def find_triggered_skill_command(
     user_message: str,
 ) -> tuple[str, dict[str, Any], str] | None:
@@ -297,6 +318,8 @@ def find_triggered_skill_command(
 
     text = user_message.strip()
     if not text or text.startswith("/"):
+        return None
+    if _no_scanned_skill_declares_triggers():
         return None
     if not is_truthy_value(_load_skills_config().get("auto_triggers"), default=True):
         return None

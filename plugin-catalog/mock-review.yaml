@@ -27,6 +27,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/arspesk/hermes-mock-review#readme
+image: https://raw.githubusercontent.com/arspesk/hermes-mock-review/57b1f581d03cb266b89bb4b6239573504a6405a6/docs/img/catalog-banner.jpg
 screenshots:
   - https://raw.githubusercontent.com/arspesk/hermes-mock-review/fb3d07bae45ab7a30f57fdc8cbc0e36df016e996/docs/img/review-board.png
 platforms: []

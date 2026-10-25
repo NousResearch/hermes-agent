@@ -28,6 +28,7 @@ import importlib
 import itertools
 import logging
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -37,7 +38,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from hermes_cli.plugin_host_wire import (
-    Channel, PluginHostUnavailable, PluginHostUnsupported, decode, encode, signature_from,
+    Channel, HOST_CWD_ENV, PluginHostUnavailable, PluginHostUnsupported, decode, encode,
+    signature_from,
 )
 
 logger = logging.getLogger("hermes_cli.plugins")
@@ -51,6 +53,167 @@ _RESTART_BUDGET = 3
 _RESTART_WINDOW_SECS = 600.0
 
 
+class _SpawnedHost:
+    """``subprocess.Popen``'s surface as the host uses it (pid, pipes, poll/wait/kill), over a
+    posix_spawn'ed child. Never a real Popen on POSIX: this CPython build lacks
+    ``POSIX_SPAWN_CLOSEFROM`` on macOS, so every Popen falls back to fork() — and in a threaded
+    process that has Network.framework loaded (any gateway) Apple's fork-child handlers crash the
+    child before exec (SIGSEGV pre-exec, seen as "channel closed" / exit code -11). posix_spawn
+    runs no fork-child handlers; the pipes land on 0/1/2 through file actions and the child
+    itself drops every other inherited descriptor before plugin code runs."""
+
+    def __init__(self, argv: list, pid: int, stdin: Any, stdout: Any, stderr: Any):
+        self.args = argv
+        self.pid = pid
+        self.stdin, self.stdout, self.stderr = stdin, stdout, stderr
+        self.returncode: Optional[int] = None
+        self._waitpid_lock = threading.Lock()
+
+    def _reap_locked(self, flags: int) -> bool:
+        if self.returncode is not None:
+            return True
+        try:
+            pid, status = os.waitpid(self.pid, flags)
+        except ChildProcessError:  # SIGCHLD ignored or reaped elsewhere: it is dead either way
+            pid, status = self.pid, 0
+        if pid != self.pid:
+            return False
+        self.returncode = (-os.WSTOPSIG(status) if os.WIFSTOPPED(status)
+                           else os.waitstatus_to_exitcode(status))
+        return True
+
+    def _reap(self, block: bool) -> bool:
+        if block:
+            with self._waitpid_lock:
+                return self._reap_locked(0)
+        if not self._waitpid_lock.acquire(blocking=False):
+            return False  # another thread is waiting; it will publish the returncode
+        try:
+            return self._reap_locked(os.WNOHANG)
+        finally:
+            self._waitpid_lock.release()
+
+    def poll(self) -> Optional[int]:
+        if self.returncode is None:
+            self._reap(block=False)
+        return self.returncode
+
+    def wait(self, timeout: Optional[float] = None) -> int:
+        if timeout is None:
+            self._reap(block=True)
+            return self.returncode  # type: ignore[return-value]
+        deadline = time.monotonic() + timeout
+        while not self._reap(block=False):
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(self.args, timeout)
+            time.sleep(0.005)
+        return self.returncode  # type: ignore[return-value]
+
+    def send_signal(self, sig: int) -> None:
+        if self.poll() is None:
+            try:
+                os.kill(self.pid, sig)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+    def terminate(self) -> None:
+        self.send_signal(signal.SIGTERM)
+
+    def kill(self) -> None:
+        self.send_signal(signal.SIGKILL)
+
+
+def _pipe() -> tuple:
+    """os.pipe() whose ends never sit on 0/1/2, so the spawn's dup2 file actions can't clobber."""
+    fds = []
+    for fd in os.pipe():
+        if fd <= 2:
+            import fcntl
+            fds.append(fcntl.fcntl(fd, fcntl.F_DUPFD, 3))
+            os.close(fd)
+        else:
+            fds.append(fd)
+    return fds[0], fds[1]
+
+
+def _posix_spawn_host(argv: list, env: dict) -> _SpawnedHost:
+    stdin_r, stdin_w = _pipe()
+    stdout_r, stdout_w = _pipe()
+    stderr_r, stderr_w = _pipe()
+    parent_ends = (stdin_w, stdout_r, stderr_r)
+    child_ends = (stdin_r, stdout_w, stderr_w)
+    try:
+        file_actions = []
+        for fd, target in ((stdin_r, 0), (stdout_w, 1), (stderr_w, 2)):
+            file_actions.append((os.POSIX_SPAWN_DUP2, fd, target))
+            file_actions.append((os.POSIX_SPAWN_CLOSE, fd))
+        for fd in parent_ends:
+            file_actions.append((os.POSIX_SPAWN_CLOSE, fd))
+        sigset = [num for num in (getattr(signal, name, None) for name in ("SIGPIPE", "SIGXFZ", "SIGXFSZ"))
+                  if num is not None]
+        kwargs: dict = {"file_actions": file_actions}
+        if sigset:
+            kwargs["setsigdef"] = sigset
+        spawn = os.posix_spawn if os.path.dirname(argv[0]) else os.posix_spawnp
+        pid = spawn(argv[0], argv, env, **kwargs)
+    except Exception:
+        for fd in parent_ends + child_ends:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        raise
+    for fd in child_ends:
+        os.close(fd)
+    return _SpawnedHost(argv, pid,
+                        os.fdopen(stdin_w, "wb", buffering=0),
+                        os.fdopen(stdout_r, "rb", buffering=0),
+                        os.fdopen(stderr_r, "rb", buffering=0))
+
+
+def _spawn_host(argv: list, env: dict, cwd: str) -> Any:
+    """Spawn the plugin host child (see :class:`_SpawnedHost` for why never Popen on POSIX).
+
+    posix_spawn has no chdir file action, so the working directory travels as
+    :data:`~hermes_cli.plugin_host_wire.HOST_CWD_ENV` and the child chdirs itself."""
+    if os.name == "posix" and hasattr(os, "posix_spawn"):
+        return _posix_spawn_host(argv, {**env, HOST_CWD_ENV: cwd})
+    return subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, env=env, cwd=cwd, bufsize=0)
+
+
+def run_no_fork(argv: list, env: dict, timeout: Optional[float] = None,
+                cwd: Optional[str] = None) -> subprocess.CompletedProcess:
+    """``subprocess.run(..., stdin=DEVNULL, capture_output=True)`` through the same no-fork spawn
+    (:class:`_SpawnedHost`), for one-shot plugin-host children such as ``--extract-profiles``.
+    Both pipes drain on their own threads (a chatty child can't deadlock the reader), and on
+    timeout the child is killed before ``TimeoutExpired`` propagates."""
+    if os.name != "posix" or not hasattr(os, "posix_spawn"):
+        return subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, env=env,
+                              cwd=cwd, timeout=timeout, check=False)
+    proc = _posix_spawn_host(argv, {**env, HOST_CWD_ENV: cwd} if cwd else env)
+    proc.stdin.close()
+    out_chunks: list = []
+    err_chunks: list = []
+    drain_out = threading.Thread(target=lambda: out_chunks.append(proc.stdout.read()), daemon=True)
+    drain_err = threading.Thread(target=lambda: err_chunks.append(proc.stderr.read()), daemon=True)
+    drain_out.start()
+    drain_err.start()
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        drain_out.join()
+        drain_err.join()
+        raise subprocess.TimeoutExpired(argv, timeout, output=b"".join(out_chunks),
+                                        stderr=b"".join(err_chunks)) from None
+    drain_out.join()
+    drain_err.join()
+    return subprocess.CompletedProcess(argv, proc.returncode, b"".join(out_chunks),
+                                       b"".join(err_chunks))
+
+
 class PluginHost:
     """One host process for one :class:`~hermes_cli.plugins.PluginManager` (one profile home)."""
 
@@ -58,7 +221,7 @@ class PluginHost:
         self._manager = manager
         self._home = Path(manager.home_path)
         self._lock = threading.Lock()
-        self._proc: Optional[subprocess.Popen] = None
+        self._proc: Optional[Any] = None
         self._channel: Optional[Channel] = None
         self._contexts: dict[str, Any] = {}
         self._handles: dict[int, Any] = {}
@@ -104,7 +267,9 @@ class PluginHost:
 
     def _argv(self) -> list:
         from hermes_cli.plugin_isolation import host_launcher
-        return [*host_launcher(), sys.executable, "-m", _HOST_MODULE]
+        # -P: the spawn no longer chdirs pre-exec, so without it the PARENT's cwd would land on
+        # sys.path[0] under -m; the child's imports come from PYTHONPATH alone.
+        return [*host_launcher(), sys.executable, "-P", "-m", _HOST_MODULE]
 
     def _env(self) -> dict[str, str]:
         from tools.environments.local import served_profile_child_env
@@ -122,9 +287,7 @@ class PluginHost:
                 return self._channel  # type: ignore[return-value]
             self._stopping = False
             argv = self._argv()
-            proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, env=self._env(), cwd=str(self._home),
-                                    bufsize=0)
+            proc = _spawn_host(argv, self._env(), str(self._home))
             threading.Thread(target=_pump_stderr, args=(proc, self._home.name), daemon=True,
                              name=f"plugin-host-{proc.pid}-stderr").start()
             self._generation += 1
@@ -578,7 +741,7 @@ def _import_ref(ref: str) -> type:
     return getattr(importlib.import_module(module), attr)
 
 
-def _pump_stderr(proc: subprocess.Popen, label: str) -> None:
+def _pump_stderr(proc: Any, label: str) -> None:
     """Plugin output and host logs go to the Hermes log, tagged with the host's profile."""
     stream = proc.stderr
     if stream is None:

@@ -32,6 +32,11 @@ logger = logging.getLogger("hermes_cli.plugins")
 
 PROTOCOL_VERSION = 1
 
+# Spawn contract: the parent cannot pass a working directory to a posix_spawn'ed child (no chdir
+# file action in os.posix_spawn), so it names the host's cwd through this variable; the child
+# chdirs and pops it before any plugin code runs.
+HOST_CWD_ENV = "HERMES_PLUGIN_HOST_CWD"
+
 
 class PluginHostError(RuntimeError):
     """The host (or the parent) raised while serving a request; ``type_name`` is the remote class."""

@@ -78,6 +78,7 @@ def _cached_extraction(plugin_dir: Path, module_name: str) -> dict[str, Any]:
 
 def _extract(plugin_dir: Path, module_name: str) -> dict[str, Any]:
     """Import the plugin in a throwaway host process with no credentials and read its profiles."""
+    from hermes_cli.plugin_host import run_no_fork
     from hermes_cli.plugin_isolation import HOST_PROCESS_ENV, host_launcher
     from hermes_constants import get_hermes_home
     repo_root = str(Path(__file__).resolve().parents[1])
@@ -86,11 +87,11 @@ def _extract(plugin_dir: Path, module_name: str) -> dict[str, Any]:
     env.update(HOME=str(Path.home()), USERPROFILE=str(Path.home()), HERMES_HOME=str(get_hermes_home()),
                PYTHONPATH=repo_root,
                **{HOST_PROCESS_ENV: "1"})
-    argv = [*host_launcher(), sys.executable, "-m", "hermes_cli.plugin_host_child", "--extract-profiles",
+    # -P: no cwd is passed, so the caller's cwd would land on sys.path[0] under -m without it.
+    argv = [*host_launcher(), sys.executable, "-P", "-m", "hermes_cli.plugin_host_child", "--extract-profiles",
             str(plugin_dir), module_name]
     try:
-        done = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, env=env,
-                              timeout=_EXTRACT_TIMEOUT_SECS, check=False)
+        done = run_no_fork(argv, env, timeout=_EXTRACT_TIMEOUT_SECS)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"error": f"profile extraction failed: {exc}"}
     try:

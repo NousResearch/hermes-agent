@@ -81,7 +81,7 @@ dependencies = [
   # official Snowball project package, pure Python, zero transitive deps.
   # Applied at index AND query time so morphological variants match
   # ("issues" finds create_issue).
-  "snowballstemmer==3.1.1; python_version >= '3.14'",
+  "snowballstemmer==3.1.1",
   # Requirement and version checks must work in lean installs without
   # relying on another package to bring packaging in transitively.
   "packaging==26.3; python_version >= '3.14'",

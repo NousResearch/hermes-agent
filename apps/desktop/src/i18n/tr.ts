@@ -35,7 +35,18 @@ export const tr: Translations = defineLocale({
     setupCancel: 'İptal',
     authorizedToolsUnavailable: 'Yetkilendirildi. Araçlar kullanılamıyor.',
     required: 'Gerekli',
-    setup: server => `${server} kur`
+    setup: server => `${server} kur`,
+    directory: {
+      allApps: 'Tüm uygulamalar',
+      finishInBrowser: 'Tarayıcınızda tamamlayın',
+      receiptConnected: apps => `Bağlandı: ${apps}`,
+      receiptNone: 'Yeni uygulama bağlanmadı',
+      receiptTimedOut: '5 dakika sonra kapatıldı',
+      signInFailed: "Bağlanılamadı. Yeniden denemek için tıklayın",
+      suggested: 'Önerilen',
+    },
+    namedAccount: (app: string, alias: string) => `Hermes bu ${app} hesabını ${alias} olarak adlandırdı.`,
+    renameAccount: 'Yeniden adlandır',
   },
   sessionImport: {
     title: 'Başka bir uygulamadan devam et',
@@ -211,7 +222,28 @@ export const tr: Translations = defineLocale({
       bundledReinstallHint:
         'Bu paketli kurulum uygulama içinden kendini onaramaz — arka ucunu geri yüklemek için uygulamayı yeniden kurun.',
       reinstallApp: 'Uygulamayı yeniden kur'
-    }
+    },
+    updateHold: {
+      checkAgain: 'Yeniden kontrol et',
+      confirmBody: "Kalan güncelleme süreci Hermes dosyalarını hâlâ değiştiriyor olabilir. Şimdi başlatmak yarı güncellenmiş bir kurulumu yükleyebilir; siz güncellemeyi yeniden çalıştırana kadar çalışmayabilir. Hermes bu seçimi günlüğüne yazar ve güncelleme işaretini yerinde bırakır.",
+      confirmKeepWaiting: 'Beklemeye devam et',
+      confirmStart: 'Yine de başlat',
+      confirmTitle: 'Güncelleme hâlâ tutarken Hermes başlatılsın mı?',
+      description: "Hermes, bir güncellemenin hâlâ değiştiriyor olabileceği dosyaları yüklememek için başlamayı bekletiyor. Bekletme biter bitmez kendiliğinden başlar.",
+      heldByProcess: pid =>
+            `Güncelleme (${pid} süreci) çıktı, ama başlattığı bir süreç Hermes kurulumunu hâlâ tutuyor.`,
+      heldUnknown: 'Bir güncelleme çıktı, ama başlattığı bir süreç Hermes kurulumunu hâlâ tutuyor.',
+      lastChecked: time => `Son kontrol ${time}`,
+      openLogs: 'Günlükleri aç',
+      quit: 'Hermes’ten çık',
+      recoveryHint: 'Bu genellikle birkaç dakikada geçer. Geçmezse: Hermes’ten çıkın, kalan git veya hermes süreçlerini sonlandırın (ya da bilgisayarı yeniden başlatın), sonra Hermes’i yeniden açın.',
+      since: time => `${time} itibarıyla bekleniyor`,
+      startAnyway: 'Yine de başlat…',
+      startAnywayRefused: 'Hermes başlamadan önce kurulumu tutan şey değişti. Gözden geçirip yeniden deneyin.',
+      title: 'Önceki bir güncelleme Hermes’i hâlâ tutuyor',
+      titleUnverified: "Hermes son güncellemenin bittiğini doğrulayamıyor",
+      unverified: "Güncelleme yardımcısı Hermes kurulumuna şu anda kimin sahip olduğunu kontrol edemedi. Hermes kontrol etmeye devam ediyor.",
+    },
   },
   notifications: {
     region: 'Bildirimler',
@@ -397,7 +429,6 @@ export const tr: Translations = defineLocale({
       'nav.commandCenter': 'Komut merkezini aç',
       'nav.settings': 'Ayarları aç',
       'nav.profiles': 'Profilleri aç',
-      'nav.skills': 'Becerileri aç',
       'nav.messaging': 'Mesajlaşmayı aç',
       'nav.artifacts': 'Yapıtları aç',
       'nav.cron': 'Zamanlanmış işleri aç',
@@ -540,24 +571,18 @@ export const tr: Translations = defineLocale({
       billing: 'Faturalandırma',
       notifications: 'Bildirimler',
       vault: 'Parolalar ve Girişler',
-      sessions: 'Oturumlar'
+      sessions: 'Oturumlar',
+      plugins: 'Eklentiler',
     },
     plugins: {
       title: 'Masaüstü eklentileri',
-      blurb:
-        'Bir ajanı değil, bu uygulamayı genişletir — hangi profile, ağ geçidine veya makineye bağlanırsanız bağlanın, tüm uygulama için bir kez kurulur. Paketlenmiş ya da desktop-plugins klasörüne bırakılmış; düğmeler anında uygulanır.',
-      count: n => `${n} yüklü`,
       openFolder: 'Eklentiler klasörünü aç',
       rescan: 'Yeniden tara',
       reveal: 'Dosya yöneticisinde göster',
       enable: 'Etkinleştir',
       disable: 'Devre dışı bırak',
       failed: 'başarısız',
-      empty: 'Henüz masaüstü eklentisi yüklenmedi.',
       kinds: { bundled: 'paketlenmiş', disk: 'diskte', runtime: 'çalışma ortamı' },
-      agentHalfMissing: 'ajan yarısı burada eksik',
-      agentHalfMissingTip:
-        "Bu, paketlenmiş bir eklentinin masaüstü yarısıdır ama ajan yarısı şu anda bağlı arka uçta/profilde kurulu değil. Yetenekler → Eklentiler'den kurun.",
       installModal: {
         installFromGit: "Git'ten kur",
         reviewRepository: 'Depoyu incele',
@@ -570,11 +595,6 @@ export const tr: Translations = defineLocale({
         desktopLabel: 'Masaüstü arayüzü',
         agentTargetLocal: (profile, dir) => `${profile} arka ucuna kurar (${dir})`,
         agentTargetRemote: profile => `Bağlı ${profile} arka ucuna kurar`,
-        catalogPinned: (name, sha) =>
-          `Hermes katalog girdisi "${name}" — ajan bileşeni, dal ucuna değil incelenen pine${sha ? ` ${sha}` : ''} kurulur.`,
-        reviewedHeading: 'İncelenmiş katalog girdisi',
-        reviewedIntro:
-          "Bu girdi, sabitlenmiş commit'inde insan tarafından incelendi. Aşağıdan tam kodu yine de inceleyebilirsiniz.",
         missingEnvAction: 'Kur',
         alreadyInstalled: name => `${name} zaten kurulu.`,
         desktopTarget: 'Bu uygulamanın yerel desktop-plugins klasörüne kurar',
@@ -582,13 +602,11 @@ export const tr: Translations = defineLocale({
         desktopOnlyNote: 'Yalnızca masaüstü paketleri bir arka uç ajan eklentisi kurmaz.',
         insecureWarning:
           'Bu URL güvensiz veya yerel bir şema kullanıyor. Üretim kurulumları için https:// veya git@ tercih edin.',
-        securityHeading: 'Kurmadan önce',
         securityIntro:
           'Yalnızca güvendiğiniz kaynaklardan kurun — nelerin ekleneceğini görmek isterseniz aşağıdaki depoyu inceleyin.',
         sourceHeading: 'Kaynak kodu',
         viewRepository: 'Depoyu görüntüle',
         viewPluginFiles: 'Eklenti dosyalarını görüntüle',
-        gitCloneLabel: "Git klonlama URL'si",
         enableAgent: 'Kurulumdan sonra ajan eklentisini etkinleştir',
         forceReinstall: 'Zorla yeniden kur (zaten kuruluysa değiştir)',
         pinToCommit: "Commit'e sabitle (isteğe bağlı)",
@@ -614,7 +632,17 @@ export const tr: Translations = defineLocale({
         skillsReady: names => (names.length === 1 ? `${names[0]} becerisi hazır` : `${names.length} beceri hazır`),
         toolsConnected: n => (n === 1 ? '1 araç bağlandı' : `${n} araç bağlandı`),
         installUncertain:
-          "Hermes kurulum sonucunu beklemeyi bıraktı ama eklenti hâlâ kuruluyor olabilir. Bu pencereyi kapatın ve Kur'u tekrar denemeden önce Eklentiler'de Yeniden Tara'yı kullanın."
+          "Hermes kurulum sonucunu beklemeyi bıraktı ama eklenti hâlâ kuruluyor olabilir. Bu pencereyi kapatın ve Kur'u tekrar denemeden önce Eklentiler'de Yeniden Tara'yı kullanın.",
+        advanced: 'Gelişmiş',
+        installsAndEnables: profile => `${profile} için kurar ve hemen açar.`,
+        installsOnly: profile => `${profile} için kurar.`,
+        latestCommit: 'Son commit',
+        nothingToInstall: 'Bu paketin burada kurulacak bir şeyi yok.',
+        reviewedByNous: 'Nous tarafından incelendi.',
+        reviewedPin: sha => (sha ? `İncelenen sürüm ${sha}` : 'İncelenen sürüm'),
+        unverified: 'Doğrulanmamış',
+        verified: 'Doğrulanmış',
+        versionLabel: 'Sürüm',
       }
     },
     vault: {
@@ -738,7 +766,9 @@ export const tr: Translations = defineLocale({
       testUnsupported: 'Bu sistem yerel bildirimleri desteklemiyor.',
       completionSoundTitle: 'Tamamlanma Sesi',
       completionSoundDesc: 'Bir ajan turu bittiğinde çalar. Bir hazır ayar seçip burada önizleyin.',
-      completionSoundPreview: 'Önizleme'
+      completionSoundPreview: 'Önizleme',
+      muteSoundsDesc: 'Otomatik tamamlama, uyandırma sözcüğü ve düşünme seslerini, dokunsal geri bildirimi ve işletim sistemi bildirim seslerini susturur. Ses önizlemeleri ve sesli yanıtlar yine çalar.',
+      muteSoundsTitle: 'Arayüz seslerini sustur',
     },
     sections: {
       model: 'Model',
@@ -746,7 +776,6 @@ export const tr: Translations = defineLocale({
       appearance: 'Görünüm',
       workspace: 'Çalışma Alanı',
       safety: 'Güvenlik',
-      browser: 'Tarayıcı',
       memory: 'Hafıza ve Bağlam',
       voice: 'Ses',
       advanced: 'Gelişmiş'
@@ -990,7 +1019,6 @@ export const tr: Translations = defineLocale({
         maxSnapshots: 'Kontrol Noktası Sınırı'
       },
       voice: {
-        recordKey: 'Ses Kısayolu',
         maxRecordingSeconds: 'Maksimum Kayıt Süresi',
         autoTts: 'Yanıtları Sesli Oku',
         voiceChatMode: 'Sesli Sohbet Modu',
@@ -1008,7 +1036,8 @@ export const tr: Translations = defineLocale({
           language: 'Döküm Dili'
         },
         openai: {
-          model: 'OpenAI STT Modeli'
+          model: 'OpenAI STT Modeli',
+          streamingModel: 'OpenAI Canlı Yazıya Çevirme Modeli',
         },
         groq: {
           model: 'Groq STT Modeli'
@@ -1021,7 +1050,14 @@ export const tr: Translations = defineLocale({
           languageCode: 'ElevenLabs Dili',
           tagAudioEvents: 'Ses Olaylarını Etiketle',
           diarize: 'Konuşmacı Ayrımı'
-        }
+        },
+        deepinfra: {
+          model: 'DeepInfra STT Modeli',
+        },
+        streaming: 'Canlı Yazıya Çevirme',
+        xai: {
+          model: 'xAI STT Modeli',
+        },
       },
       tts: {
         provider: 'Metni Sese Dönüştürme (TTS) Sağlayıcısı',
@@ -1190,7 +1226,8 @@ export const tr: Translations = defineLocale({
         echoTranscripts: 'Sesli mesajların ham dökümünü sohbete geri yazdırın.',
         elevenlabs: {
           languageCode: 'İsteğe bağlı ISO-639-3 dil kodu. Boş bırakılırsa otomatik algılanır.'
-        }
+        },
+        streaming: 'Konuşurken metni gösterin (OpenAI, xAI, ElevenLabs). Herhangi bir hata durumunda kayda geri döner.',
       },
       updates: {
         nonInteractiveLocalChanges:
@@ -1228,13 +1265,10 @@ export const tr: Translations = defineLocale({
         }
       },
       uninstalling: 'Kaldırılıyor…',
-      yesUninstall: 'Evet, kaldır'
-    },
-    poolLimits: {
-      warmBotBackendsAria: 'Sıcak bot arka uçları',
-      warmBotBackendsTitle: 'Sıcak Bot Arka Uçları',
-      backendIdleTimeoutAria: 'Milisaniye cinsinden arka uç boşta kalma zaman aşımı',
-      backendIdleTimeoutTitle: 'Arka Uç Boşta Kalma Zaman Aşımı'
+      yesUninstall: 'Evet, kaldır',
+      dataKept: path => `Yapılandırmanız, sohbetleriniz ve gizli anahtarlarınız ${path} içinde. Uygulamayı kaldırmak bunları silmez.`,
+      managedBody: 'Bu kurulum sisteminiz tarafından yönetiliyor, bu yüzden Hermes kendini kaldıramaz.',
+      openAppsSettings: 'Uygulama ayarlarını aç',
     },
     customEndpoints: {
       title: 'Özel Uç Noktalar',
@@ -1283,7 +1317,28 @@ export const tr: Translations = defineLocale({
       driverHealth: 'Sürücü sağlığı'
     },
     about: {
-      updates: 'Güncellemeler'
+      updates: 'Güncellemeler',
+      channel: {
+        allChanges: 'Tüm değişiklikleri gör',
+        branch: (b: string) => `Dal: ${b}`,
+        change: 'Değiştir',
+        description: 'Kararlı kurulumlar yalnızca yayımlanmış sürümleri alır. Her commit, değişiklikler indikçe ana dalı izler.',
+        detailsLabel: 'Kanal',
+        failed: 'Güncelleme kanalı değiştirilemedi',
+        heldBody: (v: string) =>
+          `Bu derleme, ${v} kararlı sürümünden daha yeni. Oturumlarınız zaten ${v} sürümünün açamayacağı bir ağ geçidi çalışma zamanı kullanıyor, bu yüzden daha yeni bir kararlı sürüm çıkana kadar Hermes bu derlemede kalır.`,
+        latestRelease: (v: string) => `En son kararlı sürümdesiniz (${v}).`,
+        main: 'Her commit',
+        rollbackAction: (v: string) => `${v} sürümüne geri dön`,
+        rollbackBody: (v: string) =>
+          `Bu derleme, ${v} kararlı sürümünden daha yeni. Kurmak Hermes’i o sürüme geri taşır.`,
+        rollbackTitle: (v: string) => `${v} kararlı sürümüne dön`,
+        stable: 'Kararlı sürümler',
+        stableConfirm: 'Kararlıya geç',
+        stableConfirmBody: 'Hermes en son yayımlanmış sürüme geçer; bu, şu an çalıştırdığınız koddan eski olabilir. Daha yeni kodun yazdığı veriler doğru okunmayabilir, önce yedek alın.',
+        stableConfirmTitle: 'Kararlı sürümlere geçilsin mi?',
+        title: 'Güncelleme kanalı',
+      },
     },
     config: {
       none: 'Yok',
@@ -1594,7 +1649,8 @@ export const tr: Translations = defineLocale({
         'Desteklenmeyen uzak platform. Hermes Desktop SSH modu Linux, macOS ve Windows uzak sunucularını destekler.',
       sshErrTimeout: 'SSH bağlantısı zaman aşımına uğradı. Sunucuya ulaşılamıyor veya uykuda olabilir.',
       sshErrUpdateRequired: "Desktop SSH ile bağlanmadan önce uzak sunucudaki Hermes'i güncelleyin.",
-      sshErrUnknown: 'SSH bağlantısı başarısız.'
+      sshErrUnknown: 'SSH bağlantısı başarısız.',
+      sshErrInteractiveAuth: 'Tailscale SSH etkileşimli tarayıcı doğrulaması istiyor. Terminalde `ssh <host> true` çalıştırın, doğrulamayı tamamlayın ve yeniden deneyin — Hermes SSH’i etkileşimsiz çalıştırır.',
     },
     keys: {
       loading: 'API anahtarları ve kimlik bilgileri yükleniyor...',
@@ -1696,7 +1752,11 @@ export const tr: Translations = defineLocale({
         triage_specifier: { label: 'Triyaj belirleyici', hint: 'Kanban spesifikasyonu detaylandırma' },
         kanban_decomposer: { label: 'Kanban ayrıştırıcı', hint: 'Görev ayrıştırma' },
         profile_describer: { label: 'Profil betimleyici', hint: 'Otomatik profil açıklamaları' },
-        curator: { label: 'Küratör', hint: 'Beceri kullanımı incelemesi' }
+        curator: { label: 'Küratör', hint: 'Beceri kullanımı incelemesi' },
+        voice_chat: {
+          hint: 'Sesli mod yanıtları',
+          label: 'Sesli sohbet',
+        },
       },
       moaDescription:
         'Ajan Karışımı sağlayıcısı altında model olarak görünen adlandırılmış hazır ayarları yapılandırın. Toplayıcı, işi yürüten modeldir — araç döngüsünün her adımını çalıştırır ve çalıştırmanın maliyetinin neredeyse tamamı onun sağlayıcısına faturalanır. Referanslar varsayılan olarak kullanıcı turu başına yalnızca bir kez öneride bulunur.',
@@ -1722,7 +1782,118 @@ export const tr: Translations = defineLocale({
       mainAppliedMessage: model => `Yeni oturumlar ${model} kullanacak.`,
       staleAuxDismiss: 'Bir daha gösterme',
       speed: 'Hız',
-      speedStandard: 'Standart'
+      speedStandard: 'Standart',
+      followTask: task => `${task} görevini izle`,
+      inheritsFrom: task => `${task} görevinden devralır`,
+      subagents: {
+        catalogFailed: 'Model kataloğu kullanılamıyor. Sağlayıcıyı ve modeli elle girin veya yeniden deneyin.',
+        customProvider: 'Özel sağlayıcı...',
+        customProviderLabel: 'Özel alt ajan sağlayıcısı',
+        direct: 'Doğrudan uç nokta geçersiz kılma',
+        directActive: 'Etkin bir doğrudan uç nokta var ve kayıtlı sağlayıcının önüne geçiyor. Bu mod seçiliyken uç noktası ve kimlik bilgileri korunur.',
+        directClear: 'Bu yolu uygulamak doğrudan uç noktayı ve sakladığı anahtarı siler. Diğer istek ayarları korunur.',
+        draftHint: 'Değişiklikler uygulanana kadar yerel kalır.',
+        inherit: 'Ana ajandan devral',
+        modelLabel: 'Alt Ajan Modeli',
+        modelOnly: 'Özel model (üst kimlik bilgilerini kullan)',
+        parentModel: 'Üst modeli kullan',
+        parentModelWarning: 'Seçilen sağlayıcı üst modeli desteklemelidir. Yalnızca sağlayıcı belirtilen yol, model uyumsuzsa başarısız olabilir. O sağlayıcı kendi varsayılan modelini tanımlıyorsa alt ajanlar onu kullanır.',
+        providerLabel: 'Alt Ajan Sağlayıcısı',
+        routing: {
+          addRoute: 'Yol ekle',
+          baseUrlRoute: url => `uç nokta ${url}`,
+          blockedDetail: 'Bu mod kaydedildi, bu yüzden Hermes sessizce Varsayılanı kullanmak yerine her alt ajanı reddediyor.',
+          blockedDisabled: 'Bu profilde Gelişmiş Delegasyon açılana kadar alt ajanlar başlamaz.',
+          blockedMissing: 'Gelişmiş Delegasyon kurulana kadar alt ajanlar başlamaz.',
+          blockedNotLoaded: 'Hermes Gelişmiş Delegasyonu yükleyene kadar alt ajanlar başlamaz. Bitirmek için Hermes’i yeniden başlatın.',
+          blockedPill: 'Çalışmıyor',
+          blockedUnavailable: label => `${label} burada çalışana kadar alt ajanlar başlamaz. Eklentisi çalışamadığını bildiriyor.`,
+          blockedUnregistered: name =>
+            `“${name}” sağlayan bir eklenti kurulup açılana kadar alt ajanlar başlamaz.`,
+          createRoute: 'Yol ekle',
+          defaultBadge: 'Varsayılan',
+          deleteConfirmAction: 'Yolu sil',
+          deleteConfirmBody: 'Alt ajanlar artık onu seçemez.',
+          deleteConfirmNextDefault: name => `Varsayılan yol bu, bu yüzden “${name}” varsayılan olur.`,
+          deleteConfirmTitle: name => `“${name}” yolu silinsin mi?`,
+          deleteRoute: 'Sil',
+          descriptionHint: 'Ajanın seçmeden önce okuduğu tek satır.',
+          descriptionLabel: 'Ne zaman kullanılır',
+          descriptionPlaceholder: 'ör. Ucuz ve hızlı: aramalar, özetler, basit düzenlemeler.',
+          dialogDesc: 'Ajan, bir alt ajanın hangi yolu izleyeceğine karar vermek için adı ve açıklamayı okur.',
+          dialogEdit: 'Model yolunu düzenle',
+          dialogNew: 'Yeni model yolu',
+          editRoute: 'Düzenle',
+          effortInherit: 'Alt ajan varsayılanı',
+          effortLabel: 'Akıl yürütme eforu',
+          enableFailed: 'Gelişmiş Delegasyon açılamadı',
+          enablePlugin: 'Aç',
+          errors: {
+            duplicate: 'Bu adı başka bir yol zaten kullanıyor',
+            required: 'Zorunlu',
+            spaces: 'Boşluk olmaz',
+          },
+          inUse: 'Kullanımda',
+          inactiveModelMap: route => `Model yolları her alt ajanın modelini seçer. Yol seçmeyen alt ajanlar “${route}” yolunu kullanır.`,
+          inactiveModelMapNoDefault: "Model yolları her alt ajanın modelini seçer. Yol seçmeyen alt ajanlar ana ajanın modelini kullanır.",
+          inactivePlugin: label => `${label} her alt ajanın modelini seçiyor, bu yüzden bu ayar geçerli değil.`,
+          inactiveProfiles: profile =>
+            `Profil yolları her alt ajanın profilini seçer. Profil seçmeyen alt ajanlar “${profile}” olarak çalışır.`,
+          inactiveProfilesNoDefault: "Profil yolları her alt ajanın profilini seçer. Profil seçmeyen alt ajanlar ana ajanın modelini kullanır.",
+          inactiveTitle: 'Bu modda kullanılmıyor',
+          installPlugin: 'Eklentiyi kur',
+          installUnavailable: 'Gelişmiş Delegasyon henüz eklenti kataloğunda yok. Yetenekler › Eklentiler bölümünden kurun.',
+          intro: 'Her alt ajanın modelini nasıl aldığı.',
+          loadFailed: 'Alt ajan yönlendirmesi yüklenemedi',
+          makeDefault: 'Varsayılan yap',
+          modeFailed: 'Alt ajan yönlendirmesi değiştirilemedi',
+          modelLabel: 'Model',
+          modelRoutesEmpty: "Henüz yol yok. Bir tane ekleyene kadar alt ajanlar ana ajanın modelini kullanır.",
+          modelRoutesTitle: 'Model yolları',
+          modes: {
+            default: {
+              description: 'Her alt ajan aşağıdaki alt ajan modeliyle çalışır.',
+              label: 'Varsayılan',
+            },
+            model_map: {
+              description: 'Birkaç model adlandırın. Ajan her alt ajan için birini seçer.',
+              label: 'Model yolları',
+            },
+            profile_routes: {
+              description: 'Alt ajanlar profillerinizden biri olarak, kendi modeli, becerileri ve anahtarlarıyla çalışır.',
+              label: 'Profil yolları',
+            },
+          },
+          nameHint: 'Kısa, boşluksuz. Ajan yolları bu adla seçer.',
+          nameLabel: 'Ad',
+          namePlaceholder: 'ör. hızlı',
+          optional: 'isteğe bağlı',
+          plugin: 'Eklenti',
+          pluginDisabled: 'Gelişmiş Delegasyon kurulu ama bu profilde kapalı.',
+          pluginMissing: 'Model yolları ve Profil yolları Gelişmiş Delegasyon eklentisinden gelir.',
+          pluginNotLoaded: 'Gelişmiş Delegasyon açık ama Hermes henüz yüklemedi. Bitirmek için Hermes’i yeniden başlatın.',
+          profileDefault: 'Varsayılan',
+          profileDescriptionPlaceholder: 'Ne zaman kullanılır (isteğe bağlı)',
+          profileEmpty: 'Henüz başka profil yok. Profil rayından bir tane oluşturun.',
+          profileMissing: name => `${name} (profil artık yok)`,
+          profileRoutesHint: 'İşaretlenen her profil kendi modelini, becerilerini, kişiliğini ve anahtarlarını getirir.',
+          profileRoutesTitle: 'Alt ajanların çalışabileceği profiller',
+          providerLabel: 'Sağlayıcı',
+          providerPlaceholder: 'Bir sağlayıcı seçin',
+          routeActions: name => `${name} için işlemler`,
+          saveFailed: 'Yollar kaydedilemedi',
+          saveRoute: 'Yolu kaydet',
+          settingsTitle: 'Alt ajan varsayılanları',
+          thirdPartyDescription: 'Bir eklentiden. Ayarları o eklentide.',
+          tierFast: 'Hızlı',
+          tierHint: 'Yalnızca sunan modellerde.',
+          tierLabel: 'Hız',
+          tierNormal: 'Normal',
+          tierUltrafast: 'Çok hızlı',
+          title: 'Yönlendirme',
+          useDefault: 'Varsayılana geç',
+        },
+      },
     },
     localModels: {
       title: 'Yerel Modeller',
@@ -1753,8 +1924,7 @@ export const tr: Translations = defineLocale({
           "GPU'nuzda tamamen tam hızda çalışan en yüksek kaliteli model. Seçimler, bu donanımdaki tahmini hıza karşı kaliteyi tartar.",
         'speed-gated-quality':
           'Bu makineye daha yüksek kaliteli bir model sığar ama bellek bant genişliğinde çok yavaş yanıt verirdi — bu, hızlı kalan en iyi modeldir.',
-        'fastest-resident':
-          'Bu donanımda hiçbir model tam hıza ulaşmıyor; bu, tamamen GPU belleğinde çalışırken en yakın olanı.'
+        'product-default': 'Bu makinenin varsayılan modeli, üreticisi tarafından seçildi.',
       } as Record<string, string>,
       noRecommendationTitle: 'Bu makine için otomatik öneri yok',
       noRecommendationDetail:
@@ -2391,10 +2561,41 @@ export const tr: Translations = defineLocale({
           topupCredits: {
             caption: 'Süresi dolmaz',
             title: 'Yükleme kredileri'
-          }
+          },
+          window: {
+            barLabel: title => `${title} dahil kullanımı kullanıldı`,
+            captionIncluded: 'Dahil kullanım',
+            captionPaused: 'Duraklatıldı: abonelik ödemesi başarısız',
+            captionPausedOther: 'Duraklatıldı: Portal’da Faturalandırma bölümüne bakın',
+            captionResetsIn: duration => `${duration} sonra sıfırlanır`,
+            captionTopTierUsedUp: 'Aylık kota doldu, kalanı krediler karşılıyor',
+            captionTopTierUsedUpKeepGoingOff: 'Aylık kota doldu, diğer dahil modeller hâlâ çalışıyor',
+            month: 'Bu ay',
+            today: 'Bugün',
+            topTier: 'Büyük modeller (aylık)',
+            valueUsed: percent => `${percent} kullanıldı`,
+            week: 'Bu hafta',
+          },
         }
-      }
-    }
+      },
+      keepGoingOnCredits: {
+        approveInBrowser: 'Bunu değiştirmek için tarayıcınızda Uzaktan Harcamayı onaylayın. Onayladığınız anda geçerli olur.',
+        approvedRetry: 'Uzaktan Harcama onaylandı ama değişiklik kaydedilmedi.',
+        cancel: 'İptal',
+        description: 'Dahil kullanım bittiğinde kredilerinizi kullanın. Kapalıysa Hermes sıfırlanmayı bekler.',
+        openAgain: 'Yeniden aç',
+        title: 'Kredilerle devam et',
+        tryAgain: 'Tekrar dene',
+      },
+    },
+    pluginPages: {
+      agentSettings: 'Ajan ayarları',
+      blurb: 'Kurulu eklentilerin eklediği seçenekler. Her eklenti kendi sayfasını alır, bazıları alt sayfa ekler.',
+      empty: 'Henüz ayarı olan eklenti yok.',
+      manage: 'Eklentileri yönet',
+      missing: 'O eklentinin ayar sayfası yok. Devre dışı bırakılmış veya kaldırılmış olabilir.',
+      pageCount: (n: number) => (n === 1 ? '1 sayfa' : `${n} sayfa`),
+    },
   },
   skills: {
     tabSkills: 'Yetenekler',
@@ -2482,18 +2683,11 @@ export const tr: Translations = defineLocale({
       legacyBackend:
         "Bu arka uç, anahtar adresli eklenti düğmelerinden önce çıkmış — buradan yönetmek için Hermes'i güncelleyin.",
       portableBadge: 'taşınabilir',
-      catalogTitle: 'Eklenti kataloğu',
-      catalogBrowse: 'Göz at',
-      catalogHide: 'Katalog tarayıcısını gizle',
-      catalogHint:
-        'Herhangi bir eklentide "+ Bu Ajana Ekle"ye basın — incelenmiş girdiler, seçili profile sabitlenmiş commit\'lerinde kurulur. Paketlenmiş ajan+masaüstü eklentileri her iki yarıyı da sunar.',
       alreadyInstalled: name => `${name} bu profilde zaten kurulu.`,
       catalogProvenance: sha => `Hermes kataloğundan kuruldu${sha ? ` (pin ${sha})` : ''}.`,
       pinnedProvenance: sha =>
         `${sha} commit'ine sabitlendi. Yeni bir pin ile yeniden kurulana kadar güncellemeler reddedilir.`,
       pinnedBadge: sha => `pinli @ ${sha}`,
-      tierOfficial: 'resmî',
-      tierCommunity: 'topluluk',
       updateToPin: sha => `${sha} sürümüne güncelle`,
       updateFailed: name => `${name} güncellenemedi`,
       updated: name => `${name}, geçerli katalog pinine güncellendi. Uygulamak için ağ geçidini yeniden başlatın.`,
@@ -2524,7 +2718,8 @@ export const tr: Translations = defineLocale({
         saved: (name: string) => `${name} ayarları kaydedildi.`,
         saveFailed: (name: string) => `${name} ayarları kaydedilemedi`,
         secretStoredAs: (env: string) =>
-          `Profilin .env dosyasında ${env} olarak saklanır, asla config.yaml'de değil; mevcut değeri korumak için boş bırakın.`
+          `Profilin .env dosyasında ${env} olarak saklanır, asla config.yaml'de değil; mevcut değeri korumak için boş bırakın.`,
+        required: 'Zorunlu',
       },
       deepLinkCatalogUnknown: (name: string) => `“${name}” Hermes eklenti kataloğunda yok. Hiçbir şey kurulmadı.`,
       settingsToggle: (name: string) => `Ayarlar: ${name}`,
@@ -2544,7 +2739,41 @@ export const tr: Translations = defineLocale({
       toolsetOn: (name: string, profile: string) => `${profile} için ${name} ajan araçları etkinleştirildi`,
       toolsetOff: (name: string, profile: string) => `${profile} için ${name} ajan araçları devre dışı bırakıldı`,
       toolsetToggleFailed: (name: string) =>
-        `${name} ajan araçları değiştirilemedi; Masaüstü paneli değiştirilmeden bırakıldı`
+        `${name} ajan araçları değiştirilemedi; Masaüstü paneli değiştirilmeden bırakıldı`,
+      folderAccess: {
+        hint: (name: string) => `${name} bu klasörlerdeki dosyaları okuyup değiştirebilir. Erişimi kaldırmak hemen etkili olur.`,
+        loadFailed: (name: string) => `${name} ile paylaşılan klasörler yüklenemedi.`,
+        pickerButton: 'Erişime izin ver',
+        pickerTitle: (name: string) => `${name} için bir klasör seçin`,
+        refusedProtected: (name: string) =>
+            `${name} bu klasörü kullanamaz: içinde Hermes ayarları, anahtarlar veya eklenti verileri var. Bunları içermeyen bir klasör seçin.`,
+        revoke: 'Erişimi kaldır',
+        revokeFailed: (name: string) => `${name} için klasör erişimi kaldırılamadı`,
+        revokeLabel: (path: string) => `${path} erişimini kaldır`,
+        revoked: (name: string, path: string) => `${name} artık ${path} kullanamaz.`,
+        title: 'Klasör erişimi',
+      },
+      previewScriptAccessLabel: 'Sayfa betikleri',
+      previewScriptAccessNone: 'Sayfada betik çalıştırmadan önce sorar',
+      previewScriptAllow: 'Bu sitede izin ver',
+      previewScriptDeny: "İzin verme",
+      previewScriptPromptBody: (plugin: string, origin: string) =>
+        `${plugin}, önizleme Tarayıcısında ${origin} üzerinde JavaScript çalıştırmak istiyor.`,
+      previewScriptPromptRevokeHint: 'Yalnızca bu site için geçerli. Yetenekler ▸ Eklentiler bölümünden kaldırabilirsiniz.',
+      previewScriptPromptRisk: 'Betikler o sitedeki her şeyi okuyup değiştirebilir, orada oturum açtığınız hesapların sayfaları dahil.',
+      previewScriptPromptTitle: (plugin: string) => `${plugin} bu sayfada betik çalıştırsın mı?`,
+      previewScriptRevoke: (origin: string) => `${origin} erişimini kaldır`,
+      previewScriptRevokeUnsaved: (plugin: string, origin: string) =>
+        `Bu değişiklik kaydedilemedi, bu yüzden yalnızca Hermes yeniden başlayana kadar geçerli. ${plugin} şimdilik ${origin} üzerinde engelli.`,
+      previewScriptRevoked: (plugin: string, origin: string) => `${plugin} artık ${origin} üzerinde betik çalıştıramaz.`,
+      updateScanBlocked: (name: string) =>
+        `Güvenlik taraması ${name} güncellemesini engelledi (tehlikeli karar). Bu geçersiz kılınamaz.`,
+      updateScanBody: (name: string, count: number) =>
+        `${name} güncellemesi dikkat kararı aldı (${count} bulgu). Her güncelleme taranır. Yalnızca kaynağa güveniyorsanız uygulayın:`,
+      updateScanConfirm: 'Yine de güncelle',
+      updateScanMore: (count: number) => `+ ${count} daha`,
+      updateScanTitle: (name: string) => `Güvenlik taraması ${name} için uyarı verdi`,
+      updatedGit: (name: string) => `${name} en son commit’e güncellendi.`,
     },
     officialCatalog: 'Kurulabilir',
     officialPill: 'Resmî',
@@ -3061,7 +3290,6 @@ export const tr: Translations = defineLocale({
         help: 'Önerilir. Virgülle ayrılmış telefon numaraları veya WhatsApp kimlikleri.'
       }
     },
-    platformIntro: {},
     statusFilter: {
       all: 'Tümü',
       bad: 'Hatalar',
@@ -3436,7 +3664,8 @@ export const tr: Translations = defineLocale({
     },
     overdueSince: 'Gecikme başlangıcı:',
     scriptBadge: 'betik',
-    scriptLabel: 'Betik'
+    scriptLabel: 'Betik',
+    queuedRun: 'Kuyruğa alınmış çalıştırma',
   },
   artifacts: {
     search: 'Yapıtlarda ara...',
@@ -3609,7 +3838,10 @@ export const tr: Translations = defineLocale({
       back: 'Tüm projeler',
       showAllCount: count => `Tüm ${count} oturumu göster`,
       createdInPreviousContext:
-        'Proje önceki bağlantıda veya profilde oluşturuldu. Bulmak için geri geçin; IDEA.md yazılmadı.'
+        'Proje önceki bağlantıda veya profilde oluşturuldu. Bulmak için geri geçin; IDEA.md yazılmadı.',
+      hiddenFromSidebar: 'Kenar çubuğundan gizlendi',
+      moveBusy: 'Çalışan sırayı durdurun, sonra sohbeti taşıyın',
+      undoHide: 'Geri al',
     },
     newSessionIn: label => `${label} içinde yeni oturum`,
     showMoreIn: (count, label) => `${label} içinde ${count} tane daha göster`,
@@ -3900,43 +4132,6 @@ export const tr: Translations = defineLocale({
     snippetsDesc: 'Yazım alanına eklemek için bir başlangıç istemi seçin.',
     dropFiles: 'Eklemek için dosyaları bırakın',
     dropSession: 'Bu sohbeti bağlamak için bırakın',
-    mcpSuggestions: {
-      label: server => `${server} ekle`,
-      tip: keyword => `“${keyword}” ifadesinden bahsettiğiniz için önerildi — bağlanmak için tıklayın`,
-      connecting: server => `${server} bağlanıyor…`,
-      cancelTip: 'İptal etmek için tıklayın',
-      added: server => `${server} eklendi`,
-      addedTip: 'Bağlandı — araçları bu sohbette hazır',
-      connectFailed: server => `${server} bağlanamadı`
-    },
-    skillSuggestions: {
-      label: skill => `Beceriyi kullan: ${skill}`,
-      tip: skill => `“${skill}” ifadesinden bahsettiniz — bu beceriyle başlamak için tıklayın`,
-      done: skill => `/${skill} eklendi`,
-      doneTip: 'Beceri, gönderdiğinizde yüklenir'
-    },
-    githubSuggestions: {
-      label: "GitHub'ı kur",
-      tip: 'GitHub burada gh CLI becerileriyle çalışır — hesabınızı bağlamak için tıklayın',
-      done: '/github-auth eklendi',
-      doneTip: 'Mesajı gönderin, ajan sizi GitHub girişinde yönlendirsin'
-    },
-    repairSuggestions: {
-      label: server => `${server} yeniden bağlan`,
-      tip: server => `Bir ${server} çağrısı az önce bağlantı hatasıyla başarısız oldu`,
-      working: server => `${server} yeniden bağlanıyor…`,
-      workingTip: 'İptal etmek için tıklayın',
-      done: server => `${server} yeniden bağlandı`,
-      doneTip: 'Yeni kimlik bilgileri bu sohbette etkin',
-      failed: server => `${server} yeniden bağlanamadı`
-    },
-    cronSuggestions: {
-      label: 'Bunu zamanla',
-      tip: phrase => `“${phrase}” tekrar eden bir iş gibi görünüyor — bunun yerine bir zamanlamayla çalıştırın`,
-      prefix: 'Bunu zamanlanmış bir iş olarak ayarla:',
-      done: 'Zamanlama için işaretlendi',
-      doneTip: 'Gönderin, ajan işi oluştursun'
-    },
     snippets: {
       codeReview: {
         label: 'Kod incelemesi',
@@ -3984,7 +4179,13 @@ export const tr: Translations = defineLocale({
       'Bu kuyruktaki terminal seçimi artık kullanılamıyor. Satırları yeniden seçin (Ctrl/Cmd+L) ve mesajı tekrar kuyruğa alın.',
     terminalSelectionMissingTitle: 'Terminal seçimi kullanılamıyor',
     terminalSelectionMissingBody:
-      'Göndermeden önce terminal satırlarını yeniden seçin (Ctrl/Cmd+L) — bu çipte özgün metin yok.'
+      'Göndermeden önce terminal satırlarını yeniden seçin (Ctrl/Cmd+L) — bu çipte özgün metin yok.',
+    queueCancelFailed: "Kuyruktaki sıra kaldırılamadı",
+    queueLostDiscard: 'At',
+    queueLostDiscardTip: 'Ağ geçidi sıra ortasında yeniden başladı ve bunu tamamlayamıyor. Arkasındaki kuyruktaki sıralar çalışsın diye bunu atın.',
+    queueLostNote: 'Sıra yeniden başlatma sırasında kayboldu',
+    redirect: 'Mevcut çalıştırmayı yönlendir',
+    restoreImageDraft: 'Görsel taslağını geri yükle',
   },
   statusStack: {
     agents: 'Ajanlar',
@@ -4070,7 +4271,6 @@ export const tr: Translations = defineLocale({
       heartbeatEveryHours: hours => `her ${hours} sa`,
       heartbeatEverySeconds: seconds => `her ${seconds} sn`,
       heartbeatNext: time => `sonraki ${time}`,
-      heartbeatDueWaitingForIdle: 'zamanı geldi — boşta kalınması bekleniyor',
       heartbeatActions: 'Kalp atışı eylemleri',
       pauseHeartbeat: 'Kalp atışını duraklat',
       resumeHeartbeat: 'Kalp atışını sürdür',
@@ -4087,7 +4287,8 @@ export const tr: Translations = defineLocale({
       continuationBusy: 'Hedef sürdürüldü — oturum meşgul, devam etmek için geçerli turu /interrupt ile kesin',
       controlUnavailable: msg => `Oturum denetimleri kullanılamıyor: ${msg}`,
       dismissError: 'Hatayı kapat',
-      add: 'Ekle'
+      add: 'Ekle',
+      dueWaitingForIdle: 'zamanı geldi — boşta olmayı bekliyor',
     },
     coding: {
       title: 'Çalışma ağacı',
@@ -4221,7 +4422,8 @@ export const tr: Translations = defineLocale({
       restarting: 'Arka uç güncellemeyi yüklemek için yeniden başlatılıyor…',
       notAvailable: 'Bu arka uç için güncelleme mevcut değil.',
       failed: 'Arka uç güncellemesi başarısız.',
-      noReturn: 'Arka uç yeniden çevrimiçi olmadı. Güncelleme tamamlanmamış olabilir — arka uç sunucusunu kontrol edin.'
+      noReturn: 'Arka uç yeniden çevrimiçi olmadı. Güncelleme tamamlanmamış olabilir — arka uç sunucusunu kontrol edin.',
+      owed: steps => `Arka uç güncellendi, ama hâlâ bekleyen: ${steps}. Bitirmek için \`hermes update\` komutunu yeniden çalıştırın.`,
     },
     gitUnusable: "Hermes bu bilgisayarda Git'i çalıştıramadı, bu yüzden güncellemeleri kontrol edemedi.",
     changeLogFallbackItem: 'İyileştirmeler ve düzeltmeler',
@@ -4297,20 +4499,6 @@ export const tr: Translations = defineLocale({
     versionDetailsVersion: 'Sürüm',
     versionUnavailable: 'Sürüm bilgisi yok',
     copyFullLog: 'Tam değişiklik günlüğünü kopyala'
-  },
-  handoffTour: {
-    profileTitle: 'İlk göreviniz varsayılan profilde çalışır',
-    profileText:
-      'Bu ray profilleri değiştirir. Şu an yanan, görev oturumunun bulunduğu varsayılan profildir. Diğeri ise karşılama sohbetinin bulunduğu kurulum profilidir.',
-    sessionsTitle: 'Her profil kendi oturumlarını tutar',
-    sessionsText:
-      'Bu liste varsayılan profile aittir. Yeni oturum, seçili olan profilde bir oturum başlatır. Raydan profilleri değiştirin; liste de onunla birlikte değişir.',
-    stayTitle: 'Hermes bir tık uzağınızda',
-    stayText: "Bir yardım istediğinizde kurulum profiline geçin ve Hermes'e Hoş Geldiniz'i açın. Orada kalır."
-  },
-  guidedGreeting: {
-    line: 'Hey, buyur gel. Ben Hermes. Ortamı senin etrafında toparlamam için bana iki dakika ver, sonra gerçekten yapılmasını istediğin bir işe koyulalım.\n\nAma önce, sana nasıl hitap edeyim?',
-    nameSuggestion: name => `(İstersen sana kısaca ${name} da diyebilirim.)`
   },
   install: {
     stageStates: {
@@ -4458,9 +4646,6 @@ export const tr: Translations = defineLocale({
     copyAuthCode: 'Yetkilendirme kodunu kopyalayıp aşağıya yapıştırın.',
     pasteAuthCode: 'Yetkilendirme kodunu yapıştır',
     reopenAuthPage: 'Yetkilendirme sayfasını yeniden aç',
-    autoBrowser: provider =>
-      `${provider} tarayıcınızda açıldı. Hermes'i orada yetkilendirin, otomatik olarak bağlanacaksınız — kopyalayıp yapıştıracak bir şey yok.`,
-    reopenSignInPage: 'Giriş sayfasını yeniden aç',
     waitingAuthorize: 'Yetkilendirmeniz bekleniyor...',
     externalPending: provider =>
       `${provider} kendi CLI'si üzerinden giriş yapar. Bu komutu bir terminalde çalıştırın, sonra geri dönüp "Giriş yaptım"ı seçin:`,
@@ -4476,7 +4661,10 @@ export const tr: Translations = defineLocale({
     change: 'Değiştir',
     startChatting: 'Başla',
     docs: provider => `${provider} belgeleri`,
-    localModelNamePlaceholder: 'Model adı (örn. command-a-plus-05-2026)'
+    localModelNamePlaceholder: 'Model adı (örn. command-a-plus-05-2026)',
+    continueWithoutSetup: 'Kurulum olmadan devam et',
+    setupSlowBody: 'Hermes arka planda hâlâ başlatılıyor.',
+    setupSlowTitle: 'Kurulum normalden uzun sürüyor.',
   },
   freeTier: {
     providerRowTitle: 'Nous · ücretsiz katman',
@@ -4495,13 +4683,10 @@ export const tr: Translations = defineLocale({
     signIn: 'Giriş yap',
     signInHeading: 'Daha fazla model ve aracın kilidini açmak için bir Nous hesabıyla giriş yapın.',
     settingUp: 'Ücretsiz çıkarım hazırlanıyor…',
-    codeBody: 'Girişi tamamlamak için bu kodu tarayıcınızda girin.',
-    copyLink: 'Bağlantıyı kopyala',
     doNotShare: 'Bu kodu paylaşmayın.',
     waiting: 'Giriş bekleniyor…',
     finishingHeading: 'Giriş tamamlanıyor…',
     finishingBody: 'Tarayıcıda onaylandı. Hesap tokenlarınız toplanıyor.',
-    signedInAs: email => `${email} olarak giriş yapıldı`,
     signedIn: 'Giriş yapıldı.',
     completedBody: 'Hesabınız artık çıkarım ve araçlar içeriyor.',
     defaultModel: 'Varsayılan model',
@@ -4509,14 +4694,9 @@ export const tr: Translations = defineLocale({
     done: 'Bitti',
     notNow: 'Şimdi değil',
     tryAgain: 'Tekrar dene',
-    startAgain: 'Yeniden başla',
     didNotComplete: 'Giriş tamamlanmadı',
-    rejectedBody: 'Giriş tarayıcıda reddedildi. Hâlâ ücretsiz katmandasınız.',
-    supersededBody: 'Daha yeni bir giriş kodu bunun yerini aldı.',
     timedOutHeading: 'Giriş zaman aşımına uğradı',
     timedOutBody: 'Kod zamanında kullanılmadı. Hâlâ ücretsiz katmandasınız.',
-    retiredBody:
-      'Bu ücretsiz katman kimliği zaten kullanılmış veya süresi dolmuş; bir sonraki başlatmada yenisi ayarlanır.',
     errorBody: 'Giriş tamamlanmadı; tekrar çalıştırın.',
     alreadySignedInHeading: 'Zaten giriş yapılmış.',
     alreadySignedInBody: 'Bu Hermes zaten bir Nous hesabına giriş yapmış.',
@@ -4545,7 +4725,18 @@ export const tr: Translations = defineLocale({
         `Şu anda pek çok kişi başlıyor, bu yüzden Hermes ${wait} içinde tekrar deneyecek. Giriş yapmak ücretsizdir ve beklemeyi atlar.`
     },
     busyBody: wait =>
-      `Nous hizmeti meşgul olduğu için Hermes girişinizi tamamlayamadı. ${wait} içinde tekrar deneyin. Oturumunuz bu sırada burada kalır.`
+      `Nous hizmeti meşgul olduğu için Hermes girişinizi tamamlayamadı. ${wait} içinde tekrar deneyin. Oturumunuz bu sırada burada kalır.`,
+    finishInBrowser: 'Tarayıcınızda tamamlayın',
+    offer: {
+      body: "Ücretsiz kotadasınız. Hermes’i kullanmaya devam ederseniz limitlere takılmaya başlarsınız. Daha büyük kota için ücretsiz Nous hesabıyla oturum açın.",
+      heading: 'Hermes ile devam edin',
+      notNow: 'Şimdi değil',
+      signIn: 'Oturum aç',
+    },
+    openConnectors: 'Bağlayıcıları aç',
+    openPageAgain: 'Sayfayı yeniden aç',
+    reconnect: 'Yeniden bağlan',
+    signedInAsLabel: 'Oturum açan',
   },
   modelPicker: {
     title: 'Modeli değiştir',
@@ -4567,7 +4758,35 @@ export const tr: Translations = defineLocale({
     wasPrice: 'eski',
     addCustomModelAction: 'Özel model ekle…',
     customModel: 'Özel model',
-    customModelPlaceholder: 'Bir model kimliği yazın, örn. openai/gpt-5'
+    customModelPlaceholder: 'Bir model kimliği yazın, örn. openai/gpt-5',
+    included: 'Aşağıdaki tüm modeller dahil',
+    includedUsedUp: 'Dahil kullanım tükendi',
+    largeFootnote: 'Büyük modeller ayrıca aylık büyük model limitinizi kullanır.',
+    limitNames: {
+      day: 'günlük',
+      month: 'aylık',
+      top_tier: 'aylık büyük model',
+      week: 'haftalık',
+    },
+    limitReached: name => `${name.charAt(0).toUpperCase()}${name.slice(1)} limitine ulaşıldı`,
+    limitThenCredits: 'ücretli modeller artık kredilerinizi kullanıyor (kullandıkça öde)',
+    limitThenCreditsLarge: 'Büyük modeller artık kredilerinizi kullanıyor (kullandıkça öde)',
+    limitThenWait: 'o zamana kadar yalnızca Ücretsiz modeller',
+    limitThenWaitLarge: 'Büyük modeller o zamana kadar duraklatıldı',
+    month: 'Ay',
+    pausedOther: 'duraklatıldı',
+    pausedRenewal: 'duraklatıldı: yenileme ödenmedi',
+    percentUsed: percent => `${percent} kullanıldı`,
+    resetsIn: duration => `${duration} sonra sıfırlanır`,
+    sectionOther: 'Diğer modeller',
+    sectionRecommended: 'Önerilen',
+    today: 'Bugün',
+    topTier: 'Büyük modeller (aylık)',
+    usageLevels: {
+      free: 'Ücretsiz',
+      top_tier: 'Büyük',
+    },
+    week: 'Hafta',
   },
   modelVisibility: {
     title: 'Modeller',
@@ -4600,7 +4819,32 @@ export const tr: Translations = defineLocale({
       free: 'ücretsiz',
       cacheRead: 'önbellekten okuma',
       priceTitle: (input: string, output: string, cache: string) =>
-        `Girdi ${input}/Mtok · Çıktı ${output}/Mtok` + (cache ? ` · Önbellekten okuma ${cache}/Mtok` : '')
+        `Girdi ${input}/Mtok · Çıktı ${output}/Mtok` + (cache ? ` · Önbellekten okuma ${cache}/Mtok` : ''),
+      limited: 'Sınırlı',
+      limitedTip: (provider: string, time: null | string) =>
+        time
+          ? `${provider} kullanım limitine ulaştı. ${time} itibarıyla sıfırlanır; yine de sonrası için model seçebilirsiniz.`
+          : `${provider} kullanım limitine ulaştı. Sıfırlandıktan sonrası için yine de model seçebilirsiniz.`,
+      limitedUntil: (time: string) => `${time} saatine kadar sınırlı`,
+      localSetup: {
+        action: 'Kur',
+        text: (model: string, size: string) => `${model} bu makineye uyuyor · ${size} indirme`,
+        title: 'Yerel çalıştır · ücretsiz, gizli',
+      },
+      modelLimitedTip: (time: string) =>
+        `Bu model kendi limitine ulaştı ve ${time} itibarıyla sıfırlanıyor. Buradaki diğer modeller hâlâ çalışıyor.`,
+      modelResets: (time: string) => `${time} sıfırlanır`,
+      pickDeferred: (model: string) => `${model} sonraki iletinizden itibaren geçerli`,
+      poolAccount: (number: number) => `Hesap ${number}`,
+      poolAccounts: (count: number) => (count === 1 ? '1 hesap' : `${count} hesap`),
+      poolLimited: (limited: number, total: number) => `${limited}/${total} hesap sınırlı`,
+      poolUnavailable: 'Yeniden oturum aç',
+      poolUnknown: 'Kullanım bilgisi yok',
+      usageLeft: (percent: number, time: null | string) =>
+        time ? `%${percent} kaldı · ${time} sıfırlanır` : `%${percent} kaldı`,
+      usageTip: (provider: string) => `${provider} kullanım limitine yaklaşıyor.`,
+      usageWindow: (label: string, percent: number, time: null | string) =>
+        time ? `${label}: %${percent} kaldı, ${time} sıfırlanır` : `${label}: %${percent} kaldı`,
     },
     modelOptions: {
       noOptions: 'Bu model için seçenek yok',
@@ -4749,7 +4993,13 @@ export const tr: Translations = defineLocale({
       focusedSinceTitle:
         'Bu sohbetin odaklandığı andan bu yana geçen süre — bir turun ne kadar süredir çalıştığı değil',
       releaseAvailable: (tag: string) => `${tag} sürümü mevcut.`,
-      compressions: count => `Sıkıştırmalar: ${count}`
+      compressions: count => `Sıkıştırmalar: ${count}`,
+      backend: 'Arka uç',
+      messagingDegraded: name => `${name} kapalı`,
+      messagingStopped: 'mesajlaşma durdu',
+      planUsageTitle: (used, resetsIn) =>
+            `${used} plan kullanımınızın kullanıldı${resetsIn ? ` · ${resetsIn} sonra sıfırlanır` : ''} · Faturalandırmayı aç`,
+      togglePlanUsage: 'Plan kullanımı',
     }
   },
   rightSidebar: {
@@ -5170,7 +5420,31 @@ export const tr: Translations = defineLocale({
         no_reply: {
           body: 'Hermes bu turu yanıt vermeden bitirdi. Tekrar göndermek için yeniden deneyin.',
           title: 'Yanıt tamamlanmadı'
-        }
+        },
+        SESSION_OWNER_BUSY: {
+          body: 'Burada başka bir sıra çalışıyor ve iletiniz kuyruğuna katılamadı. Hiçbir şey gönderilmedi. O sıra bitince yeniden deneyin.',
+          title: 'Hermes bu sohbette meşgul',
+        },
+        SESSION_OWNER_UNCONFIRMED: {
+          body: 'Ağ geçidi iletinizi zamanında doğrulamadı. Kuyruğa alındıysa, önceki sıra bitince veya çözülünce çalışır. Yeniden göndermeden önce sohbeti kontrol edin.',
+          title: 'İletiniz zaten kuyrukta olabilir',
+        },
+        cron_session_read_only: {
+          body: 'Yalnızca o işi çalıştırıyor, bu yüzden iletiniz çalıştırılmadı. Göndermek için yeni bir sohbet başlatın.',
+          title: 'Bu sohbet zamanlanmış bir işe ait',
+        },
+        launch_credentials_unavailable: {
+          body: 'Bu sohbet, o zamandan beri değişmiş veya kaldırılmış bir API anahtarıyla başladı, bu yüzden iletiniz gönderilmedi. Açık bir sohbet kendiliğinden farklı bir anahtara geçmez. Geçerli anahtarınızı kullanmak için yeni bir oturum başlatın.',
+          title: "Bu sohbetin API anahtarı değişti",
+        },
+        usage_window: {
+          body: "Planınızın dahil kullanımı sıfırlanana kadar tükendi. Devam etmek için /topup ile kredi ekleyin.",
+          title: 'Dahil kullanım tükendi',
+        },
+        workspace_unavailable: {
+          body: 'Bu sohbetin çalıştığı klasör taşındı veya silindi, bu yüzden iletiniz çalıştırılmadı. Klasörü yeniden oluşturun veya Projeye taşı ile sohbete başka bir klasör verin, sonra yeniden deneyin.',
+          title: "Bu sohbetin klasörü kayboldu",
+        },
       },
       errorAuthKinds: {
         api_key: {
@@ -5228,7 +5502,13 @@ export const tr: Translations = defineLocale({
       errorRetryScheduled: (time, wait) => `${time} tarihinde tekrar denenecek — ${wait} içinde`,
       copyFullResponse: 'Yanıtın tamamını kopyala',
       readAloudFullResponseHint: 'Shift-tıklama: yanıtın tamamını sesli oku',
-      responseStopped: 'Yanıt durduruldu'
+      responseStopped: 'Yanıt durduruldu',
+      errorAddCredits: 'Kredi ekle',
+      errorOpenBillingSettings: 'Faturalandırma ayarlarını aç',
+      errorSwitchModelFailed: 'Model değiştirilemedi',
+      errorSwitchToModel: (model, note) => (note ? `${model} modeline geç (${note})` : `${model} modeline geç`),
+      errorUseCredits: 'Kredilerle devam et seçeneğini aç',
+      errorUseCreditsFailed: 'Kredilerle devam et açılamadı',
     },
     approval: {
       gatewayDisconnected:
@@ -5266,7 +5546,8 @@ export const tr: Translations = defineLocale({
       noAnswer: 'Yanıt yok',
       notDelivered:
         "Bu soru uygulamaya ulaşmadı, bu yüzden burada yanıtlanamaz. Turu bitirmek için Durdur'a basın, sonra sohbette yanıtlayın.",
-      singleSelectHint: 'Birini seçin'
+      singleSelectHint: 'Birini seçin',
+      oneQuestion: '1 soru',
     },
     mcpSetup: {
       installTitle: 'MCP sunucuları ekle',
@@ -5423,8 +5704,32 @@ export const tr: Translations = defineLocale({
       skip: 'Atla',
       subdirLabel: 'Klasör',
       targetProfile: profile => `${profile} profilinize kurar`,
-      tier: { community: 'topluluk', official: 'resmî' }
-    }
+      tier: { community: 'topluluk', official: 'resmî',
+      verified: 'doğrulanmış', },
+      alreadyInstalled: 'Zaten kurulu; olduğu gibi bırakıldı',
+      envVar: name => `${name} ortam değişkeni`,
+      missingEnv: names => `Kurulumu bitirmek için ${names} ayarlayın`,
+      notEnabled: 'Kuruldu ama açılmadı',
+      phase: {
+        downloading: 'İndiriliyor…',
+        loading_tools: 'Araçları yükleniyor…',
+        python_packages: 'Python paketleri kuruluyor…',
+      },
+      requiresHermes: range => `Hermes ${range}`,
+      serverNotConnected: (server, reason) => `MCP sunucusu ${server} bağlı değil${reason ? `: ${reason}` : ''}`,
+    },
+    themePicker: {
+      accent: 'Vurgu rengi',
+      basic: 'Temel',
+      basicDetail: 'Hermes ile konuşmak için.',
+      customColor: 'Özel renk',
+      elite: 'Elit',
+      eliteDetail: 'Geliştiriciler için: terminal, dosyalar, farklar.',
+      layout: 'Yerleşim',
+      mode: 'Görünüm',
+      noPick: 'Seçim yok',
+      themeAccent: 'Tema varsayılanı',
+    },
   },
   prompts: {
     gatewayDisconnected: 'Hermes şu anda çevrimdışı. Yeniden bağlanın, sonra tekrar gönderin.',
@@ -5558,9 +5863,6 @@ export const tr: Translations = defineLocale({
     modelSwitchStaleNotice: 'Seçim değişti — model değişikliği uygulanmadı.',
     modelSwitchConfirmTitle: (model: string) => `${model} modeline geçilsin mi?`,
     restored: 'Geri yüklendi',
-    staleSessionBody:
-      'Bu pencere aynı sohbetin başka bir görünümünün gerisindeydi. En son mesajlar yüklendi. Hâlâ istiyorsanız tekrar gönderin.',
-    staleSessionTitle: 'Sohbet güncel değil',
     unarchiveFailed: 'Arşivden çıkarma başarısız',
     resetZoom: 'Yakınlaştırmayı sıfırla',
     zoomIn: 'Yakınlaştır',
@@ -5607,11 +5909,6 @@ export const tr: Translations = defineLocale({
         title: 'Yerel motor güncellemesi mevcut',
         text: 'Yerel modellerinizi çalıştıran motoru güncelleyin. Etkin yerel istekler kesintiye uğrayabilir.',
         action: 'Şimdi güncelle'
-      },
-      'local-setup': {
-        title: 'Bu makine modelleri yerel olarak çalıştırabilir',
-        text: 'Donanımınız yerel bir modele hizmet verebilir. Sohbetler bilgisayarınızda kalır ve hiçbir maliyeti olmaz.',
-        action: 'Kur'
       },
       'right-pane': {
         title: 'Çalışma bölmesi',
@@ -5890,7 +6187,32 @@ export const tr: Translations = defineLocale({
       hintIdempotent: { label: 'Tekrarlanabilir', long: 'İki kez çalıştırmak, bir kez çalıştırmakla aynı şeyi yapar.' },
       hintOpenWorld: { label: 'Harici', long: 'Bu uygulamanın dışındaki bir şeye ulaşır.' }
     },
-    searchPlaceholder: (count: number) => `${count} uygulamada ara`
+    searchPlaceholder: (count: number) => `${count} uygulamada ara`,
+    accounts: {
+      add: 'Bağlan',
+      addAnother: 'Başka hesap ekle',
+      aliasHint: 'Küçük harf, rakam ve tire, en fazla 32 karakter. Örneğin work veya home.',
+      aliasInvalid: 'Küçük harf, rakam ve tire kullanın; harf veya rakamla başlayın.',
+      aliasLabel: 'Hesap adı',
+      aliasTaken: 'Bu ad zaten kullanılıyor.',
+      count: (count: number) => (count === 1 ? '1 hesap' : `${count} hesap`),
+      heading: 'Hesaplar',
+      remove: 'Kaldır',
+      removeBody: 'Hermes bu hesap olarak davranmayı bırakır. Diğer hesaplarınız bağlı kalır.',
+      removeTitle: (app: string, name: string) => `${name} ${app} hesabı kaldırılsın mı?`,
+      rename: 'Yeniden adlandır',
+      renameGone: 'O hesap artık yok. Kaldırıldı veya yeniden bağlanmayla değiştirildi.',
+      renameLabel: (name: string) => `${name} için yeni ad`,
+      retiredCount: (count: number) => `${count} emekli`,
+      status: {
+        expired: 'Erişimin süresi doldu',
+        failed: 'Bağlanılamadı',
+        inactive: 'Etkin değil',
+        pending: 'Oturum açma bekleniyor',
+        retired: 'Yeniden bağlanmayla değiştirildi',
+        revoked: 'Erişim kaldırıldı',
+      },
+    },
   },
   intro: {
     custom: () => []
@@ -5962,24 +6284,78 @@ export const tr: Translations = defineLocale({
     tools: 'Araçlar',
     tryAnother: 'Başka bir arama deneyin veya filtrelerinizi temizleyin.',
     updatedDate: 'Güncellendi',
-    version: 'Sürüm'
+    version: 'Sürüm',
+    developer: {
+      docs: 'Geliştirici Belgeleri',
+      heading: 'Geliştirici Modu',
+      pitch: 'Bir araç, bağlayıcı, eklenti veya Mod mu yaptınız?',
+      pitchFollowUp: 'İstiyor ama nasıl yapacağınızı bilmiyor musunuz?',
+      submit: 'Mod gönder',
+      title: 'Hermes için geliştir',
+    },
+    discoverKind: (kind: string) => `${kind} keşfet`,
+    install: 'Kur',
+    moreToExplore: 'Keşfedilecek daha çok şey',
+    moreToExploreBlurb: 'Kataloğun daha küçük köşeleri, hepsi tek yerde.',
+    nextSlide: 'Sonraki öne çıkan',
+    previousSlide: 'Önceki öne çıkan',
+    skillsFor: (category: string) => `${category.toLowerCase()} için beceriler.`,
+    slideOf: (index: number, count: number) => `${index} / ${count}`,
+    tier: 'Kademe',
+    tierLabels: {
+      community: 'Topluluk',
+      official: 'Resmî',
+      verified: 'Doğrulanmış',
+    },
+    tiers: {
+      official: {
+        blurb: 'Nous Research tarafından geliştirilir ve sürdürülür.',
+        title: 'Resmî Eklentiler',
+      },
+      verified: {
+        blurb: 'Entegrasyonun arkasındaki şirketten, Nous tarafından doğrulandı.',
+        title: 'Doğrulanmış Eklentiler',
+      },
+    },
+    toolsets: {
+      callCount: (count: string, calls: number) => (calls === 1 ? '1 çağrı' : `${count} çağrı`),
+      essentials: 'Temeller',
+      essentialsBlurb: 'Hermes işlerinin çoğunun üzerinde koştuğu şeyler.',
+      mostUsed: 'En çok kullanılan',
+      mostUsedBlurb: 'Hermes’in bu profilde en sık başvurduğu araç setleri.',
+      themes: {
+        connect: {
+          blurb: 'Hesaplar, diğer ajanlar, akıllı ev ve web’in ötesinde arama.',
+          label: 'Bağlan ve ulaş',
+        },
+        create: {
+          blurb: 'Görüntü ve videoya bak, sesi yazıya çevir, medya üret.',
+          label: 'Gör, duy ve üret',
+        },
+        more: {
+          blurb: 'Bu profilin açabileceği diğer her şey.',
+          label: 'Daha fazla araç',
+        },
+        recall: {
+          blurb: 'Hermes’in hatırladıkları ve arayabileceği beceriler ile geçmiş.',
+          label: 'Bellek ve bilgi',
+        },
+        work: {
+          blurb: 'Tarayıcıyı ve masaüstünü sür, dosya düzenle, kod çalıştır ve iş planla.',
+          label: 'Gözat, çalış ve otomatikleştir',
+        },
+      },
+      toolCount: (count: number) => (count === 1 ? '1 araç' : `${count} araç`),
+    },
   },
   sharedMetrics: {
     consentTitle: "Hermes'i geliştirmeye yardım etmek ister misiniz?",
     consentBody:
       "Paylaşılan ölçümler yalnızca sınırlı sayaçlar içerir. Asla istemler, dosyalar, yollar veya hata metni içermez. Toplama yereldir. Bunları Nous'a göndermek ayrı bir onaydır.",
-    consentWindow:
-      'Yalnızca toplama süresinin tamamı kayıtlı bir onay penceresine denk gelen paketler gönderilir — onay vermeden önceki veya gönderme kapalıyken oluşan herhangi bir boşluktaki veriler bu makinede kalır. Gönderme istediğiniz zaman tekrar kapatılabilir.',
-    changeLater: "Bunu istediğiniz zaman Ayarlar → Güvenlik'ten değiştirebilirsiniz.",
-    collectLabel: 'Kullanım istatistiklerini topla',
-    collectDesc: 'Bu cihazda tutulan sınırlı sayaçlar. Asla istemler, dosyalar, yollar veya hata metni içermez.',
     sendLabel: "Kullanım istatistiklerini Nous'a gönder",
     sendDesc:
       'Her günlük paketi Nous telemetri hizmetine yükle. Yalnızca bir onay penceresi içindeki veriler gönderilir. Toplamanın açık olması gerekir.',
-    installId:
-      'Gönderme, her günlük paketi Nous telemetri hizmetine yükler. Paketler bu profilin kurulum kimliğini taşır: kişisel bilgi içermeyen, kalıcı rastgele bir UUID; shared-metrics dizini silinerek sıfırlanır.',
     whatIsCollected: 'Neler toplanır',
-    collectedIntro: 'Yalnızca sınırlı sayaçlar:',
     collectedActivity: 'Etkinlik, oturum uzunluğu, sonuçlar ve hata sınıfları',
     collectedMachine:
       'Kaba makine bilgileri: RAM aralığı, GPU türü, Hermes sürümünün yaşı ve yayın kanalı, geride kalınan güncellemeler, yerel model sunucusu kullanılıp kullanılmadığı',
@@ -5990,15 +6366,17 @@ export const tr: Translations = defineLocale({
       'Güncelleme sonuçları ve süreleri, çökmeler, başlatma ve yanıt hızı, mesajlaşma platformu sağlığı',
     collectedUsage:
       "Hermes'in nasıl kullanıldığı: ajan doğruluğu ve verimliliği (düzenleme eşleşmeleri, döngüler, kurtarmalar, görev başına token ve araç çağrıları, önbellek kırılmaları), yüzey ve Masaüstü modu başına etkin süre, hangi uygulama alanlarının, eylemlerin ve ayarların kullanıldığı, hızla kapatıldığı veya devre dışı bırakıldığı ve sağlayıcı kurulum sonuçları",
-    local: 'Yalnızca yerelde topla',
     share: "Topla ve Nous'a gönder",
     off: 'Hayır, teşekkürler',
     readDocs: 'Tüm ayrıntıları okuyun',
     saveFailed: 'Seçiminiz kaydedilemedi',
     stripBody: 'Yalnızca sınırlı sayaçlar; asla istemler veya dosyalar değil.',
     stripDetails: 'Ayrıntılar',
-    stripChoices: { local: 'Yalnızca yerel', off: 'Hayır, teşekkürler', share: "Nous'a gönder" },
-    unavailable: 'Bu ayarı değiştirmek için Hermes arka ucunu güncelleyin.'
+    stripChoices: { off: 'Hayır, teşekkürler', share: "Nous'a gönder" },
+    unavailable: 'Bu ayarı değiştirmek için Hermes arka ucunu güncelleyin.',
+    dialogTitle: 'Kullanım istatistikleri',
+    sending: 'Paylaşırsanız Hermes, bu profil için rastgele bir kimlikle günde bir kez Nous’a istatistik gönderir. Hermes’in kurulduğuna dair tek seferlik bir not dışında, katılmadan önceki istatistikler asla gönderilmez. Bunu istediğiniz zaman Ayarlar’dan değiştirebilirsiniz.',
+    stripReaskBody: 'Bir kez daha soruyoruz: eski bir sürüm, siz bunu görmeden “Hayır, teşekkürler”i kaydedebiliyordu.',
   },
   skillDeepLink: {
     destinationChanged: 'Hedef değişti. Bu pencereyi kapatın ve kurulum bağlantısını tekrar açın.',
@@ -6007,6 +6385,181 @@ export const tr: Translations = defineLocale({
     installed: 'Kuruldu',
     installing: 'Kuruluyor…',
     source: 'Kaynak',
-    thisComputer: 'Bu bilgisayar'
-  }
+    thisComputer: 'Bu bilgisayar',
+    installComplete: (name: string) => `“${name}” kuruldu`,
+    installTitle: (name: string) => `“${name}” kurulsun mu?`,
+  },
+  appTour: {
+    capabilities: {
+      text: 'Hermes’in kullanabileceği beceriler, araçlar ve eklentiler. Buradan daha fazla ekleyin.',
+      title: 'Yetenekler',
+    },
+    composer: {
+      text: 'Ne yapılmasını istediğinizi yazın. Dosya eklemek için @ yazın.',
+      title: 'Buradan sorun',
+    },
+    messaging: {
+      text: 'Hermes’e Telegram, Slack, Discord ve daha fazlasından ulaşın.',
+      title: 'Mesajlaşma',
+    },
+    model: {
+      text: 'Hangi modelin size yanıt vereceğini seçer.',
+      title: 'Model seçici',
+    },
+    modelLocal: 'Bu bilgisayar birini yerel çalıştırabilir: Ayarlar > Sağlayıcılar > Yerel Modeller.',
+    newSession: {
+      text: 'Yeni oturum kendi bağlamını alır. Her iş için bir tane kullanın.',
+      title: 'Sıfırdan başla',
+    },
+    rightPane: {
+      text: 'Sağda dosyaları, terminali, incelemeyi ve uygulama içi tarayıcıyı açar.',
+      title: 'Çalışma paneli',
+    },
+    sessions: {
+      text: 'Her konuşma burada yaşar. İstediğinizi arayın, sabitleyin veya yeniden açın.',
+      title: 'Sohbetleriniz',
+    },
+  },
+  butterbar: {
+    goTo: (index, total) => `${total} bildirimden ${index}. göster`,
+    legal: {
+      after: '.',
+      before: 'Hermes Agent kullanımı şunlara tabidir: ',
+      between: ' ve ',
+      privacy: 'Gizlilik Politikası',
+      terms: 'Hizmet Şartları',
+    },
+  },
+  connectorOffer: {
+    body: 'Bağladığınız uygulamaları (Gmail veya Slack gibi) hesabınızda tutmak için ücretsiz Nous hesabıyla oturum açın.',
+    heading: 'Bağlı uygulamalarınızı koruyun',
+  },
+  firstRun: {
+    answerRefused: 'Yanıt kabul edilmedi',
+    beats: {
+      build: 'İlk görev',
+      connectors: 'Uygulamalar',
+      layout: 'Yerleşim',
+      name: 'Ad',
+      plugins: 'Eklentiler',
+      theme: 'Vurgu rengi',
+      tour: 'Tur',
+    },
+    install: 'Kur',
+    installed: 'Kuruldu',
+    intro: {
+      greeting: "Merhaba, ben Hermes.",
+      plan: "Her şeyi sizin için kuralım. Sonra güzel bir şey yapalım.",
+    },
+    loading: 'Yükleniyor…',
+    localModel: {
+      notNow: 'Şimdi değil',
+      setUp: 'Kur',
+      text: (model, size) => `${model} (${size}) donanımınıza uyuyor. Ücretsiz çalışır ve sohbetleriniz bu bilgisayarda kalır.`,
+      title: 'Bu bilgisayar bir modeli yerel olarak çalıştırabilir',
+    },
+    namePlaceholder: 'Adınız',
+    noAnswer: 'Yanıt yok',
+    noPlugins: 'Şu anda gösterilecek eklenti yok.',
+    noneChosen: 'Hiçbiri',
+    rerun: {
+      action: 'Yeniden çalıştır',
+      description: 'İlk kurulum adımlarını mevcut modelinizle geçen yeni bir kurulum sohbeti açar.',
+      failed: 'Kurulum başlatılamadı',
+      title: 'Kurulumu yeniden çalıştır',
+    },
+    skip: 'Kurulumu atla',
+    skipFailed: 'Kurulum atlanamadı',
+    skipTip: 'Yönlendirmeli kurulumu bitir ve yeni bir sohbet aç.',
+    skippedAll: 'Kurulum atlandı',
+    slashOffBody: 'Kurulum bittiğinde her zamanki gibi çalışırlar.',
+    slashOffTitle: 'Kurulum sırasında eğik çizgi komutları kapalı',
+    tours: {
+      full: 'Her şeyi göster',
+      quick: 'Hızlı tur',
+      skip: "Atla, bir şeyler yapalım",
+    },
+    useName: name => `“${name}” kullan`,
+  },
+  gatewayGroupOpen: {
+    lookupFailed: 'Bu grup ağ geçidinde bulunamadı. Yeniden deneyin.',
+    missing: 'Bu ağ geçidi grubu artık yok.',
+    opening: 'Ağ geçidi grubu açılıyor…',
+  },
+  keepAwakeOffer: {
+    action: 'Çalışırken uyanık tut',
+    message: 'Hermes bir görev çalışırken bilgisayarınızı uyanık tutabilir. Ekran yine kapanır ve pilden çalışırken bilgisayarınız yine uyuyabilir.',
+    title: 'Hermes çalışırken bilgisayarınız uyudu',
+  },
+  promptNotices: {
+    compactedTurnUnavailable: "Bu ileti sohbet sıkıştırıldığında özetlendi, artık geri yüklenemez veya düzenlenemez.",
+    desktopCommands: {
+      agentsEmpty: 'Bu sohbette etkin alt ajan veya arka plan süreci yok.',
+      checkpointsDisabled: 'Bu oturum için kontrol noktaları açık değil (config.yaml içinde checkpoints.enabled ayarlayın).',
+      checkpointsEmpty: 'Bu çalışma dizini için henüz kontrol noktası yok.',
+      checkpointsHeader: 'Kontrol noktaları (en yeniler önce):',
+      checkpointsHint: '/rollback <n> [file] ile geri yükleyin (--all kendi düzenlemelerinizin de üzerine yazar); /rollback diff <n> ile önizleyin.',
+      configDefaults: '(varsayılanlar)',
+      configFooter: 'Ayarları Ayarlar bölümünden değiştirin veya ağ geçidi ana makinesinde `hermes config edit` ile config.yaml düzenleyin.',
+      configHeader: 'Yapılandırma (görünüm, onaylar, yapıştırma ve ses ayarları; diğerleri gösterilmez):',
+      error: message => `hata: ${message}`,
+      exportRemote: '/export profili ağ geçidi ana makinesinde paketler, burası o makine değil. O makinede `hermes profile export` çalıştırın.',
+      historyEmpty: 'Henüz ileti yok.',
+      historyHeader: count => `Sohbet geçmişi (${count} ileti):`,
+      historyHermes: 'Hermes',
+      historyYou: 'Siz',
+      importRemote: '/import profili ağ geçidi ana makinesine kurar, burası o makine değil. O makinede `hermes profile import <archive>` çalıştırın.',
+      noDiff: 'O kontrol noktasından beri değişiklik yok.',
+      processesHeader: count => `Arka plan süreçleri (${count}):`,
+      reopenForRewind: 'Geri sarılmış sohbeti görmek için bu sohbeti yeniden açın.',
+      restored: hash => (hash ? `Kontrol noktası geri yüklendi: ${hash}.` : 'Kontrol noktası geri yüklendi.'),
+      rewound: count => `Bu sohbette ${count} ileti geri sarıldı.`,
+      rollbackFailed: error => `Geri alma başarısız: ${error}`,
+      rollbackUsage: 'kullanım: /rollback [list] | diff <n|hash> | <n|hash> [file] [--all]',
+      saveCancelled: 'Kaydedilmedi (iptal edildi).',
+      saveDialogTitle: 'Sohbeti kaydet',
+      saveLegacyRefused: 'Kaydedilmedi: bu ağ geçidi redakte edilmiş, adlandırılmış veya JSON dışı bir kopya veremiyor. Ağ geçidini güncelleyin veya seçenek vermeden /save çalıştırıp ham JSON’u ağ geçidi ana makinesine yazın.',
+      saveUnsupported: 'hata: bu masaüstü derlemesi dosya kaydedemiyor',
+      saveUsage: 'kullanım: /save [json|md|html] [filename] [redact]',
+      savedOnHost: path => `Ağ geçidi ana makinesine kaydedildi: ${path}`,
+      savedTo: path => `Sohbet şuraya kaydedildi: ${path}`,
+      statusRunning: 'çalışıyor',
+      subagentFallback: 'alt ajan',
+      subagentsHeader: count => `Alt ajanlar (${count}):`,
+      timestampsOff: 'Zaman damgaları: kapalı (bu pencere; kalıcı yapmak için config.yaml içinde display.timestamps ayarlayın)',
+      timestampsOn: 'Zaman damgaları: açık (bu pencere; kalıcı yapmak için config.yaml içinde display.timestamps ayarlayın)',
+      timestampsUsage: 'kullanım: /timestamps [on|off|status]',
+      toolCalls: count => `${count} araç çağrısı`,
+      unknownError: 'bilinmeyen hata',
+      unknownPath: '(bilinmeyen yol)',
+    },
+    legacySendUnconfirmed: 'Bu sunucu, bu iletinin daha önceki gönderimini doğrulayamadı, bu yüzden zaten çalışmış olabilir. Yeniden göndermeden önce sohbeti kontrol edin.',
+    mcpReloadDeferred: 'Bu sohbet meşgul: MCP değişikliği sıra bitince ve MCP yeniden yüklenince ya da sohbeti yeniden açtığınızda uygulanır',
+    mcpReloadUnavailable: servers => `Bağlanmadı: ${servers}`,
+    sessionCommands: {
+      busy: (command: string) =>
+        `oturum meşgul — Hermes hâlâ yanıtlıyor. Önce mevcut yanıtı durdurun (Durdur düğmesi veya terminalde Ctrl+C), sonra /${command} çalıştırın.`,
+      busyCompressing: (command: string) =>
+        `oturum meşgul — bir /compress çalışıyor; bitince /${command} çalıştırın.`,
+      countOne: (count: string) => `${count} ileti kuyrukta`,
+      countOther: (count: string) => `${count} ileti kuyrukta`,
+      queueEditKept: 'Düzenlemeniz kaydedilmeden önce başladı ya da reddedildi. Düzenlenmiş metniniz giriş alanında.',
+      queueEditKeptTitle: 'Kuyruktaki ileti değiştirilmedi',
+      queueEditUnconfirmed: 'Hermes düzenlemenizi doğrulayamadı. Aynı düzenlemeyi yeniden denemek için tekrar kaydedin; iki kez kuyruğa alınmaz.',
+      queueEditUnconfirmedTitle: 'Düzenleme doğrulanmadı',
+      queueFailed: 'ileti kuyruğa alınamadı',
+      queued: (preview: string) => `kuyruğa alındı: "${preview}"`,
+      retryNothing: 'yeniden denenecek bir şey yok',
+      retryUnsupported: '/retry: yeniden deneme medya veya bilinmeyen içerik parçalarını desteklemiyor',
+      steerNoActiveTurn: (preview: string) => `etkin sıra yok — sonrakine kuyruğa alındı: "${preview}"`,
+      steerQueued: (preview: string) => `yönlendirme kuyruğa alındı — sonraki araç çağrısından sonra ulaşır: "${preview}"`,
+      steerRejected: 'yönlendirme reddedildi — etkin sıra yok, sonraki sıraya alındı',
+      steerUsage: 'kullanım: /steer <prompt>',
+      undidOne: (count: string) => `${count} ileti geri alındı — kaldırılan ileti giriş alanında`,
+      undidOther: (count: string) => `${count} ileti geri alındı — kaldırılan iletiler giriş alanında`,
+      undoNothing: 'geri alınacak bir şey yok',
+      undoUsage: 'kullanım: /undo [N]',
+    },
+    staleTurnUnavailable: "Bu ileti artık bu sohbetin geçmişinde değil.",
+  },
 })

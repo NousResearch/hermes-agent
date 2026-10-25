@@ -138,9 +138,11 @@ def tracking_refspec(remote: str, branch: str) -> str:
 
 def _fetch(git_cmd: list[str], root: Path, depth_args: list[str], remote: str, branch: str):
     print(f"→ Fetching from {remote}...")
-    return _git(
-        git_cmd, root, ["fetch", *depth_args, remote, tracking_refspec(remote, branch)],
-        **_uc()._no_prompt_git_kwargs())
+    # The parent updater's bounded runner, not the unbounded local ``_git``: a stalled --check
+    # fetch hits the same timeout/no-prompt guard and ends in the same diagnosable failure a
+    # real update gets, instead of hanging forever.
+    return _uc()._git_run(git_cmd, ["fetch", *depth_args, remote, tracking_refspec(remote, branch)],
+                          cwd=root, network=True)
 
 
 def fetch_compare_branch(git_cmd: list[str], root: Path, branch: str, depth_args: list[str]):
@@ -160,8 +162,45 @@ def fetch_compare_branch(git_cmd: list[str], root: Path, branch: str, depth_args
     # Marking the unmarked packs clears the git 2.53+ partial-clone pack-objects crash (#124272).
     print("→ Fetching from origin...")
     return fetch_with_partial_clone_recovery(
-        lambda gc, a: _git(gc, root, a, **_uc()._no_prompt_git_kwargs()),
+        lambda gc, a: _uc()._git_run(gc, a, cwd=root, network=True),
         git_cmd, ["fetch", *depth_args, "origin", tracking_refspec("origin", branch)], root), f"origin/{branch}"
+
+
+def apply_fetch(git_cmd, root, *, branch, target_ref, release_sha, target_is_head,
+                release_version, release_shallow):
+    """Return ``(result, shallow_tag_fetch)`` for the apply path's one network fetch.
+
+    ``(None, False)`` means a forward-only release already at HEAD: nothing to fetch.
+    """
+    if release_sha and target_is_head:
+        # Forward-only default: the checkout already contains the release; nothing to fetch.
+        return None, False
+    if release_sha and release_shallow:
+        # The tag refspec works on any host (a bare sha needs uploadpack.allowAnySHA1InWant)
+        # and brings the tag object + its commit + trees, which is all the detach and the
+        # version label need.
+        fetch_args = ["fetch", "--depth=1", "--no-tags", "origin",
+                      f"refs/tags/v{release_version}:refs/tags/v{release_version}"]
+        shallow_tag_fetch = True
+    elif release_sha:
+        fetch_args = ["fetch", "--no-tags", "origin", target_ref]
+        shallow_tag_fetch = False
+    else:
+        fetch_args = ["fetch", "origin", tracking_refspec("origin", branch)]
+        shallow_tag_fetch = False
+    from hermes_cli.gitlock import fetch_with_partial_clone_recovery
+    # Marking the unmarked packs clears the git 2.53+ partial-clone pack-objects crash (#124272).
+    print("→ Fetching updates...")
+    fetch_result = fetch_with_partial_clone_recovery(
+        lambda gc, a: _uc()._git_run(gc, a, cwd=root, network=True), git_cmd, fetch_args, root)
+    if fetch_result.returncode != 0 and shallow_tag_fetch:
+        # A release whose tag is not published (or a mirror without it) must never be the
+        # reason the update dies when the sha fetch would serve: fall back once.
+        shallow_tag_fetch = False
+        fetch_result = fetch_with_partial_clone_recovery(
+            lambda gc, a: _uc()._git_run(gc, a, cwd=root, network=True), git_cmd,
+            ["fetch", "--no-tags", "origin", target_ref], root)
+    return fetch_result, shallow_tag_fetch
 
 
 def repair_shallow_grafts(root: Path) -> None:
@@ -227,7 +266,7 @@ def report_rev_list_verdict(git_cmd: list[str], root: Path, compare_branch: str)
 
 def select_apply_target(args, branch: str, request: dict, *, git_cmd, stop) -> tuple:
     """Resolve the update's target before any tree write: ``(target_ref, release_sha,
-    target_is_head, repository)``; records branch/expected_sha/retirement on ``request``.
+    target_is_head, repository)``; records branch/expected_sha/release_version/retirement on ``request``.
 
     ``target_is_head`` means an unchosen default subscription is already past the release,
     so HEAD itself is the target. Exits 1 (after ``stop()``) when the channel is unresolvable.
@@ -263,6 +302,10 @@ def select_apply_target(args, branch: str, request: dict, *, git_cmd, stop) -> t
     if target.commit:
         print(f"→ {'Release' if target.ahead else 'Latest release'}: {target.label}")
         request["expected_sha"] = target.commit
+        if target.version:
+            # The caller names the release tag from this: a shallow checkout can fetch just
+            # `refs/tags/v<version>` at depth 1 instead of unshallowing first.
+            request["release_version"] = target.version
         return target.commit, target.commit, target.ahead, target.repository
     assert target.branch is not None  # a SourceTarget without a commit names its branch
     request["branch"] = target.branch

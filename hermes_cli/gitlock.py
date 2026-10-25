@@ -453,6 +453,38 @@ def _shallow_file_path(repo_root: Path) -> Optional[Path]:
     return shallow_path if shallow_path.is_file() else None
 
 
+def is_shallow_repository(repo_root: Path) -> bool:
+    """True when the checkout has a ``.git/shallow`` boundary file."""
+    return _shallow_file_path(repo_root) is not None
+
+
+def head_is_shallow_boundary(repo_root: Path) -> bool:
+    """True when HEAD's commit is itself a ``.git/shallow`` boundary (no local commits on top)."""
+    shallow_path = _shallow_file_path(repo_root)
+    if shallow_path is None:
+        return False
+    head = _git_stdout_lines(repo_root, ["rev-parse", "HEAD"])
+    if not head:
+        return False
+    try:
+        # utf-8-sig: a checkout provisioned on Windows (PowerShell redirect) can carry a BOM,
+        # which would otherwise corrupt the first boundary sha and hide the shallow gate.
+        lines = shallow_path.read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        return False
+    return head[0] in {line.strip() for line in lines if line.strip()}
+
+
+def has_merged_release_tag(repo_root: Path) -> bool:
+    """True when a ``v<digits>`` release tag points at or below HEAD in the local (possibly shallow) graph.
+
+    The same ``git tag --merged`` query ``hermes_cli.version_info._git_version_info`` derives the
+    version label from, so a True here means the label is computable without any history fetch.
+    """
+    return bool(_git_stdout_lines(
+        repo_root, ["tag", "--merged", "HEAD", "--list", "v[0-9]*"]))
+
+
 class _ShallowLock:
     """Git's own ``shallow.lock`` protocol, so a concurrent ``git fetch`` that
     writes ``.git/shallow`` between our read and our write is never clobbered:

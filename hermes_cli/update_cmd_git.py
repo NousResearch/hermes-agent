@@ -551,6 +551,12 @@ _FETCH_FAILURE_RULES = (
     (lambda s: "Permission denied (publickey)" in s or "Host key verification failed" in s,
      "✗ SSH authentication failed — check your SSH key is added to GitHub, or switch"
      " `origin` to HTTPS: `git remote set-url origin https://github.com/NousResearch/hermes-agent.git`."),
+    # The synthetic message _git_run builds for a killed fetch (returncode 124): without its own
+    # rule it fell through to the generic "Failed to fetch updates" and named no fix.
+    (lambda s: "timed out after" in s,
+     "✗ The fetch timed out — the connection stalled, or the transfer is larger than the updater's"
+     " time budget. A manual `git fetch origin <branch>` has no time limit: run it once, then re-run"
+     " `hermes update`; the delta it leaves is small."),
 )
 
 
@@ -572,6 +578,20 @@ def _print_fetch_failure(stderr: str, *, git_cmd=None, root: Optional[Path] = No
             print(f"  {line}")
         if len(lines) > 15:
             print(f"  ... ({len(lines) - 15} more lines omitted)")
+
+
+def _heal_stale_shallow_checkout(repo_root: Path, branch: str) -> None:
+    """Unshallow a shallow checkout before the bounded fetch (#123254). Non-fatal: on failure the
+    update proceeds with the fetch it always ran."""
+    from hermes_cli._subprocess_compat import no_prompt_git_kwargs as _no_prompt_git_kwargs
+    from hermes_cli.gitlock import heal_shallow_history
+
+    try:
+        if heal_shallow_history(repo_root, branch, **_no_prompt_git_kwargs()):
+            print("  ✓ Fetched the commit history this shallow checkout was missing")
+    except (OSError, subprocess.SubprocessError) as exc:
+        detail = (getattr(exc, "stderr", None) or str(exc)).strip().splitlines()[-1:] or [type(exc).__name__]
+        print(f"  ⚠ Could not fetch the missing commit history ({detail[0]}); a very stale install may time out")
 
 
 def _probe_fork_bomb(argv: list) -> Optional[bool]:

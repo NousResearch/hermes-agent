@@ -98,7 +98,8 @@ from hermes_cli.update_cmd_git import (
     _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _add_upstream_remote, _assess_parked_branch_switch,
     _branch_head_label, _branch_head_suffix, _classify_fetch_failure, _count_commits_between,
     _discard_lockfile_churn, _ensure_non_trampoline_git, _get_origin_url, _git_is_trampoline,
-    _has_upstream_remote, _is_fork, _locate_real_git, _mark_skip_upstream_prompt,
+    _has_upstream_remote, _heal_stale_shallow_checkout, _is_fork, _locate_real_git,
+    _mark_skip_upstream_prompt,
     _normalize_managed_eol, _park_detached_head, _portable_git_candidates, _print_fetch_failure,
     _print_parked_branch_kept_notice, _print_parked_branch_skip_warning,
     _prune_orphan_rescue_refs, _push_synced_fork, _should_skip_upstream_prompt, _sync_fork_with_upstream,
@@ -114,7 +115,7 @@ from hermes_cli.update_cmd_maint import (
     _reload_process_scan_modules, _reload_updated_runtime_modules,
     _resolve_pre_update_backup_mode, _restore_state_db_from_snapshot,
     _run_post_update_maintenance, _run_pre_update_backup,
-    _sweep_bytecode_after_update,
+    _sweep_bytecode_after_update, _sweep_timed_out_pack_temps,
     _update_complete_message, _verify_and_restore_one_state_db,
     _verify_and_restore_state_dbs_post_update)
 from datetime import UTC
@@ -283,25 +284,13 @@ def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
         # subprocess.run already killed the child; the checkout stays consistent because
         # fetch writes to tmp_pack_* and only renames on success. Report as a failed run
         # so every caller's existing stderr path prints one clear line.
-        result = subprocess.CompletedProcess(
-            exc.cmd, 124, stdout="",
-            stderr=f"git {args[0]} timed out after {NETWORK_GIT_TIMEOUT_SECONDS}s (a stalled remote, or a transfer too large for the limit)")
+        stderr = (f"git {args[0]} timed out after {NETWORK_GIT_TIMEOUT_SECONDS}s (a stalled remote, "
+                  "or a transfer too large for the limit)")
+        stderr = _sweep_timed_out_pack_temps(cwd, stderr)
+        result = subprocess.CompletedProcess(exc.cmd, 124, stdout="", stderr=stderr)
         if check:
             raise subprocess.CalledProcessError(124, exc.cmd, output="", stderr=result.stderr) from exc
         return result
-
-
-def _heal_stale_shallow_checkout(repo_root: Path, branch: str) -> None:
-    """Unshallow a shallow checkout before the bounded fetch (#123254). Non-fatal: on failure the
-    update proceeds with the fetch it always ran."""
-    from hermes_cli.gitlock import heal_shallow_history
-
-    try:
-        if heal_shallow_history(repo_root, branch, **_no_prompt_git_kwargs()):
-            print("  ✓ Fetched the commit history this shallow checkout was missing")
-    except (OSError, subprocess.SubprocessError) as exc:
-        detail = (getattr(exc, "stderr", None) or str(exc)).strip().splitlines()[-1:] or [type(exc).__name__]
-        print(f"  ⚠ Could not fetch the missing commit history ({detail[0]}); a very stale install may time out")
 
 
 def _capture_head_sha(git_cmd, cwd) -> str | None:
@@ -1864,6 +1853,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
         args, branch, completion_request, git_cmd=None if use_zip_update else git_cmd,
         stop=lambda: _m()._resume_windows_gateways_after_update(_windows_gateway_resume))
     branch = completion_request["branch"]
+    from hermes_cli.gitlock import head_is_shallow_boundary, is_shallow_repository
+    release_version = completion_request.get("release_version")
+    # A release update on a pristine shallow install only needs the one release commit: keep the
+    # checkout shallow and fetch just its tag, instead of paying twice for ~900 MB of history the
+    # detach and the version label never use (#123254). Any local commit on top of the shallow
+    # boundary (or an unknown version) falls back to the unshallow path below.
+    release_shallow = bool(
+        release_sha and release_version
+        and is_shallow_repository(_m().PROJECT_ROOT)
+        and head_is_shallow_boundary(_m().PROJECT_ROOT))
 
     if use_zip_update:
         try:
@@ -1895,25 +1894,19 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # A shallow checkout's plain fetch drags in ~the whole history and cannot finish inside
         # the network cap (#123254); its grafts also make merge-base report orphan divergence
-        # (#123346, #124645). Unshallow it (commits only) first.
-        _heal_stale_shallow_checkout(_m().PROJECT_ROOT, branch)
+        # (#123346, #124645). Unshallow it (commits only) first — unless this is a release update
+        # on a pristine shallow checkout, which keeps its shallow graph and fetches only the tag.
+        if not release_shallow:
+            _heal_stale_shallow_checkout(_m().PROJECT_ROOT, branch)
 
-        if release_sha and target_is_head:
-            # Forward-only default: the checkout already contains the release; nothing to fetch.
-            fetch_args = None
-        elif release_sha:
-            fetch_args = ["fetch", "--no-tags", "origin", target_ref]
-        else:
-            fetch_args = ["fetch", "origin", _check.tracking_refspec("origin", branch)]
-        from hermes_cli.gitlock import fetch_with_partial_clone_recovery, is_partial_clone_pack_objects_crash
-        # Marking the unmarked packs clears the git 2.53+ partial-clone pack-objects crash (#124272).
-        if fetch_args is None:
-            fetch_result = subprocess.CompletedProcess([], 0)
-        else:
-            print("→ Fetching updates...")
-            fetch_result = fetch_with_partial_clone_recovery(
-                lambda gc, a: _git_run(gc, a, network=True), git_cmd, fetch_args, _m().PROJECT_ROOT)
-        if fetch_result.returncode != 0:
+        from hermes_cli.gitlock import is_partial_clone_pack_objects_crash
+        fetch_result, shallow_tag_fetch = _check.apply_fetch(
+            git_cmd, _m().PROJECT_ROOT, branch=branch, target_ref=target_ref,
+            release_sha=release_sha, target_is_head=target_is_head,
+            release_version=release_version, release_shallow=release_shallow)
+        if fetch_result is not None and fetch_result.returncode == 0 and shallow_tag_fetch:
+            print("  ✓ Kept the shallow checkout: fetched only the release tag")
+        if fetch_result is not None and fetch_result.returncode != 0:
             if is_partial_clone_pack_objects_crash(fetch_result.stderr or ""):
                 print("✗ git still crashed after marking this checkout's packs. See 'Fetch fails with"
                       " should_include_obj' in https://hermes-agent.nousresearch.com/docs/getting-started/updating")

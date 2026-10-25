@@ -200,6 +200,57 @@ function splitNumericParams(params: string): number[] {
   return params.split(';').map(p => parseInt(p, 10))
 }
 
+// A terminal reply can arrive with its leading ESC eaten by the transport:
+// some console paths (e.g. the Proxmox web console) deliver the reply body as
+// plain printable text, so `ESC[?1000;2$y` shows up as `[?1000;2$y`. The
+// tokenizer then classifies it as text and parseTextKeypresses types it into
+// the composer. Only DEC-private bodies are matched — `[?<digits>;<digits>$y`
+// and `[?<digits>(;<digits>)*c` — because no key press or paste produces them,
+// so recognizing them cannot swallow real typing.
+const ESC_LESS_RESPONSE_RE = /\[\?\d+(?:;\d+)*(?:\$y|c)/g
+
+type TextSegment = { text: string; response?: TerminalResponse }
+
+/**
+ * Split a text token into segments, lifting out any ESC-less terminal reply.
+ * The ESC is re-synthesized for each candidate and handed to
+ * parseTerminalResponse, so this matcher can never recognize a body the
+ * ESC-prefixed path would not — the two stay in lockstep.
+ */
+function splitEscLessResponses(text: string): TextSegment[] {
+  const segments: TextSegment[] = []
+  let last = 0
+
+  ESC_LESS_RESPONSE_RE.lastIndex = 0
+
+  let m: RegExpExecArray | null
+
+  while ((m = ESC_LESS_RESPONSE_RE.exec(text))) {
+    const response = parseTerminalResponse('\x1b' + m[0])
+
+    if (!response) {
+      continue
+    }
+
+    if (m.index > last) {
+      segments.push({ text: text.slice(last, m.index) })
+    }
+
+    segments.push({ text: '\x1b' + m[0], response })
+    last = m.index + m[0].length
+  }
+
+  if (!segments.length) {
+    return [{ text }]
+  }
+
+  if (last < text.length) {
+    segments.push({ text: text.slice(last) })
+  }
+
+  return segments
+}
+
 // A text token can carry stray control bytes fused with printable input —
 // most commonly when a third-party IME (Vietnamese Telex via OpenKey/Unikey/
 // EVKey, etc.) recomposes a syllable by emitting an erase control byte
@@ -346,7 +397,15 @@ export function parseMultipleKeypresses(
         const resynthesized = '\x1b' + token.value
         keys.push(parseKeypress(resynthesized))
       } else {
-        keys.push(...parseTextKeypresses(token.value))
+        // Lift out any terminal reply whose leading ESC the transport ate
+        // (see splitEscLessResponses) instead of typing it into the composer.
+        for (const segment of splitEscLessResponses(token.value)) {
+          if (segment.response) {
+            keys.push({ kind: 'response', sequence: segment.text, response: segment.response })
+          } else {
+            keys.push(...parseTextKeypresses(segment.text))
+          }
+        }
       }
     }
   }

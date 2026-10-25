@@ -2,11 +2,11 @@ name: hermes-chat-share
 repo: https://github.com/smallmj/hermes-chat-share
 sha: 17c3edbf7f37ea813581cf65f56bc332fe892873
 subdir: ""
-description: Share Hermes Desktop conversations as long PNG screenshots, self-contained HTML, or Markdown — per-turn selection, turn gutter, search, per-turn collapsing and session metadata. The Hermes Desktop counterpart of dsh-share. Disclosure — community plugin, not a Nous product; zero network calls (no `fetch`/`XMLHttpRequest`/`WebSocket` in the source); reads only the user's own sessions through the canonical `session.history`/`session.info` gateway RPCs; writes to the system clipboard or triggers file downloads only on explicit clicks.
+description: "Share Hermes Desktop conversations as long PNG screenshots, self-contained HTML, or Markdown — per-turn selection, turn gutter, search, per-turn collapsing and session metadata. The Hermes Desktop counterpart of dsh-share. Disclosure — makes no network calls; reads the conversation you share (and the session list, for its title) through the gateway's session.history / session.info / session.list RPCs; writes to the clipboard or downloads a file only when you trigger an export. HTML exports keep the conversation's image and link URLs, which load when the file is opened."
 maintainer: smallmj
 tier: community
 category: desktop
-requires_hermes: ">=0.19"
+requires_hermes: ">=0.21.5"
 docs_url: https://github.com/smallmj/hermes-chat-share#readme
 version: "1.0.0"
 image: https://raw.githubusercontent.com/smallmj/hermes-chat-share/17c3edbf7f37ea813581cf65f56bc332fe892873/docs/banner.png

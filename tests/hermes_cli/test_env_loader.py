@@ -697,3 +697,45 @@ def test_reload_env_skips_launch_only_keys(tmp_path, monkeypatch):
     assert os.environ["HERMES_MANAGED_DIR"] == "/launch/admin-dir"
     assert os.environ["RELOAD_TEST_KEY"] == "reloaded"  # control: other keys still reload
     assert changed == 1
+
+
+# ---------------------------------------------------------------------------
+# HERMES_HOME is launch-only too (#144685): a single write to ~/.hermes/.env
+# must not relocate identity and policy wholesale on the next start.
+# ---------------------------------------------------------------------------
+
+
+def test_user_env_cannot_repoint_hermes_home_with_launch_value(tmp_path, monkeypatch):
+    """#144685 repro, end to end: with the launch environment pinning ``HERMES_HOME`` at
+    directory *a*, a ``HERMES_HOME=b`` line in *a*'s own ``.env`` must be ignored — both
+    ``os.environ`` and ``get_hermes_home()`` (SOUL.md, config.yaml, plugins, skills, cron
+    all resolve from it) must keep answering *a*."""
+    home_a = tmp_path / "a"
+    home_b = tmp_path / "b"
+    home_a.mkdir()
+    home_b.mkdir()
+    (home_a / ".env").write_text(f"HERMES_HOME={home_b}\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_HOME", str(home_a))
+
+    load_hermes_dotenv(load_external_secrets=False)
+
+    from hermes_constants import get_hermes_home
+    assert os.environ["HERMES_HOME"] == str(home_a)
+    assert get_hermes_home() == home_a.resolve()
+
+
+def test_user_env_cannot_set_hermes_home_without_launch_value(tmp_path, monkeypatch):
+    """Same refusal when the launch environment never set the key: the ``.env`` must not
+    introduce it either — otherwise a fresh install's first write would pin the home."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    planted = tmp_path / "planted"
+    planted.mkdir()
+    (home / ".env").write_text(f"HERMES_HOME={planted}\n", encoding="utf-8")
+
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+
+    load_hermes_dotenv(load_external_secrets=False)
+
+    assert "HERMES_HOME" not in os.environ

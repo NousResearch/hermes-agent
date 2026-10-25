@@ -65,6 +65,17 @@ ESN0407_WORK_DIR=/PRIVATE_EMPTY_WORK_DIR \
   /PRIVATE_TMP/launch.sh
 ```
 
+The launcher also uses the installed Claude Code 2.1.306 `--bare` flag. Its
+documented behavior is to skip hooks, installed plugins, plugin sync,
+auto-memory, background prefetches, keychain reads and `CLAUDE.md`
+auto-discovery while retaining explicitly supplied MCP configuration. This
+removes the project-discovery reason for Claude to require trust in the empty
+disposable working directory and further reduces inherited customization. It
+does not replace `--setting-sources ""`, `--strict-mcp-config`, `--restricted`,
+the exact tool visibility/allowlist, or `dontAsk`; all remain in force. Whether
+2.1.306 actually starts without writing workspace trust is an acceptance-test
+claim, not assumed proof, and global configuration hashes must remain unchanged.
+
 5. Send one envelope, at most 4 KiB, over the private Unix socket. It must bind
    the exact Roots ticket, assignment, attempt, owner, revision and authority
    event digest; its authority is `answer-only-no-changes`; TTL is at most 30

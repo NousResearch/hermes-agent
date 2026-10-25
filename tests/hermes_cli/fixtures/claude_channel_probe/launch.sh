@@ -26,7 +26,7 @@ auth_json="$(claude auth status --json)"
 printf '%s' "$auth_json" | node "$script_dir/preflight.mjs" auth
 
 cd "$ESN0407_WORK_DIR"
-exec claude --bg --restricted --permission-mode dontAsk \
+exec claude --bg --bare --restricted --permission-mode dontAsk \
   --setting-sources "" --strict-mcp-config \
   --mcp-config "$ESN0407_MCP_CONFIG" \
   --settings '{"crossSessionInbound":"refuse"}' \

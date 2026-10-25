@@ -158,6 +158,7 @@ node -e 'require("fs").writeFileSync(process.env.TEST_RECORD, JSON.stringify({ar
   const observed = JSON.parse(fs.readFileSync(record));
   assert.deepEqual([observed.api, observed.base, observed.aws], [null, null, null]);
   assert.equal(observed.cwd, fs.realpathSync(work));
+  assert.ok(observed.args.includes("--bare"));
   assert.ok(observed.args.includes("--dangerously-load-development-channels"));
   assert.ok(observed.args.includes("--strict-mcp-config"));
   const allowedIndex = observed.args.indexOf("--allowedTools");

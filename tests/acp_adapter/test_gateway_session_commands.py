@@ -141,13 +141,16 @@ async def test_modes_and_the_config_option_set_the_owners_edit_policy():
     async def rpc(method, **params):
         if method == 'session.resume':
             return {'revision': 3, 'execution_generation': 7}
+        if method == 'session.info':  # the config-option reply re-reads the committed options
+            return {'model': '', 'edit_approval_policy': 'session'}
         assert method == 'session.mutate', method
         sent.append((params['operation'], params['payload'], params['expected_generation']))
         return {'session_id': 's', 'operation': 'edit_policy', 'revision': 4}
 
     agent = _agent(rpc)
     await agent.set_session_mode('accept_edits', 's')
-    await agent.set_config_option('edit_approval_policy', 's', 'session')
+    picked = await agent.set_config_option('edit_approval_policy', 's', 'session')
+    assert {o.id: o.current_value for o in picked.config_options}['edit_approval_policy'] == 'session'
     await agent.set_session_mode('default', 's')
     assert sent == [('edit_policy', {'policy': 'workspace_session'}, 7), ('edit_policy', {'policy': 'session'}, 7),
                     ('edit_policy', {'policy': 'ask'}, 7)]

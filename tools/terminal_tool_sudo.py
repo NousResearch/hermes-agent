@@ -320,6 +320,105 @@ def _scan_shell(command: str, background: bool = False) -> Iterator[tuple[str, i
         i = end
 
 
+_SUDO_NON_INTERACTIVE_FLAGS = {"-n", "--non-interactive"}
+# Argument-less sudo short options, used to accept merged clusters like
+# ``-nv`` or ``-Hn`` without misreading option+argument shapes (``-un root``
+# is ``-u`` with user ``n``, not a non-interactive cluster). ``-S`` takes
+# no option operand; leave explicit non-interactive stdin use to sudo.
+_SUDO_NO_ARG_SHORT_FLAGS = "nvkKlVeisbEPABHNS"
+# sudo options whose value arrives as a separate token; the value is
+# consumed verbatim (even when it looks like a flag) so scanning reaches
+# a later ``-n``: ``sudo -u janet-admin -n id``. ``-D`` covers chdir, ``-R``
+# chroot — ``sudo -D -n id`` runs in directory ``-n`` and is interactive.
+_SUDO_ARG_SHORT_FLAGS = "CcDghpRrTtUu"
+_SUDO_ARG_LONG_FLAGS = {
+    "--chdir",
+    "--chroot",
+    "--close-from",
+    "--command-timeout",
+    "--group",
+    "--host",
+    "--login-class",
+    "--other-user",
+    "--prompt",
+    "--role",
+    "--type",
+    "--user",
+}
+
+
+def _shell_word_value(token: str) -> str:
+    """Semantic value of one shell word token, quotes/escapes resolved.
+
+    ``"-n"`` and ``'-n'`` are still sudo's ``-n``; a token shlex cannot make
+    sense of is kept verbatim, which reads as a non-flag (conservative).
+    """
+    if not any(c in token for c in "'\"\\"):
+        return token
+    try:
+        parts = shlex.split(token)
+    except ValueError:
+        return token
+    return parts[0] if len(parts) == 1 else token
+
+
+def _sudo_invocation_is_non_interactive(command: str, start: int) -> bool:
+    """Whether the sudo invocation whose options begin at *start* uses -n.
+
+    Peeks the flag tokens directly following the ``sudo`` command word
+    (without consuming them) and reports whether one asks sudo to fail
+    immediately instead of prompting: ``-n`` / ``--non-interactive``, or a
+    merged argument-less short cluster containing ``n`` (e.g. ``-nv``).
+    An option whose value comes as a separate token (``-u janet-admin``,
+    ``--user janet-admin``, ``-D /``, ``--chdir /``) consumes that token, so
+    scanning continues at the following flag instead of stopping at the
+    value. Quotes do not hide a flag (``sudo "-n" id``). Stops at the
+    first non-flag token (the command sudo would run), at ``--`` (end of
+    sudo options), or at a shell/line separator.
+    """
+    i = start
+    n = len(command)
+    skip_value = False
+    while i < n:
+        ch = command[i]
+        if ch.isspace():
+            if ch == "\n":
+                return False
+            i += 1
+            continue
+        if ch in ";|&()#":
+            return False
+        token, next_i = _read_shell_token(command, i)
+        if skip_value:
+            skip_value = False
+            i = next_i
+            continue
+        word = _shell_word_value(token)
+        if word == "--":
+            return False
+        if word.startswith("-"):
+            if word in _SUDO_NON_INTERACTIVE_FLAGS:
+                return True
+            if word in _SUDO_ARG_LONG_FLAGS:
+                skip_value = True
+            elif not word.startswith("--"):
+                body = word[1:]
+                for pos, c in enumerate(body):
+                    if c == "n":
+                        return True
+                    if c not in _SUDO_NO_ARG_SHORT_FLAGS:
+                        # An argument-taking flag ends the flag part: the
+                        # rest of the cluster is its value (``-un`` is
+                        # user ``n``); a trailing one takes the next token.
+                        if c in _SUDO_ARG_SHORT_FLAGS and pos == len(body) - 1:
+                            skip_value = True
+                        break
+        else:
+            return False
+        i = next_i
+    return False
+
+
 def _rewrite_real_sudo_invocations(command: str) -> tuple[str, int]:
     """Rewrite literal sudo executable words, preserving their spelling and arguments.
 
@@ -373,7 +472,12 @@ def _rewrite_real_sudo_invocations(command: str) -> tuple[str, int]:
         executable = word.rsplit("/", 1)[-1]
         in_env = executable == "env"
         env_options = in_env
-        if executable == "sudo":
+        # ``sudo -n`` means "fail immediately if a password would be required" and never
+        # reads a piped password, so the ``-S`` rewrite + stdin injection destroys the
+        # probe's meaning (``sudo -S -p '' -n true`` always fails with "a password is
+        # required") and a prompt for it is wasted. Pass -n invocations through verbatim;
+        # the model can retry without -n, which takes the normal prompt/inject path (#94534).
+        if executable == "sudo" and not _sudo_invocation_is_non_interactive(command, end):
             out[-1] += " -S -p ''"
             sudo_count += 1
     return "".join(out), sudo_count

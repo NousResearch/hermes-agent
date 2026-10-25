@@ -37,6 +37,22 @@ LIVE_OWNER_STALE_CLAIM_FLOOR_SECONDS = 7200.0
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
+# Ledger files this process has already created or migrated, keyed by file identity
+# ``(st_dev, st_ino)``. ``_connect`` runs once per transaction — every adopt and every ledger write
+# opens a fresh connection — so re-issuing ``_initialize_schema``'s CREATE/ALTER statements on each
+# open put the whole schema DDL in front of every operation (#135487). The key carries the identity
+# and not just the path, so a ledger file that is deleted and recreated (wiped ``HERMES_HOME``, a
+# re-provisioned profile) is initialized again instead of being trusted from a stale memo.
+_initialized_ledgers: set[tuple[int, int]] = set()
+
+
+def _ledger_identity(path: Path) -> Optional[tuple[int, int]]:
+    """``(st_dev, st_ino)`` for ``path``, or None when it does not exist yet."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
 
 
 # --- executions ledger --------------------------------------------------------------------------
@@ -50,7 +66,19 @@ def _connect() -> sqlite3.Connection:
 
     path = EXECUTIONS_FILE or (get_hermes_home().resolve() / "cron" / "executions.db")
     _ensure_cron_dir(path.parent)
-    return open_db(path, db_label="cron/executions.db", synchronous_full=True, initialize=_initialize_schema)
+    existing = _ledger_identity(path)
+    if existing is not None and existing in _initialized_ledgers:
+        return open_db(path, db_label="cron/executions.db", synchronous_full=True)
+    conn = open_db(
+        path, db_label="cron/executions.db", synchronous_full=True, initialize=_initialize_schema
+    )
+    # Memoize the identity read *before* the open: if the file was replaced underneath us in the
+    # meantime, the next open reads the new identity, misses the memo and initializes again — the
+    # safe direction (re-run the idempotent DDL) rather than trusting an uninitialized file.
+    identity = existing if existing is not None else _ledger_identity(path)
+    if identity is not None:
+        _initialized_ledgers.add(identity)
+    return conn
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:

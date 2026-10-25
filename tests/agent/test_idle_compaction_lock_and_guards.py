@@ -244,5 +244,23 @@ def test_idle_compaction_respects_anti_thrash_breaker(tmp_path: Path) -> None:
     assert len(ctx.messages) == len(_history()) + 1
 
 
+def test_idle_compaction_waits_for_review_fork_first_request(tmp_path: Path) -> None:
+    """A review fork must not compact its shared parent before its warm-cache request."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid = "IDLE_REVIEW_FORK"
+    db.create_session(sid, source="cli")
+    agent = _prep_idle_agent(db, sid)
+    agent._review_defer_compaction_before_first_response = True
+    agent._turn_received_provider_response = False
+    seam = _pin_compress_seam(agent)
+
+    ctx = _run_prologue(agent, _history())
+
+    seam.assert_not_called()
+    agent.context_compressor.compress.assert_not_called()
+    assert agent.session_id == sid
+    assert len(ctx.messages) == len(_history()) + 1
+
+
 
 

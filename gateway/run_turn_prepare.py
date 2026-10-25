@@ -597,26 +597,25 @@ class GatewayTurnPrepareMixin:
                 source, t("gateway.notify.no_home_channel", platform=platform_name.title(), sethome_cmd=sethome_cmd),
             )
 
-    # Short, machine-shaped marker: a verbose "The user sent a voice message..." wrapper made
-    # models answer about voice mode instead of the request. API-call-local only (see below).
-    VOICE_TRANSCRIPT_MARKER = "[voice:transcribed] "
-
     @classmethod
     def _hmwa_apply_voice_transcript_marker(cls, event, message_text, persist_user_message):
-        """Prefix in-context speech-to-text input with the voice marker; persist the clean text.
+        """Prefix in-context speech-to-text input with ``VOICE_INPUT_PREFIX``; persist clean text.
 
-        Mirrors the CLI's ``turn.voice_prefix`` (API-call-local, never stored) so both entry
-        points tell the model the same thing about the medium. Failures to transcribe never set
-        the flag, so an untranscribed audio note is not labelled as a transcript.
+        Same prefix and same rule as the CLI's ``turn.voice_prefix``: the model is told the
+        message came from speech (so it stops "correcting" phonetic proper nouns and stops
+        replying in tables a voice interface cannot read), while the stored user row keeps the
+        transcript verbatim. Failures to transcribe never set the flag, so an untranscribed
+        audio note is not labelled as a transcript.
         """
+        from hermes_constants import VOICE_INPUT_PREFIX
         if not getattr(event, "_gateway_stt_transcribed", False):
             return message_text, persist_user_message
         if not isinstance(message_text, str) or not message_text.strip():
             return message_text, persist_user_message
-        if message_text.startswith(cls.VOICE_TRANSCRIPT_MARKER):
+        if message_text.startswith(VOICE_INPUT_PREFIX):
             return message_text, persist_user_message
         clean = persist_user_message if persist_user_message is not None else message_text
-        return cls.VOICE_TRANSCRIPT_MARKER + message_text, clean
+        return VOICE_INPUT_PREFIX + message_text, clean
 
     def _hmwa_apply_message_timestamp(self, event, message_text):
         """Capture the platform event time as message metadata and keep the persisted transcript

@@ -287,8 +287,8 @@ class CLIChatTurnMixin:
 
         # API-call-local only — run_conversation persists the original clean user message.
         if voice_input and isinstance(message, str):
-            turn.voice_prefix = ("[Voice input — respond concisely and conversationally, "
-                                 "2-3 sentences max. No code blocks or markdown.] ")
+            from hermes_constants import VOICE_INPUT_PREFIX
+            turn.voice_prefix = VOICE_INPUT_PREFIX
 
     def _chat_run_agent(self, turn, message):
         """Agent-thread body: bind per-thread callbacks/approval key, prepend one-shot notes, run the turn."""

@@ -1451,6 +1451,18 @@ class TestFormatMessage:
         assert out == "hello *world*"
 
 
+    def test_nested_inline_code_does_not_leak_placeholders(self):
+        out = GoogleChatAdapter.format_message(
+            "**`model:`**\n## Using `hermes config`\n[run `code`](https://example.com)"
+        )
+
+        assert out == (
+            "*`model:`*\n*Using `hermes config`*\n"
+            "<https://example.com|run `code`>"
+        )
+        assert "\x00GC" not in out
+
+
     def test_markdown_link_to_chat_anglebracket(self):
         """[text](url) → <url|text> (Slack-style anglebracket links)."""
         out = GoogleChatAdapter.format_message("see [docs](https://example.com)")

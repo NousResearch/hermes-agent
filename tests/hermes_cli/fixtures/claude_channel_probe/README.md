@@ -65,16 +65,58 @@ ESN0407_WORK_DIR=/PRIVATE_EMPTY_WORK_DIR \
   /PRIVATE_TMP/launch.sh
 ```
 
-The launcher also uses the installed Claude Code 2.1.306 `--bare` flag. Its
-documented behavior is to skip hooks, installed plugins, plugin sync,
-auto-memory, background prefetches, keychain reads and `CLAUDE.md`
-auto-discovery while retaining explicitly supplied MCP configuration. This
-removes the project-discovery reason for Claude to require trust in the empty
-disposable working directory and further reduces inherited customization. It
-does not replace `--setting-sources ""`, `--strict-mcp-config`, `--restricted`,
-the exact tool visibility/allowlist, or `dontAsk`; all remain in force. Whether
-2.1.306 actually starts without writing workspace trust is an acceptance-test
-claim, not assumed proof, and global configuration hashes must remain unchanged.
+Do not add `--bare`. Installed Claude Code 2.1.306 documents that bare mode
+never reads OAuth or the keychain and accepts only `ANTHROPIC_API_KEY` or an API
+key helper. That conflicts with this probe's subscription-only requirement and
+credential scrub.
+
+### Proposed isolated trust bootstrap (not authorized or applied)
+
+The background launcher requires workspace trust even for its empty restricted
+working directory. Installed 2.1.306 identifies the state as
+`projects[<absolute path>].hasTrustDialogAccepted` in `.claude.json`.
+`trust-bootstrap-plan.mjs` validates two empty, current-user-owned mode-0700
+sibling directories under the OS temporary root and emits this exact proposed
+write without performing it:
+
+```json
+{
+  "projects": {
+    "/PRIVATE_DISPOSABLE_PARENT/work": {
+      "hasTrustDialogAccepted": true
+    }
+  }
+}
+```
+
+The target is `/PRIVATE_DISPOSABLE_PARENT/config/.claude.json`, created mode
+`0600`, with `CLAUDE_CONFIG_DIR` set to that `config` directory only for the
+disposable Claude process. The exact additional consent proposed by the plan is:
+"Authorize one trust record for the empty disposable Claude workspace
+`/PRIVATE_DISPOSABLE_PARENT/work`, written only to
+`/PRIVATE_DISPOSABLE_PARENT/config/.claude.json`, removed with its temporary
+parent, and never copied to global config?" The before state is an absent file;
+the only intended semantic diff is the path-scoped boolean above.
+Cleanup removes the shared disposable parent, including config, work,
+dependencies and socket. Nothing is copied to `~/.claude.json`.
+
+This trust bootstrap alone cannot launch with the current controls. Read-only
+investigation showed `claude auth status --json` under a fresh temporary
+`CLAUDE_CONFIG_DIR` reports `loggedIn: false`, even when a copy of the normal
+`.claude.json` is placed there, because the OAuth/keychain identity is
+namespaced away. No OAuth token was extracted or copied. Independent review
+must decide both whether existing authorization covers this one temporary trust
+write and whether a supported subscription credential bridge exists. Until
+both are resolved, do not apply the write or retry the probe.
+
+This reply-only transport probe intentionally loads no `CLAUDE.md`, skill,
+hook, project MCP server or Roots tool. Its authority and route are supplied by
+the explicit reviewed Channel configuration, and the only visible and allowed
+tool is the correlated reply. A future managed-worker bootstrap is a separate
+contract: its receipt must bind the actual governing instruction source, role,
+task, ticket, revision, DoD and context, plus authenticated scoped Roots MCP
+tool authorization. A self-attested prompt or this transport receipt cannot
+prove those properties.
 
 5. Send one envelope, at most 4 KiB, over the private Unix socket. It must bind
    the exact Roots ticket, assignment, attempt, owner, revision and authority

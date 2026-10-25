@@ -15,6 +15,7 @@ import {
   validateQuestion,
   validateReply,
 } from "./contract.mjs";
+import { buildTrustBootstrapPlan } from "./trust-bootstrap-plan.mjs";
 
 function environment(overrides = {}) {
   return {
@@ -100,6 +101,23 @@ test("dependency preparation accepts only an owned private temporary non-reposit
   fs.rmSync(privateDirectory, { recursive: true });
 });
 
+test("trust bootstrap plan binds one empty private config to one empty private workspace", () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "esn0407-trust-plan-test-"));
+  fs.chmodSync(parent, 0o700);
+  const config = path.join(parent, "config");
+  const work = path.join(parent, "work");
+  fs.mkdirSync(config, { mode: 0o700 });
+  fs.mkdirSync(work, { mode: 0o700 });
+  const plan = buildTrustBootstrapPlan(config, work);
+  assert.equal(plan.target, path.join(fs.realpathSync(config), ".claude.json"));
+  assert.deepEqual(plan.after.projects[fs.realpathSync(work)], { hasTrustDialogAccepted: true });
+  assert.equal(plan.write_mode, "0600");
+  assert.equal(fs.existsSync(plan.target), false);
+  fs.writeFileSync(path.join(config, "unexpected"), "x");
+  assert.throws(() => buildTrustBootstrapPlan(config, work), /must be empty/);
+  fs.rmSync(parent, { recursive: true });
+});
+
 test("teardown destroys active clients, clears timers and removes the socket", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "esn0407-channel-test-"));
   fs.chmodSync(directory, 0o700);
@@ -158,7 +176,7 @@ node -e 'require("fs").writeFileSync(process.env.TEST_RECORD, JSON.stringify({ar
   const observed = JSON.parse(fs.readFileSync(record));
   assert.deepEqual([observed.api, observed.base, observed.aws], [null, null, null]);
   assert.equal(observed.cwd, fs.realpathSync(work));
-  assert.ok(observed.args.includes("--bare"));
+  assert.equal(observed.args.includes("--bare"), false);
   assert.ok(observed.args.includes("--dangerously-load-development-channels"));
   assert.ok(observed.args.includes("--strict-mcp-config"));
   const allowedIndex = observed.args.indexOf("--allowedTools");

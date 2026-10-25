@@ -1,6 +1,6 @@
 name: netplane
 repo: https://github.com/lEWFkRAD/netplane
-sha: 62c84d510bdb6d7599197f9028b2cb0d006c3c7d
+sha: b7e86700c7b120c19f9ea60027aa5ced35a5bd80
 description: >-
   Run and operate your own self-hosted Tailscale network (a Headscale control plane) from
   inside Hermes: netplane_status health-checks the control plane (gRPC, API key, HTTPS

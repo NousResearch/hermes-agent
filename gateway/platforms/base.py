@@ -259,35 +259,6 @@ def _prefix_within_utf16_limit(s: str, limit: int) -> str:
     return s[:_custom_unit_to_cp(s, limit, utf16_len)]
 
 
-def _open_link_bracket(text: str) -> int:
-    """Index of the ``[`` opening a Markdown link still unclosed at *text* end, else -1.
-
-    Escaped brackets are plain text: platform formatters (Telegram MarkdownV2) escape
-    literal ``[]()`` in prose, so an unescaped ``[...](…)`` run really is a link.
-    """
-    i, open_at, in_dest = 0, -1, False
-    while i < len(text):
-        ch = text[i]
-        if ch == "\\":
-            i += 2  # skip the escaped char (or an escaped backslash)
-            continue
-        if in_dest:
-            if ch == ")":
-                in_dest = False
-                open_at = -1
-        elif ch == "[":
-            if open_at < 0:
-                open_at = i
-        elif ch == "]":
-            if open_at >= 0 and text.startswith("(", i + 1):
-                in_dest = True
-                i += 1
-            else:
-                open_at = -1  # lone "]" without "(" — not a link start
-        i += 1
-    return open_at
-
-
 def is_network_accessible(host: str) -> bool:
     """True if *host* would expose the server beyond loopback (incl. IPv4-mapped
     ::ffff:127.0.0.1); hostnames are resolved and DNS failure fails closed (True)."""
@@ -462,7 +433,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
     sys.path.append(_checkout_root)  # append, never prepend: never shadow same-named installed packages
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import TABLE_SEPARATOR_RE, fence_state_after, typing_metadata_for_turn
+from gateway.platforms.helpers import fence_state_after, typing_metadata_for_turn
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_delivery_ledger import finalize_final_obligation, ledger_bracket, record_final_obligation
 from gateway.platforms.base_exec_approval import (
@@ -4751,101 +4722,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     @staticmethod
     def truncate_message(content: str, max_length: int = 4096,
                          len_fn: Optional[Callable[[str], int]] = None) -> list[str]:
-        """Split a long message into chunks preserving code blocks: a split inside a fence closes it
-        at the chunk end and reopens it (same language tag) in the next; multi-chunk output gets
-        ``(1/3)`` indicators. ``len_fn`` overrides ``len`` (``utf16_len`` for Telegram)."""
-        _len = len_fn or len
-        if _len(content) <= max_length:
-            return [content]
-        INDICATOR_RESERVE = 12   # room for " (XXX/XXX)" once MarkdownV2-escaped to " \(XXX/XXX\)"
-        FENCE_CLOSE = "\n```"
-        chunks: list[str] = []
-        remaining = content
-        carry_lang: Optional[str] = None  # language tag ("" ok) when previous chunk ended mid-fence
-        while remaining:
-            prefix = f"```{carry_lang}\n" if carry_lang is not None else ""
-            # Body budget after prefix/fence/indicator; floored so a tiny max_length can't stall.
-            headroom = max_length - INDICATOR_RESERVE - _len(prefix) - _len(FENCE_CLOSE)
-            if headroom < 1:
-                headroom = max(1, max_length // 2)
-            # Remainder fits in one final chunk; close a reopened fence if still open.
-            if _len(prefix) + _len(remaining) <= max_length - INDICATOR_RESERVE:
-                final_chunk = prefix + remaining
-                if carry_lang is not None and fence_state_after(remaining, True, carry_lang)[0]:
-                    final_chunk += FENCE_CLOSE
-                chunks.append(final_chunk)
-                break
-            # Natural split (newline, then space); a custom _len budget maps to a codepoint offset.
-            _cp_limit = (
-                _custom_unit_to_cp(remaining, headroom, _len) if _len is not len else headroom)
-            region = remaining[:_cp_limit]
-            split_at = region.rfind("\n")
-            if split_at < _cp_limit // 2:
-                split_at = region.rfind(" ")
-            if split_at < 1:
-                # Floor at one codepoint: a zero _cp_limit (max_length 0/1, or a surrogate pair
-                # wider than the utf16 budget) would never shrink ``remaining``; overshooting beats
-                # a hang.
-                split_at = max(1, _cp_limit)
-            # Don't split inside an inline code span or an open Markdown link:
-            # an unpaired backtick breaks MarkdownV2, and a cut between "[" and
-            # its closing ")" strands a half link in each chunk. One guard's
-            # retreat can re-expose the other's hazard in the shorter candidate
-            # (retreating past the "[" may also cross a backtick), so the guards
-            # settle split_at to a fixed point; it strictly decreases per move,
-            # which guarantees termination.
-            while True:
-                candidate = remaining[:split_at]
-                moved = False
-                backtick_count = candidate.count("`") - candidate.count("\\`")
-                if backtick_count % 2 == 1:
-                    last_bt = candidate.rfind("`")
-                    while last_bt > 0 and candidate[last_bt - 1] == "\\":
-                        last_bt = candidate.rfind("`", 0, last_bt)
-                    if last_bt > 0:
-                        safe_split = max(
-                            candidate.rfind(" ", 0, last_bt), candidate.rfind("\n", 0, last_bt))
-                        if safe_split > _cp_limit // 4:
-                            split_at = safe_split
-                            moved = True
-                link_lb = _open_link_bracket(candidate)
-                if link_lb > 0:
-                    safe_split = max(
-                        candidate.rfind(" ", 0, link_lb), candidate.rfind("\n", 0, link_lb))
-                    if safe_split > _cp_limit // 4:
-                        split_at = safe_split
-                        moved = True
-                if not moved:
-                    break
-            # Don't split a GFM pipe table across chunks. A split lands in a
-            # table when the chunk ends on a table line and the next starts
-            # with one; roll ``split_at`` back to just before the table header
-            # so the whole table lands in the next chunk (upstream atoms:
-            # helpers.split_markdown_atoms treats a table as indivisible).
-            _cand = remaining[:split_at]
-            _last_nl = _cand.rfind("\n")
-            if _last_nl >= 0:
-                _last_line = _cand[_last_nl + 1:]
-                _next_line = remaining[split_at:].lstrip().split("\n", 1)[0].strip()
-                if (_last_line.startswith("|") or TABLE_SEPARATOR_RE.match(_last_line.strip())) and _next_line.startswith("|"):
-                    # Find the separator row, then the header row before it.
-                    _lines = _cand.split("\n")
-                    for _li in range(len(_lines) - 2, -1, -1):
-                        if TABLE_SEPARATOR_RE.match(_lines[_li].strip()):
-                            if _li >= 2 and _lines[_li - 1].startswith("|"):
-                                _rollback = len("\n".join(_lines[:_li - 1])) + 1
-                                if 0 < _rollback < split_at:
-                                    split_at = _rollback
-                            break
-
-            chunk_body = remaining[:split_at]
-            remaining = remaining[split_at:].lstrip()
-            full_chunk = prefix + chunk_body
-            # Walk only chunk_body (not the prepended prefix) for the fence state.
-            in_code, lang = fence_state_after(chunk_body, carry_lang is not None, carry_lang or "")
-            carry_lang = lang if in_code else None
-            # Close the orphaned fence so the chunk stands alone.
-            chunks.append(full_chunk + FENCE_CLOSE if in_code else full_chunk)
-        if len(chunks) > 1:
-            chunks = [f"{chunk} ({i + 1}/{len(chunks)})" for i, chunk in enumerate(chunks)]
-        return chunks
+        """Split a long message into Markdown-safe chunks with ``(1/3)`` indicators: fences
+        close/reopen, inline code and links stay whole, pipe tables repeat their header.
+        ``len_fn`` overrides ``len`` (``utf16_len`` for Telegram). See ``base_chunking``."""
+        from gateway.platforms.base_chunking import chunk_markdown_message
+        return chunk_markdown_message(content, max_length, len_fn)

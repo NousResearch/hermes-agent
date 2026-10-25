@@ -74,6 +74,7 @@ def test_loop_liveness_watchdog_logs_a_nonterminal_miss_with_its_strike_and_wait
     """Before #137838 only the terminal strike was logged, so how long the loop had been starved
     could not be measured from logs. Each miss now carries its strike count and measured wait."""
     loop = MagicMock(spec=asyncio.AbstractEventLoop)  # probes are scheduled but never answered
+    logged = threading.Event()
 
     with (
         patch("gateway.shutdown_watchdog.logger.warning") as warning,
@@ -82,15 +83,16 @@ def test_loop_liveness_watchdog_logs_a_nonterminal_miss_with_its_strike_and_wait
         patch("gateway.shutdown_watchdog._mark_exited_quietly"),
         patch("gateway.shutdown_watchdog._hard_exit"),
     ):
+        warning.side_effect = lambda *args, **kwargs: logged.set()
         handle = start_loop_liveness_watchdog(
             loop, probe_interval=0.01, probe_timeout=0.2, max_strikes=3)
         assert handle is not None
-        deadline = time.monotonic() + 2.0
-        while warning.call_count < 1 and time.monotonic() < deadline:
-            time.sleep(0.01)
+        # Wait for the log itself instead of polling a clock: a loaded CI runner is exactly the
+        # case where a short poll deadline expires before the watchdog's own thread gets scheduled.
+        assert logged.wait(10.0), "the non-terminal miss was not logged"
         assert warning.call_count == 1, "the non-terminal miss was not logged exactly once"
         handle.stop()
-        handle.join(timeout=2.0)
+        handle.join(timeout=5.0)
 
     assert not handle.is_alive()
     args = warning.call_args.args

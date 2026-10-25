@@ -1234,14 +1234,8 @@ def _repair_unit_without_fatal_exit_park(svc_name: str, scope: str) -> None:
     )
 
 
-def _restart_one_systemd_gateway_unit(
-    svc_name: str, *, scope: str, scope_cmd: list, drain_budget: float, _manage_cmd_cache: dict,
-    restarted_services: list, failed_or_stale_units: list, self_restart_pending: set | None = None,
-) -> None:
-    """Restart one active systemd gateway/serve unit: graceful SIGUSR1 drain, then forced restart.
-
-    Appends settled names to ``restarted_services`` and failures to ``failed_or_stale_units``.
-    """
+def _prepare_systemd_gateway_unit(svc_name: str, *, scope: str, scope_cmd: list, manage_cmd_cache: dict):
+    """Resolve active, owned unit authority and PID before any drain signal is sent."""
     check = _systemctl(scope_cmd + ["is-active", svc_name], timeout=5)
     if check.stdout.strip() != "active":
         return
@@ -1251,7 +1245,7 @@ def _restart_one_systemd_gateway_unit(
 
     # None ⇒ no non-interactive privilege path; avoid manage-units verbs
     # entirely or polkit prompts inside the captured subprocess.
-    _manage_cmd = _resolve_manage_cmd(_manage_cmd_cache, scope, scope_cmd, svc_name)
+    _manage_cmd = _resolve_manage_cmd(manage_cmd_cache, scope, scope_cmd, svc_name)
 
     # Graceful SIGUSR1 first so in-flight runs drain: handler → request_restart(via_service=True)
     # → drain → exit, Restart=always respawns. hermes-serve has no handler → blunt restart below.
@@ -1263,9 +1257,27 @@ def _restart_one_systemd_gateway_unit(
         except (ValueError, subprocess.TimeoutExpired, FileNotFoundError):
             _main_pid = 0
 
-    # Three-way triage (ancestor / wedged / graceful drain).
-    _graceful_ok = _main_pid > 0 and _drain_or_signal_gateway_for_update(
-        _main_pid, drain_budget, svc_name, self_restart_pending=self_restart_pending)
+    return _manage_cmd, _main_pid
+
+
+def _restart_one_systemd_gateway_unit(
+    svc_name: str, *, scope: str, scope_cmd: list, drain_budget: float, _manage_cmd_cache: dict,
+    restarted_services: list, failed_or_stale_units: list, self_restart_pending: set | None = None,
+    _prepared=None, _drain_wait=None,
+) -> None:
+    """Reconcile one drain, then verify relaunch or fall back to a forced restart.
+
+    The fleet may supply already-prepared authority and a previously signalled drain.
+    Direct callers retain the original synchronous triage.
+    """
+    prepared = _prepared if _prepared is not None else _prepare_systemd_gateway_unit(
+        svc_name, scope=scope, scope_cmd=scope_cmd, manage_cmd_cache=_manage_cmd_cache)
+    if prepared is None:
+        return
+    _manage_cmd, _main_pid = prepared
+    _graceful_ok = _drain_wait() if _drain_wait is not None else (
+        _main_pid > 0 and _drain_or_signal_gateway_for_update(
+            _main_pid, drain_budget, svc_name, self_restart_pending=self_restart_pending))
 
     if _graceful_ok:
         from hermes_cli.update_cmd_fleet_unit_budget import service_restart_sec, systemd_restart_timeout
@@ -1403,11 +1415,25 @@ def _restart_systemd_gateway_units(
         )
 
     from hermes_cli.update_cmd_posix_pause import already_restarted
+    from hermes_cli.update_cmd_fleet_batch import begin_systemd_drain
+    pending = []
     for key in keys:
         scope, scope_cmd, svc_name = targets[key]
         if key in already_restarted()["units"]:  # paused for the update, restarted on the new code
             restarted_scoped_units.add(key)
             continue
+        try:
+            prepared = _prepare_systemd_gateway_unit(
+                svc_name, scope=scope, scope_cmd=scope_cmd, manage_cmd_cache=_manage_cmd_cache)
+            if prepared is None:
+                continue
+            drain_wait = begin_systemd_drain(
+                prepared[1], drain_budget, svc_name, self_restart_pending=self_restart_pending)
+            pending.append((scope, scope_cmd, svc_name, prepared, drain_wait))
+        except subprocess.TimeoutExpired as exc:
+            _on_unit_timeout(svc_name, exc)
+
+    for scope, scope_cmd, svc_name, prepared, drain_wait in pending:
         # Scope-qualify before the next unit; ``finally`` so a mid-pass abort keeps settled units.
         _scope_mark = len(restarted_services)
         try:
@@ -1420,6 +1446,8 @@ def _restart_systemd_gateway_units(
                 restarted_services=restarted_services,
                 failed_or_stale_units=failed_or_stale_units,
                 self_restart_pending=self_restart_pending,
+                _prepared=prepared,
+                _drain_wait=drain_wait,
             )
         except subprocess.TimeoutExpired as exc:
             _on_unit_timeout(svc_name, exc)

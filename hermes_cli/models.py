@@ -715,6 +715,21 @@ def fetch_openrouter_models(
             desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
         curated.append((preferred_id, desc))
 
+    # Free tool-supporting live models missing from the curated manifest must
+    # still be selectable (fathah/hermes-desktop#894): append them after the
+    # curated entries instead of hiding the whole live catalog tail.
+    seen = {mid for mid, _ in curated}
+    for live_id in sorted(live_by_id):
+        if live_id in seen:
+            continue
+        live_item = live_by_id[live_id]
+        if not _openrouter_model_supports_tools(live_item):
+            continue
+        if not _openrouter_model_is_free(live_item.get("pricing")):
+            continue
+        curated.append((live_id, "free"))
+        seen.add(live_id)
+
     if not curated:
         return list(cached or fallback)
     if not curated[0][1]:

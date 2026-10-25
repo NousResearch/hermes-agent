@@ -33,6 +33,13 @@ def _aux(timeout, *, reasoning_effort=True, **extra):
 DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
+    "github": {
+        "workflow": {
+            "enabled": True,
+            "api_timeout_seconds": 10,
+            "preflight_cache_seconds": 900,
+        },
+    },
     "fallback_providers": [],
     # min_switch_reset_seconds: opt-in (0 = off). When a rate-limited primary declares a reset
     # sooner than this many seconds, stay on it (the retry backoff rides out the window) instead

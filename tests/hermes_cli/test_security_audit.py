@@ -53,13 +53,13 @@ class TestMCPComponentExtraction:
                 "--python",
                 "3.12",
                 "--from",
-                "arcade-agent[mcp]==0.1.0",
+                "arcade-agent[mcp]==0.4.2",
                 "arcade-mcp",
             ],
         )
         assert comp == sa.Component(
             name="arcade-agent",
-            version="0.1.0",
+            version="0.4.2",
             ecosystem="PyPI",
             source="mcp:arcade",
         )
@@ -68,10 +68,10 @@ class TestMCPComponentExtraction:
         comp = sa._extract_mcp_component(
             "arcade",
             "uvx",
-            ["--from=arcade-agent[mcp]==0.1.0", "arcade-mcp"],
+            ["--from=arcade-agent[mcp]==0.4.2", "arcade-mcp"],
         )
         assert comp is not None
-        assert (comp.name, comp.version) == ("arcade-agent", "0.1.0")
+        assert (comp.name, comp.version) == ("arcade-agent", "0.4.2")
 
     def test_uvx_unpinned_from_does_not_audit_pinned_entrypoint(self):
         comp = sa._extract_mcp_component(

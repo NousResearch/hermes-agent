@@ -4,7 +4,7 @@ manifest_version: 1
 
 name: arcade-agent
 description: 'Arcade: recover software architecture, smells, and quality metrics.'
-source: https://github.com/lemduc/arcade-agent
+source: https://github.com/arcade-agent/arcade-agent
 
 transport:
   type: stdio

@@ -81,18 +81,18 @@ class TestParsePackageFromArgs:
                 "--python",
                 "3.12",
                 "--from",
-                "arcade-agent[mcp]==0.1.0",
+                "arcade-agent[mcp]==0.4.2",
                 "arcade-mcp",
             ],
             "PyPI",
         )
-        assert (name, ver) == ("arcade-agent", "0.1.0")
+        assert (name, ver) == ("arcade-agent", "0.4.2")
 
     def test_pypi_from_equals_with_extras(self):
         name, ver = _parse_package_from_args(
-            ["--from=arcade-agent[mcp]==0.1.0", "arcade-mcp"], "PyPI"
+            ["--from=arcade-agent[mcp]==0.4.2", "arcade-mcp"], "PyPI"
         )
-        assert (name, ver) == ("arcade-agent", "0.1.0")
+        assert (name, ver) == ("arcade-agent", "0.4.2")
 
     def test_pypi_unpinned_from_does_not_parse_pinned_entrypoint(self):
         name, ver = _parse_package_from_args(

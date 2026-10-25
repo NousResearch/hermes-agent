@@ -178,3 +178,33 @@ def test_gap_recovery_restores_or_clears_the_connection_card(agents, monkeypatch
     monkeypatch.setattr(client, "rpc", rpc)
     assert run_turn(agent, "connect linear", 5) is not None
     assert (opened, updates) == (([pending], []) if pending else ([], [{"settled": True}]))
+
+
+@pytest.mark.parametrize(("status", "answered"), [("started", True), ("queued", False)])
+def test_a_finite_turn_whose_start_the_gap_ate_answers_its_requests(agents, monkeypatch, status, answered):
+    """A finite (``-q``/``-Q``) client answers an owner request only once its own admission runs (#143565). The
+    resume snapshot's ``started`` row stands in for a ``message.start`` the gap ate; a queued one does not."""
+    from tests.hermes_cli.test_gateway_agent import _SUDO_REQUEST
+    from tools.terminal_tool import set_sudo_password_callback
+    agent, client = agents([GAP], result={"final_response": "done", "completed": True})
+    agent._finite = True
+    original = client.rpc
+
+    async def rpc(method, **params):
+        if method == "session.resume":
+            await client.events.put(_SUDO_REQUEST)
+            await client.events.put(frame("message.complete", {"text": "done", "outcome": "completed"}))
+            return {"pending": [{"admission_id": "adm-1", "status": status}]}
+        return await original(method, **params)
+
+    monkeypatch.setattr(client, "rpc", rpc)
+    replies, abstained = [], []
+    agent.connection.reply = lambda rid, result: replies.append((rid, result)) or True
+    agent.connection.abstain = lambda rid: abstained.append(rid) or True
+    set_sudo_password_callback(lambda: "pw")
+    try:
+        result = agent.run_conversation("run sudo")  # this thread: the sudo callback is thread-local
+    finally:
+        set_sudo_password_callback(None)
+    assert not result["failed"]
+    assert (replies, abstained) == (([("srq-sudo", {"value": "pw"})], []) if answered else ([], ["srq-sudo"]))

@@ -7,7 +7,7 @@ sidecar ``tui_gateway/server_requests.py``. A viewer answers with a JSON-RPC res
 (:func:`resolve`) or, for a batch clarify, per question with ``clarify.lock`` (:func:`lock_answer`); both go
 through :func:`may_settle`, and a batch's terminal result comes from ``tools.clarify_batch.settle_batch``,
 the rule the sidecar uses too. Values are never published, journaled or logged: they travel only in the
-viewer's response frame.
+viewer's response frame. A viewer that may not answer (``ABSTAIN_CODE``) leaves the request to the others.
 """
 from __future__ import annotations
 
@@ -19,10 +19,15 @@ from tools.clarify_batch import settle_batch
 
 REQUEST_TIMEOUT_S = 120  # main: ``_ask("sudo", ..., timeout=120)``
 _POLL_S = 0.25
+# The error code of a viewer's "not mine to answer" response: a ``-q``/``-Q`` client queued behind the
+# running turn has no human to show it to (#143565). The request stays open for the other viewers; once
+# every attached viewer has abstained it is declined at once, as with no viewer, not after its timeout.
+ABSTAIN_CODE = 4095
 
 
 class _Pending:
-    __slots__ = ("event", "events", "locked", "method", "params", "qids", "replay", "result", "session_id", "value")
+    __slots__ = ("abstained", "event", "events", "locked", "method", "params", "qids", "replay", "result",
+                 "session_id", "value")
 
     def __init__(self, session_id, qids=None, events=None, method=None, params=None, replay=True):
         self.event = threading.Event()
@@ -40,6 +45,8 @@ class _Pending:
         # A batch clarify: its question ids and the answers ``clarify.lock`` has locked so far.
         self.qids = tuple(qids) if qids else None
         self.locked = {}
+        # The attached transports that answered ``ABSTAIN_CODE``.
+        self.abstained = set()
 
 
 _lock = threading.Lock()
@@ -75,15 +82,20 @@ def is_response_frame(frame) -> bool:
             and frame["id"].startswith("srq-") and ("result" in frame or "error" in frame))
 
 
-def resolve(frame, *, session_ok=lambda session_id, events: True) -> bool:
+def resolve(frame, *, session_ok=lambda session_id, events: True, transport=None) -> bool:
     """Settle the open request *frame* answers; False when nothing (here) waits for that id.
     ``session_ok(session_id, events)`` lets the caller refuse an answer from a connection not entitled
     to that session: the caller's own authority must own ``events``, the stream the request was sent on
-    (session ids are only unique per profile, and ``_open`` is process-wide)."""
+    (session ids are only unique per profile, and ``_open`` is process-wide). An ``ABSTAIN_CODE`` error
+    from *transport* settles nothing: :func:`_ask` declines the request once every viewer has abstained."""
     with _lock:
         pending = _open.get(frame["id"])
         if pending is None or not session_ok(pending.session_id, pending.events):
             return False
+        if isinstance(frame.get("error"), dict) and frame["error"].get("code") == ABSTAIN_CODE:
+            if transport is not None:
+                pending.abstained.add(transport)
+            return True
         _open.pop(frame["id"], None)
         locked = dict(pending.locked) if pending.qids is not None else None
     result = frame.get("result") if "error" not in frame else None
@@ -183,6 +195,9 @@ def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None, r
         if cancelled():
             reason = "interrupted"
             break
+        if _all_abstained(pending):
+            reason = "resolved"  # no attached viewer may answer it: declined, as with none attached
+            break
         if timeout is not None and waited >= timeout:
             break
     with _lock:
@@ -191,7 +206,7 @@ def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None, r
             # A batch keeps every answer locked before the wait ended (main's sidecar: "locked
             # answers survive a timeout"); sudo/secret have no question ids and stay unanswered.
             pending.result = settle_batch(pending.locked,
-                                          ended="cancelled" if reason == "interrupted" else "timed_out")
+                                          ended="timed_out" if reason == "timeout" else "cancelled")
     if still_open:
         # The same teardown main's renderers key on (``request.cancel``): the card closes and a
         # timed-out password prompt says so.
@@ -207,3 +222,10 @@ def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None, r
         events.publish(session_id, {"id": request_id, "method": method, "reason": "resolved"},
                        event_type="request.cancel")
     return pending
+
+
+def _all_abstained(pending) -> bool:
+    """Every viewer still attached to the request's stream answered ``ABSTAIN_CODE`` (and at least one did)."""
+    with _lock:
+        abstained = set(pending.abstained)
+    return bool(abstained) and all(transport in abstained for transport in pending.events.fanout.transports())

@@ -385,11 +385,22 @@ class GatewayConnection:
     def reply(self, request_id, result):
         """Answer one of the gateway's server→client requests (the ``sudo`` prompt): a JSON-RPC
         response frame with the request's own id. Never raises; a lost reply times out gateway-side."""
+        return self._respond({"jsonrpc": "2.0", "id": request_id, "result": result})
+
+    def abstain(self, request_id):
+        """Tell the gateway a server→client request is not this viewer's to answer (a ``-q``/``-Q`` client
+        queued behind the running turn, #143565): it stays open for the other viewers, and is declined at
+        once when no other viewer is attached."""
+        from gateway.session_server_requests import ABSTAIN_CODE
+        return self._respond({"jsonrpc": "2.0", "id": request_id,
+                              "error": {"code": ABSTAIN_CODE, "message": "not this viewer's request"}})
+
+    def _respond(self, payload):
         import json
         client, loop = self.client, self.loop
         if client is None or loop is None:
             return False
-        frame = json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result})
+        frame = json.dumps(payload)
         try:
             asyncio.run_coroutine_threadsafe(client.websocket.send(frame), loop).result(10)
         except Exception as exc:  # health: allow BLE001 -- the gateway's own wait bounds a lost answer

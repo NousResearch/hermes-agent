@@ -77,6 +77,68 @@ def test_no_attached_viewer_is_headless():
     assert ask_sudo(SessionEvents(), 's1', 'sudo true', timeout=0.1) == ''
 
 
+def _abstain(request_id):
+    from gateway.session_server_requests import ABSTAIN_CODE
+    return {'jsonrpc': '2.0', 'id': request_id, 'error': {'code': ABSTAIN_CODE, 'message': 'not mine'}}
+
+
+def _ask_in_background(events, out):
+    from gateway.session_sudo_prompt import ask_sudo
+    worker = threading.Thread(target=lambda: out.setdefault('value', ask_sudo(events, 's1', 'sudo true')),
+                              daemon=True)  # the default 120 s timeout: a hang must not hold the run
+    worker.start()
+    return worker
+
+
+def test_a_sole_viewer_that_abstains_declines_the_request_at_once():
+    """A ``-Q`` client queued behind the running turn is the only viewer (#143565): its abstention declines
+    the prompt now, as with no viewer attached, instead of after the 120 s timeout."""
+    from gateway.session_server_requests import resolve
+    events, peer = _events()
+    out = {}
+    worker = _ask_in_background(events, out)
+    _wait_for(lambda: any(f.get('method') == 'sudo' for f in peer.frames))
+    request = next(f for f in peer.frames if f.get('method') == 'sudo')
+    assert resolve(_abstain(request['id']), transport=peer)
+    worker.join(5)
+    assert not worker.is_alive() and out['value'] == ''
+    _wait_for(lambda: any(f.get('params', {}).get('type') == 'request.cancel' for f in peer.frames))
+
+
+def test_an_abstention_leaves_the_request_to_the_other_viewers():
+    """The Desktop window that shows the card still answers it after the ``-Q`` client abstained."""
+    from gateway.session_server_requests import resolve
+    events, finite = _events()
+    desktop = _Peer()
+    events.fanout.attach(desktop)
+    out = {}
+    worker = _ask_in_background(events, out)
+    _wait_for(lambda: any(f.get('method') == 'sudo' for f in desktop.frames))
+    request = next(f for f in desktop.frames if f.get('method') == 'sudo')
+    assert resolve(_abstain(request['id']), transport=finite)
+    worker.join(0.75)  # past a few polls
+    assert worker.is_alive()
+    assert resolve({'jsonrpc': '2.0', 'id': request['id'], 'result': {'value': 'hunter2'}})
+    worker.join(5)
+    assert out['value'] == 'hunter2'
+
+
+def test_a_declined_batch_keeps_its_locked_answers():
+    from gateway.session_server_requests import ask_viewer_result, lock_answer, resolve
+    events, peer = _events()
+    out = {}
+    questions = [{'qid': 'q0', 'question': 'colour?'}, {'qid': 'q1', 'question': 'size?'}]
+    worker = threading.Thread(target=lambda: out.setdefault('result', ask_viewer_result(
+        events, 's1', 'clarify', {'questions': questions}, qids=['q0', 'q1'])), daemon=True)
+    worker.start()
+    _wait_for(lambda: any(f.get('method') == 'clarify' for f in peer.frames))
+    request = next(f for f in peer.frames if f.get('method') == 'clarify')
+    assert lock_answer(request['id'], 'q0', 'red', session_ok=lambda session_id, events: True) == ['q1']
+    assert resolve(_abstain(request['id']), transport=peer)
+    worker.join(5)
+    assert out['result'] == {'answers': {'q0': 'red'}, 'outcome': 'cancelled'}
+
+
 @pytest.mark.parametrize(('platform', 'installed'), [(Platform.LOCAL, True), (Platform.TELEGRAM, False)])
 def test_scope_installs_the_callback_only_for_local_viewer_turns(platform, installed):
     from gateway.session_sudo_prompt import sudo_prompt_scope
@@ -109,6 +171,32 @@ async def test_the_viewer_response_frame_is_routed_by_the_authority_connection(t
         reply = await connection.dispatch({'jsonrpc': '2.0', 'id': 'srq-abc', 'result': {'value': 'pw'}})
         assert reply is None
         assert pending.event.is_set() and pending.value == 'pw'
+    finally:
+        session_server_requests._open.pop('srq-abc', None)
+        await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_an_abstention_names_the_transport_the_session_attached(tmp_path, monkeypatch):
+    """``_ask`` compares abstentions with the session's fan-out peers, so the connection must record the
+    very transport ``session.resume`` attached."""
+    from gateway import session_server_requests
+    from gateway.session_controls import AuthorityConnection
+    from tests.gateway.test_surface_admission import _authority
+
+    async def answer(event):
+        return 'ok'
+    authority = await _authority(tmp_path, monkeypatch, answer)
+    transport = object()
+    connection = AuthorityConnection(authority, transport, {'user_id': 'owner'})
+    await connection.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}})
+    events = authority.sessions['s'].event_stream
+    pending = session_server_requests._Pending('s', events=events)
+    session_server_requests._open['srq-abc'] = pending
+    try:
+        assert await connection.dispatch(_abstain('srq-abc')) is None
+        assert not pending.event.is_set() and pending.abstained == {transport}
+        assert transport in events.fanout.transports()
     finally:
         session_server_requests._open.pop('srq-abc', None)
         await connection.close()

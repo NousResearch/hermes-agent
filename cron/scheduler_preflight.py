@@ -195,25 +195,28 @@ def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:
 class SharedRouteAdapters:
     """Read-only adapter map for a credentialless satellite profile. ``get(platform, target)``
     resolves the PRIMARY adapter iff the inbound route matcher (``ProfileRoute.matches``) accepts
-    the target; anything else (unmatched target, disabled route, other profile, or target-less
+    the target — or, for a route with a ``bot_profile``, that profile's own connected bot (the
+    bot that receives the route's inbound traffic); anything else (unmatched target, disabled route, other profile, or target-less
     ``get(platform)``) is a miss — fail closed, never the default bot.
 
     See #101113.
     """
 
-    def __init__(self, primary_adapters, routes) -> None:
+    def __init__(self, primary_adapters, routes, profile_adapters=None) -> None:
         self._primary = dict(primary_adapters or {})
         self._routes = list(routes or [])
+        # Live per-profile adapter maps (the gateway's ``_profile_adapters``), held by reference so a
+        # secondary bot that connects later is seen. Consulted only for routes pinned to a
+        # ``bot_profile``: that bot owns the chat/topic, so it is the only one that can deliver there.
+        self._profile_adapters = profile_adapters if profile_adapters is not None else {}
 
     def __bool__(self) -> bool:
-        return bool(self._primary) and bool(self._routes)
+        return bool(self._routes) and (bool(self._primary) or any(self._profile_adapters.values()))
 
     def get(self, platform, target=None, default=None):
         if not target:
             return default
         adapter = self._primary.get(platform)
-        if adapter is None:
-            return default
         platform_key = str(getattr(platform, "value", platform)).lower()
         chat_id = str(target.get("chat_id") or "") or None
         thread_id = target.get("thread_id")
@@ -226,10 +229,14 @@ class SharedRouteAdapters:
                 continue
             if not (route.chat_id or route.thread_id):
                 continue  # guild-only routes are not target-exact
-            if route.matches(
+            # A route pinned to a secondary bot names a chat/topic that exists only in THAT bot's
+            # chat: deliver through that bot or not at all — never the default bot (#104933 sibling).
+            bot = (self._profile_adapters.get(route.bot_profile) or {}).get(platform) if route.bot_profile else adapter
+            if bot is not None and route.matches(
                 str(route.platform), guild_id=route.guild_id, chat_id=chat_id, thread_id=thread_id,
+                adapter_profile=route.bot_profile,
             ):
-                return adapter
+                return bot
         return default
 
 

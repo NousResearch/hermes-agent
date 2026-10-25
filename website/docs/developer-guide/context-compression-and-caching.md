@@ -701,8 +701,8 @@ cancellation, and compaction then summarizes inline.
 Everything else runs inline exactly as without the flag: no candidate, a candidate or running pass
 that no longer fits, manual `/compress`, focus compaction, provider-overflow recovery, and
 compactions where a memory provider contributes summary context. A running pass overtaken by compaction or a session
-boundary (including a rebind to another session id on `/resume` or `/branch`) cannot publish its
-result. A failed pass pauses further passes but never arms the live compressor's failure cooldown. State is per compressor and in memory only, so a gateway agent
+boundary (including a rebind to another session id on `/resume` or `/branch`) is cancelled: it
+cannot publish, and its summary stream is closed rather than billed to completion. A failed pass pauses further passes but never arms the live compressor's failure cooldown. State is per compressor and in memory only, so a gateway agent
 eviction or process restart simply means the next compaction runs inline. Plugin context engines,
 Codex app-server sessions, native Responses compaction and micro-compaction are not prepared.
 

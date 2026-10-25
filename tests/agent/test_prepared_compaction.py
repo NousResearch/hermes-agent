@@ -411,6 +411,46 @@ def test_prompt_reading_in_the_pass_extends_the_deadline_the_wait_honours():
     assert "Summary v1" in _summary_row(compressed)["content"]
 
 
+def test_host_cancel_ends_the_wait_and_cancels_the_superseded_pass():
+    from agent.auxiliary_client import aux_interrupt_protection, aux_progress_hook
+
+    cc = _compressor()
+    cc.gate = threading.Event()
+    msgs = _messages(30)
+    running = pc.maybe_prepare(_agent(cc), msgs, origin="test")
+    assert running is not None
+    pending, host_cancel = cc.prepared_compaction._pending, threading.Event()
+    threading.Thread(target=lambda: wait_until(lambda: pending.on_progress is not None)
+                     and host_cancel.set()).start()
+    with aux_interrupt_protection(cancel_event=host_cancel), aux_progress_hook(lambda: None):
+        cc.compress(msgs, current_tokens=cc.threshold_tokens + 1)
+    assert running.is_alive(), "the wait ended on the host cancel, not with the pass"
+    assert [c["worker"] for c in cc.calls] == [False], "inline summary after the host cancelled the wait"
+    assert pending.cancelled.is_set(), "the pass nobody can use is told to stop streaming"
+    cc.gate.set()
+    running.join(5.0)
+
+
+def test_session_reset_during_the_wait_wakes_it_without_waiting_for_the_pass():
+    from agent.auxiliary_client import aux_progress_hook
+
+    cc = _compressor()
+    cc.gate = threading.Event()
+    msgs = _messages(30)
+    running = pc.maybe_prepare(_agent(cc), msgs, origin="test")
+    assert running is not None
+    pending = cc.prepared_compaction._pending
+    threading.Thread(target=lambda: wait_until(lambda: pending.on_progress is not None)
+                     and cc.prepared_compaction.discard("session reset")).start()
+    with aux_progress_hook(lambda: None):  # a host hook marks the moment the wait starts
+        cc.compress(msgs, current_tokens=cc.threshold_tokens + 1)
+    assert running.is_alive(), "the wait ended on the discard, not with the pass"
+    assert [c["worker"] for c in cc.calls] == [False]
+    cc.gate.set()
+    running.join(5.0)
+    assert cc.prepared_compaction._entry is None
+
+
 @pytest.mark.parametrize("boundary", ["reset", "end", "rebind"])
 def test_session_boundary_discards_candidate_and_running_pass(boundary):
     cc = _compressor()

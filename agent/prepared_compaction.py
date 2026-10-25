@@ -21,10 +21,10 @@ When no completed candidate fits but a running pass would, compaction waits for
 that pass instead of starting the same summary over: the pass's streamed
 progress and local prompt reading feed the waiting compaction's hooks, so the
 host's idle watchdog and deadline extension see a live summary exactly as they
-would inline, and the wait ends at
-the host's deadline (the compression aux timeout without one) or on
-cancellation. A pass that is not waited on loses the right to publish once
-compaction runs.
+would inline, and the wait ends at the host's deadline (the compression aux
+timeout without one), on cancellation, or when the pass is discarded. A pass
+that compaction or a session boundary supersedes is cancelled: its summary
+stream is closed instead of being billed to completion for nothing.
 
 State is per compressor and in memory only; every session boundary (reset,
 end, or a rebind to another session id) discards it. Manual, focus,
@@ -79,12 +79,14 @@ class PreparedSummary(_Window):
 
 
 class _PendingPass:
-    """The one running pass allowed to publish: its planned window, a completion event, and the
-    progress and prompt-reading hooks of a compaction waiting on it."""
+    """The one running pass allowed to publish: its planned window, completion and cancel events, and
+    the progress and prompt-reading hooks of a compaction waiting on it."""
 
     def __init__(self, window: _Window) -> None:
         self.window = window
         self.done = threading.Event()
+        # Set once nothing can use the pass any more; its summary stream is closed (the aux hard-cancel path).
+        self.cancelled = threading.Event()
         self.on_progress: Optional[Callable[[], None]] = None
         self.on_reading: Optional[Callable[[float], None]] = None
 
@@ -176,9 +178,11 @@ class PreparedCompaction:
         self._retry_after = 0.0  # monotonic; set by a failed pass
 
     def discard(self, reason: str) -> None:
-        """Drop the candidate; a running pass may finish but can no longer publish."""
+        """Drop the candidate and cancel a running pass (it can no longer publish)."""
         with self._lock:
-            entry, self._entry, self._pending = self._entry, None, None
+            entry, pending, self._entry, self._pending = self._entry, self._pending, None, None
+        if pending is not None:
+            pending.cancelled.set()
         if entry is not None:
             logger.info(
                 "prepared compaction: dropped window=%d-%d reason=%s", entry.compress_start, entry.compress_end, reason,
@@ -190,8 +194,8 @@ class PreparedCompaction:
     ) -> Optional[PreparedSummary]:
         """The completed candidate when it fits ``compress()``'s planned window, else what a running pass
         whose window fits publishes while this compaction waits for it, else None. A window whose boundary
-        trails the cut by more than ``max_gap_tokens`` is stale. Either way the state is cleared: this
-        compaction consumes or supersedes it."""
+        trails the cut by more than ``max_gap_tokens`` is stale. Either way the state is cleared and a
+        running pass is cancelled: this compaction consumes or supersedes it."""
         with self._lock:
             entry, pending = self._entry, self._pending
             self._entry = None
@@ -201,14 +205,15 @@ class PreparedCompaction:
         try:
             if eligible and (entry is None or reason is not None):
                 if pending is not None and self._misfit(pending.window, messages, session_id, start, end, max_gap_tokens) is None:
-                    entry = self._await(pending)
-                    reason = None if entry is not None else "running pass did not finish in time"
+                    entry, reason = self._await(pending)
                 elif entry is None:
                     reason = "running pass does not fit" if pending is not None else "no candidate"
         finally:
             with self._lock:
                 if self._pending is pending:
                     self._pending = None
+            if pending is not None:
+                pending.cancelled.set()  # done already, or superseded: stop paying for it
         if reason is not None or entry is None:
             if entry is not None or pending is not None:
                 logger.info("prepared compaction: splice miss reason=%s", reason)
@@ -232,9 +237,10 @@ class PreparedCompaction:
                 reason = f"stale candidate (~{gap} tokens past its boundary, budget {max_gap_tokens})"
         return reason
 
-    def _await(self, pending: _PendingPass) -> Optional[PreparedSummary]:
-        """Wait on the compacting thread for *pending* and return what it published; None at the host's
-        deadline (the compression aux timeout without one) or when the host cancels. Meanwhile the pass's
+    def _await(self, pending: _PendingPass) -> tuple[Optional[PreparedSummary], Optional[str]]:
+        """Wait on the compacting thread for *pending*: what it published, or None and why (the host's
+        deadline, the compression aux timeout without one, a host cancel, a discard, a failed pass).
+        Meanwhile the pass's
         streamed progress and local prompt reading feed this thread's hooks, so the host's idle watchdog
         and deadline extension see a live summary exactly as they would inline; the deadline is re-read
         on every poll because prompt reading pushes it back."""
@@ -244,10 +250,11 @@ class PreparedCompaction:
         )
         from agent.local_prompt_progress import current_prompt_reading_hook
 
-        cancel_check = _capture_aux_cancel_check()
-        fallback = time.monotonic() + float(_effective_aux_timeout("compression", None))
+        # Hooks first: the pass may stream while the rest of the setup runs (the timeout loads config).
         pending.on_progress = getattr(_aux_progress, "hook", None)
         pending.on_reading = current_prompt_reading_hook()
+        cancel_check = _capture_aux_cancel_check()
+        fallback = time.monotonic() + float(_effective_aux_timeout("compression", None))
         logger.info(
             "prepared compaction: waiting for the running pass window=%d-%d",
             pending.window.compress_start, pending.window.compress_end,
@@ -256,15 +263,21 @@ class PreparedCompaction:
             while not pending.done.wait(
                 max(0.0, min(_WAIT_POLL_SECONDS, (_current_aux_stream_deadline() or fallback) - time.monotonic())),
             ):
-                if time.monotonic() >= (_current_aux_stream_deadline() or fallback) or (
-                    cancel_check is not None and _captured_aux_cancel_requested(cancel_check)
-                ):
-                    return None
+                if pending.cancelled.is_set():
+                    return None, "running pass discarded"
+                if cancel_check is not None and _captured_aux_cancel_requested(cancel_check):
+                    return None, "host cancelled the wait"
+                if time.monotonic() >= (_current_aux_stream_deadline() or fallback):
+                    return None, "running pass did not finish in time"
         finally:
             pending.on_progress = pending.on_reading = None
+        if pending.cancelled.is_set():
+            return None, "running pass discarded"
         with self._lock:
             entry, self._entry = self._entry, None
-        return entry if entry is not None and entry.fingerprint == pending.window.fingerprint else None
+        if entry is None or entry.fingerprint != pending.window.fingerprint:
+            return None, "running pass failed"
+        return entry, None
 
     def _blocked(self, agent: Any, compressor: Any) -> bool:
         if not getattr(agent, "compression_enabled", False) or getattr(agent, "_persist_disabled", False):
@@ -354,7 +367,7 @@ class PreparedCompaction:
         self, worker: Any, turns: list[dict[str, Any]], focus: Optional[str], token: _PendingPass, origin: str,
         extend: Optional[PreparedSummary],
     ) -> None:
-        from agent.auxiliary_client import aux_progress_hook
+        from agent.auxiliary_client import aux_interrupt_protection, aux_progress_hook
         from agent.local_prompt_progress import prompt_reading_hook
         from agent.thread_scoped_output import thread_scoped_silence
 
@@ -366,9 +379,14 @@ class PreparedCompaction:
                 "prepared compaction: pass started origin=%s window=%d-%d turns=%d extends=%s",
                 origin, start, end, len(turns), extend is not None,
             )
-            with thread_scoped_silence(), aux_progress_hook(token.touch), prompt_reading_hook(token.read):
+            with (
+                thread_scoped_silence(), aux_interrupt_protection(cancel_event=token.cancelled),
+                aux_progress_hook(token.touch), prompt_reading_hook(token.read),
+            ):
                 summary = worker._generate_summary(turns, focus_topic=focus)
-            if summary:
+            if token.cancelled.is_set():
+                logger.info("prepared compaction: pass cancelled after %.1fs (superseded)", time.monotonic() - started)
+            elif summary:
                 entry = PreparedSummary(start, end, window_fingerprint, summary, worker._previous_summary)
                 logger.info("prepared compaction: pass completed window=%d-%d in %.1fs",
                             start, end, time.monotonic() - started)

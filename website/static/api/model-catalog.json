@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-10-17T11:22:42Z",
+  "updated_at": "2026-10-22T07:11:18Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -266,14 +266,6 @@
           "description": "free"
         },
         {
-          "id": "minimax/minimax-m3:free",
-          "description": "free"
-        },
-        {
-          "id": "z-ai/glm-5.2:free",
-          "description": "free"
-        },
-        {
           "id": "poolside/laguna-s-2.1:free",
           "description": "free"
         },
@@ -290,11 +282,19 @@
           "description": "free"
         },
         {
-          "id": "inclusionai/ling-3.0-flash:free",
+          "id": "nvidia/nemotron-3.5-lightning:free",
           "description": "free"
         },
         {
-          "id": "nvidia/nemotron-3.5-lightning:free",
+          "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+          "description": "free"
+        },
+        {
+          "id": "google/gemma-4-26b-a4b-it:free",
+          "description": "free"
+        },
+        {
+          "id": "minimax/minimax-m3.1-flash:free",
           "description": "free"
         },
         {

@@ -77,6 +77,7 @@ def test_a_relative_hermes_home_still_reaches_the_browser_in_a_page(private, mon
     assert "ticket=" not in capsys.readouterr().out
 
 
+@pytest.mark.platforms("posix")
 def test_pages_of_earlier_launches_are_removed(private):
     folder = private["root"] / "webapp"
     folder.mkdir(mode=0o700)

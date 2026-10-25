@@ -58,6 +58,11 @@ from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult, cache_image_from_url, cache_media_bytes_async,
 )
+
+try:  # card messages (location, approvals, polls) arrive with no activity.text
+    from .card_text import attachments_to_text
+except ImportError:  # the plugin loader imports this module by file path
+    from plugins.platforms.teams.card_text import attachments_to_text
 from gateway.platforms.base_exec_approval import approval_timeout_seconds, format_approval_deadline_line
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent, MessageType
@@ -509,6 +514,8 @@ class TeamsAdapter(BasePlatformAdapter):
         if conv_id:  # cache the conversation reference for proactive sends (approval cards, etc.)
             self._conv_refs[conv_id] = ctx.conversation_ref
         text = activity.text if hasattr(activity, "text") and activity.text else ""
+        if not text:  # do not drop card-only messages (Teams share-location, approvals…)
+            text = attachments_to_text(getattr(activity, "attachments", None))
         if self._require_mention and getattr(conv, "conversation_type", None) != "personal":
             # RSC-delivered history: every channel/groupChat message arrives. Keep the ones that
             # @mention the bot or reply to one of its own messages; drop the rest BEFORE the

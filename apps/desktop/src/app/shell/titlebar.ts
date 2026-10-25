@@ -1,12 +1,14 @@
 import type { HermesConnection } from '@/global'
+import { isBrowserHostedDesktop, isMacPlatform } from '@/lib/platform'
 
-export const TITLEBAR_HEIGHT = 34
+import { desktopTitlebarHeight, MACOS_TRAFFIC_LIGHTS_WIDTH, MACOS_WINDOW_BUTTON_X } from '../../../window-chrome'
+
+export const TITLEBAR_HEIGHT = desktopTitlebarHeight(isMacPlatform() && !isBrowserHostedDesktop())
 /** Browser touch chrome: the band (and the controls flush in it) are 44px
  *  touch targets, not Electron's compact band. */
 export const TOUCH_TITLEBAR_HEIGHT = 44
 /** Permanent native drag target beside a top-edge tab strip. */
 export const TITLEBAR_DRAG_HANDLE_WIDTH = 48
-export const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 /** Titlebar tool hit target (both axes). */
 export const TITLEBAR_CONTROL_SIZE = 24
 /** Codicon glyph box in titlebar clusters — optical match to traffic-light row. */
@@ -21,7 +23,7 @@ export function titlebarIconSizeCss(scale = 1): string {
   return `${TITLEBAR_ICON_SIZE * scale}px`
 }
 
-export const TITLEBAR_FALLBACK_WINDOW_BUTTON_X = 12
+export const TITLEBAR_FALLBACK_WINDOW_BUTTON_X = MACOS_WINDOW_BUTTON_X
 // Preserve other platforms' first paint until native window state arrives.
 const TITLEBAR_NON_MAC_FALLBACK_WINDOW_BUTTON_X = 24
 // Edge inset used when no left-side native controls take up that space —
@@ -32,27 +34,10 @@ export const TITLEBAR_EDGE_INSET = 14
 // macOS Tahoe = Darwin 25+. Keep in sync with electron/titlebar-overlay-width.ts.
 export const MACOS_TAHOE_DARWIN_MAJOR = 25
 
-// macOS traffic-light row only: nudge the left toolbar cluster down to sit on
-// the same optical center as the native buttons on pre-Tahoe macOS. null
-// windowButtonPosition means Windows/Linux, macOS fullscreen, or Tahoe.
-export const TITLEBAR_MAC_TRAFFIC_LIGHTS_Y_NUDGE = 'calc(var(--spacing) * 0.9)'
-
 export interface TitlebarChromeContext {
   darwinMajor?: number
   isFullscreen?: boolean
   windowButtonPosition?: HermesConnection['windowButtonPosition']
-}
-
-export function titlebarControlsYNudge({
-  darwinMajor = 0,
-  isFullscreen = false,
-  windowButtonPosition
-}: TitlebarChromeContext = {}): string {
-  if (isFullscreen || windowButtonPosition === null || darwinMajor >= MACOS_TAHOE_DARWIN_MAJOR) {
-    return '0px'
-  }
-
-  return TITLEBAR_MAC_TRAFFIC_LIGHTS_Y_NUDGE
 }
 
 /** Right-cluster inset — WCO width when present; macOS fullscreen matches left edge inset. */
@@ -97,7 +82,8 @@ export const titlebarHeaderShadowClass =
 
 export function titlebarControlsPosition(
   windowButtonPosition: HermesConnection['windowButtonPosition'] | undefined,
-  isFullscreen = false
+  isFullscreen = false,
+  zoomFactor = 1
 ) {
   const top = Math.max(0, TITLEBAR_CONTROLS_TOP)
 
@@ -112,8 +98,10 @@ export function titlebarControlsPosition(
   const isMac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform)
   const fallbackX = isMac ? TITLEBAR_FALLBACK_WINDOW_BUTTON_X : TITLEBAR_NON_MAC_FALLBACK_WINDOW_BUTTON_X
 
+  const lightsWidth = MACOS_TRAFFIC_LIGHTS_WIDTH / (windowButtonPosition || isMac ? zoomFactor : 1)
+
   return {
-    left: (windowButtonPosition?.x ?? fallbackX) + TITLEBAR_CONTROL_OFFSET_X,
+    left: (windowButtonPosition?.x ?? fallbackX) + lightsWidth + (TITLEBAR_CONTROL_OFFSET_X - MACOS_TRAFFIC_LIGHTS_WIDTH),
     top
   }
 }

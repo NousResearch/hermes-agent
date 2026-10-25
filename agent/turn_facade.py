@@ -29,6 +29,7 @@ class TurnFacadeMixin:
         turn_author: Optional[dict[str, Any]] = None,
         relay_metadata: Optional[dict[str, Any]] = None,
         title_user_message: Optional[str]=None,
+        reuse_current_user_message: bool = False,
         prelude: Optional[Generator]=None,
     ) -> dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
@@ -154,6 +155,7 @@ class TurnFacadeMixin:
                         persist_user_platform_id=persist_user_platform_id, moa_config=moa_config,
                         turn_author=turn_author,
                         title_user_message=title_user_message,
+                        reuse_current_user_message=reuse_current_user_message,
                         prelude=prelude,
                     )
                 finally:

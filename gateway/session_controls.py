@@ -135,6 +135,7 @@ class AuthorityConnection:
         bind_native_transport(authority, self.actor, identity)
         self.native_owner = identity.get('native_bootstrap') is True
         self.subscriptions = {}
+        self.handed_back = set()  # sessions this live client detached without closing (the TUI's switcher)
         self._identity, self._operator, self._siblings = identity, operator, {}
         authority.events[self.actor.transport_id] = transport
 
@@ -498,7 +499,8 @@ class AuthorityConnection:
         from gateway.session_skin import resolved_skin
         return {'instance_id': self.authority.instance_id, 'profile_id': self.authority.profile_id,
                 'authority_epoch': self.authority.epoch,
-                'capabilities': ['durable-admission-v1', 'event-replay-v1', 'local-cli-create-v1', 'acp-editor-policy-v1', 'acp-session-mcp-v1'],
+                'capabilities': ['durable-admission-v1', 'event-replay-v1', 'local-cli-create-v1', 'acp-editor-policy-v1',
+                                 'acp-session-mcp-v1', 'clarify-batch-v1'],
                 'session_create': {'sources': sorted(SURFACES),
                                    'parameters': sorted(CREATE_FIELDS | {'title'})},
                 # Main's ``gateway.ready.skin``: the canonical client's own ready carries it.
@@ -616,6 +618,7 @@ class AuthorityConnection:
             await refresh_resumed_policy(self.authority, ref, attached=ref.session_id in self.subscriptions)
         snapshot = await self.authority.attach(self.actor, ref)
         self.subscriptions[ref.session_id] = snapshot.subscription_id
+        self.handed_back.discard(ref.session_id)
         self._spawn_notice(ref)
         # Only local routes have a frozen local launch policy to project; with it, main's banner and
         # status-bar inventory (tools, skills, MCP, version, branch) for that policy.
@@ -680,6 +683,7 @@ class AuthorityConnection:
         await self.authority.detach(self.actor, subscription_id, end_reason=end_reason)
         if self.subscriptions.get(session_id) == subscription_id:
             del self.subscriptions[session_id]
+        (self.handed_back.discard if end_reason else self.handed_back.add)(session_id)
         result['detached'] = True
         return result
 
@@ -814,8 +818,22 @@ class AuthorityConnection:
 
     async def cancel(self, ref, params):
         admission_id = params.get('admission_id')
-        if (await self.authority.receipt(self.actor, ref, admission_id)).status != 'queued':
-            return asdict(await self.authority.cancel_queued(self.actor, ref, admission_id))  # started: unaffected
+        receipt = await self.authority.receipt(self.actor, ref, admission_id)
+        from hermes_state_runtime import get_session_admission
+        # A transferred steer also reads started (as its receiving claim): only its own claim is stopped here;
+        # the transfer is refused below and settles with that claim.
+        if receipt.status == 'started' and get_session_admission(
+                self.authority.db, admission_id=admission_id)['status'] == 'started':
+            # Stopped in this RPC: an editor that exits right after its cancel never sends a follow-up
+            # interrupt. A stale generation means the turn already settled.
+            try:
+                await self.interrupt(ref, {'execution_generation': receipt.execution_generation})
+            except RuntimeStoreError as exc:
+                if exc.reason != 'stale_generation':
+                    raise
+            return asdict(await self.authority.receipt(self.actor, ref, admission_id))
+        if receipt.status != 'queued':
+            return asdict(await self.authority.cancel_queued(self.actor, ref, admission_id))
         # Queued at this read, claimed by the drain before the cancel commit: Stop that exact claim (as
         # API and ACP do) instead of refusing while the withdrawn prompt runs.
         row = await self.authority.cancel_or_claimed(self.actor, ref, admission_id)
@@ -865,10 +883,17 @@ class AuthorityConnection:
         forget(self)  # nobody is left to read its one-shot replies
         # Deletion may already have evicted a subscribed session; its membership died
         # with it, and one retired ID must not leave the others (or the transport) attached.
-        for session_id, subscription in list(self.subscriptions.items()):
-            live = self.authority.sessions.get(session_id)
-            if live is not None and subscription in live.subscribers:
-                await self.authority.detach(self.actor, subscription)
+        # A sibling's teardown runs under the primary socket's scope: detach as this owner, as dispatch does.
+        from gateway.session_authorities import owner_scope
+        with owner_scope(self.authority):
+            for session_id, subscription in list(self.subscriptions.items()):
+                live = self.authority.sessions.get(session_id)
+                if live is not None and subscription in live.subscribers:
+                    await self.authority.detach(self.actor, subscription, orphaned=True)
+            # Kept in the background by this client: losing it orphans them too, unless another viewer holds one.
+            from gateway.session_viewer_close import arm_detached_orphan_close
+            for session_id in self.handed_back:
+                await arm_detached_orphan_close(self.authority, session_id)
         from gateway.session_local_migration import unbind_native_transport
         unbind_native_transport(self.authority, self.actor)
         self.subscriptions.clear()

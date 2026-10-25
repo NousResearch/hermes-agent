@@ -362,3 +362,66 @@ def test_mailbox_dacl_stays_reachable_on_windows(tmp_path):
     assert claimed is not None and claimed["message"] == "héllo 世界"
     result = mailbox.read_delivery_result(tmp_path, delivery_id)
     assert result is not None and result["status"] == "claimed"
+
+
+def test_unreachable_mailbox_raises_actionable_error(tmp_path, monkeypatch):
+    """A mailbox left behind by another token must not escape as a bare PermissionError.
+
+    #138872: the directory already exists, so ``mkdir(exist_ok=True)`` cannot repair it
+    and the next ``os.open`` on ``.lock`` fails with WinError 5. Callers need a message
+    naming the directory and the command that fixes it.
+    """
+    from tools import bot_live_delivery as mailbox
+
+    root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+    root.mkdir(parents=True)
+    lock = root / ".lock"
+    real_open = os.open
+
+    def deny_lock(path, *args, **kwargs):
+        if str(path) == str(lock):
+            raise PermissionError(13, "Access is denied", str(path))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(mailbox, "_IS_WINDOWS", True)
+    monkeypatch.setattr(mailbox, "_repair_windows_acl", lambda _root: False)
+    monkeypatch.setattr(mailbox.os, "open", deny_lock)
+
+    with pytest.raises(mailbox.MailboxUnavailable) as excinfo:
+        with mailbox._locked(tmp_path):
+            pass
+    message = str(excinfo.value)
+    assert str(root) in message
+    assert "icacls" in message
+    assert excinfo.value.path == root
+
+
+def test_unreachable_mailbox_repairs_acl_then_retries(tmp_path, monkeypatch):
+    """One denied open triggers a single ACL reset, and the retry succeeds."""
+    from tools import bot_live_delivery as mailbox
+
+    root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+    root.mkdir(parents=True)
+    lock = root / ".lock"
+    real_open = os.open
+    calls = {"open": 0, "repair": 0}
+
+    def flaky_open(path, *args, **kwargs):
+        if str(path) == str(lock):
+            calls["open"] += 1
+            if calls["open"] == 1:
+                raise PermissionError(13, "Access is denied", str(path))
+        return real_open(path, *args, **kwargs)
+
+    def repair(_root):
+        calls["repair"] += 1
+        return True
+
+    monkeypatch.setattr(mailbox, "_IS_WINDOWS", True)
+    monkeypatch.setattr(mailbox, "_repair_windows_acl", repair)
+    monkeypatch.setattr(mailbox.os, "open", flaky_open)
+
+    with mailbox._locked(tmp_path) as locked_root:
+        assert locked_root == root
+    assert calls["repair"] == 1
+    assert calls["open"] >= 2

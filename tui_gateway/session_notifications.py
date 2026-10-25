@@ -5,8 +5,24 @@ desktop UI wiring, HUD surface note. Bodies are rebound onto server.py's globals
 from __future__ import annotations
 
 import contextlib
+import logging
 
 from .method_ctx import bind_module
+
+_log = logging.getLogger(__name__)
+
+# Mailbox paths already reported as unreachable by this process. The poller runs twice a
+# second, so a permanently unreadable directory must be one WARNING, not a log flood.
+_unreachable_mailboxes: set[str] = set()
+
+
+def _warn_unreachable_mailbox(path: str, detail: str) -> None:
+    """Report an unreadable bot live-delivery mailbox once per path and keep polling."""
+    if path in _unreachable_mailboxes:
+        _log.debug("bot live-delivery mailbox still unreachable: %s", detail)
+        return
+    _unreachable_mailboxes.add(path)
+    _log.warning("bot live-delivery mailbox unreachable, skipping this pass: %s", detail)
 
 
 def _notif_locked_sessions(fn, default):
@@ -646,12 +662,16 @@ def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred, 
 
 def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     """Run one durable envelope only after local FIFO/continuations yield the idle boundary."""
-    from tools.bot_live_delivery import claim_pending_delivery, complete_delivery, find_canonical_live_owner, has_mailbox
+    from tools.bot_live_delivery import (MailboxUnavailable, claim_pending_delivery,
+                                         complete_delivery, find_canonical_live_owner, has_mailbox)
 
     home = _session_home(session)
     # Most profiles never receive a delivery: without a mailbox there is nothing to claim, and the owner
     # lookup below costs a state.db open plus the exclusive active-session registry lock every pass (#111719).
-    if not has_mailbox(home):
+    try:
+        if not has_mailbox(home):
+            return False
+    except OSError:
         return False
     with _session_turn_admission(session) as admitted:
         # No _turn_cancel_requested here: a delivery is a person's message, not an automatic turn,
@@ -669,7 +689,14 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
                 or owner.get("session_id") != session.get("session_key")):
             return False
         # The mailbox matches each envelope to this pinned lease/live id and compression lineage.
-        claimed = claim_pending_delivery(home, owner)
+        try:
+            claimed = claim_pending_delivery(home, owner)
+        except MailboxUnavailable as exc:
+            # One unreadable mailbox must not take the whole gateway down (#138872): the
+            # directory belongs to another token, so log the exact repair command once
+            # per path and try again on a later pass.
+            _warn_unreachable_mailbox(str(exc.path), str(exc))
+            return False
         if claimed is None:
             return False
         session["running"] = True

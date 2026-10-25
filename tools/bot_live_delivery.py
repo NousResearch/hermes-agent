@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import time
 import uuid
 from contextlib import contextmanager
@@ -88,6 +89,44 @@ def has_mailbox(profile_home: Path | str) -> bool:
     return _root(profile_home).is_dir()
 
 
+class MailboxUnavailable(RuntimeError):
+    """An existing mailbox directory cannot be opened by this process.
+
+    Raised instead of a raw ``PermissionError`` so delivery-path callers can skip this
+    pass and keep the gateway alive, while the message names the directory and the
+    command that repairs it.
+    """
+
+    def __init__(self, path: Path, *, cause: OSError | None = None) -> None:
+        self.path = path
+        self.hint = f'icacls "{path}" /reset /T /C'
+        detail = f"{cause.__class__.__name__}: {cause}" if cause is not None else "PermissionError"
+        super().__init__(
+            f"bot live-delivery mailbox {path} is not writable by this process ({detail}). "
+            f"Fix: run `{self.hint}` from an elevated prompt, or delete that directory so it is "
+            f"recreated, then restart the gateway."
+        )
+
+
+def _repair_windows_acl(root: Path) -> bool:
+    """Best-effort ``icacls <dir> /reset`` so this token can re-enter a mailbox another token created.
+
+    Returns True only when ``icacls`` itself succeeded; the caller still retries the lock
+    open, because a successful reset does not guarantee the retry works.
+    """
+    try:
+        completed = subprocess.run(
+            ["icacls", str(root), "/reset", "/T", "/C"],
+            check=False,
+            capture_output=True,
+            timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
+
+
 @contextmanager
 def _locked(home: Path | str):
     root = _root(home)
@@ -100,7 +139,10 @@ def _locked(home: Path | str):
         # A mailbox created by an elevated process would lock out the same user's
         # non-elevated processes and never be claimed; inherit the profile home's ACL
         # instead, the same trust boundary as the rest of the runtime directory.
-        root.mkdir(exist_ok=True)
+        try:
+            root.mkdir(exist_ok=True)
+        except PermissionError as exc:
+            raise MailboxUnavailable(root, cause=exc) from exc
     else:
         root.mkdir(mode=0o700, exist_ok=True)
         root.chmod(0o700)
@@ -111,7 +153,21 @@ def _locked(home: Path | str):
         fsync_directory(root.parent)
         fsync_directory(root.parent.parent)
     lock = root / ".lock"
-    fd = os.open(lock, os.O_CREAT | os.O_WRONLY, 0o600)
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_WRONLY, 0o600)
+    except PermissionError as exc:
+        # A mailbox left behind by an elevated process (#138872) already exists, so
+        # ``mkdir(exist_ok=True)`` cannot repair it. Reset the inherited ACL once and
+        # retry; when that fails too, raise an actionable error instead of a bare
+        # WinError 5 out of startup recovery, so one unreadable directory cannot keep
+        # the gateway offline.
+        if _IS_WINDOWS and _repair_windows_acl(root):
+            try:
+                fd = os.open(lock, os.O_CREAT | os.O_WRONLY, 0o600)
+            except PermissionError as retry_exc:
+                raise MailboxUnavailable(root, cause=retry_exc) from retry_exc
+        else:
+            raise MailboxUnavailable(root, cause=exc) from exc
     os.close(fd)
     with _FileLock(lock):
         yield root

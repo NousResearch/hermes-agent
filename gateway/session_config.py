@@ -116,6 +116,8 @@ async def config_get(connection, ref, params):
 def session_voice_mode(connection, ref):
     """``off`` / ``voice_only`` / ``all``: the session's ``/voice`` mode as the messaging handler stored it."""
     runner, live = connection.authority.runner, connection.authority.sessions[ref.session_id]
+    if live.source is None:  # a history mount: no chat for a voice mode to belong to
+        return 'off'
     modes = getattr(runner, '_voice_mode', None) or {}
     return modes.get(runner._voice_key_for_source(live.source), 'off')
 
@@ -130,6 +132,8 @@ def local_voice_enabled(session_id):
     for authority in all_authorities(_ACTIVE_RUNNER):
         live = getattr(authority, 'sessions', {}).get(session_id)
         if live is not None:
+            if live.source is None:  # a history mount: no chat for a voice mode to belong to
+                return False
             modes = getattr(_ACTIVE_RUNNER, '_voice_mode', None) or {}
             return modes.get(_ACTIVE_RUNNER._voice_key_for_source(live.source), 'off') != 'off'
     return None
@@ -225,8 +229,8 @@ async def model_options(connection, ref, params):
             selected = provider
             if selected == 'custom':
                 from hermes_cli.runtime_provider import canonical_custom_identity
-                selected = canonical_custom_identity(base_url=base_url, config_provider=ctx.current_provider,
-                                                     model=model) or selected
+                selected = canonical_custom_identity(base_url=base_url, config_provider=ctx.current_provider, model=model,
+                                                     requested=getattr(agent, 'requested_provider', None)) or selected
             return build_model_options_payload(ctx.with_overrides(current_provider=selected,
                 current_model=model, current_base_url=base_url), **{k: params[k] for k in flags & params.keys()})
     return await asyncio.to_thread(discover)

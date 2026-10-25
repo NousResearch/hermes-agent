@@ -2739,6 +2739,7 @@ export const jaOverrides = {
     onLatest: '最新バージョンです。',
     installing: '更新をインストール中です。',
     cantReach: '更新サーバーに接続できませんでした。',
+    unpublishedBranchTitle: 'このインストールは、まだ公開されていないブランチを使用しています。',
     tapCheck: '更新を探すには「今すぐ確認」を押してください。',
     updateReady: count => `新しい更新の準備ができました (${count} 件の変更を含みます)。`,
     updateReadyUnknown: '新しい更新の準備ができました。',
@@ -2748,7 +2749,6 @@ export const jaOverrides = {
     minAgo: count => `${count} 分前`,
     hoursAgo: count => `${count} 時間前`,
     daysAgo: count => `${count} 日前`,
-    justNowSuffix: ' · たった今',
     bundleOutOfSync: 'アプリのビルドが古くなっています',
     bundleOutOfSyncDesc:
       'Hermes ランタイムは更新されましたが、デスクトップアプリ自体は古いビルドのままです。アプリを更新するまで、新しいインターフェース機能(Bot Mode など)は表示されません。下の更新を実行してアプリを再ビルドしてください。それでもこの警告が消えない場合は、最新のデスクトップインストーラーから再インストールしてください。',

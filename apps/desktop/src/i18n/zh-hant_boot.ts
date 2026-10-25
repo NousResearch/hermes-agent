@@ -192,6 +192,7 @@ export const zhHantBoot = {
     onLatest: '你已是最新版本。',
     installing: '正在安裝更新。',
     cantReach: '無法連線到更新伺服器。',
+    unpublishedBranchTitle: '此安裝使用的是從未發布過的分支。',
     tapCheck: '點選「立即檢查」以尋找更新。',
     updateReady: count => `新更新已就緒（包含 ${count} 項變更）。`,
     updateReadyUnknown: '新更新已就緒。',
@@ -201,7 +202,6 @@ export const zhHantBoot = {
     minAgo: count => `${count} 分鐘前`,
     hoursAgo: count => `${count} 小時前`,
     daysAgo: count => `${count} 天前`,
-    justNowSuffix: ' · 剛剛',
     bundleOutOfSync: '應用程式建置版本過舊',
     bundleOutOfSyncDesc:
       'Hermes 執行環境已更新,但桌面應用程式本身仍是舊建置——在應用程式更新之前,新的介面功能(如 Bot Mode)不會顯示。請執行下方的更新以重新建置應用程式。如果此警告仍未消除,請從最新的桌面安裝程式重新安裝。',

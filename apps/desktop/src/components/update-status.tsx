@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { type ReactElement, type ReactNode, useState } from 'react'
+import { type ReactElement, type ReactNode } from 'react'
 
 import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
@@ -54,6 +54,38 @@ function retirementStatus(
     line: u.discontinuedTitle,
     error: u.discontinuedBody
   }
+}
+
+/**
+ * The codes whose cause the backend names in its own message ("Could not read the
+ * installed revision.", "Could not resolve the ... source channel: ...").
+ */
+const MESSAGE_NAMED_ERRORS = new Set(['head-unavailable', 'release-unavailable', 'fetch-failed'])
+
+/**
+ * The headline for a failed check, and the body under it.
+ *
+ * The transport error codes are internal; each one names a different cause, and
+ * "we couldn't reach the update server" is only true for the ones that are about
+ * reaching a server. Where the backend already names the cause, its message is the
+ * headline; where it does not, the app's own copy is. The internal code is never
+ * shown: it is noise next to the sentence that explains the failure.
+ */
+function errorView(
+  status: DesktopUpdateStatus,
+  u: Translations['updates']
+): { line: string; error?: string } {
+  const message = status.message
+
+  if (status.error === 'branch-local-only') {
+    return { line: u.unpublishedBranchTitle, error: message }
+  }
+
+  if (status.error && message && MESSAGE_NAMED_ERRORS.has(status.error)) {
+    return { line: message }
+  }
+
+  return { line: u.cantReach, error: message }
 }
 
 /**
@@ -127,10 +159,12 @@ function ordinaryUpdateStatus({
   }
 
   if (status?.error) {
+    const { line, error } = errorView(status, u)
+
     return {
       applying,
-      error: [status.message, status.error].filter(l => !!l).join('\n'),
-      line: u.cantReach,
+      error,
+      line,
       supported,
       tone: 'error',
       updateAvailable
@@ -319,6 +353,37 @@ function UpdateActions({ target, u, view }: UpdateActionsProps): ReactElement | 
 }
 
 /**
+ * The card's text block: the status line, the body under it, the note a successful
+ * check can carry, and the age of the last check.
+ */
+function UpdateStatusText({
+  status,
+  u,
+  view
+}: {
+  status: DesktopUpdateStatus | null
+  u: Translations['updates']
+  view: UpdateStatusView
+}): ReactElement {
+  return (
+    <div className="min-w-0">
+      <p className="font-medium">{view.line}</p>
+      {view.error && <p className="mt-1 text-xs text-muted-foreground">{view.error}</p>}
+      {/* A check that succeeded can still carry a note: a parked branch the remote
+          never received, a channel that resolved to a retired record. */}
+      {!view.error && view.tone !== 'unsupported' && status?.message && (
+        <p className="mt-1 text-xs text-muted-foreground">{status.message}</p>
+      )}
+      {view.tone !== 'unsupported' && (
+        <p className="mt-1 text-xs text-muted-foreground">
+          {u.lastChecked(relativeTime(status?.fetchedAt, u))}
+        </p>
+      )}
+    </div>
+  )
+}
+
+/**
  * The bordered update-state card (status line, last-checked age, check /
  * update / release-notes actions) in the About page's visual language.
  * Target-aware: 'client' reads the desktop self-update atoms, 'backend' the
@@ -338,7 +403,6 @@ export function UpdateStatusCard({
   const status = useStore(isBackend ? $backendUpdateStatus : $updateStatus)
   const checking = useStore(isBackend ? $backendUpdateChecking : $updateChecking)
   const apply = useStore(isBackend ? $backendUpdateApply : $updateApply)
-  const [justChecked, setJustChecked] = useState<boolean>(false)
 
   const view = deriveUpdateStatus({
     apply,
@@ -352,9 +416,7 @@ export function UpdateStatusCard({
   })
 
   const handleCheck = async (): Promise<void> => {
-    setJustChecked(false)
-    const next = await (isBackend ? checkBackendUpdates({ force: true }) : checkUpdates({ force: true }))
-    setJustChecked(Boolean(next))
+    await (isBackend ? checkBackendUpdates({ force: true }) : checkUpdates({ force: true }))
   }
 
   return (
@@ -372,16 +434,7 @@ export function UpdateStatusCard({
         ) : view.tone === 'error' || view.tone === 'unsupported' ? null : (
           <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
         )}
-        <div className="min-w-0">
-          <p className="font-medium">{view.line}</p>
-          {view.error && <p className="mt-1 text-xs text-muted-foreground">{view.error}</p>}
-          {view.tone !== 'unsupported' && (
-            <p className="mt-1 text-xs text-muted-foreground">
-              {u.lastChecked(relativeTime(status?.fetchedAt, u))}
-              {justChecked && !checking ? u.justNowSuffix : ''}
-            </p>
-          )}
-        </div>
+        <UpdateStatusText status={status} u={u} view={view} />
       </div>
 
       {view.tone !== 'unsupported' && (

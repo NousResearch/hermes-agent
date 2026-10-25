@@ -4,9 +4,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DesktopUpdateStatus, DesktopVersionInfo } from '@/global'
 import { I18nProvider, type Locale, TRANSLATIONS, type Translations } from '@/i18n'
 import { en } from '@/i18n/en'
-import type { UpdateApplyState } from '@/store/updates'
+import { $updateApply, $updateStatus, type UpdateApplyState } from '@/store/updates'
 
-import { deriveUpdateStatus, VersionHero } from './update-status'
+import { deriveUpdateStatus, UpdateStatusCard, VersionHero } from './update-status'
 
 // VersionHero is the shared About/overlay hero. Its module imports the real
 // updates store graph; mock it shallowly — these tests exercise the hero's
@@ -166,13 +166,49 @@ describe('deriveUpdateStatus', () => {
 
     expect(view.tone).toBe('error')
     expect(view.line).toBe(en.updates.cantReach)
-    expect(view.error).toBe('ECONNREFUSED\ncheck-failed')
+    // The transport code is an internal detail: only the human message is shown.
+    expect(view.error).toBe('ECONNREFUSED')
   })
 
-  it.each([undefined, ''])('keeps the error when the transport message is %s', message => {
+  it.each([undefined, ''])('keeps no body when the transport message is %s', message => {
     const view = derive({ supported: true, error: 'check-failed', message })
 
-    expect(view.error).toBe('check-failed')
+    expect(view.error).toBeFalsy()
+  })
+
+  it('names the cause instead of blaming the update server', () => {
+    // The backend names the cause in its own message for these codes.
+    for (const code of ['head-unavailable', 'release-unavailable', 'fetch-failed']) {
+      const view = derive({ supported: true, error: code, message: 'Could not read the installed revision.' })
+
+      expect(view.tone).toBe('error')
+      expect(view.line).toBe('Could not read the installed revision.')
+      expect(view.line).not.toBe(en.updates.cantReach)
+    }
+
+    // An unpublished branch has its own copy.
+    const branch = derive({
+      supported: true,
+      error: 'branch-local-only',
+      message: "Branch 'local/x' has never been pushed."
+    })
+
+    expect(branch.line).toBe(en.updates.unpublishedBranchTitle)
+    expect(branch.error).toBe("Branch 'local/x' has never been pushed.")
+  })
+
+  it('a parked unpublished branch still offers the update it is waiting for', () => {
+    const view = derive({
+      supported: true,
+      behind: 6,
+      updateAvailable: true,
+      branch: 'local/openrouter-free-models',
+      message: "Branch 'local/openrouter-free-models' has never been pushed."
+    })
+
+    expect(view.tone).toBe('available')
+    expect(view.updateAvailable).toBe(true)
+    expect(view.error).toBeFalsy()
   })
 
   it('applying beats available so the card cannot offer a second install', () => {
@@ -217,6 +253,45 @@ describe('deriveUpdateStatus', () => {
     })
 
     expect(view.line).toBe(en.updates.latestBodyBackend)
+  })
+})
+
+describe('UpdateStatusCard', () => {
+  afterEach(() => {
+    cleanup()
+    $updateStatus.set(null)
+  })
+
+  const renderCard = (): void => {
+    $updateApply.set(IDLE_APPLY)
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <UpdateStatusCard target="client" />
+      </I18nProvider>
+    )
+  }
+
+  it('shows the parked-branch note a successful check can carry', () => {
+    $updateStatus.set({
+      supported: true,
+      behind: 0,
+      branch: 'local/openrouter-free-models',
+      message: "Branch 'local/openrouter-free-models' has never been pushed.",
+      fetchedAt: Date.now()
+    })
+
+    renderCard()
+
+    expect(screen.getByText("Branch 'local/openrouter-free-models' has never been pushed.")).toBeTruthy()
+  })
+
+  it('says the age of the last check once, not twice', () => {
+    $updateStatus.set({ supported: true, behind: 0, fetchedAt: Date.now() })
+
+    renderCard()
+
+    expect(screen.getByText(en.updates.lastChecked(en.updates.justNow))).toBeTruthy()
+    expect(screen.queryByText(`${en.updates.lastChecked(en.updates.justNow)} · just now`)).toBeNull()
   })
 })
 

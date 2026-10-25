@@ -4133,12 +4133,12 @@ export const esOverrides = {
     onLatest: 'Ya tienes la versión más reciente.',
     installing: 'Se está instalando una actualización.',
     cantReach: 'No pudimos contactar con el servidor de actualizaciones.',
+    unpublishedBranchTitle: 'Esta instalación usa una rama que nunca se publicó.',
     tapCheck: 'Pulsa "Comprobar ahora" para buscar actualizaciones.',
     updateReady: count =>
       `Hay una actualización lista (${count} ${count === 1 ? 'cambio incluido' : 'cambios incluidos'}).`,
     updateReadyUnknown: 'Hay una nueva actualización lista.',
     lastChecked: age => `Última comprobación ${age}`,
-    justNowSuffix: ' · ahora mismo',
     never: 'nunca',
     justNow: 'ahora mismo',
     minAgo: count => `hace ${count} min`,

@@ -117,17 +117,81 @@ def test_bound_launch_key_wins_over_the_route_key(tmp_path, monkeypatch):
     ('eu.amazon.nova-pro-v1:0', {'provider': 'bedrock'}, {'AWS_REGION': 'eu-west-1'},
      {'api_mode': 'bedrock_converse', 'base_url': 'https://bedrock-runtime.eu-west-1.amazonaws.com'}),
 ])
-def test_worker_builds_on_the_routes_resolved_api_mode_and_endpoint(tmp_path, monkeypatch, model, block, env, expected):
+@pytest.mark.parametrize('api_key', [None, 'fake-launch-key'])
+def test_worker_builds_on_the_routes_resolved_api_mode_and_endpoint(tmp_path, monkeypatch, model, block, env, expected,
+                                                                    api_key):
     """KB-11: the worker's agent gets the api_mode and endpoint the in-process turn's resolution
-    gives it, not the frozen ``model.base_url`` with no api_mode (chat_completions, us-east-1)."""
+    gives it, not the frozen ``model.base_url`` with no api_mode (chat_completions, us-east-1), with
+    or without a bound launch key."""
     frame, _ = assignment(tmp_path, monkeypatch)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     config = {**json.loads(frame['policy']['config_json']), 'model': {'default': model, **block}}
     request = {k: v for k, v in json.loads(frame['policy']['request_json']).items() if k not in ('provider', 'base_url')}
     policy = {**frame['policy'], 'model': model, 'config_json': json.dumps(config), 'request_json': json.dumps(request)}
-    built = _execute({**frame, 'policy': policy, 'api_key': None}, monkeypatch)
+    built = _execute({**frame, 'policy': policy, 'api_key': api_key}, monkeypatch)
     assert {key: built.get(key) for key in expected} == expected
+
+
+def _routed_frame(tmp_path, monkeypatch, model, block, launch_url=None, api_key=None):
+    frame, _ = assignment(tmp_path, monkeypatch)
+    config = {**json.loads(frame['policy']['config_json']), 'model': {'default': model, **block}}
+    request = {k: v for k, v in json.loads(frame['policy']['request_json']).items() if k not in ('provider', 'base_url')}
+    if launch_url:
+        request['base_url'] = launch_url
+    policy = {**frame['policy'], 'model': model, 'config_json': json.dumps(config), 'request_json': json.dumps(request)}
+    return {**frame, 'policy': policy, 'api_key': api_key}
+
+
+def test_bound_launch_key_builds_without_the_providers_login(tmp_path, monkeypatch):
+    """A supplied Qwen OAuth token is the credential: no Qwen CLI login file is needed."""
+    monkeypatch.setenv('HOME', str(tmp_path))
+    url, launch = 'https://portal.qwen.ai/v1', 'fake-qwen-' + secrets.token_hex(8)
+    frame = _routed_frame(tmp_path, monkeypatch, 'qwen3-coder-plus', {'provider': 'qwen-oauth', 'base_url': url},
+                          launch_url=url, api_key=launch)
+    built = _execute(frame, monkeypatch)
+    assert built['api_key'] == launch
+
+
+def _constructed_agent(frame, monkeypatch):
+    from run_agent import AIAgent
+    prewarmed = threading.Event()
+    prewarmed.set()
+    monkeypatch.setattr('run_agent._openrouter_prewarm_done', prewarmed)
+    made = []
+
+    class Recorded(AIAgent):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            made.append(self)
+    _execute(frame, monkeypatch, base=Recorded)
+    assert made
+    return made[0]
+
+
+def test_worker_without_a_configured_mode_keeps_the_agents_gpt5_responses_upgrade(tmp_path, monkeypatch):
+    """The resolver's chat_completions is a default, not a choice: the agent still moves GPT-5 on
+    OpenRouter to Responses."""
+    monkeypatch.setenv('OPENROUTER_API_KEY', 'fake-or-' + secrets.token_hex(8))
+    frame = _routed_frame(tmp_path, monkeypatch, 'openai/gpt-5.5', {'provider': 'openrouter'})
+    assert _constructed_agent(frame, monkeypatch).api_mode == 'codex_responses'
+
+
+RELAY_URL = 'https://relay.example.test/v1'
+
+
+@pytest.mark.parametrize('section', [
+    {'providers': {'relay': {'base_url': RELAY_URL, 'key_env': KEY_ENV, 'transport': 'chat_completions'}}},
+    {'custom_providers': [{'name': 'relay', 'base_url': RELAY_URL, 'key_env': KEY_ENV, 'api_mode': 'chat_completions'}]},
+])
+def test_named_custom_gpt5_relay_keeps_its_configured_chat_completions(tmp_path, monkeypatch, section):
+    """A provider-level mode is explicit too: a GPT-5 relay configured for Chat Completions is never
+    upgraded to a Responses endpoint it may not serve."""
+    monkeypatch.setenv(KEY_ENV, 'fake-relay-' + secrets.token_hex(8))
+    frame = _routed_frame(tmp_path, monkeypatch, 'gpt-5.5', {'provider': 'custom:relay', 'base_url': RELAY_URL})
+    config = {**json.loads(frame['policy']['config_json']), **section}
+    frame = {**frame, 'policy': {**frame['policy'], 'config_json': json.dumps(config)}}
+    assert _constructed_agent(frame, monkeypatch).api_mode == 'chat_completions'
 
 
 def test_primary_auth_failure_never_borrows_a_fallback_providers_key(tmp_path, monkeypatch):

@@ -207,8 +207,16 @@ def worker_route(policy, construct):
     runtime, fallback_entry = route_runtime(policy, frozen, model, construct['api_key'])
     if fallback_entry is not None:
         return {}
+    api_mode = runtime.get('api_mode')
+    # A built-in provider's chat_completions is the resolver's default unless model.api_mode set it: None
+    # leaves the agent's model-aware upgrade (GPT-5 on OpenRouter to Responses). A custom route's mode
+    # is its endpoint's own (providers.<name>/custom_providers[] or URL-detected), which the in-process
+    # turn's ``custom`` provider never upgrades; the worker's ``custom:<name>`` would.
+    if (api_mode == 'chat_completions' and runtime.get('provider') != 'custom'
+            and not (frozen.get('model') or {}).get('api_mode')):
+        api_mode = None
     return {'api_key': construct['api_key'] or runtime.get('api_key'), 'base_url': runtime.get('base_url'),
-            'api_mode': runtime.get('api_mode')}
+            'api_mode': api_mode}
 
 
 def checkpoint_agent_kwargs(config):

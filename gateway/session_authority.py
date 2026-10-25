@@ -324,7 +324,11 @@ class SessionAuthority:
         self.authorize(actor, ref, 'session:read')
         from gateway.session_local_recovery import local_history, prepare_history
         prepared = await prepare_history(self, ref)  # the lineage read stays off the loop and the lock
-        # A delete or eviction can land during that await: re-check, so it answers not_found, never a KeyError.
+        from gateway.session_onboarding import keep_from_discard
+        # The last await before the viewer joins: a fresh launch's claim is taken back with no yield
+        # before the join, and a delete already past it answers not_found below.
+        await keep_from_discard(self, ref.session_id)
+        # A delete or eviction can land during those awaits: re-check, so it answers not_found, never a KeyError.
         self.authorize(actor, ref, 'session:read')
         live = self.sessions[ref.session_id]
         from gateway.session_queued_controls import pending_rows

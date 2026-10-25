@@ -185,6 +185,8 @@ async def settle_viewer_close(authority, session_id):
     if live.subscribers:
         return  # a viewer reattached during the stamp; reopen_if_reattached reopened the row
     platform = (row or {}).get('source') or (live.source.platform.value if live.source else '')
+    from gateway.session_vault_prompt import release_unlocks
+    release_unlocks(session_id)
     await _run_close_lifecycle(authority, live, target, platform, close.reason)
 
 

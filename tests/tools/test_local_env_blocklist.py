@@ -584,6 +584,27 @@ def test_pythonpath_descendants_are_not_owned():
     assert env["PYTHONPATH"].split(os.pathsep) == entries
 
 
+def test_pm_committed_site_packages_stripped_when_not_the_running_interpreter(child_env, monkeypatch):
+    # activate_dependencies writes the committed PM generation's site-packages
+    # into os.environ["PYTHONPATH"]. A child of a different interpreter (a
+    # 3.12 venv launched from a 3.14 store) does not list that path in
+    # site.getsitepackages(), so ownership-by-current-process misses it and
+    # the child imports the store's compiled extensions.
+    state = child_env / "hermes-home" / "installs" / "deadbeef"
+    generation = state / "environments/cafebabe/venv"
+    site = generation / (f"lib/python{sys.version_info.major}.{sys.version_info.minor + 1}/site-packages")
+    site.mkdir(parents=True)
+    (generation / "pyvenv.cfg").write_text(
+        f"version = {sys.version_info.major}.{sys.version_info.minor + 1}.0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(local, "_hermes_site_packages", None)
+    user = "/opt/user-lib"
+    env = {"PYTHONPATH": os.pathsep.join([str(site), user])}
+    pp._strip_hermes_owned_pythonpath(env)
+    assert env["PYTHONPATH"] == user
+
+
 @pytest.mark.platforms("linux", "macos", "windows")
 @pytest.mark.parametrize("link_at", ["home", "repo", "unrelated"])
 @pytest.mark.parametrize("profile", [False, True])

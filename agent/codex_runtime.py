@@ -871,6 +871,7 @@ class _CodexResponseAssembler:
         # back in stream order.
         self.output_indexes, self.output_sequences = [], []
         self.text_deltas, self.commentary_text_deltas = [], []
+        self.active_text_item_started = True
         # pending_function_calls: announced-but-unconfirmed function calls keyed by item id. announced_output_order:
         # first-observed (sequence, output_index) per announced item id so a later .done keeps its announced position.
         self.pending_function_calls: dict[str, dict[str, Any]] = {}
@@ -883,6 +884,8 @@ class _CodexResponseAssembler:
         item = _event_field(event, "item")
         item_type = _event_field(item, "type", "")
         self.active_message_phase = _message_phase(item) if item_type == "message" else None
+        if item_type == "message":
+            self.active_text_item_started = False
         if self.active_message_phase == "commentary":
             self.commentary_text_deltas = []
         # Record first-observed ordering for EVERY announced item; .done must reuse it or a mixed
@@ -914,6 +917,10 @@ class _CodexResponseAssembler:
         elif self.active_message_phase == "analysis":
             self._safe(self.on_reasoning_delta, "on_reasoning_delta", delta_text)
         else:
+            if not self.active_text_item_started:
+                if self.text_deltas:
+                    delta_text = f"\n\n{delta_text}"
+                self.active_text_item_started = True
             self.text_deltas.append(delta_text)
             if self.has_tool_calls:
                 return

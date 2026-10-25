@@ -19,8 +19,9 @@ exactly as without the flag.
 
 When no completed candidate fits but a running pass would, compaction waits for
 that pass instead of starting the same summary over: the pass's streamed
-progress feeds the waiting compaction's progress hook, so the host's idle
-watchdog sees a live summary exactly as it would inline, and the wait ends at
+progress and local prompt reading feed the waiting compaction's hooks, so the
+host's idle watchdog and deadline extension see a live summary exactly as they
+would inline, and the wait ends at
 the host's deadline (the compression aux timeout without one) or on
 cancellation. A pass that is not waited on loses the right to publish once
 compaction runs.
@@ -79,17 +80,23 @@ class PreparedSummary(_Window):
 
 class _PendingPass:
     """The one running pass allowed to publish: its planned window, a completion event, and the
-    progress hook of a compaction waiting on it."""
+    progress and prompt-reading hooks of a compaction waiting on it."""
 
     def __init__(self, window: _Window) -> None:
         self.window = window
         self.done = threading.Event()
         self.on_progress: Optional[Callable[[], None]] = None
+        self.on_reading: Optional[Callable[[float], None]] = None
 
     def touch(self) -> None:
         hook = self.on_progress
         if hook is not None:
             hook()
+
+    def read(self, seconds: float) -> None:
+        hook = self.on_reading
+        if hook is not None:
+            hook(seconds)
 
 
 def _text_of(content: Any) -> str:
@@ -228,26 +235,33 @@ class PreparedCompaction:
     def _await(self, pending: _PendingPass) -> Optional[PreparedSummary]:
         """Wait on the compacting thread for *pending* and return what it published; None at the host's
         deadline (the compression aux timeout without one) or when the host cancels. Meanwhile the pass's
-        streamed progress feeds this thread's aux progress hook, so the host's idle watchdog sees a live
-        summary exactly as it would inline."""
+        streamed progress and local prompt reading feed this thread's hooks, so the host's idle watchdog
+        and deadline extension see a live summary exactly as they would inline; the deadline is re-read
+        on every poll because prompt reading pushes it back."""
         from agent.auxiliary_client import (
             _aux_progress, _capture_aux_cancel_check, _captured_aux_cancel_requested, _current_aux_stream_deadline,
             _effective_aux_timeout,
         )
+        from agent.local_prompt_progress import current_prompt_reading_hook
 
         cancel_check = _capture_aux_cancel_check()
-        deadline = _current_aux_stream_deadline() or time.monotonic() + float(_effective_aux_timeout("compression", None))
+        fallback = time.monotonic() + float(_effective_aux_timeout("compression", None))
         pending.on_progress = getattr(_aux_progress, "hook", None)
+        pending.on_reading = current_prompt_reading_hook()
         logger.info(
             "prepared compaction: waiting for the running pass window=%d-%d",
             pending.window.compress_start, pending.window.compress_end,
         )
         try:
-            while not pending.done.wait(max(0.0, min(_WAIT_POLL_SECONDS, deadline - time.monotonic()))):
-                if time.monotonic() >= deadline or (cancel_check is not None and _captured_aux_cancel_requested(cancel_check)):
+            while not pending.done.wait(
+                max(0.0, min(_WAIT_POLL_SECONDS, (_current_aux_stream_deadline() or fallback) - time.monotonic())),
+            ):
+                if time.monotonic() >= (_current_aux_stream_deadline() or fallback) or (
+                    cancel_check is not None and _captured_aux_cancel_requested(cancel_check)
+                ):
                     return None
         finally:
-            pending.on_progress = None
+            pending.on_progress = pending.on_reading = None
         with self._lock:
             entry, self._entry = self._entry, None
         return entry if entry is not None and entry.fingerprint == pending.window.fingerprint else None
@@ -341,6 +355,7 @@ class PreparedCompaction:
         extend: Optional[PreparedSummary],
     ) -> None:
         from agent.auxiliary_client import aux_progress_hook
+        from agent.local_prompt_progress import prompt_reading_hook
         from agent.thread_scoped_output import thread_scoped_silence
 
         start, end, window_fingerprint = token.window.compress_start, token.window.compress_end, token.window.fingerprint
@@ -351,7 +366,7 @@ class PreparedCompaction:
                 "prepared compaction: pass started origin=%s window=%d-%d turns=%d extends=%s",
                 origin, start, end, len(turns), extend is not None,
             )
-            with thread_scoped_silence(), aux_progress_hook(token.touch):
+            with thread_scoped_silence(), aux_progress_hook(token.touch), prompt_reading_hook(token.read):
                 summary = worker._generate_summary(turns, focus_topic=focus)
             if summary:
                 entry = PreparedSummary(start, end, window_fingerprint, summary, worker._previous_summary)

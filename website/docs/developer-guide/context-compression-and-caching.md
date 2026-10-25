@@ -694,7 +694,8 @@ Phase 4 assembly.
 When no completed candidate fits but the pass still running would, compaction waits for that pass
 instead of writing the same summary again. Each streamed chunk of the pass touches the waiting
 compaction's progress hook, so the host's idle watchdog treats the wait like an inline summary
-stream. The wait ends at the host's deadline (the compression aux timeout when there is none) or on
+stream, and time a llama.cpp server spends reading the pass's prompt pushes the host's deadline back
+as it would inline. The wait ends at the host's deadline (the compression aux timeout when there is none) or on
 cancellation, and compaction then summarizes inline.
 
 Everything else runs inline exactly as without the flag: no candidate, a candidate or running pass

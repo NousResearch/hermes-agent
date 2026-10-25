@@ -27,6 +27,7 @@ from agent import prepared_compaction as pc
 from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor
 from agent.model_metadata import estimate_messages_tokens_rough
 from agent.prepared_compaction import PreparedCompaction
+from tests.waiting import wait_until
 
 
 class _StubCompressor(ContextCompressor):
@@ -36,6 +37,13 @@ class _StubCompressor(ContextCompressor):
         from hermes_constants import get_hermes_home
 
         worker = threading.current_thread().name == "compaction-prepare"
+        if worker and self.read_seconds:
+            from agent.local_prompt_progress import current_prompt_reading_hook
+
+            pending = self.prepared_compaction._pending
+            assert _wait_until(lambda: pending.on_reading is not None), "compaction never started waiting"
+            current_prompt_reading_hook()(self.read_seconds)  # a local server reading the prompt
+            self.after_read()
         if worker and self.gate is not None:
             assert self.gate.wait(5.0), "pass never released"
         if worker and self.stream_progress:
@@ -61,7 +69,7 @@ def _compressor(*, enabled: bool = True, session_id: str = "S1") -> _StubCompres
         cc.context_length = 40960
     cc.threshold_tokens = 20000
     cc.tail_token_budget = 2500
-    cc.calls, cc.gate, cc.stream_progress = [], None, False
+    cc.calls, cc.gate, cc.stream_progress, cc.read_seconds, cc.after_read = [], None, False, 0.0, None
     cc._session_id = session_id
     if enabled:
         cc.prepared_compaction = PreparedCompaction()
@@ -349,7 +357,9 @@ def test_compaction_waits_for_a_running_pass_and_forwards_its_progress():
     running = pc.maybe_prepare(_agent(cc), msgs, origin="test")
     assert running is not None
     host_progress = []
-    threading.Timer(0.3, cc.gate.set).start()
+    pending = cc.prepared_compaction._pending
+    # Release the pass only once the compaction is waiting on it.
+    threading.Thread(target=lambda: _wait_until(lambda: pending.on_progress is not None) and cc.gate.set()).start()
     with aux_progress_hook(lambda: host_progress.append(threading.current_thread().name)):
         compressed = cc.compress(msgs, current_tokens=cc.threshold_tokens + 1)
     running.join(5.0)
@@ -377,6 +387,28 @@ def test_wait_ends_at_the_host_deadline_then_summarises_inline_and_the_pass_cann
     cc.gate.set()
     running.join(5.0)
     assert cc.prepared_compaction._entry is None
+
+
+def test_prompt_reading_in_the_pass_extends_the_deadline_the_wait_honours():
+    """A local server still reading the pass's prompt pushes the host deadline back exactly as it would
+    inline, and the wait follows the live deadline instead of the one it started with."""
+    from agent.auxiliary_client import aux_stream_deadline
+    from agent.local_prompt_progress import prompt_reading_hook
+
+    cc = _compressor()
+    deadline = [time.monotonic() + 1.0]
+    initial = deadline[0]
+    # The pass finishes only after the deadline the wait started with has passed.
+    cc.read_seconds, cc.after_read = 5.0, lambda: wait_until(lambda: time.monotonic() > initial + 0.3)
+    msgs = _messages(30)
+    running = pc.maybe_prepare(_agent(cc), msgs, origin="test")
+    assert running is not None
+    with aux_stream_deadline(lambda: deadline[0]), prompt_reading_hook(lambda s: deadline.__setitem__(0, deadline[0] + s)):
+        compressed = cc.compress(msgs, current_tokens=cc.threshold_tokens + 1)
+    running.join(5.0)
+
+    assert [c["worker"] for c in cc.calls] == [True], "the extended wait outlived the initial deadline"
+    assert "Summary v1" in _summary_row(compressed)["content"]
 
 
 @pytest.mark.parametrize("boundary", ["reset", "end", "rebind"])

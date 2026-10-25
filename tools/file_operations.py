@@ -778,8 +778,11 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             "    lines = text.split('\\n')\n"
             "    total = len(lines)\n"
             "    sel = lines[offset - 1: offset - 1 + limit]\n"
+            "    content = '\\n'.join(sel)\n"
+            "    if sel and offset - 1 + len(sel) < total:\n"
+            "        content += '\\n'\n"
             "    out = {'total_lines': total, 'encoding': enc,\n"
-            "           'content': '\\n'.join(sel)}\n"
+            "           'content': content}\n"
             "    print('HERMES_UTF16:OK')\n"
             "    print(json.dumps(out, ensure_ascii=True))\n"
             "except Exception:\n"
@@ -816,7 +819,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return ReadResult(
             content=self._add_line_numbers(content, offset), total_lines=total_lines,
             file_size=file_size, truncated=truncated, hint=" ".join(hint_parts),
-            truncated_lines=True if truncated_lines else None)
+            truncated_lines=True if truncated_lines else None,
+            _trailing_newline=content.endswith('\n'))
 
     def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
         """Read a file with pagination, binary detection, and line numbers.
@@ -1173,7 +1177,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return ReadResult(
             content=self._add_line_numbers(read_output, offset), total_lines=total_lines,
             file_size=file_size, truncated=truncated, hint=hint,
-            truncated_lines=True if truncated_lines else None)
+            truncated_lines=True if truncated_lines else None,
+            _trailing_newline=read_output.endswith('\n'))
 
     # Confusable characters seen in real filenames, collapsed after NFC.
     _CONFUSABLES = (

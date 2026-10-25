@@ -316,9 +316,9 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
             callback = _get_approval_callback()
         except Exception:
             callback = None
-        if callback is None:
-            # No human channel (script, cron, background thread): fail closed —
-            # auto-approving here would recreate the persistence vector.
+        if callback is None or getattr(callback, "non_interactive", False):
+            # No human channel (script, cron, background thread, or a delegated child / review fork whose
+            # callback answers by itself): fail closed — auto-approving here would recreate the persistence vector.
             return blocked.format(why=_NO_HUMAN)
         # -q (every kanban worker), cron and unattended platforms can have a callback registered that nobody
         # answers: fail closed now, and never auto-approve, whatever approvals.<context>_mode says.

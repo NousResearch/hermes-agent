@@ -895,10 +895,12 @@ class TestBatchRefusesToEmptyNonEmptyStore:
         self, store, target, seed
     ):
         assert store.add(target, seed)["success"] is True
+        assert store.add(target, "second entry here")["success"] is True
         path = store._path_for(target)
         before = path.read_text(encoding="utf-8")
 
-        result = store.apply_batch(target, [{"action": "remove", "old_text": seed}])
+        result = store.apply_batch(target, [{"action": "remove", "old_text": seed},
+                                            {"action": "remove", "old_text": "second entry"}])
 
         assert result["success"] is False
         assert "current_entries" not in result  # batch abort never echoes the store (#97316)

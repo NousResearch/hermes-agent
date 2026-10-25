@@ -1132,23 +1132,22 @@ def _snapshot_review_usage(review_agent: Any) -> dict[str, Any]:
 
 
 def _record_review_usage_to_parent(
-    parent_agent: Any,
-    usage: dict[str, Any],
+    parent_agent: Any, usage: dict[str, Any], *, task: str = "background_review",
     session_id: Optional[str] = None,
 ) -> None:
-    """Record a fork's usage against the parent session (best-effort, never raises). The fork has
-    ``_session_db = None`` so conversation_loop's DB-gated accounting never sees its calls; route
-    them through the aux-accounting chokepoint, which writes only ``session_model_usage`` — never
-    the transcript or ``sessions`` row."""
+    """Record a fork's usage against the parent session (or ``session_id`` when given) under
+    ``task`` (best-effort, never raises). The fork has ``_session_db = None`` so
+    conversation_loop's DB-gated accounting never sees its calls; route them through the
+    aux-accounting chokepoint, which writes only ``session_model_usage`` — never the transcript
+    or ``sessions`` row."""
     try:
         session_db = getattr(parent_agent, "_session_db", None)
-        if session_id is None:
-            session_id = getattr(parent_agent, "session_id", None)
+        session_id = session_id or getattr(parent_agent, "session_id", None)
         counts = {key: int(usage.get(key) or 0) for key in _USAGE_COUNTERS}
         if session_db is None or not session_id or not any(counts.values()):
             return  # no DB, or the fork made no successful API calls (e.g. failed at spawn)
         session_db.record_auxiliary_usage(
-            session_id, task="background_review", model=usage.get("model"),
+            session_id, task=task, model=usage.get("model"),
             billing_provider=usage.get("provider"), billing_base_url=usage.get("base_url"),
             estimated_cost_usd=usage.get("estimated_cost_usd"),
             api_call_count=counts.pop("api_calls"), **counts,
@@ -1580,6 +1579,20 @@ def _release_fork_clients(review_agent: Any) -> None:
         review_agent.release_clients()
 
 
+def release_cache_parity_fork(
+    parent_agent: Any, fork: Any, *, task: str, session_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Teardown for a one-shot :func:`build_cache_parity_fork` caller (``/btw``, plugin side
+    questions): attribute the fork's usage under ``task`` to ``session_id`` (default: the parent's
+    current session), then release only its clients (never ``close()``, which tears down the
+    shared session's terminal sandbox, browser and file state). Never raises; returns the usage
+    snapshot."""
+    usage = _snapshot_review_usage(fork)
+    _record_review_usage_to_parent(parent_agent, usage, task=task, session_id=session_id)
+    _release_fork_clients(fork)
+    return usage
+
+
 def _run_review_fork(
     agent: Any, messages_snapshot: list[dict], prompt: str, task_cfg: Optional[dict[str, Any]],
     review_run: Optional[_BackgroundReviewRun], st: _ReviewForkState, review_memory: bool = False,
@@ -1683,7 +1696,7 @@ def _run_review_fork(
         if st.review_agent is not None:
             st.review_usage.update(_snapshot_review_usage(st.review_agent))
             _record_review_usage_to_parent(
-                agent, st.review_usage, review_session_id
+                agent, st.review_usage, session_id=review_session_id
             )
         # Publish completion as soon as the provider-capable phase has returned or startup
         # cancellation has fenced it out (unregister + finish are identity-scoped and idempotent).

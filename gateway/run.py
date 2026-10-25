@@ -1559,11 +1559,11 @@ def _restart_notification_pending() -> bool:
 
 
 def _planned_restart_notification_path() -> Path:
-    return _hermes_home / ".restart_pending.json"
+    from gateway.restart_notice import planned_restart_marker_path
+    return planned_restart_marker_path(_hermes_home)
 
 
 def _planned_restart_notification_pending() -> bool:
-    """Return True when a non-chat planned restart should notify home channels."""
     return _planned_restart_notification_path().exists()
 
 

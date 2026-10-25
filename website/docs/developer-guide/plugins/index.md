@@ -407,7 +407,9 @@ def register(ctx):
 
 Known capability ids: `tools.override`, `llm.provider_override`,
 `llm.model_override`, `llm.agent_id_override`, `llm.profile_override`,
-`llm.task_override` (see `hermes_cli/plugin_capabilities.py` for the
+`llm.task_override`, `llm.side_question` (ask the session's own agent after
+a turn, see [Plugin LLM Access](../plugin-llm-access.md#asking-the-sessions-own-agent-ctxside_question)),
+`gateway.platform_actions` (see `hermes_cli/plugin_capabilities.py` for the
 canonical registry). Unknown ids are ignored. The older per-capability
 config keys (`plugins.entries.<id>.allow_tool_override`, …) still work but
 are deprecated — declare capabilities instead so users get a single,
@@ -1366,7 +1368,9 @@ legacy `pip_dependencies` and `python_dependencies` lists from `plugin.yaml` or
 Consent, workspace membership, and currency checks use the same declaration.
 PM prepares their dependencies together with core requirements before enabling
 the plugin. The generated workspace does not rewrite the plugin directory or
-the shipped lockfile. Dependency conflicts refuse admission and preserve the
+the shipped lockfile, and it is solved only for the installing interpreter's
+platform: a dependency that ships no wheels for another platform does not
+block the plugin. Dependency conflicts refuse admission and preserve the
 previous selection. PM does not automatically disable other plugins.
 
 Dependencies installed manually with pip are not durable PM declarations.

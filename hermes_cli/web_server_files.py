@@ -4,6 +4,7 @@
 import logging
 import mimetypes
 import os
+import re
 import stat
 import urllib.request
 from contextlib import contextmanager
@@ -35,6 +36,44 @@ def _resolve_fs_candidate(raw: str, *, cwd: str | None = None) -> Path:
     return candidate.resolve(strict=False)
 
 
+def _decoded_candidate(raw: str, *, cwd: str | None = None) -> Path | None:
+    """``raw`` percent-decoded once and resolved, or None when decoding adds a dot-segment.
+
+    The decode rescues a name that arrived encoded twice (issue #103425). A ``.`` or ``..`` it
+    produces (``..%2f``, ``%2e%2e/``) would move the lookup out of the folder the caller named."""
+    decoded = urllib.parse.unquote(raw)
+    separators = r"[\\/]" if os.name == "nt" else "/"
+
+    def dot_segments(path: str) -> int:
+        return sum(segment in (".", "..") for segment in re.split(separators, path))
+
+    if dot_segments(decoded) > dot_segments(raw):
+        return None
+    return _resolve_fs_candidate(decoded, cwd=cwd)
+
+
+def _file_url_path(url: str) -> str:
+    """The native path a ``file:`` URL names, percent-decoded once.
+
+    A URL that encodes a separator is refused (ValueError) as ``apps/shared/src/file-url.ts``
+    refuses it in the renderer and Electron: ``%2f``, and ``%5c`` on a Windows gateway or in a
+    Windows URL (a UNC host or a drive letter). Decoding it would add a segment, so ``..%2f`` would
+    name a file outside the folder the URL spells.
+    """
+    parsed = urllib.parse.urlparse(url)
+    uri_path = parsed.path
+    host = "" if parsed.netloc.lower() == "localhost" else parsed.netloc
+    drive = re.match(r"/[a-z]:", urllib.parse.unquote(uri_path), re.IGNORECASE)
+    windows = os.name == "nt" or bool(host) or drive is not None
+    if re.search(r"%2f", uri_path, re.IGNORECASE) or (windows and re.search(r"%5c", uri_path, re.IGNORECASE)):
+        raise ValueError("file: URL encodes a path separator")
+    if host:
+        if os.name != "nt":
+            raise ValueError("file: URL names another host")
+        uri_path = f"//{host}{uri_path}"
+    return urllib.request.url2pathname(uri_path)
+
+
 def _fs_path(raw_path: str, *, cwd: str | None = None, decode_fallback: bool = True) -> Path:
     raw = str(raw_path or "").strip()
     if not raw:
@@ -42,14 +81,9 @@ def _fs_path(raw_path: str, *, cwd: str | None = None, decode_fallback: bool = T
     if "\0" in raw:
         raise HTTPException(status_code=400, detail="Invalid path")
     try:
-        if raw.lower().startswith("file:"):
-            parsed = urllib.parse.urlparse(raw)
-            uri_path = parsed.path
-            if parsed.netloc and parsed.netloc.lower() != "localhost":
-                if os.name != "nt":
-                    raise ValueError
-                uri_path = f"//{parsed.netloc}{uri_path}"
-            raw = urllib.request.url2pathname(uri_path)
+        from_url = raw.lower().startswith("file:")
+        if from_url:
+            raw = _file_url_path(raw)
         elif os.name == "nt":
             # MEDIA links can reuse Git Bash paths; native Path would read /c/ as C:\c\.
             from tools.environments.local import _msys_to_windows_path
@@ -60,10 +94,11 @@ def _fs_path(raw_path: str, *, cwd: str | None = None, decode_fallback: bool = T
         # decoding, so a non-ASCII name can arrive as a literal "%E5%8D%8A..."
         # string that stats as missing (issue #103425). The verbatim path wins
         # whenever it exists, so filenames that genuinely contain "%XX" keep
-        # resolving as-is; the unquoted form only rescues the lookup.
-        if decode_fallback and "%" in raw and not candidate.exists():
-            decoded = _resolve_fs_candidate(urllib.parse.unquote(raw), cwd=cwd)
-            if decoded.exists():
+        # resolving as-is; the unquoted form only rescues the lookup. A file: URL
+        # was decoded once above, and a second decode would read ..%252f as ../.
+        if decode_fallback and not from_url and "%" in raw and not candidate.exists():
+            decoded = _decoded_candidate(raw, cwd=cwd)
+            if decoded is not None and decoded.exists():
                 candidate = decoded
         return candidate
     except (OSError, RuntimeError, ValueError):
@@ -300,10 +335,10 @@ def _managed_files_policy(request: Optional[Request], *, create_root: bool = Tru
 
 
 def _resolve_managed_path(
-    raw_path: str | None, request: Request, *, for_write: bool = False,
+    raw_path: str | None, request: Request, *, for_write: bool = False, create_root: bool = True,
     for_agent_read: bool = False,
 ) -> tuple[ManagedFilesPolicy, Path, str]:
-    policy = _managed_files_policy(request)
+    policy = _managed_files_policy(request, create_root=create_root)
     text = _path_text(raw_path)
     root = policy.locked_root
 

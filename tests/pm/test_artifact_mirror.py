@@ -72,3 +72,12 @@ def test_npm_artifacts_follow_the_users_npm_registry(tmp_path, monkeypatch):
     assert pinned_source(lock_url, tmp_path / "npm.tgz", digest).url == "https://env.corp.example/npm/-/npm-10.9.2.tgz"
     other = "https://github.com/x/y/releases/download/v1/y.tgz"
     assert pinned_source(other, tmp_path / "y.tgz", digest).url == other
+    # A closed network's registry is plain http (#123132), and the downloader refuses
+    # plain http unless the source says the user configured that origin.
+    monkeypatch.delenv("NPM_CONFIG_REGISTRY")
+    (tmp_path / ".npmrc").write_text("registry = http://npm.corp.example/npm/\n", encoding="utf-8")
+    plain = pinned_source(lock_url, tmp_path / "npm.tgz", digest)
+    assert plain.url == "http://npm.corp.example/npm/npm/-/npm-10.9.2.tgz"
+    assert plain.allow_plain_http is True
+    assert plain.fallbacks and plain.fallbacks[0].startswith("https://")
+    assert pinned_source(other, tmp_path / "y.tgz", digest).allow_plain_http is False

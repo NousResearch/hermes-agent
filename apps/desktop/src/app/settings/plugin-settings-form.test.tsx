@@ -84,6 +84,20 @@ describe('PluginSettingsForm (#46600, #87934)', () => {
     expect(() => collectChanges(FIELDS, { ...initialDraft(FIELDS), retries: 'five' })).toThrow(/number/)
   })
 
+  it('gives decimal number fields a 0.1 spinner step so ratios can be adjusted', () => {
+    const fields: PluginSettingField[] = [
+      { description: '', key: 'threshold', label: 'Threshold', required: false, type: 'number', value: 0.5 },
+      { description: '', key: 'retries', label: 'Retries', required: false, type: 'number', value: 3 }
+    ]
+
+    render(
+      <PluginSettingsForm disabled={false} fields={fields} idPrefix="st" onSave={vi.fn(async () => true)} title="Demo" />
+    )
+
+    expect((screen.getByLabelText(/^Threshold/) as HTMLInputElement).step).toBe('0.1')
+    expect((screen.getByLabelText(/^Retries/) as HTMLInputElement).step).toBe('1')
+  })
+
   it('labels raw keys like native rows and joins helper sentences with punctuation', () => {
     const fields: PluginSettingField[] = [
       {

@@ -2109,6 +2109,45 @@ class TestNousWelcomeTier:
         assert "welcome_route" not in result.error_context
 
 
+class Test401FallbackLegRetry:
+    """Regression for #144343: a transient 401 on a fallback (non-primary) leg was
+    globally classified non-retryable, so once the fallback chain was exhausted the
+    turn died and queued messages were lost — while direct calls to the same vendor
+    returned 200 the same minute (23 production hits, 18% fallback-trigger rate).
+    On a fallback leg a vendor-side auth flap deserves a bounded same-leg retry
+    (rotation/fallback hints kept); the primary leg keeps the fast abort into the
+    fallback/rotate chain, so a genuinely dead key still surfaces immediately.
+    """
+
+    def test_fallback_leg_401_is_retryable_with_rotation_hints_kept(self):
+        """P1: on a non-primary leg a bare 401 classifies retryable (auth), with the
+        rotate/fallback hints bit-identical and no compression."""
+        e = MockAPIError("Unauthorized", status_code=401)
+        result = classify_api_error(e, provider="custom", is_fallback_leg=True)
+        assert result.reason == FailoverReason.auth
+        assert result.retryable is True
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+        assert result.should_compress is False
+        # Scope guard: the leg flag moves ONLY the 401 verdict — a fallback-leg 403
+        # keeps the primary-leg abort (fast fail into the fallback chain).
+        assert classify_api_error(
+            MockAPIError("Forbidden", status_code=403), provider="custom", is_fallback_leg=True
+        ).retryable is False
+
+    def test_primary_leg_401_keeps_non_retryable(self):
+        """P2: default and explicit is_fallback_leg=False keep the base behaviour
+        bit-for-bit (retryable=False, rotation + fallback hints intact)."""
+        e = MockAPIError("Unauthorized", status_code=401)
+        for kwargs in ({}, {"is_fallback_leg": False}):
+            result = classify_api_error(e, provider="custom", **kwargs)
+            assert result.reason == FailoverReason.auth
+            assert result.retryable is False
+            assert result.should_rotate_credential is True
+            assert result.should_fallback is True
+            assert result.should_compress is False
+
+
 class TestAuthErrorNamesOffRouteEndpoint:
     """#113719: an auth refusal from a route that is not the provider's own endpoint names the host."""
 

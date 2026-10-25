@@ -719,6 +719,9 @@ class _Ctx:
     num_messages: int
     base_url: str = ""  # the route the call went to; "" when the caller did not say
     anonymous: bool = False
+    # The failed call went out on a fallback (non-primary) leg — caller-attested
+    # (the turn loop reads ``_provider_fallback_active``); the classifier never guesses it.
+    is_fallback_leg: bool = False
 
     def __post_init__(self) -> None:
         self.error_type = type(self.error).__name__
@@ -1014,13 +1017,16 @@ def classify_api_error(
     approx_tokens: int = 0, context_length: int = 200000, num_messages: int = 0,
     base_url: str = "",
     api_key: Any = None,
+    is_fallback_leg: bool = False,
 ) -> ClassifiedError:
     """Classify an API error into a structured recovery recommendation (see ``_STAGES``).
 
     ``base_url`` (optional) is the route the call went to; the Nous welcome tier keys its
     dark-tier 403 on it because that refusal carries no distinguishing message.
     ``api_key`` identifies an anonymous request; a host or fairshare reason alone does not.
-    The credential is never included in the returned context."""
+    ``is_fallback_leg`` attests the call went out on a non-primary (fallback) leg — only a
+    401's verdict reads it today (#144343). The credential is never included in the returned
+    context."""
     from hermes_cli.anon_auth import is_anonymous_request
     status_code = _extract_status_code(error)
     # Copilot/GitHub Models RateLimitError may not set .status_code; force 429.
@@ -1031,6 +1037,7 @@ def classify_api_error(
         error, status_code, body, _build_error_msg(error, body), provider, model,
         approx_tokens, context_length, num_messages, str(base_url or ""),
         anonymous=is_anonymous_request(provider, api_key),
+        is_fallback_leg=is_fallback_leg,
     )
     verdict = next((v for v in (stage(c) for stage in _STAGES) if v is not None), _V_UNKNOWN)
     message = _extract_message(error, body)
@@ -1291,12 +1298,25 @@ def _classify_image_tool_422(c: _Ctx) -> Verdict:
     return _first_match(c.msg, _IMAGE_TOOL_RULES) or _V_FORMAT_ERROR
 
 
-# 401 not retryable on its own: rotation/refresh run before the retryability
-# check, then the client-error abort path (fallback first) is correct. 408 is
+def _status_401(c: _Ctx) -> Verdict:
+    """Leg-differentiated 401 verdict (#144343). Primary leg: not retryable on its
+    own — rotation/refresh run before the retryability check, then the client-error
+    abort path (fallback first) is correct, so a dead key fails fast into the chain.
+    Fallback (non-primary) leg: the same 401 is usually the vendor's auth edge
+    flapping (reporter's logs: 23 hits at an 18% fallback rate, direct calls 200 the
+    same minute), and with the chain exhausted the abort drops the whole turn and its
+    queued messages — so the verdict flips to a bounded same-leg retry inside the
+    existing backoff budget, rotation/fallback hints untouched."""
+    if c.is_fallback_leg:
+        return _v(_R.auth, retryable=True, **_ROTATE_FALLBACK)
+    return _V_AUTH_ROTATE
+
+
+# 401 is leg-differentiated (see ``_status_401``). 408 is
 # retry-safe (RFC 9110 §15.5.9; proxies emit it when generation outruns the
 # read window). Unlisted 4xx → format_error, 5xx → server_error.
 _STATUS_HANDLERS: dict[int, Callable[[_Ctx], Verdict]] = {
-    400: _classify_400, 401: lambda c: _V_AUTH_ROTATE,
+    400: _classify_400, 401: _status_401,
     402: lambda c: _classify_402(c.msg, dict, c.code if _is_nous_route(c) else "", c.body),
     403: _status_403, 404: _status_404, 408: lambda c: _V_TIMEOUT, 413: lambda c: _V_PAYLOAD_TOO_LARGE,
     422: lambda c: _classify_image_tool_422(c),

@@ -572,3 +572,72 @@ def test_a_failed_retry_never_erases_the_killed_updates_claim(repo: Path) -> Non
 
     assert release_dead_index_lock(repo) is True
     assert not lock.exists()
+
+
+# ---- a killed fetch's ref lock (Windows crash cell mid_fetch: "reference already exists") ----
+
+# Git's own hook: it runs while the fetch holds its ref locks ("prepared") and waits for a release
+# file, so the kill lands inside the ref transaction instead of wherever a timer happens to be.
+_HOLD_IN_REF_TRANSACTION = """#!/bin/sh
+input=$(cat)
+case "$1:$input" in
+  prepared:*refs/remotes/origin/main*)
+    dir=$(git rev-parse --git-dir)  # once: a git spawned in the loop would be a live git here
+    : > "$dir/held"
+    while [ ! -e "$dir/release" ]; do sleep 0.05; done ;;
+esac
+"""
+
+
+_FETCH = ["git", "-c", "maintenance.auto=false", "-c", "gc.auto=0", "fetch", "origin",
+          "+refs/heads/main:refs/remotes/origin/main"]
+
+
+def _fetch(clone: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(_FETCH, cwd=clone, capture_output=True, text=True, encoding="utf-8", check=False)
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="ownership proof via /proc (Linux)")
+def test_a_killed_fetchs_ref_lock_goes_and_the_next_fetch_lands(repo: Path, tmp_path: Path) -> None:
+    """A fetch killed inside its ref transaction strands ``refs/remotes/origin/main.lock`` and git
+    then refuses every later fetch ("reference already exists"): the next update must drop that
+    lock once its killed run's git is gone, and never while the fetch still runs."""
+    from hermes_cli.gitlock import release_dead_ref_locks
+
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "branch", "-M", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "clone", "-q", f"file://{repo}", str(clone)], check=True)
+    subprocess.run(["git", "-c", "maintenance.auto=false", "commit", "-q", "--allow-empty", "-m", "next"],
+                   cwd=repo, check=True)
+    git_dir = clone / ".git"
+    hook = git_dir / "hooks" / "reference-transaction"
+    hook.write_text(_HOLD_IN_REF_TRANSACTION, encoding="utf-8")
+    hook.chmod(0o755)
+    lock = git_dir / "refs" / "remotes" / "origin" / "main.lock"
+    _killed_update_receipt()
+    err = tmp_path / "fetch.err"  # a file, not a pipe: the hook inherits it and outlives the killed git
+    with err.open("w", encoding="utf-8") as sink:
+        proc = subprocess.Popen(_FETCH, cwd=clone, stdout=subprocess.DEVNULL, stderr=sink)
+    try:
+        deadline = time.monotonic() + 30
+        while not (git_dir / "held").exists():
+            assert proc.poll() is None and time.monotonic() < deadline, \
+                f"the fetch never reached its ref transaction: {err.read_text(encoding='utf-8')}"
+            time.sleep(0.05)
+        assert lock.exists(), "premise: the held fetch holds its ref lock"
+        assert release_dead_ref_locks(clone) == [] and lock.exists(), "the reclaim took a live fetch's lock"
+    finally:
+        proc.kill()
+        proc.wait()
+        (git_dir / "release").touch()  # the hook (not a git) exits; the dead fetch's lock stays
+
+    hook.unlink()
+
+    stuck = _fetch(clone)  # git 2.51+: "reference already exists"; older git: "...main.lock': File exists"
+    assert stuck.returncode != 0 and "origin/main" in stuck.stderr, f"premise: {stuck.stderr}"
+    assert release_dead_ref_locks(clone) == [str(lock)]
+    landed = _fetch(clone)
+    assert landed.returncode == 0, landed.stderr
+    tips = [subprocess.run(["git", "rev-parse", ref], cwd=cwd, capture_output=True, text=True, check=True).stdout
+            for cwd, ref in ((clone, "refs/remotes/origin/main"), (repo, "HEAD"))]
+    assert tips[0] == tips[1]

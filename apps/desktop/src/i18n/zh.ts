@@ -4301,6 +4301,16 @@ export const zhOverrides = {
           body: '你的方案包含的用量已用完，将在重置后恢复。在 /topup 中添加额度即可继续。'
         }
       },
+      errorAuthKinds: {
+        api_key: {
+          title: provider => `${provider} 拒绝了你的 API 密钥`,
+          body: provider => `为 ${provider} 保存的密钥无效或已被撤销。请更新密钥后重试。`
+        },
+        oauth: {
+          title: provider => `你的 ${provider} 登录已过期`
+        }
+      },
+      errorDetails: '详情',
       errorRetry: '重试',
       errorSwitchToModel: (model, note) => (note ? `切换到 ${model}（${note}）` : `切换到 ${model}`),
       errorSwitchModelFailed: '无法切换模型',
@@ -4314,6 +4324,7 @@ export const zhOverrides = {
       errorRetryScheduledCancel: '取消',
       errorStartNewSession: '开始新会话',
       errorSwitchProvider: '切换服务商',
+      errorUpdateApiKey: '更新 API 密钥',
       errorSignInAgain: provider => `重新登录 ${provider}`,
       errorOauthExpired: provider => `您的 ${provider} 登录已过期或被撤销。请重新登录以继续对话。`,
       errorOpenLogs: '打开日志',

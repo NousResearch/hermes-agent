@@ -125,6 +125,16 @@ export const zhHantAssistant = {
         runtime: '本機執行環境錯誤',
         streaming: '串流連線錯誤'
       },
+      errorAuthKinds: {
+        api_key: {
+          title: provider => `${provider} 拒絕了你的 API 金鑰`,
+          body: provider => `為 ${provider} 儲存的金鑰無效或已被撤銷。請更新金鑰後重試。`
+        },
+        oauth: {
+          title: provider => `你的 ${provider} 登入已過期`
+        }
+      },
+      errorDetails: '詳細資訊',
       errorRetry: '重試',
       errorSwitchToModel: (model, note) => (note ? `切換到 ${model}（${note}）` : `切換到 ${model}`),
       errorSwitchModelFailed: '無法切換模型',
@@ -138,6 +148,7 @@ export const zhHantAssistant = {
       errorRetryScheduledCancel: '取消',
       errorStartNewSession: '開始新工作階段',
       errorSwitchProvider: '切換服務商',
+      errorUpdateApiKey: '更新 API 金鑰',
       errorSignInAgain: provider => `重新登入 ${provider}`,
       errorOauthExpired: provider => `您的 ${provider} 登入已過期或被撤銷。請重新登入以繼續對話。`,
       errorOpenLogs: '開啟日誌',

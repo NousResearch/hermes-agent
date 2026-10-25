@@ -12,9 +12,11 @@ from gateway.config import Platform
 from gateway.run import _prepare_gateway_status_message
 from gateway.warning_notifications import DiagnosticText
 
+_PLAIN_KEY = "display.status.turn.fallback_rate_limited"
+_NOISY_KEY = "display.status.turn.retry_wait"
 _CATALOGS = {
-    "en": {"probe": {"noisy": "⚠ Auxiliary compression failed: {detail}", "plain": "Working on {what}"}},
-    "de": {"probe": {"noisy": "⚠ Hilfskomprimierung fehlgeschlagen: {detail}", "plain": "Arbeite an {what}"}},
+    "en": {_PLAIN_KEY: "Custom English fallback"},
+    "de": {_PLAIN_KEY: "Wechsel zum Ersatzanbieter", _NOISY_KEY: "Neuer Versuch: {wait}s ({attempt}/{max})"},
 }
 
 
@@ -35,10 +37,11 @@ def german_home(tmp_path, monkeypatch):
 
 
 def test_status_line_is_filtered_in_english_and_delivered_localized(german_home):
-    plain = i18n.tl("probe.plain", what="x")
-    assert plain == "Working on x"  # matchers, logs and transcripts see English
-    assert _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", plain) == "Arbeite an x"
+    plain = i18n.tl(_PLAIN_KEY)
+    assert plain == "⚠️ Rate limited — switching to fallback provider..."
+    assert _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", plain) == "Wechsel zum Ersatzanbieter"
     # A diagnostic wrapper keeps the key, so the sink still localizes it.
-    assert _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", DiagnosticText(plain)) == "Arbeite an x"
+    assert _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", DiagnosticText(plain)) == "Wechsel zum Ersatzanbieter"
     # The noise filter matches the English value; the German text alone would slip through it.
-    assert _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", i18n.tl("probe.noisy", detail="y")) is None
+    noisy = i18n.tl(_NOISY_KEY, wait="5.0", attempt=1, max=3)
+    assert _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", noisy) is None

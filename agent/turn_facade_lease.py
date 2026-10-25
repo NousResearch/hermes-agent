@@ -15,6 +15,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from agent.sleep_clock import SleepWatch, awake_seconds
 from hermes_state_pidns import holder_namespace_token
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
@@ -44,12 +45,21 @@ class DurableTurnLease:
         self.db = db
         self.session_id = session_id  # id at admission; release always targets this row
         self.holder = holder
-        # Wall clock, same as the row's expires_at, never later than it: the row's committed expiry at
-        # admission, then a timestamp taken BEFORE each successful renewal (the store stamps expiry
-        # before its lock wait). Only a successful renewal moves it.
-        self._authority_deadline = time.time() + LEASE_TTL_SECONDS if expires_at is None else expires_at
+        # The authority is measured on the awake clock (``agent/sleep_clock.awake_seconds``): a
+        # host suspend must not consume the TTL, or the first tick after wake finds the patience
+        # spent and hard-interrupts a turn nobody took the lease from (#144503). The row's
+        # committed expires_at stays on the wall clock for cross-process stale-claim; admission
+        # converts its remaining life once, never overstating it (the store stamps expiry before
+        # its lock wait). Only a successful renewal moves the deadline from there.
+        if expires_at is None:
+            self._authority_deadline = awake_seconds() + LEASE_TTL_SECONDS
+        else:
+            self._authority_deadline = awake_seconds() + max(0.0, expires_at - time.time())
         self.stop = threading.Event()
         self.refresh_interval = float(getattr(agent, "_session_turn_lease_refresh_interval", 60.0))
+        # Wall-clock gap detector over the ticks: reports how long this process was stopped
+        # between two ticks, so a suspend shows up in the log instead of passing silently.
+        self._sleep_watch = SleepWatch(self.refresh_interval)
         self._lock = threading.Lock()
         self.turn_active = False
         self.interrupt_message: Optional[str] = None
@@ -191,7 +201,10 @@ class DurableTurnLease:
                 _set_interrupt(False, agent._execution_thread_id)
 
     def _stop_on_exhausted_authority(self) -> bool:
-        """State.db stayed locked until no renewal can land before the row expires: stop now."""
+        """No renewal can land before the authority runs out (state.db stayed locked): stop now.
+
+        With the authority on the awake clock, a host suspend cannot spend it, so reaching here
+        still means real lock contention, not the wake-up path (#144503)."""
         logger.warning("Session turn lease refresh stayed locked through its lifetime: %s", self._current_session_id())
         self._interrupt_turn("Session turn lease could not be refreshed; stopping to protect the transcript.")
         return False
@@ -212,7 +225,13 @@ class DurableTurnLease:
         a loss."""
         if self.stop.is_set():
             return False
-        started = time.time()
+        suspended_s = self._sleep_watch.slept()
+        if suspended_s:
+            logger.info(
+                "Host suspended for ~%.0fs mid-turn; the lease clock excludes sleep: %s",
+                suspended_s, self._current_session_id(),
+            )
+        started = awake_seconds()
         # The whole renewal must finish before the authority runs out: a renewal still waiting on the
         # write lock past expiry keeps this turn running while a successor reclaims the row. The
         # margin covers one BEGIN IMMEDIATE that blocks in SQLite's busy handler past the patience.
@@ -240,7 +259,7 @@ class DurableTurnLease:
             if is_sqlite_lock_error(exc):
                 # The scheduler will not try again until one interval from now. If that attempt
                 # could not finish before the row expiry, stop before a successor can claim it.
-                if time.time() + self.refresh_interval + _REFRESH_EXPIRY_MARGIN_S >= self._authority_deadline:
+                if awake_seconds() + self.refresh_interval + _REFRESH_EXPIRY_MARGIN_S >= self._authority_deadline:
                     return self._stop_on_exhausted_authority()
                 logger.warning(
                     "Session turn lease refresh hit a SQLite lock; will retry: %s",

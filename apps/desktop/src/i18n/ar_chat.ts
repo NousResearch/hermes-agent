@@ -460,6 +460,7 @@ export const arChat = {
     savingImage: 'جار حفظ الصورة',
     zoomIn: 'تكبير',
     zoomOut: 'تصغير',
+    warmView: 'Warm view',
     resetZoom: 'إعادة تعيين التكبير',
     imagePreviewFailed: 'فشلت معاينة الصورة',
     imageAttach: 'إرفاق الصورة',

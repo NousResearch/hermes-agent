@@ -8,8 +8,15 @@ import { useImageDownload } from '@/hooks/use-image-download'
 import { useMediaImage } from '@/hooks/use-media-image'
 import { useI18n } from '@/i18n'
 import { generatedImageDimensionsFromResult, generatedImageFromResult } from '@/lib/generated-images'
-import { mediaExternalUrl, mediaName } from '@/lib/media'
+import {
+  downloadGatewayMediaFile,
+  isFileMediaPath,
+  isRemoteGateway,
+  mediaExternalUrl,
+  mediaName
+} from '@/lib/media'
 import { cn } from '@/lib/utils'
+import { notifyError } from '@/store/notifications'
 
 // A hint is only a placeholder shape, not a promise about the delivered image.
 const ASPECT_HINTS: Record<string, number> = {
@@ -57,7 +64,15 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
         href="#"
         onClick={event => {
           event.preventDefault()
-          void window.hermesDesktop?.openExternal(mediaExternalUrl(image))
+
+          // A gateway file saves through the host bridge, like every other
+          // remote media open: its URL form carries the connection token,
+          // which must never land in a browser's history.
+          if (isRemoteGateway() && isFileMediaPath(image)) {
+            void downloadGatewayMediaFile(image).catch(error => notifyError(error, copy.imageDownloadFailed))
+          } else {
+            void window.hermesDesktop?.openExternal(mediaExternalUrl(image))
+          }
         }}
       >
         {copy.openImage}: {mediaName(image)}

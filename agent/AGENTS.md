@@ -142,6 +142,13 @@ providers intentionally do not run during cron.
   `agent/review_admission.py` — live-turn registry, follow-up fence, replay ceiling, and the
   body-free reason slugs + hashed owner tags every review log line carries; a new gate or slug
   goes there, never inline at a call site.
+  Cache-parity forks come from `background_review.py::build_cache_parity_fork` — the review,
+  `/btw` and a plugin `ctx.side_question` (`agent/side_question_request.py`) — which stamps
+  `_foreground_exempt_fork`: never a foreground turn (no registry entry, idle-queue count or
+  durable turn lease), no transcript; only the review carries the aggregate input budget. A
+  side question may answer beside the automatic review of its turn and is bounded by
+  `agent/side_question_lease.py` (one lease per live agent, 60 s, text-only), not by admission;
+  its token is leased in `turn_finalizer.py::_apply_output_hooks`, before the review hand-off.
 - `agent/secret_scope.py::get_secret` fails closed (`UnscopedSecretError`) only after
   `set_multiplex_active(True)`; the gateway, cron, migrate and `serve` set it. A new multi-home host
   must too, or every guard is silently off. Isolation is BETWEEN profiles; children inherit via

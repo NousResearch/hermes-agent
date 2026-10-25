@@ -279,7 +279,7 @@ hermes setup [model|tts|terminal|gateway|tools|agent] [--non-interactive] [--res
 | 选项 | 说明 |
 |--------|-------------|
 | `--quick` | 在已配置用户运行时：仅提示缺失或未设置的项目，跳过已配置的项目。 |
-| `--non-interactive` | 使用默认值/环境变量，不显示提示。 |
+| `--non-interactive` | 打印不使用向导配置 Hermes 的指引（`hermes config set …` 或提供商环境变量）后退出，不做任何修改。未连接 TTY 时也会自动如此。 |
 | `--reset` | 在设置前将配置重置为默认值。 |
 | `--reconfigure` | 向后兼容别名——在已有安装上裸运行 `hermes setup` 现在默认执行此操作。 |
 | `--portal` | 一键 Nous Portal 设置：通过 OAuth 登录，将 Nous 设为推理 provider，并选择加入 [Tool Gateway](../user-guide/features/tool-gateway.md)。跳过向导其余部分。 |

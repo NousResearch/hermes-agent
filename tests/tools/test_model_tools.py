@@ -523,6 +523,17 @@ class TestBridgeDispatch:
         assert json.loads(out) == {"ok": True}
         assert disp.call_args.args[0] == "mcp_x" and disp.call_args.args[1] == {"a": 1}
 
+    def test_tool_call_bridge_forwards_parent_agent_to_underlying_dispatch(self):
+        import tools.tool_search as ts
+        agent = object()
+        with patch("model_tools.get_tool_definitions", return_value=[]), \
+             patch.object(ts, "resolve_underlying_call", return_value=("mcp_x", {"a": 1}, None)), \
+             patch.object(ts, "scoped_deferrable_names", return_value=frozenset({"mcp_x"})), \
+             patch.object(ts, "validate_deferred_call_args", return_value=None), \
+             patch("model_tools.registry.dispatch", return_value='{"ok": true}') as disp:
+            handle_function_call("tool_call", {"name": "mcp_x"}, task_id="t", parent_agent=agent)
+        assert disp.call_args.kwargs["parent_agent"] is agent
+
 
 # ==================================================================
 

@@ -510,3 +510,45 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+@pytest.fixture
+def parent_agent_probe():
+    """A real registry tool whose handler records the ``parent_agent`` kwarg it receives."""
+    from tools.registry import registry
+
+    seen = []
+
+    def handler(args, parent_agent=None, **kw):
+        seen.append(parent_agent)
+        return json.dumps({"ok": True})
+
+    registry.register(
+        name="parent_agent_probe", toolset="parent-agent-probe",
+        schema={"name": "parent_agent_probe", "description": "Records parent_agent.",
+                "parameters": {"type": "object", "properties": {}}},
+        handler=handler,
+    )
+    try:
+        yield seen
+    finally:
+        registry.deregister("parent_agent_probe")
+
+
+def test_sequential_executor_passes_parent_agent_to_registry_handler(parent_agent_probe):
+    agent = _make_agent("parent_agent_probe")
+    msg = SimpleNamespace(content="", tool_calls=[_mock_tool_call("parent_agent_probe", "{}", "c-seq")])
+
+    agent._execute_tool_calls_sequential(msg, [], "task-1")
+
+    assert parent_agent_probe == [agent]
+
+
+def test_concurrent_executor_passes_parent_agent_to_registry_handler(parent_agent_probe):
+    agent = _make_agent("parent_agent_probe")
+    calls = [_mock_tool_call("parent_agent_probe", "{}", f"c-{i}") for i in range(2)]
+    msg = SimpleNamespace(content="", tool_calls=calls)
+
+    agent._execute_tool_calls_concurrent(msg, [], "task-1")
+
+    assert parent_agent_probe == [agent, agent]

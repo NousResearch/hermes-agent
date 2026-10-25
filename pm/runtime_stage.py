@@ -37,7 +37,11 @@ def stage_runtime(uv: Path, python: Path, destination: Path, *,
             shutil.copyfile(project / name, snapshot / name)
         environment.create()
         if wheelhouse is None:
-            environment.sync(snapshot, locked=True, no_default_groups=True,
+            # The snapshot is a copy of the committed lock, not a workspace uv
+            # may re-resolve: --locked's up-to-date assertion is environment-
+            # brittle in the staged directory (#125323), while --frozen installs
+            # exactly the hash-verified lockfile PM shipped.
+            environment.sync(snapshot, no_default_groups=True,
                              no_install_project=True, timeout=600)
         else:
             environment.install_wheelhouse(snapshot, wheelhouse, timeout=600)

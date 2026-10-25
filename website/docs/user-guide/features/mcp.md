@@ -26,6 +26,9 @@ The `mcpServers` block in your `~/.claude.json` maps to `mcp_servers` in Hermes'
 - Utility wrappers for MCP resources and prompts when supported by the server
 - Per-server filtering so you can expose only the MCP tools you actually want Hermes to see
 
+Memory MCP servers expose tools only; they do not receive the memory-provider
+lifecycle. See [Choosing between an MCP server and a memory provider](/developer-guide/memory-provider-plugin#choosing-between-an-mcp-server-and-a-memory-provider).
+
 ## Quick start
 
 1. MCP support ships with the standard install — no extra step needed.

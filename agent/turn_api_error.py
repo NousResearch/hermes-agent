@@ -79,6 +79,26 @@ def handle_api_error(
     if agent.thinking_callback:
         agent.thinking_callback("")
 
+    # Native atomic rejection must precede *all* provider recovery/status branches.
+    # In particular, do not let a 500 rotate credentials, retry, nudge or fall back.
+    from agent.error_classifier import is_native_tool_output_error
+    if is_native_tool_output_error(api_error):
+        # Notify the existing lifecycle hook, but never treat its return as recovery.
+        agent._invoke_api_request_error_hook(
+            task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
+            api_call_count=api_call_count, api_start_time=api_start_time, api_kwargs=api_kwargs,
+            error_type=type(api_error).__name__, error_message=str(api_error),
+            status_code=getattr(api_error, "status_code", None),
+            retry_count=retry_count, max_retries=max_retries,
+            retryable=False, reason="native_tool_output",
+        )
+        message = "Native tool output rejected; this turn stopped without retry or fallback."
+        return _verdict("return", {
+            "final_response": message, "messages": messages, "api_calls": api_call_count,
+            "completed": False, "failed": True, "error": message,
+            "failure_reason": "native_tool_output", "failure_retryable": False,
+        })
+
     _recovered, active_system_prompt = recover_before_classification(
         agent, api_error, messages=messages, api_messages=api_messages, api_kwargs=api_kwargs,
         active_system_prompt=active_system_prompt,

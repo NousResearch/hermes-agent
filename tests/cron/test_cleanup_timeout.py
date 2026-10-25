@@ -6,6 +6,7 @@ agent resource finalizer stops returning after the model turn has ended.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from concurrent.futures import Future
@@ -13,7 +14,7 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from cron.scheduler import _teardown_cron_agent, run_job
+from cron.scheduler import _finalize_cron_session, _teardown_cron_agent, run_job
 from cron.scheduler_detached_worker import defer_teardown_to_running_worker
 
 
@@ -62,6 +63,29 @@ class HangingAgent:
         self.release.wait()
 
 
+class TitleWriteHangingSessionDB:
+    """A title write that outlives the bounded finalization timeout."""
+
+    def __init__(self, release: threading.Event):
+        self.release = release
+        self.entered = threading.Event()
+        self.lineage_calls = 0
+
+    def get_compression_tip(self, _session_id):
+        return None
+
+    def set_session_title(self, _session_id, _title):
+        self.entered.set()
+        self.release.wait()
+
+    def get_next_title_in_lineage(self, title):
+        self.lineage_calls += 1
+        return f"{title} #2"
+
+    def end_session(self, *_args, **_kwargs):
+        return None
+
+
 def test_run_job_bounds_sessiondb_finalization(tmp_path):
     release = threading.Event()
     fake_db = HangingSessionDB(release)
@@ -93,6 +117,42 @@ def test_run_job_bounds_sessiondb_finalization(tmp_path):
         assert error is None
     finally:
         release.set()
+
+
+def test_title_fallback_does_not_escape_after_timeout_disables_session_db():
+    """Regression for #138160: a disabled proxy must not run the fallback title lookup."""
+    release = threading.Event()
+    session_db = TitleWriteHangingSessionDB(release)
+
+    try:
+        with patch("cron.scheduler._cron_cleanup_timeout_seconds", return_value=0.02), \
+             patch("hermes_state_registry.release_or_close"):
+            _finalize_cron_session(
+                session_db, MagicMock(), "title-timeout", "Title timeout", "cron_title-timeout")
+
+        assert session_db.entered.wait(timeout=2.0)
+        assert session_db.lineage_calls == 0
+    finally:
+        release.set()
+
+
+def test_title_fallback_logs_lineage_failure_and_uses_bare_title(caplog):
+    """A failed lineage lookup keeps its traceback and does not block finalization."""
+    session_db = MagicMock()
+    session_db.get_compression_tip.return_value = None
+    session_db.set_session_title.side_effect = [RuntimeError("title collision"), True]
+    lineage_error = RuntimeError("lineage unavailable")
+    session_db.get_next_title_in_lineage.side_effect = lineage_error
+    session_db.session_lifecycle_statuses.return_value = {}
+    agent = MagicMock()
+
+    with caplog.at_level(logging.DEBUG, logger="cron.scheduler"), \
+         patch("hermes_state_registry.release_or_close"):
+        _finalize_cron_session(session_db, agent, "lineage-failure", "Lineage failure", "cron_lineage")
+
+    assert session_db.set_session_title.call_args.args == ("cron_lineage", "cron lineage-failure ineage")
+    assert agent._end_session_on_close is False
+    assert any(record.exc_info and record.exc_info[1] is lineage_error for record in caplog.records)
 
 
 def test_agent_teardown_is_bounded():

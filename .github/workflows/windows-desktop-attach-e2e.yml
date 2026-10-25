@@ -38,10 +38,15 @@ jobs:
           extras: '[]'
           test-environment: 'true'
 
-      # Full npm ci (not --ignore-scripts): electron's postinstall downloads the binary we launch.
+      # Full npm ci (not --ignore-scripts): native addons need their lifecycle scripts.
       - uses: ./.github/actions/retry
         with:
           command: npm ci
+
+      # Electron 42+ has no postinstall; unpack the binary the attach spec launches.
+      - name: Prepare locked Electron runtime
+        shell: bash
+        run: node scripts/build/electron-runtime.mjs --source .
 
       - name: Build the desktop app
         working-directory: apps/desktop

@@ -264,6 +264,31 @@ describe('reconcileUnifiedDesktopHalves', () => {
     expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
   })
 
+  it('overlapping passes publish a half once, from the first home that has it', async () => {
+    // Every window's disk poll and the Plugins page each run a pass through IPC,
+    // so passes overlap at boot. Unserialized, both copied, one rename hit the
+    // other's fresh folder (ENOTEMPTY) and that pass then took the profile's
+    // same-named package instead of the default home's.
+    const home = makeHome()
+    const appRoot = path.join(home, 'desktop-plugins')
+    write(path.join(home, 'plugins', 'media', 'desktop', 'plugin.js'), 'default home copy')
+    write(path.join(home, 'profiles', 'workbot', 'plugins', 'media', 'desktop', 'plugin.js'), 'profile copy')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    let passes: string[][]
+
+    try {
+      passes = await Promise.all([1, 2, 3].map(() => reconcileUnifiedDesktopHalves(home, appRoot)))
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
+
+    expect(passes.flat()).toEqual([path.join(appRoot, 'media')])
+    expect(fs.readFileSync(path.join(appRoot, 'media', 'plugin.js'), 'utf8')).toBe('default home copy')
+    expect(fs.readdirSync(appRoot)).toEqual(['media'])
+    expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
+  })
+
   it('cleans up failed staging copies without exposing a marker-less target', async () => {
     const home = makeHome()
     const appRoot = path.join(home, 'desktop-plugins')

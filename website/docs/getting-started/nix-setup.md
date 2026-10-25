@@ -368,7 +368,7 @@ Quick reference for the most common things Nix users want to customize:
 | Add project context to the workspace | `documents."AGENTS.md"` | `./documents/AGENTS.md` |
 | Run the backend for the desktop app or the dashboard | `backend.mode` | `"serve"` or `"dashboard"` |
 | Add MCP tool servers | `mcpServers.<name>` | See [MCP Servers](#mcp-servers) |
-| Enable Discord/Telegram/Slack | `extraDependencyGroups` | `[ "messaging" ]` |
+| Add an optional extra the package does not ship | `extraDependencyGroups` | `[ "google-meet" ]` |
 | Mount host directories into container | `container.extraVolumes` | `[ "/data:/data:rw" ]` |
 | Pass GPU access to container | `container.extraOptions` | `[ "--gpus" "all" ]` |
 | Use Podman instead of Docker | `container.backend` | `"podman"` |
@@ -819,12 +819,14 @@ The package's `site-packages` is added to PYTHONPATH in the hermes wrapper. `imp
 
 ### Optional Dependency Groups (`extraDependencyGroups`)
 
-For optional extras declared in hermes-agent's `pyproject.toml`, use `extraDependencyGroups` to include them in the sealed venv at build time. This is required for any extra not in the default `[all]` set — on Nix, runtime installation into the read-only store is not possible.
+For optional extras declared in hermes-agent's `pyproject.toml`, use `extraDependencyGroups` to include them in the sealed venv at build time. This is required for any extra the selected package does not already ship — on Nix, runtime installation into the read-only store is not possible.
 
 ```nix
-# Enable Discord, Telegram, Slack
-services.hermes-agent.extraDependencyGroups = [ "messaging" ];
+# Add Google Meet support on top of what the package ships
+services.hermes-agent.extraDependencyGroups = [ "google-meet" ];
 ```
+
+`extraDependencyGroups` and `extraPythonPackages` **add to** the groups the selected package ships; they never replace them. The `default` package already ships `messaging`, `voice`, `exa` and the other groups in the table below, so naming one of those changes nothing. The same holds for `pkgs.hermes-agent.override { extraDependencyGroups = [ ... ]; }`. For a smaller build, start from a smaller package: `package = inputs.hermes-agent.packages.${system}.minimal;` (or `#messaging`), or `.override { defaultDependencyGroups = [ ]; }` to drop the shipped groups and list only the ones you want.
 
 These groups join the core dependency resolution at build time. Conflicting
 requirements can still fail that resolution. The table lists common groups;
@@ -884,7 +886,9 @@ External flakes can override the package directly:
     nixpkgs.overlays = [ hermes-agent.overlays.default ];
     # Then:
     #   pkgs.hermes-agent.override { extraPythonPackages = [...]; }
-    #   pkgs.hermes-agent.override { extraDependencyGroups = [ "voice" ]; }
+    #   pkgs.hermes-agent.override { extraDependencyGroups = [ "google-meet" ]; }
+    # Both add to the groups the default package ships. To drop those:
+    #   pkgs.hermes-agent.override { defaultDependencyGroups = [ ]; }
   };
 }
 ```
@@ -910,8 +914,9 @@ A build-time collision check prevents plugin packages from shadowing core hermes
 
 ### Dev Shell
 
-The flake provides an editable Python environment with the lock-derived interpreter
-and the `dev` dependency group. `HERMES_PYTHON` points to its interpreter. It does not install
+The flake provides an editable Python venv with the `dev` dependency group, running
+on the interpreter `pm/lock.json` pins. `HERMES_PYTHON` and `VIRTUAL_ENV` point at it,
+and it needs no `PYTHONPATH`. It does not install
 Python dependencies into a repository-local `.venv`. The shell also provides
 Node.js and runtime tools. Its npm hook refreshes JS workspaces when their inputs change.
 
@@ -1029,7 +1034,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 | `extraPackages` | `listOf package` | `[]` | Extra packages available to the agent. Added to the hermes user's per-user profile so terminal commands, skills, and cron jobs all see them |
 | `extraPlugins` | `listOf package` | `[]` | Directory plugin packages to symlink into `$HERMES_HOME/plugins/`. Each must contain `plugin.yaml` |
 | `extraPythonPackages` | `listOf package` | `[]` | Python packages added to PYTHONPATH for entry-point plugin discovery. Use the selected package’s `python.pkgs` |
-| `extraDependencyGroups` | `listOf str` | `[]` | pyproject.toml optional extras to include in the sealed venv (e.g. `["voice"]`). Resolved by uv — no collisions |
+| `extraDependencyGroups` | `listOf str` | `[]` | pyproject.toml optional extras added to the groups `package` already ships (e.g. `["google-meet"]`). Resolved by uv — no collisions |
 | `restart` | `str` | `"always"` | The systemd `Restart=` policy. macOS does not use it. |
 | `restartSec` | `int` | `5` | The systemd `RestartSec=` value. macOS does not use it. |
 

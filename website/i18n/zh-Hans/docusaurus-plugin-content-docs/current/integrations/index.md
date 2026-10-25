@@ -42,12 +42,14 @@ web:
 
 ## 浏览器自动化
 
-Hermes 内置完整的浏览器自动化功能，提供多种后端选项，用于网站导航、表单填写和信息提取：
+Hermes 通过 `browser_exec`（基于 CDP 的 Python）提供完整的浏览器自动化功能，用于网站导航、表单填写和信息提取，浏览器可运行在以下位置：
 
 - **Browserbase** — 托管云端浏览器，具备反机器人工具、CAPTCHA 解决和住宅代理
 - **Browser Use** — 备选云端浏览器提供商
 - **本地 Chromium 系 CDP** — 使用 `/browser connect` 连接正在运行的 Chrome、Brave、Chromium 或 Edge 浏览器
-- **本地 Chromium** — 通过 `agent-browser` CLI 使用无头本地浏览器
+- **本地 Chromium** — 由 Hermes 自行启动的无头本地 Chromium（默认）
+
+Camofox 反检测浏览器以目录插件形式提供：`hermes plugins install camofox`。
 
 详见[浏览器自动化](../user-guide/features/browser.md)的配置与使用说明。
 

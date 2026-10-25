@@ -56,6 +56,22 @@ class TestApprovalModeParsing:
             assert _get_approval_mode() == "off"
 
 
+class TestDangerousCommandFailsClosedWithoutHuman:
+    def test_noninteractive_unrecognized_context_blocks(self, monkeypatch):
+        """Dangerous commands must not auto-approve in worker contexts without an approval bridge."""
+        monkeypatch.setattr(approval_module, "_presence", lambda _callback: (None, False, False, False))
+        monkeypatch.setattr(approval_module, "_unattended_contexts", lambda: [])
+        monkeypatch.setattr(approval_module, "is_approved", lambda *_: False)
+        monkeypatch.setattr(approval_module, "_yolo_active", lambda: False)
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval_module, "_command_matches_permanent_allowlist", lambda *_: False)
+
+        result = approval_module.check_dangerous_command("rm -rf build/", "local")
+
+        assert result["approved"] is False
+        assert "no interactive user or gateway" in result["message"].lower()
+
+
 class TestSmartApproval:
     def test_smart_approval_uses_call_llm(self):
         response = SimpleNamespace(

@@ -1979,38 +1979,13 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
     Guards two collapse-to-empty failure modes that would let a read-then-write caller silently
     wipe user overrides: an unreadable file (permissions / broken mount) and an unparseable or
     non-mapping root — bare-``except`` loaders treat both as ``{}``, so a subsequent write would
-    replace the recoverable file with only the caller's partial dict. Fails closed."""
-    if config_path is None:
-        snapshot = _worker_config_snapshot()
-        if snapshot is not None:
-            # A bypass worker's config IS its frozen snapshot; it never reads the profile file.
-            return copy.deepcopy(snapshot)
-        config_path = get_config_path()
-    try:
-        config_path.stat()
-    except FileNotFoundError:
-        return {}
-    except OSError as exc:
-        raise _refuse_overwrite(config_path, "cannot be accessed", exc, _FIX_PERMS) from exc
+    replace the recoverable file with only the caller's partial dict. Fails closed.
 
-    try:
-        with open(config_path, encoding="utf-8-sig") as f:
-            loaded = fast_safe_load(f)
-    except OSError as exc:
-        raise _refuse_overwrite(config_path, "cannot be read", exc, _FIX_PERMS) from exc
-    except Exception as exc:
-        _warn_config_parse_failure(config_path, exc, fallback="refuse-write")
-        raise _refuse_overwrite(
-            config_path, "has a formatting error", exc, _FIX_YAML.format(backups=_backups_dir_display())) from exc
-    if loaded is None:
-        return {}
-    if not isinstance(loaded, dict):
-        exc = TypeError(f"top-level YAML must be a mapping, got {type(loaded).__name__}")
-        _warn_config_parse_failure(config_path, exc, fallback="refuse-write")
-        raise _refuse_overwrite(
-            config_path, f"must start with settings names, but its top level is a {type(loaded).__name__}",
-            exc, _FIX_YAML.format(backups=_backups_dir_display())) from exc
-    return loaded
+    The strict parse is cached on the file signature while the file is unchanged (failures are
+    never cached), so tool-hook calls on an idle config cost one stat instead of a full YAML
+    parse (#141856). Behaviour lives in ``hermes_cli/config_strict_read.py``."""
+    from hermes_cli.config_strict_read import require_readable_strict_config
+    return require_readable_strict_config(config_path)
 
 
 def _omitted_config_paths(
@@ -2515,6 +2490,8 @@ def save_config(
         atomic_config_replace(config_path, normalized, extra_content_on_create=_commented_sections_for_save(normalized))
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
+        from hermes_cli.config_strict_read import _STRICT_READ_CACHE
+        _STRICT_READ_CACHE.pop(str(config_path), None)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
     from hermes_cli.observability.shared_metrics_disabled import record_config_saved
     record_config_saved(_raw_for_paths, current_normalized)

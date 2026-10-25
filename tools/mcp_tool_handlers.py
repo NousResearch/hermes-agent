@@ -12,6 +12,7 @@ from functools import partial
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from agent.i18n import t
 from hermes_platform import declaration
 from tools.registry import invalidate_check_fn_cache, tool_error
 from tools.ansi_strip import strip_unicode_tags
@@ -164,25 +165,22 @@ def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[lis
             over = True
     extra = charge.lines(spent) if charge is not None else []
     if gated:
-        head = f"MCP tool '{tool_name}' on UNTRUSTED server '{server_name}' wants to run."
-        tail = "This tool is write-capable (no readOnlyHint=true annotation) and may modify external state."
+        head = t("approval.elicitation.mcp_untrusted_head", tool=tool_name, server=server_name)
+        tail = t("approval.elicitation.mcp_write_warning")
         # The limit notice leads, and the arguments trail: a prompt cut to a platform's cap keeps the notice.
-        message = " ".join([head, *(["This call goes past the chat's spend limit."] if over else []), *extra, tail])
+        message = " ".join([head, *([t("approval.elicitation.mcp_spend_over")] if over else []), *extra, tail])
         if args:
-            message += f"\n\nArguments:\n{_format_trust_gate_arguments(args)}"
+            message += t("approval.elicitation.mcp_arguments", arguments=_format_trust_gate_arguments(args))
         # Over the limit the answer covers this call only: a remembered trust grant must not
         # pre-approve the next over-limit call.
         remember_key = None if over else _trust_approval_key(server_name, tool_name)
-        scope = "once" if over else "once, for this session, or always"
-        description = (f"Server '{server_name}' is configured 'trust: untrusted'. "
-                       f"Approve to run '{tool_name}' {scope}, or deny to block it.")
-        title = f"MCP server '{server_name}' is asking"
+        description = t("approval.elicitation.mcp_untrusted_description" if over
+                        else "approval.elicitation.mcp_untrusted_remember_description", server=server_name, tool=tool_name)
+        title = t("approval.elicitation.mcp_untrusted_title", server=server_name)
     else:
-        message = " ".join([f"MCP tool '{tool_name}' on server '{server_name}' would take this chat past its "
-                            f"spend limit.", *extra])
-        description = (f"Server '{server_name}' declares a spend limit per chat. Approve to run '{tool_name}' "
-                       f"once (every further paid call in this chat asks again), or deny to block it.")
-        title = f"MCP server '{server_name}' spend limit"
+        message = " ".join([t("approval.elicitation.mcp_spend_command", tool=tool_name, server=server_name), *extra])
+        description = t("approval.elicitation.mcp_spend_description", server=server_name, tool=tool_name)
+        title = t("approval.elicitation.mcp_spend_title", server=server_name)
         remember_key = None
     try:  # lazy: tools.approval routes the prompt to whichever surface owns the session
         from tools.approval_prompt import request_elicitation_consent

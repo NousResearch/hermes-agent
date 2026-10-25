@@ -1115,4 +1115,4 @@ All the same commands work with `/skills`:
 /skills list
 ```
 
-Official optional skills still use identifiers like `official/security/1password` and `official/migration/openclaw-migration`.
+Official optional skills still use identifiers like `official/security/1password` and `official/mcp/fastmcp`.

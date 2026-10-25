@@ -71,7 +71,7 @@ def _mcp_oauth_callback_url(request: Request, server_name: str) -> str:
     from hermes_cli.dashboard_auth.prefix import prefix_from_request, resolve_public_url
 
     suffix = f"/api/mcp/oauth/callback/{quote(server_name, safe='')}"
-    public_url = resolve_public_url()
+    public_url = resolve_public_url(request.app.state)
     if public_url:
         return f"{public_url}{suffix}"
     base = urlparse(str(request.base_url))

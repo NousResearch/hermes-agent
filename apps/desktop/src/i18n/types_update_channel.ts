@@ -20,6 +20,8 @@ export interface UpdateChannelCopy {
   rollbackTitle: (version: string) => string
   /** Installing the older stable release moves the checkout back; says so plainly. */
   rollbackBody: (version: string) => string
+  /** A stable release `hermes update` refuses: this install keeps its build until a newer release. */
+  heldBody: (version: string) => string
   /** Updates overlay install button for that rollback. */
   rollbackAction: (version: string) => string
   /** Update dialog link to every change in a commit-line update. */

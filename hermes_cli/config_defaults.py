@@ -1481,13 +1481,13 @@ DEFAULT_CONFIG = {
         "write_approval": False,
         # Audit ledger: every skill mutation appends to ~/.hermes/skills/.curator_ledger.jsonl with
         # before/after hashes (blobs under ~/.hermes/.curator_backups/blobs/); powers `hermes
-        # curator ledger` / `rollback <entry-id>`. Never a gate — failures can't block.
-        # See #79686.
+        # curator ledger` / `rollback <entry-id>`. Never a gate — failures can't block. See #79686.
         "ledger": True,
         # Size cap for that ledger: once the file grows past this, the next append rewrites it
         # through the unchanged-file dedup and, if still over, drops the oldest entries (0 = keep
         # the ledger append-only forever, the previous behaviour).
         "ledger_max_bytes": 5 * 1024 * 1024,
+        "auto_triggers": True,  # classic CLI: auto-load skills whose metadata.hermes.triggers match a turn
     },
 
     # Curator — background maintenance of AGENT-CREATED skills (never hub-installed): marks

@@ -203,6 +203,7 @@ metadata:
   hermes:
     tags: [python, automation]
     category: devops
+    triggers: ["my workflow"]        # Optional — auto-load in the classic CLI (see below)
     fallback_for_toolsets: [web]    # Optional — conditional activation (see below)
     requires_toolsets: [terminal]   # Optional — conditional activation (see below)
     config:                          # Optional — config.yaml settings
@@ -227,6 +228,39 @@ Trigger conditions for this skill.
 ## Verification
 How to confirm it worked.
 ```
+
+### Automatic triggers (classic CLI)
+
+A skill can opt into loading from ordinary messages by listing phrases under
+`metadata.hermes.triggers`:
+
+```yaml
+metadata:
+  hermes:
+    triggers: ["market outlook", "EUR/USD"]
+```
+
+In the **classic CLI**, `What is happening with EUR/USD today?` then loads the
+skill exactly as `/skill-name What is happening…` would, and prints a
+`⚡ Loading skill` notice with the matched phrase. The Ink TUI, Desktop,
+messaging gateway, and ACP do not trigger-match.
+
+- **Matching:** literal, case-insensitive phrases (no regex, no semantic
+  matching). Words need boundaries, so `market` does not match `supermarket`;
+  punctuation is literal and whitespace between words may vary.
+- **Selection:** one skill per turn — the longest matching phrase wins; ties go
+  to the longer skill name, then the slash command key. Only skills the current
+  scan offers (enabled, platform/environment filters, no collision) are eligible.
+- **Skipped turns:** messages starting with `/`, empty input, and image /
+  content-part turns.
+- **Only `metadata.hermes.triggers` counts.** A top-level `triggers:` list (used by
+  some bundled skills as prose) is ignored, so skills without the key behave as before.
+- **Refresh:** after editing a skill's triggers, run `/reload-skills` or start a new session.
+- **Opt out:** `skills.auto_triggers: false` in `config.yaml` (default `true`)
+  disables all matching; explicit `/skill` loads keep working.
+
+The transcript keeps your original message; the loaded skill content goes to the
+model on that turn and is replayed unchanged on later turns.
 
 ### Platform-Specific Skills
 

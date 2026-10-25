@@ -252,15 +252,11 @@ def _resolve_skill_commands_project() -> Optional[str]:
 
 
 def _extract_skill_triggers(frontmatter: dict[str, Any]) -> list[str]:
-    """Return normalized auto-trigger phrases declared in skill frontmatter."""
+    """Return normalized ``metadata.hermes.triggers`` phrases. Top-level ``triggers:``
+    is ignored on purpose: bundled skills use it as informal prose, not as opt-in."""
     metadata = frontmatter.get("metadata")
     hermes_meta = metadata.get("hermes") if isinstance(metadata, dict) else None
-    raw_triggers = None
-    if isinstance(hermes_meta, dict):
-        raw_triggers = hermes_meta.get("triggers")
-    if raw_triggers is None:
-        raw_triggers = frontmatter.get("triggers")
-
+    raw_triggers = hermes_meta.get("triggers") if isinstance(hermes_meta, dict) else None
     if raw_triggers is None:
         return []
     if not isinstance(raw_triggers, list):
@@ -299,11 +295,13 @@ def find_triggered_skill_command(
         return None
 
     text = user_message.strip()
-    if not text or text.startswith("/"):
+    if not text or text.startswith("/") or not _load_skills_config().get("auto_triggers", True):
         return None
 
     best_match: tuple[int, int, str, str, dict[str, Any]] | None = None
-    for cmd_key, skill_info in get_skill_commands().items():
+    # Same interactive map /skill uses, without refreshing its /reload-skills snapshot.
+    commands = _merge_interactive_skill_commands(get_skill_commands(), get_plugin_skill_commands())
+    for cmd_key, skill_info in commands.items():
         for trigger in skill_info.get("triggers") or []:
             if not _compile_skill_trigger_pattern(trigger).search(text):
                 continue
@@ -786,6 +784,7 @@ def _scan_plugin_skill_commands(manager, metadata: list, tag: tuple) -> dict[str
                                                   or f"Invoke the {qualified} plugin skill").strip(),
             "skill_identifier": qualified, "skill_md_path": str(skill_md),
             "skill_dir": str(skill_md.parent), "source": "plugin",
+            "triggers": _extract_skill_triggers(parsed),
         }
     with _publish_lock:
         _plugin_skill_commands, _plugin_skill_commands_tag = commands, tag

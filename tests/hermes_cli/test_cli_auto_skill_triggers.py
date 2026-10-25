@@ -10,7 +10,7 @@ from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
 
 @pytest.fixture
 def trigger_turn(tmp_path, monkeypatch):
-    import tools.skills_tool as skills_tool
+    from tools import skills_tool
 
     skills = tmp_path / "skills"
     skill = skills / "market-watch"

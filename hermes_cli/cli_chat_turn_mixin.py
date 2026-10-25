@@ -37,7 +37,8 @@ def _resolve_skill_trigger_message(message, session_id):
     )
     if not expanded:
         return message
-    _cprint(f"  {_DIM}⚡ Auto-loading skill: {skill_info.get('name') or cmd_key.lstrip('/')} (trigger: {trigger}){_RST}")
+    name = skill_info.get("name") or cmd_key.lstrip("/")
+    _cprint(f"  {_DIM}⚡ {t('cli.skills.loading_skill', name=name)} · \"{trigger}\"{_RST}")
     return expanded
 
 

@@ -1,4 +1,4 @@
-import { hermesApi } from '@/api/client'
+import { capabilityScoped, hermesApi, type OwnerScope, profileScopeKey } from '@/api/client'
 import type {
   HermesConnection,
   HermesReadDirResult,
@@ -39,8 +39,8 @@ function connectionCacheKey(connection: HermesConnection | null) {
   return `${connection.mode || 'local'}:${connection.remoteKind || ''}:${connection.profile || ''}:${target}`
 }
 
-export function desktopFsCacheKey(connection: HermesConnection | null = $connection.get()) {
-  return connectionCacheKey(connection)
+export function desktopFsCacheKey(connection: HermesConnection | null = $connection.get(), owner?: OwnerScope) {
+  return owner ? profileScopeKey(owner) : connectionCacheKey(connection)
 }
 
 export function isDesktopFsRemoteMode() {
@@ -67,10 +67,10 @@ function bridge() {
   return desktop
 }
 
-function remoteFsApi<T>(path: string, body?: Record<string, unknown>): Promise<T> {
-  return hermesApi<T>(
-    body ? { body, method: 'POST', path, profile: desktopFsProfile() } : { path, profile: desktopFsProfile() }
-  )
+function remoteFsApi<T>(path: string, body?: Record<string, unknown>, owner?: OwnerScope): Promise<T> {
+  const scope = owner ? capabilityScoped(owner) : { profile: desktopFsProfile() }
+
+  return hermesApi<T>(body ? { body, method: 'POST', path, ...scope } : { path, ...scope })
 }
 
 /** True when a bridge read returned the main process's structured "file is not
@@ -109,8 +109,8 @@ export async function readDesktopDir(path: string): Promise<HermesReadDirResult>
   return remoteFsApi<HermesReadDirResult>(fsPath('list', path))
 }
 
-export async function readDesktopFileText(path: string): Promise<HermesReadFileTextResult> {
-  if (!isDesktopFsRemoteMode()) {
+export async function readDesktopFileText(path: string, owner?: OwnerScope): Promise<HermesReadFileTextResult> {
+  if (!owner && !isDesktopFsRemoteMode()) {
     const result = await bridge().readFileText(path)
 
     if (isReadFileErrorResult(result)) {
@@ -120,17 +120,21 @@ export async function readDesktopFileText(path: string): Promise<HermesReadFileT
     return result
   }
 
-  return remoteFsApi<HermesReadFileTextResult>(fsPath('read-text', path))
+  return remoteFsApi<HermesReadFileTextResult>(fsPath('read-text', path), undefined, owner)
 }
 
 // Save UTF-8 text back to a file. Local writes go through the hardened Electron
 // IPC; remote writes hit the dashboard's POST /api/fs/write-text (same path
 // hardening, parent-must-exist, size cap) so the editor behaves identically in
 // both modes. Stale-on-disk detection is the caller's job (re-read before save).
-export async function writeDesktopFileText(path: string, content: string): Promise<{ path: string }> {
+export async function writeDesktopFileText(
+  path: string,
+  content: string,
+  owner?: OwnerScope
+): Promise<{ path: string }> {
   const desktop = bridge()
 
-  if (!isDesktopFsRemoteMode()) {
+  if (!owner && !isDesktopFsRemoteMode()) {
     if (!desktop.writeTextFile) {
       throw new Error('Saving is not available')
     }
@@ -138,7 +142,7 @@ export async function writeDesktopFileText(path: string, content: string): Promi
     return desktop.writeTextFile(path, content)
   }
 
-  const result = await remoteFsApi<{ ok?: boolean; path?: string }>('/api/fs/write-text', { content, path })
+  const result = await remoteFsApi<{ ok?: boolean; path?: string }>('/api/fs/write-text', { content, path }, owner)
 
   return { path: result.path || path }
 }
@@ -151,8 +155,8 @@ export async function createRemoteDir(path: string): Promise<string> {
   return result.path || path
 }
 
-export async function readDesktopFileDataUrl(path: string): Promise<string> {
-  if (!isDesktopFsRemoteMode()) {
+export async function readDesktopFileDataUrl(path: string, owner?: OwnerScope): Promise<string> {
+  if (!owner && !isDesktopFsRemoteMode()) {
     const result = await bridge().readFileDataUrl(path)
 
     if (isReadFileErrorResult(result)) {
@@ -162,7 +166,7 @@ export async function readDesktopFileDataUrl(path: string): Promise<string> {
     return result
   }
 
-  const result = await remoteFsApi<string | { dataUrl?: string }>(fsPath('read-data-url', path))
+  const result = await remoteFsApi<string | { dataUrl?: string }>(fsPath('read-data-url', path), undefined, owner)
 
   return typeof result === 'string' ? result : result.dataUrl || ''
 }
@@ -194,14 +198,14 @@ export async function readDesktopFileDataUrlLocalFirst(path: string): Promise<st
   return readDesktopFileDataUrl(path)
 }
 
-export async function desktopGitRoot(path: string): Promise<string | null> {
+export async function desktopGitRoot(path: string, owner?: OwnerScope): Promise<string | null> {
   const desktop = bridge()
 
-  if (!isDesktopFsRemoteMode()) {
+  if (!owner && !isDesktopFsRemoteMode()) {
     return desktop.gitRoot ? desktop.gitRoot(path) : null
   }
 
-  return (await remoteFsApi<{ root: string | null }>(fsPath('git-root', path))).root
+  return (await remoteFsApi<{ root: string | null }>(fsPath('git-root', path), undefined, owner)).root
 }
 
 export async function desktopDefaultCwd(): Promise<{ branch: string; cwd: string } | null> {
@@ -253,10 +257,12 @@ export async function copyTextToClipboard(text: string): Promise<void> {
 
 // Working-tree-vs-HEAD diff for one file. Empty when unchanged / not a repo.
 // Remote gateway → backend git (/api/git/file-diff); local → Electron git.
-export async function desktopFileDiff(repoRoot: string, filePath: string): Promise<string> {
-  if (isDesktopFsRemoteMode()) {
+export async function desktopFileDiff(repoRoot: string, filePath: string, owner?: OwnerScope): Promise<string> {
+  if (owner || isDesktopFsRemoteMode()) {
     const result = await remoteFsApi<{ diff: string }>(
-      `/api/git/file-diff?path=${encodeURIComponent(repoRoot)}&file=${encodeURIComponent(filePath)}`
+      `/api/git/file-diff?path=${encodeURIComponent(repoRoot)}&file=${encodeURIComponent(filePath)}`,
+      undefined,
+      owner
     )
 
     return result.diff || ''

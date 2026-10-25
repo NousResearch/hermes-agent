@@ -84,6 +84,22 @@ describe('desktop filesystem facade', () => {
     setDesktopFsRemotePicker(null)
   })
 
+  it('pins a secondary bot file to its owner even while the window is local or another bot', async () => {
+    const owner = { connectionId: 'secondary', profile: 'default' }
+    $connection.set({ mode: 'local', connectionId: 'local' } as never)
+    await readDesktopFileText('/home/secondary/report.md', owner)
+    expect(readFileText).not.toHaveBeenCalled()
+    expect(api).toHaveBeenLastCalledWith(expect.objectContaining({ connectionId: 'secondary', profile: 'default' }))
+    $connection.set({ mode: 'remote', connectionId: 'primary' } as never)
+    setApiRequestConnection('primary')
+    await readDesktopFileDataUrl('/home/secondary/report.pdf', owner)
+    expect(api).toHaveBeenLastCalledWith(expect.objectContaining({ connectionId: 'secondary', profile: 'default' }))
+    await desktopGitRoot('/home/secondary/report.md', owner)
+    expect(api).toHaveBeenLastCalledWith(expect.objectContaining({ connectionId: 'secondary' }))
+    await desktopFileDiff('/home/secondary', '/home/secondary/report.md', owner)
+    expect(api).toHaveBeenLastCalledWith(expect.objectContaining({ connectionId: 'secondary' }))
+  })
+
   it('uses local Electron filesystem methods in local mode', async () => {
     $connection.set({ mode: 'local', profile: 'team-local' } as never)
 

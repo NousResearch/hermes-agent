@@ -28,6 +28,7 @@ import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { useContributions } from '@/contrib'
 import { useMediaImage } from '@/hooks/use-media-image'
+import { useSessionFileOrigin } from '@/hooks/use-session-file-origin'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
@@ -124,14 +125,21 @@ function preprocessWithTailRepair(text: string): string {
 }
 
 function useOpenMediaFile(path: string) {
+  const { resolveOrigin } = useSessionFileOrigin()
   const [openFailed, setOpenFailed] = useState(false)
 
-  const open = () => {
-    if (window.hermesDesktop && isRemoteGateway()) {
-      setOpenFailed(false)
-      void downloadGatewayMediaFile(path).catch(() => setOpenFailed(true))
-    } else {
-      openExternalLink(mediaExternalUrl(path))
+  const open = async () => {
+    try {
+      const origin = resolveOrigin()
+
+      if (window.hermesDesktop && (origin.owner || isRemoteGateway())) {
+        setOpenFailed(false)
+        await downloadGatewayMediaFile(path, origin)
+      } else {
+        openExternalLink(mediaExternalUrl(path))
+      }
+    } catch {
+      setOpenFailed(true)
     }
   }
 

@@ -49,3 +49,22 @@ class TestNoCredentialsNoSwitch:
         loudly instead of silently ignoring the request."""
         monkeypatch.setattr(models, "detect_static_provider_for_model", lambda n, c: ("nous", "hermes-4-405b"))
         assert models.detect_provider_for_model("nous", "deepseek") == ("nous", "hermes-4-405b")
+
+
+class TestSharedSlugTiebreak:
+    """A slug listed by several first-party catalogs goes to the one the user can use (#102775):
+    ``gpt-5.6-luna`` sits in both ``openai-api`` and ``openai-codex``, and the first catalog hit
+    used to be the only candidate — a Codex-only user was routed to a keyless ``openai-api``
+    (``auto``) or left on the current provider (explicit switch)."""
+
+    def test_shared_slug_goes_to_the_credentialed_sibling(self, no_live_catalog, authed):
+        authed.add("openai-codex")
+        assert models.detect_provider_for_model("gpt-5.6-luna", "deepseek") == ("openai-codex", "gpt-5.6-luna")
+        assert models.detect_provider_for_model("gpt-5.6-luna", "auto") == ("openai-codex", "gpt-5.6-luna")
+
+    def test_shared_slug_keeps_first_catalog_when_it_is_usable(self, no_live_catalog, authed):
+        authed.update({"openai-api", "openai-codex"})
+        assert models.detect_provider_for_model("gpt-5.6-luna", "deepseek") == ("openai-api", "gpt-5.6-luna")
+        authed.clear()
+        # Nothing usable anywhere: a fresh session still fails loudly on the first guess.
+        assert models.detect_provider_for_model("gpt-5.6-luna", "auto") == ("openai-api", "gpt-5.6-luna")

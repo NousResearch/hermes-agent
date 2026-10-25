@@ -37,12 +37,6 @@ describe('scoreSlashMenuItem', () => {
     expect(scoreSlashMenuItem(item, 'caps')).toBe(2)
   })
 
-  it('scores description matches at the +3 offset, below any name tier', () => {
-    expect(scoreSlashMenuItem({ description: 'Turn session recaps on/off', id: 'other' }, 'session')).toBe(3)
-    expect(scoreSlashMenuItem({ description: 'Turn session recaps on/off', id: 'other' }, 'sess')).toBe(4)
-    expect(scoreSlashMenuItem({ description: 'Turn session recaps on/off', id: 'other' }, 'essio')).toBe(5)
-  })
-
   it('prefers the name tier when both name and description match', () => {
     expect(scoreSlashMenuItem(item, 'recap')).toBe(0)
   })

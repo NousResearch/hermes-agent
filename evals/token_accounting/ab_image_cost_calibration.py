@@ -7,7 +7,7 @@ screenshot per turn on a small window; the question is whether compaction fires 
 prompt crosses the provider window (the fake returns a context-overflow 400 past it, like
 llama.cpp), and what the estimator believes when it does.
 
-    python evals/token_accounting/ab_image_cost_calibration.py --out /tmp/result.json
+    python evals/token_accounting/ab_image_cost_calibration.py --out result.json
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ class _FakeVisionChat:
         server = self
 
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *_a):  # noqa: D401
+            def log_message(self, *_a):
                 pass
 
             def do_POST(self):
@@ -124,7 +124,6 @@ def run(out_path: str) -> dict:
     cc.context_length = CONTEXT_LENGTH
     cc.threshold_tokens = THRESHOLD
     compress_calls: list[dict] = []
-    original = agent._compress_context
 
     def counting(messages, system_message, **kw):
         # Real compaction would need a summarizer; drop everything but the last 2 rows like one.
@@ -157,7 +156,7 @@ def run(out_path: str) -> dict:
     tail = walk_history[cut:]
     tail_real = _count_images(tail) * IMAGE_REAL + len(tail) * TEXT_PER_TURN // 2
     result = {
-        "head": subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip(),
+        "head": subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False).stdout.strip(),
         "image_real_cost": IMAGE_REAL, "context_length": CONTEXT_LENGTH, "threshold": THRESHOLD,
         "learned_image_cost_after": learned_image_token_cost("vision-local-ab", wire.base_url),
         "provider_overflows": wire.overflows, "compress_calls": compress_calls, "per_turn": per_turn,

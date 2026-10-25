@@ -52,7 +52,7 @@ class AgentRole:
     name: str
     instructions: str = ""
     model: Optional[str] = None
-    enabled_toolsets: Optional[List[str]] = None
+    enabled_toolsets: Optional[list[str]] = None
 
     @property
     def is_builtin(self) -> bool:
@@ -77,7 +77,7 @@ def _load_delegation_config() -> dict:
             return {}
 
 
-def get_agent_roles() -> Dict[str, AgentRole]:
+def get_agent_roles() -> dict[str, AgentRole]:
     """Return configured bounded roles keyed by name.
 
     Reads ``delegation.roles`` from the active config. Malformed entries are
@@ -87,7 +87,7 @@ def get_agent_roles() -> Dict[str, AgentRole]:
     roles_raw = cfg.get("roles") or {}
     if not isinstance(roles_raw, dict):
         return {}
-    roles: Dict[str, AgentRole] = {}
+    roles: dict[str, AgentRole] = {}
     for name, raw in roles_raw.items():
         if not isinstance(raw, dict):
             logger.warning("delegation.roles.%s: expected a mapping, skipping", name)
@@ -136,9 +136,9 @@ def apply_role_instructions(base_prompt: str, role: Optional[AgentRole]) -> str:
 
 
 def apply_role_toolsets(
-    child_toolsets: List[str],
+    child_toolsets: list[str],
     role: Optional[AgentRole],
-) -> List[str]:
+) -> list[str]:
     """Intersect a role's enabled_toolsets with the child's (never widen).
 
     The caller has already intersected with the parent's toolsets; intersecting

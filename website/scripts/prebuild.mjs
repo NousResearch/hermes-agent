@@ -16,7 +16,7 @@
 // several minutes and burns GitHub API quota — but still gets the same
 // 2000+ external skills the deployed site has.
 //
-// If python3 or its deps (pyyaml) aren't available on the local machine, we
+// If python3 or its deps (ruamel.yaml) aren't available on the local machine, we
 // fall back to writing an empty skills.json so `npm run build` still
 // succeeds — the Skills Hub page just shows an empty state, and llms.txt
 // generation is skipped. CI always has the deps installed, so production
@@ -29,10 +29,12 @@ import { fileURLToPath } from "node:url";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const websiteDir = resolve(scriptDir, "..");
+const repoRoot = resolve(websiteDir, "..");
 const extractScript = join(scriptDir, "extract-skills.py");
 const llmsScript = join(scriptDir, "generate-llms-txt.py");
 const cronBlueprintsScript = join(scriptDir, "extract-automation-blueprints.py");
 const pluginsScript = join(scriptDir, "extract-plugins.py");
+const pluginStarsScript = join(scriptDir, "fetch-plugin-stars.py");
 const outputFile = join(websiteDir, "static", "api", "skills.json");
 const pluginsOutputFile = join(websiteDir, "static", "api", "plugins.json");
 const pluginsMetaOutputFile = join(websiteDir, "static", "api", "plugins-meta.json");
@@ -46,7 +48,7 @@ function writeEmptyFallback(reason) {
   writeFileSync(outputFile, "[]\n");
   console.warn(
     `[prebuild] extract-skills.py skipped (${reason}); wrote empty skills.json. ` +
-      `Install python3 + pyyaml locally for a populated Skills Hub page.`,
+      `Install python3 + ruamel.yaml locally for a populated Skills Hub page.`,
   );
 }
 
@@ -146,6 +148,11 @@ runPython(llmsScript, "generate-llms-txt.py");
 // 3) automation-blueprints-index.json — Automation Blueprints catalog page. Non-fatal; the page
 //    renders an empty state if the generator can't run.
 runPython(cronBlueprintsScript, "extract-automation-blueprints.py");
+
+// 4a) plugin-stars.json — GitHub star counts for catalog ranking. Reuse-only here
+//     (live site copy via one CDN GET, else on-disk, else empty); GitHub itself is
+//     probed only by the scheduled skills-index workflow. Never fails the build.
+runPython(pluginStarsScript, "fetch-plugin-stars.py");
 
 // 4) plugins.json + plugins-meta.json — Plugin Catalog page. The script itself
 //    degrades gracefully (empty catalog, exit 0) when plugin-catalog/ is absent;

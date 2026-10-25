@@ -10,7 +10,6 @@ for the same reason is skipped, and only the newest ``keep`` per reason survive,
 
 from __future__ import annotations
 
-import filecmp
 import logging
 import shutil
 import time
@@ -55,7 +54,9 @@ def backup_config(config_path: Path, reason: str, *, keep: int = DEFAULT_KEEP) -
         root.mkdir(parents=True, exist_ok=True)
         _sweep_legacy_siblings(config_path, root)
         existing = list_config_backups(config_path, reason)
-        if existing and filecmp.cmp(config_path, existing[0], shallow=False):
+        # Not filecmp.cmp: its process-wide cache keys on (size, mtime), so an equal-size edit
+        # within one mtime tick of an earlier comparison is reported identical and never backed up.
+        if existing and config_path.read_bytes() == existing[0].read_bytes():
             return None
         dest = root / f"{config_path.name}.{reason}.{time.strftime('%Y%m%d-%H%M%S')}"
         if dest.is_symlink() or dest.exists():  # never write through a planted link
@@ -67,6 +68,26 @@ def backup_config(config_path: Path, reason: str, *, keep: int = DEFAULT_KEEP) -
     except OSError as exc:
         logger.warning("Could not back up %s (%s): %s", config_path, reason, exc)
         return None
+
+
+def load_newest_good_backup(config_path: Path) -> Optional[dict]:
+    """Parse the newest ``good`` backup (the file as it was at the last successful load).
+
+    Returns the raw mapping, or None when there is no usable copy. Older ``good`` copies are not
+    tried: a backup that fails to parse means the on-disk copy was damaged after the fact, and
+    guessing further back would serve a config the user never saw as current.
+    """
+    newest = list_config_backups(config_path, "good")[:1]
+    if not newest:
+        return None
+    try:
+        from utils import fast_safe_load
+        with newest[0].open(encoding="utf-8") as f:
+            data = fast_safe_load(f)
+    except Exception as exc:
+        logger.warning("Last-known-good backup %s is unreadable: %s", newest[0], exc)
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _sweep_legacy_siblings(config_path: Path, root: Path) -> None:

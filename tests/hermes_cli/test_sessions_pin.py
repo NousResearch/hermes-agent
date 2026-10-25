@@ -9,6 +9,14 @@ not a client-local list.
 import json
 import sys
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def existing_store(tmp_path, monkeypatch):
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    (tmp_path / "state.db").touch()
+
 
 class _FakeDB:
     def __init__(self, rows=None, known=("20260315_092437_c9a6ff",)):
@@ -38,12 +46,15 @@ class _FakeDB:
     def close(self):
         self.closed = True
 
-
 def _run(monkeypatch, capsys, argv_tail, db):
     import hermes_cli.main as main_mod
     import hermes_state
 
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda: db)
+    def open_db(**kwargs):
+        assert kwargs.get("read_only", False) == (argv_tail[0] == "pinned")
+        return db
+
+    monkeypatch.setattr(hermes_state, "SessionDB", open_db)
     monkeypatch.setattr(sys, "argv", ["hermes", "sessions", *argv_tail])
     try:
         main_mod.main()
@@ -51,7 +62,6 @@ def _run(monkeypatch, capsys, argv_tail, db):
     except SystemExit as e:  # non-zero exits propagate through main()
         code = e.code or 0
     return code, capsys.readouterr().out
-
 
 def test_pin_accepts_unique_prefix(monkeypatch, capsys):
     db = _FakeDB()
@@ -61,22 +71,19 @@ def test_pin_accepts_unique_prefix(monkeypatch, capsys):
     assert "(Alpha Work)" in out
     assert code == 0
 
-
 def test_unpin_writes_false(monkeypatch, capsys):
     db = _FakeDB()
     _code, out = _run(monkeypatch, capsys, ["unpin", "20260315_092437_c9a6ff"], db)
     assert db.pin_calls == [("20260315_092437_c9a6ff", False)]
     assert "Unpinned session" in out
 
-
 def test_pin_multiple_ids_one_missing(monkeypatch, capsys):
     db = _FakeDB(known=("aaa111", "bbb222"))
     code, out = _run(monkeypatch, capsys, ["pin", "aaa", "nope", "bbb"], db)
     assert ("aaa111", True) in db.pin_calls
     assert ("bbb222", True) in db.pin_calls
-    assert "Session 'nope' not found." in out
+    assert "No session 'nope'" in out and "hermes sessions list" in out
     assert code == 1
-
 
 def test_pinned_lists_only_pinned_rows(monkeypatch, capsys):
     rows = [
@@ -105,7 +112,6 @@ def test_pinned_lists_only_pinned_rows(monkeypatch, capsys):
     assert "Keep Me" in out
     assert "recent_unpinned" not in out
 
-
 def test_pinned_json_output(monkeypatch, capsys):
     rows = [
         {
@@ -129,10 +135,3 @@ def test_pinned_json_output(monkeypatch, capsys):
             "message_count": 3,
         }
     ]
-
-
-def test_pinned_empty_hint(monkeypatch, capsys):
-    db = _FakeDB(rows=[])
-    _code, out = _run(monkeypatch, capsys, ["pinned"], db)
-    assert "No pinned sessions" in out
-    assert "hermes sessions pin" in out

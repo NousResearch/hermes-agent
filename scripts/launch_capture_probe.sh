@@ -39,18 +39,20 @@ echo "OK"
 echo "--- treatment 1: source shape (npm exec -- electron .) captured, not spawned"
 rm -f "$WORK"/spec.json*
 run_py yes -c '
-import subprocess
-r = subprocess.run(["npm", "exec", "--", "electron", "."], cwd="/tmp", env={"HERMES_DESKTOP_CWD": "/tmp", "PATH": "/usr/bin"})
+import subprocess, tempfile
+tmp = tempfile.gettempdir()
+r = subprocess.run(["npm", "exec", "--", "electron", "."], cwd=tmp, env={"HERMES_DESKTOP_CWD": tmp, "PATH": "/usr/bin"})
 assert r.returncode == 0, r
 '
 [ -e "$WORK/spec.json" ] || fail "treatment 1: no spec written"
 [ "$(cat "$WORK/spec.json.captured")" = "source" ] || fail "treatment 1: wrong shape"
 python3 - "$WORK/spec.json" <<'EOF'
-import json, sys
+import json, sys, tempfile
+tmp = tempfile.gettempdir()
 spec = json.load(open(sys.argv[1]))
 assert spec["argv"] == ["npm", "exec", "--", "electron", "."], spec["argv"]
-assert spec["cwd"] == "/tmp", spec["cwd"]
-assert spec["env"]["HERMES_DESKTOP_CWD"] == "/tmp", "env= kwarg not captured"
+assert spec["cwd"] == tmp, spec["cwd"]
+assert spec["env"]["HERMES_DESKTOP_CWD"] == tmp, "env= kwarg not captured"
 assert spec["matchedShape"] == "source"
 print("spec contents OK")
 EOF
@@ -59,9 +61,9 @@ echo "OK"
 echo "--- treatment 2: packaged shape captured, not spawned"
 rm -f "$WORK"/spec.json*
 run_py yes -c '
-import subprocess
+import subprocess, tempfile
 exe = "/x/apps/desktop/release/linux-unpacked/Hermes"
-r = subprocess.run([exe, "--no-sandbox"], cwd="/tmp", env={"PATH": "/usr/bin"})
+r = subprocess.run([exe, "--no-sandbox"], cwd=tempfile.gettempdir(), env={"PATH": "/usr/bin"})
 assert r.returncode == 0, r   # a real spawn of this path would ENOENT
 '
 [ "$(cat "$WORK/spec.json.captured")" = "packaged" ] || fail "treatment 2: wrong shape"

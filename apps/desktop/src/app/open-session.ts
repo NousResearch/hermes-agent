@@ -15,11 +15,13 @@
  *     the bridge has no session-window support.
  */
 import type { WorkspaceMode } from '@/contrib/types'
-import { $activeSessionId, $selectedStoredSessionId, markSessionRead } from '@/store/session'
+import { $activeSessionId, $selectedStoredSessionId, markSessionRead, requestSessionResume } from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import {
   focusedSessionNeedsRoute,
+  focusedSessionWorkspaceScope,
   focusOpenSession,
+  frontMainIfSelected,
   openSessionTile,
   reuseBlankDraftTile,
   setSessionTileWorkspaceScope
@@ -75,6 +77,35 @@ export function openSessionIntentFromModifiers(
   return base
 }
 
+/** Every door that opens a saved chat from a picker-like surface (the /resume
+ * overlay, ⌘K session search, an artifact's "open chat") preserves the
+ * workspace of the tab the user acted from. `intent` is the caller's unmodified
+ * meaning (`in-place` for the overlay and artifacts, `stack` for ⌘K, or the
+ * ⌘/⇧⌘ modifier result); a Bot-scoped `in-place` becomes `stack` so the chat
+ * lands in the Bot tab instead of the Sessions main. */
+export function openSessionFromPicker(
+  storedSessionId: string,
+  navigate: OpenSessionNavigate,
+  intent: OpenSessionIntent = 'in-place'
+): void {
+  // A picker click is an EXPLICIT reselect, even when the row is the chat this
+  // window already shows (#62045): openSession's in-place path would see the
+  // active session on screen, front it (a visual no-op), and never queue a
+  // resume — so the transcript/composer never get the re-attach a sidebar click
+  // on the same row issues via its own door (wiring.tsx openStoredSession →
+  // requestSessionResume). Queue the explicit request here so every picker
+  // surface (/resume overlay, ⌘K, artifacts) matches the sidebar, and
+  // use-route-resume's `explicitlyRequested` branch bypasses its
+  // already-active skip and re-runs resumeSession (which re-fronts the
+  // surface and re-focuses the composer through its normal path).
+  requestSessionResume(storedSessionId)
+
+  const workspaceScope = focusedSessionWorkspaceScope()
+  const resolved = workspaceScope.workspaceMode === 'bots' && intent === 'in-place' ? 'stack' : intent
+
+  openSession(storedSessionId, navigate, resolved, workspaceScope)
+}
+
 /**
  * @param navigate Required for `in-place` (route into main when not on screen).
  *   `tab` / `window` ignore it — pass a no-op when you don't have a router handle.
@@ -126,7 +157,14 @@ export function openSession(
   let spendBlankDraft = false
 
   if (resolved === 'stack') {
-    spendBlankDraft = mainChatOccupied($activeSessionId.get(), $selectedStoredSessionId.get())
+    // A Bot-scoped picker is already inside a session tab, so its blank draft
+    // is the surface the user expects `/resume` to replace. Main may be empty
+    // or hidden behind the Bots workspace; treating that as an in-place open
+    // routes the saved chat elsewhere while leaving the visible blank tab
+    // active. Force the tab path so it first focuses an existing target, then
+    // spends the scoped blank draft before stacking a new tab.
+    spendBlankDraft =
+      Boolean(botWorkspaceScope) || mainChatOccupied($activeSessionId.get(), $selectedStoredSessionId.get())
     resolved = spendBlankDraft ? 'tab' : 'in-place'
   }
 
@@ -162,6 +200,8 @@ export function openSession(
       openSessionTile(storedSessionId, 'center')
     }
 
+    focusOpenSession(storedSessionId, workspaceScope)
+
     return
   }
 
@@ -169,7 +209,20 @@ export function openSession(
   // otherwise load it into main. From a full page (artifacts, skills, …) a
   // `'main'` hit still has to route back: fronting the workspace tab alone
   // leaves the page showing.
-  if (focusedSessionNeedsRoute(focusOpenSession(storedSessionId, workspaceScope), $workspaceIsPage.get())) {
+  const focused = focusOpenSession(storedSessionId, workspaceScope)
+
+  if (focusedSessionNeedsRoute(focused, $workspaceIsPage.get())) {
     navigate(sessionRoute(storedSessionId))
+  }
+
+  // The target may also be the chat MAIN already holds — a Bot Mode roster
+  // click whose owner lost its tile (closing main promoted a neighbour tile
+  // into the workspace pane). focusOpenSession declined the 'main' hit for the
+  // Bot scope because a Bot tab for the same stored id must stay mintable, and
+  // the navigate above changed nothing (the route already points there), so
+  // front the pane here — or a zone parked on another bot's tile leaves the
+  // click looking dead (#125899).
+  if (!focused) {
+    frontMainIfSelected(storedSessionId)
   }
 }

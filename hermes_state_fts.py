@@ -4,11 +4,16 @@ FTS-scoped corruption detection and the atomic fail-open trigger detach."""
 
 import logging
 import os
+import re
 import sqlite3
+import time
 from pathlib import Path
+from typing import Sequence
 
 from hermes_constants import get_hermes_home
-from hermes_state_common import FTS_CJK_STALE_KEY, FTS_STALE_KEY, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS
+from hermes_state_common import (FTS_CJK_STALE_KEY, FTS_SQL, FTS_STALE_KEY, FTS_TRIGRAM_SQL, _FTS_CJK_TRIGGERS,
+    _FTS_TRIGGERS, routed_sessions_setting)
+from hermes_state_errors import is_fts_scoped_corruption_error, is_sqlite_lock_error
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
@@ -100,8 +105,9 @@ def fts5_cjk_so_path() -> Path:
 
 
 def _cjk_fts_config_enabled() -> bool:
-    """config.yaml ``sessions.cjk_fts`` (default on), via its env bridge."""
-    return os.getenv("HERMES_CJK_FTS", "1").strip().lower() not in ("0", "false", "off", "no")
+    """config.yaml ``sessions.cjk_fts`` (default on) for the profile being served."""
+    value = routed_sessions_setting("cjk_fts", "HERMES_CJK_FTS")
+    return value is None or str(value).strip().lower() not in ("0", "false", "off", "no")
 
 
 def load_fts5_cjk_extension(conn: sqlite3.Connection) -> bool:
@@ -120,6 +126,155 @@ def load_fts5_cjk_extension(conn: sqlite3.Connection) -> bool:
     except Exception:
         logger.warning("fts5_cjk extension load failed (%s)", path, exc_info=True)
         return False
+
+
+_FTS_DDL_TABLES = ("messages_fts", "messages_fts_trigram")
+
+
+def _stored_form(sql: str) -> str:
+    """``sqlite_master.sql`` as compared here: whitespace collapsed, none kept around parentheses and commas (the
+    same definition written with different spacing is the same layout), and the object name unquoted (an ALTER
+    TABLE RENAME round trip stores it as ``"name"`` without changing the layout)."""
+    collapsed = re.sub(r"\s*([(),])\s*", r"\1", " ".join((sql or "").split()))
+    return re.sub(r'^CREATE (VIRTUAL TABLE|VIEW) "([^"]+)"', r"CREATE \1 \2", collapsed)
+
+
+def _expected_stored_sql(ddl: str, kind: str, name: str) -> str:
+    """The stored form of the ``CREATE <kind> IF NOT EXISTS <name>`` statement in *ddl* (``IF NOT EXISTS``
+    and ``;`` dropped), i.e. what ``sqlite_master.sql`` holds once the DDL has run."""
+    start = ddl.index(f"CREATE {kind} IF NOT EXISTS {name} ")
+    end = ddl.index(";", start)
+    return _stored_form(ddl[start:end].replace(" IF NOT EXISTS", "", 1))
+
+
+def _expected_vtable_sql(ddl: str, table: str) -> str:
+    return _expected_stored_sql(ddl, "VIRTUAL TABLE", table)
+
+
+# Every stored definition a released version has created, oldest first; the LAST entry is the one this code
+# creates. optimize-storage rebuilds only the older entries: an unrecognised definition (a newer release's, after
+# a downgrade) is left alone. Literal on purpose: a change to FTS_SQL / FTS_TRIGRAM_SQL fails
+# test_the_layout_registry_ends_with_the_shipping_ddl until its new form is appended here, which keeps the
+# previous form recognisable as old.
+FTS_VTABLE_LAYOUTS: dict[str, tuple[str, ...]] = {
+    "messages_fts": (
+        "CREATE VIRTUAL TABLE messages_fts USING fts5(content,content=messages,content_rowid=id)",
+        "CREATE VIRTUAL TABLE messages_fts USING fts5(content)",
+        "CREATE VIRTUAL TABLE messages_fts USING fts5(content,tool_name,tool_calls,content='messages',"
+        "content_rowid='id')",
+        "CREATE VIRTUAL TABLE messages_fts USING fts5(content,tool_name,tool_calls,"
+        "content='messages_fts_src',content_rowid='id')",
+    ),
+    "messages_fts_trigram": (
+        "CREATE VIRTUAL TABLE messages_fts_trigram USING fts5(content,content=messages,content_rowid=id,"
+        "tokenize='trigram')",
+        "CREATE VIRTUAL TABLE messages_fts_trigram USING fts5(content,tokenize='trigram')",
+        "CREATE VIRTUAL TABLE messages_fts_trigram USING fts5(content,tool_name,tool_calls,"
+        "content='messages_fts_trigram_src',content_rowid='id',tokenize='trigram')",
+        "CREATE VIRTUAL TABLE messages_fts_trigram USING fts5(content,tool_name,"
+        "content='messages_fts_trigram_src',content_rowid='id',tokenize='trigram')",
+    ),
+}
+
+
+def _stored_vtables(cursor: sqlite3.Cursor) -> dict[str, str]:
+    rows = cursor.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name IN (?, ?)", _FTS_DDL_TABLES).fetchall()
+    return {name: _stored_form(sql) for name, sql in rows}
+
+
+def _is_older_layout(table: str, stored: str) -> bool:
+    """A definition an earlier release created. The two shape checks keep every store the pre-registry code
+    treated as old (any base index without ``tool_name``, any trigram with ``tool_calls``) on the opt-in path."""
+    if stored in FTS_VTABLE_LAYOUTS[table][:-1]:
+        return True
+    if table == "messages_fts":
+        return "tool_name" not in stored
+    return "tool_calls" in stored.lower()
+
+
+def base_index_recognised(cursor: sqlite3.Cursor) -> bool:
+    """``messages_fts`` holds a definition this code or an earlier release created; the open-time realign
+    replaces nothing else."""
+    return _stored_vtables(cursor).get("messages_fts") in FTS_VTABLE_LAYOUTS["messages_fts"]
+
+
+def base_index_realigned_on_open(stored: str) -> bool:
+    """External-content base index not reading ``messages_fts_src``: the next read-write open rebuilds it from
+    the current DDL (``_migrate_misaligned_fts_source``), so it is never opt-in work."""
+    return "tool_name" in stored and "messages_fts_src" not in stored
+
+
+def fts_layout_drift(cursor: sqlite3.Cursor) -> list[str]:
+    """FTS tables on an older release's definition that only ``optimize-storage`` replaces; empty otherwise.
+
+    Shared by the update notice, doctor and optimize-storage's demote decision. An absent table is not drift
+    (the trigram index is optional; the base index is created on open), nor is a base index the next open
+    realigns, nor a definition this code does not recognise. The cjk index owns its own markers.
+    """
+    return [table for table, stored in _stored_vtables(cursor).items()
+            if _is_older_layout(table, stored)
+            and not (table == "messages_fts" and base_index_realigned_on_open(stored))]
+
+
+def fts_layout_current(cursor: sqlite3.Cursor) -> bool:
+    """True when every present FTS table, and the base index's source view, is exactly what this code creates:
+    the only state the ``fts_storage_version`` stamp may be written over."""
+    stored = _stored_vtables(cursor)
+    if any(sql != FTS_VTABLE_LAYOUTS[table][-1] for table, sql in stored.items()):
+        return False
+    if "messages_fts" not in stored:
+        return True
+    row = cursor.execute("SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'messages_fts_src'").fetchone()
+    return row is not None and _stored_form(row[0]) == _expected_stored_sql(FTS_SQL, "VIEW", "messages_fts_src")
+
+
+def base_source_view_is_stale(cursor: sqlite3.Cursor) -> bool:
+    """``messages_fts_src`` exists but differs from what this code creates (``CREATE VIEW IF NOT EXISTS`` never
+    replaces it)."""
+    row = cursor.execute("SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'messages_fts_src'").fetchone()
+    return row is not None and _stored_form(row[0]) != _expected_stored_sql(FTS_SQL, "VIEW", "messages_fts_src")
+
+
+# FTS5 shadow tables the virtual-table engine owns. `sqlite3 .recover` re-emits them
+# as ordinary tables but cannot re-emit the CREATE VIRTUAL TABLE row, so every later
+# CREATE VIRTUAL TABLE fails with "fts5: error creating shadow table <name>: table
+# already exists" until the orphans are dropped (#103840).
+_FTS5_SHADOW_SUFFIXES = ("content", "data", "docsize", "idx", "config")
+
+
+def _drop_orphan_fts_shadow_tables(cursor: sqlite3.Cursor, families: Sequence[str]) -> list[str]:
+    """Drop, per family, shadow tables whose virtual table row is absent from sqlite_master.
+
+    Matches exact shadow names only (never a prefix LIKE, so the base family cannot reach
+    ``messages_fts_trigram_*``) and leaves a family alone whenever its vtable is live. The
+    shadows are derived index state; the caller recreates and rebuilds from ``messages``.
+    Returns the families that were repaired.
+    """
+    repaired: list[str] = []
+    for family in families:
+        vtable_live = cursor.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? "
+            "AND sql LIKE 'CREATE VIRTUAL TABLE%'",
+            (family,),
+        ).fetchone()
+        if vtable_live:
+            continue
+        shadows = [f"{family}_{suffix}" for suffix in _FTS5_SHADOW_SUFFIXES]
+        orphans = [row[0] for row in cursor.execute(
+            f"SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ({','.join('?' for _ in shadows)})",
+            shadows,
+        ).fetchall()]
+        if not orphans:
+            continue
+        for name in orphans:
+            cursor.execute(f'DROP TABLE "{name}"')
+        logger.warning(
+            "Dropped orphan FTS5 shadow tables of %s (%s); the index is recreated from messages",
+            family, ", ".join(orphans),
+        )
+        repaired.append(family)
+    return repaired
 
 
 class SessionFtsSetupMixin:
@@ -164,8 +319,8 @@ class SessionFtsSetupMixin:
 
     @classmethod
     def _db_needs_fts_storage_upgrade(cls, cursor: sqlite3.Cursor) -> bool:
-        """True when the current FTS storage layout should be treated as stale (optimize-storage has work)."""
-        return cls._db_has_legacy_inline_fts(cursor) or cls._db_has_trigram_tool_calls_projection(cursor)
+        """True when optimize-storage has layout work: a stored FTS vtable differs from what this code creates."""
+        return bool(fts_layout_drift(cursor))
 
     def _warn_trigram_unavailable(self, exc: sqlite3.OperationalError) -> None:
         """Log once that the trigram tokenizer is missing; base FTS5 stays enabled."""
@@ -299,54 +454,74 @@ class SessionFtsSetupMixin:
 
     @staticmethod
     def _is_fts_write_corruption_error(exc: sqlite3.DatabaseError) -> bool:
-        """Corruption SQLite identifies as FTS-scoped (SQLITE_CORRUPT_VTAB, or an
-        ``fts5:`` message on older builds); a bare malformed image is structural."""
-        error_code = getattr(exc, "sqlite_errorcode", None)
-        if error_code is not None:
-            return error_code == getattr(sqlite3, "SQLITE_CORRUPT_VTAB", 267)
-        msg = str(exc).lower()
-        return msg.startswith("fts5:") and "corrupt structure" in msg
+        """Corruption SQLite identifies as FTS-scoped (SQLITE_CORRUPT_VTAB, or an ``fts5:``
+        report naming ``messages_fts*`` on builds without result codes); a bare malformed
+        image is structural. One rule, shared with ``classify_persistence_error`` and the
+        gateway transcript retry: see :func:`hermes_state_errors.is_fts_scoped_corruption_error`."""
+        return is_fts_scoped_corruption_error(exc)
 
-    def _enter_fts_fail_open(self, exc: sqlite3.DatabaseError) -> bool:
+    def _enter_fts_fail_open(
+        self, exc: sqlite3.DatabaseError, *, deadline: float | None = None, patience_s: float | None = None,
+    ) -> bool:
         """Detach corrupt FTS indexes so canonical writes can continue. Breadcrumb +
         trigger drop commit atomically: once triggers are absent the index has a
-        gap of unknown extent, so nobody may reinstall them without a full rebuild."""
+        gap of unknown extent, so nobody may reinstall them without a full rebuild.
+
+        A busy write lock is waited out on the caller's write budget (default
+        ``_WRITE_PATIENCE_S``), like ``_execute_write``: the writer connection's busy
+        timeout is only 1 s, and the usual holder is a sibling writer detaching the
+        same corrupt index — giving up after 1 s cost that turn's canonical write."""
         if not self._fts_enabled or not self._is_fts_write_corruption_error(exc):
             return False
-        self._raise_if_db_corrupt()
-        self._halt_if_db_generation_changed()
-        try:
-            with self._lock:
-                self._conn.execute("BEGIN IMMEDIATE")
-                try:
-                    self._conn.execute(
-                        "INSERT INTO state_meta (key, value) VALUES (?, '1') "
-                        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                        (FTS_STALE_KEY,),
-                    )
-                    cjk_triggers_present = self._conn.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type = 'trigger' "
-                        f"AND name IN ({','.join('?' for _ in _FTS_CJK_TRIGGERS)}) "
-                        "LIMIT 1",
-                        _FTS_CJK_TRIGGERS,
-                    ).fetchone()
-                    if cjk_triggers_present:
+        if patience_s is None:
+            patience_s = self._WRITE_PATIENCE_S
+        if deadline is None:
+            deadline = time.monotonic() + patience_s
+        while True:
+            # Re-checked every attempt: a sibling may quarantine the file while we wait for the
+            # lock, and nothing may be committed on a quarantined handle.
+            self._raise_if_db_corrupt(storage=True)
+            try:
+                with self._lock:
+                    self._raise_if_db_replaced()
+                    if self._conn is None:
+                        self._reopen_after_close_locked(context="write")
+                    self._conn.execute("BEGIN IMMEDIATE")
+                    try:
                         self._conn.execute(
                             "INSERT INTO state_meta (key, value) VALUES (?, '1') "
                             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                            (FTS_CJK_STALE_KEY,),
+                            (FTS_STALE_KEY,),
                         )
-                    self._drop_all_fts_triggers(self._conn.cursor())
-                    self._conn.commit()
-                except BaseException:
-                    self._conn.rollback()
-                    raise
-        except sqlite3.Error as detach_exc:
-            logger.error(
-                "Could not detach corrupt FTS indexes; canonical write still cannot proceed: %s",
-                detach_exc,
-            )
-            return False
+                        cjk_triggers_present = self._conn.execute(
+                            "SELECT 1 FROM sqlite_master WHERE type = 'trigger' "
+                            f"AND name IN ({','.join('?' for _ in _FTS_CJK_TRIGGERS)}) "
+                            "LIMIT 1",
+                            _FTS_CJK_TRIGGERS,
+                        ).fetchone()
+                        if cjk_triggers_present:
+                            self._conn.execute(
+                                "INSERT INTO state_meta (key, value) VALUES (?, '1') "
+                                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                                (FTS_CJK_STALE_KEY,),
+                            )
+                        self._drop_all_fts_triggers(self._conn.cursor())
+                        self._conn.commit()
+                    except BaseException:
+                        self._conn.rollback()
+                        raise
+                break
+            except sqlite3.Error as detach_exc:
+                if (
+                    isinstance(detach_exc, sqlite3.OperationalError) and is_sqlite_lock_error(detach_exc)
+                    and self._sleep_before_write_retry(deadline, patience_s)
+                ):
+                    continue
+                logger.error(
+                    "Could not detach corrupt FTS indexes; canonical write still cannot proceed: %s",
+                    detach_exc,
+                )
+                return False
         self._fts_stale = True
         self._fts_enabled = False
         self._trigram_available = False

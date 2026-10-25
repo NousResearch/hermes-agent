@@ -5,6 +5,7 @@ description: 'Snapcompact context engine: archives conversation history as dense
   vision models read back at ~1/3 the token cost.'
 maintainer: vimona3ds
 tier: community
+category: memory
 docs_url: https://github.com/vimona3ds/hermes-snapcompact
 platforms: []
 capabilities:

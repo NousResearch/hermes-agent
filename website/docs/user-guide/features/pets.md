@@ -117,7 +117,7 @@ How generation works (a two-step, cost-bounded flow):
 
 ### Image backend
 
-Generation uses the active [image-generation provider](/user-guide/features/image-generation), but it requires **reference-image grounding** so each animation row stays the same character as the base. Reference-capable backends: **Nous Portal**, **OpenRouter**, **OpenAI** (`gpt-image-2`), and **Krea**. OpenRouter/Nous run a quality-first model chain by default.
+Generation uses the active [image-generation provider](./image-generation.md), but it requires **reference-image grounding** so each animation row stays the same character as the base. Reference-capable backends: **Nous Portal**, **OpenRouter**, **OpenAI** (`gpt-image-2`), and **Krea**. OpenRouter/Nous run a quality-first model chain by default.
 
 - Resolution order prefers Nous Portal → OpenAI → OpenRouter.
 - If no reference-capable backend is configured, generation surfaces an actionable error pointing you to `hermes tools` → Image Generation. (Installing/adopting existing gallery pets needs no image backend.)

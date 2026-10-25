@@ -14,13 +14,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.context_compressor import ContextCompressor
 from agent.turn_context import (
     PreflightCompressionTimedOut,
     TurnContext,
     build_turn_context,
 )
-from hermes_state import SessionDB
 
 
 class _FakeTodoStore:
@@ -90,7 +88,6 @@ class _FakeAgent:
         self._stream_think_scrubber = None
         # Attributes the prologue assigns; recorded for assertions.
         self._invalid_tool_retries = -1
-        self._vision_supported = None
         self._persist_calls = 0
         self._session_messages = []
         self._pending_cli_user_message = None
@@ -138,33 +135,6 @@ class _FakeAgent:
 
     def _persist_session(self, *_a, **_k):
         self._persist_calls += 1
-
-
-def _make_agent_with_cooldown(db_path, session_id, *, cooldown_until=None):
-    agent = _FakeAgent()
-    agent.compression_enabled = True
-    agent._emit_status = MagicMock()
-    agent._compress_context = MagicMock(
-        side_effect=lambda messages, *_a, **_k: (messages, "SYSTEM")
-    )
-
-    db = SessionDB(db_path=db_path)
-    db.create_session(session_id, source="cli")
-    if cooldown_until is not None:
-        db.record_compression_failure_cooldown(session_id, cooldown_until, "timeout")
-
-    with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-        compressor = ContextCompressor(
-            model="test/model",
-            threshold_percent=0.85,
-            protect_first_n=2,
-            protect_last_n=2,
-            quiet_mode=True,
-        )
-    compressor.bind_session_state(db, session_id)
-    agent.context_compressor = compressor
-    agent._session_db = db
-    return agent
 
 
 @pytest.fixture(autouse=True)
@@ -215,7 +185,8 @@ def test_returns_turn_context_with_user_message_appended():
 
 
 def test_preflight_timeout_stops_turn_before_provider_boundary():
-    """An unchanged oversized payload must not escape turn construction."""
+    """An unchanged payload above the model window must not escape turn construction (a request that
+    still fits its window is sent uncompressed instead — see test_preflight_compression_timeout_fail_closed)."""
     agent = _FakeAgent()
     agent.compression_enabled = True
     agent.max_compression_attempts = 3
@@ -223,7 +194,7 @@ def test_preflight_timeout_stops_turn_before_provider_boundary():
         protect_first_n=2,
         protect_last_n=2,
         threshold_tokens=1_000,
-        context_length=4_000,
+        context_length=1_500,
         summary_target_ratio=0.3,
         last_prompt_tokens=0,
         should_compress=lambda tokens=None: True,
@@ -382,10 +353,9 @@ def test_turn_start_replaces_stale_parent_history_with_compression_child():
 def test_applies_agent_side_effects():
     agent = _FakeAgent()
     _build(agent)
-    # Retry counters reset, guardrails reset, vision re-armed, turn counted.
+    # Retry counters reset, guardrails reset, turn counted.
     assert agent._invalid_tool_retries == 0
     assert agent._tool_guardrails.reset_called is True
-    assert agent._vision_supported is True
     assert agent._user_turn_count == 1
     # Crash-resilience persistence fired once.
     assert agent._persist_calls == 1
@@ -485,7 +455,7 @@ def test_between_turns_refresh_adds_late_tool_when_servers_registered():
     new_def = {"type": "function", "function": {"name": "mcp_x_tool", "description": "", "parameters": {}}}
 
     import model_tools
-    import tools.mcp_tool  # noqa: F401 — the prologue's import-cost gate requires it in sys.modules
+    import tools.mcp_tool
     with patch("tools.mcp_tool_discovery.has_registered_mcp_tools", return_value=True), \
          patch.object(model_tools, "get_tool_definitions", return_value=[new_def]):
         _build(agent)
@@ -534,3 +504,40 @@ def test_prologue_does_not_title_machine_driven_runs(platform):
     overwritten or never read.
     """
     assert not _title_turn(platform).called
+
+
+def test_prologue_names_a_subagent_run_after_its_goal_without_a_model_call():
+    """A delegate run gets ``Subagent: <goal>`` at derived authority so it reads as machinery
+    wherever ``sessions.show_subagents`` lists it, instead of staying untitled (#97202)."""
+    from agent import turn_context
+
+    agent = _TitlingAgent("subagent")
+    agent._session_db.set_auto_title.return_value = True
+    with patch("agent.title_generator.maybe_auto_title") as titler:
+        turn_context._maybe_title_session_at_turn_start(
+            agent, [{"role": "user", "content": "Audit the billing module\n\nContext: ..."}])
+    assert not titler.called
+    agent._session_db.set_auto_title.assert_called_once_with(
+        "sess-1", "Subagent: Audit the billing module", source="derived")
+
+
+def test_prologue_leaves_cron_runs_untitled():
+    agent = _TitlingAgent("cron")
+    from agent import turn_context
+
+    turn_context._maybe_title_session_at_turn_start(agent, [{"role": "user", "content": "Run the job"}])
+    assert not agent._session_db.set_auto_title.called
+
+
+def test_prologue_forwards_the_submit_title_preview_to_the_titler():
+    """A paste-shrunk ``display_metadata.title_preview`` from prompt.submit is the text the
+    titler should read, not the full pasted body."""
+    from agent import turn_context
+
+    with patch("agent.title_generator.maybe_auto_title") as titler:
+        turn_context._maybe_title_session_at_turn_start(
+            _TitlingAgent("desktop"),
+            [{"role": "user", "content": "x" * 5000,
+              "display_metadata": {"title_preview": "Pasted 5000 chars"}}],
+        )
+    assert titler.call_args.kwargs["title_preview"] == "Pasted 5000 chars"

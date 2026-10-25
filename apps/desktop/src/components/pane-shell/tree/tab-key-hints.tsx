@@ -12,9 +12,9 @@ export function TabKeyHint({ children, groupId, slot }: { children: ReactNode; g
   const held = useStore($heldTabModifier)
 
   return (
-    <span className="relative flex shrink-0 items-center [&:has([data-tab-key-hint])>span:first-child]:invisible">
-      <span className="flex items-center">{children}</span>
+    <span className="relative flex shrink-0 items-center">
       {held && <HeldTabKeyHint groupId={groupId} slot={slot} />}
+      <span className="tab-key-hint-icon flex items-center">{children}</span>
     </span>
   )
 }
@@ -27,7 +27,7 @@ function HeldTabKeyHint({ groupId, slot }: { groupId: string; slot: number }) {
   useStore($registryVersion)
   const bindings = useStore($comboIndex)
 
-  if (slot > 9 || bindings.get(`mod+${slot}`) !== `profile.switch.${slot}` || treeTabSlotTarget()?.id !== groupId) {
+  if (slot > 9 || bindings.get(`mod+${slot}`)?.[0] !== `view.tabSlot.${slot}` || treeTabSlotTarget()?.id !== groupId) {
     return null
   }
 

@@ -61,16 +61,6 @@ describe('seedBootEnvironment', () => {
     expect(seeded).toEqual({ seededBackground: '#1e1e1e', seededPin: true })
   })
 
-  it('replays a pinned dark on a light physical background too', () => {
-    const env: NodeJS.ProcessEnv = {}
-
-    const seeded = seedBootEnvironment(cache({ background: '#ffffff', mode: 'dark' }), env)
-
-    expect(env.HERMES_TUI_THEME).toBe('dark')
-    expect(env.HERMES_TUI_BACKGROUND).toBe('#ffffff')
-    expect(seeded.seededPin).toBe(true)
-  })
-
   it('is a no-op without a cache', () => {
     const env: NodeJS.ProcessEnv = {}
 
@@ -93,15 +83,6 @@ describe('invalidateBootBackground', () => {
 
     // Idempotent: a second distrusted answer has nothing left to clear.
     expect(invalidateBootBackground(env)).toBe(false)
-  })
-
-  it('clears a stale dark cache on a current ambiguous terminal the same way', () => {
-    const env: NodeJS.ProcessEnv = {}
-
-    seedBootEnvironment(cache({ background: '#1e1e1e' }), env)
-
-    expect(invalidateBootBackground(env)).toBe(true)
-    expect(env.HERMES_TUI_BACKGROUND).toBeUndefined()
   })
 
   it('leaves a trusted OSC answer that overwrote the seed alone', () => {

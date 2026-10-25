@@ -1,0 +1,51 @@
+name: memory-shield
+title: Memory Shield
+repo: https://github.com/churnast/hermes-memory-shield
+sha: 347ab18408da52937f7e808a6e88a52b74184225
+description: >-
+  Keeps your agent from rewriting or wiping what it remembers about you: by default the agent may add facts
+  to the owner profile (USER.md) wherever it may write and may correct one only when the owner asks in a
+  direct chat, the CLI or a trusted chat, and nobody may delete one; the agent's notes (MEMORY.md) cannot
+  be deleted; group chats are read-only except for the people and owner-only chats you trust, and once
+  trusted_users is set a direct chat with anyone not listed is read-only too; Hermes' unattended
+  background review may not touch the owner profile. Block, ask through Hermes' approval prompt or just
+  log, and undo edits and deletions from snapshots.
+  Disclosure — no network calls, credentials, shell commands or background processes. One pre_tool_call hook
+  reads the turn's platform, chat type, chat id and name, sender id and name and the cron flag
+  (gateway.session_context) and whether the run is Hermes' unattended review
+  (tools.skill_provenance.is_unattended_review), checks memory tool calls, and checks write_file, patch,
+  terminal and execute_code calls only for a write into, or a removal of, USER.md, MEMORY.md or the memory
+  folder (reading a memory file or copying it elsewhere passes in calls up to 16 KB; a longer call that names
+  them is refused); mode approve asks through Hermes' approval gate in the owner's direct chats and the CLI
+  and blocks in shared chats, cron and direct chats with people not in trusted_users. Writes
+  plugin-data/memory-shield/audit.jsonl (the last 500 refused or flagged writes: time, chat, sender and a
+  160-character excerpt) and snapshots/ (full copies of USER.md and MEMORY.md taken right before an allowed
+  edit or deletion, 20 per file by default). Reads the memory files and holds the memory store's lock files
+  while it reads or writes them (not on Windows); /memory-shield restore overwrites one memory file.
+  /memory-shield log and restore answer only in direct chats, the CLI and trusted_chats, and once
+  trusted_users is set only the people listed there (a session without a user id, such as the CLI, counts as
+  the owner); /memory-shield, snapshots and whoami answer in any chat with settings, counts, times, sizes and
+  the caller's own id, name and chat key.
+maintainer: churnast
+tier: community
+category: general
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/churnast/hermes-memory-shield#readme
+version: "1.1.2"
+image: https://raw.githubusercontent.com/churnast/hermes-memory-shield/347ab18408da52937f7e808a6e88a52b74184225/docs/card.png
+screenshots:
+  - https://raw.githubusercontent.com/churnast/hermes-memory-shield/347ab18408da52937f7e808a6e88a52b74184225/docs/screenshots/01-group-stranger.png
+  - https://raw.githubusercontent.com/churnast/hermes-memory-shield/347ab18408da52937f7e808a6e88a52b74184225/docs/screenshots/02-forget-everything.png
+  - https://raw.githubusercontent.com/churnast/hermes-memory-shield/347ab18408da52937f7e808a6e88a52b74184225/docs/screenshots/04-undo.png
+platforms: [linux, macos]
+known_issues:
+  - "Needs plugins.isolation: in_process (the default). Under plugins.isolation: host the plugin cannot see the current chat, sender or Hermes' review marker, so it judges every call like a direct chat and the group chat and background review protection does not apply."
+  - "Covers Hermes' built-in memory tool (USER.md, MEMORY.md) only, not the tools of memory provider plugins such as Honcho or Mem0."
+  - "Without trusted_users every direct chat counts as the owner: whoever can message the agent directly may add facts to the owner profile and correct them (not delete them) until the owner's id is listed."
+  - "Spotting USER.md and MEMORY.md edits made through terminal and execute_code is best effort: a path built some other way, or a command run from a script file, can get through."
+  - "terminal and execute_code calls are read up to 16,384 characters. A longer call that contains the word memories, USER.md or MEMORY.md (any case, quotes ignored) is refused even when it only reads them; a longer call that contains none of them passes without being read."
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call]
+  provides_middleware: []
+  requires_env: []

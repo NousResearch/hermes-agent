@@ -172,7 +172,25 @@ function parseKey(keypress: ParsedKey): [Key, string] {
   return [key, input]
 }
 
+/**
+ * A ctrl chord is never typed text — but `parseKeypress` names a C0 control
+ * byte after the letter it encodes (0x0c → 'l'), an extended-protocol chord
+ * (kitty CSI u / xterm modifyOtherKeys `ESC [ 108 ; 5 u`) after its keycode,
+ * and `parseKey` above hands that name to `input` so bindings can still match
+ * ctrl+<letter>. Text inserters must not read the name as input: the dashboard
+ * writes the PTY force-redraw byte Ctrl+L (0x0c, `hermes_cli/pty_session.py`
+ * TUI_FORCE_REDRAW) into the TUI's stdin on every re-attach, which typed a
+ * solitary `l` into the composer after a session resume / tab switch / window
+ * restore (#115284). Bracketed pastes are text even when a control byte rides
+ * inside them, so they are never a chord.
+ */
+function isControlChord(keypress: ParsedKey): boolean {
+  return keypress.ctrl && !keypress.isPasted
+}
+
 export class InputEvent extends Event {
+  /** `input` is a ctrl chord's binding name, not text the user typed. */
+  readonly isControlChord: boolean
   readonly keypress: ParsedKey
   readonly key: Key
   readonly input: string
@@ -181,6 +199,7 @@ export class InputEvent extends Event {
     super()
     const [key, input] = parseKey(keypress)
 
+    this.isControlChord = isControlChord(keypress)
     this.keypress = keypress
     this.key = key
     this.input = input

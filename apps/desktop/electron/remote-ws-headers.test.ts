@@ -2,9 +2,13 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   applyRemoteRequestHeaders,
+  attachRemoteRequestHeaderListener,
+  collectRemoteHeaderSources,
   createRegistryGatewayWsUrlHandler,
   createRemoteWsHeaderStore,
-  type RegistryGatewayWsConnection
+  oauthLoginLoadUrlOptions,
+  type RegistryGatewayWsConnection,
+  resolveRemoteRequestHeaders
 } from './remote-ws-headers'
 
 const accessHeaders = {
@@ -34,7 +38,7 @@ function expectRequestHeaders(
 ) {
   const callback = vi.fn()
 
-  applyRemoteRequestHeaders({ url, requestHeaders: { Origin: 'app://hermes' } }, callback, store.headersFor)
+  applyRemoteRequestHeaders({ url, requestHeaders: { Origin: 'app://hermes' } }, callback, store.headersFor, new Map())
 
   expect(callback).toHaveBeenCalledOnce()
   expect(callback).toHaveBeenCalledWith(expected ? { requestHeaders: { Origin: 'app://hermes', ...expected } } : {})
@@ -163,5 +167,110 @@ describe('registry gateway WebSocket headers', () => {
     expect(store.headersFor(result)).toEqual(accessHeaders)
     expectRequestHeaders(store, result, accessHeaders)
     expect(store.headersFor('wss://gateway.example/api/ws?token=secret&trace=one')).toEqual({})
+  })
+})
+
+describe('OAuth login and registry extra headers', () => {
+  it('applies Connections extra headers to /login, not only an exact WebSocket URL', () => {
+    const sources = collectRemoteHeaderSources({
+      connections: [{ kind: 'local' }, { kind: 'remote', url: 'https://gateway.example', headers: accessHeaders }],
+      v1Remote: { url: 'https://other.example', headers: { 'CF-Access-Client-Id': 'v1-only' } }
+    })
+
+    expect(resolveRemoteRequestHeaders('https://gateway.example/login', { sources })).toEqual(accessHeaders)
+    expect(resolveRemoteRequestHeaders('https://gateway.example/api/status', { sources })).toEqual(accessHeaders)
+    expect(oauthLoginLoadUrlOptions(accessHeaders)).toEqual({
+      extraHeaders: 'CF-Access-Client-Id: client-id\nCF-Access-Client-Secret: client-secret'
+    })
+    expect(resolveRemoteRequestHeaders('https://other.example/login', { sources })).toEqual({
+      'CF-Access-Client-Id': 'v1-only'
+    })
+  })
+
+  it('keeps configured headers inside their gateway path and strips them from redirects outside it', () => {
+    const listeners = []
+    let completed = details => details
+
+    const oauthSession = {
+      webRequest: {
+        onBeforeSendHeaders: listener => {
+          listeners.push(listener)
+        },
+        onCompleted: listener => {
+          completed = listener
+        }
+      }
+    }
+
+    const scopedHeaders = { ...accessHeaders, 'X-Api-Key': 'configured-secret' }
+
+    const sources = collectRemoteHeaderSources({
+      connections: [{ kind: 'remote', url: 'https://gateway.example/hermes', headers: scopedHeaders }]
+    })
+
+    attachRemoteRequestHeaderListener(oauthSession, url => resolveRemoteRequestHeaders(url, { sources }))
+
+    const initial = vi.fn()
+    listeners[0](
+      { id: 1, url: 'https://gateway.example/hermes/login', requestHeaders: { Origin: 'app://hermes' } },
+      initial
+    )
+    expect(initial).toHaveBeenCalledWith({
+      requestHeaders: { Origin: 'app://hermes', ...scopedHeaders }
+    })
+
+    const sameScope = vi.fn()
+    listeners[0](
+      {
+        id: 1,
+        url: 'https://gateway.example/hermes/ready',
+        requestHeaders: { Origin: 'app://hermes', Cookie: 'session=live', ...scopedHeaders }
+      },
+      sameScope
+    )
+    expect(sameScope).toHaveBeenCalledWith({
+      requestHeaders: { Origin: 'app://hermes', Cookie: 'session=live', ...scopedHeaders }
+    })
+
+    for (const [id, redirectUrl] of [
+      [2, 'https://gateway.example/login'],
+      [3, 'https://identity.example/callback']
+    ] as const) {
+      listeners[0]({ id, url: 'https://gateway.example/hermes/start', requestHeaders: {} }, vi.fn())
+
+      const redirected = vi.fn()
+      listeners[0](
+        {
+          id,
+          url: redirectUrl,
+          requestHeaders: {
+            Origin: 'app://hermes',
+            Cookie: 'idp-session=live',
+            'x-api-key': scopedHeaders['X-Api-Key'],
+            'cf-access-client-id': scopedHeaders['CF-Access-Client-Id'],
+            'CF-Access-Client-Secret': scopedHeaders['CF-Access-Client-Secret']
+          }
+        },
+        redirected
+      )
+      expect(redirected).toHaveBeenCalledWith({
+        requestHeaders: { Origin: 'app://hermes', Cookie: 'idp-session=live' }
+      })
+    }
+
+    // Stripping is keyed on the request we injected into, not on header
+    // values: an unrelated request carrying the same name — even the same
+    // value — passes through untouched.
+    completed({ id: 1 })
+
+    for (const [id, value] of [
+      [4, 'identity-provider-key'],
+      [4, scopedHeaders['X-Api-Key']],
+      [1, scopedHeaders['X-Api-Key']]
+    ] as const) {
+      const unrelated = vi.fn()
+      listeners[0]({ id, url: 'https://identity.example/token', requestHeaders: { 'X-Api-Key': value } }, unrelated)
+      expect(unrelated).toHaveBeenCalledWith({})
+    }
   })
 })

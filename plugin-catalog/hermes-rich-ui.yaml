@@ -1,0 +1,28 @@
+# plugin-catalog/hermes-rich-ui.yaml — catalog PR: 1 commit, 1 file.
+# Schema fetched 2026-09-28 from
+# https://raw.githubusercontent.com/NousResearch/hermes-agent/main/plugin-catalog/README.md
+# Owner-gated: `sha` is filled at tag-push time (publish.sh replaces it with the
+# v0.1.0 tag's 40-hex commit SHA); the loader rejects anything but a full SHA.
+name: hermes-rich-ui
+repo: https://github.com/jacobhausler/hermes-rich-ui
+sha: "693fe296579ae69cfc78b90624a7b6bfc2564755"
+subdir: ""
+description: "Rich, evidence-backed answer cards — tables, charts, metrics, timelines, sources — rendered inline in the desktop transcript Disclosure — Image and ImageGallery cards load agent-supplied https image URLs (up to 8 per gallery) from any host when the card renders in Desktop"
+maintainer: jacobhausler
+tier: community
+category: desktop                       # README vocabulary: desktop|memory|platform|web|tools|voice|automation|models|general
+requires_hermes: ">=0.21.5"
+version: "0.1.4"                        # cosmetic label; quoted per README
+image: "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/693fe296579ae69cfc78b90624a7b6bfc2564755/assets/screenshot-1.png"
+screenshots:
+- "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/693fe296579ae69cfc78b90624a7b6bfc2564755/assets/screenshot-1.png"
+- "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/693fe296579ae69cfc78b90624a7b6bfc2564755/assets/screenshot-2.png"
+- "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/693fe296579ae69cfc78b90624a7b6bfc2564755/assets/screenshot-3.png"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+  - rich_present
+  provides_hooks: []
+  provides_middleware: []               # plugin.yaml registers no middleware — verify at pinned SHA
+  requires_env: []

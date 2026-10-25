@@ -3,15 +3,17 @@ agent session does not kill tools in other sessions (the gateway runs many agent
 process). The agent passes its execution thread id to set_interrupt(); tools call
 is_interrupted(), which checks the CURRENT thread."""
 
+import contextvars
 import logging
-import os
 import threading
 from collections.abc import Callable
+
+from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
 
 # Opt-in debug tracing — pairs with HERMES_DEBUG_INTERRUPT in tools/environments/base.py.
-_DEBUG_INTERRUPT = bool(os.getenv("HERMES_DEBUG_INTERRUPT"))
+_DEBUG_INTERRUPT = env_var_enabled("HERMES_DEBUG_INTERRUPT")
 if _DEBUG_INTERRUPT:
     # AIAgent's quiet_mode forces the `tools` logger to ERROR on CLI startup;
     # force ours back to INFO so the trace is visible in agent.log.
@@ -24,6 +26,12 @@ _interrupt_reasons: dict[int, str] = {}
 # instead of killing it, so a mid-turn user message is not parked behind it.
 _yield_threads: set[int] = set()
 _lock = threading.Lock()
+# Tool-worker tid a deadline worker acts for. ``run_bounded_sync`` runs its worker under
+# ``contextvars.copy_context()``, so a guard chain moved onto that worker still honours
+# ``/stop`` aimed at the tool thread that spawned it (``is_interrupted`` checks both).
+acting_for_tid: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "hermes_interrupt_acting_for_tid", default=None,
+)
 
 
 def set_interrupt(active: bool, thread_id: int | None = None, *, reason: str | None = None) -> None:
@@ -47,7 +55,7 @@ def set_interrupt(active: bool, thread_id: int | None = None, *, reason: str | N
 
 
 def is_interrupted() -> bool:
-    return is_thread_interrupted(threading.current_thread().ident)
+    return is_thread_interrupted(threading.current_thread().ident) or is_thread_interrupted(acting_for_tid.get())
 
 
 def is_thread_interrupted(thread_id: int | None) -> bool:

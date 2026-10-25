@@ -18,7 +18,7 @@ from tools import interrupt as interrupt_mod
 from tools.process_registry import process_registry
 from tools.terminal_tool import terminal_tool
 
-pytestmark = pytest.mark.linux_only
+pytestmark = pytest.mark.platforms("linux")
 
 
 class _Agent(InterruptControlMixin):
@@ -36,7 +36,13 @@ class _Agent(InterruptControlMixin):
         self._execution_thread_id = None
 
 
+@pytest.mark.live_system_guard_bypass
 def test_redirect_mid_command_yields_it_to_background_without_killing_it(tmp_path, monkeypatch):
+    """Real signal delivery is required: the registry SIGTERMs the shell first, so its
+    ``sleep`` child is reparented to init before the registry reaps it from the descendant
+    snapshot — the conftest guard's parent-chain walk can no longer see it under the test PID."""
+    import psutil
+
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     agent = _Agent()
     res = {}
@@ -65,9 +71,13 @@ def test_redirect_mid_command_yields_it_to_background_without_killing_it(tmp_pat
         assert os.path.exists(f"/proc/{r['pid']}")
         assert process_registry.poll(r["session_id"])["status"] == "running"
         assert not interrupt_mod.is_thread_yield_requested(t.ident)
+        descendants = psutil.Process(r["pid"]).children(recursive=True)
+        assert descendants, "the yielded shell should still own its sleep child"
     finally:
         killed = process_registry.kill_process(r["session_id"])
-    assert killed["status"] == "killed"
+    assert killed["status"] == "killed", killed
+    # The shell exits on SIGTERM before its child does; the orphaned child must still be reaped.
+    assert not any(process_registry._proc_alive(p) for p in descendants), "orphaned descendant survived kill"
     evt = process_registry.completion_queue.get(timeout=5)
     assert evt["session_id"] == r["session_id"]
 

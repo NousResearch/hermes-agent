@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 
 from agent.memory_context import sanitize_context
 from agent.message_content import flatten_message_text
-from agent.history_commentary import visible_commentary
+from agent.history_commentary import COMMENTARY_WITHHELD, commentary_items, visible_commentary
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
@@ -31,12 +31,15 @@ def withhold_held_row(agent: Any, assistant_msg: dict[str, Any]) -> dict[str, An
 
 
 def publish_held_final_row(agent: Any, final_msg: dict[str, Any], final_response: Any, joined: bool) -> None:
-    """The held turn's final row shows what the user got: visible again, and carrying the whole
-    stitched reply when length-continuation fragments (hidden above) were joined into it."""
+    """The held turn's final row shows what the user got: visible again, without the Codex
+    commentary the transform never saw, and carrying the whole stitched reply when
+    length-continuation fragments (hidden above) were joined into it."""
     if getattr(agent, "_hold_stream", False) is not True:
         return
     if final_msg.get("display_kind") == "hidden":
         del final_msg["display_kind"]
+    if commentary_items(final_msg):  # Codex commentary rides the row's items, for replay only
+        final_msg["display_metadata"] = {**(final_msg.get("display_metadata") or {}), COMMENTARY_WITHHELD: True}
     if joined and final_msg.get("content") and final_msg["content"] != final_response:
         final_msg.setdefault("api_content", final_msg["content"])  # the model keeps the piece it wrote
         final_msg["content"] = final_response

@@ -284,13 +284,20 @@ def _close_transcript_tail(agent, messages, final_response, interrupted, _recove
         _apply_override(messages)
 
 
-def _store_rewrite_on_tail(messages, raw, final) -> None:
-    """A recovery exit that already appended its text as the tail row (the iteration-budget summary)
-    stores the rewrite the user gets, not the model text, while that row is still unflushed (#44239)."""
+def _store_rewrite_on_tail(agent, messages, raw, final) -> None:
+    """A recovery exit whose text is already the unflushed tail row (the iteration-budget summary, a
+    stop gate's answer kept as the budget fallback) stores the rewrite the user gets, not the model
+    text (#44239). A held turn's hidden answer becomes the published reply; the model already saw
+    it, so ``api_content`` keeps its bytes on the wire."""
     tail = messages[-1] if messages else None
-    if (final != raw and isinstance(tail, dict) and tail.get("role") == "assistant"
-            and tail.get("content") == raw and not tail.get(_DB_PERSISTED_MARKER)):
-        tail["content"] = final
+    if not (isinstance(tail, dict) and tail.get("role") == "assistant" and tail.get("content") == raw
+            and not tail.get(_DB_PERSISTED_MARKER)):
+        return
+    if tail.get("display_kind") == "hidden" and getattr(agent, "_hold_stream", False) is True:
+        del tail["display_kind"]
+        if final != raw:
+            tail.setdefault("api_content", raw)
+    tail["content"] = final
 
 
 def _micro_compact_after_turn(agent, messages, final_response, logger, task_id) -> None:
@@ -688,7 +695,7 @@ def finalize_turn(
         if final_response and not interrupted:
             _raw = final_response
             final_response, _, _ = apply_llm_output_transform(agent, final_response, turn_id=turn_id, logger=logger)
-            _store_rewrite_on_tail(messages, _raw, final_response)
+            _store_rewrite_on_tail(agent, messages, _raw, final_response)
         _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
         if not interrupted and not failed:
             _micro_compact_after_turn(agent, messages, final_response, logger, effective_task_id)

@@ -102,10 +102,17 @@ def test_a_turn_starting_during_a_plugin_reload_sees_the_settled_hold(tmp_path, 
         reload.start()
         assert gate.entered.wait(10)  # the reload unloaded everything and is re-registering
         answers: list[bool] = []
-        turn = threading.Thread(target=lambda: answers.append(manager.holds_stream()))
+        reading = threading.Event()
+
+        def read() -> None:
+            reading.set()
+            answers.append(manager.holds_stream())
+
+        turn = threading.Thread(target=read)
         turn.start()
-        turn.join(0.5)
-        assert answers == []  # the turn waits while the plugin is mid-reload
+        assert reading.wait(10)  # the read has started: from here only the reload lock can hold it
+        turn.join(2.0)
+        assert answers == [] and turn.is_alive()  # the turn waits while the plugin is mid-reload
         gate.release.set()
         reload.join(10)
         turn.join(10)

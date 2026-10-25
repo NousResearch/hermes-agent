@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from tests.fakes.fake_llm_provider import Error, FakeLLMServer, Text, ToolCall
+from tests.fakes.providers.openai_responses import FakeResponsesServer, Message, Turn
 from tests.fakes.redactor_plugin import COMMENTARY, RAW, REWRITE, redactor_home
 
 ATTEMPT = "Done, the deploy key SECRET-321 is in place."
@@ -22,15 +23,16 @@ ATTEMPT = "Done, the deploy key SECRET-321 is in place."
 def _agent(server, db, session_id: str, **kwargs):
     from run_agent import AIAgent
 
+    kwargs.setdefault("enabled_toolsets", ["todo"])
     return AIAgent(base_url=server.base_url, api_key="sk-fake-e2e", provider="custom", model="fake-model",
-                   quiet_mode=True, skip_context_files=True, skip_memory=True, enabled_toolsets=["todo"],
+                   quiet_mode=True, skip_context_files=True, skip_memory=True,
                    session_id=session_id, session_db=db, **kwargs)
 
 
 @pytest.fixture
 def held(tmp_path):
-    """``run(script, plugin_body=None, **agent_kwargs) -> (result, shown, displayed history, server, db)``
-    for one held turn."""
+    """``run(script, plugin_body=None, server_cls=FakeLLMServer, **agent_kwargs)
+    -> (result, shown, displayed history, server, db)`` for one held turn."""
     from gateway.session_controls import display_projection
     from hermes_cli import plugins
     from hermes_state import SessionDB
@@ -38,16 +40,15 @@ def held(tmp_path):
     home = Path(os.environ["HERMES_HOME"])
     opened = []
 
-    def run(script, plugin_body=None, **kwargs):
-        server = FakeLLMServer(script)
-        server.start()
-        opened.append(server)
+    def run(script, plugin_body=None, server_cls=FakeLLMServer, **kwargs):
+        server = server_cls(script).__enter__()
+        opened.append(lambda: server.__exit__(None, None, None))
         redactor_home(home, server.base_url, hold=True)
         if plugin_body:
             (home / "plugins" / "redactor" / "__init__.py").write_text(plugin_body, encoding="utf-8")
         plugins._reset_plugin_managers_for_tests()
         db = SessionDB(db_path=tmp_path / "held.db")
-        opened.append(db)
+        opened.append(db.close)
         agent = _agent(server, db, "held-exit", **kwargs)
         shown = []
         agent.stream_delta_callback = shown.append
@@ -57,8 +58,8 @@ def held(tmp_path):
         return result, [text for text in shown if text], displayed, server, db
 
     yield run
-    for item in opened:
-        (item.stop if isinstance(item, FakeLLMServer) else item.close)()
+    for close in opened:
+        close()
     plugins._reset_plugin_managers_for_tests()
 
 
@@ -145,3 +146,38 @@ def test_commentary_on_an_unknown_tool_call_stays_out_of_history(held):
     assert result["final_response"] == REWRITE
     assert shown == []
     assert COMMENTARY not in str(displayed) and _assistant_texts(displayed) == [REWRITE]
+
+
+_VERIFYING_PLUGIN = (
+    "import re\n"
+    "def redact(response_text, **_):\n    return re.sub(r'SECRET-\\d+', '[REDACTED]', response_text)\n"
+    "def verify(**_):\n    return {'action': 'continue', 'message': 'Run the tests before you finish.'}\n"
+    "def register(ctx):\n"
+    "    ctx.register_hook('transform_llm_output', redact, hold_stream=True)\n"
+    "    ctx.register_hook('pre_verify', verify)\n"
+)
+
+
+def test_answer_kept_as_the_budget_fallback_is_shown_in_history_as_the_rewrite(held, tmp_path):
+    # pre_verify sends the answer back on the last allowed call: the turn ends on that saved answer.
+    edit = ToolCall("write_file", {"path": str(tmp_path / "app.py"), "content": "x = 1\n"})
+    result, shown, displayed, server, db = held(
+        [edit, Text(ATTEMPT)], plugin_body=_VERIFYING_PLUGIN, enabled_toolsets=["file"], max_iterations=2)
+    rewrite = ATTEMPT.replace("SECRET-321", "[REDACTED]")
+    assert result["final_response"] == rewrite and shown == []
+    assert "SECRET-" not in str(displayed) and _assistant_texts(displayed) == [rewrite]
+    # The model keeps the answer it wrote: a resumed turn replays it unchanged.
+    resumed = _agent(server, db, "held-exit", enabled_toolsets=["file"])
+    resumed.run_conversation("thanks", conversation_history=db.get_messages_as_conversation("held-exit"))
+    replayed = [m for m in server.main_requests()[-1]["messages"] if m["role"] == "assistant" and m.get("content")]
+    assert [m["content"] for m in replayed] == [ATTEMPT]
+
+
+def test_codex_commentary_riding_a_held_final_stays_out_of_history(held):
+    turn = Turn([Message(COMMENTARY, phase="commentary"), Message(RAW, phase="final_answer")])
+    result, shown, displayed, _, _ = held([turn], server_cls=FakeResponsesServer, api_mode="codex_responses")
+    assert result["final_response"] == REWRITE and shown == []
+    assert _assistant_texts(displayed) == [REWRITE]
+    # The provider items stay on the row for replay; no rendered field carries the commentary.
+    rendered = [row.get(key) for row in displayed for key in ("text", "display_content", "display_commentary")]
+    assert COMMENTARY not in str(rendered)

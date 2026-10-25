@@ -12,7 +12,12 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from tools.tool_backend_helpers import selection_error, selection_exists
-from tools.url_safety import normalize_url_for_request
+from tools.url_safety import (
+    has_url_userinfo,
+    normalize_url_for_request,
+    sensitive_fragment_param_name,
+    sensitive_query_param_name,
+)
 from tools.web_tools_rescue import _rescue_eligible, _rescue_extract
 
 logger = logging.getLogger("tools.web_tools")
@@ -99,7 +104,21 @@ def _validate_extract_urls(urls: list[Any]):
             invalid_urls[index] = _result_entry("", _INVALID_ITEM_ERROR.format(index))
             continue
         normalized_url = normalize_url_for_request(_url)
-        if any(_PREFIX_RE.search(c) for c in (_url, unquote(_url), normalized_url, unquote(normalized_url))):
+        if has_url_userinfo(normalized_url):
+            return _refuse_all(
+                "Blocked: URL contains embedded userinfo credentials. "
+                "Web extract backends are third-party readers; remove the "
+                "userinfo or use a local browser session when authenticated "
+                "access is explicitly required."
+            )
+        if (
+            sensitive_query_param_name(_url) is not None
+            or sensitive_fragment_param_name(_url) is not None
+            or any(
+                _PREFIX_RE.search(c)
+                for c in (_url, unquote(_url), normalized_url, unquote(normalized_url))
+            )
+        ):
             return _refuse_all(
                 "Blocked: URL contains what appears to be an API key or token. "
                 "Secrets must not be sent in URLs."
@@ -201,8 +220,9 @@ async def _extract_safe_urls(provider, safe_urls: list[str], format: Optional[st
 
     The disk cache (tools/web_result_cache.py) sits AFTER the secret-URL gate, SSRF gate, and provider
     resolution, and is gated per-URL on the website policy — a hit skips only the vendor call, never a
-    control; policy-blocked URLs are cache misses. Keys include provider and format, so switching either
-    within the TTL never serves the other's content."""
+    control. Policy-blocked URLs are refused outright — never fetched, never served from cache — so the
+    blocklist is a gate on this path like every other control. Keys include provider and format, so
+    switching either within the TTL never serves the other's content."""
     from tools.web_result_cache import extract_cache_get
     from tools.website_policy import check_website_access as _check_site
     cached_results, fetch_urls, fetch_positions = {}, [], []
@@ -211,7 +231,12 @@ async def _extract_safe_urls(provider, safe_urls: list[str], format: Optional[st
             _policy_block = _check_site(url)
         except Exception:
             _policy_block = None
-        hit = extract_cache_get(url, format=format, provider=provider.name) if _policy_block is None else None
+        if _policy_block is not None:
+            cached_results[position] = _result_entry(
+                url, _policy_block.get("message") or "Blocked by website policy"
+            )
+            continue
+        hit = extract_cache_get(url, format=format, provider=provider.name)
         if hit is not None:
             cached_results[position] = hit
         else:

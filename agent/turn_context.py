@@ -445,6 +445,25 @@ def _compression_warrants_another_preflight_pass(
     tokens by >5%."""
     return new_tokens >= threshold_tokens and orig_tokens > 0 and new_tokens < orig_tokens * 0.95
 
+def _preflight_block_outlived_its_request(
+    blocked_at_tokens: int, current_tokens: int
+) -> bool:
+    """Whether an "insufficient progress" verdict still describes this request.
+
+    The verdict above is a statement about one request shape: compacting *that*
+    transcript did not pay for itself. A turn keeps appending tool results
+    afterwards, and once the request has grown materially past the size that
+    produced the verdict it is a different transcript — one with new bulk that
+    was never offered to the compressor. Left armed, the block keeps the
+    pre-API gate dark for the rest of the turn while the request runs at the
+    window edge, where providers clip and models start returning empty turns.
+
+    Growth is judged with the same 5% materiality margin the shrink test uses,
+    so the gate re-arms on exactly the scale of change it took to keep it open.
+    """
+    return blocked_at_tokens > 0 and current_tokens > blocked_at_tokens * 1.05
+
+
 
 def _should_run_preflight_estimate(
     messages: list[dict[str, Any]], protect_first_n: int, protect_last_n: int, threshold_tokens: int
@@ -504,6 +523,10 @@ class TurnContext:
     plugin_user_context: str = ""  # ``pre_llm_call`` context (appended to user message)
     ext_prefetch_cache: str = ""  # external-memory prefetch, reused across iterations
     preflight_compression_blocked: bool = False  # immediate retry proved ineffective
+    # Request size that verdict was made about, so the loop can tell when the
+    # transcript has grown into a different one and the block should lift.
+    preflight_blocked_at_tokens: int = 0
+
 
 
 def _persist_under_lock(agent: Any, fn, failure_msg: str, pending_cli_message: Any) -> None:
@@ -1221,6 +1244,7 @@ def build_turn_context(
         current_turn_user_idx=current_turn_user_idx, should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context, ext_prefetch_cache=ext_prefetch_cache,
         preflight_compression_blocked=compaction.blocked,
+        preflight_blocked_at_tokens=compaction.blocked_at_tokens,
     )
 
 

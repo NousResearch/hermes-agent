@@ -110,6 +110,31 @@ def test_agent_teardown_is_bounded():
         release.set()
 
 
+def test_agent_teardown_closes_codex_session():
+    """Teardown drops the ephemeral agent's codex app-server subprocess (#62101)."""
+    agent = MagicMock()
+    session = MagicMock()
+    agent._codex_session = session
+
+    _teardown_cron_agent(agent, "cleanup-codex-session")
+
+    session.close.assert_called_once()
+    assert agent._codex_session is None
+
+
+def test_agent_teardown_closes_codex_session_when_agent_close_raises():
+    """A failing agent.close() must not skip the codex session drop (#62101)."""
+    agent = MagicMock()
+    agent.close.side_effect = RuntimeError("close exploded")
+    session = MagicMock()
+    agent._codex_session = session
+
+    _teardown_cron_agent(agent, "cleanup-codex-session-close-raises")
+
+    session.close.assert_called_once()
+    assert agent._codex_session is None
+
+
 def test_detached_worker_teardown_waits_for_future():
     """A timed-out worker keeps its agent and SessionDB until its Future completes."""
     future = Future()

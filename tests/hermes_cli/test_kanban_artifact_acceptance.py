@@ -46,9 +46,16 @@ json.dump({
     "accepted": candidate.get("approve") is True and candidate.get("reviewed_sha256") == hashes,
     "verdict": "accepted",
     "bindings": {key: authority[key] for key in (
-        "task_id", "run_id", "completion_contract", "owner", "reviewer")},
+        "task_id", "run_id", "completion_contract", "owner", "reviewer",
+        "review_profile", "worker_session_id", "source_revision")},
     "artifact_sha256": hashes,
-    "independent_review": {"independent": True, "reviewer": authority["reviewer"]},
+    "independent_review": {
+        "independent": True,
+        "reviewer": authority["reviewer"],
+        "profile": authority["review_profile"],
+        "session_id": authority["worker_session_id"],
+        "credential_fingerprint": authority["runtime_observation"]["credential_fingerprint"],
+    },
     "evidence": {
         "tests": evidence(candidate.get("test_scope", "targeted-worker")),
         "integration": evidence(candidate.get("integration_scope", "combined-revision")),
@@ -56,6 +63,49 @@ json.dump({
     "usage": candidate.get("usage", {"applicable": False, "reason": "no model or paid service used"}),
 }, sys.stdout)
 '''
+
+SOURCE_REVISION = "workspace-sha256:" + "1" * 64
+
+
+def _observation(profile: str, session_id: str, principal: str) -> dict:
+    return {
+        "runtime": "hermes-native:anthropic_messages",
+        "provider": "anthropic",
+        "model": "claude-test-model",
+        "profile": profile,
+        "session_id": session_id,
+        "auth_class": "api_key",
+        "credential_fingerprint": f"credential-sha256:{principal * 64}",
+        "billing_mode": "metered",
+        "source_revision": SOURCE_REVISION,
+        "usage_basis": "hermes-session-model-usage/v1",
+        "tokens": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "api_calls": 1,
+        },
+    }
+
+
+def _record_observation(conn, task_id: str, run_id: int, observation: dict) -> bool:
+    """Seed an observed receipt directly in the isolated test database."""
+    with kb.write_txn(conn):
+        row = conn.execute(
+            "SELECT metadata FROM task_runs WHERE id=? AND task_id=?",
+            (run_id, task_id),
+        ).fetchone()
+        metadata = json.loads(row["metadata"]) if row and row["metadata"] else {}
+        prior = metadata.get("runtime_observation")
+        if prior is not None:
+            return prior == observation
+        metadata["runtime_observation"] = observation
+        return conn.execute(
+            "UPDATE task_runs SET metadata=? WHERE id=? AND task_id=?",
+            (json.dumps(metadata), run_id, task_id),
+        ).rowcount == 1
 
 
 @pytest.fixture
@@ -103,6 +153,9 @@ def _reviewed_task(conn, *, reviewer: str = "reviewer") -> tuple[str, int, str]:
     )
     claimed = kb.claim_task(conn, task_id, claimer="builder:1")
     assert claimed is not None
+    assert _record_observation(
+        conn, task_id, claimed.current_run_id, _observation("builder", "build-session-1", "a"),
+    )
     attachment_id = kb.store_attachment_bytes(
         conn, task_id, "deliverable.bin", b"review this exact artifact", uploaded_by="builder",
     )
@@ -114,6 +167,9 @@ def _reviewed_task(conn, *, reviewer: str = "reviewer") -> tuple[str, int, str]:
     )
     review = kb.claim_review_task(conn, task_id, claimer="reviewer:1")
     assert review is not None and review.current_run_id is not None
+    assert _record_observation(
+        conn, task_id, review.current_run_id, _observation("reviewer", "review-session-1", "b"),
+    )
     return task_id, review.current_run_id, artifact.stored_path
 
 
@@ -122,9 +178,31 @@ def _candidate(artifact_path: str, **overrides):
     value = {
         "approve": True,
         "reviewed_sha256": [reviewed_sha],
-        "source_revision": "tree:0123456789abcdef",
+        "source_revision": SOURCE_REVISION,
         "environment": "python:test-env-lock-1",
-        "usage": {"applicable": False, "reason": "deterministic local verifier"},
+        "usage": {
+            "applicable": True,
+            "runtime": "hermes-native:anthropic_messages",
+            "provider": "anthropic",
+            "model": "claude-test-model",
+            "profile": "reviewer",
+            "session_id": "review-session-1",
+            "auth_class": "api_key",
+            "billing_mode": "metered",
+            "policy": "review-budget-v1",
+            "budget": {"max_tokens": 50000},
+            "basis": "hermes-session-model-usage/v1",
+            "source_revision": SOURCE_REVISION,
+            "artifact_sha256": [reviewed_sha],
+            "tokens": {
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 0,
+                "api_calls": 1,
+            },
+        },
     }
     value.update(overrides)
     return {"artifact_review_receipt": value}
@@ -157,6 +235,12 @@ def test_acceptance_binds_review_artifact_and_atomically_releases_child(board):
         closing_run = kb.latest_run(conn, parent)
         assert closing_run is not None
         assert "artifact_review_receipt" not in (closing_run.metadata or {})
+        assert closing_run.metadata["runtime_observation"]["session_id"] == "review-session-1"
+        assert receipt["usage"]["runtime"] == "hermes-native:anthropic_messages"
+        assert receipt["usage"]["model"] == "claude-test-model"
+        assert receipt["usage"]["auth_class"] == "api_key"
+        assert receipt["usage"]["billing_mode"] == "metered"
+        assert receipt["usage"]["tokens"]["api_calls"] == 1
         assert not kb.complete_task(conn, parent, metadata=_candidate(original))
         assert len([event for event in kb.list_events(conn, parent)
                     if event.kind == "artifact_review_acceptance"]) == 1
@@ -217,6 +301,109 @@ def test_configured_evidence_scope_policy_is_enforced(board):
         assert "scope policy" in (kb.get_task(conn, task_id).last_failure_error or "")
 
 
+def test_model_review_identity_and_usage_receipt_fail_closed(board):
+    with connect() as conn:
+        task_id, review_run, artifact = _reviewed_task(conn)
+
+        with kb.write_txn(conn):
+            conn.execute("UPDATE task_runs SET metadata=NULL WHERE id=?", (review_run,))
+        forged = _candidate(artifact)
+        forged["runtime_observation"] = _observation(
+            "reviewer", "review-session-1", "b",
+        )
+        assert not kb.complete_task(
+            conn, task_id, metadata=forged, expected_run_id=review_run,
+        )
+        assert "observed runtime" in (kb.get_task(conn, task_id).last_failure_error or "")
+        assert _record_observation(
+            conn, task_id, review_run, _observation("reviewer", "review-session-1", "b"),
+        )
+
+        wrong_session = _candidate(artifact)
+        wrong_session["artifact_review_receipt"]["usage"]["session_id"] = "another-session"
+        assert not kb.complete_task(
+            conn, task_id, metadata=wrong_session, expected_run_id=review_run,
+        )
+        assert "session" in (kb.get_task(conn, task_id).last_failure_error or "")
+
+        not_applicable = _candidate(artifact)
+        not_applicable["artifact_review_receipt"]["usage"] = {
+            "applicable": False,
+            "reason": "claimed deterministic review",
+        }
+        assert not kb.complete_task(
+            conn, task_id, metadata=not_applicable, expected_run_id=review_run,
+        )
+        assert "applicable model usage" in (kb.get_task(conn, task_id).last_failure_error or "")
+
+        no_calls = _candidate(artifact)
+        no_calls["artifact_review_receipt"]["usage"]["tokens"]["api_calls"] = 0
+        assert not kb.complete_task(
+            conn, task_id, metadata=no_calls, expected_run_id=review_run,
+        )
+        assert "at least one API call" in (kb.get_task(conn, task_id).last_failure_error or "")
+
+        conflated_auth = _candidate(artifact)
+        conflated_auth["artifact_review_receipt"]["usage"]["auth_class"] = "subscription_cli"
+        conflated_auth["artifact_review_receipt"]["usage"]["runtime"] = "hermes-native-anthropic"
+        assert not kb.complete_task(
+            conn, task_id, metadata=conflated_auth, expected_run_id=review_run,
+        )
+        assert "explicit CLI runtime" in (kb.get_task(conn, task_id).last_failure_error or "")
+
+        stale_revision = _candidate(artifact)
+        stale_revision["artifact_review_receipt"]["usage"]["source_revision"] = "tree:stale"
+        assert not kb.complete_task(
+            conn, task_id, metadata=stale_revision, expected_run_id=review_run,
+        )
+        assert "runtime observation" in (kb.get_task(conn, task_id).last_failure_error or "")
+
+        assert kb.complete_task(
+            conn, task_id, metadata=_candidate(artifact), expected_run_id=review_run,
+        )
+
+
+def test_runtime_observation_has_no_public_library_minting_path(board):
+    assert not hasattr(kb, "record_run_observation")
+    assert not hasattr(kb, "_record_run_observation")
+    assert not hasattr(kb, "_RUN_OBSERVATION_CAPABILITY")
+
+
+def test_runtime_observation_is_immutable_and_principal_revision_bound(board):
+    with connect() as conn:
+        task_id, review_run, artifact = _reviewed_task(conn)
+        changed = _observation("reviewer", "review-session-1", "c")
+        assert not _record_observation(conn, task_id, review_run, changed)
+
+        run = kb.get_run(conn, review_run)
+        metadata = dict(run.metadata)
+        observation = dict(metadata["runtime_observation"])
+        observation["source_revision"] = "workspace-sha256:" + "2" * 64
+        metadata["runtime_observation"] = observation
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_runs SET metadata=? WHERE id=?", (json.dumps(metadata), review_run),
+            )
+        assert not kb.complete_task(
+            conn, task_id, metadata=_candidate(artifact), expected_run_id=review_run,
+        )
+        assert "workspace revision" in (kb.get_task(conn, task_id).last_failure_error or "")
+
+        observation["source_revision"] = SOURCE_REVISION
+        observation["credential_fingerprint"] = "credential-sha256:" + "a" * 64
+        metadata["runtime_observation"] = observation
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_runs SET metadata=? WHERE id=?", (json.dumps(metadata), review_run),
+            )
+        assert not kb.complete_task(
+            conn, task_id, metadata=_candidate(artifact), expected_run_id=review_run,
+        )
+        assert "same observed runtime credential" in (
+            kb.get_task(conn, task_id).last_failure_error or ""
+        )
+
+
 def test_each_evidence_category_must_cover_every_artifact(board):
     with connect() as conn:
         task_id = kb.create_task(
@@ -224,6 +411,10 @@ def test_each_evidence_category_must_cover_every_artifact(board):
             completion_contract="artifact-review-v1",
         )
         claimed = kb.claim_task(conn, task_id, claimer="builder:multi")
+        assert claimed and _record_observation(
+            conn, task_id, claimed.current_run_id,
+            _observation("builder", "build-session-multi", "a"),
+        )
         paths = []
         for name, data in (("a.bin", b"a"), ("b.bin", b"b")):
             aid = kb.store_attachment_bytes(conn, task_id, name, data)
@@ -233,6 +424,10 @@ def test_each_evidence_category_must_cover_every_artifact(board):
             expected_run_id=claimed.current_run_id,
         )
         review = kb.claim_review_task(conn, task_id, claimer="reviewer:multi")
+        assert review and _record_observation(
+            conn, task_id, review.current_run_id,
+            _observation("reviewer", "review-session-1", "b"),
+        )
         candidate = _candidate(paths[0], omit_second_evidence=True)
         candidate["artifact_review_receipt"]["reviewed_sha256"] = [
             hashlib.sha256(Path(path).read_bytes()).hexdigest() for path in paths
@@ -253,6 +448,10 @@ def test_independent_reviewer_and_archive_disposition_are_enforced(board):
         attachment_id = kb.store_attachment_bytes(conn, task_id, "x", b"x")
         artifact = kb.get_attachment(conn, attachment_id)
         assert claimed and artifact
+        assert _record_observation(
+            conn, task_id, claimed.current_run_id,
+            _observation("builder", "build-session-self", "a"),
+        )
         assert kb.request_review(
             conn, task_id, metadata={"artifacts": [artifact.stored_path]},
             reviewer="builder", expected_run_id=claimed.current_run_id,
@@ -371,6 +570,10 @@ def test_parked_protected_review_requires_an_active_review_run(board):
             completion_contract="artifact-review-v1",
         )
         claimed = kb.claim_task(conn, parent, claimer="builder:parked")
+        assert claimed and _record_observation(
+            conn, parent, claimed.current_run_id,
+            _observation("builder", "build-session-parked", "a"),
+        )
         aid = kb.store_attachment_bytes(conn, parent, "parked.bin", b"parked")
         artifact = kb.get_attachment(conn, aid)
         assert claimed and artifact and kb.request_review(

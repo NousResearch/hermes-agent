@@ -8,9 +8,12 @@ shlex quoting of JSON metadata, structured-JSON failures). Humans use CLI/dashbo
 from __future__ import annotations
 
 import functools
+import hashlib
 import json
 import logging
 import os
+from pathlib import Path
+import subprocess
 import time
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
@@ -180,6 +183,193 @@ def _stamp_worker_session_metadata(task_id: str, metadata: Optional[dict]) -> Op
     """Add trusted worker session id metadata for this worker's own task."""
     session_id = _own_task_env(task_id, "HERMES_SESSION_ID")
     return {**(metadata or {}), "worker_session_id": session_id} if session_id else metadata
+
+
+def _workspace_source_revision(workspace: str) -> Optional[str]:
+    """Content fingerprint for HEAD, tracked changes and untracked review inputs."""
+    root = Path(workspace or "")
+    if not root.is_absolute() or not root.is_dir():
+        return None
+    try:
+        top = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"], cwd=root, text=True,
+            capture_output=True, check=True, timeout=10,
+        ).stdout.strip()
+        repo = Path(top).resolve(strict=True)
+        root.resolve(strict=True).relative_to(repo)
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, text=True,
+            capture_output=True, check=True, timeout=10,
+        ).stdout.strip()
+        diff = subprocess.run(
+            ["git", "diff", "--binary", "--no-ext-diff", "HEAD", "--"], cwd=repo,
+            capture_output=True, check=True, timeout=30,
+        ).stdout
+        untracked = subprocess.run(
+            ["git", "ls-files", "-z", "--others", "--exclude-standard"], cwd=repo,
+            capture_output=True, check=True, timeout=10,
+        ).stdout.split(b"\0")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    digest = hashlib.sha256()
+    digest.update(b"hermes-workspace-revision-v1\0")
+    digest.update(head.encode("ascii", "strict"))
+    digest.update(b"\0")
+    digest.update(diff)
+    for raw_name in sorted(name for name in untracked if name):
+        try:
+            name = raw_name.decode("utf-8", "surrogateescape")
+            path = (repo / name).resolve(strict=False)
+            path.relative_to(repo)
+            digest.update(b"\0untracked\0")
+            digest.update(raw_name)
+            digest.update(b"\0")
+            if path.is_symlink():
+                digest.update(os.readlink(path).encode("utf-8", "surrogateescape"))
+            elif path.is_file():
+                with path.open("rb") as stream:
+                    while chunk := stream.read(1024 * 1024):
+                        digest.update(chunk)
+            else:
+                return None
+        except (OSError, ValueError):
+            return None
+    return f"workspace-sha256:{digest.hexdigest()}"
+
+
+def _runtime_credential_fingerprint(runtime: dict[str, Any]) -> Optional[str]:
+    """Opaque fingerprint of the credential actually bound to the live runtime.
+
+    A JWT payload is not an authenticated identity assertion until its signature
+    is verified. Hash the whole runtime credential instead, so protected review
+    never promotes unsigned claims to account identity. The fingerprint proves
+    credential separation; an adapter that can attest an account principal must
+    supply its own stronger observation rather than relabel this native path.
+    """
+    token = runtime.get("api_key")
+    if not isinstance(token, str) or not token.strip():
+        return None
+    provider = str(runtime.get("provider") or "").strip().lower()
+    canonical = provider.encode("utf-8") + b"\0" + token.strip().encode("utf-8")
+    return "credential-sha256:" + hashlib.sha256(canonical).hexdigest()
+
+
+def _record_observed_worker_run(kb, conn, task, trusted_session_id: Any) -> None:
+    """Bridge live Hermes runtime + SessionDB facts into the active board run."""
+    if not task or task.completion_contract != "artifact-review-v1":
+        return
+    session_id = str(trusted_session_id or "").strip()
+    if not session_id or task.current_run_id is None:
+        raise _Reject("protected review requires a live Hermes session identity")
+    from agent.auxiliary_client import _normalize_main_runtime
+    from hermes_state_registry import acquire, release_or_close
+
+    runtime = _normalize_main_runtime(None)
+    if runtime.get("session_id") != session_id:
+        raise _Reject("live runtime session does not match the tool execution session")
+    db = acquire()
+    try:
+        session = db.get_session(session_id)
+        route = db.get_recent_session_model_route(session_id)
+    finally:
+        release_or_close(db)
+    if not session or not route:
+        raise _Reject("protected review requires an accounted SessionDB model call")
+    profile = str(session.get("profile_name") or os.environ.get("HERMES_PROFILE") or "").strip()
+    if profile != (task.assignee or ""):
+        raise _Reject("SessionDB profile does not match the active task assignee")
+    provider = str(route.get("billing_provider") or "").strip()
+    model = str(route.get("model") or "").strip()
+    if provider != str(runtime.get("provider") or "").strip() or model != str(runtime.get("model") or "").strip():
+        raise _Reject("live runtime route does not match the accounted SessionDB route")
+    source_revision = _workspace_source_revision(task.workspace_path or os.getcwd())
+    credential = _runtime_credential_fingerprint(runtime)
+    auth_class = str(runtime.get("auth_mode") or "").strip()
+    billing_mode = str(route.get("billing_mode") or "").strip()
+    invalid_billing = billing_mode.casefold() in {
+        "", "unclassified", "unknown", "none", "n/a", "na", "unset",
+    }
+    if not source_revision or not credential or not auth_class or invalid_billing:
+        raise _Reject(
+            "protected review requires a Git workspace fingerprint, observed runtime credential, "
+            "auth class and classified billing mode"
+        )
+    tokens = {
+        "input_tokens": int(route.get("input_tokens") or 0),
+        "output_tokens": int(route.get("output_tokens") or 0),
+        "cache_read_tokens": int(route.get("cache_read_tokens") or 0),
+        "cache_write_tokens": int(route.get("cache_write_tokens") or 0),
+        "reasoning_tokens": int(route.get("reasoning_tokens") or 0),
+        "api_calls": int(route.get("api_call_count") or 0),
+    }
+    observation = {
+        # This bridge observes Hermes' native transport. It must never claim a
+        # Claude CLI adapter merely because the wire protocol is Anthropic.
+        "runtime": "hermes-native:" + str(runtime.get("api_mode") or "unknown"),
+        "provider": provider,
+        "model": model,
+        "profile": profile,
+        "session_id": session_id,
+        "auth_class": auth_class,
+        "credential_fingerprint": credential,
+        "billing_mode": billing_mode,
+        "source_revision": source_revision,
+        "usage_basis": "hermes-session-model-usage/v1",
+        "tokens": tokens,
+    }
+    # Deliberately persist here, after every field has been derived from the
+    # live runtime, SessionDB and workspace. kanban_db exposes no recorder that
+    # accepts a caller-supplied observation.
+    with kb.write_txn(conn):
+        row = conn.execute(
+            "SELECT metadata FROM task_runs WHERE id=? AND task_id=? "
+            "AND ended_at IS NULL AND status='running'",
+            (int(task.current_run_id), task.id),
+        ).fetchone()
+        _check(row is not None, "active protected task run changed before observation")
+        metadata = kb._json_dict(row["metadata"])
+        prior = metadata.get("runtime_observation")
+        if prior is not None:
+            stable_keys = (
+                "runtime", "provider", "model", "profile", "session_id",
+                "auth_class", "credential_fingerprint", "billing_mode", "usage_basis",
+            )
+            _check(
+                isinstance(prior, dict)
+                and all(prior.get(key) == observation[key] for key in stable_keys),
+                "active run runtime identity changed before retry",
+            )
+            prior_tokens = prior.get("tokens")
+            _check(
+                isinstance(prior_tokens, dict)
+                and all(
+                    isinstance(prior_tokens.get(key), int)
+                    and prior_tokens[key] <= observation["tokens"][key]
+                    for key in observation["tokens"]
+                ),
+                "active run usage counters moved backwards before retry",
+            )
+            if prior == observation:
+                return
+        metadata["runtime_observation"] = observation
+        cur = conn.execute(
+            "UPDATE task_runs SET metadata=? WHERE id=? AND task_id=? "
+            "AND ended_at IS NULL AND status='running'",
+            (kb._json_or_null(metadata), int(task.current_run_id), task.id),
+        )
+        _check(cur.rowcount == 1, "could not bind live runtime observation to the active task run")
+        kb._append_event(
+            conn, task.id, "run_observation_refreshed" if prior is not None else "run_observed",
+            {
+                key: observation[key]
+                for key in (
+                    "profile", "session_id", "runtime", "provider", "model",
+                    "auth_class", "credential_fingerprint", "billing_mode",
+                    "source_revision", "usage_basis", "tokens",
+                )
+            },
+            run_id=int(task.current_run_id),
+        )
 
 
 def _enforce_worker_task_ownership(tid: str) -> None:
@@ -622,6 +812,7 @@ def _handle_complete(args: dict, **kw) -> str:
         # judge by calling kanban_complete before acceptance criteria are met. Only enforce when a judge is
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
         task = kb.get_task(conn, tid)
+        _record_observed_worker_run(kb, conn, task, kw.get("session_id"))
         _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
         try:
             ok = kb.complete_task(
@@ -739,7 +930,9 @@ def _handle_request_review(args: dict, **kw) -> str:
                f"reviewer profile {reviewer!r} is not installed. "
                f"Installed profiles: {', '.join(list_profile_names())}")
     with _board(args.get("board")) as (kb, conn):
-        _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
+        task = kb.get_task(conn, tid)
+        _record_observed_worker_run(kb, conn, task, kw.get("session_id"))
+        _goal_gate("kanban_request_review", task, tid, summary)
         try:
             ok, fail_reason = kb.request_review(
                 conn, tid, summary=summary, metadata=metadata, reviewer=reviewer,

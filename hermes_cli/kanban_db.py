@@ -1960,6 +1960,16 @@ def _end_run(
     run_id = _current_run_id(conn, task_id)
     if run_id is None:
         return None
+    existing = conn.execute("SELECT metadata FROM task_runs WHERE id = ?", (run_id,)).fetchone()
+    merged_metadata = _json_dict(existing["metadata"] if existing else None)
+    supplied_metadata = metadata if isinstance(metadata, dict) else {}
+    observed = merged_metadata.get("runtime_observation")
+    merged_metadata.update(supplied_metadata)
+    if observed is not None:
+        # Runtime facts are written by the in-process worker bridge before the
+        # model-supplied completion payload is accepted. Completion metadata
+        # can add fields but cannot replace those observed facts.
+        merged_metadata["runtime_observation"] = observed
     conn.execute(
         """
         UPDATE task_runs
@@ -1973,7 +1983,10 @@ def _end_run(
          WHERE id = ?
            AND ended_at IS NULL
         """,
-        (status or outcome, outcome, summary, error, _json_or_null(metadata), now, run_id),
+        (
+            status or outcome, outcome, summary, error,
+            _json_or_null(merged_metadata), now, run_id,
+        ),
     )
     conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,))
     return run_id
@@ -3289,6 +3302,9 @@ def request_review(
     re-review defaults to the latest ``changes_requested`` provenance. A live
     claim is only cleared with proof of ownership (``expected_run_id``) or
     ``force=True``. Returns ``bool``, or ``(ok, reason)`` with ``with_reason``.
+    Crossing profiles also records and clears the implementer's task-level
+    model/provider/reasoning overrides so the reviewer uses its own profile
+    route; :func:`request_changes` restores that recorded implementation route.
 
     ``metadata["artifacts"]`` names the handoff's deliverable
     files; a review handoff is the last implementer transition, and the
@@ -3319,7 +3335,9 @@ def request_review(
                 return _ret(False, "parent dependencies are not satisfied")
             trow = conn.execute(
                 "SELECT assignee, status, claim_lock, current_run_id, worker_pid, "
-                "worker_started_at FROM tasks WHERE id = ?", (task_id,),
+                "worker_started_at, model_override, provider_override, reasoning_effort, "
+                "completion_contract "
+                "FROM tasks WHERE id = ?", (task_id,),
             ).fetchone()
             if trow is None:
                 return _ret(False, "task not found")
@@ -3342,7 +3360,27 @@ def request_review(
                         "malformed); pass reviewer= explicitly",
                     )
             reviewer = _canonical_assignee(reviewer)
+            implementer_observation: dict[str, Any] = {}
+            if trow["completion_contract"] == "artifact-review-v1":
+                observed_row = conn.execute(
+                    "SELECT metadata FROM task_runs WHERE id=? AND task_id=? AND ended_at IS NULL",
+                    (trow["current_run_id"], task_id),
+                ).fetchone()
+                implementer_observation = _json_dict(
+                    observed_row["metadata"] if observed_row else None,
+                ).get("runtime_observation") or {}
+                if not isinstance(implementer_observation, dict) or not implementer_observation:
+                    return _ret(False, "protected review handoff has no observed implementer runtime")
+            route_changes = bool(
+                trow["completion_contract"] == "artifact-review-v1"
+                and reviewer
+                and reviewer != implementer
+            )
             assignee_sql = ", assignee = ?" if reviewer is not None else ""
+            route_sql = (
+                ", model_override = NULL, provider_override = NULL, reasoning_effort = NULL"
+                if route_changes else ""
+            )
             run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
             params: tuple[Any, ...] = (
                 *(() if reviewer is None else (reviewer,)), task_id,
@@ -3355,7 +3393,7 @@ def request_review(
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL
-                """ + assignee_sql + """
+                """ + assignee_sql + route_sql + """
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """ + run_guard,
@@ -3378,7 +3416,26 @@ def request_review(
                 "summary": _first_line(summary, 400) or None,
                 "implementer": implementer,
                 "reviewer": reviewer,
+                "implementer_route": {
+                    "model_override": trow["model_override"],
+                    "provider_override": trow["provider_override"],
+                    "reasoning_effort": trow["reasoning_effort"],
+                },
+                "reviewer_route": {
+                    "profile": reviewer,
+                    "source": "profile_default" if route_changes else "task_route",
+                    "inherited_task_override": not route_changes,
+                },
             }
+            if implementer_observation:
+                payload["implementer_identity"] = {
+                    key: implementer_observation[key]
+                    for key in (
+                        "profile", "session_id", "runtime", "provider", "model",
+                        "auth_class", "credential_fingerprint", "billing_mode",
+                        "source_revision", "usage_basis", "tokens",
+                    )
+                }
             staged = _cleaned_artifact_paths(metadata)
             if staged:
                 payload["artifacts"] = staged
@@ -3422,7 +3479,8 @@ def request_changes(
 
     with write_txn(conn):
         task_row = conn.execute(
-            "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?", (task_id,),
+            "SELECT status, assignee, current_run_id, model_override, provider_override, "
+            "reasoning_effort FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if task_row is None:
             return False, "task not found"
@@ -3440,10 +3498,28 @@ def request_changes(
         requested_event = _latest_event(conn, task_id, "review_requested")
         if requested_event is None:
             return False, "no prior review_requested event"
-        implementer = _nonblank_str(_json_dict(requested_event["payload"]).get("implementer"))
+        requested_payload = _json_dict(requested_event["payload"])
+        implementer = _nonblank_str(requested_payload.get("implementer"))
         if implementer is None:
             return False, "review handoff has no valid implementer provenance"
         reviewer = _canonical_assignee(_nonblank_str(task_row["assignee"]))
+        implementer_route = requested_payload.get("implementer_route")
+        if not isinstance(implementer_route, dict):
+            # An in-flight review created before phase routes were recorded
+            # retained the task route through review. Preserve that route on
+            # return instead of silently erasing it during an upgrade.
+            implementer_route = {
+                "model_override": task_row["model_override"],
+                "provider_override": task_row["provider_override"],
+                "reasoning_effort": task_row["reasoning_effort"],
+            }
+        restored_model, restored_provider = _validate_model_override(
+            _nonblank_str(implementer_route.get("model_override")),
+            _nonblank_str(implementer_route.get("provider_override")),
+        )
+        restored_reasoning = normalize_reasoning_effort(
+            _nonblank_str(implementer_route.get("reasoning_effort")),
+        )
 
         new_status = _landing_status_after_parents(conn, task_id)
         # consecutive_failures deliberately PRESERVED: a review transition is
@@ -3455,10 +3531,14 @@ def request_changes(
                    assignee = COALESCE(?, assignee),
                    claim_lock = NULL,
                    claim_expires = NULL,
-                   worker_pid = NULL, worker_started_at = NULL
+                   worker_pid = NULL, worker_started_at = NULL,
+                   model_override = ?, provider_override = ?, reasoning_effort = ?
              WHERE id = ? AND status = 'running' AND current_run_id = ?
             """,
-            (new_status, implementer, task_id, int(current_run_id)),
+            (
+                new_status, implementer, restored_model, restored_provider, restored_reasoning,
+                task_id, int(current_run_id),
+            ),
         )
         if cur.rowcount != 1:
             return False, "task changed during review handoff"
@@ -3474,6 +3554,7 @@ def request_changes(
                 "implementer": implementer,
                 "reviewer": reviewer,
                 "status": new_status,
+                "implementer_route_restored": True,
             },
             run_id=run_id,
         )

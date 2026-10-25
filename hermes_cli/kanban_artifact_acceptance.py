@@ -204,6 +204,37 @@ def _authoritative_context(conn, task_id: str, snapshot: tuple[Any, ...]) -> dic
         raise ValueError("latest review handoff has no reviewer provenance")
     if owner.strip() == reviewer.strip():
         raise ValueError("artifact review must be independent from the implementer")
+    run = conn.execute(
+        "SELECT profile, metadata FROM task_runs WHERE id=? AND task_id=? AND ended_at IS NULL",
+        (run_id, task_id),
+    ).fetchone()
+    if run is None or not isinstance(run["profile"], str) or not run["profile"].strip():
+        raise ValueError("active review run has no reviewer profile identity")
+    review_profile = run["profile"].strip()
+    if review_profile != reviewer.strip():
+        raise ValueError("active review run profile does not match the review handoff")
+    observation = _json_dict(run["metadata"]).get("runtime_observation")
+    if not isinstance(observation, dict):
+        raise ValueError("active review run has no Hermes-observed runtime receipt")
+    required_observed = (
+        "runtime", "provider", "model", "profile", "session_id", "auth_class",
+        "credential_fingerprint", "billing_mode", "source_revision", "usage_basis", "tokens",
+    )
+    if any(observation.get(key) in (None, "", {}) for key in required_observed):
+        raise ValueError("active review run has an incomplete Hermes runtime receipt")
+    if str(observation["billing_mode"]).strip().casefold() in {
+        "unclassified", "unknown", "none", "n/a", "na", "unset",
+    }:
+        raise ValueError("active review run has no classified billing mode")
+    if observation["profile"] != review_profile:
+        raise ValueError("observed runtime profile does not match the active review run")
+    implementer_identity = handoff.get("implementer_identity")
+    if not isinstance(implementer_identity, dict):
+        raise ValueError("review handoff has no observed implementer identity")
+    if implementer_identity.get("source_revision") != observation["source_revision"]:
+        raise ValueError("reviewer workspace revision differs from the implementation handoff")
+    if implementer_identity.get("credential_fingerprint") == observation["credential_fingerprint"]:
+        raise ValueError("reviewer and implementer used the same observed runtime credential")
     declared = handoff.get("artifacts")
     if not isinstance(declared, list) or not declared:
         raise ValueError("latest review handoff declares no durable artifacts")
@@ -227,6 +258,11 @@ def _authoritative_context(conn, task_id: str, snapshot: tuple[Any, ...]) -> dic
         "completion_contract": contract,
         "owner": owner.strip(),
         "reviewer": reviewer.strip(),
+        "review_profile": review_profile,
+        "worker_session_id": observation["session_id"],
+        "source_revision": observation["source_revision"],
+        "runtime_observation": observation,
+        "implementer_identity": implementer_identity,
         "artifacts": artifacts,
     }
 
@@ -255,7 +291,10 @@ def _normalize_verified(value: Any, authority: dict[str, Any]) -> dict[str, Any]
     bindings = value.get("bindings")
     if not isinstance(bindings, dict):
         raise ValueError("verifier omitted authoritative bindings")
-    for key in ("task_id", "run_id", "completion_contract", "owner", "reviewer"):
+    for key in (
+        "task_id", "run_id", "completion_contract", "owner", "reviewer",
+        "review_profile", "worker_session_id", "source_revision",
+    ):
         if bindings.get(key) != authority[key]:
             raise ValueError(f"verifier receipt has a stale or mismatched {key}")
     if value.get("schema") != SCHEMA or value.get("verdict") != "accepted":
@@ -265,6 +304,12 @@ def _normalize_verified(value: Any, authority: dict[str, Any]) -> dict[str, Any]
         raise ValueError("verifier did not attest an independent review")
     if independent.get("reviewer") != authority["reviewer"]:
         raise ValueError("independent reviewer does not match the review handoff")
+    if independent.get("profile") != authority["review_profile"]:
+        raise ValueError("independent review profile does not match the active review run")
+    if independent.get("session_id") != authority["worker_session_id"]:
+        raise ValueError("independent review session does not match the active worker session")
+    if independent.get("credential_fingerprint") != authority["runtime_observation"]["credential_fingerprint"]:
+        raise ValueError("independent review credential does not match the observed runtime")
     expected = {item["sha256"] for item in authority["artifacts"]}
     got = value.get("artifact_sha256")
     if not isinstance(got, list) or set(got) != expected or len(got) != len(expected):
@@ -278,6 +323,8 @@ def _normalize_verified(value: Any, authority: dict[str, Any]) -> dict[str, Any]
         raise ValueError("test evidence does not cover the complete artifact set")
     if {item["artifact_sha256"] for item in integration} != expected:
         raise ValueError("integration evidence does not cover the complete artifact set")
+    if any(item["source_revision"] != authority["source_revision"] for item in (*tests, *integration)):
+        raise ValueError("test or integration evidence is bound to a different source revision")
     policy = authority["evidence_policy"]
     if not set(policy["test_scopes"]).issubset({item["scope"] for item in tests}):
         raise ValueError("test evidence does not satisfy the configured scope policy")
@@ -287,22 +334,87 @@ def _normalize_verified(value: Any, authority: dict[str, Any]) -> dict[str, Any]
     if not isinstance(usage, dict) or not isinstance(usage.get("applicable"), bool):
         raise ValueError("verifier omitted usage applicability")
     if usage["applicable"]:
-        for key in ("provider", "model", "policy", "budget"):
+        required_usage = (
+            "runtime", "provider", "model", "profile", "session_id", "auth_class",
+            "billing_mode", "policy", "budget", "basis", "source_revision",
+            "artifact_sha256", "tokens",
+        )
+        for key in required_usage:
             if key not in usage or usage[key] in (None, "", {}):
                 raise ValueError(f"applicable usage receipt omitted {key}")
-        normalized_usage = {key: usage[key] for key in ("applicable", "provider", "model", "policy", "budget")}
+        text_fields = (
+            "runtime", "provider", "model", "profile", "session_id", "auth_class",
+            "billing_mode", "basis", "source_revision",
+        )
+        if any(not isinstance(usage[key], str) or not usage[key].strip() for key in text_fields):
+            raise ValueError("usage receipt runtime and billing identity fields must be text")
+        if usage["auth_class"] == "subscription_cli" and "cli" not in usage["runtime"].casefold():
+            raise ValueError("subscription CLI authentication requires an explicit CLI runtime")
+        if usage["profile"] != authority["review_profile"]:
+            raise ValueError("usage receipt profile does not match the active review run")
+        if usage["session_id"] != authority["worker_session_id"]:
+            raise ValueError("usage receipt session does not match the active worker session")
+        observed = authority["runtime_observation"]
+        observed_map = {
+            "runtime": "runtime",
+            "provider": "provider",
+            "model": "model",
+            "profile": "profile",
+            "session_id": "session_id",
+            "auth_class": "auth_class",
+            "billing_mode": "billing_mode",
+            "basis": "usage_basis",
+            "source_revision": "source_revision",
+        }
+        for receipt_key, observed_key in observed_map.items():
+            if usage[receipt_key] != observed[observed_key]:
+                raise ValueError(f"usage receipt {receipt_key} differs from Hermes runtime observation")
+        usage_hashes = usage["artifact_sha256"]
+        if not isinstance(usage_hashes, list) or set(usage_hashes) != expected or len(usage_hashes) != len(expected):
+            raise ValueError("usage receipt is not bound to the complete artifact set")
+        evidence_revisions = {item["source_revision"] for item in (*tests, *integration)}
+        if evidence_revisions != {authority["source_revision"]}:
+            raise ValueError("usage receipt source revision does not match the evidence revision")
+        tokens = usage["tokens"]
+        token_keys = (
+            "input_tokens", "output_tokens", "cache_read_tokens",
+            "cache_write_tokens", "reasoning_tokens", "api_calls",
+        )
+        if not isinstance(tokens, dict) or any(
+            isinstance(tokens.get(key), bool)
+            or not isinstance(tokens.get(key), int)
+            or tokens[key] < 0
+            for key in token_keys
+        ):
+            raise ValueError("usage receipt tokens must contain non-negative integer counters")
+        if tokens["api_calls"] < 1:
+            raise ValueError("model-backed review usage receipt must record at least one API call")
+        if any(tokens[key] != observed["tokens"][key] for key in token_keys):
+            raise ValueError("usage receipt token counters differ from SessionDB accounting")
+        normalized_usage = {
+            "applicable": True,
+            **{key: usage[key] for key in required_usage if key != "tokens"},
+            "tokens": {key: tokens[key] for key in token_keys},
+        }
     else:
-        if not isinstance(usage.get("reason"), str) or not usage["reason"].strip():
-            raise ValueError("non-applicable usage receipt requires a reason")
-        normalized_usage = {"applicable": False, "reason": usage["reason"].strip()}
+        raise ValueError("protected autonomous review requires an applicable model usage receipt")
     receipt = {
         "ok": True,
         "classification": "success",
         "schema": SCHEMA,
         "verdict": "accepted",
-        "bindings": {key: authority[key] for key in ("task_id", "run_id", "completion_contract", "owner", "reviewer")},
+        "bindings": {key: authority[key] for key in (
+            "task_id", "run_id", "completion_contract", "owner", "reviewer",
+            "review_profile", "worker_session_id", "source_revision",
+        )},
         "artifacts": authority["artifacts"],
-        "independent_review": {"independent": True, "reviewer": authority["reviewer"]},
+        "independent_review": {
+            "independent": True,
+            "reviewer": authority["reviewer"],
+            "profile": authority["review_profile"],
+            "session_id": authority["worker_session_id"],
+            "credential_fingerprint": authority["runtime_observation"]["credential_fingerprint"],
+        },
         "evidence": {"tests": tests, "integration": integration},
         "evidence_policy": policy,
         "usage": normalized_usage,

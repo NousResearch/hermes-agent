@@ -777,7 +777,8 @@ class SessionSessionsMixin:
         self.flush_token_counts()
         row = self._read_one(
             """SELECT model, billing_provider, billing_base_url, billing_mode,
-                      api_call_count
+                      api_call_count, input_tokens, output_tokens,
+                      cache_read_tokens, cache_write_tokens, reasoning_tokens
                  FROM session_model_usage
                 WHERE session_id = ?
                   AND task = ''

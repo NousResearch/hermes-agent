@@ -75,6 +75,24 @@ def _last_run(conn, tid):
     ).fetchone()
 
 
+def _record_observation(conn, task_id: str, run_id: int, observation: dict) -> bool:
+    """Seed an observed receipt directly in the isolated test database."""
+    with kb.write_txn(conn):
+        row = conn.execute(
+            "SELECT metadata FROM task_runs WHERE id=? AND task_id=?",
+            (run_id, task_id),
+        ).fetchone()
+        metadata = json.loads(row["metadata"]) if row and row["metadata"] else {}
+        prior = metadata.get("runtime_observation")
+        if prior is not None:
+            return prior == observation
+        metadata["runtime_observation"] = observation
+        return conn.execute(
+            "UPDATE task_runs SET metadata=? WHERE id=? AND task_id=?",
+            (json.dumps(metadata), run_id, task_id),
+        ).rowcount == 1
+
+
 # ---------------------------------------------------------------------------
 # Happy path: running -> review
 # ---------------------------------------------------------------------------
@@ -118,6 +136,122 @@ def test_request_review_transitions_running_to_review(kanban_home: Path) -> None
         # No block / triage events were emitted.
         assert _events(conn, tid, kind="blocked") == []
         assert _events(conn, tid, kind="block_loop_detected") == []
+
+
+def test_review_handoff_does_not_inherit_implementer_model_route(kanban_home: Path) -> None:
+    """A Claude reviewer must not launch with the Codex builder's task overrides."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="cross-provider review",
+            assignee="codex-builder",
+            model_override="gpt-6.1-sol",
+            provider_override="openai-codex",
+            reasoning_effort="high",
+            completion_contract="artifact-review-v1",
+        )
+        claimed = kb.claim_task(conn, tid)
+        assert claimed and claimed.current_run_id
+        assert _record_observation(conn, tid, claimed.current_run_id, {
+            "runtime": "hermes-native:codex_responses",
+            "provider": "openai-codex",
+            "model": "gpt-6.1-sol",
+            "profile": "codex-builder",
+            "session_id": "builder-session",
+            "auth_class": "chatgpt",
+            "credential_fingerprint": "credential-sha256:" + "a" * 64,
+            "billing_mode": "subscription",
+            "source_revision": "workspace-sha256:" + "1" * 64,
+            "usage_basis": "hermes-session-model-usage/v1",
+            "tokens": {
+                "input_tokens": 10, "output_tokens": 2,
+                "cache_read_tokens": 0, "cache_write_tokens": 0,
+                "reasoning_tokens": 0, "api_calls": 1,
+            },
+        })
+
+        assert kb.request_review(
+            conn,
+            tid,
+            reviewer="claude-reviewer",
+            expected_run_id=claimed.current_run_id,
+        )
+        review_task = kb.get_task(conn, tid)
+        assert review_task.assignee == "claude-reviewer"
+        assert review_task.model_override is None
+        assert review_task.provider_override is None
+        assert review_task.reasoning_effort is None
+
+        payload = _events(conn, tid, kind="review_requested")[-1][1]
+        assert payload["reviewer_route"] == {
+            "profile": "claude-reviewer",
+            "source": "profile_default",
+            "inherited_task_override": False,
+        }
+        assert payload["implementer_route"] == {
+            "model_override": "gpt-6.1-sol",
+            "provider_override": "openai-codex",
+            "reasoning_effort": "high",
+        }
+
+        review = kb.claim_review_task(conn, tid)
+        assert review and review.current_run_id
+        ok, implementer = kb.request_changes(
+            conn, tid, reason="please revise", expected_run_id=review.current_run_id,
+        )
+        assert ok and implementer == "codex-builder"
+        returned = kb.get_task(conn, tid)
+        assert returned.assignee == "codex-builder"
+        assert returned.model_override == "gpt-6.1-sol"
+        assert returned.provider_override == "openai-codex"
+        assert returned.reasoning_effort == "high"
+
+
+def test_ordinary_review_keeps_task_route_and_legacy_return_preserves_it(
+    kanban_home: Path,
+) -> None:
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="ordinary review",
+            assignee="builder",
+            model_override="builder-model",
+            provider_override="builder-provider",
+            reasoning_effort="medium",
+        )
+        claimed = kb.claim_task(conn, tid)
+        assert claimed and claimed.current_run_id
+        assert kb.request_review(
+            conn, tid, reviewer="reviewer", expected_run_id=claimed.current_run_id,
+        )
+        review_task = kb.get_task(conn, tid)
+        assert review_task.model_override == "builder-model"
+        assert review_task.provider_override == "builder-provider"
+        assert review_task.reasoning_effort == "medium"
+
+        # Reproduce a review_requested event written by a pre-route-snapshot build.
+        with kb.write_txn(conn):
+            row = conn.execute(
+                "SELECT id, payload FROM task_events WHERE task_id=? "
+                "AND kind='review_requested' ORDER BY id DESC LIMIT 1", (tid,),
+            ).fetchone()
+            payload = json.loads(row["payload"])
+            payload.pop("implementer_route", None)
+            payload.pop("reviewer_route", None)
+            conn.execute(
+                "UPDATE task_events SET payload=? WHERE id=?", (json.dumps(payload), row["id"]),
+            )
+
+        review = kb.claim_review_task(conn, tid)
+        assert review and review.current_run_id
+        ok, _ = kb.request_changes(
+            conn, tid, reason="legacy return", expected_run_id=review.current_run_id,
+        )
+        assert ok
+        returned = kb.get_task(conn, tid)
+        assert returned.model_override == "builder-model"
+        assert returned.provider_override == "builder-provider"
+        assert returned.reasoning_effort == "medium"
 
 
 # ---------------------------------------------------------------------------

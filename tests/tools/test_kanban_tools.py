@@ -10,9 +10,178 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
+
+
+def test_workspace_source_revision_covers_tracked_and_untracked_bytes(tmp_path: Path):
+    from tools import kanban_tools as kt
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "tracked.txt").write_text("one", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=tmp_path, check=True)
+    subprocess.run(
+        [
+            "git", "-c", "user.name=Hermes Test", "-c", "user.email=test@example.invalid",
+            "commit", "-qm", "fixture",
+        ],
+        cwd=tmp_path, check=True,
+    )
+    original = kt._workspace_source_revision(str(tmp_path))
+    assert original and original.startswith("workspace-sha256:")
+
+    (tmp_path / "tracked.txt").write_text("two", encoding="utf-8")
+    tracked_change = kt._workspace_source_revision(str(tmp_path))
+    assert tracked_change != original
+
+    (tmp_path / "untracked.txt").write_text("three", encoding="utf-8")
+    untracked_change = kt._workspace_source_revision(str(tmp_path))
+    assert untracked_change not in {original, tracked_change}
+
+
+def test_runtime_credential_fingerprint_does_not_trust_unsigned_jwt_claims():
+    from tools import kanban_tools as kt
+
+    first = kt._runtime_credential_fingerprint({
+        "provider": "anthropic", "api_key": "header.claims.signature-a",
+    })
+    second = kt._runtime_credential_fingerprint({
+        "provider": "anthropic", "api_key": "header.claims.signature-b",
+    })
+    assert first and first.startswith("credential-sha256:")
+    assert second and second != first
+    assert kt._runtime_credential_fingerprint({"provider": "anthropic"}) is None
+
+
+def test_protected_bridge_rejects_unclassified_billing(monkeypatch, tmp_path):
+    from agent import auxiliary_client
+    import hermes_state_registry
+    from tools import kanban_tools as kt
+
+    runtime = {
+        "session_id": "review-session",
+        "provider": "anthropic",
+        "model": "claude-test-model",
+        "api_key": "live-runtime-credential",
+        "auth_mode": "api_key",
+        "api_mode": "anthropic_messages",
+    }
+
+    class FakeSessionDB:
+        def get_session(self, session_id):
+            assert session_id == "review-session"
+            return {"profile_name": "reviewer"}
+
+        def get_recent_session_model_route(self, session_id):
+            assert session_id == "review-session"
+            return {
+                "billing_provider": "anthropic",
+                "model": "claude-test-model",
+                "billing_mode": "unclassified",
+                "api_call_count": 1,
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 0,
+            }
+
+    monkeypatch.setattr(auxiliary_client, "_normalize_main_runtime", lambda _: runtime)
+    monkeypatch.setattr(hermes_state_registry, "acquire", FakeSessionDB)
+    monkeypatch.setattr(hermes_state_registry, "release_or_close", lambda db: None)
+    monkeypatch.setattr(
+        kt, "_workspace_source_revision",
+        lambda workspace: "workspace-sha256:" + "1" * 64,
+    )
+    task = SimpleNamespace(
+        id="t_protected",
+        completion_contract="artifact-review-v1",
+        current_run_id=1,
+        assignee="reviewer",
+        workspace_path=str(tmp_path),
+    )
+    with pytest.raises(kt._Reject, match="classified billing mode"):
+        kt._record_observed_worker_run(object(), object(), task, "review-session")
+
+
+def test_protected_bridge_refreshes_monotonic_usage_after_failed_attempt(monkeypatch, tmp_path):
+    from agent import auxiliary_client
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    import hermes_state_registry
+    from tools import kanban_tools as kt
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    runtime = {
+        "session_id": "review-session",
+        "provider": "anthropic",
+        "model": "claude-test-model",
+        "api_key": "live-runtime-credential",
+        "auth_mode": "api_key",
+        "api_mode": "anthropic_messages",
+    }
+    route = {
+        "billing_provider": "anthropic",
+        "model": "claude-test-model",
+        "billing_mode": "metered",
+        "api_call_count": 1,
+        "input_tokens": 10,
+        "output_tokens": 2,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+    }
+
+    class FakeSessionDB:
+        def get_session(self, session_id):
+            return {"profile_name": "reviewer"}
+
+        def get_recent_session_model_route(self, session_id):
+            return dict(route)
+
+    revision = ["workspace-sha256:" + "1" * 64]
+    monkeypatch.setattr(auxiliary_client, "_normalize_main_runtime", lambda _: dict(runtime))
+    monkeypatch.setattr(hermes_state_registry, "acquire", FakeSessionDB)
+    monkeypatch.setattr(hermes_state_registry, "release_or_close", lambda db: None)
+    monkeypatch.setattr(kt, "_workspace_source_revision", lambda workspace: revision[0])
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn, title="retry protected review", assignee="reviewer",
+            workspace_path=str(tmp_path),
+            completion_contract="artifact-review-v1",
+        )
+        task = kb.claim_task(conn, task_id, claimer="reviewer:retry")
+        assert task and task.current_run_id
+        kt._record_observed_worker_run(kb, conn, task, "review-session")
+
+        # A later gate can fail while the run remains active. The model retries
+        # after another accounted call and may have corrected workspace bytes.
+        route.update(api_call_count=2, input_tokens=18, output_tokens=5)
+        revision[0] = "workspace-sha256:" + "2" * 64
+        task = kb.get_task(conn, task_id)
+        kt._record_observed_worker_run(kb, conn, task, "review-session")
+
+        observed = kb.get_run(conn, task.current_run_id).metadata["runtime_observation"]
+        assert observed["tokens"]["api_calls"] == 2
+        assert observed["tokens"]["input_tokens"] == 18
+        assert observed["source_revision"] == revision[0]
+        kinds = [event.kind for event in kb.list_events(conn, task_id)]
+        assert kinds.count("run_observed") == 1
+        assert kinds.count("run_observation_refreshed") == 1
+
+        route["api_call_count"] = 1
+        with pytest.raises(kt._Reject, match="moved backwards"):
+            kt._record_observed_worker_run(kb, conn, task, "review-session")
 
 
 # ---------------------------------------------------------------------------

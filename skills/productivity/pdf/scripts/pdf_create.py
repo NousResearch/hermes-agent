@@ -10,7 +10,7 @@ Spec format (UTF-8 JSON):
   "elements": [
     {"type": "heading", "text": "Section 1", "level": 1},
     {"type": "paragraph", "text": "Body text..."},
-    {"type": "table", "rows": [["H1", "H2"], ["a", "b"]], "header": true},
+    {"type": "table", "rows": [["H1", "H2"], ["a", "b"]], "header": true, "col_widths": [320, 100]},
     {"type": "image", "path": "chart.png", "width": 400},
     {"type": "pagebreak"}
   ]
@@ -29,6 +29,31 @@ def _reconfigure_stdio() -> None:
             stream.reconfigure(encoding="utf-8")
         except Exception:
             pass
+
+
+def _validated_col_widths(raw: object, rows: list, usable_width: float) -> list[float] | None:
+    """Validate a table element's optional col_widths (points); None means auto.
+
+    A bad spec (wrong length, non-numeric or non-positive entries, or a total
+    wider than the printable page) reports an error and falls back to the
+    automatic widths instead of silently clipping columns off the page.
+    """
+    if raw is None:
+        return None
+    ncols = len(rows[0])
+    reason = None
+    if not isinstance(raw, list) or len(raw) != ncols:
+        reason = f"must be a list of {ncols} numbers"
+    elif not all(isinstance(w, (int, float)) and not isinstance(w, bool) for w in raw):
+        reason = "entries must be numbers"
+    elif any(w <= 0 for w in raw):
+        reason = "entries must be positive"
+    elif sum(raw) > usable_width + 0.01:
+        reason = f"total {sum(raw):.1f}pt exceeds the printable width {usable_width:.1f}pt"
+    if reason:
+        print(f"Error: invalid col_widths for table element: {reason}; using automatic widths", file=sys.stderr)
+        return None
+    return [float(w) for w in raw]
 
 
 def build_pdf(spec: dict, out_path: str) -> int:
@@ -65,7 +90,14 @@ def build_pdf(spec: dict, out_path: str) -> int:
             rows = el.get("rows", [])
             if not rows:
                 continue
-            table = Table(rows, repeatRows=1 if el.get("header", True) else 0)
+            col_widths = _validated_col_widths(
+                el.get("col_widths"), rows, page_size[0] - 2 * inch
+            )
+            table = Table(
+                rows,
+                repeatRows=1 if el.get("header", True) else 0,
+                colWidths=col_widths,
+            )
             style = [
                 ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),

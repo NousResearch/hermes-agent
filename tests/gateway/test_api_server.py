@@ -2451,42 +2451,8 @@ class TestSessionIdHeader:
                 # The agent is never invoked for a rejected ID.
                 assert mock_run.call_count == 0
 
-    @pytest.mark.asyncio
-    async def test_provided_session_id_loads_history_from_db(self, auth_adapter):
-        """When X-Hermes-Session-Id is provided, history comes from SessionDB not request body."""
-        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
-        db_history = [
-            {"role": "user", "content": "stored message 1"},
-            {"role": "assistant", "content": "stored reply 1"},
-        ]
-        mock_db = MagicMock()
-        mock_db.get_messages_as_conversation.return_value = db_history
-        mock_db.resolve_resume_session_id.side_effect = lambda sid: sid
-        auth_adapter._session_db = mock_db
-        app = _create_app(auth_adapter)
-        async with TestClient(TestServer(app)) as cli:
-            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
-                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
-
-                resp = await cli.post(
-                    "/v1/chat/completions",
-                    headers={"X-Hermes-Session-Id": "existing-session", "Authorization": "Bearer sk-secret"},
-                    # Request body has different history — should be ignored
-                    json={
-                        "model": "hermes-agent",
-                        "messages": [
-                            {"role": "user", "content": "old msg from client"},
-                            {"role": "assistant", "content": "old reply from client"},
-                            {"role": "user", "content": "new question"},
-                        ],
-                    },
-                )
-
-            assert resp.status == 200
-            call_kwargs = mock_run.call_args.kwargs
-            # History must come from DB, not from the request body
-            assert call_kwargs["conversation_history"] == db_history
-            assert call_kwargs["user_message"] == "new question"
+# History-provenance + foreign-surface pre-stream refusal live in
+# test_api_server_session_header.py (this file is over its line cap).
 
 
 # ---------------------------------------------------------------------------

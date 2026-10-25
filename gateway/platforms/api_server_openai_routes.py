@@ -822,6 +822,58 @@ class OpenAICompatRoutesMixin:
         agent_task.add_done_callback(_done)
         return agent_task, agent_ref
 
+    async def _continuation_context(self, request: web.Request, body_history: list):
+        """X-Hermes-Session-Id preamble -> ``(provided_session_id, session_id, history, refusal)``.
+        ``refusal`` set means answer it and stop, before the stream starts: the API key gate
+        (#5958 path-safety), the live-tip adoption (#98619/#13437), and the foreign-surface
+        refusal (#143686/#144227) all belong ahead of the first SSE chunk. Without the header the
+        body-derived history passes through untouched."""
+        provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        if not provided_session_id:
+            return provided_session_id, "", body_history, None
+        from gateway.platforms.api_server import _error_response, _invalid_request
+        if not self._api_key:
+            logger.warning(
+                "Session continuation via X-Hermes-Session-Id rejected: "
+                "no API key configured.  Set API_SERVER_KEY to enable "
+                "session continuity.")
+            return provided_session_id, provided_session_id, [], _error_response(
+                "Session continuation requires API key authentication. "
+                "Configure API_SERVER_KEY to enable this feature.", 403)
+        # Same guard as the native gateway: ids are interpolated into on-disk filenames.
+        from gateway.session import _is_path_unsafe
+        if re.search(r'[\r\n\x00]', provided_session_id) or _is_path_unsafe(provided_session_id):
+            return provided_session_id, provided_session_id, [], _invalid_request("Invalid session ID")
+        if len(provided_session_id) > self._MAX_SESSION_HEADER_LEN:
+            return provided_session_id, provided_session_id, [], _invalid_request("Session ID too long")
+        session_id, history = provided_session_id, body_history
+        try:
+            db = await self._ensure_session_db_async()
+            if db is not None:
+                # #98619/#13437: a client-addressed id from before a compression rotation
+                # must adopt the live continuation tip — history loads from it, the turn and
+                # the wake target bind it, and a detached delegation delivery row persisted
+                # on the tip is what this continuation consumes. Same canonical resolution
+                # the delivery writer (gateway/wake.py) and /v1/runs use; fails open.
+                from gateway.platforms.api_server_runs import _resolve_live_session_id
+                session_id = await _resolve_live_session_id(self, provided_session_id)
+                # #143686/#144227: admission refuses a foreign-surface target (e.g. a CLI-created
+                # local- session); answer that refusal here, before the stream starts — as
+                # a mid-stream error chunk it reads as an empty successful completion to
+                # clients that only watch HTTP 200 / [DONE]. Same source gate as admit_api_steps.
+                from gateway.session_api_turn import API_TARGET_SOURCES
+                existing = await asyncio.to_thread(db.get_session, session_id)
+                if existing is not None and existing.get('source') not in API_TARGET_SOURCES:
+                    return provided_session_id, session_id, [], _error_response(
+                        f"Session {session_id} was created by another surface "
+                        f"(source: {existing['source']}); X-Hermes-Session-Id continuation "
+                        "only accepts sessions created through this API.", 403)
+                history = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
+        except Exception as e:  # health: allow BLE001 -- the history load fails open on purpose: any failure falls back to an empty history turn rather than refusing the continuation
+            logger.warning("Failed to load session history for %s: %s", session_id, e)
+            history = []
+        return provided_session_id, session_id, history, None
+
     async def _handle_chat_completions(self, request: web.Request) -> web.Response:
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
         from gateway.platforms.api_server import (
@@ -858,37 +910,10 @@ class OpenAICompatRoutesMixin:
             return key_err
         # X-Hermes-Session-Id continues an existing session (history from state.db, not the body);
         # requires a configured API key or any client could read history by guessing ids.
-        provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
-        if provided_session_id:
-            if not self._api_key:
-                logger.warning(
-                    "Session continuation via X-Hermes-Session-Id rejected: "
-                    "no API key configured.  Set API_SERVER_KEY to enable "
-                    "session continuity.")
-                return _error_response("Session continuation requires API key authentication. "
-                        "Configure API_SERVER_KEY to enable this feature.", 403)
-            # Same guard as the native gateway: ids are interpolated into on-disk filenames.
-            from gateway.session import _is_path_unsafe
-            if re.search(r'[\r\n\x00]', provided_session_id) or _is_path_unsafe(provided_session_id):
-                return _invalid_request("Invalid session ID")
-            if len(provided_session_id) > self._MAX_SESSION_HEADER_LEN:
-                return _invalid_request("Session ID too long")
-            session_id = provided_session_id
-            try:
-                db = await self._ensure_session_db_async()
-                if db is not None:
-                    # #98619/#13437: a client-addressed id from before a compression rotation
-                    # must adopt the live continuation tip — history loads from it, the turn and
-                    # the wake target bind it, and a detached delegation delivery row persisted
-                    # on the tip is what this continuation consumes. Same canonical resolution
-                    # the delivery writer (gateway/wake.py) and /v1/runs use; fails open.
-                    from gateway.platforms.api_server_runs import _resolve_live_session_id
-                    session_id = await _resolve_live_session_id(self, provided_session_id)
-                    history = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
-            except Exception as e:
-                logger.warning("Failed to load session history for %s: %s", session_id, e)
-                history = []
-        else:
+        provided_session_id, session_id, history, refusal = await self._continuation_context(request, history)
+        if refusal is not None:
+            return refusal
+        if not provided_session_id:
             # Stable id from the conversation fingerprint so Open WebUI-style clients map onto
             # one Hermes session; namespaced by the routed profile (#123989).
             first_user = next(

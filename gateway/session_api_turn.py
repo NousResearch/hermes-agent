@@ -23,6 +23,10 @@ _SETTING_KEYS = ('ephemeral_system_prompt', 'requested_model', 'requested_provid
                  'model_options', 'route', 'session_model', 'confirmed_runtime_lock',
                  'requested_runtime', 'route_source', 'room_dispatch', 'room_execution_policy',
                  'session_history_delivery')
+# Session sources an api-principal turn may target: an API key drives sessions this surface
+# created (plus bot_room dispatch targets), never another surface's (cli 'tool', telegram, …)
+# history. The HTTP routes answer this same refusal before their streams start (#143686/#144227).
+API_TARGET_SOURCES = ('api_server', 'bot_room')
 _OWNER_SCOPE_RE = re.compile(r'[0-9a-f]{64}')
 
 
@@ -171,7 +175,7 @@ def admit_api_steps(adapter, **kwargs):
     # Refuse a foreign-surface target before committing any media for it (a refused
     # admission otherwise retains its image bytes under native-inputs/ forever).
     existing = authority.db.get_session(sid)
-    if existing is not None and existing['source'] not in ('api_server', 'bot_room'):
+    if existing is not None and existing['source'] not in API_TARGET_SOURCES:
         raise RuntimeStoreError('permission_denied')
     if kwargs.get('turn_author') is not None:
         from agent.turn_author import parse_turn_author

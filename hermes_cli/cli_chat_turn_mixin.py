@@ -316,10 +316,12 @@ class CLIChatTurnMixin:
         self.agent._voice_turn_pending = bool(turn.voice_prefix)  # auxiliary.voice_chat route
         # One-shot /model and /reload-skills notes; _prepend_note_to_message also handles
         # multimodal content-part lists (string concat raised TypeError with an image).
+        _taken_notes = {}
         for _note_attr in ("_pending_model_switch_note", "_pending_skills_reload_note"):
             _note = getattr(self, _note_attr, None)
             if _note:
                 agent_message = _prepend_note_to_message(agent_message, _note)
+                _taken_notes[_note_attr] = _note
                 setattr(self, _note_attr, None)
         # Barged mid-speech (VAD or record key)? Tell the model it was cut off.
         from tools.tts_streaming import SPEECH_INTERRUPTED_NOTE, take_speech_interrupted
@@ -362,7 +364,11 @@ class CLIChatTurnMixin:
                 "completed": False, "failed": True, "error": _summary,
             }
         finally:
-            if _one_turn_model_restore and (turn.result or {}).get("failure_reason") == "session_busy":
+            _unadmitted = (turn.result or {}).get("admitted") is False
+            if _unadmitted:  # refused before the submit: the resend still owes the notes
+                for _note_attr, _note in _taken_notes.items():
+                    setattr(self, _note_attr, _note)
+            if _one_turn_model_restore and (_unadmitted or (turn.result or {}).get("failure_reason") == "session_busy"):
                 # The owner admitted nothing: the resend is still the one turn the pick was for.
                 self._pending_one_turn_model_restore = _one_turn_model_restore
             elif _one_turn_model_restore:

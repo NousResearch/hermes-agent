@@ -773,7 +773,10 @@ class GatewayAgent:
                 # Building the params consumes a ``/model --once`` pick (``_take_turn_route``).
                 notice = self._prepare_submit(turn)
                 if notice:
-                    return self._failed(history, user_message, notice, failure_reason="gateway_connection")
+                    # Refused before prompt.submit: nothing was admitted, so the CLI keeps the turn's
+                    # local state (no history row, the /model --once pick and notes) for the resend.
+                    return {**self._failed(history, user_message, notice, failure_reason="gateway_connection"),
+                            "messages": history, "admitted": False}
                 params = self._submit_params(user_message, persist_user_message, turn_author)
                 if self._stop(turn)():
                     raise CallStopped("prompt.submit")

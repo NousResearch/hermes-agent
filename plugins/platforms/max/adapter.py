@@ -1,7 +1,8 @@
 """MAX messenger platform adapter: GET /updates long polling in, POST /messages out.
 
-MAX (max.ru, RU messenger) Bot API. Minimal functionality: 1:1 text dialogs only
-(no groups/channels/media/buttons/threads — those can be layered on later).
+MAX (max.ru, RU messenger) Bot API. Minimal functionality: 1:1 text dialogs, plus
+voice-note transcription (no groups/channels/images/video/buttons/threads — those
+can be layered on later).
 
 config.yaml ``platforms.max.extra``: ``token`` (required), ``server`` (default
 https://platform-api2.max.ru). Env (read at construct time; ``extra`` wins over
@@ -16,6 +17,11 @@ delivery volume becomes an issue.
 
 Identity: ``sender.user_id`` is MAX's own numeric user id — a real authenticated
 identity (unlike ntfy's topic-as-identity hack). Standard allowlist semantics apply.
+
+Voice: MAX has no distinct "voice note" attachment — ``type: "audio"`` covers both
+a microphone recording and an uploaded file. Treated as MessageType.VOICE (same
+choice Telegram/Discord/DingTalk/Feishu make) so the gateway's existing STT
+pipeline auto-transcribes it; no MAX-specific transcription code here.
 """
 
 import asyncio
@@ -31,7 +37,7 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult, cache_audio_from_bytes_async
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
 from gateway.platforms.helpers import MessageDeduplicator
@@ -237,9 +243,12 @@ class MaxAdapter(BasePlatformAdapter):
             logger.debug("[%s] Duplicate message %s, skipping", self.name, msg_id)
             return
         text = (body.get("text") or "").strip()
+        voice_url = None
         if not text:
-            logger.debug("[%s] Empty/unsupported (non-text) message body, skipping", self.name)
-            return
+            voice_url = self._extract_voice_url(body.get("attachments"))
+            if not voice_url:
+                logger.debug("[%s] Empty/unsupported (non-text, non-audio) message body, skipping", self.name)
+                return
         sender = message.get("sender") or {}
         recipient = message.get("recipient") or {}
         user_id = str(sender.get("user_id") or "")
@@ -264,8 +273,43 @@ class MaxAdapter(BasePlatformAdapter):
         message_event = MessageEvent(
             text=text, message_type=MessageType.TEXT, source=source, message_id=msg_id,
             raw_message=update, timestamp=timestamp)
-        logger.debug("[%s] Message from %s: %s", self.name, user_id, text[:80])
+        if voice_url:
+            cached_path = await self._cache_voice(voice_url)
+            if not cached_path:
+                logger.warning("[%s] Voice message from %s: download/cache failed, skipping", self.name, user_id)
+                return
+            message_event.message_type = MessageType.VOICE
+            message_event.media_urls = [cached_path]
+            message_event.media_types = ["audio/ogg"]
+            message_event.text = ""
+            logger.info("[%s] Cached voice message from %s at %s", self.name, user_id, cached_path)
+        else:
+            logger.debug("[%s] Message from %s: %s", self.name, user_id, text[:80])
         await self.handle_message(message_event)
+
+    @staticmethod
+    def _extract_voice_url(attachments: Optional[list]) -> Optional[str]:
+        """MAX has no distinct 'voice note' attachment type — ``type: \"audio\"`` covers both a
+        microphone recording and an uploaded audio file (unlike Telegram's voice/audio split).
+        Treated as voice here (gateway auto-transcribes MessageType.VOICE), matching the same
+        choice other ambiguous platforms (Feishu/Lark) make for their single audio type."""
+        for att in attachments or []:
+            if att.get("type") == "audio":
+                url = (att.get("payload") or {}).get("url")
+                if url:
+                    return url
+        return None
+
+    async def _cache_voice(self, url: str) -> Optional[str]:
+        """Download a MAX voice attachment URL (pre-signed, no auth header needed) into the
+        local audio cache; returns the cached path, or ``None`` on failure."""
+        try:
+            resp = await self._http_client.get(url, timeout=httpx.Timeout(30.0))
+            resp.raise_for_status()
+            return await cache_audio_from_bytes_async(resp.content, ext=".ogg")
+        except Exception:
+            logger.warning("[%s] Failed to download voice attachment", self.name, exc_info=True)
+            return None
 
     # -- Outbound messaging -------------------------------------------------
 

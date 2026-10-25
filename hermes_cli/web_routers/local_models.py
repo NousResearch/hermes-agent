@@ -1050,7 +1050,7 @@ async def local_models_sideload(body: SideloadBody):
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.link(src, dest)          # hardlink: instant, no extra disk
-    except OSError:
+    except (AttributeError, OSError):
         try:
             os.symlink(src, dest)   # cross-volume fallback
         except OSError:

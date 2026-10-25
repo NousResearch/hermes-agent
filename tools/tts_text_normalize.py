@@ -16,6 +16,13 @@ import re
 _HEAD = "\x00"
 
 _MD_CODE_BLOCK_RE = re.compile(r"```[\s\S]*?```")
+# A reply cut off mid-generation (gateway streaming, truncated output, a model
+# that opens a fence and stops) leaves an opener with no closer, so the pattern
+# above never fires and the raw source is read aloud. This anchored alternative
+# strips only that remainder: the opener must start a line and the match must
+# run to end-of-text, so a mid-sentence backtick run is never a trigger and a
+# properly closed fence is never re-matched.
+_MD_UNTERMINATED_CODE_RE = re.compile(r"(?ms)^[ \t]{0,3}```[^\n]*\n[\s\S]*\Z")
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((?:[^()]|\([^)]*\))*\)")
 _MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\((?:[^()]|\([^)]*\))*\)")
 _MD_INLINE_CODE_RE = re.compile(r"`([^`]+)`")
@@ -62,6 +69,7 @@ def strip_markdown_for_tts(text: str) -> str:
         return ""
     text = html.unescape(str(text))
     text = _MD_CODE_BLOCK_RE.sub(" ", text)
+    text = _MD_UNTERMINATED_CODE_RE.sub(" ", text)
     text = _MD_IMAGE_RE.sub(lambda m: f" {m.group(1)} " if m.group(1) else " ", text)
     text = _MD_LINK_RE.sub(r"\1", text)
     text = _URL_RE.sub("", text)

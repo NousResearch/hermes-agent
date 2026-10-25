@@ -275,3 +275,12 @@ def test_archive_rejects_unknown_arguments(board_env):
     from tools.registry import registry
     out = json.loads(registry.dispatch("kanban_archive", {"task_id": "t_x", "force": True}))
     assert out.get("error") and "force" in out["error"]
+
+
+def test_archive_exposed_to_codex_runtime_workers():
+    """Codex app-server workers only reach Hermes tools named in EXPOSED_TOOLS;
+    archive is a stateless lifecycle tool (reads HERMES_KANBAN_TASK, writes
+    kanban.db via archive_task()), so it belongs there like its siblings."""
+    from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
+
+    assert "kanban_archive" in EXPOSED_TOOLS

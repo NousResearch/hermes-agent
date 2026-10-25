@@ -41,9 +41,9 @@ describe('browser image paste size', () => {
   it('stages an image of exactly the limit', async () => {
     seedWebappSession('served-token')
 
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ path: '/srv/hermes/cache/images/upload.png' }), { status: 200 })
-    )
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ path: '/srv/hermes/cache/images/upload.png' }), { status: 200 }))
 
     vi.stubGlobal('fetch', fetchMock)
     expect(installBrowserDesktopBridge()).toBe(true)

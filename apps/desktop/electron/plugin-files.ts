@@ -119,7 +119,6 @@ export interface PluginFiles {
   run: (pluginId: unknown, request: PluginFilesRequest) => Promise<PluginFilesResult>
 }
 
-
 export function createPluginFiles(deps: PluginFilesDeps): PluginFiles {
   const platform = deps.platform ?? process.platform
   const { inside, insideLoose, same, segments } = pathTools(platform)

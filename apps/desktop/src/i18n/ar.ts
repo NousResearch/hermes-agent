@@ -13,7 +13,6 @@ import { arSettings } from './ar_settings'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 
 export const arOverrides = {
-
   catalog: {
     add: 'إضافة',
     added: 'تمت الإضافة',

@@ -1,7 +1,11 @@
 # ESN-0407 disposable Claude Channel proposal
 
-This is a review-only acceptance fixture. It is excluded from production
-packaging and has not been installed or launched.
+This is a review-only acceptance fixture excluded from production packaging.
+One live background attempt was launched on 2026-10-25 after durable
+subscription login; it blocked at Claude's mandatory interactive development-
+Channel confirmation, the bounded question expired without delivery or reply,
+and the provider session, socket and temporary dependencies were removed. That
+attempt is evidence for expiry and cleanup only, not Channel acceptance.
 
 ## Dependency and consent boundary
 
@@ -50,8 +54,25 @@ After independent review passes:
    Roots ticket read. Generate a fresh 256-bit nonce and one correlation ID for
    this single question. Do not write either value to logs or use an operator
    or production project directory.
-4. Launch one background subscription-authenticated Claude session from an
-   empty temporary working directory. `launch.sh` repeats the credential scrub
+4. Generate and record a fresh provider session UUID, then launch one foreground
+   subscription-authenticated Claude session from the stable empty work
+   directory inside the durable provider-authentication profile. That directory
+   is mode `0700`, contains no project files, and has one reviewed persistent
+   trust record in the same profile namespace. It is not a per-run temporary
+   workspace. The manifest's `production_service_active: false` is a declared
+   invariant, not process evidence: immediately before launch, run
+   `claude agents --json` under this `CLAUDE_CONFIG_DIR` and refuse the probe if
+   any session is active; `launch.sh` enforces that check immediately before
+   starting Claude while holding an atomic profile-scoped lease for the full
+   process lifetime. A concurrent launcher is refused, and a dead owner's lease
+   is recovered only by an atomic rename plus owner recheck. Custom development
+   Channels require an
+   interactive warning: the operator must select **I am using this for local
+   development** before the Channel registers. `launch.sh` intentionally does
+   not use `--bg`, because a background launch blocks at that confirmation and
+   silently leaves the Channel unable to deliver. After the terminal displays
+   the Channels notice, keep it open while the separate sender submits the one
+   bounded question. `launch.sh` repeats the credential scrub
    and subscription-auth check immediately before `exec` so the Claude child
    cannot fall back to an API or cloud-provider credential. It makes only
    `mcp__esn0407_channel__reply` visible with `--tools` and explicitly permits
@@ -61,11 +82,15 @@ After independent review passes:
 
 ```text
 ESN0407_MCP_CONFIG=/PRIVATE_TMP/mcp.json \
-ESN0407_WORK_DIR=/PRIVATE_EMPTY_WORK_DIR \
+ESN0407_WORK_DIR=/PERSISTENT_HERMES_AUTH_PROFILE/work \
+ESN0407_PROFILE_ROOT=/PERSISTENT_HERMES_AUTH_PROFILE \
+ESN0407_SESSION_ID=/PRE_REGISTERED_UUIDV4 \
+CLAUDE_CONFIG_DIR=/PERSISTENT_HERMES_AUTH_PROFILE/config \
   /PRIVATE_TMP/launch.sh
 ```
 
-5. Send one envelope, at most 4 KiB, over the private Unix socket. It must bind
+5. Only after the interactive Channels notice is visible, send one envelope,
+   at most 4 KiB, over the private Unix socket. It must bind
    the exact Roots ticket, assignment, attempt, owner, revision and authority
    event digest; its authority is `answer-only-no-changes`; TTL is at most 30
    seconds. The envelope must also echo the one-time nonce and pre-registered
@@ -74,18 +99,23 @@ ESN0407_WORK_DIR=/PRIVATE_EMPTY_WORK_DIR \
    cancel envelope or close the connection. The Channel cannot retract an event
    already delivered to Claude; it invalidates the waiter and rejects a late
    reply instead.
-7. Stop and remove the disposable Claude background session, then remove the
-   private temporary directory. Confirm that the socket, session and dependency
-   directory no longer exist.
+7. Exit the foreground Claude session and verify that exact UUID is no longer
+   active. The installed CLI exposes deletion only for background sessions, so
+   the bounded foreground transcript remains durable provider state under the
+   pre-registered UUID; do not claim it was deleted. It may contain only the
+   startup/consent event, the one bounded question and its reply-tool result.
+   Remove the private temporary MCP, socket and dependency directory and confirm
+   they no longer exist. The durable provider-authentication profile, its stable
+   empty work directory, reviewed trust record and bounded transcript remain.
 
 Do not add `--bare`. Installed Claude Code 2.1.306 documents that bare mode
 never reads OAuth or the keychain and accepts only `ANTHROPIC_API_KEY` or an API
 key helper. That conflicts with this probe's subscription-only requirement and
 credential scrub.
 
-### Proposed isolated trust bootstrap (not authorized or applied)
+### Superseded isolated trust bootstrap experiment
 
-The background launcher requires workspace trust even for its empty restricted
+The launcher requires workspace trust even for its empty restricted
 working directory. Installed 2.1.306 identifies the state as
 `projects[<absolute path>].hasTrustDialogAccepted` in `.claude.json`.
 `trust-bootstrap-plan.mjs` validates two empty, current-user-owned mode-0700
@@ -113,14 +143,14 @@ the only intended semantic diff is the path-scoped boolean above.
 Cleanup removes the shared disposable parent, including config, work,
 dependencies and socket. Nothing is copied to `~/.claude.json`.
 
-This trust bootstrap alone cannot launch with the current controls. Read-only
-investigation showed `claude auth status --json` under a fresh temporary
-`CLAUDE_CONFIG_DIR` reports `loggedIn: false`, even when a copy of the normal
-`.claude.json` is placed there, because the OAuth/keychain identity is
-namespaced away. No OAuth token was extracted or copied. Independent review
-must decide both whether existing authorization covers this one temporary trust
-write and whether a supported subscription credential bridge exists. Until
-both are resolved, do not apply the write or retry the probe.
+This experiment established that copying `.claude.json` cannot move OAuth or
+keychain identity into a new namespace. It is retained as a negative control,
+not as the current launch path. The operator instead completed the supported
+interactive `claude auth login --claudeai` flow in a durable, private
+`CLAUDE_CONFIG_DIR`; no OAuth token was extracted or copied. Per-run cleanup
+must never remove that durable authentication directory. Provider login remains
+separate from the Roots ticket, role, revision and tool authority required for
+each managed worker start.
 
 This reply-only transport probe intentionally loads no `CLAUDE.md`, skill,
 hook, project MCP server or Roots tool. Its authority and route are supplied by
@@ -165,14 +195,18 @@ bootstrap. It only tests the separate reply-only Channel transport boundary.
 Acceptance must record the disposable provider session identity, Channel child
 identity, Roots route binding and correlation ID. It must show:
 
-1. the question arrived in the exact disposable session at a provider safe
+1. the operator accepted the custom development-Channel warning in the exact
+   foreground session before the question was sent;
+2. the question arrived in the exact disposable session at a provider safe
    point;
-2. the reply tool echoed the correlation ID and exact marker;
-3. no file, command, browser, agent or approval tool ran;
-4. cancellation stopped the caller wait and a later reply was rejected without
+3. the reply tool echoed the correlation ID and exact marker;
+4. no file, command, browser, agent or approval tool ran;
+5. cancellation stopped the caller wait and a later reply was rejected without
    claiming delivery retraction;
-5. the Claude session, Unix socket and temporary dependency directory were
-   removed.
+6. the exact pre-registered Claude session UUID is no longer active, the Unix
+   socket and temporary dependency directory were removed, and durable provider
+   authentication, its stable empty workspace trust and its explicitly bounded
+   retained transcript remained intact.
 
 No result from this fixture establishes access to a Claude session that was not
 started with this Channel.

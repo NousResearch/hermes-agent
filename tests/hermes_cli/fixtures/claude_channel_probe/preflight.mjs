@@ -3,6 +3,7 @@ import fs from "node:fs";
 import {
   assertDisposableDirectory,
   assertLockedDependencies,
+  assertManagedProfile,
   assertSubscriptionAuth,
 } from "./contract.mjs";
 
@@ -18,6 +19,17 @@ if (mode === "auth") {
 } else if (mode === "location") {
   assertDisposableDirectory(process.cwd());
   process.stdout.write("disposable-location-ok\n");
+} else if (mode === "profile") {
+  assertManagedProfile(process.argv[3], process.argv[4], process.argv[5]);
+  process.stdout.write("managed-profile-ok\n");
+} else if (mode === "sessions") {
+  let input = "";
+  for await (const chunk of process.stdin) input += chunk;
+  const sessions = JSON.parse(input);
+  if (!Array.isArray(sessions) || sessions.length !== 0) {
+    throw new Error("managed provider-auth profile already has an active session");
+  }
+  process.stdout.write("managed-profile-idle-ok\n");
 } else {
-  throw new Error("usage: node preflight.mjs auth|lock|location");
+  throw new Error("usage: node preflight.mjs auth|lock|location|profile|sessions");
 }

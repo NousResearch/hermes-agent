@@ -175,6 +175,71 @@ export function assertDisposableDirectory(directory) {
   return resolved;
 }
 
+export function assertManagedProfile(profileDirectory, configDirectory, workDirectory) {
+  for (const [name, value] of Object.entries({ profileDirectory, configDirectory, workDirectory })) {
+    if (typeof value !== "string" || !path.isAbsolute(value)) {
+      throw new Error(`${name} must be absolute`);
+    }
+  }
+  for (const value of [profileDirectory, configDirectory, workDirectory]) {
+    if (fs.lstatSync(value).isSymbolicLink()) throw new Error("managed profile paths must not be symlinks");
+  }
+  const profile = fs.realpathSync(profileDirectory);
+  const config = fs.realpathSync(configDirectory);
+  const work = fs.realpathSync(workDirectory);
+  if (config !== path.join(profile, "config") || work !== path.join(profile, "work")) {
+    throw new Error("managed config and work directories must match the reviewed profile layout");
+  }
+  for (const [name, value] of Object.entries({ profile, config, work })) {
+    const stat = fs.statSync(value);
+    if (!stat.isDirectory() || (stat.mode & 0o777) !== 0o700) {
+      throw new Error(`${name} must be a private mode-0700 directory`);
+    }
+    if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+      throw new Error(`${name} must be owned by the current OS user`);
+    }
+  }
+  if (fs.readdirSync(work).length !== 0) throw new Error("managed work directory must be empty");
+  const manifestPath = path.join(profile, "profile.json");
+  const claudeConfigPath = path.join(config, ".claude.json");
+  function readPrivateJson(value) {
+    const before = fs.lstatSync(value);
+    if (before.isSymbolicLink() || !before.isFile() || (before.mode & 0o777) !== 0o600) {
+      throw new Error(`${value} must be a private mode-0600 file`);
+    }
+    if (typeof process.getuid === "function" && before.uid !== process.getuid()) {
+      throw new Error(`${value} must be owned by the current OS user`);
+    }
+    const descriptor = fs.openSync(value, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    try {
+      const after = fs.fstatSync(descriptor);
+      if (after.dev !== before.dev || after.ino !== before.ino || (after.mode & 0o777) !== 0o600) {
+        throw new Error(`${value} changed during managed-profile validation`);
+      }
+      return JSON.parse(fs.readFileSync(descriptor, "utf8"));
+    } finally {
+      fs.closeSync(descriptor);
+    }
+  }
+  const manifest = readPrivateJson(manifestPath);
+  if (
+    manifest.schema !== "hermes.provider-auth-profile/v1" ||
+    manifest.provider !== "claude-code" ||
+    manifest.account_kind !== "claude.ai-subscription" ||
+    manifest.config_directory !== config ||
+    manifest.trusted_workspace !== work ||
+    manifest.api_fallback_allowed !== false ||
+    manifest.production_service_active !== false
+  ) {
+    throw new Error("managed profile manifest does not match the reviewed subscription boundary");
+  }
+  const claudeConfig = readPrivateJson(claudeConfigPath);
+  if (claudeConfig?.projects?.[work]?.hasTrustDialogAccepted !== true) {
+    throw new Error("managed work directory lacks the exact reviewed trust record");
+  }
+  return Object.freeze({ profile, config, work });
+}
+
 export function unlinkOwnedSocket(socketPath) {
   try {
     const stat = fs.lstatSync(socketPath);

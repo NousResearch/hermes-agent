@@ -90,7 +90,7 @@ def _install_plugin_python_deps(
         deps = declaration.install_requirements
     except Exception as exc:
         return False, _ConsentRefusal(f"invalid Python dependency declaration: {exc}", "manifest_invalid")
-    has_python = declaration.is_member
+    has_python = declaration.installs_packages
     has_package_json = (target / "package.json").is_file()
     if not has_python and not has_package_json:
         return True, None  # no declared deps at all
@@ -204,12 +204,14 @@ def _prompt_plugin_env_vars(manifest: dict, console) -> None:
     console.print()
 
 
-def _display_after_install(plugin_dir: Path, identifier: str) -> None:
-    """Show after-install.md if it exists, otherwise a default message."""
+def _display_after_install(plugin_dir: Path, identifier: str, *, brief: bool = False) -> None:
+    """Show after-install.md if it exists, otherwise a default message (skipped when *brief*)."""
     from rich.markdown import Markdown
     from rich.panel import Panel
     console = _pc()._console()
     after_install = plugin_dir / "after-install.md"
+    if brief and not after_install.exists():
+        return
     if after_install.exists():
         body, title = Markdown(after_install.read_text(encoding="utf-8-sig")), None
     else:
@@ -295,29 +297,30 @@ def _ensure_tree_readable(root: Path, plugins_dir: Path) -> None:
             ) from exc
 
 
-def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path) -> None:
+def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path, app_title: Optional[str] = None) -> None:
+    """Refuse a portable plugin whose app is missing here, in the same sentence the runtime surfaces use.
+
+    *app_title* is the catalog's human name for the app ("Blender"); without it the server name stands in."""
     if not (tree / "plugin.json").is_file():
         return
     from hermes_cli.agent_plugins import load_agent_plugin
-    from hermes_platform.declaration import gpu_label
     from hermes_platform.resolver.availability import availability
+    from tools.mcp_liveness import availability_problem, describe
 
     try:
         package = load_agent_plugin(tree, tree.parent / ".hermes-install-data")
     except ValueError as exc:
         raise _pc().PluginOperationError(f"Plugin '{plugin_name}' is unavailable: {exc}.",
                                          failure_class="manifest_invalid") from exc
-    for server_name, server_decl in package.server_declarations.items():
+    for server_decl in package.server_declarations.values():
         result = availability(server_decl.declaration)
         if result.offerable:
             continue
-        found = f", found version {result.version}" if result.version else ""
-        if result.state == "unsupported_gpu":
-            found = f", needs {gpu_label(server_decl.declaration.required_gpu)}"
-        raise _pc().PluginOperationError(
-            f"Plugin '{plugin_name}' server '{server_name}' is unavailable: {result.state}{found}.",
-            failure_class="incompatible",
-        )
+        problem = availability_problem(result)
+        reason = (describe(server_decl.declaration, result, problem, display_name=app_title)
+                  if problem else f"its app is unavailable ({result.state}).")
+        raise _pc().PluginOperationError(f"Can't install plugin '{plugin_name}': {reason}",
+                                         failure_class="incompatible")
 
 
 def _known_issue_warnings(entry) -> list[str]:
@@ -366,6 +369,7 @@ def _install_plugin_core(
     catalog: Optional[dict] = None,
     allow_removed: bool = False,
     before_swap=None,
+    app_title: Optional[str] = None,
 ) -> tuple[Path, dict, str]:
     """Clone a Git plugin and atomically record its source and exact revision.
 
@@ -452,7 +456,7 @@ def _install_plugin_core(
                 raise _pc().PluginOperationError(
                     "--no-deps cannot replace an active plugin. Retry without --no-deps; "
                     "PM must prepare its dependencies before publication.", failure_class="already_installed")
-        _refuse_unavailable_portable_plugin(plugin_name, tmp_target)
+        _refuse_unavailable_portable_plugin(plugin_name, tmp_target, app_title)
 
         if target.exists() and not force:
             from pm.environments import cli_command_name
@@ -557,6 +561,20 @@ def recorded_install(install: Callable[[], tuple], *, catalog_name: Optional[str
     return result
 
 
+def _announce_source(identifier: str, console, *, brief: bool) -> tuple[Optional[Any], str]:
+    """``(catalog entry or None, install identifier)``, printing where the install comes from: the
+    catalog pin (plus the entry's description unless *brief*) or the custom-source warning."""
+    from hermes_cli import plugins_cmd_catalog as catalog
+    if not catalog.looks_like_catalog_name(identifier):
+        console.print("[yellow]Warning:[/yellow] custom (unreviewed) source — not from the Hermes catalog.")
+        return None, identifier
+    entry = catalog.resolve_catalog_name(identifier, console)
+    console.print(f"[bold]{entry.name}[/bold] [cyan]\\[{entry.tier}][/cyan] [dim]pinned @ {entry.sha[:8]}[/dim]")
+    if not brief:
+        console.print(catalog.entry_capability_summary(entry))
+    return entry, entry.install_identifier
+
+
 def cmd_install(
     identifier: str,
     force: bool = False,
@@ -565,6 +583,7 @@ def cmd_install(
     allow_removed: bool = False,
     no_deps: bool = False,
     yes_deps: bool = False,
+    brief: bool = False,
 ) -> None:
     """Install a plugin from the curated catalog (bare name), a Git URL, or owner/repo shorthand.
 
@@ -577,17 +596,13 @@ def cmd_install(
     finish in one run instead of being refused and left for an ``enable`` that
     cannot recover a refused publication (#122134). The default without it stays
     fail-closed in non-interactive sessions.
+    *brief* is for a caller that already told the user what is being installed and why (first-time
+    setup): the catalog line, questions, warnings, errors and the outcome print, the catalog
+    description, clone line and default "Installed" panel do not.
     """
     from hermes_cli import plugins_cmd_catalog as catalog
     console = _pc()._console()
-    entry = None
-    if catalog.looks_like_catalog_name(identifier):
-        entry = catalog.resolve_catalog_name(identifier, console)
-        identifier = entry.install_identifier
-        console.print(f"[bold]{entry.name}[/bold] [cyan]\\[{entry.tier}][/cyan] [dim]pinned @ {entry.sha[:8]}[/dim]")
-        console.print(catalog.entry_capability_summary(entry))
-    else:
-        console.print("[yellow]Warning:[/yellow] custom (unreviewed) source — not from the Hermes catalog.")
+    entry, identifier = _announce_source(identifier, console, brief=brief)
     if allow_removed:
         console.print(
             "[bold red]WARNING:[/bold red] [red]--allow-removed set — skipping the catalog kill-list check. "
@@ -604,7 +619,8 @@ def cmd_install(
             "[yellow]Warning:[/yellow] Using insecure/local URL scheme. "
             "Consider using https:// or git@ for production installs.")
 
-    console.print(f"[dim]Cloning {git_url}{f' (subdir: {_subdir})' if _subdir else ''}...[/dim]")
+    if not brief:
+        console.print(f"[dim]Cloning {git_url}{f' (subdir: {_subdir})' if _subdir else ''}...[/dim]")
     _interactive_scan_decision = interactive_scan_decision(console, "Install")
 
     def _install() -> tuple:
@@ -649,7 +665,7 @@ def cmd_install(
         deps_ok, deps_reason = _install_plugin_python_deps(installed_manifest, target, console,
                                                            assume_yes=yes_deps)
 
-    _pc()._display_after_install(target, identifier)
+    _pc()._display_after_install(target, identifier, brief=brief)
 
     # ONE admission transaction for the enable (C13): resolve the candidate
     # union (enabled members + this target) and commit the config in the
@@ -670,6 +686,7 @@ def cmd_install(
 
     # already_active is PM's selection (plugins.enabled): it settles dependency consent, not memory.provider.
     # An explicit --enable still selects the provider, repairing installs that listed it in plugins.enabled.
+    activate = bool(enable)  # also set by a "y" at the Enable-now prompt below
     if already_active and not (is_memory_provider and enable):
         console.print("[dim]Replacement installed; plugin selection was not changed.[/dim]")
     elif is_memory_provider:
@@ -685,6 +702,7 @@ def cmd_install(
                 "after resolving the conflict.[/dim]"
             )
         else:
+            activate = True
             console.print(
                 f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.",
             )
@@ -700,10 +718,12 @@ def cmd_install(
     declared_caps = _pc()._declared_capabilities_from_manifest(installed_manifest, installed_name)
     if declared_caps:
         _pc()._run_capability_consent(console, installed_name, declared_caps, context="install")
-    if enable and not is_memory_provider:
+    if activate and not is_memory_provider:
         # Loads it into the running gateway now (handlers live) or says what needs a restart (#87770).
-        from hermes_cli.plugins_activation import activate_plugin_now, activation_hint
-        console.print(f"[dim]{activation_hint(activate_plugin_now(installed_name, in_process=False))}[/dim]")
+        # A "y" at the Enable-now prompt counts: without the nudge the gateway never loads the plugin
+        # (its MCP servers stay absent from every session) and nothing tells the user to restart.
+        from hermes_cli.plugins_activation import report_activation
+        report_activation(console, installed_name)
     console.print()
 
 

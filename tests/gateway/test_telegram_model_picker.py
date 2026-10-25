@@ -60,6 +60,7 @@ class TestTelegramModelPicker:
         query.data = "mb"
         query.message = MagicMock()
         query.message.chat_id = 12345
+        query.message.message_thread_id = None
         query.from_user = MagicMock()
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
@@ -70,6 +71,46 @@ class TestTelegramModelPicker:
         assert "MARKDOWN_V2" in repr(edit_kwargs["parse_mode"])
         assert "provider\\_one" in edit_kwargs["text"]
         assert "`model_1`" in edit_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_topic_picker_callbacks_keep_each_topics_selection_state(self):
+        adapter = _make_adapter()
+        work_callback = AsyncMock(return_value="Switched work model")
+        personal_callback = AsyncMock(return_value="Switched personal model")
+        chat_id = "12345"
+        adapter._bot.send_message = AsyncMock(
+            side_effect=[SimpleNamespace(message_id=101), SimpleNamespace(message_id=202)]
+        )
+
+        for thread_id, model_id, callback in (
+            ("101", "work-model", work_callback),
+            ("202", "personal-model", personal_callback),
+        ):
+            await adapter.send_model_picker(
+                chat_id=chat_id,
+                providers=[{"slug": "codex", "name": "Codex", "models": [model_id]}],
+                current_model=model_id,
+                current_provider="codex",
+                session_key=f"topic-{thread_id}",
+                on_model_selected=callback,
+                metadata={"thread_id": thread_id},
+            )
+
+        assert len(adapter._model_picker_state) == 2
+
+        async def select_in_topic(thread_id):
+            query = AsyncMock()
+            query.message = MagicMock(chat_id=int(chat_id), message_thread_id=int(thread_id))
+            query.answer = AsyncMock()
+            query.edit_message_text = AsyncMock()
+            await adapter._handle_model_picker_callback(query, "mp:codex", chat_id)
+            await adapter._handle_model_picker_callback(query, "mc:0", chat_id)
+
+        await select_in_topic("101")
+        await select_in_topic("202")
+
+        work_callback.assert_awaited_once_with(chat_id, "work-model", "codex")
+        personal_callback.assert_awaited_once_with(chat_id, "personal-model", "codex")
 
 
 def _gateway_wired_adapter():
@@ -127,5 +168,3 @@ async def test_group_model_picker_switch_follows_callback_allowlist(monkeypatch,
 
     assert on_model_selected.await_count == (1 if switches else 0)
     assert ("-100777" in adapter._model_picker_state) is not switches
-
-

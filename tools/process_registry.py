@@ -343,6 +343,11 @@ def _build_systemd_scope_argv(shell_argv: list[str], unit_suffix: str) -> list[s
     return _systemd_scope_argv(binary, f"hermes-worker-{unit_suffix}", *shell_argv)
 
 
+def systemd_scope_unit_name(unit_suffix: str) -> str:
+    """The unit :func:`_build_systemd_scope_argv` creates for *unit_suffix*: the exact name to stop."""
+    return f"hermes-worker-{unit_suffix}.scope"
+
+
 _scope_degraded_warned = False
 
 
@@ -391,6 +396,7 @@ class GatewayChildDispatch(NamedTuple):
 
     mode: Literal["in_process", "scoped", "degraded"]
     argv: list[str]
+    unit: Optional[str] = None  # ``scoped`` only: the transient scope unit's exact name
 
 
 def scoped_spawn_lost_user_bus(spawn_env: dict[str, str]) -> bool:
@@ -467,7 +473,7 @@ def restart_safe_gateway_child_argv(
     scoped = _build_systemd_scope_argv(command, unit_suffix=unit_suffix)
     if scoped == command:
         return _degrade("systemd-run disappeared after the availability probe")
-    return GatewayChildDispatch("scoped", scoped)
+    return GatewayChildDispatch("scoped", scoped, systemd_scope_unit_name(unit_suffix))
 
 
 def _stop_systemd_unit(unit_name: str) -> bool:
@@ -503,17 +509,6 @@ def _stop_systemd_unit(unit_name: str) -> bool:
     except Exception as exc:
         logger.debug("systemctl --user stop %s failed: %s", unit_name, exc)
         return False
-
-
-def format_uptime_short(seconds: int) -> str:
-    s = max(0, int(seconds))
-    if s < 60:
-        return f"{s}s"
-    mins, secs = divmod(s, 60)
-    if mins < 60:
-        return f"{mins}m {secs}s"
-    hours, mins = divmod(mins, 60)
-    return f"{hours}h {mins}m"
 
 
 def _not_found(session_id: str) -> dict:
@@ -1110,19 +1105,24 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         """Login-shell argv for *safe_command* (parity with LocalEnvironment: rc files
         sourced, user tools on PATH), wrapped in a transient systemd scope when we are
         the supervised gateway (own cgroup: an OOM kills only the worker, not the
-        gateway and its messaging control plane)."""
+        gateway and its messaging control plane) or inside a restart-safe cron execution
+        (keeps that execution's ``--collect`` scope drainable so the gateway can release it
+        once the ledger row is terminal; the job's own unit follows the job)."""
         argv = [_find_shell(), "-lic", f"set +m; {safe_command}"]
+        from cron.worker_bootstrap import EXTERNAL_WORKER_ENV  # late: cron imports this module
+
         # This applies to both pipe mode and the PTY path above. See #70716.
-        in_supervised_gateway = _IS_LINUX and _is_supervised_gateway_process()
-        if in_supervised_gateway and _systemd_run_user_scope_available():
-            session.systemd_unit = f"hermes-worker-{unit_suffix}.scope"
+        # The env lookup first: the gateway check reads the PID file.
+        isolate = _IS_LINUX and (bool(os.environ.get(EXTERNAL_WORKER_ENV)) or _is_supervised_gateway_process())
+        if isolate and _systemd_run_user_scope_available():
+            session.systemd_unit = systemd_scope_unit_name(unit_suffix)
             return _build_systemd_scope_argv(argv, unit_suffix=unit_suffix)
-        if in_supervised_gateway:
-            # Under a supervisor but no private cgroup: a worker OOM can still take
-            # the whole gateway down.
+        if isolate:
+            # No private cgroup: a worker OOM can still take the whole gateway down, and a
+            # cron execution's background job keeps that execution's scope unit alive.
             logger.debug(
-                "%s background executor not isolated in a systemd scope "
-                "(systemd-run --user unavailable); worker shares the gateway cgroup.", label)
+                "%s background executor not isolated in a systemd scope (systemd-run --user "
+                "unavailable); worker shares the gateway or cron execution cgroup.", label)
         return argv
 
     @staticmethod

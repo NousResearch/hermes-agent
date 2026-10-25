@@ -128,7 +128,7 @@ class CLICommandsSessionToolsMixin:
         """Handle /agents — show background processes and agent status. On the gateway both run there:
         the session's ``process.list`` and its usage's running-subagent count (no per-delegation rows)."""
         from hermes_cli.gateway_tools import process_registry as _registry, process_view
-        from tools.process_registry import format_uptime_short
+        from tools.process_registry_notifications import format_uptime_short
         process_registry, view = _registry(), process_view()
         if view is not None:
             view.refresh(force=True)

@@ -25,7 +25,7 @@ async def hello():
 
 
 @router.get("/whoami")
-async def whoami():
+async def whoami(profile: str | None = None):
     """Side-effect-free credential probe: read a secret and fold any failure into the
     plugin "no data" contract (a plugin handler must never raise out to the client).
 
@@ -37,6 +37,9 @@ async def whoami():
     from agent.secret_scope import get_secret
 
     try:
-        return {"ok": True, "key": get_secret("EXAMPLE_PLUGIN_PROBE_KEY")}
+        result = {"ok": True, "key": get_secret("EXAMPLE_PLUGIN_PROBE_KEY")}
+        if profile is not None:
+            result["profile"] = profile
+        return result
     except Exception as exc:  # plugin contract: never raise out of the handler
         return {"ok": False, "error": type(exc).__name__}

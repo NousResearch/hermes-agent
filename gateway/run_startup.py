@@ -1468,13 +1468,13 @@ class GatewayStartupMixin:
                     len(startup_nonretryable_errors), "; ".join(startup_nonretryable_errors),
                 )
             return False
-        if startup_nonretryable_errors and not startup_retryable_errors and self._startup_ownership_conflict:
-            # Another gateway owns a token/profile: staying up would be a second, deaf owner.
-            reason = "; ".join(startup_nonretryable_errors)
-            logger.error("Gateway hit a non-retryable startup conflict: %s", reason)
-            self._startup_fail_fatal_config(reason)
-            return True
         if startup_nonretryable_errors and not startup_retryable_errors:
+            if self._startup_ownership_conflict:
+                # Another gateway owns a token/profile: staying up would be a second, deaf owner.
+                reason = "; ".join(startup_nonretryable_errors)
+                logger.error("Gateway hit a non-retryable startup conflict: %s", reason)
+                self._startup_fail_fatal_config(reason)
+                return True
             # Every platform is parked, but local clients and cron still need this gateway: exiting 78
             # would take them all down over one unusable bot. Stay up degraded, like the mixed case.
             self._startup_parked_platforms = True

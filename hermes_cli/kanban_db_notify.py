@@ -259,12 +259,21 @@ def remove_notify_sub(
     platform: str,
     chat_id: str,
     thread_id: Optional[str] = None,
+    reason: Optional[str] = None,
 ) -> bool:
+    """Delete one sub. With ``reason`` (an automatic removal: archive, send-failure drop) a
+    ``notify_unsubscribed`` task event records it in the same txn, so the removal stays
+    auditable after the gateway log rotates (sirron#166). The event carries ``platform`` and
+    ``reason`` only — never the raw gateway ``chat_id``/``thread_id``, which ``hermes kanban
+    export`` would otherwise carry past the sub-table scrub (PR #127304)."""
     with _kb.write_txn(conn):
         cur = conn.execute(
             "DELETE FROM kanban_notify_subs " + _SUB_KEY_WHERE,
             _sub_key(task_id, platform, chat_id, thread_id),
         )
+        if reason and cur.rowcount > 0:
+            _kb._append_event(conn, task_id, "notify_unsubscribed", {
+                "platform": platform, "reason": reason})
     return cur.rowcount > 0
 
 

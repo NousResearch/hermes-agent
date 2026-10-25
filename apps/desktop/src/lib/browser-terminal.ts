@@ -72,7 +72,8 @@ function settleOpen(state: TerminalState): void {
 }
 
 /** A trimmed replay can start mid-way through a full-screen program's output, and an
- * unchanged size sends no SIGWINCH: step one row away first so the program redraws. */
+ * unchanged size sends no SIGWINCH: step one row away first so the program redraws. The server
+ * holds the step back until the program has answered the step (web_host_terminal_sessions._resize). */
 function sendResumeSize(socket: WebSocket, state: TerminalState, trimmed?: boolean): void {
   if (trimmed) {socket.send(`\u001b[RESIZE:${state.cols};${state.rows > 1 ? state.rows - 1 : state.rows + 1}]`)}
   socket.send(`\u001b[RESIZE:${state.cols};${state.rows}]`)

@@ -31,6 +31,8 @@ RETENTION_SECONDS = 15 * 60
 _MAX_SHELLS = 16
 # Inbound frames buffered while one batch is written (backpressure bound).
 _INPUT_BATCH_FRAMES = 64
+# How long a resize that undoes the previous one waits for the program to answer that one (``_resize``).
+_RESIZE_ANSWER_SECONDS = 1.0
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 
 
@@ -333,6 +335,24 @@ def _input_runs(frames: list[dict], resize_re):
         yield run
 
 
+async def _resize(session: PtySession, ws: WebSocket, size: tuple[int, int], undo):
+    """Apply ``size``; return what the next resize needs to tell whether it undoes this one.
+
+    A program can read the size well after its SIGWINCH (Node, behind its event loop, and reports a
+    'resize', which Hermes' TUI redraws on, only when the size it reads has changed). A step undone
+    before it looks is never seen: both signals find the size it already had. So a resize back to
+    the size before the previous one first waits until the program has written output since that
+    one, as a program that redraws on a resize does, or ``_RESIZE_ANSWER_SECONDS`` for one that
+    does not. ``undo`` is ``(size before the previous resize, outputs when it was applied)``, set
+    only when that resize changed the size.
+    """
+    if undo is not None and undo[0] == size:
+        await session.wait_for_output(undo[1], _RESIZE_ANSWER_SECONDS)
+    before = session.size()
+    session.resize(ws, cols=size[0], rows=size[1])
+    return (before, session.outputs) if before is not None and before != size else None
+
+
 async def _pump_input(ws: WebSocket, registry: HostTerminalRegistry, token: str,
                       session: PtySession, owner: HostOwner) -> None:
     """Forward keystrokes and resizes while ``ws`` is the attached viewer.
@@ -355,6 +375,7 @@ async def _pump_input(ws: WebSocket, registry: HostTerminalRegistry, token: str,
     inbox: asyncio.Queue = asyncio.Queue(maxsize=_INPUT_BATCH_FRAMES)
     ended = asyncio.get_running_loop().create_future()
     reader = asyncio.create_task(_read_frames(ws, inbox, ended))
+    undo = None
     try:
         # No Ctrl-L/redraw input: arbitrary foreground shell programs own stdin.
         while session._ws is ws and session.alive:
@@ -364,7 +385,7 @@ async def _pump_input(ws: WebSocket, registry: HostTerminalRegistry, token: str,
             frames = [msg for msg in batch if isinstance(msg, dict)]
             for item in _input_runs(frames, _RESIZE_RE):
                 if isinstance(item, tuple):
-                    session.resize(ws, cols=item[0], rows=item[1])
+                    undo = await _resize(session, ws, item, undo)
                     continue
                 try:
                     delivered = await _write_while_open(session, ws, item, owner.admit, ended)

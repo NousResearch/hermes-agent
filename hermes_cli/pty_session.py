@@ -127,6 +127,9 @@ class PtySession:
         self._output_lock = asyncio.Lock()
         self._input_task: Optional[asyncio.Task] = None
         self._close_task: Optional[asyncio.Task] = None
+        # Chunks of output read so far, and set when one arrives (``wait_for_output``).
+        self._outputs = 0
+        self._output_arrived = asyncio.Event()
 
     async def start(self) -> None:
         self._drain_task = asyncio.create_task(self._drain())
@@ -149,6 +152,8 @@ class PtySession:
                 await asyncio.sleep(0)
                 continue
             self.buffer.append(chunk)
+            self._outputs += 1
+            self._output_arrived.set()
             ws = self._ws
             output_lock = self._output_lock
             try:
@@ -210,6 +215,30 @@ class PtySession:
     def resize(self, ws, *, cols: int, rows: int) -> None:
         if self._ws is ws and self.alive:
             self.bridge.resize(cols=cols, rows=rows)
+
+    def size(self) -> Optional[tuple[int, int]]:
+        """The PTY's ``(cols, rows)``, or None where the bridge cannot tell (ConPTY, stubs)."""
+        return self.bridge.size() if hasattr(self.bridge, "size") else None
+
+    @property
+    def outputs(self) -> int:
+        """How many chunks of output have been read from the program so far."""
+        return self._outputs
+
+    async def wait_for_output(self, since: int, timeout: float) -> None:
+        """Return once output past ``since`` (an ``outputs`` value) has been read, the session has
+        ended, or ``timeout`` seconds have passed."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while self.alive and self._outputs == since:
+            self._output_arrived.clear()
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return
+            try:
+                await asyncio.wait_for(self._output_arrived.wait(), remaining)
+            except TimeoutError:
+                return
 
     async def attach(
         self, ws, *, force_redraw: bool = False,

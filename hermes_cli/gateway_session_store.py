@@ -492,9 +492,10 @@ def _launch_cwd():
     sends it as is, as on main. A docker/ssh one sends it when it is a host directory or the recorded
     ``-w`` tree (a vanished tree is then refused as on main, not swapped for the checkout); otherwise
     it is a path inside the sandbox, so the launch dir is sent and the backend keeps its own cwd
-    (``terminal_uses_host_cwd``). A tree no longer selected (a later /resume moved away) never decides."""
+    (``terminal_uses_host_cwd``). A tree no longer selected (a later /resume moved away) never decides.
+    ``hermes -w`` records the tree in the imported ``cli`` module, ``python cli.py -w`` in ``__main__``."""
     terminal_cwd = os.getenv("TERMINAL_CWD")
-    trees = (getattr(sys.modules.get(name), "_active_worktree", None) for name in ("cli",))
+    trees = (getattr(sys.modules.get(name), "_active_worktree", None) for name in ("cli", "__main__"))
     recorded = {os.path.realpath(tree["path"]) for tree in trees if tree and tree.get("path")}
     if terminal_cwd and os.path.realpath(terminal_cwd) in recorded:
         return os.path.realpath(terminal_cwd)

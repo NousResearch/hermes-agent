@@ -547,10 +547,12 @@ def test_a_mounting_docker_backend_sends_the_w_worktree_not_the_launch_dir(store
     assert [p for m, p in client.calls if m == "session.create"][-1]["cwd"] == str(tree.resolve())
 
 
+@pytest.mark.parametrize("entry", ["cli", "__main__"])
 @pytest.mark.parametrize("backend,mount", [("local", None), ("docker", "true")])
-def test_a_removed_w_worktree_is_sent_so_the_gateway_refuses_it(store, monkeypatch, tmp_path, backend, mount):
+def test_a_removed_w_worktree_is_sent_so_the_gateway_refuses_it(store, monkeypatch, tmp_path, backend, mount, entry):
     """-w publishes its tree in TERMINAL_CWD without a chdir; once the tree is gone, creating from the
-    original checkout would put the agent's edits there. Main sent the path and the gateway refused it."""
+    original checkout would put the agent's edits there. Main sent the path and the gateway refused it.
+    ``hermes -w`` records the tree in the imported ``cli`` module, ``python cli.py -w`` in ``__main__``."""
     import sys
     from hermes_cli import gateway_session_store as gss
     db, client = store
@@ -558,7 +560,10 @@ def test_a_removed_w_worktree_is_sent_so_the_gateway_refuses_it(store, monkeypat
     repo.mkdir()
     tree = repo / ".worktrees" / "wt"  # never created: removed while the CLI was open
     monkeypatch.chdir(repo)
-    monkeypatch.setitem(sys.modules, "cli", types.SimpleNamespace(_active_worktree={"path": str(tree)}))
+    if entry == "cli":
+        monkeypatch.setitem(sys.modules, "cli", types.SimpleNamespace(_active_worktree={"path": str(tree)}))
+    else:
+        monkeypatch.setattr(sys.modules["__main__"], "_active_worktree", {"path": str(tree)}, raising=False)
     monkeypatch.setenv("TERMINAL_CWD", str(tree))
     monkeypatch.setenv("TERMINAL_ENV", backend)
     if mount:

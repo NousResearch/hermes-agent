@@ -443,7 +443,8 @@ def _owner_objects(authority, ref, *, include_fallback_evicted=False):
 
 def physical_target(authority, ref):
     from gateway.config import Platform
-    if authority.sessions[ref.session_id].source.platform == Platform.LOCAL:
+    source = authority.sessions[ref.session_id].source  # None: a history mount
+    if source is not None and source.platform == Platform.LOCAL:
         from hermes_state_local import local_receipt
         return local_receipt(authority.db, ref.session_id)['entry']['session_id']
     return ref.session_id

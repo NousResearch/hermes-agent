@@ -85,7 +85,45 @@ export interface PreviewActAction {
   to?: 'bottom' | 'top'
 }
 
+/** Bounded identity only: never labels, text, values or arbitrary attributes. */
+export interface PreviewInspectionNode {
+  tag: string
+  nthOfType: number
+  id?: string
+  class?: string
+  testId?: string
+}
+
+export interface PreviewTargetInspection {
+  coordinateSpace: 'guest-viewport-css-pixels'
+  candidateCount: number
+  truncated: boolean
+  viewport: {
+    width: number | null
+    height: number | null
+    scrollX: number | null
+    scrollY: number | null
+    devicePixelRatio: number | null
+  }
+  candidates: Array<{
+    node: PreviewInspectionNode
+    ancestors: PreviewInspectionNode[]
+    rect: { left: number; top: number; right: number; bottom: number; width: number; height: number } | null
+    /** Same rounded center used by locate, but without scrolling first. */
+    point: { x: number; y: number } | null
+    centerInViewport: boolean
+    style: { pointerEvents: string; visibility: string; display: string }
+    hit: {
+      node: PreviewInspectionNode | null
+      ancestors: PreviewInspectionNode[]
+      relationship: 'self' | 'descendant' | 'ancestor' | 'unrelated' | 'none'
+    }
+  }>
+}
+
 export interface PreviewActResult {
+  /** elements + selector/ref: read-only geometry, not an inventory or delta. */
+  inspection?: PreviewTargetInspection
   /** What the action landed on, for the agent's own log. */
   acted?: string
   /** What moved since the last look. Present INSTEAD of `elements` once the

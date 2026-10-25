@@ -350,7 +350,9 @@ A smaller auxiliary compression model can lower the live compression trigger wit
 changing the selected tail policy. In `lean` mode the selection budget remains based
 on the **main model's context window**: 2.5%, clamped to 10K–25K tokens, and never more
 than 20% of that window (the 10K floor alone is 61% of a 16K local window, so without the cap a
-small model's "protected" tail was the whole request and compaction reclaimed nothing). For example,
+small model's "protected" tail was the whole request and compaction reclaimed nothing), nor more than
+half of the compression trigger (a `threshold_tokens` of 12K on a 1M window would otherwise keep a 25K tail, so
+every pass stayed over the trigger and refused as "would grow"). For example,
 a 1M main model with a 512K auxiliary model retains a 25K
 selection budget even when feasibility lowers its trigger from 850K to 512K. Explicit `legacy` mode instead
 recomputes `threshold_tokens × target_ratio` (102,400 tokens at 512K × 0.20).

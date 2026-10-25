@@ -2232,10 +2232,9 @@ class ContextCompressor(
         if self._tail_token_budget is None:
             if getattr(self, "tail_mode", "lean") == "lean":
                 # Lean mode: tail is a small clamped recency window; the summary carries continuity.
-                floor = LEAN_TAIL_FLOOR_TOKENS
-                if self.threshold_tokens > 0:
-                    floor = min(floor, int(self.threshold_tokens * TAIL_MAX_THRESHOLD_FRACTION))
-                budget = max(floor, min(LEAN_TAIL_CAP_TOKENS, int(self.context_length * 0.025)))
+                budget = max(LEAN_TAIL_FLOOR_TOKENS, min(LEAN_TAIL_CAP_TOKENS, int(self.context_length * 0.025)))
+                if self.threshold_tokens > 0:  # floor AND window term: 25K at 1M outgrew a 12K/30K trigger
+                    budget = min(budget, int(self.threshold_tokens * TAIL_MAX_THRESHOLD_FRACTION))
             else:
                 budget = int(self.threshold_tokens * self.summary_target_ratio)
             if self.context_length > 0:

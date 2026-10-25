@@ -6,6 +6,8 @@ tail, so head + summary + tail stayed over the 12K trigger and every follow-up p
 
 from unittest.mock import patch
 
+import pytest
+
 import agent.context_compressor as cc
 from agent.context_compressor import ContextCompressor, _estimate_msg_budget_tokens
 
@@ -42,3 +44,16 @@ def test_retained_tail_leaves_half_the_configured_trigger_free():
 
 def test_unconfigured_trigger_keeps_the_lean_floor():
     assert _make(131_072, threshold_tokens=None).tail_token_budget == cc.LEAN_TAIL_FLOOR_TOKENS
+
+
+@pytest.mark.parametrize("ctx, threshold", [(400_000, 12_000), (1_000_000, 12_000), (1_000_000, 30_000)])
+def test_large_window_retained_tail_stays_well_under_the_configured_trigger(ctx, threshold):
+    """The 2.5%-of-window recency term (25K at 1M) must not outgrow a configured trigger either: the kept tail stays
+    within half the trigger plus the soft ceiling's whole-row overrun (1.5x), not at or past the trigger."""
+    comp = _make(ctx, threshold_tokens=threshold)
+    assert comp.threshold_tokens == threshold
+    msgs = _chatty_transcript(16)
+    start, end = comp._compress_window(msgs)
+    tail_tokens = sum(_estimate_msg_budget_tokens(m) for m in msgs[end:])
+    assert end > start
+    assert tail_tokens <= threshold * 3 // 4, (start, end, tail_tokens)

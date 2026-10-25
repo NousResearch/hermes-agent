@@ -16,10 +16,10 @@ _LEAN_TAIL_DEMOTE_MIN_CHARS = 1_500
 # id and a reload marker the stub can pass the Phase-1 prune floor, and re-summarising it would drop both pointers.
 _DEMOTED_STUB_RE = re.compile(r"\[[^\s\]]* output demoted at compaction — [\d,]+ chars preserved in session history\.")
 
-# ``ContextCompressor.tail_token_budget``: the lean 10K floor never claims more than this share of the trigger. A
+# ``ContextCompressor.tail_token_budget``: the lean tail never claims more than this share of the trigger. A
 # configured ``threshold_tokens`` (or aux summariser ceiling) far below the window left that floor at 83% of a 12K
 # trigger, so head + summary + tail stayed over threshold and every pre-API pass refused as "would grow" (the
-# window-side twin is ``TAIL_MAX_CONTEXT_FRACTION``). The 2.5%-of-window recency window is not clamped.
+# window-side twin is ``TAIL_MAX_CONTEXT_FRACTION``). It caps the whole lean budget, the 2.5%-of-window term included.
 TAIL_MAX_THRESHOLD_FRACTION = 0.50
 
 

@@ -40,6 +40,7 @@ from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
 from tools.process_registry_env_log import log_delta_command
 from tools.process_registry_wsl import _is_wsl_launcher_command
+from tools.terminal_tool_result import transform_process_output
 
 logger = logging.getLogger(__name__)
 
@@ -563,6 +564,7 @@ class ProcessSession:
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # Recovered from checkpoint (no pipe)
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
+    local_execution: Any = None                 # agent.redact.local_execution, taken before a local spawn
     systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run
     wsl_chain: bool = False                     # spawned via wsl[.exe]: the host PID is the short-lived
                                                 # launcher; Linux-side workers outlive it (#120546)
@@ -1185,10 +1187,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         # ``A && { B & }``. Lazy import: terminal_tool imports this module.
         # Guard against the `A && B &` subshell-wait trap (issue #68915).
         from tools.terminal_tool_sudo import _rewrite_compound_background as _rewrite_bg
+        from agent.redact import local_execution
 
         safe_command = _rewrite_bg(command)
         session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()),
-                                    persist_on_release=persist_on_release)
+                                    persist_on_release=persist_on_release,
+                                    local_execution=local_execution(command, self._spawn_env(env_vars).get("HOME")))
         pty_scope_attempted = False
         # A worker's pipe or PTY dies with the worker (the child's next write is SIGPIPE): write to a log.
         log = worker_output_log(session.id)
@@ -2623,17 +2627,6 @@ PROCESS_SCHEMA = {
 }
 
 
-def transform_process_output(output: str, *, command: str, returncode: Optional[int], task_id: str = "") -> str:
-    """``transform_terminal_output`` seam for background-process output — the poll/wait/log/kill
-    results and the completion/heartbeat/watch notifications — so a plugin that rewrites terminal
-    output sees the same command output whether it ran in the foreground or not (#70760).
-    Same helper as the foreground path; callers redact AFTER it, never before, so a replacement
-    the plugin returns is still masked. ``returncode`` is None while the process is running and
-    ``env_type`` is not recorded per process, so it is passed empty."""
-    from tools.terminal_tool_result import _apply_output_transform_hook
-    return _apply_output_transform_hook(command, output, returncode, task_id or "", "")
-
-
 def _redact_process_result(result: dict) -> dict:
     """Transform, then redact secrets from background-process output before it reaches the
     model, session.db and CLI, mirroring the foreground ``terminal`` pipeline (hook first,
@@ -2647,14 +2640,16 @@ def _redact_process_result(result: dict) -> dict:
     from agent.redact import redact_sensitive_text, redact_terminal_output
 
     command = result.get("command") or ""
+    session = process_registry.get(str(result.get("session_id") or ""))
+    execution = getattr(session, "local_execution", None)
     # The hook's task_id is the process OWNER's (poll/log/wait results carry only session_id).
     task_id = str(result.get("task_id") or "")
-    if not task_id and (session := process_registry.get(str(result.get("session_id") or ""))) is not None:
+    if not task_id and session is not None:
         task_id = str(getattr(session, "task_id", "") or "")
     for key in ("output", "output_preview"):
         if isinstance(value := result.get(key), str) and value:
             value = transform_process_output(value, command=command, returncode=result.get("exit_code"), task_id=task_id)
-            result[key] = redact_terminal_output(value, command)
+            result[key] = redact_terminal_output(value, command, execution=execution)
     if isinstance(command, str) and command:
         result["command"] = redact_sensitive_text(command, code_file=True)
     return result

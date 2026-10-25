@@ -9,7 +9,12 @@ read_file pagination) are different products and stay separate.
 
 from __future__ import annotations
 
+import re
+
 HEAD_RATIO = 0.4
+# ``truncation_notice`` as a capturing pattern: ``re.split`` keeps each notice at an odd index.
+TRUNCATION_NOTICE_RE = re.compile(
+    r"(\n\n\.\.\. \[[A-Z_ ]+ TRUNCATED - [\d,]+ \w+ omitted out of [\d,]+ total\] \.\.\.\n\n)")
 
 
 def truncation_notice(omitted: int, total: int, *, label: str = "OUTPUT", unit: str = "chars") -> str:

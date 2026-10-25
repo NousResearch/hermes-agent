@@ -546,7 +546,7 @@ class S6ServiceManager:
             ) from exc
 
     def start(self, name: str) -> None:
-        self._run_svc("-u", "start", name)
+        self._run_svc("-U", "start", name)
         _write_gateway_desired_state(name, "running")
 
     def _svstat_fields(self, name: str, *fields: str) -> list[str] | None:
@@ -586,8 +586,8 @@ class S6ServiceManager:
         _write_gateway_desired_state(name, "stopped")
 
     def restart(self, name: str) -> None:
-        """``s6-svc -t`` (SIGTERM)."""
-        self._run_svc("-t", "restart", name)
+        """Restart an up slot or revive a stopped one, clearing persistent down intent."""
+        self._run_svc("-tU", "restart", name)
         _write_gateway_desired_state(name, "running")
 
     def is_running(self, name: str) -> bool:

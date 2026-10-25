@@ -256,10 +256,16 @@ def _version_line(project_root: Path) -> str:
     return f"{ver_str} ({commit_date})" if commit_date else ver_str
 
 
+def _section(config: dict, name: str) -> dict:
+    """``config[name]`` as a dict; a hand-edited scalar/list section reads as empty instead of crashing."""
+    value = config.get(name)
+    return value if isinstance(value, dict) else {}
+
+
 def _effective_terminal_backend(config: dict) -> str:
     """The EFFECTIVE backend: a TERMINAL_ENV set directly in .env / the shell overrides ``terminal.backend`` and
     is what terminal_tool uses. run_dump() has already loaded .env, so os.environ reflects the override."""
-    config_backend = config.get("terminal", {}).get("backend", "local")
+    config_backend = _section(config, "terminal").get("backend", "local")
     env_backend = (os.environ.get("TERMINAL_ENV") or "").strip().lower()
     if env_backend and env_backend != str(config_backend).strip().lower():
         return f"{env_backend}  (TERMINAL_ENV overrides config.yaml terminal.backend={config_backend})"
@@ -331,8 +337,8 @@ def run_dump(args):
         "", "api_keys:", *_api_key_lines(show_keys),
         "", "features:",
         f"  toolsets:           {', '.join(toolsets) if toolsets else '(default)'}",
-        f"  mcp_servers:        {len(config.get('mcp', {}).get('servers', {}))}",
-        f"  memory_provider:    {config.get('memory', {}).get('provider', '') or 'built-in'}",
+        f"  mcp_servers:        {len(_section(config, 'mcp').get('servers') or {})}",
+        f"  memory_provider:    {_section(config, 'memory').get('provider', '') or 'built-in'}",
         f"  gateway:            {_gateway_status()}",
         f"  platforms:          {', '.join(platforms) if platforms else 'none'}",
         f"  cron_jobs:          {_cron_summary(hermes_home)}",

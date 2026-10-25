@@ -2050,3 +2050,26 @@ def test_endpoint_pricing_per_token_quotes_pass_through_unchanged():
     assert float(entry.input_cost_per_million) == pytest.approx(0.6)
     assert float(entry.output_cost_per_million) == pytest.approx(1.2)
     assert float(entry.request_cost) == pytest.approx(0.005)
+
+
+def test_endpoint_pricing_preserves_single_prompt_tier_override():
+    """A compatible endpoint's tier table reaches the cost estimator intact."""
+    from agent import model_metadata as mm
+
+    model = {
+        "id": "openai/gpt-6.1-sol-pro",
+        "pricing": {
+            "prompt": "0.000002", "completion": "0.000010",
+            "overrides": [{
+                "min_prompt_tokens": 272_000,
+                "prompt": "0.000004", "completion": "0.000015",
+            }],
+        },
+    }
+
+    pricing = mm._endpoint_model_entry(model, model["id"], None)["pricing"]
+
+    assert pricing["overrides"] == [{
+        "min_prompt_tokens": 272_000,
+        "prompt": "0.000004", "completion": "0.000015",
+    }]

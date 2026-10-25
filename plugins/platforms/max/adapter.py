@@ -311,6 +311,22 @@ class MaxAdapter(BasePlatformAdapter):
             logger.warning("[%s] Failed to download voice attachment", self.name, exc_info=True)
             return None
 
+    # -- Typing indicator -----------------------------------------------------
+
+    async def send_typing(self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> None:
+        """POST /chats/{chatId}/actions {"action": "typing_on"} — works for both a dialog
+        (chatId == the human's user_id, confirmed live) and a real group/channel chat_id. MAX's
+        typing bubble expires after a few seconds same as Telegram's; the base adapter's
+        ``_keep_typing`` loop already re-fires this every ~2s while the agent is working, so a
+        single best-effort POST per tick is all that's needed here — no persistent state."""
+        if not self._http_client:
+            return
+        try:
+            await self._http_client.post(
+                f"/chats/{chat_id}/actions", json={"action": "typing_on"}, timeout=10.0)
+        except Exception:
+            logger.debug("[%s] send_typing failed for %s", self.name, chat_id, exc_info=True)
+
     # -- Outbound messaging -------------------------------------------------
 
     async def send(

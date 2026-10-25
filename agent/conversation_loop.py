@@ -1666,6 +1666,12 @@ def _run_conversation_turn(
     except Exception:
         logger.debug("per-turn env credential refresh failed", exc_info=True)
 
+    # A loaded ``hold_stream`` transform in this profile: the user sees only its rewritten final, made
+    # by the transforms live now (a plugin reload mid-turn cannot drop them before the final). Set
+    # before any exit, so an early one never reads the previous turn's hold.
+    agent._held_transforms = held_stream_transforms()
+    agent._hold_stream = bool(agent._held_transforms)
+
     # Per-turn setup: build_turn_context mutates ``agent`` and returns the locals the loop reads.
     try:
         _ctx = build_turn_context(
@@ -1702,10 +1708,6 @@ def _run_conversation_turn(
     # pool refresh tallies cap same-entry refreshes on a persistent 401 (#26080); usage
     # for on_turn_complete() stays None on turns that never reach a response.
     agent._delivered_interim_texts = set()
-    # A loaded ``hold_stream`` transform in this profile: the user sees only its rewritten final, made
-    # by the transforms live now (a plugin reload mid-turn cannot drop them before the final).
-    agent._held_transforms = held_stream_transforms()
-    agent._hold_stream = bool(agent._held_transforms)
     agent._incremental_persistence_failed = False
     agent._last_persistence_error_cause = None
     agent._compression_adoption_failed = False
@@ -1812,6 +1814,7 @@ def run_conversation(
     addresses, after every history rewrite including post-turn micro-compaction.
     """
     from agent.turn_context import export_current_turn_boundary
+    from agent.turn_finalizer import settle_held_final
     from agent.voice_turn_route import end_voice_turn_route
     from tools.vision_tools_history_budget import native_turn_images
 
@@ -1840,6 +1843,7 @@ def run_conversation(
             )
         finally:
             end_voice_turn_route(agent)
+    settle_held_final(agent, result)
     result = export_current_turn_boundary(agent, result, user_message)
     if isinstance(result, dict):
         result["user_intervened"] = bool(getattr(agent, "_turn_user_intervened", False))

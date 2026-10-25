@@ -284,6 +284,15 @@ def _close_transcript_tail(agent, messages, final_response, interrupted, _recove
         _apply_override(messages)
 
 
+def _store_rewrite_on_tail(messages, raw, final) -> None:
+    """A recovery exit that already appended its text as the tail row (the iteration-budget summary)
+    stores the rewrite the user gets, not the model text, while that row is still unflushed (#44239)."""
+    tail = messages[-1] if messages else None
+    if (final != raw and isinstance(tail, dict) and tail.get("role") == "assistant"
+            and tail.get("content") == raw and not tail.get(_DB_PERSISTED_MARKER)):
+        tail["content"] = final
+
+
 def _micro_compact_after_turn(agent, messages, final_response, logger, task_id) -> None:
     """Post-turn micro-compaction: absorb the oldest uncompacted exchange into the
     rolling summary before persist, amortizing compression across turns."""
@@ -547,6 +556,24 @@ def _run_held_transforms(callbacks, payload: dict, logger) -> Optional[str]:
     return HELD_TRANSFORM_FAILED_REPLY if failed else rewrite
 
 
+def settle_held_final(agent, result: Any) -> None:
+    """A held turn's reply leaves only through its transform snapshot. ``finish_text_response``,
+    ``finalize_turn``, the Codex runtime and the truncation ceiling run it before persisting; every
+    other exit (provider errors, retry exhaustion, interrupts, compression failures, ...) returns its
+    text through ``run_conversation``, which calls this, so no path hands the user text the plugin
+    did not see first, and a failed transform yields the withheld notice."""
+    if getattr(agent, "_hold_stream", False) is not True or not isinstance(result, dict):
+        return
+    text, turn_id = result.get("final_response"), getattr(agent, "_current_turn_id", "") or ""
+    recorded = getattr(agent, "_llm_output_transform", None)
+    if not isinstance(text, str) or not text or (isinstance(recorded, tuple) and recorded[:1] == (turn_id,)):
+        return
+    final, transformed, _ = apply_llm_output_transform(agent, text, turn_id=turn_id)
+    if result.get("error") == text:  # keep the mirror an error card reads
+        result["error"] = final
+    result.update(final_response=final, response_transformed=transformed, pre_transform_response=None)
+
+
 def public_pre_transform(agent, pre_transform: Optional[Any]) -> Optional[Any]:
     """``pre_transform_response`` for a turn result: a held turn's original never leaves the agent
     (receipts, replay-gap recovery, post-stream suffix painting all see only the rewrite)."""
@@ -659,7 +686,9 @@ def finalize_turn(
         # gets the recorded outcome back. Either way the tail close below writes the text the
         # user will see, never the raw model text (#44239).
         if final_response and not interrupted:
+            _raw = final_response
             final_response, _, _ = apply_llm_output_transform(agent, final_response, turn_id=turn_id, logger=logger)
+            _store_rewrite_on_tail(messages, _raw, final_response)
         _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
         if not interrupted and not failed:
             _micro_compact_after_turn(agent, messages, final_response, logger, effective_task_id)

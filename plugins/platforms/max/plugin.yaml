@@ -1,0 +1,44 @@
+name: max-platform
+label: MAX
+kind: platform
+version: 1.0.0
+description: >
+  MAX messenger (max.ru, RU) gateway adapter for Hermes Agent.
+  Polls the MAX Bot API (GET /updates long polling) for incoming dialog
+  messages and replies via POST /messages. Minimal functionality: 1:1
+  text dialogs only (no groups/channels/media/buttons). Lightweight —
+  no external SDK, only httpx (already a Hermes dependency).
+
+  Long polling is a dev/test-grade transport on MAX's own docs (rate- and
+  retention-limited); it is intentionally used here instead of the HTTPS
+  webhook subscription to keep the adapter self-contained with no public
+  endpoint required. Revisit with a webhook adapter if production-grade
+  delivery is needed.
+author: dappvibe
+requires_env:
+  - name: MAX_BOT_TOKEN
+    description: "MAX bot token (business.max.ru/self -> Чат-боты -> Настройки)"
+    prompt: "MAX bot token"
+    url: "https://business.max.ru/self"
+    password: true
+optional_env:
+  - name: MAX_SERVER_URL
+    description: "MAX Bot API base URL (default: https://platform-api2.max.ru)"
+    prompt: "MAX API server URL"
+    password: false
+  - name: MAX_ALLOWED_USERS
+    description: "Comma-separated MAX user IDs allowed to talk to the bot"
+    prompt: "Allowed user IDs (comma-separated)"
+    password: false
+  - name: MAX_ALLOW_ALL_USERS
+    description: "Allow any MAX user to trigger the bot (dev only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: MAX_HOME_CHANNEL
+    description: "Default chat/user ID for cron / notification delivery"
+    prompt: "Home channel ID (or empty)"
+    password: false
+  - name: MAX_HOME_CHANNEL_NAME
+    description: "Human label for the home channel (defaults to the ID)"
+    prompt: "Home channel display name (or empty)"
+    password: false

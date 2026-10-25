@@ -1,0 +1,48 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: myworld-calendar
+description: Safe Google Calendar practice world for testing scheduling agents.
+source: https://github.com/shashank-yadav/myworld
+
+transport:
+  type: stdio
+  command: uvx
+  args:
+    - myworld==0.2.1
+    - stdio
+    - calendar
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - list-calendars
+    - list-events
+    - get-event
+    - search-events
+    - get-freebusy
+    - create-event
+    - update-event
+    - respond-to-event
+    - get-current-time
+
+suggest:
+  keywords:
+    - myworld
+    - calendar
+    - scheduling
+    - practice world
+
+post_install: |
+  myworld-calendar runs a local, simulated Calendar MCP server over stdio:
+    uvx myworld stdio calendar
+
+  No real calendars are changed. Use it to practice scheduling, free/busy
+  checks, invitations, RSVP handling and time-zone mistakes safely.
+
+  More calendar-shaped tools can be enabled with:
+    hermes mcp configure myworld-calendar
+

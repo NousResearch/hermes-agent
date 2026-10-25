@@ -1,0 +1,51 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: myworld-github
+description: Safe GitHub practice world for issue, pull request and repository workflows.
+source: https://github.com/shashank-yadav/myworld
+
+transport:
+  type: stdio
+  command: uvx
+  args:
+    - myworld==0.2.1
+    - stdio
+    - github
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - list_issues
+    - get_issue
+    - search_issues
+    - update_issue
+    - add_issue_comment
+    - list_pull_requests
+    - get_pull_request
+    - get_pull_request_status
+    - get_pull_request_files
+    - list_commits
+
+suggest:
+  keywords:
+    - myworld
+    - github
+    - pull request
+    - issue
+    - practice world
+
+post_install: |
+  myworld-github runs a local, simulated GitHub MCP server over stdio:
+    uvx myworld stdio github
+
+  No real repositories are changed. Use it to practice triage, merge decisions,
+  reviews, branch protection, search lag and CI status handling safely.
+
+  Mutating repository tools are available but not all default-enabled. Adjust
+  the tool surface with:
+    hermes mcp configure myworld-github
+

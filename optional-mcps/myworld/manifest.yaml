@@ -1,0 +1,68 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: myworld
+description: Safe multi-tool practice worlds for real agent work.
+source: https://github.com/shashank-yadav/myworld
+
+# myworld is published on PyPI. Hermes can launch a complete shared world
+# directly with uvx; no repository clone or local bootstrap step is required.
+transport:
+  type: stdio
+  command: uvx
+  args:
+    - myworld==0.2.1
+    - world
+    - invoice-review
+
+auth:
+  type: none
+
+# This default world is one company task across Gmail, Slack and Drive. The
+# tools are namespaced so the agent sees one MCP server while state, calls,
+# grading, snapshots and forks all stay shared.
+tools:
+  default_enabled:
+    - world_task
+    - world_grade
+    - world_submit
+    - world_snapshot
+    - world_restore
+    - world_diff
+    - world_calls
+    - gmail__search_emails
+    - gmail__read_email
+    - gmail__send_email
+    - slack__slack_list_channels
+    - slack__slack_get_channel_history
+    - slack__slack_get_thread_replies
+    - drive__search_drive_files
+    - drive__list_spreadsheets
+    - drive__get_spreadsheet_info
+    - drive__read_sheet_values
+    - drive__modify_sheet_values
+
+suggest:
+  keywords:
+    - myworld
+    - practice world
+    - agent evaluation
+    - multi-tool
+    - gmail
+    - slack
+    - drive
+
+post_install: |
+  myworld starts a local, simulated company world over stdio:
+    uvx myworld world invoice-review
+
+  The default invoice-review world gives Hermes one shared MCP server with
+  Gmail, Slack and Drive tools. Nothing touches real inboxes, Slack workspaces
+  or Drive files. Every call is recorded, and world_grade shows whether the
+  agent completed the task.
+
+  To use your own world, create an environment YAML and launch:
+    uvx myworld world path/to/world.yaml
+
+  Start a new Hermes session, or run /reload-mcp, so the tools are loaded.

@@ -547,6 +547,30 @@ def test_a_mounting_docker_backend_sends_the_w_worktree_not_the_launch_dir(store
     assert [p for m, p in client.calls if m == "session.create"][-1]["cwd"] == str(tree.resolve())
 
 
+@pytest.mark.parametrize("backend,mount", [("local", None), ("docker", "true")])
+def test_a_removed_w_worktree_is_sent_so_the_gateway_refuses_it(store, monkeypatch, tmp_path, backend, mount):
+    """-w publishes its tree in TERMINAL_CWD without a chdir; once the tree is gone, creating from the
+    original checkout would put the agent's edits there. Main sent the path and the gateway refused it."""
+    import sys
+    from hermes_cli import gateway_session_store as gss
+    db, client = store
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    tree = repo / ".worktrees" / "wt"  # never created: removed while the CLI was open
+    monkeypatch.chdir(repo)
+    monkeypatch.setitem(sys.modules, "cli", types.SimpleNamespace(_active_worktree={"path": str(tree)}))
+    monkeypatch.setenv("TERMINAL_CWD", str(tree))
+    monkeypatch.setenv("TERMINAL_ENV", backend)
+    if mount:
+        monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", mount)
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    db.create({"toolsets": ["file"]})
+    assert [p for m, p in client.calls if m == "session.create"][-1]["cwd"] == str(tree.resolve())
+    monkeypatch.setattr(gss, "session_store", lambda: db)
+    gss.create_titled_session("Named")
+    assert [p for m, p in client.calls if m == "session.create"][-1]["cwd"] == str(tree.resolve())
+
+
 def test_explicit_reasoning_max_turns_and_checkpoints_reach_session_create(store, monkeypatch):
     """Main's HermesCLI built AIAgent with the run's `--reasoning`, `--max-turns` and `--checkpoints`;
     the gateway now builds the agent, so `session.create` must carry them or the run silently uses

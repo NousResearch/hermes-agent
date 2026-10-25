@@ -487,12 +487,17 @@ def _creation_policy(launch):
 
 
 def _launch_cwd():
-    """``session.create``'s ``cwd``: a host folder, which the owner checks on its own host. TERMINAL_CWD
-    when it is one (a local backend's cwd, or the ``-w`` worktree a mounting docker backend works in);
-    a docker/ssh ``terminal.cwd`` that names a path inside the sandbox sends the launch dir instead and
+    """``session.create``'s ``cwd``, a host folder the owner checks on its own host. A folder chosen on
+    this host (the ``-w`` / ``/worktree new`` tree, or a local backend's TERMINAL_CWD) is sent as is, so
+    a vanished one is refused as on main rather than swapped for the checkout. Only a docker/ssh
+    ``terminal.cwd`` that is not a host directory (a path inside the sandbox) sends the launch dir, and
     the backend keeps its own cwd (``terminal_uses_host_cwd``)."""
+    worktree = getattr(sys.modules.get("cli"), "_active_worktree", None)
+    if worktree and worktree.get("path"):
+        return os.path.realpath(worktree["path"])
     terminal_cwd = os.getenv("TERMINAL_CWD")
-    return os.path.realpath(terminal_cwd if terminal_cwd and os.path.isdir(terminal_cwd) else os.getcwd())
+    local = (os.getenv("TERMINAL_ENV") or "local").strip().lower() in ("", "local")
+    return os.path.realpath(terminal_cwd if terminal_cwd and (local or os.path.isdir(terminal_cwd)) else os.getcwd())
 
 
 def _classic_only_policy(launch):

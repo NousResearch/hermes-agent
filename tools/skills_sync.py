@@ -386,11 +386,32 @@ def _seed_category_descriptions(bundled_dir: Path, only_dirs: Optional[set[Path]
         dest_desc = _skills_dir() / desc_md.relative_to(bundled_dir)
         if (only_dirs is not None and dest_desc.parent not in only_dirs) or dest_desc.exists():
             continue
+        # Never seed through a registry subscriber view: a symlinked category
+        # resolves into another profile's home tree, where writing would mutate
+        # the wrong profile (profile-split, ~/.hermes/skills-registry.json).
+        if _under_symlinked_component(dest_desc.parent):
+            continue
         try:
             dest_desc.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(desc_md, dest_desc)
         except OSError as e:
             logger.debug("Could not copy %s: %s", desc_md, e)
+
+
+def _under_symlinked_component(path: Path) -> bool:
+    """True when any component of ``path`` below the skills root is a symlink
+    (a profile-split subscriber view). The skills root itself is trusted."""
+    base = _skills_dir()
+    try:
+        rel = path.relative_to(base)
+    except ValueError:
+        return False
+    cur = base
+    for part in rel.parts:
+        cur = cur / part
+        if cur.is_symlink():
+            return True
+    return False
 
 
 def sync_skills(quiet: bool = False) -> dict:
@@ -419,6 +440,14 @@ def sync_skills(quiet: bool = False) -> dict:
             continue
         dest = _compute_relative_dest(skill_src, bundled_dir)
         bundled_hash = dir_hash(skill_src)
+        # Profile-split subscriber view (registry: ~/.hermes/skills-registry.json,
+        # enforced by skills-reconcile.py): a symlinked dest is a read view into the
+        # home profile's entity. Never copy/update/rename through it — that would
+        # flatten the split back into per-profile duplicates (2026-10-25 incident).
+        if dest.is_symlink():
+            st.skipped += 1
+            st.say(f"  ⇢ {skill_name} (registry subscriber view — skipped)")
+            continue
         # Recoveries run BEFORE classification so a missing dest isn't misread as user-deleted.
         _recover_orphan_backup(dest)
         if not dest.exists() and skill_name in st.manifest and _recover_renamed_skill(st, skill_name, dest):

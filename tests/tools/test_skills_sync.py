@@ -1035,3 +1035,113 @@ class TestCallTimeDirResolution:
                 ss._rmtree_writable(foreign)
         finally:
             reset_hermes_home_override(token)
+
+
+class TestRegistrySubscriberViewGuard:
+    """Profile-split subscriber views must be opaque to sync (2026-10-25 flatten incident).
+
+    A multi-profile deployment keeps each skill entity in ONE home profile and
+    exposes it to subscriber profiles via symlinks (contract:
+    ~/.hermes/skills-registry.json, enforced by skills-reconcile.py). sync_skills
+    must never copy through, update through, rename, or seed descriptions into
+    a symlinked view — that is what re-flattened the split into per-profile
+    duplicate trees.
+    """
+
+    def _patches(self, bundled, skills_dir, manifest_file):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
+        stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
+        stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
+        stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        return stack
+
+    def _bundled(self, tmp_path):
+        bundled = tmp_path / "bundled_skills"
+        (bundled / "devops" / "clair-qa").mkdir(parents=True)
+        (bundled / "devops" / "clair-qa" / "SKILL.md").write_text("# bundled clair")
+        (bundled / "devops" / "DESCRIPTION.md").write_text("# devops category")
+        return bundled
+
+    def test_symlink_view_new_skill_not_copied(self, tmp_path):
+        """A subscriber view (symlink) is not replaced by a bundled copy, even
+        for a skill absent from the manifest."""
+        bundled = self._bundled(tmp_path)
+        home = tmp_path / "home_skills"
+        entity = home / "devops" / "clair-qa"
+        entity.mkdir(parents=True)
+        (entity / "SKILL.md").write_text("# home entity")
+        skills_dir = tmp_path / "subscriber_skills"
+        (skills_dir / "devops").mkdir(parents=True)
+        (skills_dir / "devops" / "clair-qa").symlink_to(entity)
+
+        with self._patches(bundled, skills_dir, skills_dir / ".bundled_manifest"):
+            with patch("agent.skill_utils.get_external_skills_dirs", return_value=[]):
+                result = sync_skills(quiet=True)
+
+        assert "clair-qa" not in result["copied"]
+        assert "clair-qa" not in result["updated"]
+        view = skills_dir / "devops" / "clair-qa"
+        assert view.is_symlink(), "view was flattened into a real copy"
+        assert (entity / "SKILL.md").read_text() == "# home entity"
+        assert not (skills_dir / ".bundled_manifest").read_text().strip() or "clair-qa" not in _read_manifest()
+
+    def test_symlink_view_not_updated_when_bundled_changed(self, tmp_path):
+        """Even with a manifest baseline, a changed bundled version must not be
+        written through the view into the home entity."""
+        bundled = self._bundled(tmp_path)
+        home = tmp_path / "home_skills"
+        entity = home / "devops" / "clair-qa"
+        entity.mkdir(parents=True)
+        (entity / "SKILL.md").write_text("# home v1")
+        bundled_origin_hash = dir_hash(entity)
+        skills_dir = tmp_path / "subscriber_skills"
+        (skills_dir / "devops").mkdir(parents=True)
+        (skills_dir / "devops" / "clair-qa").symlink_to(entity)
+
+        # bundled changed after the home entity was baselined
+        (bundled / "devops" / "clair-qa" / "SKILL.md").write_text("# bundled v2")
+
+        with self._patches(bundled, skills_dir, skills_dir / ".bundled_manifest"):
+            _write_manifest({"clair-qa": bundled_origin_hash})
+            with patch("agent.skill_utils.get_external_skills_dirs", return_value=[]):
+                result = sync_skills(quiet=True)
+
+        assert "clair-qa" not in result["updated"]
+        assert "clair-qa" not in result["user_modified"]
+        assert (entity / "SKILL.md").read_text() == "# home v1"
+        assert (skills_dir / "devops" / "clair-qa").is_symlink()
+
+    def test_description_not_seeded_through_symlinked_category(self, tmp_path):
+        """Category DESCRIPTION.md seeding must not write through a symlinked
+        category into the home profile's tree."""
+        bundled = self._bundled(tmp_path)
+        home = tmp_path / "home_skills"
+        (home / "devops").mkdir(parents=True)
+        (home / "devops" / "other-skill").mkdir()
+        (home / "devops" / "other-skill" / "SKILL.md").write_text("# other")
+        skills_dir = tmp_path / "subscriber_skills"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "devops").symlink_to(home / "devops")
+
+        with self._patches(bundled, skills_dir, skills_dir / ".bundled_manifest"):
+            with patch("agent.skill_utils.get_external_skills_dirs", return_value=[]):
+                sync_skills(quiet=True)
+
+        assert not (home / "devops" / "DESCRIPTION.md").exists()
+
+    def test_real_dir_behavior_unchanged(self, tmp_path):
+        """The guard must not over-block: a genuine (non-symlink) missing skill
+        is still copied as before."""
+        bundled = self._bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        skills_dir.mkdir(parents=True)
+
+        with self._patches(bundled, skills_dir, skills_dir / ".bundled_manifest"):
+            with patch("agent.skill_utils.get_external_skills_dirs", return_value=[]):
+                result = sync_skills(quiet=True)
+
+        assert "clair-qa" in result["copied"]
+        assert (skills_dir / "devops" / "clair-qa" / "SKILL.md").exists()
+        assert not (skills_dir / "devops" / "clair-qa").is_symlink()

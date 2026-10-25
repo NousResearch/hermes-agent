@@ -19,7 +19,7 @@ import hermes_yaml as yaml
 
 from agent import model_metadata_http
 from agent.model_metadata_cache import _write_context_cache, locked_context_cache
-from agent.model_metadata_llamacpp import llamacpp_context
+from agent.model_metadata_llamacpp import _apply_llamacpp_props, _llamaswap_context, llamacpp_context
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
@@ -717,7 +717,7 @@ def _localhost_to_ipv4(url: str) -> str:
 
 
 def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
-    """Probe known endpoints: "ollama", "lm-studio", "vllm", "llamacpp", or None (TTL-cached)."""
+    """Probe known endpoints: "ollama", "lm-studio", "vllm", "llamacpp", "llama-swap", or None (TTL-cached)."""
     import httpx
     # IPv4-resolve BEFORE deriving server/LM Studio URLs and the cache lookup, so localhost and 127.0.0.1 share a cache entry.
     normalized = _localhost_to_ipv4(_normalize_base_url(base_url))
@@ -746,6 +746,10 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
         ("lm-studio", (f"{lmstudio_url}/api/v1/models",), lambda r: True),
         ("ollama", (f"{server_url}/api/tags",), lambda r: "models" in r.json()),
         ("llamacpp", (f"{server_url}/v1/props", f"{server_url}/props"), lambda r: "default_generation_settings" in r.text),
+        # llama-swap serves /props only per model, so the llamacpp leg never matches it. Detect it via its
+        # management route /running (200 with {"running": [...]}; bare llama-server 404s). Never detect through
+        # a model-scoped route: those start the named model.
+        ("llama-swap", (f"{server_url}/running",), lambda r: "running" in r.json()),
         ("vllm", (f"{server_url}/version",), lambda r: "version" in r.json()),
     )
     result: Optional[str] = None
@@ -971,38 +975,6 @@ def _lmstudio_native_models(normalized: str, headers: dict[str, str]) -> dict[st
         if isinstance(alt_id, str) and alt_id and alt_id != model_id:
             _add_model_aliases(cache, alt_id, entry)
     return cache
-
-
-def _apply_llamacpp_props(cache: dict[str, dict[str, Any]], request_candidate: str, headers: dict[str, str], verify) -> None:
-    """Overwrite ``context_length`` with llama.cpp's allocated ``n_ctx`` from /props (``/v1/props``, then
-    ``/props`` for older builds). In router mode the bare endpoint 400s, so each LOADED child is read
-    via ``/props?model=``; unloaded children are skipped — probing could autoload them."""
-    base = request_candidate.rstrip("/").replace("/v1", "")
-    def _props(params=None):
-        resp = model_metadata_http.get(base + "/v1/props", params=params, headers=headers, timeout=5, verify=verify)
-        if resp.is_error:
-            resp = model_metadata_http.get(base + "/props", params=params, headers=headers, timeout=5, verify=verify)
-        return resp
-    def _n_ctx(props: dict[str, Any]) -> Any:
-        return (props.get("default_generation_settings") or {}).get("n_ctx")
-    props_resp = _props()
-    if not props_resp.is_error:
-        props = props_resp.json()
-        n_ctx, model_alias = _n_ctx(props), props.get("model_alias", "")
-        if n_ctx and model_alias and model_alias in cache:
-            cache[model_alias]["context_length"] = n_ctx
-        return
-    native = model_metadata_http.get(base + "/models", headers=headers, timeout=5, verify=verify)
-    if native.is_error:
-        return
-    for child in (native.json() or {}).get("data", [])[:16]:
-        child_id = child.get("id") if isinstance(child, dict) else None
-        if not child_id or child_id not in cache or (child.get("status") or {}).get("value") not in ("loaded", "ready"):
-            continue
-        pr = _props({"model": child_id, "autoload": "false"})  # it may have unloaded since /models
-        child_ctx = _n_ctx(pr.json()) if not pr.is_error else None
-        if child_ctx:
-            cache[child_id]["context_length"] = child_ctx
 
 
 def _endpoint_memo_key(normalized: str, api_key: object) -> tuple[str, str]:
@@ -1619,7 +1591,11 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
         "lm-studio": lambda client: _lmstudio_context(client, lmstudio_url, model),
         "llamacpp": lambda client: llamacpp_context(client, server_url, model),
     }.get(server_type)
-    probes = ([typed] if typed else []) + [_model_detail_ctx, lambda client: _openai_models_list_context(client, server_url, model)]
+    if server_type == "llama-swap":
+        # The /v1/models/{model} leg is model-scoped too and would start the model; only the resident-gated probe runs.
+        probes = [lambda client: _llamaswap_context(client, server_url, model)]
+    else:
+        probes = ([typed] if typed else []) + [_model_detail_ctx, lambda client: _openai_models_list_context(client, server_url, model)]
     try:
         with httpx.Client(timeout=3.0, headers=_auth_headers(api_key), verify=model_metadata_http.resolve_verify(base_url)) as client:
             return next((ctx for ctx in (probe(client) for probe in probes) if ctx is not None), None)

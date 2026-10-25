@@ -96,6 +96,13 @@ def _base_url(peer: dict, profile: str | None) -> str:
     return url
 
 
+# Older peers page the plain listing (limit/offset/has_more). Keep pages small:
+# a 200-row page of full session rows is ~140 KB, and that response was the one
+# dropped mid-body with IncompleteRead over the tailnet.
+_LIST_PAGE_SIZE = 50
+_LIST_MAX_PAGES = 100
+
+
 def _find_bot_chat(base: str, key: str) -> str | None:
     """The remote canonical Bot Chat's session id, or None.
 
@@ -103,15 +110,24 @@ def _find_bot_chat(base: str, key: str) -> str | None:
     excludes hidden sessions) misses an existing Bot Chat and the caller
     would try to create a duplicate that the peer's UNIQUE(title) guard
     rejects (issue #91583). Newer peers support an exact-title lookup with
-    ``include_hidden=1``; older peers ignore the unknown query params and
-    return the ordinary visible listing, so this single request degrades
-    to exactly the previous behavior against them.
+    ``include_hidden=1`` and answer in one page. Older peers ignore the
+    unknown query params and return the ordinary visible listing one page at
+    a time, where a visible Bot Chat can sit past the first page, so page
+    through it until the row is found or the listing is exhausted.
     """
-    query = urllib.parse.urlencode({"limit": 200, "title": BOT_CHAT_TITLE, "include_hidden": 1})
-    listing = _request(f"{base}/api/sessions?{query}", key)
-    for session in listing.get("data") or []:
-        if isinstance(session, dict) and (session.get("title") or "").strip() == BOT_CHAT_TITLE:
-            return str(session.get("id") or "") or None
+    offset = 0
+    for _ in range(_LIST_MAX_PAGES):
+        query = urllib.parse.urlencode({
+            "limit": _LIST_PAGE_SIZE, "offset": offset,
+            "title": BOT_CHAT_TITLE, "include_hidden": 1})
+        listing = _request(f"{base}/api/sessions?{query}", key)
+        rows = listing.get("data") or []
+        for session in rows:
+            if isinstance(session, dict) and (session.get("title") or "").strip() == BOT_CHAT_TITLE:
+                return str(session.get("id") or "") or None
+        if not listing.get("has_more") or not rows:
+            return None
+        offset += len(rows)
     return None
 
 

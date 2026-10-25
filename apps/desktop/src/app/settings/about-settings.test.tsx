@@ -54,6 +54,7 @@ vi.mock('@/store/updates', async (): Promise<Record<string, unknown>> => {
     refreshDesktopVersion: vi.fn<() => Promise<DesktopVersionInfo | null>>().mockResolvedValue(null),
     setUpdateChannel: vi.fn<() => Promise<DesktopUpdateStatus | null>>().mockResolvedValue(null),
     sourceUpdateChannel: (await vi.importActual<typeof UpdatesStore>('@/store/updates')).sourceUpdateChannel,
+    sourceUpdateTrack: (await vi.importActual<typeof UpdatesStore>('@/store/updates')).sourceUpdateTrack,
     openUpdateOverlayFor: vi.fn(),
     openUpdatesWindow: vi.fn(),
     startActiveUpdate: vi.fn()

@@ -116,7 +116,7 @@ def install_packages(*, ask_password: Callable[[], str], on_line: Callable[[str]
 def _sudo_nopasswd() -> bool:
     try:
         return subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=3,
-                              stdin=subprocess.DEVNULL).returncode == 0
+                              stdin=subprocess.DEVNULL, check=False).returncode == 0
     except Exception:
         return False
 

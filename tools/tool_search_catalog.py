@@ -215,7 +215,12 @@ def search_catalog(catalog: list[CatalogEntry], query: str, limit: int = 5, *,
 _SENTENCE_END_RE = re.compile(r"(?<!\be\.g)(?<!\bi\.e)(?<!\betc)[.!?](?=\s|$)")
 
 
-def _short_desc(description: str, max_chars: int = 60) -> str:
+# A catalog line is its tool's first sentence: built-in tools keep that sentence within this cap
+# and lead with the key capability (tests/tools/test_tool_search.py pins it), so no line clips.
+CATALOG_SUMMARY_MAX_CHARS = 80
+
+
+def _short_desc(description: str, max_chars: int = CATALOG_SUMMARY_MAX_CHARS) -> str:
     """First sentence of a tool description, clipped to ``max_chars`` on a word boundary.
     ``e.g.``/``i.e.``/``etc.`` do not end a sentence; whitespace normalization and the regex
     search stay linear-time on hostile input."""
@@ -289,18 +294,23 @@ def build_catalog_listing_with_form(
         if mode == "summary":
             return (f"{label} ({len(tools)} tools — names not listed; "
                     f"discover via `{TOOL_SEARCH_NAME}`)")
-        lines = [f"{label} tools ({len(tools)}):"]
         if mode == "full":
-            lines.extend(f"- {name}: {desc}" if desc else f"- {name}" for name, desc in tools)
+            lines = [f"- {name}: {desc}" if desc else f"- {name}" for name, desc in tools]
         else:
-            lines.append(", ".join(name for name, _ in tools))
-        return "\n".join(lines)
+            lines = [", ".join(name for name, _ in tools)] if len(tools) > 1 else [f"- {tools[0][0]}"]
+        # A one-tool group's "<label> tools (1):" heading says nothing its single line does not.
+        return "\n".join(lines if len(tools) == 1 else [f"{label} tools ({len(tools)}):", *lines])
 
     header = ("Deferred tool catalog (call schemas via "
               f"`{TOOL_DESCRIBE_NAME}`, invoke via `{TOOL_CALL_NAME}`):")
 
     def assemble_if_fits(modes: dict[str, str]) -> Optional[str]:
-        available_blocks = {label: render_group(label, modes[label]) for label in groups}
+        # Headless one-tool lines go first, straight under the catalog header: placed between
+        # groups they would read as members of the group above them.
+        singles = [render_group(label, modes[label]) for label in sorted(groups)
+                   if len(groups[label]) == 1 and modes[label] != "summary"]
+        available_blocks = {label: render_group(label, modes[label]) for label in groups
+                            if len(groups[label]) > 1 or modes[label] == "summary"}
         unavailable_blocks = {
             row["name"]: (
                 f"{row['name']} ({row['tool_count']} tools unavailable: {row['unavailable']})"
@@ -317,7 +327,7 @@ def build_catalog_listing_with_form(
         if shared:
             blocks.append(f"Names not listed; find with `{TOOL_SEARCH_NAME}`: "
                           + ", ".join(f"{label} ({len(groups[label])})" for label in shared))
-        text = "\n".join([header] + blocks)
+        text = "\n".join([header] + singles + blocks)
         return text if math.ceil(len(text) / CHARS_PER_TOKEN) <= max_tokens else None
 
     def collapsed_form(modes: Dict[str, str]) -> str:
@@ -335,10 +345,14 @@ def build_catalog_listing_with_form(
         text = assemble_if_fits(modes)
         if text is not None:
             return text, collapsed_form(modes) if forced else mode
-    # 3. Collapse the LARGEST rendered groups first (deterministic: size then label).
+    # 3. Collapse the LARGEST rendered groups first (deterministic: size then label); the servers
+    # left uncollapsed get their full lines back when those fit, else names-only.
+    summarized: set[str] = set(forced)
     for lbl in sorted(set(groups) - forced, key=lambda lbl: (-len(render_group(lbl, "names")), lbl)):
-        modes[lbl] = "summary"
-        text = assemble_if_fits(modes)
-        if text is not None:
-            return text, collapsed_form(modes)
+        summarized.add(lbl)
+        for rest in ("full", "names"):
+            modes = {g: "summary" if g in summarized else rest for g in groups}
+            text = assemble_if_fits(modes)
+            if text is not None:
+                return text, collapsed_form(modes)
     return None, "none"

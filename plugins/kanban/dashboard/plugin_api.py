@@ -484,7 +484,7 @@ async def upload_task_attachment(
         dest_path = _collision_free_path(dest_dir, safe_name)  # foo.pdf → foo (1).pdf …
         total = 0  # stream in chunks with a hard size cap so one upload can't fill the disk
         try:
-            with open(dest_path, "wb") as out:
+            with open(dest_path, "wb") as out:  # noqa: ASYNC230 -- chunked local write of the upload stream; open() is non-blocking in practice
                 while chunk := await file.read(1024 * 1024):
                     total += len(chunk)
                     if total > KANBAN_ATTACHMENT_MAX_BYTES:

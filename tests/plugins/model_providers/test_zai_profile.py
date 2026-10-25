@@ -48,7 +48,7 @@ class TestZaiThinkingWireShape:
         extra_body, top_level = zai_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "medium"}, model="glm-5"
         )
-        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert extra_body == {"thinking": {"type": "enabled", "clear_thinking": False}}
         assert top_level == {}
 
     def test_explicitly_disabled_sends_disabled_marker(self, zai_profile):
@@ -73,7 +73,7 @@ class TestZaiGLM52ReasoningEffort:
             reasoning_config={"enabled": True, "effort": "high"},
             model="glm-5.2",
         )
-        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert extra_body == {"thinking": {"type": "enabled", "clear_thinking": False}}
         assert top_level == {"reasoning_effort": "high"}
 
     @pytest.mark.parametrize("effort", ["low", "medium", "minimal"])
@@ -84,7 +84,7 @@ class TestZaiGLM52ReasoningEffort:
             reasoning_config={"enabled": True, "effort": effort},
             model="glm-5.2",
         )
-        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert extra_body == {"thinking": {"type": "enabled", "clear_thinking": False}}
         assert top_level == {"reasoning_effort": "high"}
 
     @pytest.mark.parametrize("effort", ["xhigh", "max"])
@@ -93,7 +93,7 @@ class TestZaiGLM52ReasoningEffort:
             reasoning_config={"enabled": True, "effort": effort},
             model="glm-5.2",
         )
-        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert extra_body == {"thinking": {"type": "enabled", "clear_thinking": False}}
         assert top_level == {"reasoning_effort": "max"}
 
     def test_disabled_sends_no_effort(self, zai_profile):
@@ -159,7 +159,7 @@ class TestZaiGLM53ReasoningEffort:
             reasoning_config={"enabled": True, "effort": effort},
             model="glm-5.3",
         )
-        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert extra_body == {"thinking": {"type": "enabled", "clear_thinking": False}}
         assert top_level == {"reasoning_effort": expected}
 
     @pytest.mark.parametrize(
@@ -199,7 +199,7 @@ class TestZaiGLM53ReasoningEffort:
             reasoning_config={"enabled": False},
             model=model,
         )
-        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert extra_body == {"thinking": {"type": "enabled", "clear_thinking": False}}
         assert top_level == {"reasoning_effort": "low"}
 
 
@@ -243,7 +243,7 @@ class TestZaiFullKwargsIntegration:
             provider_name="zai",
         )
         assert kwargs["reasoning_effort"] == "max"
-        assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}
+        assert kwargs["extra_body"]["thinking"] == {"type": "enabled", "clear_thinking": False}
 
     @pytest.mark.parametrize("model,reasoning,thinking,effort", [
         ("glm-5.3-flash", {"enabled": False}, "enabled", "low"),
@@ -263,5 +263,6 @@ class TestZaiFullKwargsIntegration:
             provider_name="zai",
         )
         assert kwargs.get("reasoning_effort") == effort
-        expected = {"type": thinking} if thinking is not None else None
+        expected = None if thinking is None else (
+            {"type": thinking, "clear_thinking": False} if thinking == "enabled" else {"type": thinking})
         assert kwargs.get("extra_body", {}).get("thinking") == expected

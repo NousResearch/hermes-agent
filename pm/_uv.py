@@ -3,12 +3,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pm import paths
-from pm.filesystem import long_root, native
-from pm.lock import Facts
+from pm.filesystem import native
 from pm.package import InstallError
 from pm.registry import get_package
-from pm.store import Store, current_target
+from pm.store import current_target
 
 
 def _toolchain(*, realize: bool = True, explicit: bool = False) -> tuple[Path, Path] | None:
@@ -20,10 +18,8 @@ def _toolchain(*, realize: bool = True, explicit: bool = False) -> tuple[Path, P
     packaged interpreter dies with exit 101 (#135236). Hermes itself still enters those venvs
     on the packaged interpreter (``pm.environments.venv_command``).
     """
-    from pm.install import (
-        _install, _installed_location, _lockfile, _refuse_lazy,
-        ensure, lazy_installs_allowed, sealed,
-    )
+    from pm.install import _installed_location, _lockfile, ensure, sealed
+    from pm.user_facing import writable_copy
 
     if realize:
         ensure("uv", explicit=explicit)
@@ -39,20 +35,10 @@ def _toolchain(*, realize: bool = True, explicit: bool = False) -> tuple[Path, P
                 return None
             raise InstallError(name, "pinned tool is unavailable", "run `hermes pm install`")
         if name == "python" and target.startswith("win32") and sealed():
-            # Spelled like Store spells its root, so the comparison and the copy's file calls agree.
-            writable = long_root(paths.writable_store_root())
-            if location[1].root != writable:
-                copied = _installed_location(package, lockfile, target, verify=explicit, roots=(writable,))
-                if copied is None:
-                    if not realize:
-                        return None
-                    if not explicit and not lazy_installs_allowed():
-                        raise _refuse_lazy(name, "a writable Python is required for bundled builds")
-                    copy_store = Store(writable)
-                    copy_facts = Facts(writable / "facts.json")
-                    _install(package, lockfile, copy_facts, copy_store, target, copy_from=location)
-                    copied = copy_facts, copy_store
-                location = copied
+            location = writable_copy(name, realize=realize, explicit=explicit,
+                                     why="a writable Python is required for bundled builds")
+            if location is None:
+                return None
         facts, store = location
         binary = package.binary(store.entry(facts.get(name)["entry"]), target)
         if binary is None or not binary.is_file():

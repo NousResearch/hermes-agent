@@ -54,6 +54,7 @@ class PendingEvent:
     first_at: float
     count: int
     dispatch_kwargs: dict[str, Any]
+    superseded: tuple[str, ...] = ()  # delivery ids of the earlier events this one replaced
 
     def prompt_with_note(self) -> str:
         if self.count <= 1:
@@ -101,8 +102,10 @@ class WebhookCoalescer:
         first_at = existing.first_at if existing else now
         count = existing.count + 1 if existing else 1
         dispatch_kwargs = {**dispatch_kwargs, "route_name": route_name, "event_type": event_type}
+        superseded = (*existing.superseded, existing.delivery_id) if existing else ()
         self._pending[group_key] = PendingEvent(payload=payload, prompt=prompt, delivery_id=delivery_id,
-                                                first_at=first_at, count=count, dispatch_kwargs=dispatch_kwargs)
+                                                first_at=first_at, count=count, dispatch_kwargs=dispatch_kwargs,
+                                                superseded=superseded)
         if existing is not None:
             logger.info("[webhook] coalesced delivery %s superseded by %s (group=%s, %d events)",
                         existing.delivery_id, delivery_id, group_key, count)
@@ -129,7 +132,7 @@ class WebhookCoalescer:
         logger.info("[webhook] coalesce settled group=%s events=%d delivery=%s", group_key, entry.count,
                     entry.delivery_id)
         return self._dispatch(entry.payload, entry.prompt_with_note(), entry.delivery_id, time.time(),
-                              **entry.dispatch_kwargs)
+                              **entry.dispatch_kwargs, superseded=entry.superseded)
 
     async def flush(self) -> None:
         """Dispatch every pending group now and wait until each run is handed to the runner, so an adapter

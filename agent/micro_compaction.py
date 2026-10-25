@@ -12,6 +12,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from agent.compaction_events import publish_micro
+from agent.context_compressor_telemetry import _safe_int
 from agent.message_metadata import record_absorbed_message
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_tokens_rough
 
@@ -349,7 +350,6 @@ class MicroCompactionMixin:
     ) -> None:
         """Emit one content-free JSON log line for a micro-compaction pass.
         ``tokens_delta`` < 0 means the pass shrank the transcript; ``*_total`` fields accumulate."""
-        _safe_int = _cc()._safe_int
         try:
             delta = tokens_after - tokens_before if tokens_before is not None and tokens_after is not None else None
             self._micro_compact_tokens_saved_total -= delta or 0
@@ -416,6 +416,7 @@ class MicroCompactionMixin:
         session_db, session_id = getattr(self, "_session_db", None), getattr(self, "_session_id", "")
         if not session_db or not session_id:
             return True
+        from hermes_state_errors import HeldRowRewrittenError
         try:
             # Micro-compaction is prefix + marker + suffix, not a contiguous tail. Identify the exact
             # byte-identical originals by their persistence marker; the state transaction resolves each
@@ -434,7 +435,8 @@ class MicroCompactionMixin:
                 covered_ids, unresolved_held = coverage_for_commit(session_db, session_id, held)
             session_db.archive_and_compact(
                 session_id, compacted_messages, carried_messages=carried_messages, watermark=watermark,
-                covered_ids=covered_ids, unresolved_held=unresolved_held)
+                covered_ids=covered_ids, unresolved_held=unresolved_held,
+                held_for_cas=held)
             # Shared post-commit stamp site with batch commit and proactive prune.
             # See #98450.
             _cc().stamp_db_persisted_markers(compacted_messages)
@@ -442,6 +444,11 @@ class MicroCompactionMixin:
             # Another compaction committed during the summary call. Nothing is written: the store already
             # holds the winning generation. The caller discards the pass (original list, pre-pass cursor
             # and summary); otherwise finalize_turn would append the unmarked summary row beside the winner.
+            logger.info("Micro-compaction commit skipped, %s", exc)
+            return False
+        except HeldRowRewrittenError as exc:
+            # The in-transaction CAS fence tripped: a held row changed between the precheck and the
+            # commit. Same disposition as a stale generation — nothing written, the pass is discarded.
             logger.info("Micro-compaction commit skipped, %s", exc)
             return False
         except Exception:

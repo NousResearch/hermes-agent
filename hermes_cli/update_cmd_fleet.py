@@ -41,13 +41,15 @@ _LIST_GATEWAY_UNITS = [
 def _write_gateway_update_exit_code(ok: bool) -> None:
     from hermes_cli.update_cmd import get_hermes_home
     from hermes_cli.update_receipt import committed_success
+    from pm.filesystem import durable_write_bytes
 
     # A run whose receipt already closed as a success is never reported failed (C3, review
     # regression 3): the command boundary's catch-alls call this with False.
     ok = ok or committed_success()
     path = get_hermes_home() / ".update_exit_code"
     with suppress(OSError):
-        path.write_text("0" if ok else "1", encoding="utf-8")
+        # Atomic: the gateway watcher polls this file and reads an empty one as exit 1.
+        durable_write_bytes(path, b"0" if ok else b"1")
 
 
 def _fleet_restart_pending_marker_path() -> Path:
@@ -213,9 +215,9 @@ _SUPERVISED_SERVE_BACKENDS = frozenset(
 )
 # Backends whose supervisor restarts the process without any updater bookkeeping. ``manual-serve``
 # is excluded: it owes a durable handoff (``defer_manual_serve``) before it stops counting.
-# ``systemd``/``windows-service``/``service`` mirror ``_SUPERVISED_SERVE_BACKENDS`` for parity only —
-# the inventory writer classifies a serve/dashboard row as exactly launchd, desktop, desktop-ssh or manual-serve
-# (``update_inventory._collect_ledger_runtimes``); those three are set for gateway rows alone.
+# The inventory writer classifies a serve/dashboard row as launchd, desktop, desktop-ssh, systemd (a unit's
+# MainPID, #141021) or manual-serve (``update_inventory._collect_ledger_runtimes``); ``windows-service`` and
+# ``service`` mirror ``_SUPERVISED_SERVE_BACKENDS`` for parity only — they are set for gateway rows alone.
 _SUPERVISOR_OWNED_SERVE_BACKENDS = _SUPERVISED_SERVE_BACKENDS - {"manual-serve"}
 
 
@@ -691,7 +693,7 @@ def _run_pending_fleet_restart() -> bool:
 
 def _systemctl(cmd: list, *, timeout: float):
     """Run a systemctl (or sudo systemctl) invocation, capturing utf-8 text with a timeout."""
-    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, check=False)
 
 
 def _systemctl_reset_and_restart(manage_cmd: list, svc_name: str, *, scope_cmd: list | None = None):
@@ -733,6 +735,19 @@ def _scoped_manual_gateway_pids(pids, *, keep=(), quiet: bool = False) -> list[i
     return [pid for pid in pids if pid in keep or pid in owned]
 
 
+def _is_serve_or_dashboard_unit(unit: str) -> bool:
+    """``hermes-serve*``/``hermes-dashboard*`` (``.service``) by the same exact-or-hyphenated shape."""
+    return (
+        unit == "hermes-serve.service"
+        or unit.startswith("hermes-serve-")
+        # #125297: ``hermes-dashboard*`` units are systemd-supervised dashboard backends — the
+        # same fleet this pass restarts. Leaving them out meant a successful update reported
+        # the dashboard ``deferred`` (still on pre-update code) while nothing ever restarted it.
+        or unit == "hermes-dashboard.service"
+        or unit.startswith("hermes-dashboard-")
+    )
+
+
 def _is_hermes_gateway_unit(unit: str) -> bool:
     """Exact base unit or hyphenated profile family only: ``startswith("hermes-serve")``
     would accept ``hermes-server.service``."""
@@ -741,13 +756,7 @@ def _is_hermes_gateway_unit(unit: str) -> bool:
         # cannot enter the restart path. See #83595.
         unit == "hermes-gateway.service"
         or unit.startswith("hermes-gateway-")
-        or unit == "hermes-serve.service"
-        or unit.startswith("hermes-serve-")
-        # #125297: ``hermes-dashboard*`` units are systemd-supervised dashboard backends — the
-        # same fleet this pass restarts. Leaving them out meant a successful update reported
-        # the dashboard ``deferred`` (still on pre-update code) while nothing ever restarted it.
-        or unit == "hermes-dashboard.service"
-        or unit.startswith("hermes-dashboard-")
+        or _is_serve_or_dashboard_unit(unit)
     )
 
 
@@ -917,7 +926,7 @@ def _restart_macos_launchd_gateways(
         _locate_launchd_gateway_service, _wait_for_launchd_service_pid,
     )
     if require_supervision:
-        listing = subprocess.run(["launchctl", "list"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
+        listing = subprocess.run(["launchctl", "list"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, check=False)
         if listing.returncode != 0:
             failed_or_stale_units.append("launchd (listing failed)")
             return
@@ -1010,12 +1019,13 @@ _DESKTOP_SERVE_SKIP_REASON = (
     "desktop app owns and respawns this serve backend;"
     " the recovery pass must not restart it out from under its supervisor"
 )
-# NOT a claim that no supervisor exists: a systemd-launched serve sets neither HERMES_SPAWN
-# nor HERMES_PARENT_PID ("manual-serve"). Unit-backed serves are recovered by the fresh
-# child's systemd pass; survivors reported by _surviving_pre_update_serve_runtimes.
+# NOT a claim that no supervisor exists: a unit's MainPID row is classified "systemd" (#141021),
+# and "manual-serve" still covers a process inside some unit's cgroup it is not MainPID of, or
+# unreadable ownership. Unit-backed serves are recovered by the fresh child's systemd pass;
+# survivors reported by _surviving_pre_update_serve_runtimes.
 _SERVE_SKIP_REASON = (
     "no per-profile relaunch command reaches a serve/dashboard runtime; recovered by the fresh"
-    " systemd unit pass when it owns a hermes-serve* unit, else left running for explicit"
+    " systemd unit pass when a hermes-serve*/hermes-dashboard* unit owns it, else left running for explicit"
     " operator restart"
 )
 # A launchd-owned backend (#116503): the fresh child has no per-label kickstart for serve/dashboard
@@ -1160,10 +1170,10 @@ def _sudo_noninteractive_ok(targeted_probe: list) -> bool:
     are about to elevate.
     """
     try:
-        if subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=5).returncode == 0:
+        if subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=5, check=False).returncode == 0:
             return True
         # Blanket sudo refused — a targeted NOPASSWD sudoers entry may still work.
-        return subprocess.run(["sudo", "-n", *targeted_probe], capture_output=True, timeout=5).returncode == 0
+        return subprocess.run(["sudo", "-n", *targeted_probe], capture_output=True, timeout=5, check=False).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
 

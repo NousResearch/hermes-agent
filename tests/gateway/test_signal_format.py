@@ -5,7 +5,7 @@ strikethrough, monospace, code blocks, headings, and — critically — the
 false-positive regressions that caused spurious italics in production.
 """
 
-from gateway.platforms.signal_format import markdown_to_signal
+from plugins.platforms.signal.signal_format import markdown_to_signal
 
 # ---------------------------------------------------------------------------
 # Helper

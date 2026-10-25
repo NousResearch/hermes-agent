@@ -330,7 +330,7 @@ def _macos_desktop_dr(app: Path) -> str | None:
     """Return the bundle's designated requirement string, or None on failure (a hanging codesign must never abort doctor)."""
     codesign = shutil.which("codesign")
     try:
-        proc = subprocess.run([codesign, "-d", "--requirements", "-", str(app)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15) if codesign else None
+        proc = subprocess.run([codesign, "-d", "--requirements", "-", str(app)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15, check=False) if codesign else None
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
     return None if proc is None or proc.returncode != 0 else (proc.stdout or "") + (proc.stderr or "")
@@ -549,6 +549,7 @@ def _check_web_dashboard_import(should_fix: bool, f: Finding) -> None:
             timeout=120,
             cwd=str(PROJECT_ROOT),
             env=env,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         _fail_and_issue(

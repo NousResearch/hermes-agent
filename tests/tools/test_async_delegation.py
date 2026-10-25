@@ -497,7 +497,8 @@ def test_in_tool_stall_uses_higher_threshold(monkeypatch):
 
 
 def test_real_process_restart_restores_owned_completion_once(tmp_path):
-    """Real-import E2E: a fresh interpreter restores a prior process's result."""
+    """Real-import E2E: the owning runtime, in a fresh interpreter, restores a prior process's
+    result exactly once. Importing the tools graph alone restores nothing (client fence)."""
     repo = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     env = {**os.environ, "HERMES_HOME": str(tmp_path), "PYTHONPATH": repo}
     producer = r'''
@@ -523,7 +524,9 @@ print(r["delegation_id"])
     consumer = r'''
 import json
 from tools.process_registry import process_registry
-process_registry.restore_completions()
+from tools.async_delegation import restore_undelivered_completions
+assert process_registry.completion_queue.empty(), "import must not restore"
+restore_undelivered_completions(process_registry.completion_queue)
 evt = process_registry.completion_queue.get_nowait()
 print(json.dumps(evt, sort_keys=True))
 '''
@@ -816,7 +819,6 @@ def test_batch_truncation_banner_marks_only_truncated_task():
     assert "finished cleanly" in text
     assert "cut off mid-work" in text
     # ...but the banner is tied to the truncated task, not the clean one.
-    trunc_pos = text.index("cut off mid-work")
     clean_pos = text.index("finished cleanly")
     banner_pos = text.index("TRUNCATED")
     # The header banner for task 2 appears after task 1's summary.
@@ -1083,7 +1085,7 @@ dt.delegate_task(tasks=[{"goal": "fast member of the group task", "group": "g"},
 time.sleep(2.0)
 sys.stdout.flush(); os._exit(1)
 '''
-    subprocess.run([sys.executable, "-c", producer], cwd=repo, env=env, text=True, capture_output=True, timeout=30)
+    subprocess.run([sys.executable, "-c", producer], cwd=repo, env=env, text=True, capture_output=True, timeout=30, check=False)
     consumer = r'''
 import json, queue
 from tools import async_delegation as ad

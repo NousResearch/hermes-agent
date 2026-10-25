@@ -21,7 +21,8 @@ from hermes_cli import worktree_ops
 
 def _run(args, cwd):
     return subprocess.run(
-        args, cwd=cwd, capture_output=True, text=True, encoding="utf-8"
+        args, cwd=cwd, capture_output=True, text=True, encoding="utf-8",
+        check=False,
     )
 
 

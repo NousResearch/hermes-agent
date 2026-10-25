@@ -116,8 +116,11 @@ def label_for_tool_name(name: str, arguments: Any = None) -> Optional[ToolLabel]
         return None
     connector = parse_connector_name(name)
     if connector is not None:
-        return ToolLabel(kind="connector", app=app_title(connector.connector),
-                         action=_action_phrase(connector.tool, connector.connector),
+        action = _action_phrase(connector.tool, connector.connector)
+        alias = arguments.get("connector_alias") if isinstance(arguments, dict) else None
+        if isinstance(alias, str) and alias.strip():
+            action = f"{action} ({alias.strip()})"
+        return ToolLabel(kind="connector", app=app_title(connector.connector), action=action,
                          emoji=CONNECTOR_EMOJI, name=name, preview=_arg_preview(name, arguments))
     if name.startswith(MCP_TOOL_NAME_PREFIX):
         server, _, tool = name[len(MCP_TOOL_NAME_PREFIX):].partition("__")

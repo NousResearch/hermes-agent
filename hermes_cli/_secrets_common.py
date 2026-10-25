@@ -95,7 +95,7 @@ def cli_version(binary: Path) -> str:
     """Return the first line of ``<binary> --version`` or ``"version unknown"``."""
     try:
         res = subprocess.run([str(binary), "--version"], capture_output=True, text=True, encoding='utf-8',
-                             errors='replace', timeout=5)
+                             errors='replace', timeout=5, check=False)
         if res.returncode == 0:
             return (res.stdout or res.stderr).strip().splitlines()[0]
     except (OSError, subprocess.TimeoutExpired):

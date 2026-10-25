@@ -150,7 +150,7 @@ from hermes_cli.main import main
 main()
 ''', "mcp", *command]
         result = subprocess.run(argv,
-                                cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=40)
+                                cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=40, check=False)
         token_path = home / "mcp-tokens" / "fixture.json"
         refresh_output = None
         if token_path.exists() and not previous:
@@ -158,7 +158,7 @@ main()
             tokens["expires_at"] = time.time() - 60
             token_path.write_text(json.dumps(tokens))
             refreshed = subprocess.run([sys.executable, "-m", "hermes_cli.main", "mcp", "test", "fixture"],
-                                       cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+                                       cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30, check=False)
             refresh_output = refreshed.stdout + refreshed.stderr
         return {"mode": mode, "returncode": result.returncode, "output": result.stdout + result.stderr,
                 "token_persisted": token_path.exists(), "refresh_output": refresh_output, "wire": wire,

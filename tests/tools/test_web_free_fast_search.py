@@ -11,7 +11,10 @@ from threading import Thread
 
 import pytest
 
-# Anonymous guest: NAS tier claim says "anonymous" — no Portal account behind the identity.
+from tests.hermes_cli.anon_portal import as_local_desktop_backend
+
+# Anonymous guest: NAS tier claim says "anonymous" — no Portal account behind the identity. It claimed
+# the desktop's welcome trial (``_write_home`` reads it on the local desktop backend).
 ANON = {"sub": "anon-1", "account_tier": "anonymous", "paid_access": False}
 # Registered Portal account, signed in, no credits and no tool pool.
 EXHAUSTED = {"sub": "user-1", "paid_access": False, "tool_access": {"enabled": False, "coverage": {}}}
@@ -25,6 +28,9 @@ def _nous_state(claims: dict, auth_method: str) -> dict:
     # anon_auth persists the tier alongside the token.
     if claims.get("account_tier"):
         state["account_tier"] = claims["account_tier"]
+    if auth_method == "anonymous":
+        from hermes_cli.anon_auth import WELCOME_CLAIM_FLAG
+        state[WELCOME_CLAIM_FLAG] = True
     return state
 
 
@@ -73,7 +79,7 @@ def _write_home(home, monkeypatch, *, nous_state=None, config=None):
 
     home.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
+    as_local_desktop_backend(monkeypatch)
     monkeypatch.delenv("PERPLEXITY_API_KEY", raising=False)
     monkeypatch.delenv("TOOL_GATEWAY_USER_TOKEN", raising=False)
     atomic_config_write(home / "config.yaml", {"web": {"keyless_rescue": False}, **(config or {})})

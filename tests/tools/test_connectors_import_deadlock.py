@@ -64,6 +64,7 @@ def _run_snippet(snippet: str) -> subprocess.CompletedProcess:
         timeout=180,
         env=env,
         cwd=str(REPO_ROOT),
+        check=False,
     )
 
 

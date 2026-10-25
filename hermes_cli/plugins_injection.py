@@ -24,7 +24,10 @@ def inject_plugin_message(
     if session_key and origin is not None:
         logger.warning("inject_message: pass session_key or origin, not both")
         return False
-    if not session_key and origin is None:
+    # Neither: the live gateway picks the chat (gateway/plugin_keyless_inject.py) from the session this
+    # call works for, read here on the caller's own context; no gateway keeps main's refusal.
+    keyless = not session_key and origin is None
+    if keyless and not manager.has_gateway_message_injector:
         logger.warning("inject_message: gateway mode requires an existing session_key or an origin")
         return False
     if origin is not None and not isinstance(origin, Mapping):
@@ -49,11 +52,16 @@ def inject_plugin_message(
     if not manager.has_gateway_message_injector:
         logger.warning("inject_message: no live gateway is available")
         return False
-    if origin is None:
-        target: dict[str, Any] = {"session_key": session_key}
+    # The manager's immutable home is the plugin's profile: the gateway creates an origin's session
+    # there or nowhere, and a keyed local session must belong to it (never the ambient HERMES_HOME
+    # of whatever thread called us).
+    if keyless:
+        from gateway.session_context import bound_session_key
+        target: dict[str, Any] = {"keyless": True, "calling_session_key": bound_session_key(),
+                                  "plugin_home": manager.home_path}
+    elif origin is None:
+        target = {"session_key": session_key, "plugin_home": manager.home_path}
     else:
-        # The manager's immutable home is the plugin's profile: the gateway creates the session
-        # there or nowhere (never the ambient HERMES_HOME of whatever thread called us).
         target = {"origin": dict(origin), "plugin_home": manager.home_path}
     try:
         return bool(manager.inject_gateway_message(**target, content=msg, plugin_id=ctx.plugin_id))

@@ -336,7 +336,7 @@ def _is_git(path: str) -> bool:
     try:
         probe = subprocess.run([path, "--version"], capture_output=True, text=True, encoding="utf-8",
                                errors="replace", timeout=30, stdin=subprocess.DEVNULL,
-                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=False)
     except (OSError, ValueError, subprocess.SubprocessError):
         return False
     return probe.returncode == 0 and probe.stdout.startswith("git version")
@@ -686,6 +686,18 @@ def _counts_as_holder(args: list[str], any_git: bool) -> bool:
     return sub not in _NEVER_LOCKS and (any_git or sub not in _READER_GIT)
 
 
+def _exited(pid_dir: Path) -> bool:
+    """The process has released its memory (exiting, or a zombie) or is gone.
+
+    The kernel drops its fds before its cwd, and refuses its cwd/environ once it is exiting, so an
+    unreadable cwd there is not a hidden git: counting it made any git exiting anywhere on a busy
+    machine postpone the repair. A live process keeps a non-empty argv."""
+    try:
+        return not (pid_dir / "cmdline").read_bytes()
+    except OSError:
+        return not pid_dir.exists()
+
+
 def _held_open_proc(path: Path, root: Path | None, any_git: bool) -> _Holder | bool | None:
     proc = Path("/proc")
     target = os.path.realpath(path)
@@ -734,6 +746,8 @@ def _held_open_proc(path: Path, root: Path | None, any_git: bool) -> _Holder | b
             env = dict(entry.decode("utf-8", "replace").partition("=")[::2]
                        for entry in (pid_dir / "environ").read_bytes().split(b"\0") if entry)
         except OSError:
+            if _exited(pid_dir):
+                continue  # exited since its argv was read: no cwd/environ left, and it holds nothing
             if git_works_in(args, None, None, places):
                 return _Holder(f"pid {pid_dir.name} ({name(args, pid_dir)})")
             if pid_dir.exists() and _could_write(uid, path.parent):
@@ -753,7 +767,7 @@ def _held_open_lsof(path: Path, root: Path | None, any_git: bool) -> _Holder | b
     try:
         found = subprocess.run([lsof, "-F", "pc", "--", str(path)], capture_output=True, text=True, encoding="utf-8",
                                errors="replace", timeout=20,
-                               stdin=subprocess.DEVNULL)
+                               stdin=subprocess.DEVNULL, check=False)
     except (OSError, subprocess.SubprocessError):
         return None
     pids = [line[1:] for line in found.stdout.splitlines() if line.startswith("p")]
@@ -769,7 +783,7 @@ def _lsof_cwds(lsof: str, pids: list[str]) -> dict[str, str] | None:
     """Each pid's cwd from ``lsof -d cwd`` (macOS has no /proc); None when lsof cannot answer."""
     try:
         out = subprocess.run([lsof, "-a", "-d", "cwd", "-F", "pn", "-p", ",".join(pids)], capture_output=True,
-                             text=True, encoding="utf-8", errors="replace", timeout=20, stdin=subprocess.DEVNULL)
+                             text=True, encoding="utf-8", errors="replace", timeout=20, stdin=subprocess.DEVNULL, check=False)
     except (OSError, subprocess.SubprocessError):
         return None
     if out.returncode not in (0, 1):
@@ -813,7 +827,7 @@ def _ps_git_holder(lsof: str, git_dir: Path, root: Path, any_git: bool) -> _Hold
         try:
             out = subprocess.run([ps_bin, "-A", *(f"-o{c}=" for c in columns)], capture_output=True,
                                  text=True, encoding="utf-8", errors="replace",
-                                 timeout=20, stdin=subprocess.DEVNULL)
+                                 timeout=20, stdin=subprocess.DEVNULL, check=False)
         except (OSError, subprocess.SubprocessError):
             return None
         if out.returncode != 0:

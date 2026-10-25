@@ -52,7 +52,7 @@ def _git_proc_running() -> bool:
         argv = (["tasklist", "/FI", "IMAGENAME eq git.exe", "/FO", "CSV"]
                 if os.name == "nt" else ["pgrep", "-x", "git"])
         proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                               timeout=10, creationflags=windows_hide_flags())
+                               timeout=10, creationflags=windows_hide_flags(), check=False)
         if os.name == "nt":
             return "git.exe" in proc.stdout.lower()
         return proc.returncode == 0
@@ -652,6 +652,13 @@ def heal_shallow_history(repo_root: Path, branch: str, **run_kwargs) -> bool:
     return _shallow_file_path(repo_root) is not None and fetch_full_commit_graph(repo_root, branch, **run_kwargs)
 
 
+# A tags-only refresh is a ref listing plus a few small tag objects; when GitHub is slow it can
+# stall for minutes, and a miss only leaves the version label stale until the next update. Filling
+# shallow history really transfers the commit graph, so it keeps the long budget.
+_TAG_REFRESH_TIMEOUT_SECONDS = 30
+_HISTORY_FETCH_TIMEOUT_SECONDS = 900
+
+
 def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs) -> bool:
     """Refresh release tags and fill shallow history before publishing identity.
 
@@ -684,7 +691,8 @@ def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs)
              *([f"--filter={fetch_filter}"] if fetch_filter else []),
              "--no-tags", "origin", "refs/tags/v*:refs/tags/v*", *extra_refspecs],
             cwd=str(repo_root), check=True, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=900, **run_kwargs,
+            encoding="utf-8", errors="replace",
+            timeout=_HISTORY_FETCH_TIMEOUT_SECONDS if shallow else _TAG_REFRESH_TIMEOUT_SECONDS, **run_kwargs,
         )
     finally:
         # git writes the partial-clone config before it fetches, so a failed fetch converts too.
@@ -761,7 +769,7 @@ def convert_treeless_checkout(repo_root: Path, **run_kwargs) -> bool:
                "--filter=blob:none", "origin"]
     fetch_kwargs = dict(cwd=str(repo_root), capture_output=True, text=True,
                         encoding="utf-8", errors="replace", timeout=900, **run_kwargs)
-    subprocess.run([*refetch, "--tags"], check=False, **fetch_kwargs)
+    subprocess.run([*refetch, "--tags"], **fetch_kwargs)  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **run_kwargs; an explicit check=False would raise TypeError
     if not _history_trees_complete(repo_root, **run_kwargs):
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(repo_root), check=True,
                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
@@ -800,7 +808,7 @@ def convert_treeless_checkout_first(repo_root: Path) -> None:
 
 
 def _git_version(**run_kwargs) -> tuple:
-    out = subprocess.run(["git", "--version"], capture_output=True, text=True, encoding="utf-8",
+    out = subprocess.run(["git", "--version"], capture_output=True, text=True, encoding="utf-8",  # noqa: PLW1510 -- forwarding wrapper: **run_kwargs may carry check
                          errors="replace", timeout=30, **run_kwargs).stdout
     match = re.search(r"(\d+)\.(\d+)", out)
     return (int(match[1]), int(match[2])) if match else (0, 0)
@@ -809,7 +817,7 @@ def _git_version(**run_kwargs) -> tuple:
 def _history_trees_complete(repo_root: Path, **run_kwargs) -> bool:
     """Whether every tree in HEAD's history is local, checked without fetching (~3 s for this repo)."""
     env = dict(run_kwargs.pop("env", None) or noninteractive_git_env(), GIT_NO_LAZY_FETCH="1")
-    walk = subprocess.run(
+    walk = subprocess.run(  # noqa: PLW1510 -- forwarding wrapper: **run_kwargs may carry check
         ["git", "rev-list", "--objects", "--filter=blob:none", "--missing=print", "HEAD"],
         cwd=str(repo_root), capture_output=True, text=True, encoding="utf-8", errors="replace",
         timeout=300, env=env, **run_kwargs,

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Terminal tool: run shell commands in the configured backend.
 
-Backends (``TERMINAL_ENV``): local (default), docker, singularity, modal
-(direct or managed gateway), daytona, vercel_sandbox, ssh, plus
-plugin-registered backends. Handles background processes, sandbox lifecycle
-(per-task cache, idle reaper, atexit teardown) and sudo password plumbing.
+Backends (``TERMINAL_ENV``): local (default), docker, modal (direct or
+managed gateway), daytona, vercel_sandbox, ssh, plus plugin-registered
+backends (the ``singularity`` catalog plugin, ...). Handles background
+processes, sandbox lifecycle (per-task cache, idle reaper, atexit teardown)
+and sudo password plumbing.
 Cloud-sandbox persistent filesystems preserve working state across sandbox
 recreation but do NOT guarantee the same live sandbox or long-running
 processes survive cleanup, idle reaping, or Hermes exit.
@@ -40,13 +41,13 @@ def _redact_terminal_error_text(value: Any) -> str:
 
 from tools.registry import tool_error
 from tools.terminal_tool_lifecycle import (
-    _check_disk_usage_warning, _cleanup_inactive_envs, _create_configured_env,
+    _cleanup_inactive_envs, _create_configured_env,
     _evict_environment_for_task, cleanup_all_environments, ensure_task_env,
 )
 from tools.terminal_tool_config import (
     _is_container_backend, _is_host_cwd, _is_mounted_host_cwd, _is_unusable_container_cwd,
     _is_windows_drive_path, _parse_env_var, _plugin_env_flag, _quiet, _safe_getcwd, _tenv, _tenv_bool,
-    coerce_ssh_remote_cwd, translate_mounted_host_path,
+    _in_sandbox_home, coerce_ssh_remote_cwd, translate_mounted_host_path,
 )
 from tools.terminal_tool_backends import (
     _REQUIREMENT_CHECKERS, _VERCEL_SANDBOX_DEFAULT_CWD, _check_plugin_requirements,
@@ -74,9 +75,6 @@ def _safe_parse_import_env(name: str, default: Any, converter, type_label: str):
 
 # Hard cap on foreground timeout; override via TERMINAL_MAX_FOREGROUND_TIMEOUT env var.
 FOREGROUND_MAX_TIMEOUT = _safe_parse_import_env("TERMINAL_MAX_FOREGROUND_TIMEOUT", 600, int, "integer")
-
-# Disk usage warning threshold (in GB)
-DISK_USAGE_WARNING_THRESHOLD_GB = _safe_parse_import_env("TERMINAL_DISK_WARNING_GB", 500.0, float, "number")
 
 
 # Approval / sudo-prompt UI callbacks (CLI registers prompt_toolkit-aware
@@ -120,6 +118,23 @@ def _current_session_profile() -> str:
     return get_session_env("HERMES_SESSION_PROFILE", "")
 
 
+def _container_profile() -> str:
+    """Profile whose persistent container a session-bound command uses: the bound home's profile when it is not
+    the session's own (a profile-routed subagent runs in its target's home while the session, and the delivery
+    identity HERMES_SESSION_PROFILE carries, stay the parent's; that target may be the launch profile, reached
+    from a routed profile's chat), else the session's. A session with no profile name is the launch profile's,
+    so the launch home's own work keeps the session's key whatever the launch profile is named."""
+    from hermes_constants import get_hermes_home_override, profile_name_for_home
+    from tools.environments.local import _is_routed_home
+
+    override = get_hermes_home_override()
+    session = _current_session_profile()
+    bound = profile_name_for_home(override) if override else None
+    if bound and (bound != session if session else _is_routed_home(override)):
+        return bound
+    return session or "default"
+
+
 from tools.approval import (
     check_all_command_guards as _check_all_guards_impl,
 )
@@ -157,16 +172,11 @@ from tools.environments.base import EnvironmentConnectionError
 
 
 # Tool description for LLM
-TERMINAL_TOOL_DESCRIPTION = """Execute shell commands. The host OS, shell, and terminal backend are stated in your environment section — write commands for THAT platform. Filesystem, current working directory, and exported environment variables persist between calls.
+TERMINAL_TOOL_DESCRIPTION = """Run shell commands on the OS/shell/backend named in your environment section. The working directory, files and exported variables persist between calls: activate a virtualenv or export once, not before every command.
 
-Do NOT use cat/head/tail (use read_file), grep/rg/find/ls (use search_files), sed/awk (use patch), or echo/heredoc file creation (use write_file). Reserve terminal for: builds, installs, git, processes, scripts, network, package managers — anything that needs a shell. Output is auto-truncated with the full text saved to a file — never pipe through tail/head to shorten it.
-Environment state persists: activate a virtualenv or export variables once per session, not before every command.
+Use read_file, search_files, patch and write_file instead of cat/head/tail, grep/find/ls, sed/awk and echo/heredoc. Output is auto-truncated with the full text saved to a file; never pipe through head/tail to shorten it.
 
-Foreground (default): returns INSTANTLY when the command finishes, even with a high timeout — set timeout generously for long builds and fixed waits.
-Background: set background=true (returns a session_id) only for commands that must keep running independently after this tool call returns; add notify=true for bounded tasks, leave silent only for servers/daemons that never exit. Do not start sleep, timers, cooldowns, delays, or polling loops with background=true — to wait a fixed time, run the wait as a normal foreground command with a high enough timeout. After starting a server, verify readiness with a health check in a separate call (no blind sleep loops); manage with process(action="poll"/"wait").
-Working directory: use 'workdir' for per-command cwd; when a command changes the session cwd (cd, pushd), trust the result's "cwd" field instead of prefixing every command with 'cd'.
-PTY: pty=true + background=true for interactive CLIs (they hang without a terminal); drive them with process(action="write"/"submit"). Local backend only.
-Persist: background=true, persist_on_release=true keeps the job alive across agent lifecycle cleanup (session end, /new, compression, error recovery, stop-on-max-iterations). Use ONLY for long-running jobs the user explicitly wants to outlive the conversation; the user can still stop it on purpose.
+Foreground (default) returns as soon as the command finishes. To wait a fixed time, run the wait in the foreground; never background a sleep or polling loop. Background is only for commands that must keep running after this call returns; health-check a server in a separate call and manage jobs with process_manage. When a command changes directory, trust the result's "cwd" instead of prefixing later commands with cd.
 """
 
 # Environment lifecycle state.
@@ -315,8 +325,8 @@ def _sanitize_cwd_for_live_env(env: Any, new_cwd: str) -> Optional[str]:
 
 def register_task_env_overrides(task_id: str, overrides: dict[str, Any]):
     """Register per-task sandbox overrides (``docker_image``/``modal_image``/
-    ``singularity_image``/``daytona_image``, ``env_type``, ``cwd``) before the
-    agent loop runs.
+    ``daytona_image`` or a plugin backend's ``<backend>_image``, ``env_type``,
+    ``cwd``) before the agent loop runs.
 
     A ``cwd`` override takes effect immediately: it becomes the session's
     recorded cwd (until a ``cd`` changes it) and any live env's cwd is updated
@@ -373,10 +383,9 @@ def _resolve_container_alias(task_id: str) -> str:
     return key
 
 
-_ISOLATION_OVERRIDE_KEYS = frozenset({
-    "docker_image", "modal_image", "singularity_image",
-    "daytona_image", "env_type",
-})
+def _is_isolation_override_key(key: str) -> bool:
+    """An image (``docker_image``, a plugin backend's ``<backend>_image``) or ``env_type`` override."""
+    return key == "env_type" or key.endswith("_image")
 
 
 def _has_isolation_overrides(task_id: Optional[str]) -> bool:
@@ -384,7 +393,7 @@ def _has_isolation_overrides(task_id: Optional[str]) -> bool:
     "isolated RL/benchmark rollout" predicate shared by key resolution and
     container creation so the two can't drift."""
     overrides = _task_env_overrides.get(_qualify_task_key(task_id)) if task_id else None
-    return bool(overrides and set(overrides) & _ISOLATION_OVERRIDE_KEYS)
+    return bool(overrides and any(_is_isolation_override_key(str(key)) for key in overrides))
 
 
 @dataclass(frozen=True)
@@ -526,8 +535,50 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
         return _routed_home_task_key(scope.docker_profile_scoped) or "default"
     if not scope.docker_profile_scoped:
         return _qualify_task_key(f"session:{session_key}")
-    profile = _current_session_profile() or "default"
-    return "default" if profile == "default" else f"profile:{profile}"
+    profile = _container_profile()
+    base = "default" if profile == "default" else f"profile:{profile}"
+    return _workspace_container_key(base, task_id)
+
+
+def workspace_key_for(cwd: str) -> str:
+    """The ``:ws:`` digest of a host workspace: computed ONCE when the session binds it
+    (``gateway.session_policy.bind_turn_workspace``), so container keying never depends on live
+    filesystem state at lookup time."""
+    import hashlib
+    resolved = os.path.realpath(os.path.expanduser(cwd))
+    return hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:16]
+
+
+def _workspace_container_key(base: str, task_id: Optional[str]) -> str:
+    """Persistent Docker key for a session that registered a workspace: one container per
+    (profile, workspace), not per profile (#140665).
+
+    A gateway-owned CLI/Desktop session registers its client cwd as a ``cwd_source: "session"``
+    override (``gateway.session_policy.bind_turn_workspace``). Keyed by profile alone, every
+    concurrent session shared the container bound to whichever workspace created it first; sessions
+    in the same folder still share one. Sessions with no registered workspace keep the profile key.
+
+    Idempotent: an already-resolved ``<base>:ws:<digest>`` key maps to itself (``ensure_task_env``
+    hands the resolved key to ``get_active_env``, which resolves again). A ``delegate_task`` child has
+    only a container alias to its parent (``register_container_alias``), so the alias chain is
+    followed: the child runs in its parent's workspace container, never the profile's.
+    Reads the raw table (not :func:`resolve_task_overrides`, which calls back into key resolution).
+    """
+    if not task_id:
+        return base
+    if task_id.startswith(f"{base}:ws:"):
+        return task_id
+    for key in dict.fromkeys((task_id, _resolve_container_alias(task_id))):
+        overrides = _task_env_overrides.get(_qualify_task_key(key))
+        if not overrides or overrides.get("cwd_source") != "session":
+            continue
+        digest = overrides.get("workspace_key")
+        cwd = overrides.get("cwd")
+        if not digest and isinstance(cwd, str) and cwd.strip() and "\0" not in cwd:
+            digest = workspace_key_for(cwd)
+        if digest:
+            return f"{base}:ws:{digest}"
+    return base
 
 
 def resolve_task_overrides(task_id: Optional[str]) -> dict[str, Any]:
@@ -551,17 +602,18 @@ def resolve_task_overrides(task_id: Optional[str]) -> dict[str, Any]:
 # Backends that take an image, keyed to the override/config key carrying it.
 _IMAGE_KEY_BY_BACKEND = {
     "docker": "docker_image",
-    "singularity": "singularity_image",
     "modal": "modal_image",
     "daytona": "daytona_image",
 }
 
 
 def _select_image(env_type: str, overrides: dict[str, Any], config: dict[str, Any]) -> str:
-    """Image for *env_type*: per-task override first, then config; "" for imageless backends."""
+    """Image for *env_type*: per-task override first, then config; "" for imageless backends. A plugin
+    backend gets only its per-task ``<backend>_image`` override (batch runs register one); otherwise it
+    reads its own image setting."""
     key = _IMAGE_KEY_BY_BACKEND.get(env_type)
     if key is None:
-        return ""
+        return overrides.get(f"{env_type}_image") or ""
     return overrides.get(key) or config[key]
 
 
@@ -665,8 +717,21 @@ def _ensure_terminal_env_bridged() -> None:
             apply_terminal_config_to_env(env=None, override=False)
 
 
-# Default cwd per backend; anything else (container backends, plugins) is "/root".
+# Default cwd per backend; plugins may declare ``default_cwd``; anything else (container backends) is "/root".
 _DEFAULT_CWD_BY_BACKEND = {"ssh": "~", "vercel_sandbox": _VERCEL_SANDBOX_DEFAULT_CWD}
+
+
+def _backend_default_cwd(env_type: str) -> str:
+    if env_type == "local":
+        return _safe_getcwd()
+    if env_type in _DEFAULT_CWD_BY_BACKEND:
+        return _DEFAULT_CWD_BY_BACKEND[env_type]
+    declared = _plugin_env_flag(env_type, "default_cwd", None)
+    # "~" is each sandbox's own home, expanded inside it; otherwise only an absolute in-sandbox path
+    # (a relative value would be anchored on the host).
+    if isinstance(declared, str) and (declared == "~" or declared.startswith("/")):
+        return declared
+    return "/root"
 
 
 def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
@@ -676,10 +741,11 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
     path is remapped to /workspace and tracked as host_cwd; otherwise host paths
     are discarded in favor of the backend default.
     """
-    default_cwd = _safe_getcwd() if env_type == "local" else _DEFAULT_CWD_BY_BACKEND.get(env_type, "/root")
+    default_cwd = _backend_default_cwd(env_type)
     cwd = _tenv("TERMINAL_CWD", default_cwd)
     from hermes_cli.config import _is_ssh_remote_tilde_cwd
-    if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
+    # The backend's own default is an in-sandbox path: its ``~`` is the sandbox home, not ours.
+    if cwd and cwd != default_cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
         cwd = os.path.expanduser(cwd)
     host_cwd = None
     if env_type == "docker" and mount_docker_cwd:
@@ -747,7 +813,6 @@ def _get_env_config() -> dict[str, Any]:
         "docker_image": _tenv("TERMINAL_DOCKER_IMAGE", default_image),
         "docker_image_pinned": _tenv("TERMINAL_DOCKER_IMAGE_PINNED", "0") == "1",
         "docker_forward_env": docker_forward_env,
-        "singularity_image": _tenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": _tenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": _tenv("TERMINAL_DAYTONA_IMAGE", default_image),
         "vercel_runtime": _tenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
@@ -762,12 +827,12 @@ def _get_env_config() -> dict[str, Any]:
         "ssh_user": _tenv("TERMINAL_SSH_USER", ""),
         "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
         "ssh_key": _tenv("TERMINAL_SSH_KEY", ""),
-        # Persistent shell: SSH defaults to the config-level persistent_shell
-        # setting; local is always opt-in. Per-backend env vars override.
+        # Exported env carries across commands (cwd always does). SSH follows
+        # terminal.persistent_shell; local has its own knob. Both default on.
         "ssh_persistent": _tenv_bool(
             "TERMINAL_SSH_PERSISTENT", _tenv("TERMINAL_PERSISTENT_SHELL", "true"),
         ),
-        "local_persistent": _tenv_bool("TERMINAL_LOCAL_PERSISTENT", "false"),
+        "local_persistent": _tenv_bool("TERMINAL_LOCAL_PERSISTENT", "true"),
         # Container resources (MB); ignored for local/ssh.
         "container_cpu": container_cpu,
         "container_memory": container_memory,
@@ -855,7 +920,7 @@ def _command_requires_pipe_stdin(command: str) -> bool:
 
 from tools.terminal_tool_guards import (
     _foreground_background_guidance, _safe_command_preview, _validate_workdir,
-    gateway_lifecycle_block, self_repo_block,
+    gateway_lifecycle_block, self_repo_block, trailing_amp_background_command,
 )
 from tools.terminal_tool_background import _YIELDED_NOTE, spawn_background_process, yield_to_background_handler
 from tools.terminal_tool_result import finalize_foreground_result
@@ -945,7 +1010,7 @@ def _resolve_command_cwd(
     recorded = get_session_cwd(session_key)
     if recorded and _is_container_backend(env_type) and _is_unusable_container_cwd(
         recorded, mounted_host=mounted_host
-    ):
+    ) and not _in_sandbox_home(recorded, env):
         visible = _container_visible_cwd(recorded, env_type, env)
         if visible != recorded:
             return visible
@@ -1064,6 +1129,9 @@ class _ExecPlan:
     # Set when a foreground call asked for more than FOREGROUND_MAX_TIMEOUT and was promoted to a
     # tracked background process instead of being refused (the requested seconds, for the note).
     promoted_from_foreground_timeout: Optional[int] = None
+    # Set when a foreground `cmd &` (the trailing `&` its only backgrounding) is run as
+    # terminal(command="cmd", background=true) instead of being refused: the command to run.
+    auto_background_command: Optional[str] = None
 
 
 _PROMOTED_NOTE = (
@@ -1146,16 +1214,22 @@ def _plan_execution(
         # need the command itself rewritten, which the tool cannot do safely.
         # The detachment guidance applies whether or not the call is promoted: a promoted `cmd &`
         # would start a tracked shell that exits at once while its payload runs untracked.
-        guidance = _foreground_background_guidance(command)
-        if guidance:
-            raise _Rejected(_error_json(guidance, status="error"))
-        if timeout and timeout > FOREGROUND_MAX_TIMEOUT:
-            promoted = timeout
+        # Exception: a lone TRAILING `&` is unambiguous (the caller asked for exactly what
+        # background=true does), so run it that way instead of spending a model turn on a resend.
+        auto_bg = trailing_amp_background_command(command)
+        if auto_bg is None:
+            guidance = _foreground_background_guidance(command)
+            if guidance:
+                raise _Rejected(_error_json(guidance, status="error"))
+            if timeout and timeout > FOREGROUND_MAX_TIMEOUT:
+                promoted = timeout
+    else:
+        auto_bg = None
 
     return _ExecPlan(
         config=config, env_type=env_type, effective_task_id=effective_task_id,
         image=image, cwd=cwd, host_cwd=host_cwd, effective_timeout=timeout or config["timeout"],
-        promoted_from_foreground_timeout=promoted,
+        promoted_from_foreground_timeout=promoted, auto_background_command=auto_bg,
     )
 
 
@@ -1206,17 +1280,11 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
         if env is not None:
             return env
 
-        if env_type == "singularity":
-            _check_disk_usage_warning()
         logger.info("Creating new %s environment for task %s...", env_type, eff[:8])
         try:
             new_env = _create_configured_env(
                 plan.config, env_type, image=plan.image, cwd=plan.cwd,
                 timeout=plan.effective_timeout, task_id=eff, host_cwd=plan.host_cwd,
-                local_config=(
-                    {"persistent": plan.config.get("local_persistent", False)}
-                    if env_type == "local" else None
-                ),
             )
         except ImportError as e:
             raise _Rejected(_error_json(
@@ -1409,6 +1477,11 @@ def terminal_tool(
         plan = _plan_execution(
             command, task_id=task_id, timeout=timeout, background=background, _host_local=_host_local,
         )
+        auto_bg = getattr(plan, "auto_background_command", None)
+        if auto_bg is not None:
+            # From here on this IS a background=true call for the stripped command: every guard
+            # below (lifecycle, workdir, self-repo, dangerous-command approval) sees what runs.
+            command, background = auto_bg, True
         env = _acquire_env(plan, task_id)
         env_type, cwd, effective_task_id = plan.env_type, plan.cwd, plan.effective_task_id
 
@@ -1470,6 +1543,7 @@ def terminal_tool(
                 completion_output_chars=_completion_output_chars,
                 heartbeat_seconds=heartbeat,
                 persist_on_release=persist_on_release,
+                auto_backgrounded=auto_bg is not None and plan.promoted_from_foreground_timeout is None,
             )
             if plan.promoted_from_foreground_timeout is not None:
                 result = _with_promoted_note(result, plan.promoted_from_foreground_timeout)
@@ -1515,25 +1589,25 @@ TERMINAL_SCHEMA = {
             },
             "background": {
                 "type": "boolean",
-                "description": "Run in the background, returning a session_id. Pair with notify=true for anything with a defined end (tests, builds, deploys) — without it the process runs silently. Only servers/watchers/daemons that never exit should stay silent. Short commands: prefer foreground with a generous timeout.",
+                "description": "Keep running after this call returns; returns a session_id.",
                 "default": False
             },
             "timeout": {
                 "type": "integer",
-                "description": f"Max seconds to wait (default: 180, foreground max: {FOREGROUND_MAX_TIMEOUT}). Returns INSTANTLY when command finishes — set high for long tasks, you won't wait unnecessarily. A foreground timeout above {FOREGROUND_MAX_TIMEOUT}s runs the command as a tracked background process with notify_on_complete=true instead (the result says so; do not re-run it).",
+                "description": f"Max seconds (default 180, foreground max {FOREGROUND_MAX_TIMEOUT}). Finishing early returns at once, so set it generously. Above {FOREGROUND_MAX_TIMEOUT}s the command runs as a tracked background process with notify_on_complete=true (the result says so; do not re-run it).",
                 "minimum": 1
             },
             "workdir": {
                 "type": "string",
-                "description": "Working directory for this command (absolute path). Defaults to the session working directory."
+                "description": "Absolute working directory for this command only."
             },
             "pty": {
                 "type": "boolean",
-                "description": "With background=true: run in a pseudo-terminal for interactive CLI tools (Codex, Claude Code, Python REPL). Local backend only. Default: false.",
+                "description": "With background=true: pseudo-terminal for interactive CLIs (REPLs, coding agents); drive it with process_manage write/submit. Local backend only.",
                 "default": False
             },
             "notify": {
-                "description": "With background=true: notify=true fires exactly one notification when the process exits (the right choice for nearly every bounded task — builds, tests, deploys). notify=['pattern', ...] instead notifies when a line matches a pattern — ONLY for one-shot readiness signals on processes that never exit (e.g. ['Application startup complete']); rate-limited and auto-disabled if it over-fires. Omit for silent daemons.",
+                "description": "With background=true. true: one notification on exit; use it for anything that ends (builds, tests, deploys), or the job runs silently. ['pattern', ...]: notify when a line matches, only for one-shot readiness on processes that never exit; rate-limited. Omit for servers/daemons.",
                 "anyOf": [
                     {"type": "boolean"},
                     {"type": "array", "items": {"type": "string"}}
@@ -1543,12 +1617,12 @@ TERMINAL_SCHEMA = {
                 "type": "integer",
                 "minimum": 0,
                 "default": 0,
-                "description": "0 disables. With background=true: also notify every N seconds (positive values are clamped to min 60) with the output produced since the last notice; a tick with no new output is skipped. For bounded jobs you must react to mid-run (merge trains, full suites, deploys) — never for servers or watchers; implies notify=true. Ignored on foreground commands.",
+                "description": "With background=true: also notify every N seconds (min 60) with new output; quiet ticks are skipped. For bounded jobs you must react to mid-run, never servers. Implies notify=true; 0 = off.",
             },
             "persist_on_release": {
                 "type": "boolean",
                 "default": False,
-                "description": "With background=true: keep the process alive across agent lifecycle cleanup (session end, /new, context compression, error recovery, max-iteration stop). Use ONLY for long-running jobs the user explicitly wants to outlive the conversation (overnight batches, watchful daemons); it still dies with the host process, and the user (or a later turn via process kill) can stop it on purpose. Default false."
+                "description": "With background=true: survive session end, /new, compression and other cleanup (not host exit). Only for jobs the user explicitly wants to outlive the conversation."
             }
             # Legacy aliases (unadvertised, still accepted): notify_on_complete
             # (bool) and watch_patterns (list). notify=true|[...] maps onto

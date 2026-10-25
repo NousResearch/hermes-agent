@@ -50,6 +50,7 @@ def _tracked_python_files(root: Path) -> list[str]:
     proc = subprocess.run(
         ["git", "-C", str(root), "ls-files", "-z", "--", "*.py"],
         capture_output=True,
+        check=False,
     )
     if proc.returncode != 0:
         sys.stderr.write(

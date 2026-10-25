@@ -66,20 +66,25 @@ def _attempt_seed(
 ) -> dict[str, Any]:
     """This attempt's id, the session it started in, and its trigger.
 
-    ``attempt_seed`` is the attempt's own copy and wins: the agent's copy belongs to the newest attempt, so a
-    stalled attempt unwinding after its fallback began would otherwise log the fallback's identity. Without
-    it, read the agent's copy (a pre-commit restore puts the previous attempt's seed back on the compressor).
+    ``attempt_seed`` is the attempt's own copy and wins: the agent's current-attempt fields belong to the newest
+    attempt, so a stalled attempt unwinding after its fallback began would otherwise log the fallback's identity.
     An emit with no attempt begun (pool saturation) gets a fresh id and an unknown trigger."""
     if attempt_seed:
         return dict(attempt_seed)
     attempt_id = getattr(agent, "_compression_attempt_id", None) if attempt_began else None
-    seed = getattr(agent, "_compression_attempt_seed", None)
-    if attempt_id and isinstance(seed, dict) and seed.get("attempt_id") == attempt_id:
-        return dict(seed)
     return {
         "attempt_id": attempt_id or uuid.uuid4().hex, "session_id": getattr(agent, "session_id", "") or "",
         "trigger_source": "unknown",
     }
+
+
+def _log_attempt_record(payload: dict[str, Any]) -> None:
+    """The one attempt log line; ``scripts/micro_compaction_report.py`` parses this prefix."""
+    logger.info("context compression attempt telemetry: %s", json.dumps(payload, sort_keys=True, separators=(",", ":")))
+
+
+# Fields describing the rewritten transcript; the input-side counts (messages_before, tokens_before) stay.
+_CANDIDATE_EFFECT_FIELDS = ("messages_after", "tokens_after", "tokens_reclaimed", "items_dropped")
 
 
 def _emit_compression_attempt_telemetry(
@@ -100,9 +105,9 @@ def _emit_compression_attempt_telemetry(
         seed = _attempt_seed(agent, attempt_began=include_last_telemetry, attempt_seed=attempt_seed)
         own = isinstance(telemetry, dict) and telemetry.get("attempt_id") == seed["attempt_id"]
         if not own:
-            # The attempt-start clear leaves no dict before compress() seeds one, a pre-commit restore puts
-            # the previous attempt's back, and a newer attempt may have seeded its own: describe THIS attempt
-            # from its seed, never another's numbers.
+            # Before dispatch the compressor still holds the previous attempt's dict, a pre-commit restore puts
+            # it back, and a newer attempt may have seeded its own: describe THIS attempt from its seed, never
+            # another's numbers.
             telemetry = {**seed, "method": "none"}
         payload = dict(telemetry)
         payload.setdefault("event", "compression_attempt")
@@ -115,6 +120,10 @@ def _emit_compression_attempt_telemetry(
         )
         if history_rewritten is not None:
             payload["history_rewritten"] = history_rewritten
+        if commit_status != "committed" and not history_rewritten:
+            # A refused or rolled-back candidate never reached the transcript: report no effect it did not have.
+            for key in _CANDIDATE_EFFECT_FIELDS:
+                payload.pop(key, None)
         if commit_started_at is not None:
             telemetry["commit_ms"] = payload["commit_ms"] = max(0, int((time.monotonic() - commit_started_at) * 1000))
         # Defer only to THIS attempt's class: an abort restore can put the previous attempt's telemetry back.
@@ -130,9 +139,7 @@ def _emit_compression_attempt_telemetry(
                 or getattr(compressor, "_last_aux_model_failure_model", None)
             )
         )
-        logger.info(
-            "context compression attempt telemetry: %s", json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        )
+        _log_attempt_record(payload)
         publish_attempt(agent, payload)
         from hermes_cli.observability.shared_metrics_events import finish_compression_attempt
 
@@ -173,9 +180,7 @@ def _emit_bypassed_attempt_telemetry(
             "total_duration_ms": int((time.monotonic() - started_at) * 1000), "commit_status": commit_status,
             "split_status": "not_applicable", "fallback_used": False,
         }
-        logger.info(
-            "context compression attempt telemetry: %s", json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        )
+        _log_attempt_record(payload)
         publish_attempt(agent, payload)
     except Exception as exc:
         logger.debug("failed to emit compression attempt telemetry: %s", exc, exc_info=True)
@@ -192,18 +197,12 @@ def _emit_bypassed_attempt_telemetry(
 
 
 def _emit_blocked_attempt_telemetry(
-    agent: Any, started_at: float, approx_tokens: Any, attempt_seed: dict[str, Any] | None = None,
+    agent: Any, started_at: float, approx_tokens: Any, attempt_seed: dict[str, Any] | None, reason: str,
 ) -> None:
-    """Record an automatic attempt the breaker gate refused. The class keeps only the guard's name
-    (``blocked:cooldown``, ``blocked:structural_backoff``, ``blocked:ineffective``), never its seconds."""
-    reason = None
-    try:
-        reason_fn = getattr(getattr(agent, "context_compressor", None), "_compression_block_reason", None)
-        reason = reason_fn() if callable(reason_fn) else None
-    except Exception:
-        logger.debug("compression block-reason read failed", exc_info=True)
-    guard = reason.split(":", 1)[0] if isinstance(reason, str) and reason else "unknown"
+    """Record an automatic attempt the breaker gate refused for ``reason`` (the gate's block reason). The class keeps
+    only the guard's name (``blocked:cooldown``, ``blocked:structural_backoff``, ``blocked:ineffective``), never its
+    seconds."""
     _emit_bypassed_attempt_telemetry(
-        agent, started_at, commit_status="blocked", failure_class=f"blocked:{guard}", approx_tokens=approx_tokens,
-        attempt_seed=attempt_seed,
+        agent, started_at, commit_status="blocked", failure_class=f"blocked:{reason.split(':', 1)[0]}",
+        approx_tokens=approx_tokens, attempt_seed=attempt_seed,
     )

@@ -240,7 +240,7 @@ def test_render_finish_script_does_not_restart_on_clean_exit(tmp_path) -> None:
 
     def finish_exit(run_exit_code: int) -> int:
         proc = subprocess.run(["sh", str(script), str(run_exit_code)],
-                              capture_output=True)
+                              capture_output=True, check=False)
         return proc.returncode
 
     assert finish_exit(0) == 125   # clean stop — no restart

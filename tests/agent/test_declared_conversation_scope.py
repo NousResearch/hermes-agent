@@ -541,7 +541,7 @@ class TestConversationGenerationRotates:
         assert resolve_prompt_cache_scope(again) == scope_mine
 
     def test_scope_never_carries_the_raw_key_or_boundary(self, db):
-        agent = self._keyed(db, "sess-A")
+        self._keyed(db, "sess-A")
         db.end_session("sess-A", "session_reset")
         rotated = self._keyed(db, "sess-B")
         scope = resolve_prompt_cache_scope(rotated)

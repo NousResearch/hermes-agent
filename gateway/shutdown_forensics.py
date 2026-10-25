@@ -232,6 +232,7 @@ def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
             result = subprocess.run(
                 ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2.0,
+                check=False,
             )
         except (subprocess.TimeoutExpired, OSError):
             continue

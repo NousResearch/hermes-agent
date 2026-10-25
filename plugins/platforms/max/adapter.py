@@ -118,10 +118,37 @@ class MaxAdapter(BasePlatformAdapter):
             self._mark_connected()
             logger.info("[%s] Connected — long-polling %s/updates", self.name, self._server)
             self._wire_plugin_handlers(None)
+            asyncio.create_task(self._sync_command_menu())
             return True
         except Exception as e:
             logger.error("[%s] Failed to connect: %s", self.name, e)
             return False
+
+    # MAX caps PATCH /me's ``commands`` at 32 entries, 1-64 char names, 1-128 char descriptions.
+    _MAX_COMMAND_MENU_LIMIT = 32
+    _MAX_COMMAND_DESC_LIMIT = 128
+
+    async def _sync_command_menu(self) -> None:
+        """Push the same slash-command menu Telegram shows (``/help``, ``/new``, ...) to MAX via
+        ``PATCH /me``, reusing the shared, already-sanitized command list so both platforms stay
+        in sync without a second source of truth."""
+        if not self._http_client:
+            return
+        try:
+            from hermes_cli.commands_platforms import telegram_menu_commands
+            pairs, _hidden = telegram_menu_commands(max_commands=self._MAX_COMMAND_MENU_LIMIT)
+            commands = [
+                {"name": name, "description": (desc or name)[: self._MAX_COMMAND_DESC_LIMIT]}
+                for name, desc in pairs]
+            resp = await self._http_client.patch("/me/commands", json={"commands": commands}, timeout=15.0)
+            if resp.status_code < 300:
+                logger.info("[%s] Command menu synced (%d commands)", self.name, len(commands))
+            else:
+                logger.warning(
+                    "[%s] Command menu sync failed HTTP %d: %s",
+                    self.name, resp.status_code, resp.text[:200])
+        except Exception:
+            logger.warning("[%s] Command menu sync failed", self.name, exc_info=True)
 
     async def _run_poll(self) -> None:
         """Long-poll GET /updates with automatic reconnection."""

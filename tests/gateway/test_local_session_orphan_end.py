@@ -359,3 +359,25 @@ async def test_a_zero_grace_never_ends_a_detached_session(tmp_path, monkeypatch)
     await viewer.close()
     assert armed == [] and authority.orphan_closes == {}
     assert authority.db.get_session(sid)['ended_at'] is None
+
+
+@pytest.mark.asyncio
+async def test_a_session_the_tui_keeps_live_is_only_orphaned_when_its_connection_drops(tmp_path, monkeypatch):
+    armed = _capture_timers(monkeypatch)
+    authority, _ = await _owner(tmp_path, monkeypatch)
+    kept, front = _create(authority, 'kept live').session_id, _create(authority, 'in front').session_id
+    tui = _viewer(authority)
+    held = await tui.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': kept}})
+    await tui.dispatch({'id': 2, 'method': 'session.resume', 'params': {'session_id': front}})
+    # `/sessions new` or the live switcher: the previous session is handed back with a plain detach.
+    out = await tui.dispatch({'id': 3, 'method': 'session.detach', 'params': {
+        'session_id': kept, 'subscription_id': held['result']['subscription_id']}})
+    assert out['result']['detached'] is True
+    assert armed == [] and authority.orphan_closes == {}
+    listed = await tui.dispatch({'id': 4, 'method': 'session.list', 'params': {}})
+    assert {row['id'] for row in listed['result']['sessions']} == {kept, front}
+
+    await tui.close()  # the terminal is killed while it keeps `kept` in the background
+    assert sorted(authority.orphan_closes) == sorted([kept, front])
+    assert [delay for delay, _ in armed] == [300.0, 300.0]
+

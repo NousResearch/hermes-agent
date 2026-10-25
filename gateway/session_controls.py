@@ -135,6 +135,7 @@ class AuthorityConnection:
         bind_native_transport(authority, self.actor, identity)
         self.native_owner = identity.get('native_bootstrap') is True
         self.subscriptions = {}
+        self.handed_back = set()  # sessions this live client detached without closing (the TUI's switcher)
         self._identity, self._operator, self._siblings = identity, operator, {}
         authority.events[self.actor.transport_id] = transport
 
@@ -616,6 +617,7 @@ class AuthorityConnection:
             await refresh_resumed_policy(self.authority, ref, attached=ref.session_id in self.subscriptions)
         snapshot = await self.authority.attach(self.actor, ref)
         self.subscriptions[ref.session_id] = snapshot.subscription_id
+        self.handed_back.discard(ref.session_id)
         self._spawn_notice(ref)
         # Only local routes have a frozen local launch policy to project; with it, main's banner and
         # status-bar inventory (tools, skills, MCP, version, branch) for that policy.
@@ -680,6 +682,7 @@ class AuthorityConnection:
         await self.authority.detach(self.actor, subscription_id, end_reason=end_reason)
         if self.subscriptions.get(session_id) == subscription_id:
             del self.subscriptions[session_id]
+        (self.handed_back.discard if end_reason else self.handed_back.add)(session_id)
         result['detached'] = True
         return result
 
@@ -871,7 +874,11 @@ class AuthorityConnection:
             for session_id, subscription in list(self.subscriptions.items()):
                 live = self.authority.sessions.get(session_id)
                 if live is not None and subscription in live.subscribers:
-                    await self.authority.detach(self.actor, subscription)
+                    await self.authority.detach(self.actor, subscription, orphaned=True)
+            # Kept in the background by this client: losing it orphans them too, unless another viewer holds one.
+            from gateway.session_viewer_close import arm_detached_orphan_close
+            for session_id in self.handed_back:
+                await arm_detached_orphan_close(self.authority, session_id)
         from gateway.session_local_migration import unbind_native_transport
         unbind_native_transport(self.authority, self.actor)
         self.subscriptions.clear()

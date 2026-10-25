@@ -367,7 +367,7 @@ class SessionAuthority:
             if self.events.get(member.transport_id) is transport:
                 del live.subscribers[subscription]
 
-    async def detach(self, actor, subscription_id, *, end_reason=None):
+    async def detach(self, actor, subscription_id, *, end_reason=None, orphaned=False):
         for session_id, live in self.sessions.items():
             if subscription_id in live.subscribers:
                 if live.subscribers[subscription_id] != actor:
@@ -388,8 +388,9 @@ class SessionAuthority:
                     # A viewer that attached while the close was off the loop reopens it.
                     await tracked_write(self, partial(end_idle_acp_session, self, session_id),
                                         then=partial(reopen_if_reattached, self, session_id))
-                    from gateway.session_viewer_close import arm_detached_orphan_close
-                    await arm_detached_orphan_close(self, session_id)
+                    if orphaned:  # a plain session.detach is a live client handing the session back
+                        from gateway.session_viewer_close import arm_detached_orphan_close
+                        await arm_detached_orphan_close(self, session_id)
                 return
         raise RuntimeStoreError('not_found')
 

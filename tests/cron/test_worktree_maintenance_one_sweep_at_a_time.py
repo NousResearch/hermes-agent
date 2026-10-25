@@ -57,3 +57,36 @@ def test_a_sweep_waits_instead_of_forking_git_beside_the_running_one(tmp_path, m
         release.set()
         _join_prune_threads()
 
+
+def test_a_waiting_sweep_runs_once_the_one_ahead_fails(tmp_path, monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    second_ran = threading.Event()
+    calls = []
+
+    def discover():
+        calls.append(1)
+        if len(calls) == 1:
+            entered.set()
+            release.wait(30)
+            raise RuntimeError("discovery failed")
+        second_ran.set()
+        return []
+
+    monkeypatch.setattr(scheduler, "_last_worktree_maintenance_at", None)
+    monkeypatch.setattr(scheduler, "_worktree_maintenance_repos", discover)
+    monkeypatch.setattr(maintenance, "SWEEP_WAIT_SECONDS", 30.0, raising=False)
+
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path / "first")
+    try:
+        scheduler._maybe_run_worktree_maintenance()
+        assert entered.wait(30), "the first sweep never started"
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path / "second")
+        scheduler._maybe_run_worktree_maintenance()
+        release.set()
+        # Serialising must queue the sweep behind, not lose it when the one ahead raises.
+        assert second_ran.wait(30), "the waiting sweep never ran after the first one failed"
+    finally:
+        release.set()
+        _join_prune_threads()
+

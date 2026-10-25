@@ -2,13 +2,16 @@ import { useEffect, useReducer, useRef } from 'react'
 
 import { isSubmitEnter } from '@/lib/ime'
 import {
-  initialQuickComposerState,
+  createInitialQuickComposerState,
+  loadPersistedQuickEntryTarget,
+  persistQuickEntryTarget,
   QUICK_TARGET_CURRENT,
   QUICK_TARGET_NEW,
   type QuickComposerEvent,
   quickComposerReducer,
   type QuickComposerState,
-  quickEntryResultEvent
+  quickEntryResultEvent,
+  type QuickEntryStatePush
 } from '@/store/quick-entry'
 
 // Native select popups do not reliably inherit the closed control's colors.
@@ -60,7 +63,7 @@ export function QuickEntryApp() {
     }
 
     return next
-  }, initialQuickComposerState)
+  }, undefined, createInitialQuickComposerState)
 
   // Re-summoned by the chord: the shell reuses the window, so reset the draft
   // and take the keyboard back for a fresh capture. Also adopt gateway-state
@@ -68,17 +71,26 @@ export function QuickEntryApp() {
   useEffect(() => {
     const api = window.hermesDesktop?.quickEntry
 
+    const applyState = (payload?: null | QuickEntryStatePush) => {
+      if (payload) {
+        dispatch({
+          connected: payload.connected === true,
+          sessions: Array.isArray(payload.sessions) ? payload.sessions : [],
+          type: 'state'
+        })
+      }
+    }
+
+    void api?.getState?.().then(applyState)
+
     const offShown = api?.onShown(() => {
-      dispatch({ type: 'shown' })
+      dispatch({ resetTarget: loadPersistedQuickEntryTarget(), type: 'shown' })
+      void api?.getState?.().then(applyState)
       requestAnimationFrame(() => inputRef.current?.focus())
     })
 
     const offState = api?.onState(payload => {
-      dispatch({
-        connected: payload?.connected === true,
-        sessions: Array.isArray(payload?.sessions) ? payload.sessions : [],
-        type: 'state'
-      })
+      applyState(payload)
     })
 
     const offLateResult = api?.onLateResult(payload => {
@@ -193,9 +205,12 @@ export function QuickEntryApp() {
           </label>
           <select
             aria-label="Target session"
-            disabled={!state.connected}
             id="quick-entry-target"
-            onChange={event => dispatch({ target: event.target.value, type: 'target' })}
+            onChange={event => {
+              const target = event.target.value
+              persistQuickEntryTarget(target)
+              dispatch({ target, type: 'target' })
+            }}
             onKeyDown={event => {
               if (event.key === 'Escape') {
                 event.preventDefault()

@@ -66,6 +66,18 @@ _HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
 _HOOK_MAX_ABANDONED_WORKERS = 3
 _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE = "pre_tool_call plugin callback timed out or is still running"
 
+# The one hook whose callback rewrites the reply the user would otherwise see streaming.
+STREAM_HOLDING_HOOK = "transform_llm_output"
+
+
+def stream_held() -> bool:
+    """True when a plugin loaded in the active profile registered ``transform_llm_output`` with
+    ``hold_stream=True``: that profile's replies reach the user only as the rewritten final.
+    Lazy-discovers first, like ``has_hook``."""
+    from hermes_cli.plugins import _delivery_manager
+
+    return _delivery_manager().holds_stream()
+
 
 def _policy_error_block_directive(hook_name: str, cb: Callable, exc: BaseException) -> dict[str, str]:
     """Block directive for a fail-closed hook whose callback raised: names the callback and the
@@ -533,6 +545,24 @@ class PluginDispatchMixin:
         if safe_worker_enabled():
             return False
         return bool(self._hooks.get(hook_name))
+
+    def track_hook(self, context: Any, hook_name: str, callback: Callable, *, hold_stream: bool = False):
+        """Register ``callback`` for ``hook_name`` on behalf of ``context`` (unknown names warn but are
+        still stored). ``hold_stream=True`` on ``transform_llm_output`` declares the rewrite must reach
+        the user first, so this profile's replies are not streamed (:meth:`holds_stream`)."""
+        from hermes_cli.plugins import VALID_HOOKS
+
+        handle = context._track_callback("hook", hook_name, callback, self._hooks, VALID_HOOKS)
+        if hold_stream and hook_name != STREAM_HOLDING_HOOK:
+            logger.warning("Plugin '%s' set hold_stream on '%s'; only %s rewrites the reply, ignored",
+                           context.manifest.name, hook_name, STREAM_HOLDING_HOOK)
+        else:
+            handle.hold_stream = hold_stream
+        return handle
+
+    def holds_stream(self) -> bool:
+        """True while a loaded plugin's ``transform_llm_output`` registration declared ``hold_stream``."""
+        return any(r.hold_stream for owned in self._ownership_ledger.values() for r in owned)
 
     async def ainvoke_hook(self, hook_name: str, **kwargs: Any) -> list[Any]:
         """:meth:`invoke_hook` for callers that are already on an event loop.

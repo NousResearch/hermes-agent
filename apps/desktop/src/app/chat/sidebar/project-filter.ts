@@ -27,10 +27,18 @@ export function resolveLiveProjectFilter(
  * lands there (it reappears the moment it owns a session). Explicit projects
  * and the Home bucket always render — the user created or kept those. Session
  * counts come from the backend `projects.tree`, so this stays live without
- * client-side re-derivation.
+ * client-side re-derivation. A `keepId` (the entered project's scope) pins one
+ * node regardless: entering a session-less auto project is deliberate, and the
+ * overview filter must not undo it.
  */
 export function filterToSessionBearingProjects<
-  T extends { isAuto?: boolean; isNoProject?: boolean; sessionCount?: number }
->(projects: readonly T[]): T[] {
-  return projects.filter(project => !project.isAuto || project.isNoProject || (project.sessionCount ?? 0) > 0)
+  T extends { id?: string; isAuto?: boolean; isNoProject?: boolean; sessionCount?: number }
+>(projects: readonly T[], keepId?: string): T[] {
+  return projects.filter(
+    project =>
+      !project.isAuto ||
+      project.isNoProject ||
+      (project.sessionCount ?? 0) > 0 ||
+      (keepId !== undefined && project.id === keepId)
+  )
 }

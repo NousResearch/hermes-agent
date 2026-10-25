@@ -353,12 +353,12 @@ describe('SessionsSettings auto archive', () => {
 
 describe('SessionsSettings default directory in a browser tab', () => {
   afterEach(() => {
-    delete document.documentElement.dataset.hermesDesktopHost
+    delete globalThis.document.documentElement.dataset.hermesDesktopHost
     Reflect.deleteProperty(window, 'hermesDesktop')
   })
 
   it('picks through the server folder browser instead of the native dialog', async () => {
-    document.documentElement.dataset.hermesDesktopHost = 'browser'
+    globalThis.document.documentElement.dataset.hermesDesktopHost = 'browser'
 
     const settings = {
       getDefaultProjectDir: vi.fn().mockResolvedValue({ defaultLabel: 'Server workspace', dir: null, resolvedCwd: '' }),
@@ -366,7 +366,7 @@ describe('SessionsSettings default directory in a browser tab', () => {
       setDefaultProjectDir: vi.fn(async (dir: null | string) => ({ dir }))
     }
 
-    Object.assign(window, { hermesDesktop: { settings } })
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { settings } })
     selectDesktopPaths.mockReset().mockResolvedValue(['/srv/work'])
 
     render(<SessionsSettings subpage="default-directory" />)

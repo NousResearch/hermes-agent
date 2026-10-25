@@ -66,6 +66,63 @@ def test_claude_floor_must_be_explicit_and_positive(tmp_path):
         )
 
 
+@pytest.mark.parametrize("field", [
+    "claude_floor_percent", "codex_reservation_percent_per_worker",
+    "claude_reservation_percent_per_worker",
+])
+def test_boolean_capacity_percentages_fail_closed(tmp_path, field):
+    provider = "anthropic" if field.startswith("claude") else "openai-codex"
+    model = "claude-sonnet-4" if provider == "anthropic" else "gpt-6-sol"
+    values = {field: True}
+    if provider == "anthropic" and field != "claude_floor_percent":
+        values["claude_floor_percent"] = 10
+    with pytest.raises(runtime.SubscriptionCapacityUnavailable, match="positive"):
+        runtime.prepare_kanban_worker_capacity(
+            _task(provider, model), shared_root=tmp_path, profile_home=None,
+            config={"kanban": {"subscription_capacity": values}},
+            fetcher=lambda candidate: _snapshot(candidate),
+        )
+
+
+def test_codex_blocks_new_work_below_twenty_percent_remaining(tmp_path):
+    with pytest.raises(runtime.SubscriptionCapacityUnavailable, match="protected floor"):
+        runtime.prepare_kanban_worker_capacity(
+            _task(), shared_root=tmp_path, profile_home=None, config={},
+            fetcher=lambda provider: _snapshot(used=81.0),
+        )
+
+
+def test_provider_concurrency_requires_bounded_reservations(tmp_path):
+    config = {"kanban": {"subscription_capacity": {"codex_max_concurrent_workers": 2}}}
+    with pytest.raises(runtime.SubscriptionCapacityUnavailable, match="reservation_percent_per_worker"):
+        runtime.prepare_kanban_worker_capacity(
+            _task(), shared_root=tmp_path, profile_home=None, config=config,
+            fetcher=lambda provider: _snapshot(),
+        )
+
+
+def test_configured_bounded_workers_share_one_account_pool(tmp_path):
+    config = {"kanban": {"subscription_capacity": {
+        "codex_max_concurrent_workers": 2,
+        "codex_reservation_percent_per_worker": 5,
+    }}}
+    first = runtime.prepare_kanban_worker_capacity(
+        _task(current_run_id=1), shared_root=tmp_path, profile_home=None, config=config,
+        fetcher=lambda provider: _snapshot(),
+    )
+    second = runtime.prepare_kanban_worker_capacity(
+        _task(current_run_id=2), shared_root=tmp_path, profile_home=None, config=config,
+        fetcher=lambda provider: _snapshot(),
+    )
+    with pytest.raises(runtime.SubscriptionCapacityUnavailable, match="bounded lease limit"):
+        runtime.prepare_kanban_worker_capacity(
+            _task(current_run_id=3), shared_root=tmp_path, profile_home=None, config=config,
+            fetcher=lambda provider: _snapshot(),
+        )
+    assert runtime.release_prepared_capacity(first) is True
+    assert runtime.release_prepared_capacity(second) is True
+
+
 def test_acquire_phase_check_and_normal_release_use_same_durable_lease(tmp_path, monkeypatch):
     snapshot = _snapshot()
     payload = runtime.prepare_kanban_worker_capacity(

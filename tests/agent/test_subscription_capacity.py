@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+import os
 from threading import Barrier
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 from agent.subscription_capacity import (
     CapacityRequest,
+    DEFAULT_LEASE_TTL,
     ProviderPolicy,
     SubscriptionCapacityRouter,
     default_subscription_policies,
@@ -59,9 +61,9 @@ def _router(tmp_path, policies, snapshots, *, now=lambda: NOW):
     ), calls
 
 
-def test_default_floors_keep_codex_voice_allowance_and_require_configured_claude_floor():
+def test_default_floors_keep_codex_interactive_allowance_and_require_configured_claude_floor():
     codex, claude = default_subscription_policies(claude_floor_percent=4.0)
-    assert codex.protected_floor_percent == 10.0
+    assert codex.protected_floor_percent == 20.0
     assert claude.protected_floor_percent == 4.0
     with pytest.raises(ValueError, match="positive"):
         default_subscription_policies(claude_floor_percent=0)
@@ -207,6 +209,44 @@ def test_phase_boundary_forces_refresh_and_stops_when_floor_is_reached(tmp_path)
     assert calls == ["openai-codex", "openai-codex"]
     assert not phase.admitted
     assert phase.reason == "protected floor would be crossed"
+
+
+def test_bound_worker_reservation_survives_initial_ttl_and_can_renew(tmp_path, monkeypatch):
+    clock = [NOW]
+
+    def snapshot():
+        return _snapshot(
+            used=(20, 20), reset=(timedelta(hours=4), timedelta(days=5)),
+            age=NOW - clock[0],
+        )
+
+    router, _ = _router(
+        tmp_path, (_policy(),), {"openai-codex": snapshot}, now=lambda: clock[0],
+    )
+    first = router.acquire(
+        CapacityRequest("req-long", "builder", "worker"),
+        candidate_models={"openai-codex": "gpt-6-sol"},
+    )
+    assert first.lease is not None
+    assert router.authorize_dispatcher_process(first.lease)
+    assert router.register_worker_process(first.lease, os.getpid())
+
+    clock[0] += timedelta(minutes=31)
+    second = router.acquire(
+        CapacityRequest("req-second", "builder", "other"),
+        candidate_models={"openai-codex": "gpt-6-sol"},
+    )
+    assert second.lease is None
+    assert "unbounded" in second.assessments[0].reason
+    bound_pid = os.getpid()
+    assert router.worker_process_matches(first.lease, bound_pid)
+    with monkeypatch.context() as copied_process:
+        copied_process.setattr("agent.subscription_capacity.os.getpid", lambda: bound_pid + 1)
+        assert router.renew_bound_lease(first.lease) is None
+    renewed = router.renew_bound_lease(first.lease)
+    assert renewed is not None
+    assert renewed.expires_at == clock[0] + DEFAULT_LEASE_TTL
+    assert router.check_phase(renewed).admitted
 
 
 def test_release_requires_the_lease_owner(tmp_path):

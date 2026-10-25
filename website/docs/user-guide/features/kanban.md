@@ -997,7 +997,9 @@ All commands are also available as a slash command in the interactive CLI and in
 |------------|---------|--------------|
 | `kanban.max_in_progress` | unset (unlimited) | Caps the number of simultaneously running tasks. When the board already has N running, the dispatcher skips spawning more — useful for slow workers (local LLMs, resource-constrained hosts) so they finish what they have before more pile up and time out. Invalid or below-1 values log a warning and behave as unlimited. |
 | `kanban.max_in_progress_per_profile` | unset (unlimited) | Per-profile variant of `max_in_progress` — caps how many tasks any single assignee profile may run concurrently. Useful when one profile is slow or rate-limited but others should keep flowing. Applies alongside the board-wide `max_in_progress`; both must allow a spawn for it to proceed. |
-| `kanban.subscription_capacity.claude_floor_percent` | unset (Anthropic native workers denied) | Protects native subscription capacity for explicitly pinned `anthropic` Kanban workers. Set a positive percentage below 100. Native `openai-codex` workers always preserve a fixed 10% floor. Both routes require fresh quota data and a stable account identity; missing or stale identity/quota fails closed. This guard applies only to native subscription providers and never reroutes to paid providers or gateway aliases. |
+| `kanban.subscription_capacity.claude_floor_percent` | unset (Anthropic native workers denied) | Protects native subscription capacity for explicitly pinned `anthropic` Kanban workers. Set a positive percentage below 100. Native `openai-codex` workers always preserve a fixed 20% floor across every applicable quota window. Both routes require fresh quota data and a stable account identity; missing or stale identity/quota fails closed. This guard applies to builders, repairs, analysis workers and reviewers, and never reroutes to paid providers or gateway aliases. |
+| `kanban.subscription_capacity.codex_max_concurrent_workers` / `claude_max_concurrent_workers` | `1` | Per-provider, per-subscription-account lease cap. A value above one is refused unless the corresponding bounded reservation is configured. Global, host-derived and per-profile Kanban caps still apply. |
+| `kanban.subscription_capacity.codex_reservation_percent_per_worker` / `claude_reservation_percent_per_worker` | unset | Optional quota reservation for each native worker. Set a positive percentage below 100 to make bounded parallel admission possible. Reservations, live usage and the protected floor are combined atomically in the account's shared lease pool. Unset preserves the conservative single-worker guard. |
 | `kanban.dispatch_profiles` | unset (any existing profile) | Per-home claim allowlist for boards shared across Hermes homes. When the key is present, this home's dispatcher only claims cards whose assignee is listed — fail-closed: an empty list, `null` or a bare `dispatch_profiles:` claims nothing, and a config read that fails logs a warning and claims nothing; other assignees land in `skipped_nonspawnable`. Only omitting the key means "any existing profile". `hermes kanban diagnostics` prints the resolved value for this home (`any`, the listed names, or `none (fail-closed: …)`). See [Shared boards across homes](#shared-boards-across-homes). |
 | `kanban.auto_promote_children` | `true` | After `decompose_triage_task()` produces children with no parent-blocker dependencies, they're automatically promoted to `ready` so the dispatcher can pick them up. Set to `false` to require manual review — children stay in `todo` until you promote them. |
 | `kanban.default_workdir` | unset | Board-level default working directory applied to new tasks when neither `--workspace` nor the task itself overrides it. Per-task `workspace:` still wins. |
@@ -1006,7 +1008,11 @@ All commands are also available as a slash command in the interactive CLI and in
 kanban:
   max_in_progress: 2
   subscription_capacity:
+    codex_max_concurrent_workers: 3
+    codex_reservation_percent_per_worker: 5
     claude_floor_percent: 15
+    claude_max_concurrent_workers: 2
+    claude_reservation_percent_per_worker: 5
   auto_promote_children: false
   default_workdir: ~/work/active-project
 ```

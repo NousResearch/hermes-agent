@@ -19,6 +19,7 @@ from typing import Any, Callable, Mapping, Optional
 
 from agent.account_usage import AccountUsageSnapshot, fetch_account_usage
 from agent.subscription_capacity import (
+    CODEX_PROTECTED_FLOOR_PERCENT,
     CapacityLease,
     CapacityRequest,
     ProviderPolicy,
@@ -38,11 +39,23 @@ def is_native_subscription_task(task: Any) -> bool:
 
 
 def _positive_float(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
     try:
         parsed = float(value)
     except (TypeError, ValueError):
         return None
     return parsed if 0 < parsed < 100 else None
+
+
+def _positive_int(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 and str(value).strip() == str(parsed) else None
 
 
 def _capacity_config(config: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -53,13 +66,21 @@ def _capacity_config(config: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def _policy(provider: str, identity: str, config: Mapping[str, Any]) -> ProviderPolicy:
     tasks = frozenset({"builder", "reviewer", "repair", "analysis"})
+    capacity = _capacity_config(config)
+    prefix = "codex" if provider == "openai-codex" else "claude"
+    configured_max = capacity.get(f"{prefix}_max_concurrent_workers", 1)
+    max_bounded = _positive_int(configured_max)
+    if max_bounded is None:
+        raise SubscriptionCapacityUnavailable(
+            f"kanban.subscription_capacity.{prefix}_max_concurrent_workers must be a positive integer"
+        )
     if provider == "openai-codex":
         return ProviderPolicy(
-            provider, 10.0, tasks, ("gpt-", "codex-"), frozenset({"usage_api"}),
-            expected_identity=identity,
+            provider, CODEX_PROTECTED_FLOOR_PERCENT, tasks, ("gpt-", "codex-"),
+            frozenset({"usage_api"}), expected_identity=identity, max_bounded_leases=max_bounded,
         )
     if provider == "anthropic":
-        floor = _positive_float(_capacity_config(config).get("claude_floor_percent"))
+        floor = _positive_float(capacity.get("claude_floor_percent"))
         if floor is None:
             raise SubscriptionCapacityUnavailable(
                 "native Anthropic subscription workers require a configured positive "
@@ -67,9 +88,28 @@ def _policy(provider: str, identity: str, config: Mapping[str, Any]) -> Provider
             )
         return ProviderPolicy(
             provider, floor, tasks, ("claude-",), frozenset({"oauth_usage_api"}),
-            expected_identity=identity,
+            expected_identity=identity, max_bounded_leases=max_bounded,
         )
     raise SubscriptionCapacityUnavailable(f"unsupported native subscription provider {provider!r}")
+
+
+def _reservation_percent(provider: str, policy: ProviderPolicy, config: Mapping[str, Any]) -> Optional[float]:
+    prefix = "codex" if provider == "openai-codex" else "claude"
+    raw = _capacity_config(config).get(f"{prefix}_reservation_percent_per_worker")
+    if raw is None:
+        if policy.max_bounded_leases > 1:
+            raise SubscriptionCapacityUnavailable(
+                f"kanban.subscription_capacity.{prefix}_reservation_percent_per_worker is required "
+                "when concurrent native workers exceed one"
+            )
+        return None
+    reservation = _positive_float(raw)
+    if reservation is None:
+        raise SubscriptionCapacityUnavailable(
+            f"kanban.subscription_capacity.{prefix}_reservation_percent_per_worker must be "
+            "a positive percentage below 100"
+        )
+    return reservation
 
 
 def _lease_dict(lease: CapacityLease) -> dict[str, Any]:
@@ -157,6 +197,7 @@ def prepare_kanban_worker_capacity(
         if not identity:
             raise SubscriptionCapacityUnavailable("subscription account identity unavailable")
         policy = _policy(provider, identity, config)
+        reservation_percent = _reservation_percent(provider, policy, config)
         scope = f"{provider}:{identity}"
         digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:24]
         db_path = Path(shared_root) / "kanban" / "subscription_capacity" / f"{digest}.sqlite3"
@@ -178,7 +219,8 @@ def prepare_kanban_worker_capacity(
         )
         owner = f"kanban:{getattr(task, 'id')}:{run_id}"
         result = router.acquire(
-            CapacityRequest(owner, task_role, owner), candidate_models={provider: model},
+            CapacityRequest(owner, task_role, owner, reserved_percent=reservation_percent),
+            candidate_models={provider: model},
         )
         if result.lease is None:
             reasons = "; ".join(a.reason for a in result.assessments) or "capacity denied"
@@ -326,6 +368,13 @@ def check_worker_capacity_phase(agent: Any) -> None:
         raise SubscriptionCapacityUnavailable(
             "guarded worker route changed from its admitted subscription provider/model"
         )
+    renewed = router.renew_bound_lease(lease)
+    if renewed is None:
+        raise SubscriptionCapacityUnavailable("subscription capacity lease could not be renewed")
+    global _runtime
+    with _runtime_lock:
+        _runtime = (router, renewed)
+    lease = renewed
     assessment = router.check_phase(lease)
     if not assessment.admitted:
         raise SubscriptionCapacityUnavailable(f"subscription capacity phase denied: {assessment.reason}")

@@ -23,6 +23,7 @@ from hermes_constants import hermes_home_key
 ADMISSION_MAX_AGE = timedelta(seconds=60)
 DISPLAY_MAX_AGE = timedelta(minutes=5)
 DEFAULT_LEASE_TTL = timedelta(minutes=30)
+CODEX_PROTECTED_FLOOR_PERCENT = 20.0
 
 
 def _utc_now() -> datetime:
@@ -65,13 +66,16 @@ class ProviderPolicy:
 def default_subscription_policies(*, claude_floor_percent: float) -> tuple[ProviderPolicy, ...]:
     """Policies for native Codex and Claude subscriptions.
 
-    Codex keeps the operator-mandated 10% voice allowance.  Claude has no inferred 10% rule:
+    Codex keeps the operator-mandated 20% interactive allowance.  Claude has no inferred floor:
     callers must provide the positive floor that their own operating policy configured.
     """
 
     tasks = frozenset({"builder", "reviewer", "repair", "analysis"})
     return (
-        ProviderPolicy("openai-codex", 10.0, tasks, ("gpt-", "codex-"), frozenset({"usage_api"})),
+        ProviderPolicy(
+            "openai-codex", CODEX_PROTECTED_FLOOR_PERCENT, tasks,
+            ("gpt-", "codex-"), frozenset({"usage_api"}),
+        ),
         ProviderPolicy("anthropic", claude_floor_percent, tasks, ("claude-",), frozenset({"oauth_usage_api"})),
     )
 
@@ -280,7 +284,14 @@ class SubscriptionCapacityRouter:
         )
 
     def _lease_state(self, conn: sqlite3.Connection, provider: str, now: datetime) -> tuple[int, float, bool]:
-        conn.execute("DELETE FROM subscription_capacity_leases WHERE expires_at <= ?", (now.isoformat(),))
+        # A bound worker owns its lease until it releases or dispatcher recovery proves that exact
+        # run dead.  Time alone must never erase a live worker's reservation: long local phases can
+        # legitimately exceed the initial TTL without crossing a provider boundary.
+        conn.execute(
+            "DELETE FROM subscription_capacity_leases WHERE expires_at <= ? AND lease_id NOT IN "
+            "(SELECT lease_id FROM subscription_capacity_bindings)",
+            (now.isoformat(),),
+        )
         conn.execute(
             "DELETE FROM subscription_capacity_bindings WHERE lease_id NOT IN "
             "(SELECT lease_id FROM subscription_capacity_leases)"
@@ -320,7 +331,11 @@ class SubscriptionCapacityRouter:
         now = _aware(self.now())
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            conn.execute("DELETE FROM subscription_capacity_leases WHERE expires_at <= ?", (now.isoformat(),))
+            conn.execute(
+                "DELETE FROM subscription_capacity_leases WHERE expires_at <= ? AND lease_id NOT IN "
+                "(SELECT lease_id FROM subscription_capacity_bindings)",
+                (now.isoformat(),),
+            )
             conn.execute(
                 "DELETE FROM subscription_capacity_bindings WHERE lease_id NOT IN "
                 "(SELECT lease_id FROM subscription_capacity_leases)"
@@ -549,10 +564,43 @@ class SubscriptionCapacityRouter:
             row = conn.execute(
                 "SELECT * FROM subscription_capacity_leases WHERE lease_id = ?", (lease.lease_id,),
             ).fetchone()
-            if (row is None or self._row_to_lease(row) != lease
-                    or datetime.fromisoformat(row["expires_at"]) <= _aware(self.now())):
+            if row is None or self._row_to_lease(row) != lease:
                 return False
             bound = conn.execute(
                 "SELECT worker_pid FROM subscription_capacity_bindings WHERE lease_id = ?", (lease.lease_id,),
             ).fetchone()
             return bound is not None and int(bound["worker_pid"]) == worker_pid
+
+    def renew_bound_lease(self, lease: CapacityLease) -> Optional[CapacityLease]:
+        """Extend the exact bound worker lease, including after its initial TTL.
+
+        Expired unbound leases are reclaimable. Bound leases remain reserved until the owning
+        process renews, releases, or dispatcher recovery proves the task run dead. This favors a
+        safe explicit queue over silently admitting behind a long-running worker.
+        """
+        worker_pid = os.getpid()
+        now = _aware(self.now())
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM subscription_capacity_leases WHERE lease_id = ?", (lease.lease_id,),
+            ).fetchone()
+            bound = conn.execute(
+                "SELECT worker_pid FROM subscription_capacity_bindings WHERE lease_id = ?",
+                (lease.lease_id,),
+            ).fetchone()
+            if row is None or self._row_to_lease(row) != lease or bound is None or int(
+                bound["worker_pid"]
+            ) != worker_pid:
+                conn.rollback()
+                return None
+            renewed = CapacityLease(
+                lease.lease_id, lease.request_id, lease.provider, lease.task, lease.model,
+                lease.owner, lease.reserved_percent, now + self.lease_ttl,
+            )
+            conn.execute(
+                "UPDATE subscription_capacity_leases SET expires_at = ? WHERE lease_id = ?",
+                (renewed.expires_at.isoformat(), lease.lease_id),
+            )
+            conn.commit()
+            return renewed

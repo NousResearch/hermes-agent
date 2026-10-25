@@ -928,6 +928,11 @@ def _local_host_hints() -> list[str]:
         host_lines.append(f"Current working directory: {resolve_agent_cwd()}")
     except OSError:
         pass
+    host_lines.append(
+        f"Hermes config/state directory: {get_hermes_home()} "
+        "(your own config.yaml, .env, sessions, and skills live here "
+        "— NOT under the current working directory)"
+    )
     # The model reaches for the system temp dir by reflex (tmpfs on most Linux hosts, fills RAM);
     # naming Hermes' scratch dir here is what makes the TMPDIR export a habit rather than a hidden default.
     try:

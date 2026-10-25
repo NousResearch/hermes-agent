@@ -939,6 +939,17 @@ def apply_secure_dir_policy(path, *, home: str | Path | None = None) -> None:
     if get_managed_system(home) is not None:
         return
     explicit_mode = os.environ.get("HERMES_HOME_MODE", "").strip()
+    # Steady-state fast path: with no operator overrides, a directory already at the default
+    # 0700 needs neither the container/chmod-skip probe nor the chmod — every outcome of the
+    # full policy below is a no-op. The multiplex cron ticker secures cron dirs once per
+    # profile per cycle, and the per-call /proc container probe there dominated the tick
+    # (#138105); one stat here replaces it.
+    if not explicit_mode and _resolve_hermes_uid_gid() == (None, None):
+        try:
+            if stat.S_IMODE(os.stat(path).st_mode) == 0o700:
+                return
+        except OSError:
+            pass
     if _container_or_chmod_skipped() and not explicit_mode:
         _chown_to_hermes_uid(path)
         return

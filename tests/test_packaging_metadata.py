@@ -29,6 +29,22 @@ def test_core_and_optional_speech_dependencies():
     }
 
 
+def test_excluded_override_stays_off_spacys_thinc_branch():
+    # The marker drops the requirement but not the excluded package's own
+    # dependencies, so an unpinned override floats to a thinc only spacy 2.x
+    # accepts and walks spacy down to a 2017 sdist. pyproject tells it longer.
+    metadata = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    excluded = next(r for r in map(Requirement, metadata["tool"]["uv"]["override-dependencies"])
+                    if r.name == "spacy-curated-transformers")
+    assert list(excluded.specifier), "an unpinned override re-opens the spacy 2.x backtrack"
+    locked = next(r for r in lock["manifest"]["overrides"] if r["name"] == excluded.name)
+    assert locked.get("specifier") == "==0.3.1", locked
+    versions = {r["name"]: Version(r["version"]) for r in lock["package"]}
+    assert versions["spacy"] >= Version("3.8"), versions["spacy"]
+    assert versions["thinc"] < Version("9"), versions["thinc"]
+
+
 def test_starlette_server_pins_and_lock_exclude_cve_2026_48710():
     # BadHost's reviewed fixed boundary is independent of today's exact pin.
     floor = Version("1.0.1")

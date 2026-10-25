@@ -209,3 +209,47 @@ class TestNousCatalogExpiry:
             lambda: now + _NOUS_CATALOG_TTL_SECONDS + 1,
         )
         assert peek_cached_pricing(BASE) == {}
+
+
+class TestPickerStalePricing:
+    """Stale-while-revalidate for the picker's cached-only read (#136655): an expired TTL or a
+    failed refetch must not leave the picker rendering a provider row with no free/price badges,
+    while live readers (peek, prewarm) keep revalidating on schedule."""
+
+    def _warm_nous_catalog(self) -> dict:
+        warmed = fetch_models_with_pricing(api_key="sk-test", base_url=BASE)
+        models_pricing._remember_provider_cache_key(
+            "nous", BASE + models_pricing._pricing_auth_fingerprint("sk-test"))
+        return warmed
+
+    def test_ttl_expiry_still_serves_the_cached_only_read(self, catalog, monkeypatch):
+        from hermes_cli.models_pricing import _NOUS_CATALOG_TTL_SECONDS
+
+        warmed = fetch_models_with_pricing(
+            api_key="sk-test", base_url=BASE, cache_ttl_seconds=_NOUS_CATALOG_TTL_SECONDS)
+        models_pricing._remember_provider_cache_key(
+            "nous", BASE + models_pricing._pricing_auth_fingerprint("sk-test"))
+
+        now = models_mod.time.monotonic()
+        monkeypatch.setattr(
+            models_mod.time, "monotonic",
+            lambda: now + _NOUS_CATALOG_TTL_SECONDS + 1,
+        )
+        # Live readers still see the entry as expired...
+        assert peek_cached_pricing(BASE) == {}
+        # ...but a picker open (cached_only, no I/O) keeps the last-known prices.
+        assert models_pricing.get_pricing_for_provider("nous", cached_only=True) == warmed
+
+    def test_a_failed_refetch_keeps_the_last_known_catalog(self, catalog, monkeypatch):
+        warmed = self._warm_nous_catalog()
+
+        def _refuse(req, timeout=8.0):
+            raise OSError("endpoint unreachable")
+
+        monkeypatch.setattr(models_mod, "_urlopen_model_catalog_request", _refuse)
+        assert fetch_models_with_pricing(
+            api_key="sk-test", base_url=BASE, force_refresh=True) == {}
+        assert models_pricing.get_pricing_for_provider("nous", cached_only=True) == warmed
+        # The failure window still suppresses re-dialing: served from the kept entry.
+        assert fetch_models_with_pricing(api_key="sk-test", base_url=BASE) == warmed
+        assert len(catalog) == 1, "only the first successful fetch dialed the endpoint"

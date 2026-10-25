@@ -32,7 +32,7 @@ from urllib.parse import urlparse
 
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
-from utils import atomic_json_write, env_float, file_signature, is_truthy_value
+from utils import atomic_json_write, base_url_host_matches, env_float, file_signature, is_truthy_value
 from hermes_cli.auth_zai_kimi import (
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
     _resolve_zai_base_url, detect_zai_endpoint)
@@ -1635,9 +1635,10 @@ def resolve_provider(
     """Determine which inference provider to use.
 
     "auto" priority (explicit intent beats a stale OAuth login): 1. CLI api_key/base_url ->
-    "openrouter"; 2. config.yaml ``model.provider``; 3. OPENROUTER_API_KEY (or an sk-or- key in
-    OPENAI_API_KEY) -> "openrouter"; 4. OpenRouter pool; 5. provider env keys; 6. auth.json ``active_provider``;
-    7. Nous free tier when a claimed guest exists on the desktop's local backend (never created here);
+    "openrouter" (or "custom" when ``explicit_base_url`` is a non-OpenRouter host); 2. config.yaml
+    ``model.provider``; 3. OPENROUTER_API_KEY (or an sk-or- key in OPENAI_API_KEY) -> "openrouter";
+    4. OpenRouter pool; 5. provider env keys; 6. auth.json ``active_provider``; 7. Nous free tier
+    when a claimed guest exists on the desktop's local backend (never created here);
     8. AWS Bedrock chain; 9. AuthError(no_provider_configured).
 
     ``skip_free_tier`` hides rungs 6-for-a-free-tier-identity and 7: the boot bootstrap asks
@@ -1658,7 +1659,10 @@ def resolve_provider(
                 "or run 'hermes doctor' to diagnose config issues.")
         raise AuthError(f"Unknown provider '{normalized}'." + tail, code="invalid_provider")
 
-    if explicit_api_key or explicit_base_url:  # one-off CLI creds always mean openrouter/custom
+    if explicit_api_key or explicit_base_url:  # one-off CLI creds: OpenRouter, unless the URL is not
+        # openrouter.ai (local/custom OpenAI-compatible servers must not inherit the OpenRouter gate).
+        if explicit_base_url and not base_url_host_matches(str(explicit_base_url), "openrouter.ai"):
+            return "custom"
         return "openrouter"
 
     _model_cfg, cfg_provider = _config_model_provider()

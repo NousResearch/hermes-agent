@@ -47,11 +47,17 @@ function ClarifyToolLive(props: ToolCallMessagePartProps) {
   const [answered, setAnswered] = useState(false)
   const settledResults = useStore($settledClarifyResults)
   const requestId = requestIdByToolCall.get(rowKey)
-  const settledResult = requestId && request?.requestId !== requestId ? settledResults[requestId] : undefined
+  // The chat bar settles a one-question card as soon as it is answered. The
+  // gateway then sends the next question as a new request on this same row.
+  // That live request replaces the settlement, or the next question never
+  // appears and the next chat-bar line is taken as its answer.
+  const nextRequest = Boolean(request && request.requestId !== requestId)
 
-  if (request && !settledResult && request.requestId !== requestId) {
+  if (request && nextRequest) {
     requestIdByToolCall.set(rowKey, request.requestId)
   }
+
+  const settledResult = !nextRequest && requestId ? settledResults[requestId] : undefined
 
   const undelivered = useUndeliveredClarify(sessionId, messageRunning && !request && !answered && !settledResult)
 

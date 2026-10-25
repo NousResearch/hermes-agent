@@ -188,16 +188,7 @@ class BridgeStore:
             columns = {row[1] for row in conn.execute("PRAGMA table_info(bridge_requests)")}
             if "ingress_json" not in columns:
                 conn.execute("ALTER TABLE bridge_requests ADD COLUMN ingress_json TEXT")
-            from hermes_cli.session_bridge_targets import ensure_schema
-            ensure_schema(conn)
             conn.commit()
-
-    def resolve_ticket_target(self, ticket_ref: str):
-        """Resolve a provider-authenticated target without asking for native IDs."""
-        from hermes_cli.session_bridge_targets import resolve_ticket_target
-
-        with self._connect() as conn:
-            return resolve_ticket_target(conn, ticket_ref)
 
     @staticmethod
     def _row(row: sqlite3.Row) -> BridgeRequest:
@@ -501,6 +492,21 @@ def capabilities() -> dict[str, dict[str, Any]]:
             "available": platform_ok and bool(shutil.which("codex")),
             "question_mode": "unavailable",
             "live_question": codex_live,
+            "provider_transports": {
+                "app_owned_thread": {
+                    "provider_native": True,
+                    "external_hermes_ingress": False,
+                    "delivery_while_busy": "prompt message boundary or after pending tool call",
+                    "reply": "provider read/wait tools",
+                    "reason": "authenticated Codex app tools are owned by the app host, not an arbitrary Hermes process",
+                },
+                "app_server_owned_thread": {
+                    "provider_native": True,
+                    "external_hermes_ingress": False,
+                    "busy_input": "turn/steer changes the active turn; turn/start is an idle-turn operation",
+                    "reason": "a separate app-server client cannot become a second owner of an app-owned live thread",
+                },
+            },
             "mutates_target": False,
             "result_transport": "subprocess-jsonl",
         },
@@ -517,26 +523,37 @@ def capabilities() -> dict[str, dict[str, Any]]:
                     "authenticated_hermes_callable_transport",
                 ],
                 "manual_native_ids": False,
+                "production_registry": False,
+                "reason": "no provider adapter currently issues authenticated ticket/session receipts",
             },
             "native_transport_scopes": {
                 "same_team_mailbox": {
                     "provider_native": True,
                     "external_hermes_ingress": False,
-                    "address": "exact teammate agent id within one Claude team runtime",
-                    "reason": "Claude exposes this only to agents already inside that team/runtime",
+                    "address": "teammate name inside one Claude team runtime",
+                    "reason": "structured team-mailbox protocol is scoped to one team",
                 },
-                "same_machine_session_socket": {
+                "cross_session_send_message": {
                     "provider_native": True,
                     "external_hermes_ingress": False,
-                    "address": "native session identity plus provider-owned socket delivery handle",
-                    "reason": "the installed runtime has internal authenticated routing but no supported external API",
+                    "address": "session name or disambiguating short reference",
+                    "scope": "same machine, Remote Control peers, and cloud sessions",
+                    "reason": "provider SendMessage is internal; its external peer reply protocol is not public",
                 },
-                "account_bridge": {
+                "mcp_channel": {
                     "provider_native": True,
                     "external_hermes_ingress": False,
-                    "address": "provider session identity through Claude account/device authentication",
-                    "correlated_reply_guaranteed": False,
-                    "reason": "the installed runtime's internal bridge may be one-way and is not a public Hermes API",
+                    "address": "MCP stdio child bound to the exact session at startup",
+                    "correlated_reply_supported": True,
+                    "queued_message_cancellation": False,
+                    "reason": "official research preview and two-way, but startup-bound and not enabled in existing sessions",
+                    "future_ticket_managed_session": {
+                        "feasible": True,
+                        "delivery_retraction": False,
+                        "caller_stop_waiting": True,
+                        "late_reply_invalidation": True,
+                        "condition": "Hermes starts the session with the channel and binds ticket, attempt, owner, revision, and correlation",
+                    },
                 },
             },
             "inventory_gap": {

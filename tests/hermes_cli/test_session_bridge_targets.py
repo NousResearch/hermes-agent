@@ -1,107 +1,196 @@
 from __future__ import annotations
 
-import sqlite3
+from dataclasses import replace
 import uuid
 
 import pytest
 
 from hermes_cli.session_bridge_targets import (
-    SessionTargetObservation, TargetUnavailable, ensure_schema,
-    record_provider_observation, resolve_ticket_target,
+    ProviderTargetReceipt, RootsRouteAuthority, TargetUnavailable, TransportPolicy,
+    receipt_binding_sha256, receipt_payload_sha256, resolve_provider_receipts,
 )
 
 
-def _db() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    ensure_schema(conn)
-    return conn
+def _seal(receipt: ProviderTargetReceipt) -> ProviderTargetReceipt:
+    receipt = replace(receipt, binding_sha256=receipt_binding_sha256(receipt))
+    return replace(receipt, payload_sha256=receipt_payload_sha256(receipt))
 
 
-def _observation(**overrides) -> SessionTargetObservation:
+def _receipt(**overrides) -> ProviderTargetReceipt:
     values = {
-        "observation_id": str(uuid.uuid4()), "ticket_ref": "ESN-0407",
+        "receipt_id": str(uuid.uuid4()), "ticket_ref": "ESN-0407",
         "assignment_id": "assignment-7", "attempt_id": "attempt-3",
-        "assignment_active": True, "attempt_active": True,
-        "backend": "claude", "native_session_id": str(uuid.uuid4()),
-        "delivery_handle": "uds:/owner-only/session.sock", "agent_id": "agent-9",
-        "team_name": "team-a", "transport": "claude-local-uds",
-        "owner_pid": 123, "owner_started_at": 45.0, "ownership_kind": "local-process",
-        "identity_verified": True, "transport_authenticated": True,
-        "hermes_callable": True,
-        "reply_capable": True, "cancel_capable": True, "non_interrupting": True,
-        "answer_only": True, "authority": "claude-native-adapter",
-        "provenance": {"source": "provider-session-registry", "schema": "v1"},
+        "assignment_state": "active", "attempt_state": "active",
+        "provider": "codex-app", "backend": "codex", "transport": "codex-app-thread",
+        "provider_instance_id": "codex-host-local", "profile_scope": "/profiles/operator",
+        "native_session_id": str(uuid.uuid4()), "delivery_handle": "thread:opaque-7",
+        "agent_id": "codex-thread-agent", "team_name": None,
+        "owner_identity": "operator-account", "ticket_revision": 4,
+        "authority_event_sha256": "a" * 64,
+        "authority_scope": "answer-only-no-changes", "identity_state": "verified",
+        "transport_authorization_state": "authorized",
+        "safe_delivery_state": "safe-point-queue", "reply_state": "correlated",
+        "caller_cancellation_state": "stop-wait-and-invalidate-late",
         "observed_at": 100.0, "expires_at": 150.0,
+        "revoked": False, "provenance": {"source": "codex-app-tools", "revision": 3},
+        "binding_sha256": "", "payload_sha256": "", "provider_signature": "trusted:test",
     }
     values.update(overrides)
-    return SessionTargetObservation(**values)
+    return _seal(ProviderTargetReceipt(**values))
 
 
-def test_ticket_resolves_exact_attempt_without_manual_native_id():
-    conn = _db()
-    expected = _observation()
-    record_provider_observation(conn, expected)
-    actual = resolve_ticket_target(conn, "esn-0407", now=110, liveness=lambda pid, started: True)
-    assert actual.assignment_id == "assignment-7" and actual.attempt_id == "attempt-3"
-    assert actual.native_session_id == expected.native_session_id
-    assert actual.delivery_handle == "uds:/owner-only/session.sock"
-    assert actual.delivery_handle != actual.native_session_id
+def _verify(receipt: ProviderTargetReceipt) -> bool:
+    return receipt.provider_signature == "trusted:test"
 
 
-@pytest.mark.parametrize("field", [
-    "assignment_active", "attempt_active",
-    "identity_verified", "transport_authenticated", "hermes_callable", "reply_capable",
-    "cancel_capable", "non_interrupting",
+def _route(**overrides) -> RootsRouteAuthority:
+    values = {
+        "ticket_ref": "ESN-0407", "assignment_id": "assignment-7",
+        "attempt_id": "attempt-3", "owner_identity": "operator-account",
+        "profile_scope": "/profiles/operator", "ticket_revision": 4,
+        "authority_event_sha256": "a" * 64,
+    }
+    values.update(overrides)
+    return RootsRouteAuthority(**values)
+
+
+def _resolve(receipts, **kwargs):
+    return resolve_provider_receipts(
+        _route(), receipts, verify_provider_signature=_verify, now=110, **kwargs,
+    )
+
+
+def _enable_test_adapter(monkeypatch):
+    import hermes_cli.session_bridge_targets as targets
+
+    policies = dict(targets.TRANSPORT_POLICIES)
+    policies[("codex-app", "codex-app-thread")] = TransportPolicy(
+        "codex-app", "codex", "codex-app-thread", "safe-point-queue",
+        "thread-read-wait", "none", True, "test provider adapter",
+    )
+    monkeypatch.setattr(targets, "TRANSPORT_POLICIES", policies)
+
+
+def test_resolves_one_provider_issued_ticket_attempt(monkeypatch):
+    _enable_test_adapter(monkeypatch)
+    expected = _receipt()
+    actual = _resolve([expected])
+    assert actual.attempt_id == "attempt-3"
+    assert actual.native_session_id != actual.delivery_handle
+
+
+def test_spoofed_signature_cannot_register_a_target():
+    spoof = _seal(replace(_receipt(), provider_signature="caller-asserted"))
+    with pytest.raises(TargetUnavailable, match="signature"):
+        _resolve([spoof])
+
+
+def test_digest_tampering_is_rejected_before_eligibility():
+    tampered = replace(_receipt(), delivery_handle="thread:substituted")
+    with pytest.raises(TargetUnavailable, match="digest"):
+        _resolve([tampered])
+
+
+def test_unknown_provider_transport_pair_is_rejected():
+    unknown = _receipt(provider="claude-code", backend="claude", transport="invented")
+    with pytest.raises(TargetUnavailable, match="not registered"):
+        _resolve([unknown])
+
+
+def test_native_identity_and_delivery_handle_cannot_collapse():
+    session_id = str(uuid.uuid4())
+    collapsed = _receipt(native_session_id=session_id, delivery_handle=session_id)
+    with pytest.raises(TargetUnavailable, match="must differ"):
+        _resolve([collapsed])
+
+
+@pytest.mark.parametrize("field,value", [
+    ("assignment_id", "assignment-stale"),
+    ("attempt_id", "attempt-stale"),
+    ("owner_identity", "different-owner"),
+    ("profile_scope", "/profiles/other"),
+    ("ticket_revision", 3),
+    ("authority_event_sha256", "b" * 64),
 ])
-def test_answer_only_wording_cannot_manufacture_transport_or_identity(field: str):
-    conn = _db()
-    record_provider_observation(conn, _observation(**{field: False, "answer_only": True}))
+def test_receipt_must_bind_exact_current_roots_route(field: str, value):
+    with pytest.raises(TargetUnavailable, match="exact current Roots"):
+        resolve_provider_receipts(
+            _route(), [_receipt(**{field: value})],
+            verify_provider_signature=_verify, now=110,
+        )
+
+
+def test_newer_revocation_tombstones_older_positive_receipt():
+    old = _receipt(observed_at=100, expires_at=150)
+    revoked = _receipt(
+        receipt_id=str(uuid.uuid4()), native_session_id=old.native_session_id,
+        observed_at=105, expires_at=155, revoked=True,
+    )
+    with pytest.raises(TargetUnavailable, match="revoked"):
+        _resolve([old, revoked])
+
+
+@pytest.mark.parametrize("field", ["assignment_state", "attempt_state"])
+def test_newer_inactive_state_tombstones_older_positive_receipt(field: str):
+    old = _receipt(observed_at=100, expires_at=150)
+    inactive = _receipt(
+        receipt_id=str(uuid.uuid4()), native_session_id=old.native_session_id,
+        observed_at=105, expires_at=155, **{field: "inactive"},
+    )
+    with pytest.raises(TargetUnavailable, match="inactive"):
+        _resolve([old, inactive])
+
+
+@pytest.mark.parametrize("field,value", [
+    ("transport_authorization_state", "denied"),
+    ("caller_cancellation_state", "unavailable"),
+])
+def test_newer_capability_reduction_tombstones_older_positive_receipt(field: str, value: str):
+    old = _receipt(observed_at=100, expires_at=150)
+    reduced = _receipt(
+        receipt_id=str(uuid.uuid4()), native_session_id=old.native_session_id,
+        observed_at=105, expires_at=155, **{field: value},
+    )
     with pytest.raises(TargetUnavailable, match=field):
-        resolve_ticket_target(conn, "ESN-0407", now=110, liveness=lambda pid, started: True)
+        _resolve([old, reduced])
 
 
-def test_answer_authority_must_be_provider_attested():
-    conn = _db()
-    record_provider_observation(conn, _observation(answer_only=False))
-    with pytest.raises(TargetUnavailable, match="answer_only"):
-        resolve_ticket_target(conn, "ESN-0407", now=110, liveness=lambda pid, started: True)
+def test_untrusted_newer_spoof_does_not_tombstone_authoritative_receipt(monkeypatch):
+    _enable_test_adapter(monkeypatch)
+    old = _receipt(observed_at=100, expires_at=150)
+    spoof = _seal(replace(
+        old, receipt_id=str(uuid.uuid4()), observed_at=105, expires_at=155,
+        revoked=True, provider_signature="caller-asserted",
+    ))
+    assert _resolve([old, spoof]).receipt_id == old.receipt_id
 
 
-def test_stale_or_dead_observation_fails_closed():
-    conn = _db()
-    record_provider_observation(conn, _observation(expires_at=500))
-    with pytest.raises(TargetUnavailable, match="stale or expired"):
-        resolve_ticket_target(conn, "ESN-0407", now=200, liveness=lambda pid, started: True)
-    with pytest.raises(TargetUnavailable, match="owner is not provably live"):
-        resolve_ticket_target(conn, "ESN-0407", now=110, liveness=lambda pid, started: False)
-
-
-def test_multiple_active_attempts_are_not_guessed():
-    conn = _db()
-    record_provider_observation(conn, _observation())
-    record_provider_observation(conn, _observation(attempt_id="attempt-4"))
+def test_multiple_authoritative_active_attempts_are_ambiguous(monkeypatch):
+    _enable_test_adapter(monkeypatch)
     with pytest.raises(TargetUnavailable, match="ambiguous"):
-        resolve_ticket_target(conn, "ESN-0407", now=110, liveness=lambda pid, started: True)
+        _resolve([_receipt(), _receipt(native_session_id=str(uuid.uuid4()))])
 
 
-def test_newer_refresh_for_same_attempt_supersedes_old_observation():
-    conn = _db()
-    record_provider_observation(conn, _observation(observed_at=100, expires_at=150))
-    expected = _observation(observed_at=105, expires_at=155, delivery_handle="uds:/rotated.sock")
-    record_provider_observation(conn, expected)
-    actual = resolve_ticket_target(conn, "ESN-0407", now=110, liveness=lambda pid, started: True)
-    assert actual.observation_id == expected.observation_id
-    assert actual.delivery_handle == "uds:/rotated.sock"
+@pytest.mark.parametrize("transport", [
+    "claude-team-mailbox", "claude-peer-socket", "claude-mcp-channel",
+])
+def test_claude_native_transports_remain_fail_closed_for_external_hermes(transport: str):
+    team = "team-a" if transport == "claude-team-mailbox" else None
+    receipt = _receipt(
+        provider="claude-code", backend="claude", transport=transport,
+        team_name=team, delivery_handle="uds:/private/session.sock",
+    )
+    with pytest.raises(TargetUnavailable, match="unavailable to external Hermes"):
+        _resolve([receipt])
 
 
-def test_registry_has_no_public_cli_ingress():
-    from hermes_cli.subcommands.session_bridge import build_session_bridge_parser
-    import argparse
+def test_app_owned_codex_transport_is_not_callable_by_external_hermes():
+    with pytest.raises(TargetUnavailable, match="owning Codex app host"):
+        _resolve([_receipt()])
 
-    parser = argparse.ArgumentParser()
-    build_session_bridge_parser(parser.add_subparsers(dest="command"))
-    bridge = parser.parse_args(["session-bridge", "capabilities"])
-    assert bridge.bridge_action == "capabilities"
-    assert "register-target" not in parser.format_help()
 
+def test_registry_module_exposes_no_production_record_function():
+    import hermes_cli.session_bridge_targets as targets
+
+    assert not hasattr(targets, "record_provider_observation")
+    assert not hasattr(targets, "ensure_schema")

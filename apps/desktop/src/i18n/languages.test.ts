@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { TRANSLATIONS } from './catalog'
-import { DEFAULT_LOCALE, isLocale, isSupportedLocaleValue, LOCALE_OPTIONS, normalizeLocale } from './languages'
+import { DEFAULT_LOCALE, isLocale, isSupportedLocaleValue, LOCALE_OPTIONS, localeConfigValue, normalizeLocale } from './languages'
 
 describe('desktop i18n languages', () => {
   it('normalizes supported locale aliases', () => {
@@ -35,12 +35,15 @@ describe('desktop i18n languages', () => {
     expect(normalizeLocale('ES-419')).toBe('es')
     expect(normalizeLocale(' es_mx ')).toBe('es')
     expect(normalizeLocale('Español')).toBe('es')
+    expect(normalizeLocale('it')).toBe('it')
+    expect(normalizeLocale('it-IT')).toBe('it')
+    expect(normalizeLocale(' it_CH ')).toBe('it')
   })
 
   it('falls back to English for empty or unsupported values', () => {
     expect(normalizeLocale(null)).toBe(DEFAULT_LOCALE)
     expect(normalizeLocale('')).toBe(DEFAULT_LOCALE)
-    expect(normalizeLocale('it')).toBe(DEFAULT_LOCALE)
+    expect(normalizeLocale('xx')).toBe(DEFAULT_LOCALE)
   })
 
   it('distinguishes exact locale ids from supported config aliases', () => {
@@ -49,7 +52,9 @@ describe('desktop i18n languages', () => {
     expect(isSupportedLocaleValue('ja-JP')).toBe(true)
     expect(isSupportedLocaleValue('ru-RU')).toBe(true)
     expect(isSupportedLocaleValue('de-DE')).toBe(true)
-    expect(isSupportedLocaleValue('it')).toBe(false)
+    expect(isSupportedLocaleValue('it-IT')).toBe(true)
+    expect(isSupportedLocaleValue('it-CH')).toBe(true)
+    expect(isSupportedLocaleValue('xx')).toBe(false)
     expect(isLocale('zh-CN')).toBe(false)
     expect(isLocale('zh')).toBe(true)
     expect(isLocale('zh-hant')).toBe(true)
@@ -59,6 +64,8 @@ describe('desktop i18n languages', () => {
     expect(isLocale('fr')).toBe(true)
     expect(isLocale('de')).toBe(true)
     expect(isLocale('es')).toBe(true)
+    expect(isLocale('it')).toBe(true)
+    expect(isLocale('it-IT')).toBe(false)
   })
 
   it('round-trips every picker option through its display.language value to a registered catalog', () => {
@@ -68,5 +75,13 @@ describe('desktop i18n languages', () => {
     }
 
     expect(Object.keys(TRANSLATIONS).sort()).toEqual(LOCALE_OPTIONS.map(option => option.id).sort())
+  })
+
+  it('returns the persisted config value for supported locales', () => {
+    expect(localeConfigValue('en')).toBe('en')
+    expect(localeConfigValue('zh')).toBe('zh')
+    expect(localeConfigValue('zh-hant')).toBe('zh-hant')
+    expect(localeConfigValue('ja')).toBe('ja')
+    expect(localeConfigValue('it')).toBe('it')
   })
 })

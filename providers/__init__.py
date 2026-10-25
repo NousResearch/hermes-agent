@@ -57,6 +57,8 @@ _ALIASES: dict[str, str] = {}
 # Where the CURRENT registration of each name came from: "bundled" / "user" (a
 # ``$HERMES_HOME`` plugin dir) / "runtime" (entry point, legacy module, direct call).
 _SOURCES: dict[str, str] = {}
+# The in-tree profile of each bundled name, whatever later replaced it in ``_REGISTRY``.
+_BUNDLED: dict[str, ProviderProfile] = {}
 _current_source: str | None = None
 _PROVIDER_LIST_CACHE: list[ProviderProfile] | None = None
 _discovered = False
@@ -136,6 +138,8 @@ def register_provider(profile: ProviderProfile) -> None:
     else:
         _REGISTRY[profile.name] = profile
         _SOURCES[profile.name] = _current_source or "runtime"
+        if _current_source == "bundled":
+            _BUNDLED[profile.name] = profile
         for alias in profile.aliases:
             _ALIASES[alias] = profile.name
         _PROVIDER_LIST_CACHE = None
@@ -154,6 +158,14 @@ def provider_source(name: str) -> str | None:
     if canonical in layer.registry:
         return "user"
     return _SOURCES.get(canonical)
+
+
+def bundled_profile(name: str) -> ProviderProfile | None:
+    """The in-tree profile registered under canonical *name*, even when a user plugin, a legacy
+    module or a runtime registration has since replaced it (None for a non-bundled name)."""
+    if not _discovered:
+        _discover_providers()
+    return _BUNDLED.get(name)
 
 
 # ``has_named_custom_provider`` walks the provider registry (``_shadowed_by_builtin`` →

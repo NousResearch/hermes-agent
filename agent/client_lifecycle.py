@@ -100,6 +100,11 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
         agent._replace_primary_openai_client(reason="fallback_timeout_apply")
 
 
+# Providers whose turn-boundary env refresh takes ProviderProfile.resolve_base_url instead of
+# env-override-or-registry-default: the pre-hook subset, kept as is (not an extension point).
+_ENV_REFRESH_PROFILE_BASE_URL = frozenset({"actual", "kimi-coding", "zai"})
+
+
 class ClientLifecycleMixin:
     def _close_task_resources(self, task_id: str) -> None:
         """Release task resources without treating a shared environment as process ownership."""
@@ -703,15 +708,13 @@ class ClientLifecycleMixin:
             env_url = get_env_prefer_dotenv(url_var).strip().rstrip("/") if url_var else ""
             default_base = (pconfig.inference_base_url or "").strip().rstrip("/")
             base_url = env_url or default_base
-            if self.provider == "actual":
-                from hermes_cli.auth import normalize_actual_base_url
-                from hermes_cli.runtime_provider import _config_base_url_for_provider, _get_model_config
-                configured_base = _config_base_url_for_provider(_get_model_config(), "actual")
-                base_url = normalize_actual_base_url(configured_base or base_url)
-            elif self.provider in ("kimi-coding", "zai"):
-                from hermes_cli import auth as _auth
-                resolver = _auth._resolve_kimi_base_url if self.provider == "kimi-coding" else _auth._resolve_zai_base_url
-                base_url = resolver(api_key, pconfig.inference_base_url, env_url).rstrip("/")
+            if self.provider in _ENV_REFRESH_PROFILE_BASE_URL:
+                from hermes_cli.auth import resolve_provider_base_url
+                if self.provider == "actual":
+                    # The session's own config route (model.provider: actual) outranks ACTUAL_BASE_URL.
+                    from hermes_cli.runtime_provider import _config_base_url_for_provider, _get_model_config
+                    env_url = _config_base_url_for_provider(_get_model_config(), "actual") or env_url
+                base_url = resolve_provider_base_url(pconfig, api_key=api_key, env_url=env_url).rstrip("/")
         elif self.provider == "custom":
             # Named custom provider: identity in config, credential in key_env; no key_env → nothing to watch.
             try:

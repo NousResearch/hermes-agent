@@ -697,6 +697,7 @@ gateway:
     no_credentials: "⚠️ 我無法連上 AI 模型服務，因此這則訊息未被處理。請使用 /login 重新登入，或使用 /model 選擇其他模型。若持續失敗，請在主機上執行 `hermes doctor`。"
     cron_session_read_only: "⚠️ 此聊天屬於一個排程工作，只會執行該工作，因此你的訊息未被執行。請開始新的聊天後再傳送。"
     workspace_unavailable: "⚠️ 此聊天的工作資料夾已不存在（{path}），因此你的訊息未被執行。請重新建立該資料夾，或將聊天移至其他資料夾（CLI 中使用 `/worktree new`，桌面應用程式中使用「Move to project」），然後再次傳送訊息。"
+    launch_credentials_unavailable: "⚠️ 此聊天無法再使用它開始時的 API 金鑰{detail}，因此無法在其中執行任何內容。開啟中的聊天不會自行切換到其他金鑰，所以 /retry 也會以同樣方式失敗。請使用 /new 以目前的金鑰開始新聊天。"
   skills:
     disabled: "**{name}** 技能已安裝但已停用。\n啟用方式：`hermes skills config`"
     not_installed: "**{name}** 技能可用但尚未安裝。\n安裝方式：`hermes skills install {install_name}`"

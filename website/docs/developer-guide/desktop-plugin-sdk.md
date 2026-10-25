@@ -251,6 +251,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Model menu rows | `MODEL_MENU_ROW_AREA` | `data: ModelMenuRowContribution` — a leading icon / trailing badge per model |
 | Kanban card badges | `KANBAN_CARD_AREAS.badges` | `data: KanbanCardBadgeContribution` — short text labels per card, painted by the board |
 | Appearance settings | `APPEARANCE_AREAS.extra` | `render` — controls appended to Settings → Appearance |
+| Tool media | `TOOL_MEDIA_RENDERER_AREA` (`'transcript.toolMedia'`) | `data: { tools, render }` — draw the `MEDIA:` files your package's own tools produced ([Tool media renderers](#tool-media-renderers)) |
 | Plugin settings page | `SETTINGS_PLUGINS_AREA` (`'settings.plugins'`) | Use `ctx.registerSettingsPage({ id, title, render, icon?, order?, children? })` — your own entry (with sub-pages) under Settings → Plugins |
 
 ### Panes
@@ -1159,6 +1160,101 @@ prompt reaches the chat's composer, or `{ ok: false, error }` where `error` is
 `too_long` (with `maxLength`), `throttled` (with `retryAfterMs`), `invalid`,
 or `undelivered` (no visible composer took it). Check it before showing a
 widget as saved.
+
+### Tool media renderers — draw the files your own tools produce {#tool-media-renderers}
+
+A unified package (agent tools + a desktop half) can decide how Desktop shows
+the media **its own tools** produce. When an assistant reply delivers a file
+with a `MEDIA:` line, Desktop looks for the tool call whose result first named
+the path, earlier in the transcript. If the plugin that owns that tool registered a renderer for
+the tool's name, your component replaces the built-in player:
+
+```javascript
+import * as sdk from '@hermes/plugin-sdk'
+import { useEffect, useState } from 'react'
+import { jsx, jsxs } from 'react/jsx-runtime'
+
+export default {
+  id: 'sound-fx', // the desktop half of the `sound-fx` package
+  register(ctx) {
+    // Older Desktops don't export the area: keep your old path there.
+    if (typeof sdk.TOOL_MEDIA_RENDERER_AREA !== 'string') return
+
+    ctx.register({
+      id: 'sound-card',
+      area: sdk.TOOL_MEDIA_RENDERER_AREA,
+      data: {
+        tools: ['sound_fx_generate'], // a tool this package's plugin.yaml registers
+        render: props => jsx(SoundCard, props)
+      }
+    })
+  }
+}
+
+function SoundCard({ file, args, result, sessionId, fallback }) {
+  const [src, setSrc] = useState(null)
+  useEffect(() => {
+    let live = true
+    file.resolveUrl().then(url => live && setSrc(url), () => live && setSrc(''))
+    return () => { live = false }
+  }, [file])
+
+  if (file.kind !== 'audio' || src === '') return fallback // the built-in player
+  return jsxs('figure', {
+    children: [
+      jsx('figcaption', { children: args.prompt ?? file.name }),
+      src && jsx('audio', { controls: true, src })
+    ]
+  })
+}
+```
+
+`render` receives:
+
+| Prop | What it is |
+|------|------------|
+| `file` | `{ path, name, kind, mime, resolveUrl() }`. `path` is the path on the **backend's** machine exactly as the `MEDIA:` line wrote it; never open it yourself. `resolveUrl()` returns a URL this window can load with a local or a remote backend: a range-streaming route for audio and video, a data URL for anything else (capped by the host's file reader), read from the backend that owns the chat. A large file (a 3D model) is better served by your own `plugin_api.py` route, called with `ctx.rest` and the `path`. |
+| `toolName`, `toolCallId` | The producing call. |
+| `args`, `result` | The call's arguments and result payload (the result as the tool returned it: an object, or a string). A reopened chat rebuilds them from history, so read fields defensively: `args` can carry display keys (`context`, labels) and `result` can arrive parsed where it was a JSON string live. |
+| `sessionId` | The chat whose transcript shows the file (same meaning as a directive's `sessionId`), or `null`. |
+| `fallback` | The built-in player for this file. Return it (or `null`) for anything you don't draw. |
+
+What the host guarantees:
+
+- **Ownership is provenance, never file type.** A claim counts only for tools
+  your package's own code registered: native tools from `ctx.register_tool` in
+  the same package's `plugin.yaml` plugin, or the tools of the MCP servers your
+  portable package declares (a trailing `*` matches by prefix, e.g.
+  `mcp__meshy__*`). The backend reports the exact tool names per package
+  (`plugins.manage list` → `tools`, from the chat's own backend and profile),
+  so a claim on a core tool
+  (`text_to_speech`), another plugin's tool, or from a standalone desktop
+  plugin with no agent half is refused with a console warning.
+- **Everything else keeps the built-in player:** core voice replies, files
+  from other tools, user uploads, and any path no tool produced. The earliest
+  successful call whose result names the whole path is the producer, so a
+  later `ls`, a read, or a plugin tool that takes the file as input does not
+  count, and rewriting a file in place does not move it to another tool. A
+  path the user named first (an upload, or an output path typed in the
+  prompt) has no producer. A failed call (live, or a stored result carrying
+  `error` / `success: false`) never produces anything.
+- **Fail-safe:** a renderer that throws or returns `null`, a plugin that is
+  disabled, a backend too old to report ownership, or a tool whose agent half
+  is not loaded all fall back to the built-in player. An MCP server that has
+  not connected yet owns nothing; Desktop re-reads ownership on a bounded
+  backoff while a claimed tool has no owner, and after `reload.mcp` or a
+  plugin-list change, so the card appears once the server is up.
+- **Only this app pairs a desktop half with a package.** The
+  `.hermes-package.json` marker is written by the installer and the reconcile
+  pass; one shipped inside a desktop-only repository is dropped on install.
+- **Other surfaces are unchanged.** Tools keep emitting plain `MEDIA:` lines;
+  the CLI, the TUI and messaging platforms deliver the file as before.
+
+Before this area existed, a plugin had to make the model emit its own
+`::directive` to get a custom card, which needs a skill instruction and leaves
+non-Desktop users with a raw directive line. With a renderer, the tool returns
+the ordinary `MEDIA:` tag every surface understands and Desktop alone upgrades
+it.
 
 ### Mount-scoped chrome (`Contribute`)
 

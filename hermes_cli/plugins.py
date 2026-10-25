@@ -35,7 +35,7 @@ from hermes_cli.plugin_capabilities import plugin_capability_granted
 from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV, legacy_relay_plugin_keys
 # Sibling modules' names are re-exported here (origin) so plugins and tests keep one import path.
 from hermes_cli.plugins_manifest import (
-    _CONFIG_SCHEMA_TYPES, SUPPORTED_MANIFEST_VERSION, PluginManifest, _portable_skill_namespace,
+    _CONFIG_SCHEMA_TYPES, SUPPORTED_MANIFEST_VERSION, PluginManifest, _portable_data_namespace,
     manifest_key, parse_manifest_file, resolve_module_origin, resolve_plugin_load_order,
     validate_config_schema,
 )
@@ -281,7 +281,7 @@ class PluginContext:
     @cached_property
     def state(self) -> PluginState:
         """This plugin's profile-scoped durable JSON state facade."""
-        return PluginState(self.plugin_id, self.manifest.skill_namespace)
+        return PluginState(self.plugin_id, self.manifest.data_namespace)
 
     @cached_property
     def platform_actions(self):
@@ -1463,7 +1463,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             try:  # lazy: this is a startup probe, keep agent_plugins unimported unless needed
                 from hermes_cli.agent_plugins import _discover_mcp
                 if _discover_mcp(Path(manifest.path), get_hermes_home() / "plugin-data"
-                                 / (manifest.skill_namespace or lookup_key), [], create_data=False):
+                                 / (manifest.data_namespace or lookup_key), [], create_data=False):
                     return True
             except (OSError, RuntimeError, ValueError):
                 continue  # fail closed on an unreadable package; full discovery reports it

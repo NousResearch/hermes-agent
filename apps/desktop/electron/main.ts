@@ -682,7 +682,7 @@ import { buildPathExtCandidates, chooseUpdaterArgs, resolveVenvHermesCommand } f
 import {
   connectWindowsRemote,
   detectRemotePlatform,
-  helper,
+  inspectWindowsSupport,
   probeWindowsRemote,
   terminateOwnedWindowsDashboardForUpdate
 } from './windows-remote-lifecycle'
@@ -10301,7 +10301,7 @@ async function testDesktopConnectionConfig(input: any = {}) {
           if (platform.os === 'Windows') {
             const runtime = platform
             hermesPath = runtime.hermesPath
-            const inspection = await helper(ssh, runtime, 'inspect', [runtime.hermesPath])
+            const inspection = await inspectWindowsSupport(ssh, runtime)
             hermesVersion = inspection.version
             supported = inspection.supported
           } else {
@@ -10339,7 +10339,7 @@ async function testDesktopConnectionConfig(input: any = {}) {
         }
       }
     } catch (error: any) {
-      return { reachable: false, sshError: error.kind || 'unknown', error: error.message }
+      return { reachable: false, sshError: error.kind || 'unknown', error: redactSecrets(String(error.message)) }
     } finally {
       try {
         await ssh.close()
@@ -14908,8 +14908,8 @@ async function probeSshProfileInventory(connection) {
   )
 
   try {
-    await ssh.open()
-    const profiles = await remoteLifecycle.listRemoteHermesProfiles(ssh)
+    const platform = await ssh.open().then(() => detectRemotePlatform(ssh, sshConfig.remoteHermesPath || ''))
+    const profiles = await remoteLifecycle.listRemoteHermesProfiles(ssh, platform)
 
     if (profiles.length > 0) {
       sshRosterCache.set(connection.id, profiles)
@@ -14919,7 +14919,7 @@ async function probeSshProfileInventory(connection) {
     // install id at all, so two addresses for one machine never collapse into one roster row
     // (#88828 wired this for remote/local only, through /api/status).
     connectionInstallIds.set(connection.id, {
-      id: await remoteLifecycle.readRemoteInstallId(ssh),
+      id: await remoteLifecycle.readRemoteInstallId(ssh, platform),
       ts: Date.now()
     })
   } catch (error: any) {

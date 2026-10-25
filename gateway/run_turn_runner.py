@@ -141,6 +141,11 @@ def _resolution_failure_reply(exc: Exception, platform: Platform) -> tuple[str, 
     from hermes_cli.auth import AuthError, is_rate_limited_auth_error
     from hermes_state_runtime import RuntimeStoreError
     auth_permanent = FailoverReason.auth_permanent.value
+    if isinstance(exc, RuntimeStoreError) and exc.reason == 'launch_credentials_unavailable':
+        # The session's launch key is gone (a restart revoked a CLI --api-key, a route key changed):
+        # the shared refusal copy names /new, never a resend.
+        from agent.turn_failure_copy import launch_credentials_copy
+        return launch_credentials_copy(exc), 'launch_credentials_unavailable', False
     if isinstance(exc, RuntimeStoreError):
         # Session-policy refusals carry a stable reason code (e.g. a CLI launch key revoked by
         # daemon restart): keep it in the reply so clients can act on it, and do not suggest
@@ -1172,7 +1177,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
 
     def run_sync(self):
         from contextlib import ExitStack
-        from gateway.session_policy import bind_turn_workspace, policy_for_source, policy_scope, workspace_unavailable_result
+        from gateway.session_policy import bind_turn_workspace, policy_for_source, policy_scope, refused_turn_result
         from gateway.session_api_turn import api_policy_scope
         from gateway.session_authorities import active_authority
         from hermes_state_runtime import RuntimeStoreError
@@ -1181,9 +1186,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             try:
                 scope.enter_context(policy_scope(policy, authority=active_authority(self._runner)))
             except RuntimeStoreError as exc:
-                if exc.reason != 'workspace_unavailable':
+                result = refused_turn_result(policy, exc)
+                if result is None:
                     raise
-                result = workspace_unavailable_result(policy)
             else:
                 scope.enter_context(api_policy_scope())
                 bind_turn_workspace(policy, self._ctx.session_id)

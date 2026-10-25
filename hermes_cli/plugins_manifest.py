@@ -56,8 +56,8 @@ def _plugins_debug() -> bool:
     return _origin._PLUGINS_DEBUG
 
 
-def _portable_skill_namespace(key: str) -> str:
-    """Return a readable, collision-resistant namespace for a portable plugin."""
+def _portable_data_namespace(key: str) -> str:
+    """Return a readable, collision-resistant ``plugin-data`` directory name for a portable plugin."""
     slug = _portable_slug(key)
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:8]
     return f"agent-plugin-{slug}-{digest}"
@@ -70,8 +70,8 @@ def _portable_slug(key: str) -> str:
 
 def portable_mcp_server_name(key: str, server: str) -> str:
     """Internal name of a portable plugin's MCP server: exactly the name its ``mcp.json`` gives it, the same
-    rule a user's own ``mcp_servers`` block in config.yaml follows. The plugin's skill namespace
-    (``agent-plugin-<slug>-<digest>``) is NOT prepended: it keeps plugin-data and skill names collision-free
+    rule a user's own ``mcp_servers`` block in config.yaml follows. The plugin's data namespace
+    (``agent-plugin-<slug>-<digest>``) is NOT prepended: it keeps plugin-data dirs collision-free
     without coordination, but here it cost ~40 chars of every ``mcp__<server>__<tool>`` name, which providers
     cap at 64, so the tool verb was hash-clamped away. A duplicate is refused at load (native config first,
     then first-loaded plugin) with a warning naming both owners; that beats hiding it behind a digest."""
@@ -368,7 +368,9 @@ class PluginManifest:
     # recorded with an error and skipped before import — see ``requires_hermes_error``.
     requires_hermes: str = ""
     portable: bool = False
-    skill_namespace: str = ""
+    # ``plugin-data/<data_namespace>`` for a portable plugin; its skills are named after the plugin
+    # itself (``<name>:<skill>``), like every native plugin's.
+    data_namespace: str = ""
     # Declared capability ids, normalized to KNOWN ids. Declaration is consent metadata, NOT a grant: live
     # only via plugins.entries.<id>.granted_capabilities or the legacy allow_* key.
     # See #64228.
@@ -501,7 +503,7 @@ def portable_plugin_manifest(child: Path, source: str, prefix: str) -> PluginMan
     return PluginManifest(
         name=data["name"], version=data.get("version", ""), description=data.get("description", ""),
         author=_display_author(data.get("author", "")), source=source, path=str(child), key=key,
-        portable=True, skill_namespace=_portable_skill_namespace(key),
+        portable=True, data_namespace=_portable_data_namespace(key),
         config_schema=_config_schema_entries(key, manifest_config_schema(data)),
     )
 

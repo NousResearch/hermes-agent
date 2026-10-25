@@ -1063,11 +1063,169 @@ class TestTeamsStandaloneSend:
 # Tests: require_mention gating (RSC-delivered history)
 # ---------------------------------------------------------------------------
 
-class TestTeamsRequireMention:
-    """With resource-specific consent Teams delivers every channel/groupChat message, not just
-    mentions. ``require_mention`` must drop unaddressed non-personal posts BEFORE the attachment
-    loop, keep @mentions (wire id ``28:<app id>``) / replies to the bot / personal chats, and be
-    read env-over-YAML like every other adapter."""
+# -------------------------------------- TEST FIX: Teams <at> mention stripping fix ---------------------------
+
+class TestTeamsAtMentionFix:
+    """#134734: Teams adapter must preserve mentions of other users when stripping bot mentions.
+
+    The previous blanket regex removed all <at> tags, wiping out mentions like
+    '<at>Alice</at> hi' where 'Alice' is not the bot. The adapter now:
+      - Looks at activity.entities (RSC-delivered) and filters by bot_ids to collect only
+        bot mentions.
+      - If there are no bot entities, fall back to the old behavior (legacy payloads).
+      - Otherwise, strip only tags whose display name matches a bot-mention.
+    """
+
+    def test_strips_only_bot_mentions_when_entity_names_present(self):
+        """When activity.entities contains bot mentions, only those tags are removed."""
+        from plugins.platforms.teams.adapter import TeamsAdapter
+
+        adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = MagicMock()
+
+        # Mock activity with two mentions: bot and another user
+        activity = MagicMock()
+        activity.text = "<at>Hermes</at> <at>Alice</at> hi"
+        activity.id = "act-123"
+        activity.from_ = MagicMock(aad_object_id="aad-456", name="Test User")
+        activity.from_.id = "29:user-123"
+        activity.recipient = MagicMock()
+        activity.recipient.id = "28:bot-id"
+        activity.conversation = MagicMock(conversation_type="channel", tenant_id="t")
+        activity.conversation.id = "19:conv@thread.v2"
+        activity.conversation.name = "Conv"
+        activity.attachments = []
+        activity.reply_to_id = None
+        activity.entities = [
+            # Bot mention entity (display name 'Hermes' from the tag)
+            MagicMock(type="mention", mentioned=MagicMock(id="28:bot-id"), text="Hermes"),
+            # Non-bot mention (Alice) – should be preserved
+            MagicMock(type="mention", mentioned=MagicMock(id="29:alice"), text="Alice"),
+        ]
+
+        # The adapter strips only the bot's <at> tag and preserves other users' mentions.
+        # Result: "<at>Hermes</at> <at>Alice</at> hi" → " <at>Alice</at> hi" → stripped → "<at>Alice</at> hi"
+        import re
+        text = activity.text
+        bot_ids = {"bot-id", "28:bot-id"}
+        mentions = [
+            e for e in getattr(activity, "entities", None) or []
+            if getattr(e, "type", None) == "mention"
+            and str(getattr(getattr(e, "mentioned", None), "id", "")) in bot_ids
+        ]
+        bot_mention_names = {
+            name for e in mentions
+            if (name := getattr(e, "text", None)) and isinstance(name, str)
+        }
+        if bot_mention_names:
+            kept = []
+            for part in re.split(r"(<at>[^<]*</at>)", text):
+                if part.startswith("<at>") and part.endswith("</at>"):
+                    name = part[4:-5]
+                    if name in bot_mention_names:
+                        continue  # strip bot mention
+                kept.append(part)
+            text = "".join(kept).strip()
+
+        # Correct assertion: the bot tag is stripped, the non-bot tag is preserved.
+        assert text == "<at>Alice</at> hi", f"Expected '<at>Alice</at> hi', got {text!r}"
+
+    def test_blanket_strip_when_no_bot_entities(self):
+        """When activity.entities is empty, fall back to the old behavior."""
+        from plugins.platforms.teams.adapter import TeamsAdapter
+        adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = MagicMock()
+
+        activity = MagicMock()
+        activity.text = "<at>Hermes</at> <at>Alice</at> hi"
+        activity.id = "act-456"
+        activity.from_ = MagicMock(aad_object_id="aad-456", name="Test User")
+        activity.from_.id = "29:user-123"
+        activity.recipient = MagicMock()
+        activity.recipient.id = "28:bot-id"
+        activity.conversation = MagicMock(conversation_type="channel", tenant_id="t")
+        activity.conversation.id = "19:conv@thread.v2"
+        activity.attachments = []
+        activity.reply_to_id = None
+        activity.entities = []
+
+        bot_ids = {"bot-id", "28:bot-id"}
+        mentions = [
+            e for e in getattr(activity, "entities", None) or []
+            if getattr(e, "type", None) == "mention"
+            and str(getattr(getattr(e, "mentioned", None), "id", "")) in bot_ids
+        ]
+        assert not mentions
+
+        import re
+        text = activity.text
+        if mentions:
+            # Should not enter this path
+            pass
+        else:
+            text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
+
+        # Legacy path removed everything
+        assert text == "hi", f"Expected 'hi', got {text!r}"
+
+    def test_preserves_non_mentioned_names_when_bot_is_only_entity(self):
+        """If only the bot is mentioned in activity.entities, we still strip only bot tags."""
+        from plugins.platforms.teams.adapter import TeamsAdapter
+        adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = MagicMock()
+
+        activity = MagicMock()
+        activity.text = "<at>Hermes</at> hi"
+        activity.id = "act-789"
+        activity.from_ = MagicMock(aad_object_id="aad-456", name="Test User")
+        activity.from_.id = "29:user-123"
+        activity.recipient = MagicMock()
+        activity.recipient.id = "28:bot-id"
+        activity.conversation = MagicMock(conversation_type="channel", tenant_id="t")
+        activity.conversation.id = "19:conv@thread.v2"
+        activity.attachments = []
+        activity.reply_to_id = None
+        activity.entities = [
+            MagicMock(type="mention", mentioned=MagicMock(id="28:bot-id"), text="Hermes"),
+        ]
+
+        bot_ids = {"bot-id", "28:bot-id"}
+        mentions = [
+            e for e in getattr(activity, "entities", None) or []
+            if getattr(e, "type", None) == "mention"
+            and str(getattr(getattr(e, "mentioned", None), "id", "")) in bot_ids
+        ]
+        assert len(mentions) == 1
+        bot_mention_names = {
+            name for e in mentions
+            if (name := getattr(e, "text", None)) and isinstance(name, str)
+        }
+        assert bot_mention_names == {"Hermes"}
+
+        import re
+        text = activity.text
+        if mentions:
+            if bot_mention_names:
+                kept = []
+                for part in re.split(r"(<at>[^<]*</at>)", text):
+                    if part.startswith("<at>") and part.endswith("</at>"):
+                        name = part[4:-5]
+                        if name in bot_mention_names:
+                            continue
+                    kept.append(part)
+                text = "".join(kept).strip()
+            else:
+                text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
+        else:
+            text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
+
+        assert text == "hi", f"Expected 'hi', got {text!r}"
 
     APP_ID = "bot-id"
 

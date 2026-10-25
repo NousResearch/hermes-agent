@@ -541,8 +541,10 @@ def _with_entry_pick(params, config):
     different provider than the entry the profile runs (#140107). Only the held entry's bare key
     is that entry (Desktop's guard). A keyed entry's display name is not; a keyless legacy
     ``custom_providers:`` entry's is (``configured_entry_key``). A bare ``custom`` pick is the billing
-    class a client echoed from the runtime, not a route: it names the configured entry serving its
-    endpoint/model, else (no endpoint picked) the profile's own entry. Other picks stay as they came.
+    class a client echoed from the runtime, not a route: on a bare ``custom`` profile with no other
+    endpoint picked it is that profile's route; otherwise it names the configured entry serving its
+    endpoint/model (the profile's own first), else (no endpoint picked) the profile's own entry.
+    Other picks stay as they came.
     """
     from gateway.session_route_identity import configured_entry_key, profile_route_identity
     picked = params.get('provider')
@@ -550,9 +552,17 @@ def _with_entry_pick(params, config):
         return params
     identity = profile_route_identity(config)
     if picked.strip().lower() == 'custom':
+        from hermes_cli.route_identity import normalize_route_base_url
         from hermes_cli.runtime_provider_custom import routed_custom_identity
-        healed = routed_custom_identity(params.get('base_url'), params.get('model'), config) or (
-            identity if identity.startswith('custom:') and 'base_url' not in params else None)
+        url = params.get('base_url')
+        own_url = (config.get('model') or {}).get('base_url') if isinstance(config.get('model'), dict) else None
+        if identity == 'custom' and (url is None or normalize_route_base_url(str(url)) == normalize_route_base_url(str(own_url or ''))):
+            return params
+        healed = routed_custom_identity(url, params.get('model'), config, held=identity) or (
+            identity if identity.startswith('custom:') and url is None else None)
+        if healed and healed != identity and url is None and 'api_key' in params:
+            # The model alone chose this entry: a launch key the user gave is never sent to a host they did not name.
+            _refuse('api_key', f'{healed} was chosen by model; name it with --provider or --base-url to use a launch key')
         return {**params, 'provider': healed} if healed else params
     if identity == 'auto' or picked.strip().lower() != (configured_entry_key(identity, config) or None):
         return params

@@ -123,6 +123,8 @@ export interface QuickEntryStatePush {
 
 /** What a quick-window submit carries back to the primary renderer. */
 export interface QuickEntrySubmitPayload {
+  thoughtOwnerToken?: string
+  thoughtOwner?: { connectionId: string; profile: string }
   /** QUICK_TARGET_CURRENT, QUICK_TARGET_NEW, or a stored session id. */
   target: string
   text: string
@@ -236,9 +238,8 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
   switch (event.type) {
     case 'blur':
     case 'dismiss': {
-      // Escape / focus loss discards a surface with nothing unresolved. A submit
-      // already handed to main keeps its correlation and draft: the promise
-      // still resolves, and a late failure must be able to restore the text.
+      // Hiding is not deletion. Keep the local draft, and keep an unresolved
+      // submit's correlation so a late result can still reconcile it.
       const unresolved = state.submitting || state.unknownSubmitId !== null
 
       return {
@@ -247,14 +248,10 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
           ? { ...state, error: null, visible: false }
           : {
               ...state,
-              draft: '',
-              error: null,
               lastSubmitText: '',
-              orphanedFailure: null,
               pendingSubmitId: null,
               submitting: false,
               target: QUICK_TARGET_CURRENT,
-              unknownSubmitId: null,
               visible: false
             }
       }
@@ -267,8 +264,8 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
     case 'shown': {
       // Re-summoned. With a submit unresolved the window reconnects to the SAME
       // generation and shows the text still being delivered. Otherwise the
-      // surface is fresh — except that a failure whose generation lost the
-      // window hands its text back rather than dropping it.
+      // surface keeps its local draft; a failure from a prior submit can hand
+      // its text back when there is no newer draft to replace.
       if (state.submitting || state.unknownSubmitId !== null) {
         return { send: null, state: { ...state, error: null, visible: true } }
       }
@@ -277,10 +274,10 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
         send: null,
         state: {
           ...state,
-          draft: state.orphanedFailure?.text ?? '',
-          error: state.orphanedFailure?.message ?? null,
+          draft: state.draft || state.orphanedFailure?.text || '',
+          error: state.orphanedFailure?.message ?? state.error,
           lastSubmitText: '',
-          orphanedFailure: null,
+          orphanedFailure: state.draft ? state.orphanedFailure : null,
           pendingSubmitId: null,
           submitting: false,
           target: QUICK_TARGET_CURRENT,
@@ -502,7 +499,16 @@ function normalizeSubmitPayload(raw: unknown): null | QuickEntrySubmitPayload {
     return null
   }
 
+  const owner = record.thoughtOwner as { connectionId?: unknown; profile?: unknown } | undefined
+
+  if (owner !== undefined && (typeof owner?.connectionId !== 'string' || typeof owner?.profile !== 'string')) {
+    return null
+  }
+
   return {
+    ...(owner
+      ? { thoughtOwner: { connectionId: owner.connectionId as string, profile: owner.profile as string } }
+      : {}),
     target: typeof record.target === 'string' && record.target ? record.target : QUICK_TARGET_CURRENT,
     text
   }

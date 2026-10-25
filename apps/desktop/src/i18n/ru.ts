@@ -42,6 +42,29 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 }
 
 export const ruOverrides = {
+  quickCapture: {
+    append: 'Добавить к черновику',
+    allowResend: 'Разрешить повторную отправку',
+    handoffUnconfirmed: 'Запрошена отправка в чат; доставка не подтверждена. Проверьте чат перед повторной отправкой.',
+    handoffRejected: 'Передача в чат отклонена. Ваш текст сохранён в поле ввода.',
+
+    save: 'Сохранить мысль',
+    saved: 'Сохранено на устройстве',
+    saving: 'Сохранение…',
+    browse: 'Сохранённые мысли',
+    back: 'Назад',
+    empty: 'Сохранённых мыслей пока нет.',
+    open: 'Вернуть в поле ввода',
+    placeholder: 'Запишите мысль…',
+    send: 'Enter: отправить в',
+    current: 'Текущий чат',
+    newSession: 'Новая сессия',
+    offline: 'Нет подключения — можно сохранить на устройстве.',
+    loadFailed: 'Не удалось загрузить мысли. Откройте подключение и профиль в Hermes и снова откройте быстрый ввод.',
+    saveFailed: 'Не удалось сохранить. Текст остался в поле; повторите сохранение.',
+    local: 'Хранится на этом устройстве'
+  },
+
   catalog: ruCatalog,
   connectors: ruConnectors.connectors,
   sharedMetrics: ruSharedMetrics,

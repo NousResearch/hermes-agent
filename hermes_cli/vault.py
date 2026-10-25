@@ -196,7 +196,10 @@ def _cmd_key(args) -> None:
             return
         store.migrate_key(target)
         _set_key_storage(target)
-        if target == "keychain":
+        if store.key_location()["storage"] == "none":  # nothing was moved or verified, only the setting
+            c.print(f"No vault key exists yet. The first saved item creates one in "
+                    f"{'the OS keychain' if target == 'keychain' else 'vault.key'} (vault.key_storage = {target}).")
+        elif target == "keychain":
             c.print(f"[green]Vault key moved to the OS keychain[/] ({vault_keychain.backend_label()}); "
                     "vault.key was removed after the keychain copy decrypted the vault.")
             c.print("[dim]Backups of this profile now hold the encrypted vault without its key; "

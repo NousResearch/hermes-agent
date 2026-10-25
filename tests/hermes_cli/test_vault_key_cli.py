@@ -64,3 +64,13 @@ def test_vault_key_migrate_moves_the_key_and_records_the_choice(hermes, capsys):
     assert (home / "vault" / "vault.key").exists() and backend.entries == {}
     assert load_config()["vault"]["key_storage"] == "file"
     assert VaultStore().resolve_secret(item)["password"] == "dummy-pw-cli-9"
+
+
+@pytest.mark.parametrize("target", ["keychain", "file"])
+def test_migrating_an_empty_vault_says_no_key_exists_yet(hermes, capsys, target):
+    run, backend, home = hermes
+    run("key", "migrate", "--to", target)
+    out = capsys.readouterr().out
+    assert "No vault key exists yet" in out
+    assert "decrypted" not in out and "moved" not in out, "nothing was moved or verified"
+    assert backend.entries == {} and not (home / "vault" / "vault.key").exists()

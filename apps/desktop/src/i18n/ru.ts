@@ -330,6 +330,14 @@ export const ruOverrides = {
     noResults: 'Языки не найдены'
   },
   settings: {
+    localModels: {
+      gpuLabel: 'GPU для локальных моделей',
+      gpuAuto: largestName => `Автоматически (${largestName})`,
+      gpuEntry: (index, name, vram) => `${index}: ${name} · ${vram}`,
+      gpuSelectFailed: 'Не удалось изменить выбор GPU',
+      gpuSelected: 'Выбор GPU сохранён.',
+      gpuServerRestarted: 'Выбор GPU сохранён, сервер моделей перезапущен.'
+    },
     // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
     billing: {
       keepGoingOnCredits: {

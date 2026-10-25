@@ -48,7 +48,7 @@ def test_pci_identity_controls_recommendations_without_changing_memory(
 
     def run(argv, **kwargs):
         calls.append(argv)
-        assert argv[1] == "--query-gpu=memory.total,memory.free,name,pci.device_id,memory.used,utilization.gpu"
+        assert argv[1] == "--query-gpu=memory.total,memory.free,name,pci.device_id,memory.used,utilization.gpu,index,uuid,pci.bus_id"
         # A second adapter must not supply identity for the first adapter's budget.
         output = (f'32704, 31423, "{name}", {pci_id}, 2048, 7\n'
                   '32704, 31423, NVIDIA RTX Spark N1X, 0x2E0310DE, 2048, 7\n')
@@ -89,7 +89,7 @@ def test_unavailable_pci_id_preserves_memory_and_name_fallback(monkeypatch, inte
 
     def run(argv, **kwargs):
         calls.append(argv)
-        assert argv[1] == "--query-gpu=memory.total,memory.free,name,pci.device_id,memory.used,utilization.gpu"
+        assert argv[1] == "--query-gpu=memory.total,memory.free,name,pci.device_id,memory.used,utilization.gpu,index,uuid,pci.bus_id"
         return SimpleNamespace(returncode=0, stdout=f"32704, 31423, {name}, N/A, 2048, 7\n")
 
     monkeypatch.setattr(hardware.subprocess, "run", run)

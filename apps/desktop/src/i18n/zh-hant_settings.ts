@@ -1154,6 +1154,12 @@ export const zhHantSettings = {
       vram: label => `${label} 顯示記憶體`,
       ram: label => `${label} 記憶體`,
       unifiedMemory: '統一記憶體',
+      gpuLabel: '用於本機模型的 GPU',
+      gpuAuto: largestName => `自動（${largestName}）`,
+      gpuEntry: (index, name, vram) => `${index}: ${name} · ${vram}`,
+      gpuSelectFailed: '無法變更 GPU 選擇',
+      gpuSelected: '已儲存 GPU 選擇。',
+      gpuServerRestarted: '已儲存 GPU 選擇並重新啟動模型伺服器。',
       modelsTitle: '模型',
       recommended: '推薦',
       recommendedReason: {

@@ -156,6 +156,8 @@ local_runtime:
   enabled: false     # true = start the managed server with Hermes.
                      # The desktop "Use" button sets this automatically.
   backend: auto      # auto | cuda | metal | vulkan | hip | cpu
+  gpu: auto          # auto | 0 | 1 | … — which GPU the server uses on a
+                     # multi-GPU machine (see "Choosing the GPU" below)
   detect_ports: [8081]  # extra ports to probe for a llama-server you run
                         # yourself (the default probe is :8080 only)
 ```
@@ -185,6 +187,48 @@ Models live in the machine-shared `models/` directory. Engine binaries live
 in PM's store; `runtimes/llamacpp/` holds mutable presets and server state.
 Selecting a local model as your main model uses the standard
 `model.provider: llamacpp` + `model.default` settings.
+
+## Choosing the GPU
+
+On a machine with more than one GPU, Settings → Providers → Local Models
+shows a **GPU for local models** picker (the same choice is available to
+CLI and headless users as `local_runtime.gpu`). This matters most on the
+common two-card topology — a small display card driving your monitors and
+a bigger card bought for models:
+
+- **Automatic** (default) chooses the largest visible discrete card (an integrated GPU
+  only when there is no discrete one). The managed server is pinned to the same card
+  the catalogue prices; it does not silently spread layers onto the display card.
+- **An explicit card** reserves that card for models. CUDA uses its physical GPU UUID,
+  not an enumeration ordinal. Vulkan/HIP use the installed engine's device names.
+  CUDA devices can be listed before the runtime is installed; other backends require
+  the engine's device probe. Metal and CPU keep their existing behaviour.
+
+The picker stores a stable device identifier. CLI users can select a CUDA index or
+UUID with `hermes config set local_runtime.gpu 1`; unlike the picker, a numeric CLI
+choice follows that index if a driver changes enumeration after reboot. Use
+`nvidia-smi --query-gpu=index,name,uuid,memory.total --format=csv` to find a physical
+UUID if that distinction matters.
+
+The choice is saved in the selected profile. The managed runtime is machine-shared:
+while it is running, all profiles price its actual selected GPU, not an unrelated
+profile preference. Changing it restarts an idle server and reprices the catalogue.
+A busy server or one owned by another Hermes process returns an explicit error
+instead of interrupting inference. A stopped server stays stopped.
+
+A server started by an older Hermes version may not record its GPU selection.
+Its GPU inventory remains visible, but Hermes reports the serving GPU and budget
+as unavailable rather than substituting the requesting profile's preference.
+After upgrading, restart the owning Hermes process once its active work has finished.
+
+If applying the choice fails, Hermes restores the previous setting and attempts
+server recovery; the error states whether recovery succeeded. An unavailable
+explicit GPU never falls back onto a reserved display/other-workload card. Select
+Automatic or another detected GPU to recover.
+
+Under Automatic, CUDA visibility masks are respected (including UUIDs, lists, and
+an empty `CUDA_VISIBLE_DEVICES`). An explicit choice overrides that mask for the
+managed child only. No parent environment or external llama-server is changed.
 
 ## Requirements and limits
 

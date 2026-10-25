@@ -109,6 +109,7 @@ function ScopedLocalModelsSettings(): ReactElement {
   if ((qJob || (needsSetup && !configure && heroModel)) && !otherActiveJob && !installStarting && !failedInstall) {
     return (
       <LocalModelsQuickstart
+        hardware={hardware}
         heroModel={heroModel}
         job={qJob}
         lastError={lastError}

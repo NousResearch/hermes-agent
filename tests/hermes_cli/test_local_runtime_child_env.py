@@ -43,12 +43,25 @@ def test_supervisor_spawns_llama_server_without_credentials_but_keeps_runtime_en
     assert child_env["PATH"] == os.environ["PATH"]
 
 
-def test_spawn_server_keeps_the_callers_environment(monkeypatch):
-    """The generic spawner (bounded_probe_run's git/PowerShell probes) must pass an explicit
-    ``env=`` through untouched: a gh-backed credential helper needs GITHUB_TOKEN."""
-    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kwargs: SimpleNamespace(kwargs=kwargs))
-    proc, _job = spawn_server(["git", "fetch"], env={"GITHUB_TOKEN": "g", "PATH": "/bin"})
-    assert proc.kwargs["env"] == {"GITHUB_TOKEN": "g", "PATH": "/bin"}
+def test_spawn_server_keeps_the_callers_environment():
+    """Exercise the real host spawner: the Windows Job path needs a real process handle."""
+    import sys
+
+    env = dict(os.environ, GITHUB_TOKEN="test-only-token")
+    proc, job = spawn_server(
+        [sys.executable, "-I", "-c", "import os; print(os.environ['GITHUB_TOKEN'])"],
+        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        out, err = proc.communicate(timeout=20)
+        assert proc.returncode == 0, err
+        assert out.strip() == "test-only-token"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
+        if job is not None:
+            job.close()
 
 
 def test_server_child_env_is_case_insensitive_and_pure():

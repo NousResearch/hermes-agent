@@ -572,28 +572,106 @@ def _nvidia_smi_facts() -> dict:
 
     Reads the shared cached query: one nvidia-smi spawn per poll window, hidden on Windows,
     instead of a second bare one per request (#101895, #120262)."""
-    query = hardware._cached_nvidia_gpu_query()
+    query = hardware.selected_gpu_card()
     if query is None:
         return {}
-    return dict(
-        gpu_name=query["gpu_name"],
-        gpu_util_percent=query["gpu_util_percent"],
-        vram_used_bytes=query["used_bytes"],
-    )
+    return dict(gpu_name=query["gpu_name"], gpu_util_percent=query.get("gpu_util_percent"),
+                vram_used_bytes=query.get("used_bytes"))
+
+
+def _hardware_payload() -> dict:
+    from hermes_cli.local_runtime.gpu_selection import GpuSelectionError
+
+    cards = hardware.gpu_cards()
+    error = None
+    try:
+        selected = hardware.selected_gpu_card()
+        budget = hardware.probe_budget()
+    except GpuSelectionError as exc:
+        selected, error = None, str(exc)
+        budget = estimator.HardwareBudget(0, 0, 0)
+    ram_total, ram_avail = hardware._ram_bytes()
+    out = {
+        "uma": budget.uma, "vram_total_bytes": budget.total_device_bytes,
+        "vram_usable_bytes": budget.usable_vram_bytes, "ram_total_bytes": ram_total,
+        "ram_available_bytes": ram_avail, "vram_label": _human_gb(budget.total_device_bytes),
+        "gpu_name": getattr(budget, "gpu_name", "") or None,
+        "gpu_util_percent": None, "vram_used_bytes": None,
+        "gpus": [{"index": c["index"], "id": c.get("id", str(c["index"])),
+                  "name": c["gpu_name"], "total_bytes": c["total_bytes"],
+                  "free_bytes": c["free_bytes"]} for c in cards],
+        "gpu": hardware._configured_gpu_selection(),
+        "gpu_selected": (selected or {}).get("index"), "gpu_error": error,
+    }
+    if not error:
+        out.update(_quiet(_nvidia_smi_facts, {}))
+    return out
 
 
 @router.get("/api/local-models/hardware")
-def local_models_hardware():
-    """The budget as plain facts, polled by the pane and statusbar. Sync def: shells out to nvidia-smi — threadpool."""
-    budget = hardware.probe_budget()
-    ram_total, ram_avail = hardware._ram_bytes()
-    out = {
-        "uma": budget.uma, "vram_total_bytes": budget.total_device_bytes, "vram_usable_bytes": budget.usable_vram_bytes,
-        "ram_total_bytes": ram_total, "ram_available_bytes": ram_avail, "vram_label": _human_gb(budget.total_device_bytes),
-        "gpu_name": None, "gpu_util_percent": None, "vram_used_bytes": None,
-    }
-    out.update(_quiet(_nvidia_smi_facts, {}))
-    return out
+def local_models_hardware(profile: Optional[str] = None):
+    from hermes_cli.web_server_profiles import _config_profile_scope
+
+    with _config_profile_scope(profile):
+        return _hardware_payload()
+
+
+class GpuSelectionBody(BaseModel):
+    gpu: str
+
+
+_GPU_SELECTION_LOCK = threading.Lock()
+
+
+def _apply_gpu_selection(value: str) -> dict:
+    from hermes_cli.local_runtime.gpu_selection import GpuSelectionError, choose, normalize
+
+    with _GPU_SELECTION_LOCK:
+        try:
+            requested = normalize(value)
+            selected = choose(hardware.gpu_cards(), requested)
+        except GpuSelectionError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        # Persist stable physical identity, not an ordinal that can move after reboot.
+        requested = (selected.get("id") or selected.get("uuid") or requested) if requested != "auto" else requested
+        sup = bootstrap.get_supervisor()
+        running = sup is not None or _state_endpoint() is not None
+        if running and sup is None:
+            raise HTTPException(status_code=409, detail="The local server is owned by another Hermes process; stop it there before changing GPU")
+        if sup is not None and not sup.is_idle():
+            raise HTTPException(status_code=409, detail="The local model is busy; wait for its reply before changing GPU")
+        with _CONFIG_MUTATION_LOCK:
+            config = config_mod.load_config()
+            previous = config.setdefault("local_runtime", {}).get("gpu", "auto")
+            if previous == requested:
+                return {"ok": True, "gpu": requested, "server_restarted": False}
+            config["local_runtime"]["gpu"] = requested
+            config_mod.save_config(config)
+        if running:
+            try:
+                if not bootstrap.refresh_local_runtime():
+                    raise RuntimeError("The local server did not restart on the selected GPU")
+            except Exception as exc:
+                # Roll back ONLY this field on a fresh snapshot, preserving unrelated writes.
+                with _CONFIG_MUTATION_LOCK:
+                    restored = config_mod.load_config()
+                    restored.setdefault("local_runtime", {})["gpu"] = previous
+                    config_mod.save_config(restored)
+                recovered = bootstrap.ensure_local_runtime(restored, force=True) is not None
+                if not recovered:
+                    recovered = _state_endpoint() is not None
+                detail = f"GPU change failed; previous setting restored. Server recovery {'succeeded' if recovered else 'failed'}: {exc}"
+                raise HTTPException(status_code=502, detail=detail) from exc
+        return {"ok": True, "gpu": requested, "server_restarted": running}
+
+
+@router.post("/api/local-models/gpu")
+async def local_models_gpu(body: GpuSelectionBody, profile: Optional[str] = None):
+    from hermes_cli.web_server_profiles import _config_profile_scope
+
+    # ContextVars cross to_thread; no process-global HERMES_HOME writes across awaits.
+    with _config_profile_scope(profile):
+        return await asyncio.to_thread(_apply_gpu_selection, body.gpu)
 
 
 # ── catalog: priced for THIS machine before download ─────────

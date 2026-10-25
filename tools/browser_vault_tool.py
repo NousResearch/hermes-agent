@@ -30,6 +30,8 @@ import secrets
 import logging
 from typing import Any, Dict, Optional
 
+from agent.vault_login_classifier import build_otp_probe_js
+
 logger = logging.getLogger(__name__)
 
 
@@ -297,8 +299,7 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
                       ensure_ascii=False)
 
 
-_TAB_PROBES["otp"] = ("!!document.querySelector('input[autocomplete=one-time-code], input[name*=otp i], input[name*=code i], "
-                      "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i]')")
+_TAB_PROBES["otp"] = build_otp_probe_js()
 
 
 def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) -> str:
@@ -352,6 +353,10 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 
     register_vault_redaction_value(code)
     fills = build_otp_fills(otp_controls, code)
+    if not fills:
+        del code
+        return json.dumps({"success": False, "error_type": "invalid_code_fields",
+                           "error": "The code does not match a complete, unambiguous code widget. Nothing was entered."})
     result = _eval_js_secret(effective_task_id, build_fill_js(fills, expected_origin=origin, nonce=nonce))
     del code
     if not result.get("success"):

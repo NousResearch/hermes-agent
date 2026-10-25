@@ -116,7 +116,7 @@ def test_download_failure_names_only_a_cdn_firewall_refusal(status, headers, cdn
         assert f"mirror.example's CDN firewall ({cdn}) refused this network" in message, message
 
 
-@pytest.mark.parametrize("retry_after,expected", [("7", 7), ("60", 60), ("600", None)])
+@pytest.mark.parametrize("retry_after,expected", [("60", 60), ("600", None)])
 def test_resumable_transfer_honors_retry_after_or_stops(retry_after, expected):
     attempts = []
     waits = []

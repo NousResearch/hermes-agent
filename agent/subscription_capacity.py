@@ -175,6 +175,10 @@ class SubscriptionCapacityRouter:
                     "CREATE TABLE IF NOT EXISTS subscription_capacity_meta "
                     "(singleton INTEGER PRIMARY KEY, scope TEXT NOT NULL)"
                 )
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS subscription_capacity_bindings "
+                    "(lease_id TEXT PRIMARY KEY, worker_pid INTEGER NOT NULL)"
+                )
                 row = conn.execute("SELECT scope FROM subscription_capacity_meta WHERE singleton = 1").fetchone()
                 if row is None:
                     conn.execute(
@@ -272,6 +276,10 @@ class SubscriptionCapacityRouter:
 
     def _lease_state(self, conn: sqlite3.Connection, provider: str, now: datetime) -> tuple[int, float, bool]:
         conn.execute("DELETE FROM subscription_capacity_leases WHERE expires_at <= ?", (now.isoformat(),))
+        conn.execute(
+            "DELETE FROM subscription_capacity_bindings WHERE lease_id NOT IN "
+            "(SELECT lease_id FROM subscription_capacity_leases)"
+        )
         rows = conn.execute(
             "SELECT reserved_percent FROM subscription_capacity_leases WHERE provider = ?", (provider,),
         ).fetchall()
@@ -304,6 +312,10 @@ class SubscriptionCapacityRouter:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute("DELETE FROM subscription_capacity_leases WHERE expires_at <= ?", (now.isoformat(),))
+            conn.execute(
+                "DELETE FROM subscription_capacity_bindings WHERE lease_id NOT IN "
+                "(SELECT lease_id FROM subscription_capacity_leases)"
+            )
             existing = conn.execute(
                 "SELECT * FROM subscription_capacity_leases WHERE request_id = ?", (request.request_id,),
             ).fetchone()
@@ -424,5 +436,33 @@ class SubscriptionCapacityRouter:
             cursor = conn.execute(
                 "DELETE FROM subscription_capacity_leases WHERE lease_id = ? AND owner = ?", (lease_id, owner),
             )
+            if cursor.rowcount == 1:
+                conn.execute("DELETE FROM subscription_capacity_bindings WHERE lease_id = ?", (lease_id,))
             conn.commit()
             return cursor.rowcount == 1
+
+    def bind_worker_process(self, lease: CapacityLease, worker_pid: int) -> bool:
+        """Atomically bind an admitted lease to its one owning worker process."""
+        if worker_pid <= 0:
+            return False
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT owner, expires_at FROM subscription_capacity_leases WHERE lease_id = ?",
+                (lease.lease_id,),
+            ).fetchone()
+            if row is None or row["owner"] != lease.owner or datetime.fromisoformat(row["expires_at"]) <= _aware(self.now()):
+                conn.rollback()
+                return False
+            bound = conn.execute(
+                "SELECT worker_pid FROM subscription_capacity_bindings WHERE lease_id = ?", (lease.lease_id,),
+            ).fetchone()
+            if bound is None:
+                conn.execute(
+                    "INSERT INTO subscription_capacity_bindings(lease_id, worker_pid) VALUES (?, ?)",
+                    (lease.lease_id, worker_pid),
+                )
+                conn.commit()
+                return True
+            conn.commit()
+            return int(bound["worker_pid"]) == worker_pid

@@ -334,11 +334,17 @@ def test_reclaim_fails_safe_on_non_object_claim_provenance(conn) -> None:
 def test_interrupted_review_runs_retry_in_review_phase(
     conn,
     reclaim_kind: str,
+    monkeypatch,
 ) -> None:
     task_id, review = _claimed_review(
         conn,
         f"Retry review after {reclaim_kind}",
         ttl_seconds=-1 if reclaim_kind == "expired_claim" else None,
+    )
+    capacity_releases = []
+    monkeypatch.setattr(
+        "agent.subscription_capacity_runtime.release_recovered_kanban_capacity",
+        lambda root, task, run: capacity_releases.append((task, run)) or 1,
     )
 
     if reclaim_kind == "spawn_failure":
@@ -381,6 +387,8 @@ def test_interrupted_review_runs_retry_in_review_phase(
     event = kb.list_events(conn, task_id=task_id)[-1]
     assert event.payload is not None
     assert event.payload.get("retry_status") == "review"
+    if reclaim_kind in {"expired_claim", "stale_heartbeat"}:
+        assert capacity_releases == [(task_id, review.current_run_id)]
 
 
 def test_review_retry_still_trips_the_failure_breaker(conn) -> None:

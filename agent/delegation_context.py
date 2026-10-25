@@ -22,6 +22,9 @@ DELEGATED_CHILD_ENV_MARKER = "HERMES_DELEGATED_CHILD_CONTEXT"
 KANBAN_ENV_KEYS: tuple[str, ...] = (
     "HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID", "HERMES_KANBAN_CLAIM_LOCK",
     "HERMES_KANBAN_GOAL_MODE", "HERMES_KANBAN_GOAL_MAX_TURNS",
+    # A subscription capacity lease belongs only to the dispatcher-owned worker. Descendants
+    # receive neither authority nor a share of its reservation.
+    "HERMES_SUBSCRIPTION_CAPACITY_LEASE",
 )
 
 

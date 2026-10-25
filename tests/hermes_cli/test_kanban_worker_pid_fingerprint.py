@@ -149,3 +149,28 @@ def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeyp
     monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
     assert kb.release_stale_claims(conn, signal_fn=sig) == 1
     assert killed == [] and kb.get_task(conn, tid2).status == "ready"
+
+
+def test_max_runtime_surviving_worker_retains_claim_and_capacity(board, monkeypatch):
+    conn = board
+    tid = _claimed_running(conn, pid=4242, started_at="boot:1|100", max_runtime=1)
+    old = int(time.time()) - 3600
+    with kb.write_txn(conn):
+        conn.execute("UPDATE tasks SET started_at = ? WHERE id = ?", (old, tid))
+        conn.execute(
+            "UPDATE task_runs SET started_at = ? WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+            (old, tid),
+        )
+    monkeypatch.setattr(kbd, "_terminate_reclaimed_worker", lambda *a, **k: {
+        "host_local": True, "termination_attempted": True, "terminated": False,
+    })
+    released = []
+    monkeypatch.setattr(
+        "agent.subscription_capacity_runtime.release_recovered_kanban_capacity",
+        lambda *args: released.append(args) or 1,
+    )
+
+    assert kbd.enforce_max_runtime(conn, signal_fn=lambda *_: None) == []
+    task = kb.get_task(conn, tid)
+    assert task.status == "running" and task.worker_pid == 4242
+    assert released == []

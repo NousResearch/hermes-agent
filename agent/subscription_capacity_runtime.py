@@ -220,8 +220,16 @@ def release_recovered_kanban_capacity(shared_root: Path, task_id: str, run_id: A
         try:
             with sqlite3.connect(db_path, timeout=2, isolation_level=None) as conn:
                 conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS subscription_capacity_bindings "
+                    "(lease_id TEXT PRIMARY KEY, worker_pid INTEGER NOT NULL)"
+                )
                 cursor = conn.execute(
                     "DELETE FROM subscription_capacity_leases WHERE owner = ?", (owner,),
+                )
+                conn.execute(
+                    "DELETE FROM subscription_capacity_bindings WHERE lease_id NOT IN "
+                    "(SELECT lease_id FROM subscription_capacity_leases)"
                 )
                 conn.commit()
                 released += max(0, cursor.rowcount)
@@ -258,12 +266,30 @@ def _load_runtime() -> Optional[tuple[SubscriptionCapacityRouter, CapacityLease]
         return _runtime
 
 
+def _owns_worker_context(lease: CapacityLease) -> bool:
+    from agent.delegation_context import is_dispatcher_owned_worker_context
+    if not is_dispatcher_owned_worker_context():
+        return False
+    return (
+        (os.environ.get("HERMES_KANBAN_TASK") or "") == lease.owner.split(":", 2)[1]
+        and (os.environ.get("HERMES_KANBAN_RUN_ID") or "") == lease.owner.rsplit(":", 1)[1]
+    )
+
+
+def _bind_owning_process(router: SubscriptionCapacityRouter, lease: CapacityLease) -> None:
+    if not _owns_worker_context(lease) or not router.bind_worker_process(lease, os.getpid()):
+        raise SubscriptionCapacityUnavailable(
+            "subscription capacity lease is not owned by this Kanban worker process"
+        )
+
+
 def check_worker_capacity_phase(agent: Any) -> None:
     """Fail before a consequential provider call unless the inherited lease remains valid."""
     runtime = _load_runtime()
     if runtime is None:
         return
     router, lease = runtime
+    _bind_owning_process(router, lease)
     if str(getattr(agent, "provider", "") or "") != lease.provider or str(
         getattr(agent, "model", "") or ""
     ) != lease.model:
@@ -281,10 +307,12 @@ def release_worker_capacity() -> bool:
     runtime = _load_runtime()
     if runtime is None:
         return False
+    router, lease = runtime
+    if not _owns_worker_context(lease) or not router.bind_worker_process(lease, os.getpid()):
+        return False
     with _runtime_lock:
         if _runtime_released:
             return False
-        router, lease = runtime
         released = router.release(lease.lease_id, owner=lease.owner)
         _runtime_released = True
         return released

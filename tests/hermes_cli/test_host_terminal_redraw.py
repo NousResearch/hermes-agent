@@ -9,6 +9,7 @@ import pytest
 from hermes_cli import web_host_terminal_sessions
 from hermes_cli.pty_session import PtySession
 from hermes_cli.web_host_terminal_sessions import HostOwner, _pump_input, _resize
+from tests.waiting import async_wait_until
 
 # Programs that, like Node's stdout 'resize' event (Hermes' TUI redraws on it), report a size only
 # when the one they read differs from the last, and read it after a busy event loop gets to it.
@@ -98,17 +99,14 @@ async def test_a_resize_back_waits_until_the_program_answered_the_step(tmp_path,
     await session.start()
     try:
         assert await session.attach(tab)
-        async with asyncio.timeout(10):
-            while b"READY" not in tab.output:
-                await asyncio.sleep(0.01)
+        await async_wait_until(lambda: b"READY" in tab.output, timeout=10)
         start = len(tab.output)
         # The redraw's two frames, arriving together as they leave the browser.
         tab.send("\x1b[RESIZE:80;23]", "\x1b[RESIZE:80;24]")
         pump = asyncio.create_task(_pump_input(tab, SimpleNamespace(remove=remove), "terminal", session, owner))
         # The program prints TICK five times a second: give it three seconds.
-        async with asyncio.timeout(10):
-            while b"RESIZE 24" not in tab.output[start:] and tab.output[start:].count(b"TICK") < 15:
-                await asyncio.sleep(0.01)
+        await async_wait_until(
+            lambda: b"RESIZE 24" in tab.output[start:] or tab.output[start:].count(b"TICK") >= 15, timeout=10)
         seen = tab.output[start:]
         tab.close_tab()
         await asyncio.wait_for(pump, 5)

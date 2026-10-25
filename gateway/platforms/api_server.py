@@ -51,6 +51,7 @@ _STATIC_FEATURE_FLAGS = {
     "run_approval_response": True, "tool_progress_events": True, "approval_events": True,
     "session_resources": True, "model_options": True, "session_chat": True,
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
+    "session_fork_up_to": True, "session_fork_keep_source": True,
     "reasoning_streaming": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
     "skills_api": True, "audio_api": False, "realtime_voice": False,
@@ -2778,7 +2779,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     @_require_auth
     async def _handle_fork_session(self, request: web.Request) -> web.Response:
-        """POST /api/sessions/{session_id}/fork — branch via current SessionDB primitives."""
+        """POST /api/sessions/{session_id}/fork — branch via current SessionDB primitives.
+
+        Optional body fields: ``up_to`` copies only the first N messages of the source's live
+        transcript (0 <= N <= message count, same order as ``GET .../messages?order=oldest``) instead
+        of all of them — "branch from message N" for rewind / edit-and-resend / retry-with-another-model
+        UIs; ``keep_source: true`` leaves the source session open instead of ending it as ``branched``
+        (the child still carries the ``_branched_from`` marker). Defaults keep CLI ``/branch`` semantics."""
         source_id = request.match_info["session_id"]
         source, err = await self._get_existing_session_or_404(source_id)
         if err:
@@ -2786,12 +2793,24 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
+        up_to = body.get("up_to")
+        if up_to is not None and (isinstance(up_to, bool) or not isinstance(up_to, int) or up_to < 0):
+            return _error_response("'up_to' must be a non-negative integer", 400, code="invalid_up_to")
+        keep_source = body.get("keep_source", False)
+        if not isinstance(keep_source, bool):
+            return _error_response("'keep_source' must be a boolean", 400, code="invalid_keep_source")
         db = await self._ensure_session_db_async()
         fork_id = str(body.get("id") or body.get("session_id") or f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}").strip()
         if not fork_id or re.search(r'[\r\n\x00]', fork_id):
             return _error_response("Invalid session ID", 400, code="invalid_session_id")
         if await asyncio.to_thread(db.get_session, fork_id):
             return _error_response(f"Session already exists: {fork_id}", 409, code="session_exists")
+        if up_to is not None:
+            # Validate before anything is written: an out-of-range cut must not leave a child behind.
+            available = len(await asyncio.to_thread(db.get_messages, source_id))
+            if up_to > available:
+                return _error_response(
+                    f"'up_to' ({up_to}) exceeds the source's {available} messages", 400, code="invalid_up_to")
 
         # CLI /branch semantics: create the child, then end the original as branched (child first, so
         # a failed create never leaves the source ended with no fork, #11030).
@@ -2802,8 +2821,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             db.create_session, fork_id, "api_server", model=source.get("model"),
             system_prompt=source.get("system_prompt"), parent_session_id=source_id,
             model_config={"_branched_from": source_id})
-        await asyncio.to_thread(db.end_session, source_id, "branched")
+        if not keep_source:
+            await asyncio.to_thread(db.end_session, source_id, "branched")
         messages = await asyncio.to_thread(db.get_messages, source_id)
+        if up_to is not None:
+            messages = messages[:up_to]  # transcripts are append-only: the prefix is stable
         await asyncio.to_thread(db.replace_messages, fork_id, messages)
         title = body.get("title")
         if title is None:

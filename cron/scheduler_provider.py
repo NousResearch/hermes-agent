@@ -51,6 +51,28 @@ def _note_tick_failure(exc: BaseException, consecutive_failures: int) -> int:
     return 0
 
 
+def _tick_adapters_for_profile(profile_name, *, default_profile, adapters, profile_adapters):
+    """Adapter map the multiplex ticker hands to *profile_name*'s jobs.
+
+    Deliver via the profile's OWN adapters; NEVER fall back to the default profile's (wrong bot).
+    A credentialless satellite rides the PRIMARY adapter only for targets an exact enabled route
+    maps here; else fail closed (delivery skipped this tick). Transports that can never carry a
+    delivery target — a ``LOCAL`` desktop/CLI session (registered by any desktop app, CLI run or
+    kanban worker of that profile), the API server, a webhook — do NOT count as owning a bot: a
+    map holding only those stays credentialless and still gets the shared-route grant.
+    """
+    from cron.scheduler_preflight import (
+        SharedRouteAdapters, _primary_profile_routes_for_current_home, delivering_adapters,
+    )
+
+    if profile_name is None or profile_name == default_profile:
+        return adapters
+    tick_adapters = (profile_adapters or {}).get(profile_name) or {}
+    if not delivering_adapters(tick_adapters) and adapters:
+        return SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
+    return tick_adapters
+
+
 def _guarded_store_write(action, description, *args, **kwargs):
     """Run a ticker status-marker write so a failing store never ends the ticker thread.
 
@@ -540,9 +562,6 @@ class InProcessCronScheduler(CronScheduler):
         heartbeated."""
         from cron.scheduler import tick as cron_tick
         from cron.scheduler import CronTickYielded, _is_fd_exhaustion
-        from cron.scheduler_preflight import (
-            SharedRouteAdapters, _primary_profile_routes_for_current_home,
-        )
         from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
         from cron.scheduler_ownership import register_ticked_homes
 
@@ -556,15 +575,10 @@ class InProcessCronScheduler(CronScheduler):
         )
 
         def tick_adapters_for(profile_name):
-            # Deliver via the profile's OWN adapters; NEVER fall back to the default profile's
-            # (wrong bot). A credentialless satellite may ride the PRIMARY adapter only for targets
-            # an exact enabled route maps here; else fail closed (delivery skipped this tick).
-            if profile_name is None or profile_name == default_profile:
-                return adapters
-            tick_adapters = (profile_adapters or {}).get(profile_name) or {}
-            if not tick_adapters and adapters:
-                return SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
-            return tick_adapters
+            return _tick_adapters_for_profile(
+                profile_name, default_profile=default_profile, adapters=adapters,
+                profile_adapters=profile_adapters,
+            )
 
         # Recovery + heartbeat per profile; one broken store must not abort startup for the others.
         # A profile may have been deleted since this snapshot was taken; never recreate a deleted home's

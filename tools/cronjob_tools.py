@@ -371,9 +371,14 @@ def _run_claimed_job(job: dict[str, Any], extra_prompt: Optional[str] = None) ->
             # only — the same grant the ticker's ``tick_adapters_for`` makes, never the full map.
             if getattr(runner, "_is_shared_bot_satellite", lambda _p: False)(profile):
                 from cron.scheduler_preflight import (
-                    SharedRouteAdapters, _primary_profile_routes_for_current_home)
+                    SharedRouteAdapters, _primary_profile_routes_for_current_home, delivering_adapters)
 
-                adapters = SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
+                # A satellite whose map holds only non-delivering transports (LOCAL desktop/CLI
+                # session, API server, webhook) is still credentialless: the grant must be built
+                # over the PRIMARY map, exactly like the ticker does — building it over the
+                # profile's own LOCAL-only map authorized nothing and every target failed closed.
+                base = getattr(runner, "adapters", None) if not delivering_adapters(adapters) else adapters
+                adapters = SharedRouteAdapters(base, _primary_profile_routes_for_current_home())
         gateway_loop = getattr(runner, "_gateway_loop", None) if runner is not None else None
         try:
             # run_one_job records last_run_at/last_status via mark_job_run; `job` is the

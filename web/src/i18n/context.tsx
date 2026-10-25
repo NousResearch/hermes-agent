@@ -60,7 +60,35 @@ function getInitialLocale(): Locale {
   } catch {
     // SSR or privacy mode
   }
-  return "en";
+  // No explicit choice yet: follow the browser so a Chinese user opens the panel
+  // in Chinese instead of having to find the language picker first.
+  return fromBrowserLanguage() ?? "en";
+}
+
+// Language tags whose script differs from the base language we would otherwise
+// match, so the exact-tag lookup below has to run before the base-language one:
+// a Traditional Chinese browser must get zh-hant, not zh.
+const SCRIPT_OVERRIDES: Record<string, Locale> = {
+  "zh-tw": "zh-hant",
+  "zh-hk": "zh-hant",
+  "zh-mo": "zh-hant",
+};
+
+function fromBrowserLanguage(): Locale | null {
+  try {
+    const tags = navigator.languages?.length ? navigator.languages : [navigator.language];
+    for (const tag of tags) {
+      if (!tag) continue;
+      const lower = tag.toLowerCase();
+      if (isLocale(lower)) return lower;
+      if (SCRIPT_OVERRIDES[lower]) return SCRIPT_OVERRIDES[lower]!;
+      const base = lower.split("-")[0];
+      if (base && isLocale(base)) return base;
+    }
+  } catch {
+    // no navigator (SSR, tests, hardened privacy mode)
+  }
+  return null;
 }
 
 interface I18nContextValue {

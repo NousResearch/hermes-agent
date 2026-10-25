@@ -202,7 +202,7 @@ async def test_native_completion_wake_admits_when_source_differs_only_by_message
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('field', ['user_name', 'user_id', 'thread_id'])
+@pytest.mark.parametrize('field', ['user_id', 'thread_id'])
 async def test_native_completion_wake_refuses_other_source_drift(tmp_path, monkeypatch, field):
     _runner, authority, adapter, _source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
     try:
@@ -236,8 +236,9 @@ async def test_refused_watch_wake_logs_the_refusal_code(tmp_path, monkeypatch, c
     runner, authority, _adapter, source, metadata = await _native_owner(tmp_path, monkeypatch, 'human')
     try:
         route = metadata['gateway_session_key']
-        # Point the routing entry at a renamed user: the wake's source no longer matches the commit.
-        runner.session_store._entries[route].origin = replace_source(source, user_name='renamed')
+        # Point the routing entry at another user: the wake's source no longer matches the commit
+        # (a renamed user does not, ``test_automation_route_labels``).
+        runner.session_store._entries[route].origin = replace_source(source, user_id='7')
         evt = {'type': 'completion', 'session_id': 'proc_x', 'session_key': route, 'platform': 'discord',
                'chat_id': '42', 'chat_type': 'dm', 'exit_code': 0, 'output': 'done', 'started_at': 1.0,
                'parent_session_id': metadata['gateway_session_id']}

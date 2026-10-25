@@ -26,7 +26,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
-import { sessionMatchesSearch } from '@/lib/session-search'
+import { sessionFromSearchResult, sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
@@ -356,7 +356,7 @@ export function mergeSearchResults(
     }
 
     const loaded = sessionByAnyId.get(match.session_id)
-    out.set(match.session_id, loaded ?? searchResultToSession(match))
+    out.set(match.session_id, loaded ?? sessionFromSearchResult({ ...match, snippet: stripFtsMarkers(match.snippet ?? '') }))
   }
 
   // Client-only matches that the server didn't return (e.g. cwd/git-branch

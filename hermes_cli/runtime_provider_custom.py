@@ -301,20 +301,25 @@ def codex_model_provider_id(requested_provider: str) -> Optional[str]:
 def _find_custom_identity(matches: Callable[[dict[str, Any]], bool],
                           config: Optional[dict[str, Any]] = None, prefer: Optional[str] = None) -> Optional[str]:
     """First enabled entry in ``providers:`` then legacy ``custom_providers:`` where ``matches(entry)``
-    holds (*prefer* when it is one of them), as its canonical ``custom:<name>`` slug. *config*
-    defaults to the active profile's."""
+    holds (*prefer* when it is one of them), as its canonical ``custom:<name>`` slug. A legacy entry
+    whose slug a ``providers:`` entry with an endpoint owns never matches: runtime resolution runs that one.
+    *config* defaults to the active profile's."""
     from hermes_cli.config import is_provider_enabled
     rp = _rp()
     try:
         config = rp.load_config() if config is None else config
     except Exception:
         return None
-    first = None
+    first, owned = None, set()
     providers = config.get("providers")
     if isinstance(providers, dict):
         for ep_name, entry in providers.items():
-            if isinstance(entry, dict) and is_provider_enabled(entry) and matches(entry):
-                slug = custom_provider_slug(str(ep_name), str(ep_name))
+            if not (isinstance(entry, dict) and is_provider_enabled(entry)):
+                continue
+            slug = custom_provider_slug(str(ep_name), str(ep_name))
+            if _entry_url(entry):
+                owned.add(slug)
+            if matches(entry):
                 if prefer is None or slug == prefer:
                     return slug
                 first = first or slug
@@ -326,6 +331,8 @@ def _find_custom_identity(matches: Callable[[dict[str, Any]], bool],
         name = entry.get("name") if isinstance(entry, dict) else None
         if isinstance(name, str) and name.strip() and matches(entry):
             slug = custom_provider_slug(name, str(entry.get("provider_key", "") or ""))
+            if slug in owned and not entry.get("provider_key"):
+                continue
             if prefer is None or slug == prefer:
                 return slug
             first = first or slug

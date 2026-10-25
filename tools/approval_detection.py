@@ -579,24 +579,80 @@ def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
     return command
 
 
+_MSYS_DRIVE_PATH_RE = re.compile(r"^([A-Za-z]):[/\\](.+)$")
+
+
+def _msys_drive_spellings(path: str) -> list[str]:
+    """``/c/Users/me`` (and the capital-drive form) for ``C:\\Users\\me``; empty without a drive."""
+    match = _MSYS_DRIVE_PATH_RE.match(path) if path else None
+    if match is None:
+        return []
+    letter, rest = match.group(1), match.group(2)
+    return [f"/{letter.lower()}/{rest}", f"/{letter.upper()}/{rest}"]
+
+
+def _path_below(root: str, path: str) -> str | None:
+    """*path* relative to *root* when it sits underneath (either separator; Windows folds case),
+    else ``None``. Only the comparison folds, so the caller gets the tail as it was written."""
+    root_parts = [p for p in re.split(r"[/\\]+", root) if p]
+    path_parts = [p for p in re.split(r"[/\\]+", path) if p]
+    if not root_parts or len(path_parts) <= len(root_parts):
+        return None
+    head, wanted = path_parts[:len(root_parts)], root_parts
+    if os.name == "nt":
+        head, wanted = [p.lower() for p in head], [p.lower() for p in wanted]
+    if head != wanted:
+        return None
+    return "/".join(path_parts[len(root_parts):])
+
+
+def _home_spellings(paths, command: str) -> list[str]:
+    """Every spelling a shell uses for one of *paths*: as written (native and Git Bash drive form)
+    and the same location written through a home variable — ``~``, ``$HOME``, ``$LOCALAPPDATA`` /
+    ``%LOCALAPPDATA%``, ``$USERPROFILE``. Windows's default HERMES_HOME nests under the profile,
+    which Git Bash reaches as ``/c/Users/<me>/AppData/Local/hermes``; folding only the absolute
+    native form left that spelling — and its ``~/…`` and ``$LOCALAPPDATA/…`` siblings — unmatched.
+    The variable spellings are only derived when *command* writes one of ``~``, ``$``, ``%``, so a
+    command with no variable syntax costs nothing beyond its own absolute prefixes."""
+    absolute = list(dict.fromkeys(s for path in paths for s in (path, *_msys_drive_spellings(path))))
+    if not any(marker in command for marker in ("~", "$", "%")):
+        return absolute  # no variable syntax, so no variable spelling can match either
+    # `~` is $HOME in Git Bash, so the variable wins over the native reading of it.
+    home = os.environ.get("HOME") or os.path.expanduser("~")
+    local_appdata = os.environ.get("LOCALAPPDATA", "")
+    roaming = os.environ.get("APPDATA", "")
+    profile = os.environ.get("USERPROFILE", "")
+    roots = [("~", home), ("$HOME", home), ("${HOME}", home),
+             ("$LOCALAPPDATA", local_appdata), ("%LOCALAPPDATA%", local_appdata),
+             ("$APPDATA", roaming), ("%APPDATA%", roaming),
+             ("$USERPROFILE", profile), ("%USERPROFILE%", profile)]
+    relative = [f"{prefix}/{tail}"
+                for prefix, root in roots
+                for spelled_root in dict.fromkeys([root, *_msys_drive_spellings(root)])
+                for candidate in absolute if (tail := _path_below(spelled_root, candidate))]
+    return absolute + list(dict.fromkeys(relative))
+
+
 def _rewrite_resolved_user_home(command: str) -> str:
     """User home (expanduser / realpath / $HOME) -> ``~/``; no-op when unset, degenerate, or unresolvable."""
     try:
         # expanduser, realpath, and an explicit HOME — Windows expanduser uses USERPROFILE, not HOME.
         home = os.path.expanduser("~")
         paths = [home, os.path.realpath(home), os.environ.get("HOME", "")]
+        paths += [spelling for path in list(paths) if path for spelling in _msys_drive_spellings(path)]
     except Exception:
         return command
     return _fold_home_prefixes(command, paths, "~")
 
 
 def _rewrite_resolved_hermes_home(command: str) -> str:
-    """Resolved HERMES_HOME (and its realpath) -> ``~/.hermes/`` so the _HERMES_CONFIG_PATH /
-    _HERMES_ENV_PATH rules match Docker/gateway deployments that spell the absolute path."""
+    """Resolved HERMES_HOME -> ``~/.hermes/`` so the _HERMES_CONFIG_PATH / _HERMES_ENV_PATH rules
+    match Docker/gateway deployments and the platform default in every spelling a shell uses for it
+    (native, Git Bash ``/c/…``, ``~/AppData/Local/hermes``, ``$LOCALAPPDATA/hermes``)."""
     try:
         from hermes_constants import get_hermes_home
         home = get_hermes_home().expanduser()
-        paths = [str(home), str(home.resolve(strict=False))]
+        paths = _home_spellings([str(home), str(home.resolve(strict=False))], command)
     except Exception:
         return command
     return _fold_home_prefixes(command, paths, "~/.hermes")

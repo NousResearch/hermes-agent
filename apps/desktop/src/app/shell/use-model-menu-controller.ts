@@ -18,7 +18,7 @@ import {
   modelPresetServiceTier,
   setModelPreset
 } from '@/store/model-presets'
-import { $defaultReasoningEffort, markComposerSelectionManual } from '@/store/session'
+import { $defaultReasoningEffort, markComposerEffortManual, markComposerSelectionManual } from '@/store/session'
 
 import type { ModelMenuController } from './model-catalog-menu'
 
@@ -118,6 +118,13 @@ export function useModelMenuController({
 
     if (touchesPrimary) {
       markComposerSelectionManual()
+
+      // A preset's effort dimension is an explicit composer pick; without the
+      // manual mark the sticky value stopped shipping on session.create the
+      // moment it was seeded rather than picked (#87036).
+      if (patch.effort !== undefined) {
+        markComposerEffortManual()
+      }
     }
 
     void applyModelPreset(patch, {

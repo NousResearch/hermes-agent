@@ -34,6 +34,7 @@ const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 const COMPOSER_MODEL_KEY = 'hermes.desktop.composer.model'
 const COMPOSER_PROVIDER_KEY = 'hermes.desktop.composer.provider'
 const COMPOSER_MODEL_SOURCE_KEY = 'hermes.desktop.composer.model-source'
+const COMPOSER_EFFORT_SOURCE_KEY = 'hermes.desktop.composer.reasoning-effort-source'
 const COMPOSER_EFFORT_KEY = 'hermes.desktop.composer.reasoning-effort'
 const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
 const COMPOSER_SERVICE_TIER_KEY = 'hermes.desktop.composer.service-tier'
@@ -1731,6 +1732,32 @@ export const markComposerSelectionManual = (): void => {
   setCurrentModelSource('manual')
 }
 
+// The effort pick's own manual/default split — same contract as the model's
+// COMPOSER_MODEL_SOURCE, but keyed beside the (unscoped) effort value it
+// describes. Like the value, the source is global: effort rides session.create
+// for whatever backend owns the new chat, so there is no owner to scope by.
+export const getCurrentReasoningEffortSource = (): ComposerModelSource => {
+  const source = storedString(COMPOSER_EFFORT_SOURCE_KEY)
+
+  return source === 'default' || source === 'manual' ? source : ''
+}
+
+export const $currentReasoningEffortSource = atom<ComposerModelSource>(getCurrentReasoningEffortSource())
+
+export const setCurrentReasoningEffortSource = (source: ComposerModelSource) => {
+  persistString(COMPOSER_EFFORT_SOURCE_KEY, source || null)
+  $currentReasoningEffortSource.set(source)
+}
+
+/** Only an EXPLICIT effort pick — the composer's reasoning menu, the keybind
+ *  stepper, a model row's preset — is 'manual'. A 'manual' pick is the only
+ *  value session.create may ship as a reasoning_effort override; config seeding
+ *  and runtime echoes stay 'default'/'' and resolve per-session on the backend
+ *  (#87036). */
+export const markComposerEffortManual = (): void => {
+  setCurrentReasoningEffortSource('manual')
+}
+
 export const setCurrentReasoningEffort = (next: Updater<string>) => {
   updateAtom($currentReasoningEffort, next)
   persistString(COMPOSER_EFFORT_KEY, $currentReasoningEffort.get() || null)
@@ -1738,6 +1765,12 @@ export const setCurrentReasoningEffort = (next: Updater<string>) => {
   // for; an optimistic pick clears it until the next session.info re-stamps.
   $currentReasoningEffortWire.set('')
 }
+
+/** Paint a runtime-reported effort without claiming the composer's pick: the
+ *  atom moves (a preview the draft fallback can show) but the persisted
+ *  localStorage selection and its manual/default source are untouched — the
+ *  same split setCurrentModelTransient gives the model (#102793, #87036). */
+export const setCurrentReasoningEffortTransient = (next: Updater<string>) => updateAtom($currentReasoningEffort, next)
 
 /** The level the route actually sends for `$currentReasoningEffort`
  *  (`session.info.reasoning_effort_wire`): '' when unknown, equal when verbatim,
@@ -1762,10 +1795,16 @@ export const setCurrentServiceTier = (next: Updater<string>) => {
   persistString(COMPOSER_SERVICE_TIER_KEY, $currentServiceTier.get())
 }
 
+export const setCurrentServiceTierTransient = (next: Updater<string>) => updateAtom($currentServiceTier, next)
+
 export const setCurrentFastMode = (next: Updater<boolean>) => {
   updateAtom($currentFastMode, next)
   persistBoolean(COMPOSER_FAST_KEY, $currentFastMode.get())
 }
+
+/** Same manual-pick protection as the effort/model transient setters: a
+ *  runtime-painted tier must not overwrite the composer's persisted pick. */
+export const setCurrentFastModeTransient = (next: Updater<boolean>) => updateAtom($currentFastMode, next)
 
 export const setYoloActive = (next: Updater<boolean>) => updateAtom($yoloActive, next)
 

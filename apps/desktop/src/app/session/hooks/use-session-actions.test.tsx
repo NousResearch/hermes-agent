@@ -66,6 +66,7 @@ import {
   _resetSessionOwnerHintsForTests,
   getSessionOwnerHint,
   knownSessionOwner,
+  markComposerEffortManual,
   ownerLookupSessionRows,
   sessionMatchesStoredId,
   setActiveSessionId,
@@ -1563,18 +1564,8 @@ describe('createBackendSessionForSend profile routing', () => {
     expect(params).not.toHaveProperty('provider')
   })
 
-  // Effort and fast mode are independent of the model-override decision.
-  it('keeps sending reasoning effort even when the model is omitted', async () => {
-    const params = await createWith(() => {
-      setCurrentModel('openai/gpt-5.6-sol')
-      setCurrentProvider('openai-codex')
-      setCurrentModelSource('default')
-      setCurrentReasoningEffort('high')
-    })
-
-    expect(params).not.toHaveProperty('model')
-    expect(params).toMatchObject({ reasoning_effort: 'high' })
-  })
+  // The reasoning-effort ship/no-ship matrix (manual vs default-sourced,
+  // #87036) lives in session-create-request-effort-source.test.ts.
 
   it('passes the current workspace cwd into session.create', async () => {
     const params = await createWith(() => {
@@ -1636,6 +1627,7 @@ describe('createBackendSessionForSend profile routing', () => {
     // rides along as a per-session override.
     setCurrentModelSource('manual')
     setCurrentReasoningEffort('high')
+    markComposerEffortManual()
     setCurrentFastMode(true)
     // Priority rides as `fast` alone: a pre-Ultrafast backend rejects `service_tier`.
     setCurrentServiceTier('priority')

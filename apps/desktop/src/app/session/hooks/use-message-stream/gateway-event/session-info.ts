@@ -22,11 +22,8 @@ import {
   setActiveSessionId,
   setCurrentBranch,
   setCurrentCwdTransient,
-  setCurrentFastMode,
   setCurrentPersonality,
-  setCurrentReasoningEffort,
   setCurrentReasoningEffortWire,
-  setCurrentServiceTier,
   setCurrentUsage,
   setTerminalBackend,
   setWorkspaceCwdOwner,
@@ -225,6 +222,19 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       // Active-session model/provider still flows through the session state
       // cache via updateSessionState → syncRuntimeMetadataToView below.
 
+      // reasoning_effort / service_tier / fast get the same guard model and
+      // provider have above, on BOTH layers: the session-state patch further
+      // below carries them into the per-session slice (what the pills render
+      // while the session is open), but they must never write the composer
+      // atoms. setCurrentReasoningEffort/setCurrentServiceTier/
+      // setCurrentFastMode persist to the sticky localStorage keys that
+      // session.create ships as explicit per-session overrides, so a session
+      // whose backend-resolved effort/tier differs from the user's pick — an
+      // older resumed session, a per-model default, a value the create
+      // silently dropped — silently replaced the pick and re-pinned every
+      // later new chat (#87036). Only an explicit menu/keybind pick is
+      // 'manual' and ships (getCurrentReasoningEffortSource).
+
       // cwd and branch together name the workspace, so both need the event to
       // be the selected conversation's. A background Kanban worker's update
       // otherwise repointed the composer's branch at its PR worktree while
@@ -271,20 +281,14 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
         setCurrentPersonality(normalizePersonalityValue(payload.personality))
       }
 
-      if (typeof payload?.reasoning_effort === 'string') {
-        setCurrentReasoningEffort(payload.reasoning_effort)
-      }
+      // reasoning_effort / service_tier / fast arrive slice-only: the
+      // sessionInfoStatePatch applied further below carries them into the
+      // per-session state (what the pills render while the session is open).
+      // The composer pick keeps whatever the user chose — see the guard
+      // comment above.
 
       if (typeof payload?.reasoning_effort_wire === 'string') {
         setCurrentReasoningEffortWire(payload.reasoning_effort_wire)
-      }
-
-      if (typeof payload?.service_tier === 'string') {
-        setCurrentServiceTier(payload.service_tier)
-      }
-
-      if (typeof payload?.fast === 'boolean') {
-        setCurrentFastMode(payload.fast)
       }
 
       if (typeof payload?.yolo === 'boolean') {

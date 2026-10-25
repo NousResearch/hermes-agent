@@ -53,6 +53,12 @@ panel. Every other page, and every pairing that does not name an origin, keeps
 this omits `embeddable`, which tells the extension to open the approval page in
 a tab as before.
 
+A framed page is only a few hundred pixels wide, so the extension asks for the
+compact layout with `?embed=1`: a slim header band, the prompt and the two
+buttons, nothing to scroll. The flag is honoured only for an embeddable
+pairing, and the Approve and Deny forms carry it so the result pages stay
+compact too. Every pairing page scrolls with the portal's own scrollbar.
+
 ## Who may press Approve and Deny
 
 Grant and deny are plain form posts, so they check where the post came from:

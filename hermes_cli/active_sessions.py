@@ -127,6 +127,11 @@ class ActiveSessionRefusal(str):
         obj.reason = reason
         return obj
 
+    def __getnewargs_ex__(self) -> tuple[tuple[str, str], dict[str, Any]]:
+        # copy/pickle rebuild via __new__: without the reason, publishing a refused turn's
+        # message.complete (deepcopy of the payload) raises and the viewer hangs.
+        return (str(self), self.reason), {}
+
 
 def format_refusal_stderr(message: str) -> str:
     """Keep the refusal contract across the one-shot CLI subprocess boundary."""

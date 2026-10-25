@@ -147,6 +147,17 @@ def get(profile_key: Optional[str] = None) -> Lease:
     return _read(_path(profile_key))
 
 
+def change_listeners() -> list:
+    """Snapshot of the registered change listeners.
+
+    Lets an idempotent registrar verify its own subscription is still live: a process-wide
+    "installed" flag goes stale the moment anything clears the list (``_reset_for_tests``), and a
+    still-set flag then silences every later registration.
+    """
+    with _lock:
+        return list(_listeners)
+
+
 def on_change(listener: Callable[[str, Lease], None]) -> Callable[[], None]:
     """Subscribe to lease transitions made IN THIS PROCESS (the gateway broadcasts them to Desktop
     clients). Transitions made by another process are observed by reading, not by callback."""

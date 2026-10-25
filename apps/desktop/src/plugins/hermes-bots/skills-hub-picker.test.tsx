@@ -47,6 +47,7 @@ interface PickMessage {
   identifier?: string
   name?: string
   type?: string
+  url?: string
 }
 
 /** Mount the section with the hub browser open and hand back its frame. */
@@ -299,5 +300,57 @@ describe('hub pick messages', () => {
     )
 
     expect(installCalls()).toEqual([])
+  })
+})
+
+// #135315: a link inside the embedded hub reaches the OS through the injected
+// open-bridge instead of window.open, which an embedded frame can never do —
+// the window-open handler cannot prove which frame asked. The plugin side owns
+// the trust decision, so these pin the origin + frame checks it must keep.
+describe('bridged hub opens', () => {
+  function stubOsDoor() {
+    const openExternal = vi.fn()
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { openExternal } })
+
+    return openExternal
+  }
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'hermesDesktop')
+  })
+
+  it('opens a hub link through the OS door', () => {
+    const frame = openHubBrowser()
+    const openExternal = stubOsDoor()
+
+    postPick(
+      { type: 'hermes-hub-open', url: 'https://github.com/NousResearch/hermes-agent' },
+      { source: frame.contentWindow }
+    )
+
+    expect(openExternal).toHaveBeenCalledWith('https://github.com/NousResearch/hermes-agent')
+  })
+
+  it('ignores a bridged open from another origin or another window', () => {
+    const frame = openHubBrowser()
+    const openExternal = stubOsDoor()
+
+    postPick(
+      { type: 'hermes-hub-open', url: 'https://evil.example/pwn' },
+      { origin: 'https://evil.example', source: frame.contentWindow }
+    )
+    postPick({ type: 'hermes-hub-open', url: 'https://evil.example/pwn' }, { source: null })
+
+    expect(openExternal).not.toHaveBeenCalled()
+  })
+
+  it('refuses a scheme the OS door must not receive', () => {
+    const frame = openHubBrowser()
+    const openExternal = stubOsDoor()
+
+    postPick({ type: 'hermes-hub-open', url: 'javascript:alert(1)' }, { source: frame.contentWindow })
+    postPick({ type: 'hermes-hub-open', url: 'file:///etc/passwd' }, { source: frame.contentWindow })
+
+    expect(openExternal).not.toHaveBeenCalled()
   })
 })

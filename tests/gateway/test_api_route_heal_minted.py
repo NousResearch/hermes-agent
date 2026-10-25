@@ -7,6 +7,7 @@ import pytest
 from gateway.config import Platform
 from gateway.session import SessionEntry, SessionSource
 from gateway.session_api import bind_api_session
+from hermes_state_local import API_BINDING_PREFIX
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -77,9 +78,33 @@ async def test_the_next_admitted_turn_reopens_a_finalized_api_row(tmp_path, monk
     assert ended == [None]
 
 
-def test_bind_still_refuses_a_route_held_by_a_used_session(owner):
+def test_bind_takes_back_a_route_main_forked_onto_a_used_replacement(owner):
+    """What main's heal leaves on a finalized bound route: the route's entry names a minted id that
+    holds the turn the heal ran there. The binding names S, so S gets the route back; the
+    replacement keeps its own transcript."""
+    ref = bind_api_session(owner, 'S')
+    route = owner.sessions['S'].route
+    store = owner.runner.session_store
+    owner.db.create_session('minted', source='api_server')
+    owner.db.append_message('minted', 'user', 'two')  # the turn that triggered the heal ran here
+    now = datetime.now()
+    with store._lock:
+        store._ensure_loaded_locked()
+        store._entries[route] = SessionEntry(route, 'minted', now, now, platform=Platform.API_SERVER,
+                                             origin=owner.sessions['S'].source)
+    store._save_entries()
+
+    assert bind_api_session(owner, 'S') == ref
+    with store._lock:
+        assert store._entries[route].session_id == 'S'
+    assert [m['content'] for m in owner.db.get_messages('minted')] == ['two']
+
+
+def test_bind_still_refuses_a_route_held_by_a_bound_session(owner):
     _mint_on_route(owner, 'api-stable')
     owner.db.append_message('minted', 'user', 'a conversation of its own')
+    owner.db._execute_write(lambda conn: conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
+                                                      (API_BINDING_PREFIX + 'minted', '{}')))
 
     with pytest.raises(RuntimeStoreError, match='admission_conflict'):
         bind_api_session(owner, 'api-stable')

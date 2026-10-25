@@ -3,11 +3,11 @@ import asyncio
 from functools import partial
 import hashlib
 import json
+import logging
 
 from gateway.config import Platform
 from gateway.session import SessionEntry, SessionSource, _is_path_unsafe
 from gateway.session_contract import SessionRef
-from gateway.session_local_recovery import unused_session
 from hermes_state_runtime import RuntimeStoreError, _epoch, _json
 
 from hermes_state_local import API_BINDING_PREFIX as _BINDING_PREFIX, API_DECLARED_PREFIX as _DECLARED_PREFIX
@@ -251,9 +251,7 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
         existing = conn.execute("SELECT entry_json FROM gateway_routing WHERE scope='' AND session_key=?",
                                 (route,)).fetchone()
         held = json.loads(existing[0])['session_id'] if existing is not None else session_id
-        # The route is derived from this id, so only the stale-route heal (#54878) names another session
-        # on it: one it minted that never ran a turn goes back to the caller; anything used still refuses.
-        if held != session_id and not unused_session(conn, held):
+        if held != session_id and not _heal_replacement(conn, session_id, held):
             raise RuntimeStoreError('admission_conflict')
         conn.execute('''INSERT INTO sessions(id,source,title,hidden,started_at) VALUES(?,?,?,?,?)
                         ON CONFLICT(id) DO NOTHING''', (session_id, storage_source, title,
@@ -267,6 +265,16 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
                      (_BINDING_PREFIX + session_id, _json(receipt)))
     yield partial(authority.db._execute_write, write)
     return restore_api_session(authority, session_id)
+
+
+def _heal_replacement(conn, caller, holder):
+    """The route is derived from the caller's id, so only the stale-route heal (#54878) names another
+    session on it, one with no binding of its own: the caller takes the route back, used or not, and
+    the replacement keeps its transcript under its own id. A holder with its own binding refuses."""
+    if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (_BINDING_PREFIX + holder,)).fetchone():
+        return False
+    logging.getLogger(__name__).warning('API route of %s taken back from heal replacement %s', caller, holder)
+    return True
 
 
 def reopen_api_session(authority, ref):
@@ -320,7 +328,7 @@ def restore_api_session(authority, session_id):
         current = store._entries.get(entry.session_key)
         if current is not None and current.session_id not in authority.db.get_compression_lineage(session_id):
             with authority.db._read_ctx() as conn:
-                if not unused_session(conn, current.session_id):  # see the bind's routing check
+                if not _heal_replacement(conn, session_id, current.session_id):
                     raise RuntimeStoreError('admission_conflict')
         store._entries[entry.session_key] = current if current is not None and current.session_id == target else entry
     authority.sessions.setdefault(session_id, LiveSession(source, entry.session_key))

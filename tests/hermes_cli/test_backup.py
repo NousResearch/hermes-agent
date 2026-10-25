@@ -245,10 +245,8 @@ class TestIterBackupFiles:
         assert str(Path("models/big.gguf")) not in selected
         assert not any(s.startswith("hermes-agent") for s in selected)
 
-    def test_prunes_browser_use_cli_profiles_at_home_roots_only(self, tmp_path):
-        """The Browser Use CLI backend writes ``HERMES_HOME/browser_profiles/`` (underscore) — a
-        live Chromium user-data dir holding Login Data / Cookies. It must never enter an archive,
-        at the root or under ``profiles/<name>/``; a skill's same-named dir is user data (#117346)."""
+    def test_prunes_browser_profiles_at_home_roots_only(self, tmp_path):
+        """Live Chromium profiles stay out of archives, while nested user data remains included."""
         from hermes_cli.backup import _iter_backup_files
 
         root = tmp_path / ".hermes"
@@ -257,7 +255,10 @@ class TestIterBackupFiles:
             "browser_profiles/browser-use-default/Default/Login Data": False,
             "browser_profiles/browser-use-default/Default/Network/Cookies": False,
             "profiles/coder/browser_profiles/browser-use-default/Default/Cookies": False,
+            "chrome-debug/Default/Login Data": False,
+            "profiles/coder/chrome-debug/Default/Cookies": False,
             "skills/example/browser_profiles/notes.md": True,
+            "skills/example/chrome-debug/notes.md": True,
         }
         for rel in files:
             f = root / rel

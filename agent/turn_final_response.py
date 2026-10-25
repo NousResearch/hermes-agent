@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional
 from agent.message_metadata import append_message
 from agent.reasoning_promotion import answer_in_reasoning_capability
 from agent.repetition_guard import STOP_PATH_MIN_CHARS, is_runaway_repetition
+from agent.stream_delivery import publish_held_final_row
 from agent.turn_failure_copy import stamp_failure
 from agent.turn_empty_response import recover_empty_response
 from agent.turn_stop_gates import apply_stop_gates
@@ -50,7 +51,21 @@ class FinalResponseVerdict:
     _pending_verification_response: Any
     _pending_verification_response_previewed: Any
     api_call_count: int
-    result: Optional[Dict[str, Any]] = None
+    result: Optional[dict[str, Any]] = None
+
+
+def _absorb_continuation_fragments(final_response: Any, parts: Any, messages: Any) -> tuple[Any, bool]:
+    """Stitch length-continuation fragments in front of the closing piece; True when there were
+    any. The continuation recovered, so the fragment rows stay in the transcript, unflagged."""
+    if not parts:
+        return final_response, False
+    from agent.conversation_loop import _join_truncated_parts
+
+    for frag in messages:
+        if isinstance(frag, dict):
+            frag.pop("_length_continuation_fragment", None)
+            frag.pop("_length_continuation_nudge", None)
+    return _join_truncated_parts([*parts, (final_response, False)]), True
 
 
 def finish_text_response(
@@ -68,10 +83,9 @@ def finish_text_response(
     stop gates accept it."""
     from agent.conversation_loop import (
         _CODEX_ACK_CONTINUATION_NUDGE, _DEGENERATE_FINAL_NUDGE, _DROPPED_TOOLCALL_NUDGE_CONTENT,
-        _join_truncated_parts
     )
 
-    def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> FinalResponseVerdict:
+    def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> FinalResponseVerdict:
         return FinalResponseVerdict(
             action=action, active_system_prompt=active_system_prompt, final_response=final_response,
             _turn_exit_reason=_turn_exit_reason,
@@ -250,15 +264,9 @@ def finish_text_response(
 
     codex_ack_continuations = 0
 
-    if truncated_response_parts:
-        final_response = _join_truncated_parts([*truncated_response_parts, (final_response, False)])
-        truncated_response_parts = []
-        length_continue_retries = 0
-        # The continuation recovered, so the fragments stay in the transcript.
-        for _frag in messages:
-            if isinstance(_frag, dict):
-                _frag.pop("_length_continuation_fragment", None)
-                _frag.pop("_length_continuation_nudge", None)
+    final_response, _joined = _absorb_continuation_fragments(final_response, truncated_response_parts, messages)
+    if _joined:
+        truncated_response_parts, length_continue_retries = [], 0
 
     final_response = agent._strip_think_blocks(final_response).strip()
 
@@ -356,6 +364,7 @@ def finish_text_response(
             final_msg["api_content"] = final_response
         else:
             final_msg["content"] = final_response
+    publish_held_final_row(agent, final_msg, final_response, _joined)
 
     append_message(messages, final_msg)
     # Make the answer durable before leaving the loop (_DB_PERSISTED_MARKER keeps

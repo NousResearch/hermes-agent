@@ -69,9 +69,11 @@ class Reasoning:
 
 @dataclass
 class Message:
-    """An assistant ``message`` output item (streamed as ``output_text`` deltas)."""
+    """An assistant ``message`` output item (streamed as ``output_text`` deltas); ``phase`` is the
+    Codex ``commentary`` / ``final_answer`` label (unset by default)."""
 
     text: str
+    phase: str | None = None
 
 
 @dataclass
@@ -82,7 +84,7 @@ class FunctionCall:
     args: dict[str, Any] | str = field(default_factory=dict)
 
 
-Item = Union[Reasoning, Message, FunctionCall]
+Item = Reasoning | Message | FunctionCall
 
 
 @dataclass
@@ -93,6 +95,7 @@ class Turn:
     input_tokens: int = 100
     output_tokens: int = 20
     cached_tokens: int = 0
+    cache_write_tokens: int = 0
     drop_after_events: int | None = None  # close the socket after N events (no terminal event)
 
 
@@ -115,7 +118,7 @@ class HttpError:
     retry_after: float | None = None
 
 
-Step = Union[Turn, SoftFail, HttpError]
+Step = Turn | SoftFail | HttpError
 Responder = Callable[[dict[str, Any]], Step]
 
 _REQUEST_ADAPTER = TypeAdapter(ResponseCreateParamsStreaming)
@@ -167,7 +170,7 @@ def _explain_items(items: list[Any]) -> str:
                 ta.dump_json(ta.validate_python(item), warnings=False)
                 errors = []
                 break
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 errors.append(f"{member.__name__}: {exc}")
         if errors:
             lines.append(f"input[{idx}] type={item['type']}: " + " | ".join(errors))
@@ -182,7 +185,7 @@ def validate_request(body: dict[str, Any]) -> str | None:
     body = _apply_vendor_deviations(body)
     try:
         _REQUEST_ADAPTER.dump_json(_REQUEST_ADAPTER.validate_python(body), warnings=False)
-    except Exception as exc:  # noqa: BLE001 - reported to the test verbatim
+    except Exception as exc:
         detail = _explain_items(body["input"]) if isinstance(body.get("input"), list) else ""
         return (detail or str(exc))[:4000]
     return None
@@ -215,7 +218,7 @@ def _built_item(item: Item, idx: int) -> Any:
     if isinstance(item, Message):
         return ResponseOutputMessage(
             id=f"msg_{idx}_{uuid.uuid4().hex[:8]}", role="assistant", status="completed", type="message",
-            content=[ResponseOutputText(annotations=[], text=item.text, type="output_text")])
+            content=[ResponseOutputText(annotations=[], text=item.text, type="output_text")], phase=item.phase)
     args = item.args if isinstance(item.args, str) else json.dumps(item.args)
     return ResponseFunctionToolCall(id=f"fc_{idx}_{uuid.uuid4().hex[:8]}", call_id=f"call_{uuid.uuid4().hex[:10]}",
                                     name=item.name, arguments=args, type="function_call", status="completed")
@@ -260,7 +263,8 @@ def turn_events(turn: Turn) -> list[dict[str, Any]]:
     usage = ResponseUsage(
         input_tokens=turn.input_tokens, output_tokens=turn.output_tokens,
         total_tokens=turn.input_tokens + turn.output_tokens,
-        input_tokens_details=InputTokensDetails(cached_tokens=turn.cached_tokens),
+        input_tokens_details=InputTokensDetails(cached_tokens=turn.cached_tokens,
+                                                 cache_write_tokens=turn.cache_write_tokens),
         output_tokens_details=OutputTokensDetails(reasoning_tokens=0))
     events.append(ResponseCompletedEvent(response=_response(resp_id, "completed", built, usage),
                                          sequence_number=seq(), type="response.completed"))
@@ -299,7 +303,7 @@ class FakeResponsesServer:
         self._lock = threading.Lock()
         self._server: ThreadingHTTPServer | None = None
 
-    def __enter__(self) -> "FakeResponsesServer":
+    def __enter__(self) -> FakeResponsesServer:
         server = ThreadingHTTPServer(("127.0.0.1", 0), _handler_for(self))
         server.daemon_threads = True
         self._server = server
@@ -350,14 +354,14 @@ def _handler_for(server: FakeResponsesServer) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(body)
 
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             if self.path.rstrip("/").endswith("/models"):
                 self._json(200, {"object": "list", "data": [
                     {"id": MODEL_ID, "object": "model", "context_length": 128000}]})
                 return
             self._json(404, {"error": {"message": "not found"}})
 
-        def do_POST(self) -> None:  # noqa: N802
+        def do_POST(self) -> None:
             raw = self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
             try:
                 body = json.loads(raw or b"{}")

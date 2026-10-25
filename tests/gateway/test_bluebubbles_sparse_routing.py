@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.bluebubbles import BlueBubblesAdapter
+from plugins.platforms.bluebubbles.adapter import BlueBubblesAdapter
 
 _PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR7kAAAAASUVORK5CYII=")

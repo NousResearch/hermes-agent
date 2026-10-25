@@ -31,7 +31,7 @@ def minimax_profile(request):
     if someone later replaces the registered class with a plain
     ``ProviderProfile``, every assertion below collapses.
     """
-    import model_tools  # noqa: F401  -- triggers plugin discovery
+    import model_tools
     import providers
 
     profile = providers.get_provider_profile(request.param)
@@ -77,7 +77,7 @@ class TestMinimaxM3OpenAIReasoningWireShape:
     """MiniMax-M3 on api.minimax.io/v1 gets MiniMax's OpenAI-compatible knobs."""
 
     def test_m3_openai_route_requests_reasoning_split_by_default(self):
-        import model_tools  # noqa: F401
+        import model_tools
         import providers
 
         profile = providers.get_provider_profile("minimax")
@@ -102,7 +102,7 @@ class TestMinimaxM3OpenAIReasoningWireShape:
     def test_non_m3_or_non_global_openai_routes_emit_no_openai_reasoning_knobs(
         self, model, base_url
     ):
-        import model_tools  # noqa: F401
+        import model_tools
         import providers
 
         profile = providers.get_provider_profile("minimax")
@@ -116,7 +116,7 @@ class TestMinimaxM3OpenAIReasoningWireShape:
         assert top_level == {}
 
     def test_transport_threads_base_url_to_profile(self):
-        import model_tools  # noqa: F401
+        import model_tools
         import providers
         from agent.transports.chat_completions import ChatCompletionsTransport
 
@@ -143,7 +143,7 @@ class TestMinimaxOauthAliases:
     anthropic_messages wire, extra_body and headers (#107928)."""
 
     def test_each_documented_oauth_alias_resolves_to_minimax_oauth(self):
-        import model_tools  # noqa: F401
+        import model_tools
         import providers
 
         for alias in ("minimax_oauth", "minimax-portal", "minimax-global"):

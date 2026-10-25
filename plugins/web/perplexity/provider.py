@@ -82,7 +82,7 @@ def _managed_gateway(token_reader=None):
     return gw.resolve_free_search_gateway(token_reader=token_reader)
 
 
-def _perplexity_request(endpoint: str, payload: Dict[str, Any], gateway=None) -> Dict[str, Any]:
+def _perplexity_request(endpoint: str, payload: dict[str, Any], gateway=None) -> dict[str, Any]:
     """POST to Perplexity or the supplied gateway; return parsed JSON.
 
     Raises ``ValueError`` when the key is missing or on any non-2xx status,
@@ -119,7 +119,7 @@ def _perplexity_request(endpoint: str, payload: Dict[str, Any], gateway=None) ->
     return response.json()
 
 
-def _normalize_search_results(response: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_search_results(response: dict[str, Any]) -> dict[str, Any]:
     """Map Search API ``{results: [{title,url,snippet,...}]}`` to the tool shape."""
     web_results = []
     for i, result in enumerate(response.get("results") or []):
@@ -134,7 +134,7 @@ def _normalize_search_results(response: Dict[str, Any]) -> Dict[str, Any]:
     return {"success": True, "data": {"web": web_results}}
 
 
-def _normalize_snippets(response: Dict[str, Any], urls: List[str]) -> List[Dict[str, Any]]:
+def _normalize_snippets(response: dict[str, Any], urls: list[str]) -> list[dict[str, Any]]:
     """Map ``{results: [{url,text?,tokens_count?,error?}]}`` to extract documents.
 
     One document per requested URL, in request order. A URL the backend
@@ -142,11 +142,11 @@ def _normalize_snippets(response: Dict[str, Any], urls: List[str]) -> List[Dict[
     rather than raising — a 200 does not mean every page succeeded.
     """
     by_url = {r.get("url", ""): r for r in (response.get("results") or []) if isinstance(r, dict)}
-    documents: List[Dict[str, Any]] = []
+    documents: list[dict[str, Any]] = []
     for url in urls:
         result = by_url.get(url, {})
         text = result.get("text") or ""
-        doc: Dict[str, Any] = {
+        doc: dict[str, Any] = {
             "url": url,
             "title": "",
             "content": text,
@@ -160,9 +160,9 @@ def _normalize_snippets(response: Dict[str, Any], urls: List[str]) -> List[Dict[
     return documents
 
 
-def _query_for_urls(urls: List[str]) -> str:
+def _query_for_urls(urls: list[str]) -> str:
     """Derive a relevance query from URL path words (``/bloom-filter`` -> ``bloom filter``)."""
-    words: List[str] = []
+    words: list[str] = []
     for url in urls:
         parsed = urlparse(url)
         for token in parsed.path.replace("-", " ").replace("_", " ").replace("/", " ").split():
@@ -197,7 +197,7 @@ class PerplexityWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return True
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
         """Execute a Perplexity Search API query.
 
         ``search_context_size: low`` keeps ``snippet`` at description length;
@@ -234,11 +234,11 @@ class PerplexityWebSearchProvider(WebSearchProvider):
             return _normalize_search_results(raw)
         except ValueError as exc:
             return {"success": False, "error": str(exc)}
-        except Exception as exc:  # noqa: BLE001 — including httpx errors
+        except Exception as exc:
             logger.warning("Perplexity search error: %s", exc)
             return {"success": False, "error": f"Perplexity search failed: {exc}"}
 
-    def extract(self, urls: List[str], **kwargs: Any) -> List[Dict[str, Any]]:
+    def extract(self, urls: list[str], **kwargs: Any) -> list[dict[str, Any]]:
         """Return query-relevant snippets for one or more URLs.
 
         Sync — the underlying call is httpx.post(...). Per-URL failures
@@ -263,14 +263,14 @@ class PerplexityWebSearchProvider(WebSearchProvider):
             return _normalize_snippets(raw, list(urls))
         except ValueError as exc:
             return [{"url": u, "title": "", "content": "", "error": str(exc)} for u in urls]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("Perplexity extract error: %s", exc)
             return [
                 {"url": u, "title": "", "content": "", "error": f"Perplexity extract failed: {exc}"}
                 for u in urls
             ]
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         return {
             "name": "Perplexity",
             "badge": "paid",

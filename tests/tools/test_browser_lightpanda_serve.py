@@ -45,7 +45,7 @@ def _isolate(tmp_path, monkeypatch):
     state.mkdir()
     monkeypatch.setattr(lp, "_state_dir", lambda: state)
     # Never touch the developer's real ~/.local/bin/lightpanda.
-    monkeypatch.setattr(lp, "_home_candidates", lambda: [])
+    monkeypatch.setattr(lp, "_home_candidates", list)
     monkeypatch.setattr(lp, "_safe_start_time", lambda pid: 111)
     lp._binary_supports_http_cache.cache_clear()
     monkeypatch.setattr(lp, "_binary_supports_http_cache", lambda binary: True)
@@ -68,20 +68,20 @@ class TestFindBinary:
     def test_prefers_path(self, tmp_path, monkeypatch):
         exe = _exe(tmp_path / "bin" / "lightpanda")
         monkeypatch.setenv("PATH", str(tmp_path / "bin"))
-        monkeypatch.setattr("tools.browser_tool_install._merge_browser_path", lambda p: p)
+        monkeypatch.setattr(lp, "merge_sane_path", lambda p: p)
         assert lp.find_lightpanda_binary() == str(exe)
 
     @pytest.mark.platforms("posix")
     def test_falls_back_to_home_candidates(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PATH", str(tmp_path / "empty"))
-        monkeypatch.setattr("tools.browser_tool_install._merge_browser_path", lambda p: p)
+        monkeypatch.setattr(lp, "merge_sane_path", lambda p: p)
         exe = _exe(tmp_path / ".lightpanda" / "lightpanda")
         monkeypatch.setattr(lp, "_home_candidates", lambda: [exe])
         assert lp.find_lightpanda_binary() == str(exe)
 
     def test_none_when_absent(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PATH", str(tmp_path / "empty"))
-        monkeypatch.setattr("tools.browser_tool_install._merge_browser_path", lambda p: p)
+        monkeypatch.setattr(lp, "merge_sane_path", lambda p: p)
         assert lp.find_lightpanda_binary() is None
 
     @pytest.mark.platforms("windows")
@@ -221,7 +221,7 @@ class TestLaunch:
     def test_spawn_failure_is_reported(self, monkeypatch):
         monkeypatch.setattr(lp, "find_lightpanda_binary", lambda: "/opt/lightpanda")
         monkeypatch.setattr(lp, "_pick_free_loopback_port", lambda: 1)
-        monkeypatch.setattr(lp, "_browser_env", lambda: {})
+        monkeypatch.setattr(lp, "_browser_env", dict)
 
         def boom(*a, **k):
             raise OSError("exec format error")

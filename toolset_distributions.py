@@ -11,7 +11,7 @@ import random
 from toolsets import validate_toolset
 
 
-def _dist(description: str, **toolsets: int) -> Dict[str, object]:
+def _dist(description: str, **toolsets: int) -> dict[str, object]:
     return {"description": description, "toolsets": toolsets}
 
 
@@ -46,12 +46,12 @@ DISTRIBUTIONS = {
 }
 
 
-def get_distribution(name: str) -> Optional[Dict[str, Any]]:
+def get_distribution(name: str) -> Optional[dict[str, Any]]:
     """Distribution definition (description + toolsets), or None if unknown."""
     return DISTRIBUTIONS.get(name)
 
 
-def list_distributions() -> Dict[str, Dict]:
+def list_distributions() -> dict[str, dict]:
     return DISTRIBUTIONS.copy()
 
 
@@ -59,12 +59,12 @@ def validate_distribution(distribution_name: str) -> bool:
     return distribution_name in DISTRIBUTIONS
 
 
-def _entry_members(entry: str) -> List[str]:
+def _entry_members(entry: str) -> list[str]:
     """Toolsets named by a distribution entry: a bare name or a "+"-grouped compound."""
     return [name.strip() for name in entry.split("+")]
 
 
-def sample_toolsets_from_distribution(distribution_name: str) -> List[str]:
+def sample_toolsets_from_distribution(distribution_name: str) -> list[str]:
     """Sample toolset names, each entry included independently with its % probability.
 
     An entry may be a single toolset or a "+"-grouped compound like

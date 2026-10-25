@@ -52,7 +52,7 @@ def test_provider_not_configured_is_named_in_the_error_event(monkeypatch, emitte
 
     _run_build(session)
 
-    kind, payload = next((k, p) for k, p in emitted if k == "error")
+    _kind, payload = next((k, p) for k, p in emitted if k == "error")
     assert payload["code"] == "provider_not_configured"
     assert "No LLM provider configured" in payload["message"]  # the sentence still reaches the reader
 

@@ -4,6 +4,7 @@ When ``reasoning`` extra_body is safe to send, LM Studio / Ollama / GitHub Model
 ``reasoning_content`` echo families, and strict-API tool-call sanitising.
 Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
+import logging
 import time
 
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
@@ -152,28 +153,43 @@ class ReasoningParamsMixin:
             return None
         return {"effort": clamp_github_reasoning_effort(cfg.get("effort"), supported)}
 
-    _build_assistant_message = _forward("agent.chat_completion_helpers", "build_assistant_message")
+    def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
+        """``build_assistant_message``; a held turn's row with visible text comes back typed hidden
+        (``withhold_held_row``) until ``finish_text_response`` publishes it as the final."""
+        from agent.chat_completion_helpers import build_assistant_message
+        from agent.stream_delivery import withhold_held_row
 
-    def _needs_thinking_reasoning_pad(self) -> bool:
-        """True when the provider enforces ``reasoning_content`` echo-back on tool-call replays (DeepSeek, Kimi,
-        MiMo thinking all 400 without it). Cached per (provider, model, base_url), invalidated by
-        ``switch_model()`` / ``_try_activate_fallback()`` — called ~16× per turn.
+        return withhold_held_row(self, build_assistant_message(self, assistant_message, finish_reason))
 
-        DeepSeek v4 thinking and Kimi / Moonshot thinking both reject replays of assistant tool-call
-        messages that omit ``reasoning_content`` (refs 15250, #17400). Xiaomi MiMo thinking mode has the
-        same requirement.
+    def _reasoning_replay_route(self):
+        """Reasoning replay decision for the active route (``message_sanitization.reasoning_replay_route``).
+
+        Cached per (api_mode, provider, model, base_url, opt-in, rejected keys) — called many times
+        per turn — and recomputed after ``switch_model()`` / fallback activation or a recorded
+        field rejection, the only events allowed to change the replayed bytes mid-session.
         """
-        key = (self.provider, self.model, getattr(self, "_base_url_lower", self.base_url))
-        cached = getattr(self, "_thinking_pad_cache", None)
+        from agent.message_sanitization import reasoning_replay_route, rejected_reasoning_carriers
+
+        rejected = rejected_reasoning_carriers(self)
+        key = (getattr(self, "api_mode", None), self.provider, self.model, getattr(self, "_base_url_lower", self.base_url),
+               self._reasoning_echo_opt_in(), rejected)
+        cached = getattr(self, "_reasoning_route_cache", None)
         if cached is not None and cached[0] == key:
             return cached[1]
-        result = (self._needs_deepseek_tool_reasoning() or self._needs_kimi_tool_reasoning()
-                  or self._needs_mimo_tool_reasoning() or self._reasoning_echo_opt_in())
-        self._thinking_pad_cache = (key, result)
-        return result
+        route = reasoning_replay_route(key[0], self.provider, self.model, self.base_url,
+                                       echo_opt_in=key[4], rejected=rejected)
+        self._reasoning_route_cache = (key, route)
+        return route
+
+    def _needs_thinking_reasoning_pad(self) -> bool:
+        """True for the must-echo tier: DeepSeek / Kimi / MiMo thinking 400 on a replayed tool-call turn
+        without a non-empty ``reasoning_content`` (#15250, #17400), plus a ``model.reasoning_echo`` opt-in
+        for gateways proxying them. Never true on a route that does not read the field."""
+        return self._reasoning_replay_route().pad
 
     def _reasoning_echo_opt_in(self) -> bool:
-        """``model.reasoning_echo`` opt-in for the *current* provider (covers gateways the host rules miss);
+        """``model.reasoning_echo``: treat the *current* provider as must-echo (pad tool-call turns) — for
+        gateways proxying DeepSeek/Kimi/MiMo that the host rules miss. Replay itself is on by default;
         fallback activation swaps the flag and ``restore_primary_runtime()`` restores it."""
         return bool(getattr(self, "_reasoning_echo_flag", False))
 
@@ -183,7 +199,15 @@ class ReasoningParamsMixin:
         try:
             from hermes_cli.config import load_config_readonly
             return bool((load_config_readonly().get("model") or {}).get("reasoning_echo"))
-        except Exception:
+        except Exception as exc:  # health: allow BLE001 -- a config failure must fall back, not fail init
+            # Log the class, never the config value or exception traceback.
+            logging.getLogger("run_agent").warning(
+                "Agent configuration for model.reasoning_echo could not be loaded (%s); "
+                "using the default reasoning echo setting. Check the active Hermes Python "
+                "environment and dependencies; run 'hermes config check' after "
+                "configuration imports work again.",
+                type(exc).__name__,
+            )
             return False
 
     # Echo families are host/provider-driven, not model-name-driven: aggregators re-exporting Kimi reject the
@@ -210,15 +234,18 @@ class ReasoningParamsMixin:
     _reapply_reasoning_echo_for_provider = _forward("agent.agent_runtime_helpers", "reapply_reasoning_echo_for_provider")
 
     @staticmethod
-    def _sanitize_tool_calls_for_strict_api(api_msg: dict, model: "str | None" = None) -> dict:
+    def _sanitize_tool_calls_for_strict_api(api_msg: dict, model: str | None = None, *, base_url: str | None = None,
+                                            provider: str | None = None) -> dict:
         """Strip Codex Responses fields from tool_calls for strict Chat Completions APIs (Mistral, Fireworks
-        400/422 on unknown fields). ``extra_content`` (Gemini thought_signature) is kept only for Gemini-family
-        models. Builds new dicts so the internal history keeps the Codex fields for a later fallback."""
+        400/422 on unknown fields). ``extra_content`` (Gemini thought_signature) is kept only on Gemini routes
+        (model family, Gemini host or provider). Builds new dicts so the internal history keeps the Codex
+        fields for a later fallback."""
         tool_calls = api_msg.get("tool_calls")
         if not isinstance(tool_calls, list):
             return api_msg
         from agent.transports.chat_completions import _model_consumes_thought_signature
-        strip = {"call_id", "response_item_id"} | (set() if _model_consumes_thought_signature(model) else {"extra_content"})
+        keep_signature = _model_consumes_thought_signature(model, base_url, provider)
+        strip = {"call_id", "response_item_id"} | (set() if keep_signature else {"extra_content"})
         api_msg["tool_calls"] = [{k: v for k, v in tc.items() if k not in strip} if isinstance(tc, dict) else tc
                                  for tc in tool_calls]
         return api_msg

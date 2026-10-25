@@ -15,7 +15,7 @@ import shutil
 import stat
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -375,7 +375,7 @@ class TestInstall:
         with use_cron_store(staged):
             shipped = list_jobs(include_disabled=True)[0]
             update_job(shipped["id"], {
-                "next_run_at": (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+                "next_run_at": (datetime.now(UTC) - timedelta(days=2)).isoformat()
             })
         (staged / "cron" / "future-runtime.bin").write_text("runtime", encoding="utf-8")
         (staged / "skills" / ".future-runtime").write_text("runtime", encoding="utf-8")
@@ -830,7 +830,7 @@ class TestInstalledAtStamp:
         class _FakeDT(_dt.datetime):
             @classmethod
             def now(cls, tz=None):
-                return _dt.datetime(2099, 1, 1, 0, 0, 0, tzinfo=tz or _dt.timezone.utc)
+                return _dt.datetime(2099, 1, 1, 0, 0, 0, tzinfo=tz or _dt.UTC)
         monkeypatch.setattr(
             "hermes_cli.profile_distribution.datetime", _FakeDT, raising=True
         )

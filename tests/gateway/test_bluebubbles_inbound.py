@@ -479,7 +479,7 @@ class TestBlueBubblesAdmissionBoundaries:
             downloads.append(request.url.path)
             return httpx.Response(200, content=b'probe-photo')
 
-        from gateway.platforms import bluebubbles as module
+        from plugins.platforms.bluebubbles import adapter as module
         monkeypatch.setattr(module, 'cache_image_from_bytes_async', AsyncMock(return_value='/tmp/photo.png'))
         async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
             adapter.client = client
@@ -535,7 +535,6 @@ class TestBlueBubblesAdmissionBoundaries:
 
         async def handler(event):
             seen.append(event.message_id)
-            return None
 
         adapter.set_message_handler(handler)
         source = adapter.build_source(chat_id='+155****0100', chat_type='dm', user_id='+155****0100')

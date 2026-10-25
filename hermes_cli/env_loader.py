@@ -14,7 +14,7 @@ from pathlib import Path
 # Kept at module level on purpose: importing this module must fail when the dotenv install is
 # wiped (#57828) so early recovery provably runs before third-party imports (test_early_recovery).
 # The parser internals are imported lazily below because gateway tests stub ``sys.modules["dotenv"]``.
-import dotenv  # noqa: F401
+import dotenv
 from utils import atomic_replace, load_yaml_file_readonly, mkstemp_beside
 
 logger = logging.getLogger(__name__)
@@ -175,6 +175,10 @@ def hydrate_profile_secret_sources(hermes_home: str | os.PathLike) -> dict[str, 
 
 def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     """Locked implementation for :func:`hydrate_profile_secret_sources`."""
+    from agent.safe_worker_policy import worker_config_snapshot
+
+    if worker_config_snapshot() is not None:
+        return {}
     home_key = str(home.resolve())
     if home_key in _APPLIED_HOMES:
         return get_secret_source_values(home)
@@ -186,7 +190,7 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
 
     try:
         cfg = _load_secrets_config(home)
-    except Exception:  # noqa: BLE001 — external sources must not block routing
+    except Exception:
         return {}
     if not cfg:
         return {}
@@ -207,7 +211,7 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
                 local_env.setdefault(_name, _value)
         local_env["HERMES_HOME"] = str(home)
         report = apply_all(cfg, home, environ=local_env)
-    except Exception:  # noqa: BLE001 — preserve fail-open startup behavior
+    except Exception:
         return {}
 
     if not report.sources:
@@ -268,7 +272,7 @@ def format_secret_source_suffix(env_var: str) -> str:
         registered = get_source(source)
         if registered is not None and registered.label:
             return f" (from {registered.label})"
-    except Exception:  # noqa: BLE001 — label lookup must never raise
+    except Exception:
         pass
     return f" (from {source})"
 
@@ -321,6 +325,76 @@ def _sanitize_loaded_credentials() -> None:
         )
 
 
+def _parse_dotenv_file(path: Path) -> list[tuple[str, str | None]]:
+    """``(name, raw value)`` assignments of one dotenv file, uninterpolated, in file order."""
+    raw = path.read_bytes()
+    try:
+        # utf-8-sig strips a leading BOM (PowerShell 5.1 / Notepad); plain utf-8 would keep U+FEFF on the
+        # first key name and silently drop it from os.environ under its canonical name.
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raw = raw.removeprefix(codecs.BOM_UTF8)
+        text = raw.decode("latin-1")
+    # Imported here, not at module level: gateway tests stub ``sys.modules["dotenv"]`` with a bare module
+    # exposing only ``load_dotenv``, and ``gateway.run`` imports this module at import time.
+    from dotenv.main import DotEnv
+
+    return list(DotEnv(dotenv_path=None, stream=io.StringIO(text), interpolate=False).parse())
+
+
+def _dotenv_lookup_env(load_pass: int | None) -> dict[str, str]:
+    """``os.environ`` with every value an earlier pass (any pass, for ``None``) published peeled back to
+    its baseline — what ``${VAR}`` resolves against (see ``_DOTENV_PUBLISHED``). Caller holds the lock."""
+    lookup_env = dict(os.environ)
+    for name, (baseline, published, published_pass) in _DOTENV_PUBLISHED.items():
+        if published_pass != load_pass and lookup_env.get(name) == published:
+            if baseline is None:
+                del lookup_env[name]  # absent, so ``${VAR:-default}`` takes the default again
+            else:
+                lookup_env[name] = baseline
+    return lookup_env
+
+
+def _resolve_dotenv_assignments(
+    assignments: list[tuple[str, str | None]], lookup_env: dict[str, str], *, override: bool,
+) -> dict[str, str | None]:
+    """Expand ``${VAR}`` / ``${VAR:-default}`` like ``dotenv.main.resolve_variables``, minus the live
+    ``os.environ``: a line sees *lookup_env* and the file's earlier lines (earlier lines win under
+    *override*, the environment otherwise)."""
+    from dotenv.variables import parse_variables
+
+    resolved: dict[str, str | None] = {}
+    for name, value in assignments:
+        if value is not None:
+            lookup = {**lookup_env, **resolved} if override else {**resolved, **lookup_env}
+            value = "".join(atom.resolve(lookup) for atom in parse_variables(value))
+        resolved[name] = value
+    return resolved
+
+
+def resolve_home_dotenv(home: Path) -> dict[str, str]:
+    """What ``load_hermes_dotenv`` would publish from *home*'s dotenv layers, read-only: the home's
+    ``.env`` then the administrator-managed ``.env``, both with override and ``${VAR}`` expanded by the
+    same rules against the process's own environment (this process's dotenv output peeled back), each
+    layer seeing the one before. External secret sources and the project ``.env`` are not included."""
+    from hermes_cli import managed_scope
+
+    managed_dir = managed_scope.get_managed_dir()
+    layers = [home / ".env", *([managed_dir / ".env"] if managed_dir is not None else [])]
+    with _DOTENV_LOCK:
+        lookup_env = _dotenv_lookup_env(None)
+    out: dict[str, str] = {}
+    for path in layers:
+        try:
+            assignments = _parse_dotenv_file(path)
+        except OSError:
+            continue
+        for name, value in _resolve_dotenv_assignments(assignments, lookup_env, override=True).items():
+            if value is not None:
+                lookup_env[name] = out[name] = value
+    return out
+
+
 def _load_dotenv_with_fallback(
     path: Path, *, override: bool, load_pass: int | None = None, managed: bool = False,
 ) -> None:
@@ -331,38 +405,11 @@ def _load_dotenv_with_fallback(
     ``load_pass`` groups the layered files of one ``load_hermes_dotenv`` call: within a pass a later layer
     (project, managed) still sees the earlier layer's output, as it always did; only OTHER passes' output
     is peeled. A bare call (``hermes send``'s direct reload) is its own pass."""
-    raw = path.read_bytes()
-    try:
-        # utf-8-sig strips a leading BOM (PowerShell 5.1 / Notepad); plain utf-8 would keep U+FEFF on the
-        # first key name and silently drop it from os.environ under its canonical name.
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        if raw.startswith(codecs.BOM_UTF8):  # strip the BOM by hand: utf-8-sig can't once we decode latin-1
-            raw = raw[len(codecs.BOM_UTF8) :]
-        text = raw.decode("latin-1")
-    # Imported here, not at module level: gateway tests stub ``sys.modules["dotenv"]`` with a bare module
-    # exposing only ``load_dotenv``, and ``gateway.run`` imports this module at import time.
-    from dotenv.main import DotEnv
-    from dotenv.variables import parse_variables
-
-    assignments = list(DotEnv(dotenv_path=None, stream=io.StringIO(text), interpolate=False).parse())
-
+    assignments = _parse_dotenv_file(path)
     with _DOTENV_LOCK:
         if load_pass is None:
             load_pass = next(_DOTENV_PASSES)
-        lookup_env: dict[str, str | None] = dict(os.environ)
-        for name, (baseline, published, published_pass) in _DOTENV_PUBLISHED.items():
-            if published_pass != load_pass and lookup_env.get(name) == published:
-                if baseline is None:
-                    del lookup_env[name]  # absent, so ``${VAR:-default}`` takes the default again
-                else:
-                    lookup_env[name] = baseline
-        resolved: dict[str, str | None] = {}
-        for name, value in assignments:
-            if value is not None:  # mirrors dotenv.main.resolve_variables, minus the live os.environ
-                lookup = {**lookup_env, **resolved} if override else {**resolved, **lookup_env}
-                value = "".join(atom.resolve(lookup) for atom in parse_variables(value))
-            resolved[name] = value
+        resolved = _resolve_dotenv_assignments(assignments, _dotenv_lookup_env(load_pass), override=override)
         for name, value in resolved.items():
             if value is None or (not override and name in os.environ):
                 continue
@@ -460,6 +507,12 @@ def load_hermes_dotenv(
 ) -> list[Path]:
     """Load Hermes env files: ``~/.hermes/.env`` overrides stale shell exports; project ``.env`` is a dev
     fallback that only fills gaps when the user env exists (and overrides shell vars when it does not)."""
+    from agent.safe_worker_policy import worker_config_snapshot
+
+    # The private bootstrap supplies credentials explicitly; do not rehydrate
+    # profile behavior, external secret plugins, or managed env in this worker.
+    if worker_config_snapshot() is not None:
+        return []
     # Process home on purpose (never the per-turn override): a startup .env load must not follow a routed
     # profile — see the multiplex guard below.
     from hermes_constants import get_process_hermes_home
@@ -569,7 +622,7 @@ def _reapply_terminal_config_bridge(home_path: Path) -> None:
         from hermes_cli.config import apply_terminal_config_to_env
 
         apply_terminal_config_to_env(env=None)
-    except Exception:  # noqa: BLE001 — early bootstrap / malformed config
+    except Exception:
         pass
 
 
@@ -580,7 +633,7 @@ def _apply_managed_env(*, load_pass: int | None = None) -> None:
         from hermes_cli import managed_scope
 
         managed_dir = managed_scope.get_managed_dir()
-    except Exception:  # noqa: BLE001 — managed scope must never block startup
+    except Exception:
         return
     if managed_dir is None:
         return
@@ -607,7 +660,7 @@ def _revoke_secret_source_writes(home_path: Path, *, keep) -> None:
         from agent.secret_scope import load_env_file
 
         owned_by_dotenv = set(load_env_file(Path(home_path) / ".env")) | _MANAGED_DOTENV_KEYS
-    except Exception:  # noqa: BLE001 — unreadable .env: treat nothing as dotenv-owned
+    except Exception:
         owned_by_dotenv = set(_MANAGED_DOTENV_KEYS)
     kept: dict[str, tuple[str, str, str | None]] = {}
     for name, (source, value, prior) in writes.items():
@@ -644,7 +697,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     # load (the signature-cached read is cheap).
     try:
         cfg = _load_secrets_config(home_path)
-    except Exception:  # noqa: BLE001 — config errors must not block startup
+    except Exception:
         # See #40597.
         return
     # No source configured / enabled any more: whatever one wrote earlier is no longer backed (#126982
@@ -670,7 +723,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     # a still-enabled source that supplies the same name skip it as pre-existing (``skipped_existing``).
     try:
         active = enabled_source_names(cfg, home_path)
-    except Exception:  # noqa: BLE001 — cannot tell which sources remain: keep everything (fail-open)
+    except Exception:
         active = None
     if active is not None:
         _revoke_secret_source_writes(home_path, keep=lambda _name, source: source in active)
@@ -678,7 +731,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
 
     try:
         report = apply_all(cfg, home_path)
-    except Exception:  # noqa: BLE001 — belt-and-braces; apply_all shouldn't raise
+    except Exception:
         return
 
     if not report.sources:  # no source enabled: keep retrying cheaply so flipping one on takes effect
@@ -763,7 +816,7 @@ def _remediation_hint(source_name: str, error_kind, secrets_cfg: dict, *, scope:
         src_cfg = secrets_cfg.get(source_name)
         src_cfg = src_cfg if isinstance(src_cfg, dict) else {}
         return str(source.remediation(error_kind, src_cfg) or "").strip()
-    except Exception:  # noqa: BLE001 — hints must never block startup
+    except Exception:
         return ""
 
 
@@ -785,7 +838,7 @@ def _load_secrets_config(home_path: Path) -> dict:
     # Routed profiles re-enter their scope on every poll/turn; only re-parse after the file changed.
     try:
         data = load_yaml_file_readonly(config_path) or {}
-    except Exception:  # noqa: BLE001
+    except Exception:
         return {}
     return data.get("secrets") or {}
 

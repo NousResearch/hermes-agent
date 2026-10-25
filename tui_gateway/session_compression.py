@@ -96,7 +96,6 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     """
     cfg = cfg if isinstance(cfg, dict) else {}
     compression = cfg.get("compression") if isinstance(cfg.get("compression"), dict) else {}
-    model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
     from agent.agent_init import config_context_length_for_runtime, set_config_context_length
     enabled_raw = compression.get("enabled", True)
     agent.compression_enabled = enabled_raw if isinstance(enabled_raw, bool) else str(enabled_raw).lower() in {"true", "1", "yes"}
@@ -197,18 +196,34 @@ def _sync_agent_compression_with_config(sid: str, session: dict) -> None:
 def _apply_pending_model_switch(sid: str, session: dict) -> None:
     """Apply a model switch queued (``session["pending_model_switch"]``) while a turn was running. Runs on
     the TURN thread at turn start — nothing in flight — so the in-place swap (client rebuild) is safe. A
-    failed switch keeps the current model and never blocks the turn."""
+    failed switch keeps the current model and never blocks the turn.
+
+    A dropped pick is a warning notice, not an ``error``: clients paint ``error`` as a failed turn
+    (Desktop's red retry card under the user's message) while this turn runs normally on the old model.
+    The session.info re-sync moves the pill off the pick the session never adopted."""
     pending = session.pop("pending_model_switch", None)
     if not pending or session.get("agent") is None:
         return
+    model = pending.get("display_model") or pending["raw"]
     try:
         result = _apply_model_switch(sid, session, pending["raw"], confirm_expensive_model=bool(pending.get("confirm_expensive_model")))
-        # Honour the expensive-model confirm: surface the warning and drop the switch rather than spend
-        # on a model the user never confirmed.
-        if result.get("confirm_required"):
-            _emit("error", sid, {"message": result.get("confirm_message") or result.get("warning") or ""})
+        # Honour the expensive-model confirm: drop the switch rather than spend on a model the user
+        # never confirmed.
+        if not result.get("confirm_required"):
+            return
+        detail = result.get("confirm_message") or result.get("warning") or ""
+        logger.warning("Queued model switch to %s dropped for session %s: %s", model, sid, detail.split("\n", 1)[0])
+        current = getattr(session["agent"], "model", "") or "the current model"
+        # One line: the TUI status bar truncates and the Desktop toast collapses newlines. The full
+        # guard text comes back in the confirm prompt when the user picks it again.
+        text = f"Stayed on {current}: switching to {model} needs confirmation. Pick it again to confirm."
     except Exception as e:
-        _emit("error", sid, {"message": f"Could not switch model: {e}"})
+        logger.warning("Queued model switch to %s failed for session %s: %s", model, sid, e)
+        text = f"Could not switch model: {e}"
+    _emit("notification.show", sid, {
+        "text": text.rstrip(), "level": "warn", "kind": "ttl", "ttl_ms": 12000,
+        "key": "model_switch.dropped", "id": "model_switch.dropped"})
+    _emit_session_info(sid, session)
 
 
 class CompressionLockHeld(Exception):
@@ -318,10 +333,8 @@ def _sync_session_key_after_compress(
         from tools import approval
         with contextlib.suppress(Exception):
             approval.unregister_gateway_notify(old_key)
-        with contextlib.suppress(Exception):
-            if approval.is_session_yolo_enabled(old_key):
-                approval.enable_session_yolo(new_session_id)
-                approval.disable_session_yolo(old_key)
+        from tools.approval_yolo import transfer_session_yolo
+        transfer_session_yolo(old_key, new_session_id)
         with contextlib.suppress(Exception):
             approval.register_gateway_notify(new_session_id, lambda data: _emit_approval_request(sid, data))
     # Invalidate any in-flight ``_drain_queued_prompt`` claim taken under the pre-rotation key: a raced

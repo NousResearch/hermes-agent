@@ -208,9 +208,9 @@ def transcript_persistence_caught_up(agent: Any) -> bool:
 
 
 def plan_pressure_evictions(
-    ordered_entries: Iterable[Tuple[str, Any]], *, is_evictable: Callable[[str, Any], bool],
+    ordered_entries: Iterable[tuple[str, Any]], *, is_evictable: Callable[[str, Any], bool],
     max_evictions: int, protect_recent: int = 0,
-) -> List[Tuple[str, Any]]:
+) -> list[tuple[str, Any]]:
     """Choose which cached sessions to shed, least-recently-used first.
 
     ``ordered_entries`` must be LRU→MRU (the cache OrderedDict ``move_to_end``s on
@@ -224,7 +224,7 @@ def plan_pressure_evictions(
     protect = min(max(protect_recent, 0), len(entries) // 2)
     if protect:
         entries = entries[:-protect]
-    plan: List[Tuple[str, Any]] = []
+    plan: list[tuple[str, Any]] = []
     for key, agent in entries:
         if len(plan) >= max_evictions:
             break

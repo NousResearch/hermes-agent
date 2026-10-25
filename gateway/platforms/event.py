@@ -70,10 +70,10 @@ class MessageEvent:
     # advances past it even if PTB's shutdown ACK times out.
     platform_update_id: Optional[int] = None
     # Media attachments: local file paths (for vision tool access)
-    media_urls: List[str] = field(default_factory=list)
-    media_types: List[str] = field(default_factory=list)
+    media_urls: list[str] = field(default_factory=list)
+    media_types: list[str] = field(default_factory=list)
     # Per-attachment text-inlining contract; None = legacy "text/* already inlined into ``text``".
-    media_text_inlined: List[Optional[bool]] = field(default_factory=list)
+    media_text_inlined: list[Optional[bool]] = field(default_factory=list)
     reply_to_message_id: Optional[str] = None
     reply_to_text: Optional[str] = None  # Text of the replied-to message (for context injection)
     reply_to_author_id: Optional[str] = None
@@ -81,7 +81,7 @@ class MessageEvent:
     reply_to_is_own_message: bool = False  # True when the user replied to this bot/assistant's message
     # Structured interactive-prompt reply (relay only): {prompt_id, option_id, label?,
     # prompt_message_id?}; routed to the approval/slash-confirm/clarify resolvers BEFORE dispatch.
-    prompt_response: Optional[Dict[str, Any]] = None
+    prompt_response: Optional[dict[str, Any]] = None
     # Auto-loaded skill(s) for topic/channel bindings; a single name or ordered list.
     auto_skill: Optional[str | list[str]] = None
     # Per-channel ephemeral system prompt; applied at API call time, never persisted to transcript.
@@ -92,7 +92,7 @@ class MessageEvent:
     # Set for synthetic events (e.g. background-process notifications) that must bypass user authorization.
     internal: bool = False
     # Free-form per-event metadata (e.g. ``whatsapp_from_owner=True``); plugins must ``.get()``.
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
     # May this event resolve gateway commands / control prompts? Proactive plugin events set False
     # so untrusted payload text stays conversational. New fields append after it (positional compat).
@@ -101,6 +101,16 @@ class MessageEvent:
     # knows the message was meant for someone else); None means unknown and keeps the visible
     # fallback, like True.
     reply_expected: Optional[bool] = None
+    # Set for synthetic turns that carry no channel inputs of their own (goal continuation,
+    # heartbeat due-prompts, /goal resume) so the turn reuses the session's pinned channel
+    # prompt/parent instead of overwriting it with this event's own None (#126109). Independent
+    # of ``internal``: these events still go through user authorization. Appended after
+    # ``reply_expected`` for positional compat (see the field-order rule above).
+    inherit_channel_pin: bool = False
+    # Identity of one edit of a message (Telegram: its ``update_id``). An edit re-sends its message's own
+    # ``message_id`` with new text, so native admission keys it apart from the original send.
+    # Appended for positional compat (see the field-order rule above).
+    edit_revision: Optional[str] = None
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)

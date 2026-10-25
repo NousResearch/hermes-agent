@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -646,3 +647,64 @@ def test_call_llm_stream_unwraps_completed_response(relay_turn, monkeypatch):
     assert result is completed
     assert captured["stream"] is True
     assert captured["stream_options"] == {"include_usage": True}
+
+
+def _chat_client(sent, *, is_async=False):
+    response = SimpleNamespace(
+        model="gpt-6-astra",
+        choices=[SimpleNamespace(index=0, message=SimpleNamespace(role="assistant", content="advice"),
+                                 finish_reason="stop")],
+    )
+
+    def create(**kwargs):
+        sent.append(kwargs)
+        return response
+
+    async def acreate(**kwargs):
+        return create(**kwargs)
+
+    return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=acreate if is_async else create)))
+
+
+_MESSAGES = [{"role": "system", "content": "advise"}, {"role": "user", "content": "hi"}]
+
+
+@auxiliary_client._relay_auxiliary_call
+def _codex_mode_sync(task, sent):
+    return auxiliary_client._relay_sync_completion(
+        _chat_client(sent), {"model": "gpt-6-astra", "messages": _MESSAGES},
+        provider="openai-codex", api_mode="codex_responses")
+
+
+@auxiliary_client._relay_auxiliary_call
+def _codex_mode_stream(task, sent):
+    return auxiliary_client._relay_sync_stream(
+        _chat_client(sent), {"model": "gpt-6-astra", "messages": _MESSAGES, "stream": True},
+        provider="openai-codex", api_mode="codex_responses")
+
+
+def _codex_mode_async(task, sent):
+    @auxiliary_client._relay_auxiliary_call_async
+    async def run():
+        return await auxiliary_client._relay_async_completion(
+            _chat_client(sent, is_async=True), {"model": "gpt-6-astra", "messages": _MESSAGES},
+            provider="openai-codex", api_mode="codex_responses")
+
+    return asyncio.run(run())
+
+
+@pytest.mark.parametrize("call", [_codex_mode_sync, _codex_mode_async, _codex_mode_stream])
+def test_native_api_mode_request_is_decoded_as_chat(relay_turn, call):
+    """Relay intercepts ``chat.completions.create`` at every auxiliary seam, so a
+    ``codex_responses`` attempt must reach the client instead of failing in the
+    Responses codec with "missing input" (MoA references on openai-codex, #137202)."""
+    _relay, turn = relay_turn
+    sent = []
+    turn.lease.host.retain_managed_execution("test.native-api-mode")
+    try:
+        result = call("moa_reference", sent)
+    finally:
+        turn.lease.host.release_managed_execution("test.native-api-mode")
+
+    assert result.choices[0].message.content == "advice"
+    assert [[m["content"] for m in kwargs["messages"]] for kwargs in sent] == [["advise", "hi"]]

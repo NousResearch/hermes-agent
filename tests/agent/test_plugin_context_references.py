@@ -98,7 +98,7 @@ def test_parse_plugin_reference():
     kinds = [r.kind for r in refs]
     assert "test" in kinds
     assert "file" in kinds
-    test_ref = [r for r in refs if r.kind == "test"][0]
+    test_ref = next(r for r in refs if r.kind == "test")
     assert test_ref.target == "ENG-123"
 
 def test_parse_plugin_reference_ignored_when_not_registered():

@@ -45,7 +45,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import (  # noqa: E402
+from plugins.platforms.discord.adapter import (
     _DISCORD_PROMPT_TIMEOUT_DEFAULT,
     _DISCORD_PROMPT_TIMEOUT_MIN,
     _read_discord_prompt_timeout,

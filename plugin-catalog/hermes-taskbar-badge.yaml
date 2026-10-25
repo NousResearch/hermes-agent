@@ -1,0 +1,16 @@
+name: hermes-taskbar-badge
+repo: https://github.com/BrokeSkill/hermes-taskbar-badge
+sha: fabe90e1e2271c90e31ccd4b784352193e46c795
+description: "Windows taskbar badge on the Hermes window when a turn finishes. Calls navigator.setAppBadge on the message.complete event while the window is in the background, and clears it when the window regains focus or another session is opened. Disclosure — no network calls and no data leaves the machine; the badge is drawn by the app's own Electron process, which maps the Chromium Badging API onto the Windows taskbar overlay."
+maintainer: BrokeSkill
+tier: community
+category: desktop
+version: "0.1.0"
+requires_hermes: ">=0.21.6"
+image: https://raw.githubusercontent.com/BrokeSkill/hermes-taskbar-badge/fabe90e1e2271c90e31ccd4b784352193e46c795/docs/demo.png
+platforms: [windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,6 +1,7 @@
 import type { Translations } from './types'
 
 export const enModelMenu: Translations['shell']['modelMenu'] = {
+  pickDeferred: (model: string) => `${model} applies from your next message`,
   search: 'Search models',
   noModels: 'No models found',
   editModels: 'Edit models…',
@@ -15,6 +16,11 @@ export const enModelMenu: Translations['shell']['modelMenu'] = {
   cacheRead: 'cached read',
   priceTitle: (input: string, output: string, cache: string) =>
     `Input ${input}/Mtok · Output ${output}/Mtok` + (cache ? ` · Cached read ${cache}/Mtok` : ''),
+  localSetup: {
+    title: 'Run locally · free, private',
+    text: (model: string, size: string) => `${model} fits this machine · ${size} download`,
+    action: 'Set up'
+  },
   limited: 'Limited',
   limitedUntil: (time: string) => `Limited until ${time}`,
   limitedTip: (provider: string, time: null | string) =>

@@ -41,8 +41,33 @@ def test_loop_liveness_watchdog_stop_during_dump_disarms_hard_exit():
 
     assert not handle.is_alive()
     critical.assert_called_once()
-    dump.assert_called_once_with(all_threads=True)
+    dump.assert_called()  # dump-file copy first, then stderr (#120356)
     assert exit_codes == []
+
+
+def test_loop_liveness_death_leaves_its_stacks_in_the_dump_file(tmp_path, monkeypatch):
+    # A console-less launcher discards stderr; the file is the only copy that survives (#120356).
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    exit_codes, ref, handle_ready = [], {}, threading.Event()
+
+    def exit_and_stop(code: int) -> None:  # a patched exit returns, so stop the loop like a real one
+        assert handle_ready.wait(timeout=2.0)
+        exit_codes.append(code)
+        ref["handle"].stop()
+
+    with patch("gateway.shutdown_watchdog._hard_exit", side_effect=exit_and_stop), \
+            patch("gateway.shutdown_watchdog._mark_exited_quietly"):
+        ref["handle"] = handle = start_loop_liveness_watchdog(
+            MagicMock(spec=asyncio.AbstractEventLoop), probe_interval=0.01, probe_timeout=0.01,
+            max_strikes=1)
+        handle_ready.set()
+        handle.join(timeout=5.0)
+    from gateway.shutdown_watchdog import get_shutdown_watchdog_dump_path
+    dump = get_shutdown_watchdog_dump_path(tmp_path).read_text(encoding="utf-8-sig")
+    assert '"event": "loop_liveness_watchdog_fired"' in dump
+    assert "most recent call first" in dump
+    assert exit_codes == [75]
+
 
 def test_loop_liveness_watchdog_stop_during_final_miss_disarms_hard_exit():
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
@@ -333,6 +358,5 @@ def test_heartbeat_write_does_not_block_the_loop_it_monitors():
     # Off-loop, the ticker gets roughly block_s / 0.02 ticks. Inline it gets at
     # most one, because the loop cannot run anything while fsync blocks it.
     assert ticks >= 5, (
-        "the loop made only %d tick(s) while the heartbeat was writing — "
-        "the write is blocking the loop again" % ticks
+        f'the loop made only {ticks:d} tick(s) while the heartbeat was writing — the write is blocking the loop again'
     )

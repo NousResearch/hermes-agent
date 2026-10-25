@@ -4,7 +4,6 @@ import { translateNow } from '@/i18n'
 import { isOutOfSyncRpcParams } from '@/lib/gateway-rpc'
 import { isTimeoutError } from '@/lib/with-timeout'
 import { type ErrorToastCategory, recordFriction } from '@/store/desktop-metrics'
-import { isLocalBackendSlotWaitTimeout, requestPoolLimitsSettings } from '@/store/pool-limits'
 import { requestBackendRestart, requestRoute } from '@/store/recovery-requests'
 
 export type NotificationKind = 'error' | 'warning' | 'info' | 'success'
@@ -34,6 +33,8 @@ export interface AppNotification {
   onDismiss?: () => void
   createdAt: number
   placement?: NotificationPlacement
+  /** Survives clearNotifications: a standing offer, not feedback on the last turn. */
+  persistent?: boolean
 }
 
 export interface NotificationInput {
@@ -50,6 +51,7 @@ export interface NotificationInput {
   onDismiss?: () => void
   durationMs?: number
   placement?: NotificationPlacement
+  persistent?: boolean
 }
 
 let notificationCounter = 0
@@ -226,12 +228,67 @@ function summarizeErrorMessage(message: string, fallback: string) {
   }
 }
 
+// The owner's refusal of an edit, restore or regenerate whose target is not a live user turn
+// (hermes_state_mutations._rewind): invalid_params on target_message_id. Its detail starts with
+// `compacted:` only when compaction summarized the turn; a turn another window already undid, an
+// assistant row or an unknown id is stale for another reason. Every other invalid_params keeps the
+// generic toast.
+function staleRewindRefusal(error: unknown): 'compacted' | 'stale' | null {
+  const data = error && typeof error === 'object' ? (error as { data?: unknown }).data : undefined
+
+  if (!data || typeof data !== 'object') {
+    return null
+  }
+
+  const { detail, field, reason } = data as { detail?: unknown; field?: unknown; reason?: unknown }
+
+  if (reason !== 'invalid_params' || field !== 'target_message_id') {
+    return null
+  }
+
+  return typeof detail === 'string' && detail.startsWith('compacted:') ? 'compacted' : 'stale'
+}
+
+// The owner refuses every model pick and turn on a chat whose launch API key changed or was removed
+// (gateway/session_policy_credentials.py): `data.reason` on an RPC error, or the bare code a deferred
+// pick's refusal event carries.
+function isLaunchCredentialsRefusal(error: unknown): boolean {
+  const data = error && typeof error === 'object' ? (error as { data?: { reason?: unknown } }).data : undefined
+
+  if (data && typeof data === 'object' && data.reason === 'launch_credentials_unavailable') {
+    return true
+  }
+
+  return error instanceof Error && error.message.trim() === 'launch_credentials_unavailable'
+}
+
 // Exported so flows that surface errors inline (e.g. ConfirmDialog's onConfirm
 // rethrow) can reuse the same IPC-unwrapping + summarizing as notifyError.
 export function readableError(
   error: unknown,
   fallback: string
 ): { message: string; detail?: string; action?: NotificationAction; category: ErrorToastCategory } {
+  const staleRewind = staleRewindRefusal(error)
+
+  if (staleRewind) {
+    const key = staleRewind === 'compacted' ? 'compactedTurnUnavailable' : 'staleTurnUnavailable'
+
+    return { message: translateNow(`promptNotices.${key}`), category: 'other' }
+  }
+
+  if (isLaunchCredentialsRefusal(error)) {
+    // Same sentence and button as the chat's error card: a model pick, retry or option change on
+    // this chat repeats the refusal until the user starts a new one.
+    return {
+      message: translateNow('assistant.thread.errorCodes.launch_credentials_unavailable.body'),
+      action: {
+        label: translateNow('assistant.thread.errorStartNewSession'),
+        onClick: () => void import('@/store/profile').then(({ requestFreshSession }) => requestFreshSession())
+      },
+      category: 'other'
+    }
+  }
+
   const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
   const unwrapped = raw.match(/Error invoking remote method '[^']+': Error: (.+)$/)?.[1] ?? raw
   const cleaned = cleanErrorText(unwrapped)
@@ -272,7 +329,8 @@ function showNotification(input: NotificationInput, errorCategory: ErrorToastCat
     secondaryAction: input.secondaryAction,
     onDismiss: input.onDismiss,
     createdAt: Date.now(),
-    placement: input.placement ?? defaultPlacement(kind, input.action)
+    placement: input.placement ?? defaultPlacement(kind, input.action),
+    persistent: input.persistent
   }
 
   window.clearTimeout(timers.get(id))
@@ -312,29 +370,20 @@ export function notifyError(
   options: { action?: NotificationAction; id?: string } = {}
 ): string {
   const readable = readableError(error, fallback)
-  const poolSlotTimeout = isLocalBackendSlotWaitTimeout(error)
   logErrorToDesktopLog(error, fallback)
 
-  const category: ErrorToastCategory = poolSlotTimeout
-    ? 'pool_slot_timeout'
-    : readable.category === 'unclassified' && isTimeoutError(error)
-      ? 'timeout'
-      : readable.category
+  const category: ErrorToastCategory =
+    readable.category === 'unclassified' && isTimeoutError(error) ? 'timeout' : readable.category
 
   return showNotification(
     {
-      action: poolSlotTimeout
-        ? {
-            label: translateNow('desktop.poolSlotTimeoutOpenSettings'),
-            onClick: requestPoolLimitsSettings
-          }
-        : (options.action ?? readable.action),
+      action: options.action ?? readable.action,
       // A caller that can fire again for the same cause names its toast, so the repeat replaces it.
       id: options.id,
       kind: 'error',
       title: fallback,
-      message: poolSlotTimeout ? translateNow('desktop.poolSlotTimeoutBody') : readable.message,
-      detail: poolSlotTimeout ? readable.message : readable.detail
+      message: readable.message,
+      detail: readable.detail
     },
     category
   )
@@ -349,15 +398,13 @@ export function dismissNotification(id: string) {
 }
 
 export function clearNotifications() {
-  for (const timer of timers.values()) {
-    window.clearTimeout(timer)
-  }
-
-  timers.clear()
   const all = $notifications.get()
-  $notifications.set([])
+  const cleared = all.filter(item => !item.persistent)
+  $notifications.set(all.filter(item => item.persistent))
 
-  for (const item of all) {
+  for (const item of cleared) {
+    window.clearTimeout(timers.get(item.id))
+    timers.delete(item.id)
     item.onDismiss?.()
   }
 }

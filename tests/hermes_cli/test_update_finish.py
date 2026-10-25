@@ -87,7 +87,7 @@ def completion(tmp_path, monkeypatch):
                NPM_CONFIG_OFFLINE="true", NPM_CONFIG_CACHE=str(tmp_path / "npm-cache"))
     probe = subprocess.run([str(python), "-I", "-c",
                             "import importlib.util; assert importlib.util.find_spec('yaml') is None"],
-                           env=env, capture_output=True, text=True)
+                           env=env, capture_output=True, text=True, check=False)
     assert probe.returncode == 0, probe.stderr
     request = {
         "root": str(source), "desktop": False, "assume_yes": True, "gateway_mode": False,
@@ -166,8 +166,8 @@ def completion(tmp_path, monkeypatch):
 
                     from pm.environments import project_python
 
-                    def provision(name, *, base_env, explicit):
-                        assert name == 'npm' and explicit
+                    def provision(name, *, base_env, explicit, verify=True):
+                        assert name == 'npm' and explicit and not verify
                         assert shutil.which('node', path=base_env['PATH'])
                         assert shutil.which('npm', path=base_env['PATH'])
                         assert base_env['HERMES_PYTHON'] == str(project_python(root))
@@ -243,7 +243,7 @@ def completion(tmp_path, monkeypatch):
     '''))
     def run(fault=""):
         return subprocess.run([str(python), "-I", "-B", str(runner), str(context), str(result), fault],
-                              cwd=tmp_path, env=env, capture_output=True, text=True, timeout=90)
+                              cwd=tmp_path, env=env, capture_output=True, text=True, timeout=90, check=False)
     return source, home / ".hermes", request, context, result, run
 
 
@@ -290,7 +290,7 @@ def test_failure_preserves_original_receipt_before_build(completion, fault):
 def test_refused_gateway_resume_after_commit_is_a_followup_not_exit_1(completion):
     """C3 for the historical takeover child: the code is committed, so a Windows gateway resume
     that the service manager refuses is an owed ``windows_resume`` follow-up, never exit 1."""
-    source, home, request, context, result, run = completion
+    _source, home, request, context, result, run = completion
     request["gateway_mode"] = True
     # A real start time names the run's archive file, so the running and terminal records share one
     # file (the fixture's placeholder falls back to the clock and can split them across a second).
@@ -315,7 +315,7 @@ def test_raising_fleet_restart_after_commit_is_a_followup_not_exit_1(completion)
     """Review P3 (invariant 3): the takeover child's restart/verify run after the commit point, so
     a raising fleet restart is an owed ``gateway_restart`` follow-up and exit 0, never exit 1 with a
     ``failed`` receipt and a gateway watcher told 1."""
-    source, home, request, context, result, run = completion
+    _source, home, request, context, _result, run = completion
     request["gateway_mode"] = True
     request["receipt"]["started_at"] = "2026-10-04T12:00:00+00:00"
     context.write_text(json.dumps(request), encoding="utf-8")
@@ -333,7 +333,7 @@ def test_raising_fleet_restart_after_commit_is_a_followup_not_exit_1(completion)
 def test_interrupt_after_verification_closed_the_run_keeps_gateway_status_0(completion):
     """Review regression 3: verification already finalized the takeover's run as ``success``; an
     interrupt landing after it must not rewrite the gateway /update status to 1."""
-    source, home, request, context, result, run = completion
+    _source, home, request, context, _result, run = completion
     request["gateway_mode"] = True
     request["receipt"]["started_at"] = "2026-10-04T12:00:00+00:00"
     context.write_text(json.dumps(request), encoding="utf-8")
@@ -353,7 +353,7 @@ def test_interrupt_after_verification_closed_the_run_keeps_gateway_status_0(comp
     (True, None, True),
 ])
 def test_missing_desktop_observation_uses_installed_products(completion, captured, installed, expected):
-    source, home, request, context, result, run = completion
+    source, _home, request, context, result, run = completion
     request["desktop"] = captured
     context.write_text(json.dumps(request), encoding="utf-8")
     if installed == "renderer":
@@ -379,7 +379,7 @@ def _npm_graph(source):
     assert node, "source completion acceptance requires Node and npm"
     for name in ("esbuild", "typescript", "vite"):
         probe = subprocess.run([node, "-p", f"require.resolve('{name}/package.json')"],
-                               cwd=ROOT, capture_output=True, text=True)
+                               cwd=ROOT, capture_output=True, text=True, check=False)
         if probe.returncode:
             # The Python lane runs without `npm ci`. The real completion path runs in the
             # install E2E workflow (source updates rebuild the products there).
@@ -516,7 +516,7 @@ def test_real_compiler_failure_is_owed_build_and_completion_continues(completion
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("argument, code", [("--help", 0), ("--no-such-update-option", 2)])
 def test_pre_pull_restart_enters_current_cli_with_original_arguments(completion, argument, code):
-    source, home, request, context, result, run = completion
+    source, _home, request, context, result, run = completion
     # Exercise the REAL parser without contacting a repository or supervisor.
     # The full update command's apply path is covered by its own tests.
     request.update(restart_update=True, argv=[str(source / "hermes"), "update", argument])

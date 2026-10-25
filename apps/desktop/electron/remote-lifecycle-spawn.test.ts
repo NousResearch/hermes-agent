@@ -22,6 +22,7 @@ import {
   spawnLogPath,
   spawnTokenPath
 } from './remote-lifecycle'
+import { shellExec, shellSshDouble } from './remote-ssh-exec.test-helpers'
 import type { SshConnection } from './ssh-connection'
 
 const exec: (command: string, options?: ExecOptionsWithStringEncoding) => Promise<{ stdout: string; stderr: string }> =
@@ -87,12 +88,9 @@ async function spawnFixture(launcher: 'setsid' | 'nohup', owned: boolean): Promi
   const localPath = (remotePath: string): string => remotePath.replace(/^~/, root)
   const env: NodeJS.ProcessEnv = { HOME: root, HERMES_HOME: path.join(root, '.hermes'), PATH: bin, LANG: 'C.UTF-8' }
 
-  const run = async (command: string): Promise<{ stdout: string; stderr: string }> =>
-    exec(command, { shell, env, timeout: 10_000 })
+  const run = async (command: string): Promise<{ stdout: string; stderr: string }> => shellExec(command, { shell, env })
 
-  const ssh: Pick<SshConnection, 'exec'> = {
-    exec: async (command: string): Promise<string> => (await run(command)).stdout
-  }
+  const ssh: Pick<SshConnection, 'exec'> = shellSshDouble({ shell, env })
 
   const hermesPath: string = path.join(root, 'fake hermes')
   const hermesHome: string = path.join(root, '.hermes')

@@ -561,7 +561,12 @@ class _ConcurrentToolAuthorizationGate:
 @contextlib.contextmanager
 def _registered_tool_worker(agent):
     """Track this worker tid for interrupt fan-out (``AIAgent.interrupt()``); on ANY exit
-    (incl. BaseException) discard it and clear its interrupt bit so a recycled tid starts clean."""
+    (incl. BaseException) discard it and clear its interrupt bit so a recycled tid starts clean.
+
+    The discard and the clear share the tracker critical section. A tid is pooled and reused,
+    and ``redirect()`` / the interrupt fan-out raise bits under that same lock, so a clear
+    left outside it can land after the next tool on this thread registered and was armed,
+    silently dropping a genuine yield or interrupt."""
     tid = threading.current_thread().ident
     with agent._tool_worker_threads_lock:
         agent._tool_worker_threads.add(tid)
@@ -570,8 +575,8 @@ def _registered_tool_worker(agent):
     finally:
         with agent._tool_worker_threads_lock:
             agent._tool_worker_threads.discard(tid)
-        with contextlib.suppress(Exception):
-            _ra()._set_interrupt(False, tid)
+            with contextlib.suppress(Exception):
+                _ra()._set_interrupt(False, tid)
 
 
 _NO_REASON = object()

@@ -144,3 +144,30 @@ def test_per_profile_isolation(tmp_path):
         b.close()
 
 
+def test_windows_host_keeps_posix_absolute_folder_verbatim(conn, monkeypatch):
+    # A POSIX path names the remote backend's filesystem; resolving it against the
+    # Windows host's current drive would store a folder that exists nowhere (#140204).
+    monkeypatch.setattr(os, "name", "nt")
+    pid = pdb.create_project(conn, name="Remote", folders=["/home/hiro/works/readouble2027"])
+    proj = pdb.get_project(conn, pid)
+
+    assert proj.primary_path == "/home/hiro/works/readouble2027"
+    assert [f.path for f in proj.folders] == ["/home/hiro/works/readouble2027"]
+    assert pdb.find_by_primary_path(conn, "/home/hiro/works/readouble2027").id == pid
+    assert pdb.project_for_path(conn, "/home/hiro/works/readouble2027/sub").id == pid
+
+
+def test_windows_host_normalizes_posix_path_separators(monkeypatch):
+    monkeypatch.setattr(os, "name", "nt")
+
+    assert pdb._normalize_path("//home//hiro//works//x//") == "/home/hiro/works/x"
+    assert pdb._normalize_path("/") == "/"
+    assert pdb._normalize_path("  /home/x  ") == "/home/x"
+
+
+def test_posix_host_path_normalization_unchanged():
+    # On a POSIX host the drive-resolution hazard does not exist; abspath still applies.
+    assert pdb._normalize_path("/tmp/hermes") == os.path.abspath("/tmp/hermes")
+    assert pdb._normalize_path("/tmp/hermes/") == os.path.abspath("/tmp/hermes")
+
+

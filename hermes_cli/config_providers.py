@@ -9,7 +9,7 @@ so tests patching that module still intercept the call.
 import logging
 import re
 from typing import Any, Dict, Iterator, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from hermes_cli.route_identity import normalize_route_base_url
 
@@ -365,13 +365,40 @@ def get_compatible_custom_providers(
     return compatible
 
 
+def custom_provider_openai_base_url(base_url: str) -> str:
+    """Derive OpenCode's OpenAI wire URL without changing a configured relay or origin."""
+    try:
+        configured = urlparse(base_url)
+        host = (configured.hostname or "").lower()
+    except ValueError:
+        return base_url
+    if host != "opencode.ai" and not host.endswith(".opencode.ai"):
+        return base_url
+    from hermes_cli.models import normalize_opencode_base_url
+    wire_url = normalize_opencode_base_url("opencode-go", "chat_completions", base_url, preserve_relay=True)
+    wire = urlparse(wire_url)
+    if wire.path.removesuffix("/v1") != configured.path:
+        return base_url
+    restored = urlunparse(wire._replace(path=wire.path.removesuffix("/v1")))
+    # Only /v1 may differ: the SDK normalizer also cleans URLs, but auth ownership must not.
+    if normalize_route_base_url(restored) == normalize_route_base_url(base_url):
+        return wire_url
+    return base_url
+
+
+def custom_provider_route_matches(configured_url: str, runtime_url: str) -> bool:
+    """Accept an exact endpoint or its one-way OpenCode OpenAI-wire derivation."""
+    return configured_url == runtime_url or custom_provider_openai_base_url(configured_url) == runtime_url
+
+
 def _entries_for_route(
     base_url: str,
     custom_providers: Optional[list[dict[str, Any]]],
     config: Optional[dict[str, Any]]):
-    """Yield entries whose normalized route identity equals *base_url*.
+    """Yield exact route owners, else a single owner of a derived OpenCode wire URL.
 
     None *custom_providers* → ``get_compatible_custom_providers(config)`` (failure → none).
+    An exact entry must not borrow another entry's auth. Ambiguous derived ownership fails closed.
     """
     from hermes_cli.config import get_compatible_custom_providers
     if custom_providers is None:
@@ -384,12 +411,15 @@ def _entries_for_route(
     target_url = normalize_route_base_url(base_url)
     if not target_url:
         return
-    for entry in custom_providers:
-        if not isinstance(entry, dict):
-            continue
-        entry_url = normalize_route_base_url(entry.get("base_url"))
-        if entry_url and entry_url == target_url:
-            yield entry
+    entries = [entry for entry in custom_providers if isinstance(entry, dict)]
+    exact = [entry for entry in entries if normalize_route_base_url(entry.get("base_url")) == target_url]
+    if exact:
+        yield from exact
+        return
+    derived = [entry for entry in entries if custom_provider_route_matches(
+        normalize_route_base_url(entry.get("base_url")), target_url)]
+    if len(derived) == 1:
+        yield derived[0]
 
 
 def get_custom_provider_api_mode(

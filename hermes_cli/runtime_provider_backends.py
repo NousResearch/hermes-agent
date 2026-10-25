@@ -65,7 +65,7 @@ def _azure_foundry_api_key(rp, explicit_api_key: str) -> str:
 
 def _resolve_azure_foundry_runtime(*, requested_provider: str, model_cfg: dict[str, Any],
                                    explicit_api_key: Optional[str] = None, explicit_base_url: Optional[str] = None,
-                                   target_model: Optional[str] = None) -> dict[str, Any]:
+                                   target_model: Optional[str] = None, explicit_api_mode: Optional[str] = None) -> dict[str, Any]:
     """Azure Foundry: ``model.base_url`` + ``model.api_mode`` (or explicit overrides), API key from
     ``.env``/env or a per-request Entra ID token, trailing ``/v1`` stripped for Anthropic-style
     endpoints (the Anthropic SDK appends /v1/messages itself)."""
@@ -84,7 +84,7 @@ def _resolve_azure_foundry_runtime(*, requested_provider: str, model_cfg: dict[s
             cfg_entra = model_cfg["entra"]
     # GPT-5.x / codex / o1-o4 deployments are Responses-API-only on Foundry.
     effective_model = str(target_model or model_cfg.get("default") or "").strip()
-    cfg_api_mode = rp._azure_inferred_api_mode(effective_model, cfg_api_mode)
+    cfg_api_mode = explicit_api_mode or rp._azure_inferred_api_mode(effective_model, cfg_api_mode)
     env_base_url = get_secret_str("AZURE_FOUNDRY_BASE_URL", "").strip().rstrip("/")
     base_url = explicit_base_url_clean or cfg_base_url or env_base_url
     if not base_url:

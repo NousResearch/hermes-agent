@@ -14,6 +14,7 @@ from __future__ import annotations
 import shutil
 import stat
 import sys
+from pathlib import Path
 
 import keyring
 from cryptography.fernet import Fernet
@@ -195,6 +196,38 @@ def test_cloned_and_renamed_keychain_vaults_never_share_or_overwrite_an_entry(ho
     (work / "vault").rename(renamed / "vault")
     _add(VaultStore(work / "vault"))  # a new vault where the renamed one used to live
     assert VaultStore(renamed / "vault").resolve_secret(item)["password"] == _LOGIN["password"]
+
+
+def test_clone_all_owns_its_key_before_the_source_ever_migrates(home, keychain, tmp_path, monkeypatch):
+    """A --clone-all copy gets its own keychain entry when it is created, so the source moving its key
+    to a file (which deletes the source's entry) cannot strand a clone that was never opened."""
+    from hermes_cli.profiles import create_profile
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    source = home(".hermes", key_storage="keychain")
+    item = _add(VaultStore())
+    clone = create_profile("vault-clone", clone_from="default", clone_all=True, no_alias=True)
+
+    assert VaultStore().migrate_key("file") == "file"  # the clone has not opened its vault yet
+    assert VaultStore(source / "vault").resolve_secret(item)["password"] == _LOGIN["password"]
+    assert VaultStore(clone / "vault").resolve_secret(item)["password"] == _LOGIN["password"]
+    assert not (clone / "vault" / "vault.key").exists(), "the clone keeps keychain storage"
+    assert len(keychain.entries) == 1, "only the clone's own entry is left"
+
+
+def test_clone_all_without_a_reachable_keychain_is_refused_not_published_sharing_the_key(
+        home, keychain, tmp_path, monkeypatch):
+    from hermes_cli.profiles import create_profile, get_profile_dir
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    home(".hermes", key_storage="keychain")
+    _add(VaultStore())
+    keyring.set_keyring(fail.Keyring())  # e.g. an SSH session that cannot reach the login keychain
+    with pytest.raises(ValueError, match="OS keychain"):
+        create_profile("vault-clone", clone_from="default", clone_all=True, no_alias=True)
+    assert not get_profile_dir("vault-clone").exists()
 
 
 @pytest.mark.parametrize("pointer_landed", [False, True])

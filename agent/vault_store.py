@@ -337,10 +337,38 @@ class VaultStore:
         # reads would prefer over a working keychain entry. Callers hold the vault lock.
         atomic_write_bytes(self._key_path, key, mode=0o600, fsync_dir=True)
 
+    def own_copied_key(self, published_base: Path) -> None:
+        """A ``--clone-all`` copy carries the source's ``vault.keyref``, which names the SOURCE's entry;
+        the source moving its key to a file deletes that entry. Before the clone is published at
+        ``published_base``, give it an entry of its own, so it never depends on another profile.
+        Raises VaultError when the keychain cannot be read or written: the clone must not be published
+        sharing the source's entry."""
+        from agent import vault_keychain as kc
+
+        ref = kc.read_ref(self._keyref_path)
+        if ref is None or self._key_path.exists() or kc.owns(ref, published_base):
+            return  # key file layout (a vault.key always wins on read): nothing is shared
+        try:
+            key = kc.load_key(ref)
+            if not self._decrypts(key):
+                return  # the source's own entry is already gone: the copy is no worse off than it
+            mine = kc.new_ref(published_base)
+            kc.store_key(mine, key)
+        except kc.KeychainUnavailable as exc:
+            raise VaultError(
+                f"its key is in the OS keychain, which this session cannot use ({exc}). Clone from a session "
+                "that can reach the keychain, or run `hermes vault key migrate --to file` on the source first.") from exc
+        try:
+            kc.write_ref(self._keyref_path, mine)
+        except OSError:
+            kc.delete_key(mine)
+            raise
+
     def _adopt(self, ref: dict) -> dict:
-        """Give a copied/moved vault (profile clone or rename) its own keychain entry. Never deletes the
-        entry it came from: another copy may still depend on it. Raises KeychainUnavailable only when the
-        shared entry cannot be read; if the new entry cannot be written, the shared one keeps serving."""
+        """Give a moved vault (profile rename, or a clone made before clones got their own entry at
+        creation) its own keychain entry. Never deletes the entry it came from: another copy may still
+        depend on it. Raises KeychainUnavailable only when the shared entry cannot be read; if the new
+        entry cannot be written, the shared one keeps serving."""
         from agent import vault_keychain as kc
 
         if kc.owns(ref, self._base):

@@ -343,6 +343,7 @@ def test_is_worktree_under_agent_home(tmp_path):
 #
 
 
+@pytest.mark.live_system_guard_bypass
 @pytest.mark.skipif(shutil.which("unshare") is None, reason="unshare not on PATH")
 @pytest.mark.skipif(
     subprocess.run(
@@ -370,6 +371,16 @@ def test_acceptance_harness_isolates_synthetic_repo(tmp_path):
 
     worktree = repo / ".worktrees" / "t_accept"
     (worktree / "app.py").write_text("print('hi')\n")
+
+    # ``init`` + an empty initial commit BEFORE the sandbox exists (the
+    # sandbox cannot write to the production tree, so we must seed it
+    # from the parent test process).
+    subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "canonical-deploy", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "--allow-empty", "-q", "-m", "initial"],
+        check=True,
+    )
 
     # Compose the launcher argv (without the unshare prefix; this test calls
     # ``unshare`` directly so we measure the inner launcher behaviour).
@@ -415,11 +426,27 @@ def chk(label, expect, args, cwd=None, env=None):
     if not ok:
         FAIL = 1
 
+# Seed the synthetic production repo with one commit so ``git log`` works
+# (we need a real, DIFFERENT target sha for the update-ref attack). The
+# harness runs INSIDE the sandbox and cannot write to PROD itself; the
+# parent test process must seed the repo with an initial commit.
+sha_for_move = subprocess.check_output(
+    ["git", "-C", PROD, "log", "--format=%H", "-n", "1"], text=True,
+).strip()
+
 # Forbidden: direct writes into the production tree.
 chk("direct edit", "deny", ["bash", "-c", "echo x >> '%s/app.py'" % PROD])
 # Forbidden: git state mutations that need .git/HEAD.lock / .git/index.lock.
 chk("git checkout", "deny", ["git", "-C", PROD, "checkout", "--", "."])
-# Worktree operations need .git/worktrees/* which is read-only under the sandbox.
+# Cross-branch ref move: updated target is a DIFFERENT commit, so a
+# successful update would actually move refs/heads/canonical-deploy.
+chk("git update-ref canon", "deny",
+    ["git", "-C", PROD, "update-ref", "refs/heads/canonical-deploy", sha_for_move])
+chk("git branch -f canon", "deny",
+    ["git", "-C", PROD, "branch", "-f", "canonical-deploy", sha_for_move])
+# Worktree registration. NOTE: this can leave a stray /tmp/esc-* dir if
+# git's preflight passes; the test sandbox is destroyed when unshare exits,
+# so any leaks stay outside the production tree.
 chk("worktree add", "deny", ["git", "-C", PROD, "worktree", "add", "/tmp/esc-wt", "HEAD"])
 chk("worktree add -B", "deny", ["git", "-C", PROD, "worktree", "add", "-B", "stray", "/tmp/esc-wt-b", "HEAD"])
 # Nested namespace escape: remounting prod rw from inside a child userns is locked.
@@ -467,3 +494,81 @@ def test_enter_isolation_distinct_exit_codes_on_missing_paths(tmp_path):
 
     rc = _enter_isolation(agent_home="/no/such/parent/agent", worktree=None, extra_rw=())
     assert rc == 90
+
+
+# ---------------------------------------------------------------------------
+# Branch ref dir resolver + ensure_dir_in_stage
+# ---------------------------------------------------------------------------
+
+
+def test_worker_branch_ref_dir_linked_worktree():
+    """Linked-worktree layout: .git is a gitdir pointer file."""
+    import tempfile
+
+    from hermes_cli.worker_isolate import _worker_branch_ref_dir
+
+    with tempfile.TemporaryDirectory() as td:
+        agent_home = os.path.join(td, "agent")
+        wt_dir = os.path.join(td, "wt")
+        gitdir = os.path.join(agent_home, ".git", "worktrees", "wt")
+        os.makedirs(gitdir)
+        os.makedirs(wt_dir)
+        # .git is a gitdir pointer
+        open(os.path.join(wt_dir, ".git"), "w").write(f"gitdir: {gitdir}\n")
+        # HEAD inside the gitdir points at the worker's branch
+        open(os.path.join(gitdir, "HEAD"), "w").write("ref: refs/heads/wt/some-task\n")
+        out = _worker_branch_ref_dir(agent_home, wt_dir)
+        assert out == os.path.join(agent_home, ".git", "refs", "heads", "wt")
+
+
+def test_worker_branch_ref_dir_top_level_branch_returns_none():
+    """A top-level branch like ``main`` would require carving the whole
+    .git/refs/heads directory; we refuse and return None.
+    """
+    import tempfile
+
+    from hermes_cli.worker_isolate import _worker_branch_ref_dir
+
+    with tempfile.TemporaryDirectory() as td:
+        agent_home = os.path.join(td, "agent")
+        wt_dir = os.path.join(td, "wt")
+        os.makedirs(wt_dir)
+        open(os.path.join(wt_dir, "HEAD"), "w").write("ref: refs/heads/main\n")
+        assert _worker_branch_ref_dir(agent_home, wt_dir) is None
+
+
+def test_worker_branch_ref_dir_detached_returns_none():
+    import tempfile
+
+    from hermes_cli.worker_isolate import _worker_branch_ref_dir
+
+    with tempfile.TemporaryDirectory() as td:
+        agent_home = os.path.join(td, "agent")
+        wt_dir = os.path.join(td, "wt")
+        os.makedirs(wt_dir)
+        open(os.path.join(wt_dir, "HEAD"), "w").write("77e9096d0d570d6e7c16fa9b7c37089b0e6483d7\n")
+        assert _worker_branch_ref_dir(agent_home, wt_dir) is None
+
+
+def test_ensure_dir_in_stage_creates_missing_path():
+    """Carve-out targets must exist as paths inside the rw staging bind."""
+    import tempfile
+
+    from hermes_cli.worker_isolate import _ensure_dir_in_stage
+
+    with tempfile.TemporaryDirectory() as td:
+        stage = os.path.join(td, "stage")
+        os.makedirs(stage)
+        parent = td  # parent of the eventual target
+        # A target that is *not* under parent -- the function should no-op.
+        bogus = os.path.join("/somewhere/else", "fix")
+        _ensure_dir_in_stage(stage, parent, bogus)
+        assert not os.path.exists(os.path.join(stage, "somewhere"))
+        # A target that IS under parent and DOES NOT exist -- create it.
+        target = os.path.join(parent, ".git", "refs", "heads", "fix")
+        assert not os.path.exists(target)
+        _ensure_dir_in_stage(stage, parent, target)
+        assert os.path.isdir(os.path.join(stage, ".git", "refs", "heads", "fix"))
+        # Calling again on an existing path is a no-op.
+        _ensure_dir_in_stage(stage, parent, target)
+        assert os.path.isdir(os.path.join(stage, ".git", "refs", "heads", "fix"))

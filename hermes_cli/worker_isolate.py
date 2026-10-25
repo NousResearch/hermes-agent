@@ -24,13 +24,20 @@ Carve-out set (exactly this, no more):
 * the per-task worktree (dispatcher-provisioned before the sandbox exists,
   because ``.git/worktrees`` is ro under the sandbox by design),
 * ``<agent_home>/.git/objects`` -- shared object store a commit needs,
-* ``<agent_home>/.git/refs/heads`` -- the worker's branch ref (lockfile +
-  rename),
 * ``<agent_home>/.git/logs`` -- reflog,
 * ``<agent_home>/.git/worktrees/<this-worktree-name>`` -- THIS worktree's
   ``index``/``HEAD`` (NEVER the whole ``.git/worktrees`` directory: a writable
   whole dir lets a worker register an arbitrary new worktree -- observed
-  escape during design, then closed).
+  escape during design, then closed),
+* ``<agent_home>/.git/refs/heads/<branch-dir>`` -- ONLY the directory
+  containing the worker's own branch ref (e.g. ``wt`` for ``wt/<task-id>``).
+  ``.git/refs/heads`` as a whole is **NOT** carved out: a worker that can
+  update arbitrary refs can ``git update-ref refs/heads/canonical-deploy``
+  to a different commit (validated escape during integration -- the
+  reference bash design missed it because the harness tested only no-op
+  updates where the target SHA matched the current value). The narrow
+  carve-out refuses cross-branch moves while still letting the worker
+  commit on its own branch via the standard git plumbing.
 
 Two traps (both measured):
 
@@ -39,6 +46,8 @@ Two traps (both measured):
   ``MS_RDONLY``.
 * ``.git/worktrees`` must be carved out **per worktree name**, not as a whole
   directory.
+* ``.git/refs/heads`` must be carved out **per branch directory**, not as a
+  whole directory (validated escape during integration; see above).
 
 Config gate: ``kanban.worker_isolation = off|warn|enforce`` (default
 ``enforce`` on Linux when unprivileged userns is available). Emergency kill
@@ -368,7 +377,21 @@ def _parse_launcher_argv(args: List[str]) -> tuple[str, Optional[str], List[str]
 def _enter_isolation(
     *, agent_home: str, worktree: Optional[str], extra_rw: Sequence[str]
 ) -> int:
-    """Apply the bind dance. Mirrors the validated reference launcher.
+    """Apply the bind dance. Mirrors the validated reference launcher,
+    with two security-tightening departures:
+
+    1. ``.git/refs/heads`` is carved out **only for the worker's own branch**,
+       not as a whole directory. The wider carve-out lets a worker
+       ``update-ref refs/heads/canonical-deploy`` to a different commit
+       (validated escape during integration testing -- the original bash
+       design decision missed it because the harness tested only no-op
+       updates where ``$CANON`` was the current value). The narrow
+       carve-out refuses the cross-branch move while still letting the
+       worker update its own branch ref via the standard git plumbing.
+
+    2. ``.git/packed-refs`` is NOT carved out, so a worker can't
+       resurrect a packed ref that the dispatcher unpacks to defang
+       an update.
 
     Errors return distinct exit codes (91=stage bind, 92=prod bind, 93=remount ro,
     94=carve bind) so the launcher's first failing mount is identifiable from
@@ -397,10 +420,27 @@ def _enter_isolation(
         if rc != 0:
             return 93
         # 3. carve-outs, sourced from the rw staging bind.
-        carve: List[str] = [f"{agent_home}/.git/objects", f"{agent_home}/.git/refs/heads", f"{agent_home}/.git/logs"]
+        #    ``.git/refs/heads`` is intentionally NOT included (see docstring);
+        #    the worker's own branch carve-out is added below when worktree
+        #    is provided.
+        carve: List[str] = [f"{agent_home}/.git/objects", f"{agent_home}/.git/logs"]
         if worktree:
             carve.append(worktree)
             carve.append(f"{agent_home}/.git/worktrees/{os.path.basename(worktree)}")
+            # The worker's own branch ref lives under ``refs/heads/<branch>``.
+            # We resolve the branch name from the worktree's HEAD so the
+            # carve-out matches what git will actually try to update. If
+            # the worktree has no HEAD yet (e.g. fresh worktree before any
+            # checkout), the carve-out is skipped and the worker will get
+            # the standard ro denial on its first ref write -- still safe.
+            worker_ref_dir = _worker_branch_ref_dir(agent_home, worktree)
+            if worker_ref_dir:
+                # ``mkdir -p`` in the rw staging bind so the carve-out
+                # path EXISTS (mount --bind onto a non-existent path
+                # would fail, and even if it succeeded git can't create
+                # ref files in a directory that doesn't exist on disk).
+                _ensure_dir_in_stage(stage, parent, worker_ref_dir)
+                carve.append(worker_ref_dir)
         for extra in extra_rw:
             carve.append(extra)
         for sub in carve:
@@ -422,6 +462,89 @@ def _enter_isolation(
         # The staging dir was only a mount source -- leave it; nothing inside
         # is exposed.
         pass
+
+
+def _ensure_dir_in_stage(stage: str, parent: str, target: str) -> None:
+    """Create ``target``'s parent directories inside the rw staging bind.
+
+    Carve-out targets must exist as paths inside the staging bind BEFORE
+    we bind them over the (then-ro) production path. For directories
+    holding ref files, that means we need to mkdir the path on the
+    staging side first; otherwise git's ``fopen(<refpath>, 'w')`` would
+    fail with ENOENT under the sandbox even though the file's directory
+    itself was rw.
+
+    No-op if ``target`` does not start with ``parent/`` (defensive).
+    """
+    if not target.startswith(parent + "/"):
+        return
+    rel = target[len(parent) + 1:]
+    stage_path = os.path.join(stage, rel)
+    if os.path.exists(stage_path):
+        return
+    try:
+        os.makedirs(stage_path, exist_ok=True)
+    except OSError:
+        # Best effort -- if mkdir fails, the bind will silently skip the
+        # missing source path. The worker's first ref write will then be
+        # denied by the ro bind on the parent dir, which is the safe
+        # default.
+        pass
+
+
+def _worker_branch_ref_dir(agent_home: str, worktree: str) -> Optional[str]:
+    """Resolve the worker's own branch ref directory.
+
+    Reads the worktree's HEAD (either the gitdir pointer + bookkeeping
+    file, or a real HEAD for legacy layouts) and returns the on-disk
+    directory that contains the branch ref (e.g.
+    ``<agent_home>/.git/refs/heads/wt`` for a worker on ``wt/<task-id>``).
+    Returns ``None`` when the worktree has no HEAD yet (fresh
+    ``git worktree add``); the carve-out is skipped and the worker's
+    first ref write will be denied by the standard ro bind, which is
+    the safe default.
+    """
+    head_path: Optional[str] = None
+    worktree_git = os.path.join(worktree, ".git")
+    if os.path.isfile(worktree_git):
+        # Modern linked-worktree layout: ``<worktree>/.git`` is a file
+        # containing ``gitdir: <path>``. The real HEAD lives at
+        # ``<path>/HEAD``.
+        try:
+            line = open(worktree_git, "r").read().strip()
+        except OSError:
+            return None
+        if not line.startswith("gitdir:"):
+            return None
+        gitdir = line[len("gitdir:"):].strip()
+        head_path = os.path.join(gitdir, "HEAD")
+    elif os.path.isdir(worktree_git):
+        # Legacy / non-linked layout: HEAD sits directly under .git.
+        head_path = os.path.join(worktree_git, "HEAD")
+    else:
+        # Fall back to the worktree's own HEAD (uncommon, but cheap).
+        head_path = os.path.join(worktree, "HEAD")
+    if not head_path or not os.path.isfile(head_path):
+        return None
+    try:
+        head = open(head_path, "r").read().strip()
+    except OSError:
+        return None
+    # Detached HEAD (``<sha>``) -- no branch ref dir to carve out.
+    if not head.startswith("ref:"):
+        return None
+    ref = head[len("ref:"):].strip()  # e.g. ``refs/heads/wt/t_x``
+    if not ref.startswith("refs/heads/"):
+        return None
+    branch_path = ref[len("refs/heads/"):]  # e.g. ``wt/t_x``
+    branch_dir, _ = os.path.split(branch_path)
+    if not branch_dir:
+        # Top-level branch like ``main`` -- the carve-out would be
+        # ``<agent_home>/.git/refs/heads`` itself, which is exactly the
+        # path we're refusing to expose. Skip and let the worker's
+        # first write fail safe.
+        return None
+    return os.path.join(agent_home, ".git", "refs", "heads", branch_dir)
 
 
 def _mount(args: List[str]) -> int:

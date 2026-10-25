@@ -170,7 +170,7 @@ export interface AppHandoffStatus {
   lines: string[]
   moved_toolkits?: string[]
   probably_moved?: boolean
-  state: 'claimed' | 'failed' | 'gone' | 'idle' | 'paused' | 'pending' | 'retrying'
+  state: 'claimed' | 'failed' | 'gone' | 'idle' | 'pending' | 'retrying'
   updated_at?: null | string
 }
 

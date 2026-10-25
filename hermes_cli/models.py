@@ -2159,14 +2159,14 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
     """Drop one provider's cache entry, or wipe the whole cache (``provider=None``). Used by
     ``/model --refresh`` and ``hermes model --refresh``."""
     try:
-        # Native Ollama tags are keyed by root URL, not provider slug — a targeted refresh can't
-        # identify the root from the name alone, so clear this small in-process cache every time.
+        from hermes_cli.model_catalog import clear_fetch_backoff
+        clear_fetch_backoff()  # a recovered catalog is fetched now, not after the offline backoff
+        # Native Ollama tags are keyed by root URL, not provider slug: clear them on every refresh.
         _OLLAMA_LOCAL_MODELS_CACHE.clear()
         _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.clear()
         _OLLAMA_LOCAL_PROBE_REACHABLE.clear()
-        # A fresh copilot-acp CLI login must be visible to the next /model switch (this helper is
-        # what ``--refresh`` runs): don't let the 5-min session memo (or its failure memo) serve
-        # a stale signed-out probe past an explicit refresh.
+        # A fresh copilot-acp CLI login must show on the next /model switch: ``--refresh`` drops the
+        # 5-min session memo (and its failure memo) so it never serves a stale signed-out probe.
         global _copilot_acp_session_memo
         _copilot_acp_session_memo = None
         from hermes_cli.models_cache_lock import write_under_cache_lock

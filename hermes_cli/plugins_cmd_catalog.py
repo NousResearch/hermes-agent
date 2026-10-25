@@ -286,7 +286,7 @@ def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Option
     target, manifest, installed_name = _install_plugin_core(
         entry.install_identifier, force=force, ref=ref or entry.sha, scan_decision_cb=scan_decision_cb,
         reviewed_pin=entry.sha, python_deps=python_deps, assume_deps_consent=assume_deps_consent,
-        allow_removed=allow_removed, before_swap=before_swap,
+        allow_removed=allow_removed, before_swap=before_swap, app_title=entry.title or None,
         catalog={"name": entry.name, "repo": entry.repo, "tier": entry.tier, "pin": entry.sha})
     return target, manifest, installed_name
 

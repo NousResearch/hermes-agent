@@ -56,6 +56,9 @@ export const ERROR_CODE_KEYS = [
   // The chat's working folder was moved or deleted: nothing ran, and nothing will until it is back
   // or the chat moves to another folder.
   'workspace_unavailable',
+  // The API key this chat started with changed or was removed (gateway: a chat never switches keys
+  // on its own): Retry repeats it; a new chat runs on the current key.
+  'launch_credentials_unavailable',
   // The owner did not confirm a forwarded send in time; it may already be queued: no Retry.
   'SESSION_OWNER_UNCONFIRMED',
   'disk_full',
@@ -348,6 +351,7 @@ const CODE_PLANS: Partial<Record<ErrorCodeKey, Partial<ErrorRecoveryPlan>>> = {
   cron_session_read_only: { retry: false, startNewSession: true },
   // Retry is the next click once the folder is back or the chat was moved (Move to project).
   workspace_unavailable: { retry: true, startNewSession: true },
+  launch_credentials_unavailable: { retry: false, startNewSession: true },
   content_policy_blocked: { editMessage: true, retry: false },
   context_overflow: { compress: true, retry: false, startNewSession: true },
   disk_full: { openHermesFolder: true, retry: true },

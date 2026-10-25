@@ -549,6 +549,38 @@ describe('GatewaySettings', () => {
     })
   })
 
+  it('shows the remote cause for an unclassified SSH test failure, not the generic copy', async () => {
+    getConnectionConfig.mockResolvedValue({
+      ...localConnection,
+      mode: 'ssh',
+      sshHost: 'build-box',
+      sshUser: '',
+      sshPort: 22,
+      sshKeyPath: '',
+      sshRemoteHermesPath: '',
+      sshRemoteProfile: ''
+    })
+    const cause = 'The Windows remote probe failed. (probe: Path was not found: C:\\h\\bin\\python.exe)'
+    const testConnectionConfig = vi.fn().mockResolvedValue({ reachable: false, sshError: 'unknown', error: cause })
+    Object.assign(window.hermesDesktop, { testConnectionConfig })
+
+    render(<GatewaySettings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Test SSH' }))
+
+    try {
+      await waitFor(() =>
+        expect($notifications.get()).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: 'error', message: expect.stringContaining('Path was not found') })
+          ])
+        )
+      )
+      expect($notifications.get().some((n: { message?: string }) => n.message === 'SSH connection failed.')).toBe(false)
+    } finally {
+      $notifications.set([])
+    }
+  })
+
   it('surfaces the Tailscale browser-check guidance for an interactive-auth SSH test failure', async () => {
     getConnectionConfig.mockResolvedValue({
       ...localConnection,

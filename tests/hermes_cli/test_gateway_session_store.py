@@ -487,6 +487,51 @@ def test_verbose_flag_rides_session_create():
     assert "verbose" not in _creation_policy({"verbose": None})
 
 
+def test_ssh_terminal_cwd_is_not_sent_as_gateway_session_cwd(store, monkeypatch, tmp_path):
+    """SSH TERMINAL_CWD exists only remotely; session.create still needs a gateway-local cwd."""
+    import json
+    import os
+    from hermes_cli import gateway_session_store as gss
+    from gateway.session_policy import build_policy
+    from hermes_state_runtime import RuntimeStoreError
+
+    db, client = store
+    local = tmp_path / "bot-work"
+    local.mkdir()
+    remote = tmp_path / "ssh-only"
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    (home / "config.yaml").write_text(f"terminal:\n  backend: ssh\n  cwd: {remote}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.chdir(local)
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setenv("TERMINAL_CWD", str(remote))
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    assert not remote.is_dir()
+    with pytest.raises(RuntimeStoreError, match="invalid_params"):
+        build_policy({"source": "cli", "cwd": str(remote)}, {}, profile_terminal=False)
+
+    db.open_session(cli(), {})
+    created = [p for m, p in client.calls if m == "session.create"][-1]
+    assert created["source"] == "oneshot"
+    assert created["cwd"] == str(local.resolve())
+    assert created["row_cwd"] == ""
+    config = {"terminal": {"backend": "ssh", "cwd": str(remote)}}
+    policy = build_policy({key: created[key] for key in ("cwd", "source", "row_cwd")},
+                          config, profile_terminal=True)
+    assert policy.cwd == str(local.resolve())
+    assert json.loads(policy.terminal_json)["TERMINAL_CWD"] == str(remote)
+
+    monkeypatch.setattr(gss, "session_store", lambda: db)
+    gss.create_titled_session("Fresh Named")
+    titled = [p for m, p in client.calls if m == "session.create"][-1]
+    assert titled["cwd"] == str(local.resolve())
+    policy = build_policy({key: titled[key] for key in ("cwd", "source", "row_cwd")}, config, profile_terminal=True)
+    assert policy.cwd == str(local.resolve())
+    assert json.loads(policy.terminal_json)["TERMINAL_CWD"] == str(remote)
+    assert os.environ["TERMINAL_CWD"] == str(remote)
+
+
 def test_row_cwd_is_mains_stamp_while_the_tools_run_in_terminal_cwd(store, monkeypatch, tmp_path):
     """Main's row cwd: the launching process's cwd on its first session (``-w`` never chdirs, so the
     repo root), none on ``/new`` and ``--create-if-missing``. The execution cwd stays TERMINAL_CWD."""

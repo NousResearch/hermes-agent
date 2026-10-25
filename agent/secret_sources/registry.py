@@ -24,7 +24,7 @@ from agent.secret_sources.base import (
     SECRET_SOURCE_API_VERSION, ErrorKind, FetchResult, SecretSource, is_valid_env_name,
     reset_source_environment, set_source_environment,
 )
-from hermes_constants import hermes_home_key, normalize_scope
+from hermes_constants import LAUNCH_ONLY_ENV_KEYS, hermes_home_key, normalize_scope
 
 logger = logging.getLogger(__name__)
 
@@ -414,7 +414,9 @@ def apply_all(secrets_cfg: dict, home_path: Path,
     ordered = [s for s in enabled if s.shape == "mapped"] + [s for s in enabled if s.shape == "bulk"]
 
     fetches: list[tuple[SecretSource, dict, FetchResult]] = []
-    protected: dict[str, str] = {}  # var → source that protects it
+    # Launch-only keys (HERMES_MANAGED_DIR) are pre-protected: a user-configured source must not
+    # repoint the managed scope at a directory the user controls (#135200).
+    protected: dict[str, str] = {var: "launch environment" for var in LAUNCH_ONLY_ENV_KEYS}
     for source in ordered:
         cfg = _section(secrets_cfg, source.name)
         result = _fetch_with_timeout(source, cfg, home_path, env)

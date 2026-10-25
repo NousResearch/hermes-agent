@@ -96,6 +96,7 @@ async def test_standalone_edit_refuses_while_a_gateway_owns_the_store(tmp_path, 
         assert db.get_session('owned')['runtime_revision'] == 0
 
 
+@pytest.mark.platforms("posix")
 @pytest.mark.asyncio
 async def test_a_stale_socket_without_a_gateway_still_edits_offline(tmp_path, monkeypatch):
     """A crashed gateway can leave a ``gateway.sock`` discovery refuses on its mode before it reads

@@ -68,6 +68,8 @@ def gateway_home(tmp_path, monkeypatch):
         plugins._reset_plugin_managers_for_tests()
 
 
+# The fixture server launches as ./server.py via its shebang + exec bit, which Windows lacks.
+@pytest.mark.platforms("posix")
 def test_reload_plugins_answers_with_the_plugins_mcp_tools_already_registered(gateway_home):
     from gateway.run_plugin_rewire import reload_plugins_verb
     from tools.registry import registry

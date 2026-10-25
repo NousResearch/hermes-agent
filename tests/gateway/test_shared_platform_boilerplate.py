@@ -152,3 +152,44 @@ def test_external_fallback_consults_profile_scope_only_when_unscoped(monkeypatch
         assert shared.get_scoped_secret("K", "dflt", external_fallback=True) == "dflt"
     finally:
         ss.reset_secret_scope(token)
+
+
+def test_yaml_env_setter_encodes_every_collection_shape_as_csv(monkeypatch):
+    """Every collection shape the adapter readers accept must CSV-join, not fall through to ``str()``:
+    the Slack ``reaction_triggers`` reader takes list/tuple/set, so a tuple/set bridged to env as
+    Python repr (``"('eyes', 'rocket')"``) split into punctuated trigger names (#109900). Sets sort
+    by text so the env value is deterministic regardless of iteration order."""
+    set_env = shared.yaml_env_setter()
+    os.environ.pop("X_SHAPES", None)  # pop, not monkeypatch.delenv: the setter's own writes must not be snapshotted for teardown restore
+    set_env("X_SHAPES", ["eyes", "rocket"])
+    assert os.environ["X_SHAPES"] == "eyes,rocket"
+    for value in (("eyes", "rocket"), {"rocket", "eyes"}, frozenset({"rocket", "eyes"})):
+        os.environ.pop("X_SHAPES", None)
+        set_env("X_SHAPES", value)
+        assert os.environ["X_SHAPES"] == "eyes,rocket", f"{type(value).__name__} must encode as sorted CSV"
+    os.environ.pop("X_SHAPES", None)
+    set_env("X_SHAPES", "plain")
+    assert os.environ["X_SHAPES"] == "plain"
+    os.environ.pop("X_SHAPES", None)
+    set_env("X_SHAPES", None)  # None never writes
+    assert "X_SHAPES" not in os.environ
+
+
+def test_slack_yaml_bridge_reaction_triggers_round_trip(monkeypatch):
+    """Adapter-level round-trip for every supported collection shape (#109900): the Slack bridge writes
+    SLACK_REACTION_TRIGGERS, and a process that reads the var back (no ``extra`` seeded — e.g. a child
+    process that only inherited env) must recover exactly the trigger names."""
+    import plugins.platforms.slack.adapter as slack
+    from gateway.config import Platform, PlatformConfig
+
+    monkeypatch.delenv("SLACK_REACTION_TRIGGERS", raising=False)
+    adapter = object.__new__(slack.SlackAdapter)
+    adapter.platform = Platform.SLACK
+    adapter.config = PlatformConfig(enabled=True)
+
+    for value in (["eyes", "rocket"], ("eyes", "rocket"), {"rocket", "eyes"}):
+        os.environ.pop("SLACK_REACTION_TRIGGERS", None)  # pop: the bridge's own writes must not be snapshotted for teardown restore
+        seeded = slack._apply_yaml_config({}, {"reaction_triggers": value})
+        assert seeded == {"reaction_triggers": value}
+        assert adapter._slack_reaction_triggers() == {"eyes", "rocket"}
+    os.environ.pop("SLACK_REACTION_TRIGGERS", None)

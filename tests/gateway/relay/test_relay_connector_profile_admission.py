@@ -7,6 +7,7 @@ own ledger. Neither may acknowledge the frame and drop it. An unserved stamped p
 the way an unserved profile route is: acknowledged, never run.
 """
 import asyncio
+import base64
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -261,3 +262,40 @@ async def test_stamped_profile_completion_finds_its_relay_after_a_restart(tmp_pa
                 authority.db.close()
         for _, home in homes:
             process_ownership.release(home)
+
+
+def _discord_modal(profile):
+    body = {'type': 5, 'id': 'modal-1', 'channel_id': 'chat-modal', 'user': {'id': 'u-modal'},
+            'data': {'custom_id': 'feedback', 'components': [{'type': 1, 'components': [
+                {'type': 4, 'custom_id': 'answer', 'value': 'Please summarize'}]}]}}
+    return {'platform': 'discord', 'botId': 'fixture-bot', 'method': 'POST', 'path': '/interactions',
+            'headers': [], 'bodyB64': base64.b64encode(json.dumps(body).encode()).decode(), 'profile': profile}
+
+
+@pytest.mark.asyncio
+async def test_single_profile_gateway_serves_stamped_commands_and_discord_interactions(tmp_path, monkeypatch):
+    from gateway.session_authority import initialize_session_authority
+    from hermes_constants import get_hermes_home
+    launch = Path(get_hermes_home()).resolve()
+    (launch / 'profiles' / 'work').mkdir(parents=True, exist_ok=True)
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
+    turns = _stub_turns(runner, monkeypatch)
+    authority = await initialize_session_authority(runner, profile_id='default', instance_id='relay-stamp-paths')
+    try:
+        async with _relay(runner, platforms=('discord',)) as (_send, outgoing, adapter):
+            # A stamped slash command that becomes a turn (``_on_inbound`` skips native admission).
+            await adapter._transport._on_inbound({'event': {'text': '/queue summarize', 'message_id': 'cmd-1', 'source': {
+                'platform': 'discord', 'chat_type': 'dm', 'chat_id': 'chat-cmd', 'user_id': 'u-cmd', 'profile': 'work'}}})
+            # A stamped Discord modal submit (``_on_passthrough`` calls handle_message directly).
+            await adapter._transport._on_passthrough_forward({'forward': _discord_modal('work')})
+            await async_wait_until(lambda: _replies(outgoing, 'chat-cmd') and _replies(outgoing, 'chat-modal'),
+                                   timeout=20, what='both stamped inputs answered')
+            assert len(turns) == 2, turns
+            assert {home for _, home, _ in turns} == {launch}
+            for chat in ('chat-cmd', 'chat-modal'):
+                sent = [a.get('content') or '' for a in _replies(outgoing, chat)]
+                assert sent and not any('profile_mismatch' in text for text in sent), sent
+                # The stamp is still echoed on egress.
+                assert _replies(outgoing, chat)[-1]['metadata'].get('profile') == 'work'
+    finally:
+        authority.db.close()

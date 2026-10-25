@@ -45,10 +45,6 @@ async def _admit(adapter, runner, event):
     from gateway.parked_route_refusal import ParkedProfileRefusal, refuse_parked_route
     from gateway.platforms.webhook_ingress import admit_producer
     from gateway.relay.adapter import _PERMANENT_REFUSALS
-    if event.source.profile and not getattr(runner.config, 'multiplex_profiles', False):
-        # A single-profile gateway serves the connector's profile route from its one profile;
-        # ``_capture_scope`` already kept the stamp for egress (persona attribution).
-        event.source.profile = None
     try:
         receipt = await admit_producer(adapter, event)
     except ParkedProfileRefusal as exc:

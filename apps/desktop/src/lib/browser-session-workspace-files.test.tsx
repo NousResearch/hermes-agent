@@ -1,10 +1,12 @@
+import { EditorView } from '@codemirror/view'
 import { LOCAL_CONNECTION_ID } from '@hermes/shared'
-import { act, cleanup, render, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
 import { PreviewTilePane } from '@/app/chat/right-rail/preview'
+import { LocalFilePreview } from '@/app/chat/right-rail/preview-file'
 import { SessionViewProvider } from '@/app/chat/session-view'
 import { MarkdownImage } from '@/components/assistant-ui/markdown-text'
 import { $previewTabs } from '@/store/preview'
@@ -12,11 +14,14 @@ import { $connection } from '@/store/session'
 import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
-import { readDesktopFileText } from './desktop-fs'
+import { readDesktopFileText, writeDesktopFileText } from './desktop-fs'
 import { resolveMediaPlaybackSrc } from './media'
 
 // The pane's consent dialog needs a QueryClientProvider; these tests read files, not consent.
 vi.mock('@/app/chat/right-rail/real-profile-consent-dialog', () => ({ RealProfileConsentDialog: () => null }))
+vi.mock('@/components/chat/shiki-highlighter', () => ({
+  LazyShiki: ({ code }: { code: string }) => <pre>{code}</pre>
+}))
 
 // WA-5: a Docker agent's /workspace is its own session's sandbox, so a Webapp file request names
 // the session it belongs to. The gateway half is tests/hermes_cli/test_web_server_fs_session_workspace.py.
@@ -53,7 +58,7 @@ afterEach(() => {
   $previewTabs.set([])
   clearWebappSession()
   Reflect.deleteProperty(win, 'hermesDesktop')
-  document.documentElement.removeAttribute('data-hermes-desktop-host')
+  globalThis.document.documentElement.removeAttribute('data-hermes-desktop-host')
   setApiRequestConnection(null)
   setApiRequestProfile(null)
   $connection.set(null)
@@ -135,9 +140,74 @@ describe('text previews in a session sandbox', () => {
   })
 })
 
+describe('Save in a session sandbox', () => {
+  it('saves a file for the session it was read for', async () => {
+    await writeDesktopFileText(NOTE, 'edited', { sessionId: 'sess-1' })
+    await writeDesktopFileText(NOTE, 'edited')
+
+    const [scoped, bare] = readsOf('/api/fs/write-text')
+
+    expect(scoped).toMatchObject({ body: { content: 'edited', path: NOTE, session_id: 'sess-1' }, method: 'POST' })
+    expect(bare.body).toEqual({ content: 'edited', path: NOTE })
+  })
+
+  it('saves an edited preview to the session the tab belongs to', async () => {
+    const rangeDescriptors = Object.getOwnPropertyDescriptors(Range.prototype)
+
+    Object.defineProperties(Range.prototype, {
+      getClientRects: { configurable: true, value: () => [] },
+      getBoundingClientRect: { configurable: true, value: () => new DOMRect() }
+    })
+
+    try {
+      const rendered = render(
+        <LocalFilePreview
+          reloadKey={0}
+          sessionId="stored-1"
+          target={{ kind: 'file', label: 'note.txt', path: NOTE, previewKind: 'text', source: NOTE, url: `file://${NOTE}` }}
+        />
+      )
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+      const editor = EditorView.findFromDOM(rendered.container.querySelector('.cm-content')!)!
+      act(() => editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: 'edited' } }))
+      fireEvent.click(screen.getByRole('button', { name: /Save/ }))
+
+      await waitFor(() => expect(readsOf('/api/fs/write-text')).toHaveLength(1))
+      expect(readsOf('/api/fs/write-text')[0].body).toEqual({ content: 'edited', path: NOTE, session_id: 'stored-1' })
+      // The first load, the stale-on-disk check before the write and the reload after it all
+      // read the same session's copy.
+      const sessions = readsOf('/api/fs/read-text').map(read => read.url.searchParams.get('session_id'))
+
+      expect(sessions.length).toBeGreaterThanOrEqual(2)
+      expect(new Set(sessions)).toEqual(new Set(['stored-1']))
+    } finally {
+      for (const key of ['getClientRects', 'getBoundingClientRect']) {
+        if (rangeDescriptors[key]) {
+          Object.defineProperty(Range.prototype, key, rangeDescriptors[key])
+        } else {
+          Reflect.deleteProperty(Range.prototype, key)
+        }
+      }
+    }
+  })
+})
+
 describe('native Desktop reads', () => {
+  it('keeps a local save to its path', async () => {
+    globalThis.document.documentElement.removeAttribute('data-hermes-desktop-host')
+    const writeTextFile = vi.fn(async () => ({ path: NOTE }))
+    Object.defineProperty(win, 'hermesDesktop', { configurable: true, value: { writeTextFile } })
+    $connection.set({ mode: 'local' } as never)
+
+    await writeDesktopFileText(NOTE, 'edited', { sessionId: 'sess-1' })
+
+    expect(writeTextFile).toHaveBeenCalledWith(NOTE, 'edited')
+    expect(requests).toEqual([])
+  })
+
   it('keeps a local read to its path', async () => {
-    document.documentElement.removeAttribute('data-hermes-desktop-host')
+    globalThis.document.documentElement.removeAttribute('data-hermes-desktop-host')
     const readFileText = vi.fn(async () => ({ path: NOTE, text: 'local' }))
     Object.defineProperty(win, 'hermesDesktop', { configurable: true, value: { readFileText } })
     $connection.set({ mode: 'local' } as never)

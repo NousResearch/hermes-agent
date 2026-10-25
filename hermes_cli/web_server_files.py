@@ -229,7 +229,7 @@ SANDBOX_NOT_FOUND = "File not found on the gateway host: the path may live insid
 
 def _agent_fs_path(
     raw_path: str, *, cwd: str | None = None, profile_home: Path | None = None,
-    workspace_key: str = "",
+    workspace_key: str = "", decode_fallback: bool = True,
 ) -> Path:
     """``_fs_path`` for agent-facing reads; container paths resolve to their host
     mount, so callers' boundary guards see the real host target.
@@ -241,7 +241,7 @@ def _agent_fs_path(
     """
     raw = str(raw_path or "").strip()
     if os.name != "nt":
-        host = _fs_path(raw_path, cwd=cwd)
+        host = _fs_path(raw_path, cwd=cwd, decode_fallback=decode_fallback)
         if os.access(host, os.R_OK):
             return host
         translated = _agent_container_path(
@@ -253,7 +253,7 @@ def _agent_fs_path(
         return translated
     if _is_unmapped_container_path(raw, profile_home=profile_home):
         raise HTTPException(status_code=404, detail=SANDBOX_NOT_FOUND)
-    return _fs_path(raw_path, cwd=cwd)
+    return _fs_path(raw_path, cwd=cwd, decode_fallback=decode_fallback)
 
 
 def _file_url_container_text(raw: str) -> str:

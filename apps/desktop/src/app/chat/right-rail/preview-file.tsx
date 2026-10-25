@@ -1070,7 +1070,7 @@ export function LocalFilePreview({
       // Also guards Overwrite: bypassing a content conflict never authorizes
       // writing the same path on another connection/profile or this device.
       requireEditorOwner()
-      await writeDesktopFileText(filePath, draftRef.current)
+      await writeDesktopFileText(filePath, draftRef.current, { sessionId })
       baselineRef.current = draftRef.current
       setDirty(false)
       setConflict(false)

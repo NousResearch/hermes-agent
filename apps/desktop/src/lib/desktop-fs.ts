@@ -139,7 +139,12 @@ export async function readDesktopFileText(
 // IPC; remote writes hit the dashboard's POST /api/fs/write-text (same path
 // hardening, parent-must-exist, size cap) so the editor behaves identically in
 // both modes. Stale-on-disk detection is the caller's job (re-read before save).
-export async function writeDesktopFileText(path: string, content: string): Promise<{ path: string }> {
+// A gateway save names the session the file was read for, so it lands where that read did.
+export async function writeDesktopFileText(
+  path: string,
+  content: string,
+  scope?: DesktopFsSessionScope
+): Promise<{ path: string }> {
   const desktop = bridge()
 
   if (!isDesktopFsRemoteMode()) {
@@ -150,7 +155,11 @@ export async function writeDesktopFileText(path: string, content: string): Promi
     return desktop.writeTextFile(path, content)
   }
 
-  const result = await remoteFsApi<{ ok?: boolean; path?: string }>('/api/fs/write-text', { content, path })
+  const result = await remoteFsApi<{ ok?: boolean; path?: string }>('/api/fs/write-text', {
+    content,
+    path,
+    ...(scope?.sessionId ? { session_id: scope.sessionId } : {})
+  })
 
   return { path: result.path || path }
 }

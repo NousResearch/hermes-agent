@@ -1049,7 +1049,9 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     ``_fs_path``, the parent must already exist (never build trees), only
     regular files may be replaced, payload size-capped, staged to a sibling
     temp file and ``os.replace``-d so a crash can't truncate the original.
-    Stale-on-disk detection is the client's job (re-read before save).
+    Stale-on-disk detection is the client's job (re-read before save). The
+    target resolves as ``read-text`` resolves it, ``session_id`` included, so a
+    file saves to the same place it was read from.
     """
     text = payload.content or ""
     # Save where read-text read: a staged paste or pick on this host, all else on the SSH machine.
@@ -1066,7 +1068,7 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
             _raise_fs_backend_error(exc)
         return {"ok": True, "path": target, "byteSize": byte_size}
 
-    target = _fs_path(payload.path, decode_fallback=False)
+    target = await _fs_download_path(payload.path, profile, payload.session_id, decode_fallback=False)
     if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")
 
@@ -1099,8 +1101,11 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     return {"ok": True, "path": str(target), "byteSize": len(text.encode("utf-8"))}
 
 
-async def _fs_download_path(path: str, profile: Optional[str], session_id: Optional[str]) -> Path:
+async def _fs_download_path(
+    path: str, profile: Optional[str], session_id: Optional[str], *, decode_fallback: bool = True,
+) -> Path:
     # Resolve container paths in the requested profile's sandbox, not the active one's.
+    # A write passes decode_fallback=False: it must never land on a decoded twin of its name.
     profile_home = _fs_profile_home(profile)
     if session_id is not None:
         from hermes_cli.web_routers.sessions import get_session_detail
@@ -1112,9 +1117,9 @@ async def _fs_download_path(path: str, profile: Optional[str], session_id: Optio
         cwd = session.get("cwd") or ""
         return _agent_fs_path(
             path, cwd=cwd, profile_home=profile_home,
-            workspace_key=_session_workspace_key(session_id, cwd),
+            workspace_key=_session_workspace_key(session_id, cwd), decode_fallback=decode_fallback,
         )
-    return _agent_fs_path(path, profile_home=profile_home)
+    return _agent_fs_path(path, profile_home=profile_home, decode_fallback=decode_fallback)
 
 
 def _fs_profile_home(profile: Optional[str]) -> Optional[Path]:

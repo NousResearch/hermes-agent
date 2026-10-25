@@ -181,3 +181,54 @@ def test_read_text_refuses_a_file_outside_the_sessions_workspace(client, sandbox
 
     assert response.status_code in (400, 403, 404), response.text
     assert "outside note" not in response.text
+
+
+# Part 3: Save
+
+
+def _notes(sandboxes):
+    return {name: (sandboxes[name] / "note.txt").read_text(encoding="utf-8") for name in ("own", "foreign", "shared")}
+
+
+@pytest.mark.parametrize("path", ["/workspace/note.txt", "file:///workspace/note.txt"])
+def test_save_writes_the_file_the_preview_read(client, sandboxes, path):
+    read = client.get("/api/fs/read-text", params={"path": path, "session_id": "sess-ws"})
+    saved = client.post("/api/fs/write-text", json={"path": path, "content": "edited", "session_id": "sess-ws"})
+
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["path"] == read.json()["path"] == str(sandboxes["own"] / "note.txt")
+    assert _notes(sandboxes) == {"own": "edited", "foreign": "foreign note", "shared": "shared note"}
+
+
+def test_save_without_a_session_writes_where_a_bare_read_reads(client, sandboxes):
+    read = client.get("/api/fs/read-text", params={"path": "/workspace/note.txt"})
+    saved = client.post("/api/fs/write-text", json={"path": "/workspace/note.txt", "content": "edited"})
+
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["path"] == read.json()["path"] == str(sandboxes["shared"] / "note.txt")
+    assert _notes(sandboxes) == {"own": "session note", "foreign": "foreign note", "shared": "edited"}
+
+
+@pytest.mark.parametrize("session_id", ["sess-work", "missing-session", " "])
+def test_save_refuses_a_session_this_profile_does_not_own(client, sandboxes, session_id):
+    for path in ("/workspace/note.txt", "file:///workspace/note.txt"):
+        response = client.post(
+            "/api/fs/write-text", json={"path": path, "content": "edited", "session_id": session_id},
+        )
+        assert response.status_code == 404, (path, response.text)
+    assert _notes(sandboxes) == {"own": "session note", "foreign": "foreign note", "shared": "shared note"}
+
+
+@pytest.mark.parametrize("path", [
+    "/workspace/escape.txt",
+    "file:///workspace/escape.txt",
+    "/workspace/../outside/secret.txt",
+])
+def test_save_refuses_a_file_outside_the_sessions_workspace(client, sandboxes, path):
+    response = client.post(
+        "/api/fs/write-text", json={"path": path, "content": "edited", "session_id": "sess-ws"},
+    )
+
+    assert response.status_code in (400, 403, 404), response.text
+    assert (sandboxes["outside"] / "secret.txt").read_text(encoding="utf-8") == "outside note"
+    assert (sandboxes["own"] / "escape.txt").is_symlink()

@@ -57,13 +57,13 @@ const STYLES = resolve(dirname(fileURLToPath(import.meta.url)), '../../styles.cs
 
 beforeAll(() => {
   Element.prototype.scrollIntoView = vi.fn()
-  const sheet = document.createElement('style')
+  const sheet = globalThis.document.createElement('style')
   sheet.textContent = readFileSync(STYLES, 'utf8')
-  document.head.appendChild(sheet)
+  globalThis.document.head.appendChild(sheet)
 })
 afterEach(() => {
   cleanup()
-  document.documentElement.style.removeProperty('--chat-text-scale')
+  globalThis.document.documentElement.style.removeProperty('--chat-text-scale')
 })
 
 it.each([110, 150])('shares conversation typography at %s percent in canonical and legacy rooms', async scale => {
@@ -96,9 +96,10 @@ it.each([110, 150])('shares conversation typography at %s percent in canonical a
       />
     </>
   )
+
   await waitFor(() => expect(getAllByTestId('renderer-text')).toHaveLength(4))
 
-  expect(document.documentElement.style.getPropertyValue('--chat-text-scale')).toBe(String(scale / 100))
+  expect(globalThis.document.documentElement.style.getPropertyValue('--chat-text-scale')).toBe(String(scale / 100))
   const bodies = container.querySelectorAll('[data-slot="group-chat-message-content"]')
   expect(bodies).toHaveLength(4)
 
@@ -106,9 +107,9 @@ it.each([110, 150])('shares conversation typography at %s percent in canonical a
     const style = getComputedStyle(body)
     // jsdom preserves var()/calc(); Chromium verification covers pixel sizes.
     expect(style.fontSize).toBe('var(--conversation-text-font-size)')
-    expect(style.getPropertyValue('--conversation-text-scale')).toBe('var(--chat-text-scale, 1)')
-    expect(style.getPropertyValue('--conversation-text-font-size')).toBe(
-      'calc(var(--conversation-text-base-size) * var(--chat-text-scale, 1))'
+    expect(style.getPropertyValue('--conversation-text-scale').replace(/\s/g, '')).toBe('var(--chat-text-scale,1)')
+    expect(style.getPropertyValue('--conversation-text-font-size').replace(/\s/g, '')).toBe(
+      'calc(var(--conversation-text-base-size)*var(--chat-text-scale,1))'
     )
   }
 })

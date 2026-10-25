@@ -380,6 +380,8 @@ class Download:
             try:
                 return candidate, operation(candidate)
             except DownloadTransportError as exc:
+                if isinstance(exc.cause, urllib.error.HTTPError):
+                    exc.cause.close()
                 if self.keep_retrying:
                     failures[:] = [error for error in failures if error.url != url]
                 failures.append(exc)

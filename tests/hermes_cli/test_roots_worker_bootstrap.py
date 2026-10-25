@@ -184,6 +184,7 @@ def test_identity_grant_and_ticket_must_match_exactly(tmp_path: Path, change, me
 @pytest.mark.parametrize(("change", "message"), [
     (lambda raw: raw.update(correlation_id="has spaces"), "correlation_id"),
     (lambda raw: raw.update(resume="yes"), "resume"),
+    (lambda raw: raw.update(use_default_claude_config="yes"), "must be a boolean"),
     (lambda raw: raw.update(assignment_id="not-a-uuid"), "assignment_id"),
     (lambda raw: raw.update(session_id="not-a-uuid"), "canonical UUID"),
     (lambda raw: raw.update(task="   "), "non-whitespace"),
@@ -286,6 +287,40 @@ def test_headless_task_returns_exact_correlated_result_without_channel(
     assert set(raw["allowed_tools"]).issubset(child["argv"])
     assert "bounded-token" not in receipt.read_text()
     assert not Path(persisted["launch_stage_dir"]).exists()
+
+
+def test_default_claude_profile_is_pinned_without_exporting_config_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, raw, whoami, ticket = _fixture(tmp_path)
+    profile = Path(raw["claude_config_dir"])
+    record, executable = tmp_path / "child.json", tmp_path / "claude"
+    _worker_script(executable, record)
+    raw.update(
+        use_default_claude_config=True,
+        claude_executable=str(executable),
+        roots_mcp_executable=str(executable),
+    )
+    request.write_text(json.dumps(raw))
+    monkeypatch.setattr(bootstrap, "_default_claude_config_dir", lambda: profile)
+    _fake_proofs(monkeypatch, whoami, ticket, raw)
+
+    bootstrap.run(request, _token_fd(), tmp_path / "receipt.json")
+
+    assert json.loads(record.read_text())["config_dir"] is None
+
+
+def test_default_claude_profile_refuses_a_different_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, raw, _, _ = _fixture(tmp_path)
+    raw["use_default_claude_config"] = True
+    monkeypatch.setattr(
+        bootstrap, "_default_claude_config_dir", lambda: tmp_path / "another-profile",
+    )
+
+    with pytest.raises(BootstrapRefusal, match="default Claude config mode"):
+        validate_assignment(raw)
 
 
 def test_resume_uses_existing_session_and_new_correlation(

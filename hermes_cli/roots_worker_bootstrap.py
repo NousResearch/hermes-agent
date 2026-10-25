@@ -57,6 +57,10 @@ _RESPONSE_SCHEMA = {
 }
 
 
+def _default_claude_config_dir() -> Path:
+    return Path.home() / ".claude"
+
+
 class BootstrapRefusal(ValueError):
     """The worker must not start under the supplied assignment."""
 
@@ -277,6 +281,9 @@ def validate_assignment(value: dict[str, Any], *, now: int | None = None) -> dic
         raise BootstrapRefusal("task is too large")
     if not isinstance(value.get("resume", False), bool):
         raise BootstrapRefusal("resume must be a boolean")
+    use_default_config = value.get("use_default_claude_config", False)
+    if not isinstance(use_default_config, bool):
+        raise BootstrapRefusal("use_default_claude_config must be a boolean")
     previous = value.get("previous_assignment_id")
     if value.get("resume", False):
         try:
@@ -309,8 +316,14 @@ def validate_assignment(value: dict[str, Any], *, now: int | None = None) -> dic
         directory = Path(value.get(key, ""))
         if not directory.is_absolute() or not directory.resolve(strict=True).is_dir() or directory.is_symlink():
             raise BootstrapRefusal(f"{key} must be an existing non-symlink absolute directory")
+    if (use_default_config
+            and Path(value["claude_config_dir"]).resolve()
+            != _default_claude_config_dir().resolve()):
+        raise BootstrapRefusal(
+            "default Claude config mode must pin the current user's default config directory")
     return {
         **value, "resume": value.get("resume", False),
+        "use_default_claude_config": use_default_config,
         "capabilities": capabilities, "partitions": partitions, "allowed_tools": allowed_tools,
         "instruction_files": instructions,
         "claude_executable": _owned_executable(value.get("claude_executable"), "claude_executable"),
@@ -575,6 +588,8 @@ def _authority_context(
         "capabilities": sorted(assignment["capabilities"]),
         "partitions": sorted(assignment["partitions"]),
         "allowed_tools": sorted(assignment["allowed_tools"]),
+        "claude_config_dir": assignment["claude_config_dir"],
+        "use_default_claude_config": assignment.get("use_default_claude_config", False),
         "instruction_sha256": dict(sorted(instruction_digests.items())),
     }
 
@@ -768,7 +783,12 @@ def run(request_path: Path, token_fd: int, receipt_path: Path, *, verify_only: b
                     "--disable-slash-commands", "--no-chrome",
                 ]
                 child_env = {key: os.environ[key] for key in _PASSTHROUGH_ENV if key in os.environ}
-                child_env["CLAUDE_CONFIG_DIR"] = assignment["claude_config_dir"]
+                # Claude Code treats an explicitly configured ~/.claude as a
+                # custom profile and does not use the logged-in default
+                # credential store. Pin and replacement-check the directory in
+                # both modes, but leave the variable absent for the default.
+                if not assignment["use_default_claude_config"]:
+                    child_env["CLAUDE_CONFIG_DIR"] = assignment["claude_config_dir"]
 
                 def enter_pinned_workdir() -> None:
                     os.fchdir(workdir_fd)

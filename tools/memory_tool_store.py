@@ -598,7 +598,10 @@ class MemoryStore:
                     f"entries into a shorter one instead of removing the last one. To delete the "
                     f"final entry deliberately, remove it alone in a one-item batch."), "would_empty")
             new_total = len(ENTRY_DELIMITER.join(working))  # budget check against the FINAL state only
-            if new_total > limit:
+            # A one-item remove or duplicate add never grows the store, so like the legacy
+            # remove/add it is not refused for excess left by a lowered cap.
+            grows = not (len(ops) == 1 and (ops[0].get("action") == "remove" or working == entries))
+            if grows and new_total > limit:
                 if len(ops) == 1 and ops[0].get("action") == "add":  # the advertised single add
                     return self._add_overflow(target, (ops[0].get("content") or ops[0].get("new_text") or "").strip(), limit)
                 return self._batch_failure(target, (

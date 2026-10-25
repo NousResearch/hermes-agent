@@ -84,6 +84,22 @@ def test_one_item_add_that_overflows_returns_the_live_entries_like_the_legacy_ad
     assert store.memory_entries == ["written by another session after load"]
 
 
+def test_one_item_remove_or_duplicate_add_works_on_a_store_already_over_a_lowered_cap(tmp_path, monkeypatch):
+    """Like the legacy remove (no budget check) and duplicate add ("already exists"), a one-item
+    batch that does not grow the store is not refused for the store's pre-existing excess."""
+    monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+    facts = ["a" * 50, "b" * 50, "c" * 50]
+    (tmp_path / "MEMORY.md").write_text("\n§\n".join(facts), encoding="utf-8")
+    store = MemoryStore(memory_char_limit=100, user_char_limit=300)  # cap lowered below the store
+    store.load_from_disk()
+    handler = registry.get_entry("memory").handler
+    dup = json.loads(handler({"target": "memory", "operations": [{"action": "add", "content": facts[1]}]}, store=store))
+    assert dup["success"] is True
+    gone = json.loads(handler({"target": "memory", "operations": [{"action": "remove", "old_text": "c" * 50}]}, store=store))
+    assert gone["success"] is True
+    assert store.memory_entries == facts[:2]
+
+
 def test_background_review_one_item_remove_of_the_last_entry_is_staged_not_applied(tmp_path, monkeypatch):
     """A one-item remove may empty a store, but an unattended background review never gets
     that far: the #105921 delete gate stages it, so #103419's USER.md wipe stays closed."""

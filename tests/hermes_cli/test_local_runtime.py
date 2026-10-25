@@ -672,6 +672,67 @@ def test_endpoint_identity_stable_across_supervisor_instances(tmp_path, monkeypa
     assert key_file.read_text(encoding="utf-8").strip() == first.api_key
 
 
+def _spawn_into(tmp_path, monkeypatch, *, drop_key_file=False):
+    """One real _spawn() against a recording spawn_server; returns (sup, cmd, log text)."""
+    from hermes_cli.local_runtime import supervisor as sup_mod
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    monkeypatch.setattr(sup_mod, "_direct_io_args", lambda executable: ())
+    monkeypatch.setattr(LlamaServerSupervisor, "_write_state", lambda self: None)
+    captured = {}
+
+    class _FakeProc:
+        pid = 4242
+
+    def _fake_spawn(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        return _FakeProc(), None
+
+    monkeypatch.setattr(sup_mod, "spawn_server", _fake_spawn)
+
+    binary = tmp_path / "install" / "llama-server"
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.touch()
+    log = tmp_path / "logs" / "llama-server.log"
+    sup = LlamaServerSupervisor(binary, tmp_path / "models", log_path=log)
+    if drop_key_file:
+        # A home the key could not be persisted to: the file is simply not there.
+        sup_mod._api_key_path().unlink()
+    sup._spawn()
+    return sup, captured["cmd"], log.read_text(encoding="utf-8")
+
+
+def test_spawn_hands_the_api_key_to_llama_server_by_file(tmp_path, monkeypatch):
+    """The endpoint key authenticates a loopback router; it does not belong in `ps` (argv is
+    world-readable) nor in llama-server.log, which is written outside RedactingFormatter and so
+    ignores security.redact_secrets. _stable_api_key() persists the key beside the runtimes and
+    llama-server reads that file with --api-key-file (one key per line)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime import supervisor as sup_mod
+
+    sup, cmd, written = _spawn_into(tmp_path, monkeypatch)
+
+    assert sup.api_key not in cmd
+    assert "--api-key" not in cmd
+    assert cmd[cmd.index("--api-key-file") + 1] == str(sup_mod._api_key_path())
+    # The file llama-server will read holds exactly the key the supervisor authenticates with.
+    assert sup_mod._api_key_path().read_text(encoding="utf-8").strip() == sup.api_key
+    assert sup.api_key not in written
+    assert "--api-key-file" in written
+
+
+def test_spawn_masks_the_key_when_it_cannot_be_persisted(tmp_path, monkeypatch):
+    """A home the key cannot be written to is the one case argv still has to carry it; the
+    launch line persisted to the log must not become a second copy of the secret."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    sup, cmd, written = _spawn_into(tmp_path, monkeypatch, drop_key_file=True)
+
+    assert cmd[cmd.index("--api-key") + 1] == sup.api_key
+    assert sup.api_key not in written
+    assert "'--api-key', '***'" in written
+
+
 def test_llamacpp_endpoint_no_wait_when_not_enabled(tmp_path, monkeypatch):
     """No boot in flight (runtime disabled/uninstalled): resolution returns
     None promptly instead of burning the wait budget."""

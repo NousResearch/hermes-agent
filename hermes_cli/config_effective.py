@@ -59,6 +59,11 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
     last-good state); otherwise the last successfully parsed user file — in-process first, then
     the newest ``backups/config/*.good.*`` copy — is served through the same pipeline, so a
     mid-edit torn write never silently drops user overrides (same contract as ``load_config``).
+
+    A syntactically valid document whose root is not a mapping (a list, a bare scalar) is the same
+    kind of invalid user config, not an empty one: it takes the recover-or-raise path above instead
+    of being recorded as last-known-good and backed up as ``good``. ``null``/empty stays the
+    documented empty user layer.
     Cached on the user + managed file signatures and the values of every referenced env var."""
     from agent.safe_worker_policy import worker_config_snapshot
 
@@ -92,15 +97,27 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
                     raise
                 raw, recovered = _recover_user_raw(config_path, path_key, exc), True
             else:
-                raw = loaded if isinstance(loaded, dict) else {}
-                _config._RAW_CONFIG_CACHE[path_key] = (*user_sig, copy.deepcopy(raw))
-                _LAST_GOOD_USER_RAW[path_key] = copy.deepcopy(raw)
-                # Same copy load_config keeps: a fresh process recovers from it (see _recover_user_raw).
-                # Only for the ACTIVE home — a read of another profile's file (doctor, TUI cwd lookup)
-                # must not create backups/ inside that profile.
-                if config_path == _config.get_config_path():
-                    from hermes_cli.config_backups import backup_config
-                    backup_config(config_path, "good")
+                if loaded is not None and not isinstance(loaded, dict):
+                    # A valid document whose ROOT is not a mapping (list, bare scalar) is an invalid
+                    # user config, not an empty one: the success branch below would record those bytes
+                    # as last-known-good and back them up as ``good``, dropping every override the
+                    # user had. Same error type and wording as
+                    # ``require_readable_config_before_write``, so strict callers see one contract.
+                    exc = TypeError(f"top-level YAML must be a mapping, got {type(loaded).__name__}")
+                    if fail_closed:
+                        raise exc
+                    raw, recovered = _recover_user_raw(config_path, path_key, exc), True
+                else:
+                    # ``None`` (absent, empty or ``null`` document) is the documented empty layer.
+                    raw = loaded if isinstance(loaded, dict) else {}
+                    _config._RAW_CONFIG_CACHE[path_key] = (*user_sig, copy.deepcopy(raw))
+                    _LAST_GOOD_USER_RAW[path_key] = copy.deepcopy(raw)
+                    # Same copy load_config keeps: a fresh process recovers from it (see _recover_user_raw).
+                    # Only for the ACTIVE home — a read of another profile's file (doctor, TUI cwd lookup)
+                    # must not create backups/ inside that profile.
+                    if config_path == _config.get_config_path():
+                        from hermes_cli.config_backups import backup_config
+                        backup_config(config_path, "good")
 
         env_snapshot = _config._env_ref_snapshot(raw)
         managed = managed_scope.load_managed_config()

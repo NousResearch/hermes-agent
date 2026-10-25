@@ -121,3 +121,60 @@ def _reset_caches_keep_last_good():
 
     cfg._RAW_CONFIG_CACHE.clear()
     config_effective._EFFECTIVE_CACHE.clear()
+
+
+def _good_backups(home):
+    return sorted((home / "backups" / "config").glob("config.yaml.good.*"))
+
+
+def test_non_mapping_root_is_invalid_not_empty_config(homes):
+    """A syntactically valid list/scalar root is an INVALID user config, not an empty one. Serving it
+    through the success branch would record the bad bytes as last-known-good and back them up as
+    ``good``, so a mid-edit ``[\"unfinished edit\"]`` would silently drop every override instead of
+    being reported. Fail-open keeps the last-known-good mapping; ``fail_closed`` raises the mapping
+    error ``require_readable_config_before_write`` already uses for the same document."""
+    from hermes_cli.config_effective import load_user_config_effective
+
+    home, _ = homes
+    config_path = home / "config.yaml"
+    _write(config_path, USER_YAML)
+    good = load_user_config_effective(config_path)
+    backups_before = _good_backups(home)
+    assert good["display"] == {"skin": "user-skin"}
+
+    config_path.write_text('["unfinished edit"]\n', encoding="utf-8")
+    _reset_caches_keep_last_good()
+
+    assert load_user_config_effective(config_path) == good
+    with pytest.raises(TypeError, match="top-level YAML must be a mapping, got list"):
+        load_user_config_effective(config_path, fail_closed=True)
+
+    # The invalid root never became a ``good`` copy (only the corrupt-file snapshot the parse-failure
+    # path keeps), and every surviving good copy is still a mapping.
+    assert _good_backups(home) == backups_before
+    for backup in _good_backups(home):
+        assert isinstance(yaml.safe_load(backup.read_text(encoding="utf-8")), dict)
+
+    # A cold process (no in-process last-known-good) recovers from the newest ``good`` backup.
+    _reset_caches()
+    assert load_user_config_effective(config_path) == good
+
+
+def test_empty_and_null_roots_stay_the_documented_empty_layer(homes):
+    """The invalid-root check must not swallow the documented empty cases: an absent file, an empty
+    file and an explicit ``null`` document are the empty user layer, not a config error — including
+    under ``fail_closed``."""
+    from hermes_cli.config_effective import load_user_config_effective
+
+    home, _ = homes
+    config_path = home / "config.yaml"
+
+    for body in ("", "null\n", "# only a comment\n"):
+        _write(config_path, body)
+        assert load_user_config_effective(config_path) == {}
+        assert load_user_config_effective(config_path, fail_closed=True) == {}
+
+    config_path.unlink()
+    _reset_caches()
+    assert load_user_config_effective(config_path) == {}
+

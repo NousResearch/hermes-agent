@@ -24,6 +24,7 @@ from utils import atomic_write_text, is_truthy_value
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
     extract_skill_description,
+    get_project_skills_dirs,
     is_skill_description_truncated_for_prompt,
     parse_frontmatter as _parse_frontmatter,
     SKILL_PROMPT_DESC_LIMIT)
@@ -250,7 +251,13 @@ def _read_frontmatter_name(skill_md: Path) -> Optional[str]:
 
 
 def _find_skill(name: str) -> Optional[dict[str, Any]]:
-    """Find a skill (local skills dir, then skills.external_dirs) -> ``{"path": Path}`` | None.
+    """Find a skill (project dirs first, then local skills dir, then skills.external_dirs)
+    -> ``{"path": Path}`` | None.
+
+    Project-local dirs (.hermes/skills in the cwd) have higher precedence than the profile
+    skills dir — the same order skill_commands and prompt_builder use. Previously _find_skill
+    only searched get_all_skills_dirs(), which explicitly excludes project dirs, so every
+    skill_manage write on a project skill failed with "Skill '<name>' not found".
 
     Accepts the bare dir name (``axolotl``; matches category-nested skills too) and the
     categorized relative path (``mlops/axolotl``) — the two forms skill_view resolves. The
@@ -277,7 +284,14 @@ def _find_skill(name: str) -> Optional[dict[str, Any]]:
             local_root = _skills_dir()
     display_matches: list[Path] = []
     seen_display: set = set()
-    for skills_dir in get_all_skills_dirs():
+    # Precedence: project dirs (highest) > local profile dir > external dirs.
+    # get_project_skills_dirs() returns [] when the cwd has no trusted project.
+    try:
+        project_dirs = get_project_skills_dirs()
+    except Exception:
+        logger.debug("get_project_skills_dirs() failed; skipping project dirs in _find_skill", exc_info=True)
+        project_dirs = []
+    for skills_dir in project_dirs + get_all_skills_dirs():
         if not skills_dir.exists():
             continue
         for skill_dir in _iter_skill_dirs(skills_dir):

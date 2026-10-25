@@ -581,7 +581,10 @@ def _drag_to(conn, task_id: str, s: str) -> bool:
     leaving ``review`` goes through ``reopen_review_task`` (stale-run recovery, parent re-gate,
     ``review_reopened`` event) instead of a raw write; ``triage`` needs no current-state query."""
     current = kanban_db.get_task(conn, task_id) if s != "triage" else None
-    if s == "ready" and current and current.status in ("blocked", "scheduled"):
+    if s == "ready" and current and (
+        current.status in ("blocked", "scheduled")
+        or (current.status == "todo" and current.block_kind == "needs_input")
+    ):
         return kanban_db.unblock_task(conn, task_id)
     if current is not None and current.status == "review":
         return kanban_db.reopen_review_task(conn, task_id)

@@ -1,0 +1,26 @@
+name: comment-sicko
+repo: https://github.com/christophkroeppl/comment-sicko
+sha: 43e85856b39c89450af0b07f8740316aa0d89606
+description: >-
+  Stops models from filling code with comments. Three enforcement layers: a
+  write-time gate that strips deletable comments before write_file/patch, a
+  turn-end gate that catches whatever slipped through, and the Comment Sicko
+  reviewer subagent. Toggle each layer with /comment-sicko, per profile.
+  Inspired by poteto's engineering rigor stack (https://github.com/cursor/plugins/tree/main/pstack)
+  and its Hermes port pstack by Cloeille (https://github.com/Cloeille/pstack).
+maintainer: christophkroeppl
+tier: community
+category: tools
+requires_hermes: '>=0.21.5'
+docs_url: https://github.com/christophkroeppl/comment-sicko#readme
+version: '0.1.0'
+platforms: []
+capabilities:
+  provides_tools:
+    - comment_sicko
+  provides_hooks:
+    - pre_tool_call
+    - transform_tool_result
+    - pre_verify
+  provides_middleware: []
+  requires_env: []

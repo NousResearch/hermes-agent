@@ -1669,6 +1669,7 @@ def _plugin_rows() -> list[dict]:
     git_updates = _tools_mod("hermes_cli.plugins_cadence").cached_git_updates(ref_pins)
     out = []
     active = pc._category_active_names()
+    owned_tools = _plugin_tool_ownership()
     for name, version, desc, source, _dir, key in sorted(pc._discover_all_plugins()):
         # Bundled backends/platforms/providers and the live memory provider run without an explicit
         # enable: _plugin_status reports the truthful default instead of "not enabled" (reads as OFF).
@@ -1686,6 +1687,8 @@ def _plugin_rows() -> list[dict]:
             # Manifest ``config_schema`` + current values: the Plugins hub renders these as a form.
             "settings_schema": _tools_mod("hermes_cli.plugins_settings").plugin_settings_fields(key, _dir_path),
             "servers": _plugin_server_rows(_dir_path, key, portable=portable, catalog_titles=titles),
+            # Tools this package's own code registered: Desktop's tool-media renderer ownership check.
+            "tools": owned_tools.get(key, []),
             **cat.catalog_row_fields(_dir, pins, versions),
             **({"update_available": True, "update_target": target}
                if _dir_path and (target := git_updates.get(_dir_path.name)) else {}),

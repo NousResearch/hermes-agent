@@ -88,7 +88,8 @@ async def show_tools(connection, ref, params):
                 enabled = list(policy.current_toolsets(config)) if policy is not None else None
                 disabled = session_disabled_toolsets(parse_config_string_list(
                     (config.get('agent') or {}).get('disabled_toolsets')) or None,
-                    policy.platform if policy is not None else 'cli')
+                    policy.platform if policy is not None else 'cli',
+                    oneshot=policy is not None and policy.source == 'oneshot')
             tools = model_tools.get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled,
                                                      quiet_mode=True, skip_tool_search_assembly=True)
             sections = {}

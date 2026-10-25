@@ -1,0 +1,17 @@
+name: hypd-ai-ads
+repo: https://github.com/HYPD-AI/hypd-hermes-plugin
+sha: 819c28303e4c8a71444c93d78789b7df3abdc68e
+description: "Read-only paid-media analysis for Google Ads, Meta (Facebook) Ads, Microsoft Ads, LinkedIn Ads, Google Analytics (GA4), Search Console and Merchant Center through the hosted HYPD MCP. Portable Agent Plugins v1 package with four skills (setup, tool rules, overview, ready-made analyses). OAuth uses pinned mcp-remote@0.1.49 over npx stdio, so Node.js 20.18.1+ and npm are required. Read-only: never changes campaigns, budgets or ads. Disclosure — runs the pinned mcp-remote@0.1.49 through npx (downloaded from npm on first run) as a local bridge to HYPD's hosted MCP server at mcp.hypd.ai; tool arguments and the ad, analytics, Search Console and Merchant Center data HYPD returns pass through HYPD's servers; sign-in is a browser OAuth flow whose tokens mcp-remote stores in ~/.mcp-auth; read-only is HYPD's server-side guarantee, and the analysis templates the skills follow are fetched from HYPD's server at run time."
+maintainer: HYPD AI
+tier: community
+category: tools
+requires_hermes: ">=0.20.1"
+docs_url: https://github.com/HYPD-AI/hypd-hermes-plugin#readme
+version: 1.0.0
+image: https://raw.githubusercontent.com/HYPD-AI/hypd-hermes-plugin/819c28303e4c8a71444c93d78789b7df3abdc68e/assets/icon.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

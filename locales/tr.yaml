@@ -697,6 +697,7 @@ gateway:
     no_credentials: "⚠️ Yapay zekâ model servisine bağlanamadım; bu nedenle mesaj işlenmedi. Yeniden giriş yapmak için /login, farklı bir model seçmek için /model kullanın. Sorun sürerse ana makinede `hermes doctor` çalıştırın."
     cron_session_read_only: "⚠️ Bu sohbet zamanlanmış bir göreve ait ve yalnızca o görevi çalıştırıyor, bu yüzden mesajın çalıştırılmadı. Göndermek için yeni bir sohbet başlat."
     workspace_unavailable: "⚠️ Bu sohbetin çalışma klasörü artık yok ({path}), bu yüzden mesajın çalıştırılmadı. Klasörü yeniden oluştur ya da sohbeti başka bir klasöre taşı (CLI'da `/worktree new`, masaüstü uygulamasında “Move to project”), sonra mesajını yeniden gönder."
+    launch_credentials_unavailable: "⚠️ Bu sohbet, başlatıldığı API anahtarını artık kullanamıyor{detail}, bu yüzden içinde hiçbir şey çalıştırılamaz. Açık bir sohbet asla kendiliğinden başka bir anahtara geçmez, bu nedenle /retry de aynı şekilde başarısız olur. Mevcut anahtarınla yeni bir sohbet başlatmak için /new kullan."
   skills:
     disabled: "**{name}** skill'i kurulu ancak devre dışı.\nEtkinleştirmek için: `hermes skills config`"
     not_installed: "**{name}** skill'i mevcut ancak kurulu değil.\nKurmak için: `hermes skills install {install_name}`"

@@ -37,7 +37,7 @@ dependencies = [
   # extra and gets prepared through PM when the
   # user picks that backend. Smaller `dependencies` = smaller blast
   # radius for the next supply-chain attack.
-  "openai==2.24.0; python_version >= '3.14'",
+  "openai==2.54.0; python_version >= '3.14'",
   "certifi==2026.10.19; python_version >= '3.14'",
   # TLS trust comes from the OS certificate store (agent/ssl_verify.py), so
   # a corporate/internal root installed on the machine just works. certifi
@@ -45,12 +45,12 @@ dependencies = [
   # it regardless; it is no longer OUR trust source.
   # ssl_verify uses truststore's private original SSLContext for explicit CA overrides.
   # Keep this exact until that path has a public-API replacement.
-  "truststore==0.10.4; python_version >= '3.14'",
-  "python-dotenv==1.2.2; python_version >= '3.14'",
+  "truststore==0.10.5; python_version >= '3.14'",
+  "python-dotenv==1.2.4; python_version >= '3.14'",
   "fire==0.7.1; python_version >= '3.14'",
   "httpx[socks]==0.28.1; python_version >= '3.14'",
-  "rich==14.3.3; python_version >= '3.14'",
-  "tenacity==9.1.4; python_version >= '3.14'",
+  "rich==14.3.4; python_version >= '3.14'",
+  "tenacity==9.2.1; python_version >= '3.14'",
   "tomli-w==1.2.0; python_version >= '3.14'",  # Preserve relative dependency paths in staged plugin metadata.
   # 0.18.17 requires ruamel.yaml.clib on 3.14, which has no Windows ARM64 wheel.
   "ruamel.yaml==0.18.16; python_version >= '3.14'",
@@ -58,7 +58,7 @@ dependencies = [
   # (plugin manifests, config) in pure Python: ~5 s of gateway startup on 1 vCPU.
   # Declared where clib ships a cp314 wheel; elsewhere hermes_yaml falls back to pure.
   "ruamel.yaml.clib==0.2.15; python_version >= '3.14' and platform_python_implementation == 'CPython' and (sys_platform == 'darwin' or (sys_platform == 'linux' and platform_machine in 'x86_64 aarch64 i686') or (sys_platform == 'win32' and platform_machine in 'AMD64 x86'))",
-  "requests==2.33.0; python_version >= '3.14'",  # CVE-2026-25645
+  "requests==2.34.2; python_version >= '3.14'",  # CVE-2026-25645
   "jinja2==3.1.6; python_version >= '3.14'",
   # Document-to-Markdown extraction for read_file (PDF, legacy Office,
   # OpenDocument, RTF, EPUB) + typed NeedsOcrError for scanned pages.
@@ -72,11 +72,11 @@ dependencies = [
   # pydantic-core 2.41.5 (pulled by 2.12.5) segfaults when the OpenAI SDK's
   # Responses API resource is exercised from a non-main thread, which is the
   # codex_responses dispatch in agent/chat_completion_helpers.py:_call.
-  "pydantic==2.13.4; python_version >= '3.14'",
+  "pydantic==2.14.1; python_version >= '3.14'",
   # Interactive CLI (prompt_toolkit is used directly by cli.py)
-  "prompt_toolkit==3.0.52; python_version >= '3.14'",
+  "prompt_toolkit==3.0.53; python_version >= '3.14'",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).
-  "croniter==6.0.0; python_version >= '3.14'",
+  "croniter==6.2.4; python_version >= '3.14'",
   # Snowball stemming for tool_search's BM25 (tools/tool_search.py) —
   # official Snowball project package, pure Python, zero transitive deps.
   # Applied at index AND query time so morphological variants match
@@ -84,7 +84,7 @@ dependencies = [
   "snowballstemmer==3.1.1; python_version >= '3.14'",
   # Requirement and version checks must work in lean installs without
   # relying on another package to bring packaging in transitively.
-  "packaging==26.0; python_version >= '3.14'",
+  "packaging==26.3; python_version >= '3.14'",
   # Markdown -> HTML conversion for rich message delivery (Matrix
   # `formatted_body`, and the `send_message` tool's HTML path). Now on the
   # DEFAULT delivery path, not matrix-specific: without it both
@@ -94,7 +94,7 @@ dependencies = [
   # (~108KB, no compiled extensions, no platform constraints), so unlike the
   # matrix extra's `mautrix`/`python-olm` it's safe to ship everywhere — keeps
   # it out of the lazy-install path that exists only for the heavy matrix deps.
-  "Markdown==3.10.2; python_version >= '3.14'",
+  "Markdown==3.11.2; python_version >= '3.14'",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
   "PyJWT[crypto]==2.15.1; python_version >= '3.14'",  # PYSEC-2026-175/177/178/179 + GHSA-ffc3-869f-jxw9, GHSA-42vr-xj54-vc7v (fixed in 2.14.0/2.15.0)
   # urllib3 2.8.0 fixes GHSA-8988-9cw3-xx77 (proxy TLS config ignored),
@@ -114,7 +114,7 @@ dependencies = [
   # A pin here is not sufficient on its own. alibabacloud-tea-openapi caps
   # cryptography<49, so [tool.uv] also holds an override. Read that comment
   # before you move this version.
-  "cryptography==50.0.1; python_version >= '3.14'",  # CVE-2026-69247, GHSA-m2h6-j472-rp4c, GHSA-jwv3-5hgf-82ww, CVE-2026-39892, CVE-2026-34073, GHSA-537c-gmf6-5ccf
+  "cryptography==50.0.2; python_version >= '3.14'",  # CVE-2026-69247, GHSA-m2h6-j472-rp4c, GHSA-jwv3-5hgf-82ww, CVE-2026-39892, CVE-2026-34073, GHSA-537c-gmf6-5ccf
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
   # out of the box.  ``tzdata`` ships the Olson database as a data package
@@ -191,7 +191,7 @@ dependencies = [
   # `hermes update`), so a source install carries its renderer instead of
   # preparing a separate environment at launch. abi3 wheels for every
   # shipped platform, including Windows ARM64 and Android.
-  "resvg-py==0.4.0; python_version >= '3.14'",
+  "resvg-py==0.5.0; python_version >= '3.14'",
   # Windows log rotation. Stdlib ``RotatingFileHandler.doRollover()`` uses
   # ``os.rename()`` which fails with ``PermissionError [WinError 32]`` on
   # Windows whenever any other process holds an append-mode handle on
@@ -205,7 +205,7 @@ dependencies = [
   # already works there and managed-mode perms depend on its exact lifecycle.
   # Hence the ``sys_platform == 'win32'`` marker: the dep (and its portalocker
   # / pywin32 tree) ships only where it's actually used.
-  "concurrent-log-handler==0.9.29; sys_platform == 'win32' and python_version >= '3.14'",
+  "concurrent-log-handler==0.9.30; sys_platform == 'win32' and python_version >= '3.14'",
   # First-party lifecycle and shared-metrics runtime. Relay 0.10 is the supported
   # native runtime and provider-codec baseline. Managed calls pass request and
   # response data through this native module in-process; shared metrics installs
@@ -233,15 +233,15 @@ uvloop = [
 ]
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
-anthropic = ["anthropic==0.87.0"] # CVE-2026-34450, CVE-2026-34452
+anthropic = ["anthropic==0.125.0"] # CVE-2026-34450, CVE-2026-34452
 # Web search backends — each only loaded when the user picks it as their
 # search provider (configured via `hermes tools` or config.yaml).
-exa = ["exa-py==2.10.2"]
-firecrawl = ["firecrawl-py==4.17.0"]
-parallel-web = ["parallel-web==0.4.2"]
+exa = ["exa-py==2.26.0"]
+firecrawl = ["firecrawl-py==4.53.2"]
+parallel-web = ["parallel-web==0.6.0"]
 ddgs = ["ddgs==9.16.0"]
 # Image generation backends
-fal = ["fal-client==0.13.1"]
+fal = ["fal-client==0.14.1"]
 # Edge TTS — default TTS provider but still optional (users can pick
 # ElevenLabs / OpenAI / MiniMax instead).
 edge-tts = ["edge-tts==7.3.1"]
@@ -263,21 +263,21 @@ kittentts = [
 piper = [
   "piper-tts==1.8.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin') and sys_platform != 'android'",
 ]
-modal = ["modal==1.5.5"]
-daytona = ["daytona==0.155.0"]
-vercel = ["vercel==0.7.2"]
-google-meet = ["playwright==1.62.0; sys_platform != 'android'", "websockets==15.0.1; sys_platform != 'android'"]
+modal = ["modal==1.6.2"]
+daytona = ["daytona==0.225.0"]
+vercel = ["vercel==0.12.0"]
+google-meet = ["playwright==1.64.0; sys_platform != 'android'", "websockets==15.0.1; sys_platform != 'android'"]
 messaging = [
   "python-telegram-bot[webhooks]==22.8",
   "discord.py[voice]==2.7.1",
   "aiohttp==3.14.5",
   "brotlicffi==1.2.0.2",
   "slack-bolt==1.30.0",
-  "slack-sdk==3.44.1",
+  "slack-sdk==3.45.0",
   "qrcode==7.4.2",
 ] # aiohttp 3.14.5: prior CVEs + GHSA-9xw5-w5jj-pvcg/GHSA-2g87-pp6c-29x5/GHSA-5wr8-gcqf-gqf3 family
 cron = [] # croniter is now a core dependency; this extra kept for back-compat
-slack = ["slack-bolt==1.30.0", "slack-sdk==3.44.1", "aiohttp==3.14.5"]
+slack = ["slack-bolt==1.30.0", "slack-sdk==3.45.0", "aiohttp==3.14.5"]
 # Matrix gateway deps. `mautrix[encryption]` pulls `python-olm`, whose
 # vendored libolm (archived 2023) cannot build on Windows or modern macOS:
 # no wheels for those targets AND the sdist fails to compile on current
@@ -288,8 +288,8 @@ slack = ["slack-bolt==1.30.0", "slack-sdk==3.44.1", "aiohttp==3.14.5"]
 matrix = [
   "mautrix[encryption]==0.21.1; sys_platform == 'linux'",
   "aiosqlite==0.22.1; sys_platform == 'linux'",
-  "asyncpg==0.31.0; sys_platform == 'linux'",
-  "aiohttp-socks==0.11.0; sys_platform == 'linux'",
+  "asyncpg==0.32.0; sys_platform == 'linux'",
+  "aiohttp-socks==0.12.0; sys_platform == 'linux'",
   "aiohttp==3.14.5; sys_platform == 'linux'",
 ] # aiohttp 3.14.5: prior CVEs + GHSA-9xw5-w5jj-pvcg/GHSA-2g87-pp6c-29x5/GHSA-5wr8-gcqf-gqf3 family (mautrix/aiohttp-socks only cap aiohttp<4 / >=3.10, so pin the patched floor directly)
 
@@ -307,8 +307,8 @@ voice = [
   # onnxruntime has no darwin-x64 wheel/sdist (darwin-x64). Gate the local
   # STT path off both; sounddevice/numpy still ship.
   "faster-whisper==1.2.1; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android'",
-  "sounddevice==0.5.5",
-  "numpy==2.4.3",
+  "sounddevice==0.5.6",
+  "numpy==2.5.4",
 ]
 # Wake engines are optional. Bundles include the engines supported by their
 # target. PM installs the selected engine on first use for source installs.
@@ -327,8 +327,8 @@ wake = [
   "sentencepiece==0.2.2",
   "pypinyin==0.55.0",
   "pvporcupine==4.0.3",
-  "sounddevice==0.5.5",
-  "numpy==2.4.3",
+  "sounddevice==0.5.6",
+  "numpy==2.5.4",
 ]
 # Platform sub-extras / alias extras — declared so pm.extras.ANCHORS names
 # only real extras (contract: tests/pm/test_extras.py). Each is
@@ -341,7 +341,7 @@ discord = ["discord.py[voice]==2.7.1"]
 stt-whisper = [
   "faster-whisper==1.2.1; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android'",
 ]
-audio-io = ["sounddevice==0.5.5", "numpy==2.4.3"]
+audio-io = ["sounddevice==0.5.6", "numpy==2.5.4"]
 # WeChat voice decode (tools/transcription_tools.py self-heal path).
 silk = ["pilk==0.2.4"]
 # Wake-engine sub-extras — lazy per-engine installs so a user who only wants
@@ -364,13 +364,13 @@ wake-porcupine = ["pvporcupine==4.0.3"]
 # faster-whisper. The adapter's pubsub import is lazy, so this just makes the
 # google-chat platform unavailable on win32-arm64.
 google-chat = [
-  "google-cloud-pubsub==2.39.2; platform_machine != 'ARM64' or sys_platform != 'win32'",
+  "google-cloud-pubsub==2.43.0; platform_machine != 'ARM64' or sys_platform != 'win32'",
 ]
 # Document extraction (read_file anydoc converter self-heal) — core already
 # bundles firecrawl-anydoc==0.2.4; the extra exists so a lean/broken install
 # can re-sync exactly the pin from core.
 doc-extract = ["firecrawl-anydoc==0.2.4"]
-trace-upload = ["huggingface-hub==1.24.0"]
+trace-upload = ["huggingface-hub==1.33.0"]
 # Cloud memory providers are opt-in PM extras. They stay outside [all]
 # so a quarantined release cannot break fresh installs.
 # Image resize recovery for the vision tools. Pillow is now a CORE dependency
@@ -401,23 +401,23 @@ pty = []
 # module names.
 mcp = [
   "mcp==2.3.0",
-  "httpx2==2.12.0",
-  "starlette==1.3.1",
+  "httpx2==2.15.1",
+  "starlette==1.9.0",
 ] # starlette: CVE-2026-48710
 # Backwards-compatible no-op alias. Relay is a core dependency on supported
 # wheel targets and intentionally unavailable on other platforms.
 nemo-relay = []
 sms = ["aiohttp==3.14.5"]
 teams = [
-  "microsoft-teams-apps==2.0.13.4",
+  "microsoft-teams-apps==2.1.1",
   "aiohttp==3.14.5",
 ] # aiohttp 3.14.5: prior CVEs + GHSA-9xw5-w5jj-pvcg/GHSA-2g87-pp6c-29x5/GHSA-5wr8-gcqf-gqf3 family
 # Computer use talks to PM's pinned cua-driver over MCP stdio. This extra
 # provides the MCP client, independently of the native driver package.
 computer-use = [
   "mcp==2.3.0",
-  "httpx2==2.12.0",
-  "starlette==1.3.1",
+  "httpx2==2.15.1",
+  "starlette==1.9.0",
 ] # starlette: CVE-2026-48710
 acp = ["agent-client-protocol==0.9.0"]
 # mistral: Voxtral STT + TTS. Pinned to an exact verified-clean version.
@@ -439,9 +439,9 @@ otlp = [
   "opentelemetry-sdk==1.45.1",
   "opentelemetry-exporter-otlp-proto-http==1.45.1",
 ]
-bedrock = ["boto3==1.42.89"]
-vertex = ["google-auth==2.55.1"]
-azure-identity = ["azure-identity==1.25.3"]
+bedrock = ["boto3==1.43.115"]
+vertex = ["google-auth==2.62.0"]
+azure-identity = ["azure-identity==1.26.0"]
 termux = [
   # Baseline Android / Termux path for reliable fresh installs.
   "python-telegram-bot[webhooks]==22.8",
@@ -462,18 +462,18 @@ termux-all = [
 ]
 dingtalk = [
   "dingtalk-stream==0.24.3",
-  "alibabacloud-dingtalk==2.2.42",
+  "alibabacloud-dingtalk==2.2.65",
   "qrcode==7.4.2",
 ]
-feishu = ["lark-oapi==1.6.8", "qrcode==7.4.2"]
+feishu = ["lark-oapi==1.7.5", "qrcode==7.4.2"]
 google = [
   # Required by the google-workspace skill (Gmail, Calendar, Drive, Contacts,
   # Sheets, Docs). Declared here so PM environments and independent
   # packagers can include them without mutating an application's runtime.
-  "google-api-python-client==2.194.0",
-  "google-auth==2.55.1",
-  "google-auth-oauthlib==1.3.1",
-  "google-auth-httplib2==0.3.1",
+  "google-api-python-client==2.201.0",
+  "google-auth==2.62.0",
+  "google-auth-oauthlib==1.5.0",
+  "google-auth-httplib2==0.4.4",
   # The Google SDKs permit older vulnerable transitives, so unlocked installs
   # must carry the same fixed floors as uv.lock and the runtime installers:
   # httplib2 0.32.0 (GHSA-j5g9-f88f-gfj3 decompression bomb DoS),
@@ -496,8 +496,8 @@ youtube = [
 # termux-all which includes it.
 web = [
   "fastapi==0.133.1",
-  "uvicorn==0.41.0",
-  "starlette==1.3.1",
+  "uvicorn==0.54.0",
+  "starlette==1.9.0",
   "python-multipart==0.0.32",
 ]
 all = [
@@ -536,22 +536,22 @@ all = [
 [dependency-groups]
 # Build and test tooling never ships in runtime payloads.
 dev = [
-  "debugpy==1.8.20",
+  "debugpy==1.8.22",
   "pytest==9.1.1",
-  "pytest-asyncio==1.3.0",
+  "pytest-asyncio==1.4.0",
   "mcp==2.3.0",
-  "httpx2==2.12.0",
-  "starlette==1.3.1",
-  "ty==0.0.82",
-  "ruff==0.15.10",
+  "httpx2==2.15.1",
+  "starlette==1.9.0",
+  "ty==0.0.89",
+  "ruff==0.15.22",
   "setuptools==83.0.0",
 ] # starlette: CVE-2026-48710; setuptools: 83 (torch >=2.13 requires setuptools 83)
 # Native launcher and provider-catalog E2E dependencies belong in the test
 # environment, not the core runtime. Keep the Anthropic SDK at the same
 # reviewed version as the optional runtime extra above.
 test = [
-  "distlib==0.4.3; sys_platform == 'win32'",
-  "anthropic==0.87.0",
+  "distlib==0.4.4; sys_platform == 'win32'",
+  "anthropic==0.125.0",
 ]
 
 [build-system]
@@ -625,7 +625,7 @@ override-dependencies = [
   # Keep this exact version equal to the direct dependency. uv overrides
   # replace that requirement too, not only the vendor's upper bound.
   # Remove this line when alibabacloud-tea-openapi lifts the cap.
-  "cryptography==50.0.1",
+  "cryptography==50.0.2",
   # browser-harness 0.1.13 (core dependency, latest release) pins
   # pillow==12.3.0 exactly, which holds Pillow below 13.0.0, the first
   # release fixing GHSA-8g5g-8vmr-9782, GHSA-w889-685w-c8fh and the rest of

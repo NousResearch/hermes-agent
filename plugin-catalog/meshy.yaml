@@ -1,9 +1,9 @@
 name: meshy
 title: Meshy
 repo: https://github.com/NousResearch/hermes-official-plugins
-sha: c16e967d798d8dd3b1827a62673c18627f31e0ed
+sha: e746f4c690d7b9855e8cf06485ed6ac906b66e12
 subdir: meshy
-version: "0.4.0"
+version: "0.5.0"
 description: >-
   Meshy AI's own MCP server (pinned @meshy-ai/meshy-mcp-server@0.6.5) for text, image and multi-image
   to 3D, texturing, remeshing, rigging, animation, concept images and 3D-print prep, with a bundled
@@ -22,7 +22,7 @@ tier: official
 category: tools
 requires_hermes: ">=0.22.3"
 docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/meshy
-image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/c16e967d798d8dd3b1827a62673c18627f31e0ed/assets/meshy.jpg
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/e746f4c690d7b9855e8cf06485ed6ac906b66e12/assets/meshy.jpg
 platforms: [windows, macos, linux]
 capabilities:
   provides_tools: []

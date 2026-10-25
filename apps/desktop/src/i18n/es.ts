@@ -6,6 +6,7 @@ import { esBoot } from './es_boot'
 import { esClarify } from './es_clarify'
 import { esConnectorAccounts } from './es_connector_accounts'
 import { esConnectorCard } from './es_connector_card'
+import { esErrorCodes } from './es_error_codes'
 import { esErrorLayers } from './es_error_layers'
 import { esFirstRun } from './es_first_run'
 import { esLocalModels } from './es_local_models'
@@ -14,6 +15,7 @@ import { esModelSettings } from './es_model_settings'
 import { esNotices } from './es_notices'
 import { esNotifications } from './es_notifications'
 import { esOnboarding } from './es_onboarding'
+import { esPluginPreviewAccess } from './es_plugin_preview_access'
 import { esPluginUpdate } from './es_plugin_update'
 import { esProjects } from './es_projects'
 import { esSharedMetrics } from './es_shared_metrics'
@@ -2487,6 +2489,7 @@ export const esOverrides = {
         `Fijado al commit ${sha}. Las actualizaciones se rechazan hasta que se reinstale con un nuevo commit fijado.`,
       pinnedBadge: (sha: string) => `fijado @ ${sha}`,
       ...esPluginUpdate,
+      ...esPluginPreviewAccess,
       uninstall: 'Desinstalar',
       uninstallTip: (name: string, profile: string) => `Desinstalar ${name} de ${profile}`,
       uninstallConfirmTitle: (name: string) => `¿Desinstalar ${name}?`,
@@ -4871,6 +4874,7 @@ export const esOverrides = {
       responseStopped: 'Respuesta detenida',
       ...esErrorLayers,
       errorCodes: {
+        ...esErrorCodes,
         auth: {
           title: (provider: string) => `${provider} rechazó tu inicio de sesión`,
           body: (provider: string) =>
@@ -4971,14 +4975,6 @@ export const esOverrides = {
         loop_error: {
           title: 'Hermes se quedó atascado en un bucle',
           body: 'La respuesta repetía los mismos pasos, así que Hermes la detuvo. Reinténtalo o empieza un chat nuevo si vuelve a ocurrir.'
-        },
-        cron_session_read_only: {
-          title: 'Este chat pertenece a una tarea programada',
-          body: 'Solo ejecuta esa tarea, así que tu mensaje no se ejecutó. Empieza un chat nuevo para enviarlo.'
-        },
-        workspace_unavailable: {
-          title: 'La carpeta de este chat ya no existe',
-          body: 'La carpeta en la que trabaja este chat se movió o se eliminó, así que tu mensaje no se ejecutó. Vuelve a crear la carpeta o usa «Mover a proyecto» para darle otra al chat, y vuelve a intentarlo.'
         },
         SESSION_NOT_OWNED: {
           title: 'Este chat está abierto en otro sitio',

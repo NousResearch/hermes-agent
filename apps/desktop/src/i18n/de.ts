@@ -5,6 +5,7 @@ import { deBoot } from './de_boot'
 import { deClarify } from './de_clarify'
 import { deConnectorAccounts } from './de_connector_accounts'
 import { deConnectorCard } from './de_connector_card'
+import { deErrorCodes } from './de_error_codes'
 import { deErrorLayers } from './de_error_layers'
 import { deFirstRun } from './de_first_run'
 import { deLocalModels } from './de_local_models'
@@ -13,6 +14,7 @@ import { deModelSettings } from './de_model_settings'
 import { deNotices } from './de_notices'
 import { deNotifications } from './de_notifications'
 import { deOnboarding } from './de_onboarding'
+import { dePluginPreviewAccess } from './de_plugin_preview_access'
 import { dePluginUpdate } from './de_plugin_update'
 import { deProjects } from './de_projects'
 import { deSharedMetrics } from './de_shared_metrics'
@@ -2495,6 +2497,7 @@ export const deOverrides = {
         `An Commit ${sha} gepinnt. Updates werden abgelehnt, bis es mit einem neuen Pin neu installiert wird.`,
       pinnedBadge: sha => `gepinnt @ ${sha}`,
       ...dePluginUpdate,
+      ...dePluginPreviewAccess,
       uninstall: 'Deinstallieren',
       uninstallTip: (name: string, profile: string) => `${name} aus ${profile} deinstallieren`,
       uninstallConfirmTitle: (name: string) => `${name} deinstallieren?`,
@@ -4882,6 +4885,7 @@ export const deOverrides = {
       responseStopped: 'Antwort gestoppt',
       ...deErrorLayers,
       errorCodes: {
+        ...deErrorCodes,
         auth: {
           title: provider => `${provider} hat Ihre Anmeldung abgelehnt`,
           body: provider =>
@@ -4984,14 +4988,6 @@ export const deOverrides = {
         loop_error: {
           title: 'Hermes ist in einer Schleife hängen geblieben',
           body: 'Die Antwort hat dieselben Schritte wiederholt, daher hat Hermes sie gestoppt. Versuchen Sie es erneut oder starten Sie einen neuen Chat, wenn es wieder passiert.'
-        },
-        cron_session_read_only: {
-          title: 'Dieser Chat gehört zu einer geplanten Aufgabe',
-          body: 'Er führt nur diese Aufgabe aus, daher wurde Ihre Nachricht nicht ausgeführt. Starten Sie einen neuen Chat, um sie zu senden.'
-        },
-        workspace_unavailable: {
-          title: 'Der Ordner dieses Chats fehlt',
-          body: 'Der Ordner, in dem dieser Chat arbeitet, wurde verschoben oder gelöscht, daher wurde Ihre Nachricht nicht ausgeführt. Legen Sie den Ordner neu an oder geben Sie dem Chat mit „In Projekt verschieben“ einen anderen, und versuchen Sie es dann erneut.'
         },
         SESSION_NOT_OWNED: {
           title: 'Dieser Chat ist woanders offen',

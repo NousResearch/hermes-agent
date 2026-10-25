@@ -3335,6 +3335,12 @@ def systemd_unit_is_current(system: bool = False) -> bool:
 
     installed = unit_path.read_text(encoding="utf-8-sig")
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
+    if system and expected_user is None:
+        # A system unit with no User= runs as root (systemd default), e.g. one written by an older
+        # `install --system --run-as-user root`. Regenerating the expected unit would resolve the
+        # current user and hit the install-time root guard from this read-only status/refresh check;
+        # drift cannot be judged reliably, so treat the unit as current instead of crashing (#138226).
+        return True
     expected = generate_systemd_unit(system=system, run_as_user=expected_user)
     # Ignore directives older systemd drops (RestartMaxDelaySec, RestartSteps) to avoid a perpetual "outdated" flag.
     norm = lambda text: _normalize_service_definition(_strip_optional_systemd_directives(text))

@@ -23,6 +23,7 @@ _LOGIN_HTML_TEMPLATE = """\
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
 <title>Sign in — Hermes Agent</title>
 <style>
   /* Brand fonts shipped by @nous-research/ui — same files the SPA loads. */
@@ -310,6 +311,7 @@ _EMPTY_HTML = """\
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
 <title>Sign-in unavailable — Hermes Agent</title>
 <style>
   @font-face {

@@ -116,6 +116,33 @@ async def test_parked_platform_is_logged_at_error_and_the_run_is_degraded(monkey
 
 
 @pytest.mark.asyncio
+async def test_sole_parked_platform_keeps_the_gateway_up_degraded(monkeypatch, tmp_path, caplog):
+    """Every enabled platform failing non-retryably (no ownership conflict) must not exit 78: local
+    clients and cron need the gateway, so the platform is parked and the run reports ``degraded``."""
+    runner = _runner(
+        monkeypatch, tmp_path,
+        {Platform.API_SERVER: PlatformConfig(enabled=True, extra={"port": 8642})},
+        lambda platform, platform_config: _PortTakenAdapter(),
+    )
+
+    with caplog.at_level(logging.ERROR):
+        ok = await runner.start()
+    try:
+        assert ok is True
+        assert (runner.should_exit_cleanly, runner.exit_code) == (False, None)
+        assert any(
+            record.levelno >= logging.ERROR and "api_server" in record.getMessage()
+            for record in caplog.records
+        )
+        state = read_runtime_status()
+        assert state["gateway_state"] == "degraded"
+        assert state["platforms"]["api_server"]["state"] == "fatal"
+        assert state["platforms"]["api_server"]["error_code"] == "api_server_port_in_use"
+    finally:
+        await runner.stop()
+
+
+@pytest.mark.asyncio
 async def test_every_platform_connected_still_reports_a_normal_run(monkeypatch, tmp_path, caplog):
     """Protection: a clean startup keeps the normal ``running`` state and logs no ERROR."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

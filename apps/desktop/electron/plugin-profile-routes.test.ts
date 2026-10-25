@@ -6,9 +6,51 @@ import {
   isLocalEnumerationFailure,
   localRouteFallbackProfiles,
   type ProfileRouteConfig,
+  profileRouteConnections,
   registryGatewayWsUrl,
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
+
+describe('connection-scoped route inventory', () => {
+  const sources = [
+    { id: 'local', kind: 'local' as const },
+    { id: 'remote', kind: 'ssh' as const, remoteProfile: 'backend-worker' }
+  ]
+
+  it('resolves the requested owner without enumerating a stalled sibling', async () => {
+    const enumerate = vi.fn(async (source: (typeof sources)[number]) => {
+      if (source.id === 'remote') {
+        return new Promise<never>(() => undefined)
+      }
+
+      return { connectionId: source.id, profile: 'worker' }
+    })
+
+    const agents = await Promise.all(profileRouteConnections(sources, 'local').map(enumerate))
+    const routes = buildRegistryProfileRoutes({ agents, sources, primaryConnectionId: 'local' })
+
+    expect(routes).toEqual([
+      { connectionId: 'local', mode: 'local', primary: true, profile: 'worker', targetProfile: 'worker' }
+    ])
+    expect(enumerate).toHaveBeenCalledOnce()
+  })
+
+  it('keeps an SSH backend profile mapping and refuses an unknown owner', () => {
+    const [source] = profileRouteConnections(sources, 'remote')
+
+    const routes = buildRegistryProfileRoutes({
+      agents: [{ connectionId: source.id, profile: 'worker' }],
+      sources,
+      primaryConnectionId: 'local'
+    })
+
+    expect(routes).toEqual([
+      { connectionId: 'remote', mode: 'remote', profile: 'worker', targetProfile: 'backend-worker' }
+    ])
+    expect(() => profileRouteConnections(sources, 'removed')).toThrow('Profile route connection is unavailable')
+    expect(profileRouteConnections(sources)).toBe(sources)
+  })
+})
 
 function config(overrides: Partial<ProfileRouteConfig> = {}): ProfileRouteConfig {
   return {

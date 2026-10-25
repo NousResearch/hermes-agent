@@ -66,6 +66,7 @@ vi.mock('@/store/session-states', async () => {
   return {
     $attentionSessionIds: atom([]),
     $draftSessionIds: atom([]),
+    $focusedBusy: atom(false),
     $focusedRuntimeId: atom(null),
     $focusedSessionState: atom(null),
     $sessionTiles: atom([]),
@@ -292,6 +293,17 @@ describe('connection-aware plugin host APIs', () => {
       { connectionId: 'connection-cached', mode: 'remote', profile: 'cached-worker', targetProfile: 'cached-worker' }
     ])
     expect(getProfileRoutes).toHaveBeenCalledWith(['cached-worker'])
+  })
+
+  it('requests captured connection routes without waiting for an ambient profile refresh', async () => {
+    const route = { connectionId: 'source-a', mode: 'remote', profile: 'worker', targetProfile: 'backend-worker' }
+    const getProfileRoutes = vi.fn(async () => [route])
+    $profiles.set([profile('worker')])
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { getProfileRoutes }
+
+    await expect(host.profileRoutes('source-a')).resolves.toEqual([route])
+    expect(refreshProfiles).not.toHaveBeenCalled()
+    expect(getProfileRoutes).toHaveBeenCalledWith(['worker'], 'source-a')
   })
 
   it('forwards a targeted request without changing foreground state', async () => {

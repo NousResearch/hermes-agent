@@ -674,6 +674,8 @@ export const koOverrides = {
       remoteTitle: '원격 게이트웨이 로그인 필요',
       remoteDescription:
         '원격 게이트웨이 세션이 만료되었습니다. 다시 로그인하면 연결됩니다. 여기서 대화나 설정이 삭제되는 일은 없습니다.',
+      webappTitle: 'Hermes에 로그인',
+      webappDescription: '이 브라우저를 로그인시키려면 이 컴퓨터에서 hermes webapp을 실행하세요.',
       retry: '재시도',
       repairInstall: '설치 복구',
       useLocalGateway: '로컬 게이트웨이 사용',
@@ -2190,6 +2192,44 @@ export const koOverrides = {
       loading: '게이트웨이 설정을 불러오는 중...',
       unavailableTitle: '게이트웨이 설정을 사용할 수 없음',
       unavailableDesc: '연결 설정은 Hermes Desktop이 실행 중인 컴퓨터의 앱에서만 변경할 수 있습니다.',
+      webappHostTitle: 'Hermes 호스트',
+      webappHostDesc:
+        '웹앱은 항상 자신을 제공하는 Hermes 호스트를 씁니다. 게이트웨이 전환, Hermes Cloud 로그인, 저장된 연결 관리는 Hermes Desktop 앱에서 하세요.',
+      webAccess: {
+        title: '웹 접근',
+        intro:
+          '휴대폰이나 다른 컴퓨터에서 Nous 계정으로 로그인해 이 컴퓨터의 Hermes를 엽니다. 로그인한 사람은 누구든 이 컴퓨터에서 명령을 실행할 수 있습니다.',
+        failed: '웹 접근 설정을 변경하지 못했습니다',
+        running: '실행 중',
+        stopped: '중지됨',
+        starting: '시작 중',
+        stopping: '중지 중',
+        restartNeeded: '재시작 필요',
+        unavailable: '사용 불가',
+        notRunningDetail: '다른 기기에서 Hermes를 열려면 시작하세요.',
+        needsNous: '먼저 공급자에서 Nous 계정에 로그인하세요.',
+        runningLan: '같은 네트워크의 기기에서 이 주소를 여세요.',
+        runningPublic: '내 URL로 제공 중입니다.',
+        runningLocal: '이 컴퓨터에서만 열 수 있습니다. 다른 기기에서 열려면 중지한 뒤 다시 시작하세요.',
+        pendingOn: '저장했습니다. 게이트웨이가 재시작하면 웹앱을 제공합니다.',
+        pendingOff: '껐지만, 게이트웨이가 재시작할 때까지는 웹앱을 계속 제공합니다.',
+        unavailableDetail: reason => `게이트웨이가 웹앱을 제공하지 못했습니다: ${reason}`,
+        restartBusy:
+          '저장했습니다. 대화가 진행 중이라 게이트웨이를 재시작하지 않았습니다. 대화가 끝나면 게이트웨이 재시작을 누르세요.',
+        restartFailed: '저장했지만 게이트웨이를 재시작하지 못했습니다. 다시 시도하려면 게이트웨이 재시작을 누르세요.',
+        startTimedOut: '게이트웨이가 90초 안에 웹앱을 제공하지 못했습니다.',
+        stopTimedOut: '게이트웨이가 90초 안에 웹앱 제공을 멈추지 못했습니다.',
+        start: '시작',
+        stop: '중지',
+        restartGateway: '게이트웨이 재시작',
+        modeLan: '이 네트워크',
+        modeLanDetail: url => `같은 Wi-Fi의 기기에서 ${url}을(를) 엽니다. 신뢰하는 네트워크에서만 쓰세요.`,
+        lanUnencrypted: '연결이 암호화되지 않습니다. 이 네트워크의 다른 사람이 주고받는 내용을 읽을 수 있습니다.',
+        noLan: '이 컴퓨터에는 다른 기기가 접속할 수 있는 네트워크 주소가 없습니다.',
+        modePublic: '내 URL',
+        modePublicDetail: port =>
+          `이미 운영 중인 HTTPS 주소(Tailscale Serve나 터널 등)로, http://127.0.0.1:${port}(으)로 전달합니다.`
+      },
       title: '게이트웨이 연결',
       envOverride: '환경 변수 재정의',
       intro:
@@ -5645,6 +5685,11 @@ export const koOverrides = {
     terminalNew: '새 터미널',
     terminalCloseOthers: '나머지 닫기',
     terminalCloseAll: '모두 닫기',
+    terminalDropUploadFailed: name => `${name}을(를) 업로드하지 못했습니다`,
+    terminalDropTooLargeTitle: '너무 커서 업로드할 수 없음',
+    terminalDropTooLarge: (names, limit) => `파일당 최대 ${limit}까지 업로드할 수 있습니다. 업로드하지 않음: ${names}`,
+    terminalDropControlTitle: '터미널에 입력하지 않음',
+    terminalDropControl: paths => `이 이름들에는 셸이 키 입력으로 처리할 제어 문자가 들어 있습니다: ${paths}`,
     addToChat: '대화에 추가'
   },
   preview: {
@@ -5709,6 +5754,7 @@ export const koOverrides = {
       sentMessage: count => `로그 항목 ${count}개를 입력창에 추가했습니다`
     },
     web: {
+      embeddedPreviewHint: '일부 사이트는 임베드 미리보기를 막습니다. 원본 페이지를 브라우저 탭에서 여세요.',
       appFailedToBoot: '미리보기 앱이 시작되지 못했습니다',
       serverNotFound: '서버를 찾을 수 없음',
       remoteLoopback:

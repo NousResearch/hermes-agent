@@ -1,0 +1,41 @@
+Hermes Runtime Architecture Reconnaissance - Verification Record
+
+CHANGED_BRANCH=feat/engineering-foundation
+CHANGED_FIELD=docs/research/hermes-runtime-reconnaissance.md (new runtime research document)
+ORIGINAL_SHA256=ABSENT
+MODIFIED_SHA256=9CA4A9A3D0E6FB0B4B4EC3DBEBFEA03F5DD4AA6F580C963FC0B5890868F49D10
+
+TARGET_FILE=D:\dev\hermes-engineering-agent\docs\research\hermes-runtime-reconnaissance.md
+MODIFIED_FILE=D:\dev\hermes-engineering-agent\.codex-artifacts\hermes-runtime-reconnaissance\MODIFIED_FILE.md
+DIFF_FILE=D:\dev\hermes-engineering-agent\.codex-artifacts\hermes-runtime-reconnaissance\DIFF_FILE.patch
+VERIFICATION_FILE=D:\dev\hermes-engineering-agent\.codex-artifacts\hermes-runtime-reconnaissance\VERIFICATION.txt
+ROLLBACK_FILE=D:\dev\hermes-engineering-agent\.codex-artifacts\hermes-runtime-reconnaissance\ROLLBACK.sh
+
+BASELINE
+Command: $p='docs/research/hermes-runtime-reconnaissance.md'; git cat-file -e ('HEAD:'+$p) 2>$null; if($LASTEXITCODE -eq 0){Write-Output 'BASELINE_RESULT=PRESENT'; exit 1}; Write-Output 'BASELINE_RESULT=ABSENT'; exit 0
+Input: HEAD:docs/research/hermes-runtime-reconnaissance.md
+Literal output/result: BASELINE_RESULT=ABSENT
+Exit status: 0
+
+MODIFIED
+Command: $p='docs/research/hermes-runtime-reconnaissance.md'; $c=Get-Content -LiteralPath $p -Raw; $required=@('## 1. Agent 主循环','## 2. Provider Runtime','## 3. Tool Runtime','## 4. Plugin System','## 5. Hook Lifecycle','## 6. Context','## 7. Session / Memory','## 8. Completion','## 9. Delegated Coding Agents','## 10. Public / Stable Extension Surface'); $missing=@($required|Where-Object{-not $c.Contains($_)}); $s=([regex]::Matches($c,'\*\*Status:\*\*')).Count; $e=([regex]::Matches($c,'\*\*Evidence:\*\*')).Count; $y=([regex]::Matches($c,'\*\*Symbol:\*\*')).Count; $i=([regex]::Matches($c,'\*\*Implication:\*\*')).Count; if(!(Test-Path -LiteralPath $p)-or$missing.Count-ne 0-or$s-ne 59-or$e-ne 59-or$y-ne 59-or$i-lt 59){Write-Output "MODIFIED_RESULT=FAIL;MISSING=$($missing.Count);STATUS=$s;EVIDENCE=$e;SYMBOL=$y;IMPLICATION=$i"; exit 1}; $h=(Get-FileHash -Algorithm SHA256 -LiteralPath $p).Hash; Write-Output "MODIFIED_RESULT=PASS;SECTIONS=10;STATUS=$s;EVIDENCE=$e;SYMBOL=$y;IMPLICATION=$i;SHA256=$h"; exit 0
+Input: docs/research/hermes-runtime-reconnaissance.md
+Literal output/result: MODIFIED_RESULT=PASS;SECTIONS=10;STATUS=59;EVIDENCE=59;SYMBOL=59;IMPLICATION=60;SHA256=9CA4A9A3D0E6FB0B4B4EC3DBEBFEA03F5DD4AA6F580C963FC0B5890868F49D10
+Exit status: 0
+
+STATIC EVIDENCE CHECK
+Input: docs/research/hermes-runtime-reconnaissance.md
+Literal output/result: EVIDENCE_PATH_RESULT=PASS;REFS=145;UNIQUE=58
+Literal output/result: DIFF_CHECK_RESULT=PASS;RAW_EXIT=1;WHITESPACE_ERRORS=0
+Exit status: 0
+
+ROLLBACK
+Command: & 'C:\Program Files\Git\bin\bash.exe' -lc 'set -euo pipefail; test_copy=.codex-artifacts/hermes-runtime-reconnaissance/rollback-test/hermes-runtime-reconnaissance.md; mkdir -p "$(dirname "$test_copy")"; cp docs/research/hermes-runtime-reconnaissance.md "$test_copy"; chmod +x .codex-artifacts/hermes-runtime-reconnaissance/ROLLBACK.sh; ./.codex-artifacts/hermes-runtime-reconnaissance/ROLLBACK.sh "$test_copy"; if [[ -e "$test_copy" ]]; then printf "ROLLBACK_RESTORED=PRESENT\n"; exit 1; fi; printf "ROLLBACK_RESTORED=ABSENT\n"'; exit $LASTEXITCODE
+Input: .codex-artifacts/hermes-runtime-reconnaissance/rollback-test/hermes-runtime-reconnaissance.md (separate copy)
+Literal output/result: ROLLBACK_RESULT=removed:.codex-artifacts/hermes-runtime-reconnaissance/rollback-test/hermes-runtime-reconnaissance.md
+Literal output/result: ROLLBACK_RESTORED=ABSENT
+Exit status: 0
+Restored behavior/status: the rollback copy returned to the original ABSENT state; the requested target and MODIFIED_FILE remain changed.
+
+TEST_POLICY
+Tests/builds/lint: NOT RUN (documentation-only change; repository policy calls for inspection and diff checks only).

@@ -1,0 +1,40 @@
+Engineering Workflow Domain - Verification Record
+
+CHANGED_BRANCH=feat/engineering-foundation
+CHANGED_FIELD=Hermes-independent engineering workflow domain model
+ORIGINAL_SHA256=ABSENT
+MODIFIED_SHA256=908176FD75312BD9A58874A144582A52D3084BEEAF0AFF37AB9505D890E12721
+
+MODIFIED_FILE=D:\dev\hermes-engineering-agent\.codex-artifacts\engineering-workflow-domain\MODIFIED_FILE.py
+DIFF_FILE=D:\dev\hermes-engineering-agent\.codex-artifacts\engineering-workflow-domain\DIFF_FILE.patch
+VERIFICATION_FILE=D:\dev\hermes-engineering-agent\.codex-artifacts\engineering-workflow-domain\VERIFICATION.txt
+ROLLBACK_FILE=D:\dev\hermes-engineering-agent\.codex-artifacts\engineering-workflow-domain\ROLLBACK.sh
+
+BASELINE
+Command: $paths=@('engineering/__init__.py','engineering/domain/__init__.py','engineering/domain/workflow.py','tests/engineering/domain/test_workflow.py'); $presentInHead=@(); foreach($p in $paths){git cat-file -e ('HEAD:'+$p) 2>$null; if($LASTEXITCODE-eq 0){$presentInHead+=$p}}; if($presentInHead.Count-ne 0){Write-Output ('BASELINE_RESULT=PRESENT;FILES='+($presentInHead-join',')); exit 1}; Write-Output 'BASELINE_RESULT=ABSENT;FILES=4'; exit 0
+Input: HEAD versions of the four requested source/test files
+Literal output/result: BASELINE_RESULT=ABSENT;FILES=4
+Exit status: 0
+
+MODIFIED
+Command: & 'C:\Program Files\Git\bin\bash.exe' -lc 'HERMES_PYTHON=/c/Users/LENOVO/AppData/Local/Temp/hermes-engineering-agent-pytest-venv/Scripts/python.exe scripts/run_tests.sh tests/engineering/domain/test_workflow.py'
+Input: tests/engineering/domain/test_workflow.py
+Literal output/result: === Summary: 1 files, 15 tests passed, 0 failed (100% complete) in 1.6s (32 workers) ===
+Exit status: 0
+
+STATIC REVIEW
+Input: engineering/__init__.py; engineering/domain/__init__.py; engineering/domain/workflow.py; tests/engineering/domain/test_workflow.py
+Literal output/result: DIFF_CHECK=PASS;FILES=4
+Literal output/result: FORBIDDEN_IMPORTS=0
+Exit status: 0
+
+ROLLBACK
+Command: & 'C:\Program Files\Git\bin\bash.exe' -lc 'set -euo pipefail; root=.codex-artifacts/engineering-workflow-domain/rollback-test; mkdir -p "$root/engineering/domain" "$root/tests/engineering/domain"; cp engineering/__init__.py "$root/engineering/__init__.py"; cp engineering/domain/__init__.py "$root/engineering/domain/__init__.py"; cp engineering/domain/workflow.py "$root/engineering/domain/workflow.py"; cp tests/engineering/domain/test_workflow.py "$root/tests/engineering/domain/test_workflow.py"; chmod +x .codex-artifacts/engineering-workflow-domain/ROLLBACK.sh; ./.codex-artifacts/engineering-workflow-domain/ROLLBACK.sh "$root"; remaining=0; for f in engineering/__init__.py engineering/domain/__init__.py engineering/domain/workflow.py tests/engineering/domain/test_workflow.py; do [[ ! -e "$root/$f" ]] || remaining=$((remaining+1)); done; if [[ $remaining -ne 0 ]]; then printf "ROLLBACK_RESTORED=FAIL;REMAINING=%s\n" "$remaining"; exit 1; fi; printf "ROLLBACK_RESTORED=ABSENT;FILES=4\n"'; exit $LASTEXITCODE
+Input: .codex-artifacts/engineering-workflow-domain/rollback-test (separate copy)
+Literal output/result: ROLLBACK_RESULT=removed_domain_layer:.codex-artifacts/engineering-workflow-domain/rollback-test
+Literal output/result: ROLLBACK_RESTORED=ABSENT;FILES=4
+Exit status: 0
+Restored behavior/status: the rollback copy returned all four source/test paths to the original ABSENT state; the requested domain files and MODIFIED_FILE remain changed.
+
+TEST_ENVIRONMENT
+Initial canonical test command could not start because the checkout had no pytest-enabled venv. A temporary external venv was created under %TEMP% with pytest 9.1.1 and PyYAML 6.0.3; no dependency files or Hermes Core files were changed.

@@ -21,10 +21,13 @@ _HIGH_CONCURRENCY_WARNED = False
 MAX_DEPTH = 1  # flat by default: parent (0) -> child (1); deeper needs max_spawn_depth
 _MIN_SPAWN_DEPTH = 1  # floor for the configurable cap; MAX_DEPTH stays the default
 _LEGACY_MAX_ASYNC_WARNED = False
-# No default wall-clock cap on children: legitimate heavy work (deep reviews, research fan-outs, slow reasoning
-# models) was being killed mid-task. Stuck-child detection is the heartbeat staleness monitor;
-# delegation.child_timeout_seconds opts back in.
-DEFAULT_CHILD_TIMEOUT: Optional[float] = None
+# Default INACTIVITY cap (3600s): a child with NO progress for a whole hour is wedged, not merely heavy
+# work — the budget restarts on every sign of progress, so deep reviews, research fan-outs and slow
+# reasoning models outlive it indefinitely. It is also an independent authority for the wait: even if
+# the heartbeat never ticks (a parent without _touch_activity, a dead scheduler), a frozen child still
+# ends its wait — and the cleanup/registry release that follows it runs. Explicit 0/negative opts back
+# out; a positive delegation.child_timeout_seconds overrides.
+DEFAULT_CHILD_TIMEOUT: Optional[float] = 3600.0
 
 def _cfg() -> dict:
     """The ``delegation`` section, read through the origin so tests can patch it."""
@@ -137,15 +140,17 @@ def _parse_timeout(raw: Any) -> Optional[float]:
     return None if parsed <= 0 else max(30.0, parsed)
 
 def _get_child_timeout() -> Optional[float]:
-    """Inactivity cap for one child (seconds of NO progress), or None (default: no cap). Failures should come from
-    what the child does (API/tool errors, iteration budget), not a stopwatch: the cap restarts on every sign of
-    progress — a completed call, a tool change, an activity-clock tick — so a slow provider serving multi-minute
-    completions never loses a live child, and a child frozen for the whole window is still caught. A configured
-    value pre-empts nothing the heartbeat staleness monitor would not also catch. delegation.child_timeout_seconds
-    > 0 opts in (floor 30 s); 0 or negative disables. Env fallback: DELEGATION_CHILD_TIMEOUT_SECONDS."""
+    """Inactivity cap for one child (seconds of NO progress): DEFAULT_CHILD_TIMEOUT (3600s) when unset,
+    None only when the operator explicitly disabled it. Failures should come from what the child does
+    (API/tool errors, iteration budget), not a stopwatch: the cap restarts on every sign of progress — a
+    completed call, a tool change, an activity-clock tick — so a slow provider serving multi-minute
+    completions never loses a live child, and a child frozen for the whole window is still caught. The
+    bounded default also ends the wait when the heartbeat never ticks, so the cleanup/registry release
+    cannot be wedged indefinitely. delegation.child_timeout_seconds > 0 overrides (floor 30 s); 0 or
+    negative disables. Env fallback: DELEGATION_CHILD_TIMEOUT_SECONDS."""
     return _knob(
         "child_timeout_seconds", "DELEGATION_CHILD_TIMEOUT_SECONDS", _parse_timeout, DEFAULT_CHILD_TIMEOUT,
-        "delegation.child_timeout_seconds=%r is not a valid number; using default (no timeout)",
+        f"delegation.child_timeout_seconds=%r is not a valid number; using default {DEFAULT_CHILD_TIMEOUT:g}s inactivity cap",
     )
 
 def _get_max_spawn_depth() -> int:

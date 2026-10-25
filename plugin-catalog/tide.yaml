@@ -1,7 +1,7 @@
 name: tide
 title: Tide
 repo: https://github.com/thomasscottbeck-sudo/tide
-sha: 2f1902e6656fd73251c38382c49cd4fcdecee0a8
+sha: a3d5701de430594bf4c602476b0a3cd60ef3243f
 description: "Context engine that never asks a model to summarize. Instead of pausing the turn for a model-written summary, Tide composes the request deterministically: one frozen session map (each evicted turn as the user's verbatim words plus what was done and replied), earlier compaction summaries and loaded skills carried forward, the user's current request pinned whole, then a verbatim window of recent history that trails the conversation in cache-friendly steps (fires past high_tokens, cuts back to low_tokens, never splits a tool result from its call). Bulky old tool results are folded to head and tail; anything shortened comes back verbatim through the tide_recall tool by map label, tool call id or a few words. Select with context.engine: tide; revert with context.engine: compressor. No network calls, no model calls, no third-party dependencies. Disclosure — reads the same home's state.db read-only so tide_recall can return compacted originals; writes fingerprints and counters only (never message text) to HERMES_HOME/plugin-data/tide; registers a /tide status command."
 maintainer: thomasscottbeck-sudo
 tier: community
@@ -9,7 +9,7 @@ category: memory
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/thomasscottbeck-sudo/tide#readme
 version: "0.4.8"
-image: https://raw.githubusercontent.com/thomasscottbeck-sudo/tide/2f1902e6656fd73251c38382c49cd4fcdecee0a8/docs/banner.png
+image: https://raw.githubusercontent.com/thomasscottbeck-sudo/tide/a3d5701de430594bf4c602476b0a3cd60ef3243f/docs/banner.png
 platforms: []
 capabilities:
   provides_tools: []

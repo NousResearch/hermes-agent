@@ -208,7 +208,8 @@ def refresh_local_runtime() -> bool:
         return False
 
 
-def _admitted_models_max(mdir: Path, configured: int, engine_tag: str | None = None) -> int:
+def _admitted_models_max(mdir: Path, configured: int, engine_tag: str | None = None,
+                         context_window: int | None = None) -> int:
     """Residency cap to hand the router: derived from the hardware budget, ``models_max`` as a ceiling.
 
     A cap of "four" on a card that holds one model is how a second child ends up paged (WDDM) and
@@ -222,7 +223,9 @@ def _admitted_models_max(mdir: Path, configured: int, engine_tag: str | None = N
 
         capacity = probe_budget(planning=True)
         live = _launch_budget(capacity) if capacity.uma else None
-        cap = admitted_residency_count(mdir, capacity, configured, live=live, engine_tag=engine_tag)
+        cap = admitted_residency_count(
+            mdir, capacity, configured, live=live, engine_tag=engine_tag,
+            context_window=context_window)
     except Exception as exc:
         logger.warning("residency cap probe failed (%s); using models_max=%s", exc, configured)
         return configured
@@ -232,8 +235,17 @@ def _admitted_models_max(mdir: Path, configured: int, engine_tag: str | None = N
     return cap
 
 
+def _context_window(section: dict | None) -> int | None:
+    """Return the valid configured context cap, if one was requested."""
+    value = (section or {}).get("context_window")
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        return None
+    return value
+
+
 def _generate_presets(mdir: Path, preset_path: Path, residents: int = 1, *,
-                      engine_tag: str | None = None) -> Path | None:
+                      engine_tag: str | None = None,
+                      context_window: int | None = None) -> Path | None:
     """Write the launch-policy INI for every staged model; returns the path to hand the router.
 
     Priced against CAPACITY, not live free VRAM: this runs while the outgoing server instance may
@@ -253,9 +265,11 @@ def _generate_presets(mdir: Path, preset_path: Path, residents: int = 1, *,
     from hermes_cli.local_runtime.presets import generate_presets
 
     try:
+        context_window = _context_window({"context_window": context_window})
         capacity = probe_budget(planning=True)
         for entry in generate_presets(mdir, capacity, preset_path, live=_launch_budget(capacity),
-                                      residents=residents, engine_tag=engine_tag):
+                                      residents=residents, engine_tag=engine_tag,
+                                      context_window=context_window):
             if entry.refusal:
                 logger.warning("model refused by physics check: %s", entry.refusal)
         return preset_path
@@ -309,8 +323,12 @@ def refit_idle_presets(sup) -> bool:
     last = sup._refit_usable
     if last is not None and abs(live.usable_vram_bytes - last) < _REFIT_STEP_BYTES:
         return False
-    text = render_presets(plan_presets(models_dir(), capacity, live=live, residents=sup.models_max,
-                                       engine_tag=_SERVING_ENGINE.tag if _SERVING_ENGINE is not None else None))
+    from hermes_cli.config import load_config
+
+    text = render_presets(plan_presets(
+        models_dir(), capacity, live=live, residents=sup.models_max,
+        engine_tag=_SERVING_ENGINE.tag if _SERVING_ENGINE is not None else None,
+        context_window=_context_window((load_config() or {}).get("local_runtime"))))
     # Held across the write and the reload so a restart can't spawn between them; everything
     # slow ran above.
     with sup._lifecycle_lock:
@@ -460,9 +478,17 @@ def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
 
             mdir = models_dir()
             mdir.mkdir(parents=True, exist_ok=True)
-            models_max = _admitted_models_max(mdir, int(section.get("models_max", 4)), engine.tag)
-            preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini", models_max,
-                                            engine_tag=engine.tag)
+            context_window = _context_window(section)
+            residency_kwargs = {"engine_tag": engine.tag}
+            if context_window is not None:
+                residency_kwargs["context_window"] = context_window
+            models_max = _admitted_models_max(
+                mdir, int(section.get("models_max", 4)), **residency_kwargs)
+            preset_kwargs = {"engine_tag": engine.tag}
+            if context_window is not None:
+                preset_kwargs["context_window"] = context_window
+            preset_path = _generate_presets(
+                mdir, runtimes_root() / "presets.ini", models_max, **preset_kwargs)
 
             sup = LlamaServerSupervisor(engine.binary, mdir, preset_path=preset_path,
                                         models_max=models_max,

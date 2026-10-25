@@ -1,11 +1,12 @@
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { HermesConnection } from '@/global'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $sidebarShowArchived } from '@/store/layout'
 import { $changeEventsAvailable, $cronChangeTick, $sessionsChangeTick } from '@/store/live-sync'
 import { $onBattery } from '@/store/power'
-import { $activeSessionId } from '@/store/session'
+import { $activeSessionId, $connection, $selectedStoredSessionId } from '@/store/session'
 import {
   $sessionStates,
   $workingSessionIds,
@@ -132,6 +133,53 @@ describe('useBackgroundSync profile-scoped session refresh', () => {
     })
 
     expect(loadArchivedSessions).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('useBackgroundSync live-status poll with no session open', () => {
+  // A profile picked on top of the shared primary socket (a Webapp tab's live pick, a global remote)
+  // is a view of that socket: a request that names no profile is answered for the socket's own
+  // profile, so the sidebar dot would show that profile's turns instead of the selected one's.
+  const sharedResearch = { profile: 'research', sharedPrimary: true } as HermesConnection
+
+  async function polledParams(connection: HermesConnection | null) {
+    $connection.set(connection)
+    const request = vi.fn(async (_method: string, _params?: Record<string, unknown>) => ({ sessions: [] }))
+    render('research', 'local', async () => undefined, request as typeof requestGateway)
+    await act(async () => undefined)
+
+    return request.mock.calls.filter(([method]) => method === 'session.active_list').map(([, params]) => params)
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    $activeSessionId.set(null)
+    $selectedStoredSessionId.set(null)
+    $changeEventsAvailable.set(false)
+    $sessionsChangeTick.set(0)
+  })
+
+  afterEach(() => {
+    cleanup()
+    $connection.set(null)
+    $selectedStoredSessionId.set(null)
+    vi.useRealTimers()
+  })
+
+  it('names the selected profile when it rides the shared primary socket', async () => {
+    expect(await polledParams(sharedResearch)).toEqual([{ profile: 'research' }])
+  })
+
+  it('asks what it asked before while a session is open (the session owner routes it)', async () => {
+    $selectedStoredSessionId.set('s-open')
+
+    expect(await polledParams(sharedResearch)).toEqual([{}])
+  })
+
+  it('names no profile on a socket of the selected profile’s own', async () => {
+    expect(await polledParams({ profile: 'research' } as HermesConnection)).toEqual([{}])
+    cleanup()
+    expect(await polledParams(null)).toEqual([{}])
   })
 })
 

@@ -28,6 +28,7 @@ import { refreshProjects, refreshProjectTree } from '@/store/projects'
 import {
   $activeSessionId,
   $busy,
+  $connection,
   $currentCwd,
   $messagingSessions,
   $selectedStoredSessionId,
@@ -37,6 +38,7 @@ import {
   sessionMatchesStoredId,
   setCurrentCwd
 } from '@/store/session'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
 import {
   $sessionStates,
@@ -907,6 +909,20 @@ export function rehydrateLiveSessionStatuses(
   confirmReconnectSettlesExcept(workingStoredIds)
 }
 
+/** Params for the live-status poll. With a session open the session RPC
+ *  dispatcher routes it to that session's owner, so it names nothing. With none
+ *  open it rides the active socket, and a profile that shares the primary socket
+ *  (a Webapp tab's live pick, a global remote) is only reached by naming it: the
+ *  socket answers an unnamed request for its own profile, and the sidebar would
+ *  paint that profile's turns instead of the selected one's. */
+function liveStatusParams(activeGatewayProfile: string): Record<string, unknown> {
+  if ($focusedStoredSessionId.get() || $connection.get()?.sharedPrimary !== true) {
+    return {}
+  }
+
+  return { profile: activeGatewayProfile }
+}
+
 /** Forget every profile's live-runtime bookkeeping. A gateway wipe already
  *  drops the session states these ids point at, so a carried-over set would
  *  only reap runtimes that no longer exist. */
@@ -1278,7 +1294,10 @@ export function useBackgroundSync({
       const stateAtRequest = $sessionStates.get()
 
       try {
-        const response = await requestGateway<LiveSessionStatusResponse>('session.active_list', {})
+        const response = await requestGateway<LiveSessionStatusResponse>(
+          'session.active_list',
+          liveStatusParams(activeGatewayProfile)
+        )
 
         if (!cancelled) {
           rehydrateLiveSessionStatuses(response, Date.now(), activeGatewayProfile, stateAtRequest)

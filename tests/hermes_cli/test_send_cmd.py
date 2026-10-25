@@ -459,3 +459,47 @@ def test_help_and_empty_list_hint_name_the_resolved_home(tmp_path, monkeypatch, 
     out = capsys.readouterr().out
     assert str(home / "channel_directory.json") in out
     assert "~/.hermes" not in out
+
+
+@pytest.mark.parametrize(
+    ("result_json", "diagnostic"),
+    [
+        (json.dumps({"error": "gateway unreachable"}), "gateway unreachable"),
+        (json.dumps({"status": "unexpected"}), '"status": "unexpected"'),
+        ("", "{}"),
+        ("null", "null"),
+    ],
+)
+def test_quiet_keeps_failures_observable(capsys, result_json, diagnostic):
+    rc = send_cmd._emit_result(result_json, json_mode=False, quiet=True)
+
+    captured = capsys.readouterr()
+    assert rc == send_cmd._FAILURE_EXIT
+    assert captured.out == ""
+    assert diagnostic in captured.err
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"success": True, "note": "sent to telegram"},
+        {"skipped": True, "note": "already delivered"},
+    ],
+)
+def test_quiet_suppresses_success_only(capsys, payload):
+    rc = send_cmd._emit_result(json.dumps(payload), json_mode=False, quiet=True)
+
+    captured = capsys.readouterr()
+    assert rc == send_cmd._SUCCESS_EXIT
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_json_mode_preserves_non_object_failure(capsys):
+    rc = send_cmd._emit_result("null", json_mode=True, quiet=True)
+
+    captured = capsys.readouterr()
+    assert rc == send_cmd._FAILURE_EXIT
+    assert captured.out == "null\n"
+    assert captured.err == ""
+

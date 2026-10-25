@@ -75,10 +75,16 @@ class StreamingWaitMonitor:
     def _skip_sleep(self, slept: float) -> None:
         """The computer slept and froze this request with a server on the same machine: move the
         stall clock past the sleep, so the request gets its full patience again after wake. Never
-        past now: a chunk can land between the sleep reading and this write."""
+        past now: a chunk can land between the sleep reading and this write.
+
+        ``slept`` comes from SleepWatch and is a DURATION, so it is valid on any clock; the
+        baselines it shifts and the clamp it shifts them against must both be monotonic (see
+        ``_monitor_loop``) — a wall-clock ``now`` here would compare two epochs and silently
+        defeat the clamp, since wall time always exceeds the monotonic origin.
+        """
         if slept <= 0:
             return
-        now = time.time()
+        now = time.monotonic()
         self.last_chunk_time["t"] = min(self.last_chunk_time["t"] + slept, now)
         self._mon.last_heartbeat = min(self._mon.last_heartbeat + slept, now)
         logger.info("Computer slept for %.0fs during a model request; the stall timer skips that time.", slept)
@@ -106,8 +112,11 @@ class StreamingWaitMonitor:
 
     def _monitor_loop(self) -> None:
         _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
+        # Monotonic, matching last_chunk_time: every value here is an elapsed-duration
+        # baseline, so a wall-clock step would either kill a healthy stream (forward) or
+        # silently disable the stale detector (backward).
         self._mon = SimpleNamespace(
-            last_heartbeat=time.time(), last_load_poll=0.0,
+            last_heartbeat=time.monotonic(), last_load_poll=0.0,
             load_notice_shown=False, load_notice_misses=0, wait_notice_started_ts=None,
             wait_notice=wn.WaitNoticeState(),
         )
@@ -119,7 +128,12 @@ class StreamingWaitMonitor:
             self._call_done.wait(timeout=0.3)
             if sleep_watch is not None:
                 self._skip_sleep(sleep_watch.slept())
-            _hb_now = time.time()
+            # Monotonic, and NOT interchangeable with the wall clock above: SleepWatch
+            # measures suspend against the wall clock (the only clock that sees it), while
+            # the stall baselines are elapsed-duration origins that must not move when NTP
+            # steps the wall clock. Both mechanisms are load-bearing — sleep compensation
+            # for a suspended local server, monotonic for step immunity.
+            _hb_now = time.monotonic()
             if _is_local_base and self._poll_local_load_notice(_hb_now):
                 continue
             # Reasoning callbacks do not clear the classic CLI spinner. The empty
@@ -132,7 +146,7 @@ class StreamingWaitMonitor:
             if _hb_now - self._mon.last_heartbeat >= _HEARTBEAT_INTERVAL:
                 self._mon.last_heartbeat = _hb_now
                 self._heartbeat(int(_hb_now - self.last_chunk_time["t"]))
-            _stale_elapsed = time.time() - self.last_chunk_time["t"]
+            _stale_elapsed = time.monotonic() - self.last_chunk_time["t"]
             if _stale_elapsed > self._stream_stale_timeout:
                 self._mon.wait_notice_started_ts = None  # Reconnect status has its own owner.
                 self._mon.wait_notice.reset()

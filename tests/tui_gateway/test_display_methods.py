@@ -85,6 +85,46 @@ def _rpc(server, method, params):
     return server.handle_request({"jsonrpc": "2.0", "id": 7, "method": method, "params": params})
 
 
+def test_a_viewer_opened_from_a_browser_tab_signs_out_with_that_tab(monkeypatch, tmp_path):
+    """The viewer ticket carries the credential digest the asking browser socket was admitted with,
+    so /api/display/ws closes the viewer when that browser signs out; a native client's carries none."""
+    import asyncio
+
+    from hermes_cli import browser_credential, web_server, web_session_sockets
+    from tools.bot_desktop import runtime
+    from tui_gateway import server
+
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+    monkeypatch.setattr(web_server, "_SESSION_TOKEN", "a" * 43)
+    signed_in = browser_credential.generation_of("a" * 43)
+
+    class _Socket:
+        async def close(self, code=1000, reason=""):
+            pass
+
+    class _Peer:
+        def __init__(self, ws=None):
+            self.ws = ws
+
+        def write(self, obj):
+            return True
+
+    tab = _Peer(_Socket())
+
+    async def admit():  # sockets are tracked from the server's loop
+        web_session_sockets.track(tab.ws, signed_in)
+
+    asyncio.run(admit())
+
+    def ticket(peer):
+        observed = server.dispatch({"jsonrpc": "2.0", "id": 11, "method": "display.observe", "params": {}}, peer)
+        return ws_tickets.consume_ticket(observed["result"]["ticket"])
+
+    assert ticket(tab)["admitted_with"] == signed_in
+    assert "admitted_with" not in ticket(_Peer())
+    assert "admitted_with" not in ticket(_Peer(_Socket()))  # a socket sign-out does not cover
+
+
 def test_observe_mints_the_viewer_id_and_status_never_discloses_the_holder(monkeypatch, tmp_path):
     """A client cannot choose its viewer id (it would impersonate the holder and co-drive or release
     their lease), and no snapshot or broadcast carries the raw holder id — only a hash the holder

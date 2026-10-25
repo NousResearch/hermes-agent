@@ -882,6 +882,11 @@ def test_review_fork_forwards_runtime_pool_and_overrides(curator_env, monkeypatc
     assert meta.get("error") is None, meta.get("error")
     assert captured["kwargs"]["credential_pool"] is fake_pool
     assert captured["kwargs"]["request_overrides"] == fake_overrides
+    # The review fork must be bounded: 9999 was effectively unbounded and a stuck
+    # review loop could burn the whole provider quota.
+    assert captured["kwargs"]["max_iterations"] == 200, (
+        f"expected max_iterations=200, got {captured['kwargs']['max_iterations']}"
+    )
 
 
 def test_review_fork_receives_configured_reasoning(curator_env, monkeypatch):

@@ -330,7 +330,7 @@ def build_catalog_listing_with_form(
         text = "\n".join([header] + singles + blocks)
         return text if math.ceil(len(text) / CHARS_PER_TOKEN) <= max_tokens else None
 
-    def collapsed_form(modes: Dict[str, str]) -> str:
+    def collapsed_form(modes: dict[str, str]) -> str:
         return "groups" if all(m == "summary" for m in modes.values()) else "mixed"
 
     if shown is not None:  # accept registry names too: "mcp-github" pins the "github" heading

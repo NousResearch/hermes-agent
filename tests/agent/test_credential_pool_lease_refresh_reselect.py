@@ -16,10 +16,14 @@ NOT in ``available`` until the refresh has run.
 
 import threading
 
-from agent.credential_pool import CredentialPool, PooledCredential
+from agent.credential_pool import (
+    STRATEGY_FILL_FIRST,
+    CredentialPool,
+    PooledCredential,
+)
 
 
-def _entry(entry_id: str) -> PooledCredential:
+def _entry(entry_id: str, *, priority: int = 0) -> PooledCredential:
     return PooledCredential(
         id=entry_id,
         provider="anthropic",
@@ -27,7 +31,7 @@ def _entry(entry_id: str) -> PooledCredential:
         access_token="tok",
         label=entry_id,
         source="oauth",
-        priority=0,
+        priority=priority,
     )
 
 
@@ -39,6 +43,7 @@ def _bare_pool(entries):
     pool._active_leases = {}
     pool._current_id = None
     pool._max_concurrent = 2
+    pool._strategy = STRATEGY_FILL_FIRST
     pool._unmatched_rotation_streak = 0
     pool.provider = "anthropic"
     return pool
@@ -93,3 +98,20 @@ def test_acquire_lease_still_none_when_refresh_does_not_help():
     assert pool.acquire_lease() is None
     assert state["refresh_calls"] == 1, "retry must not refresh repeatedly"
     assert pool._active_leases == {}
+
+
+def test_fill_first_leases_the_primary_while_it_remains_healthy():
+    """Regression for #137724: parallel child leases keep the preferred key.
+
+    A lease is a soft concurrency marker, not evidence that a healthy primary
+    credential cannot serve another child. ``fill_first`` must therefore not
+    spend the fallback merely because the primary already has a lease.
+    """
+    primary = _entry("primary")
+    fallback = _entry("fallback", priority=1)
+    pool = _bare_pool([primary, fallback])
+    pool._available_entries = lambda **_kwargs: ([primary, fallback], [])
+
+    assert pool.acquire_lease() == "primary"
+    assert pool.acquire_lease() == "primary"
+    assert pool._active_leases == {"primary": 2}

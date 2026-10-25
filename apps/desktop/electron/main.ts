@@ -16569,7 +16569,6 @@ app.on('before-quit', () => {
 // Close the pooled keep-alive sockets on quit so lingering connections can't
 // hold the event loop open or leak FDs past app teardown.
 app.on('will-quit', () => {
-  desktopPlayer.dispose()
   closeGatewayTicketBridges()
   killTimedGitChildren()
   sshIsolatedKeepalives.stopAll()
@@ -18029,6 +18028,12 @@ app.on('before-quit', event => {
   appQuitting = true
   quitInProgress = true
   nvidiaEglRecovery.cleanExit()
+
+  // Dispose the player as soon as this quit is committed. A pinned service
+  // guest can keep the app alive and prevent will-quit from ever firing.
+  // The host is idempotent because managed-update/teardown joins can re-enter
+  // before-quit for this same committed shutdown.
+  desktopPlayer.dispose()
 
   minimizeToTray.beginQuit()
   mainProcessLagWatchdog.stop()

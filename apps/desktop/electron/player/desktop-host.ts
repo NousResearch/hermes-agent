@@ -40,12 +40,19 @@ export function createDesktopPlayerHost() {
 
   const manager = new PlayerManager({ mediaJobs })
   const ipc = registerPlayerIpc(ipcMain, manager)
+  let disposed = false
 
   return {
     registerOwner(window: BrowserWindow, page: string) {
       ipc.registerOwner(window, page)
     },
     dispose() {
+      if (disposed) {
+        return
+      }
+
+      disposed = true
+
       ipc.dispose()
       manager.dispose()
       mediaJobs.dispose()

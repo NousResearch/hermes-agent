@@ -1,12 +1,16 @@
 'use client'
 
 import * as React from 'react'
+import { useStore } from '@nanostores/react'
 import type { BundledLanguage, ShikiTransformer, ThemedToken } from 'shiki'
 
 import { chunkLines, type LineChunk, useFixedRowWindow } from '@/components/chat/fixed-row-window'
 import { exceedsHighlightBudget, SHIKI_THEME } from '@/components/chat/shiki-highlighter'
 import { ErrorBoundary } from '@/components/error-boundary'
+import { openExternalLink } from '@/lib/external-link'
+import { mediaExternalUrl } from '@/lib/media'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
+import { $currentCwd } from '@/store/session'
 import { cn } from '@/lib/utils'
 
 /**
@@ -593,6 +597,22 @@ export function FileDiffPanel({
     [diff, fullText]
   )
 
+  // Resolve the file the diff touches to an absolute path (relative paths are
+  // project-relative, resolved against the session cwd) so the header row can
+  // open the current file with the OS default app. Subscribing to the cwd
+  // store (not a bare .get()) keeps the memo fresh when the session cwd
+  // changes while the diff path stays constant.
+  const currentCwd = useStore($currentCwd)
+  const absolutePath = React.useMemo(() => {
+    if (!path) {
+      return null
+    }
+    if (path.startsWith('/')) {
+      return path
+    }
+    return currentCwd ? `${currentCwd.replace(/\/$/, '')}/${path}` : null
+  }, [path, currentCwd])
+
   const lineChunks = React.useMemo(() => chunkLines(lines, PREVIEW_CHUNK_LINES), [lines])
 
   const { afterRows, beforeRows, endChunk, onScroll, scrollerRef, startChunk } = useFixedRowWindow({
@@ -635,6 +655,7 @@ export function FileDiffPanel({
   if (!windowed) {
     return (
       <div className={cn(DIFF_BOX_CLASS, className)} data-slot="file-diff-panel">
+        {absolutePath && <DiffFileHeader path={path ?? ''} absolutePath={absolutePath} />}
         {compactBody}
       </div>
     )
@@ -644,11 +665,14 @@ export function FileDiffPanel({
   // full-Shiki-of-every-line freeze on large diffs). With `showLineNumbers` a
   // VS Code-style gutter (new number for context/adds, old for removals) sits in
   // a left column; the scroller owns scroll so the overview ruler (an absolute
-  // sibling) stays viewport-fixed.
+  // sibling) stays viewport-fixed. The file header (when present) sits above
+  // the scroller in normal flow, so the scroller is a flex child rather than
+  // absolutely positioned — otherwise the header would be covered.
   return (
-    <div className={cn(DIFF_BOX_CLASS, 'relative overflow-hidden', className)} data-slot="file-diff-panel">
+    <div className={cn(DIFF_BOX_CLASS, 'relative flex flex-col overflow-hidden', className)} data-slot="file-diff-panel">
+      {absolutePath && <DiffFileHeader path={path ?? ''} absolutePath={absolutePath} />}
       <div
-        className={cn('absolute inset-0 overflow-auto', showLineNumbers && 'pr-2.5')}
+        className={cn('relative min-h-0 flex-1 overflow-auto', showLineNumbers && 'pr-2.5')}
         onScroll={onScroll}
         ref={scrollerRef}
       >
@@ -687,6 +711,35 @@ export function FileDiffPanel({
         )}
       </div>
       <DiffOverviewRuler lines={lines} />
+    </div>
+  )
+}
+
+/**
+ * Clickable file header for a diff card: the path the diff touches, opening
+ * the current file with the OS default app (resolved against the session cwd
+ * when the path is project-relative).
+ */
+function DiffFileHeader({ absolutePath, path }: { absolutePath: string; path: string }) {
+  const open = (event: React.MouseEvent) => {
+    event.preventDefault()
+    event.stopPropagation()
+    openExternalLink(mediaExternalUrl(absolutePath))
+  }
+
+  return (
+    <div className="border-b border-(--ui-stroke-tertiary) bg-muted/25 px-2.5 py-1.5">
+      <button
+        className="ref wrap-anywhere inline-flex cursor-pointer items-center gap-1.5 text-left text-[0.75rem] text-(--ui-text-secondary) transition-colors hover:text-foreground"
+        onClick={open}
+        title={`Open ${path}`}
+        type="button"
+      >
+        <span aria-hidden className="shrink-0">
+          📄
+        </span>
+        <span className="truncate">{path}</span>
+      </button>
     </div>
   )
 }

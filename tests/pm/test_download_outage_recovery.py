@@ -1,6 +1,7 @@
 """Active downloads respect source cooldowns and revisit a recovered mirror."""
 import hashlib
 import time
+import urllib.error
 from types import SimpleNamespace
 
 from pm import downloader
@@ -14,6 +15,17 @@ def test_recovery_revisits_sources_without_shortening_retry_after(tmp_path, monk
     original_get = RangeHandler.do_GET
     clock = [0.0]
     probes = {"/primary": [], "/mirror": []}
+    failed_responses = []
+    original_open = downloader._OPENER.open
+
+    def capture_failure(*args, **kwargs):
+        try:
+            return original_open(*args, **kwargs)
+        except urllib.error.HTTPError as exc:
+            failed_responses.append(exc)
+            raise
+
+    monkeypatch.setattr(downloader._OPENER, "open", capture_failure)
 
     def respond(handler):
         if handler.headers.get("Range") == "bytes=0-0":
@@ -42,3 +54,4 @@ def test_recovery_revisits_sources_without_shortening_retry_after(tmp_path, monk
     download.run()
     assert destination.read_bytes() == payload
     assert probes == {"/primary": [0.0, 60.0], "/mirror": [0.0, 1.0, 1.0]}
+    assert failed_responses and all(response.closed for response in failed_responses)

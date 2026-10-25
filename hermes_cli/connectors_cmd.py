@@ -135,6 +135,9 @@ def _connect(args) -> int:
     from tools.connectors import account, live
     from tools.connectors.contract import SettleReason
 
+    print("Supported connected accounts also receive read-only background assistance while the gateway runs. "
+          "It uses your auxiliary model; normal provider costs apply. "
+          "Pause with `hermes connectors findings pause`.")
     app = args.app.strip().lower()
     if args.reconnect:
         # A repair is addressed by the account's id, which also reaches an unnamed account.
@@ -229,6 +232,12 @@ _ACTIONS: dict[str, Callable[[Any], int]] = {
 
 
 def cmd_connectors(args) -> int:
+    if getattr(args, "connectors_action", None) == "findings":
+        from hermes_cli.connected_assistance import dispatch_findings_command
+        import shlex
+        output = dispatch_findings_command(shlex.join(args.findings_args))
+        print(output)
+        return 1 if output.startswith("Error:") else 0
     from tools.connectors import connectors_available
     from tools.connectors.gateway.errors import GatewayAuthError, ToolGatewayError
 

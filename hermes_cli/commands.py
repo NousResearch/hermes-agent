@@ -81,6 +81,9 @@ VALID_BUSY_POLICIES: frozenset[str] = frozenset({"dispatch", "reject", "interrup
 
 
 COMMAND_REGISTRY: list[CommandDef] = [
+    CommandDef("findings", "Review private connected-source findings or pause background assistance", "Info",
+               args_hint="[list|show <id>|dismiss <id>|resolve <id>|pause|resume]",
+               subcommands=("list", "show", "dismiss", "resolve", "pause", "resume"), busy_policy="dispatch"),
     # Session
     CommandDef("start", "Acknowledge platform start pings without a reply", "Session",
                gateway_only=True, busy_policy="dispatch", busy_handler="start"),

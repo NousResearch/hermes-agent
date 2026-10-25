@@ -34,6 +34,7 @@ from agent.error_classifier import (
     is_reasoning_required_rejection,
 )
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
+from agent.auxiliary_call_budget import acquire_auxiliary_slot, auxiliary_retry_wait, budgeted_create, budgeted_messages_client, check_auxiliary_budget, auxiliary_budget_active, call_on_budgeted_worker
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_structured_output import _route_key, _without_structured_output_format, remember_structured_output_rejection
 from agent.codex_headers import (
@@ -452,6 +453,8 @@ def _run_protected_sync_provider_call(callback: Callable[[dict[str, Any]], Any],
     transcript/commit state, never holds the session lock). Unprotected / no cancel source: direct.
     """
     source_cancel_check = _capture_aux_cancel_check()
+    if auxiliary_budget_active():
+        return call_on_budgeted_worker(callback, kwargs, source_cancel_check)
     if not _aux_interrupt_protected() or not callable(source_cancel_check):
         return callback(kwargs)
     # One linearized outcome per attempt: the host Event is reused/cleared on later turns and
@@ -459,8 +462,6 @@ def _run_protected_sync_provider_call(callback: Callable[[dict[str, Any]], Any],
     cancel_check = _AuxiliaryCancellationDecision(source_cancel_check)
     if cancel_check():
         raise AuxiliaryExplicitCancellation()
-    # Thread-locals do not cross into the daemon: timing hooks fire from the thread running
-    # the callback, and the host deadline is inert unless carried along.
     progress_hook = getattr(_aux_progress, "hook", None)
     dispatch_hook = getattr(_aux_dispatch, "hook", None)
     provider_response_hook = getattr(_aux_provider_response, "hook", None)
@@ -1703,6 +1704,7 @@ def _translate_anthropic_response_format(anthropic_kwargs: dict[str, Any], respo
 
 class _AnthropicCompletionsAdapter:
     """OpenAI-client-compatible adapter for Anthropic Messages API."""
+    BUDGET_AT_NATIVE_DISPATCH = True
 
     def __init__(self, real_client: Any, model: str, is_oauth: bool = False, base_url: str | None = None):
         self._client = real_client
@@ -1791,12 +1793,12 @@ class _AnthropicCompletionsAdapter:
                     existing = {}
                 anthropic_kwargs["extra_body"] = {**existing, **passthrough}
         response = create_anthropic_message(
-            self._client,
+            budgeted_messages_client(self._client),
             anthropic_kwargs,
-            # Record provider-response timing every event, but tick forward progress only for
-            # substantive payloads so keepalives can't hold a stalled summary open. None keeps
-            # the fast get_final_message path.
-            on_stream_event=(_anthropic_aux_stream_event_hook() if _aux_progress_active() else None),
+            # A caller deadline needs event checks even without a progress observer.
+            # Keep the fast path only for unbounded, unobserved native calls.
+            on_stream_event=(_anthropic_aux_stream_event_hook() if
+                             _aux_progress_active() or _current_aux_stream_deadline() is not None else None),
         )
         _nr = get_transport("anthropic_messages").normalize_response(response, strip_tool_prefix=self._is_oauth)
         usage = None
@@ -1837,6 +1839,7 @@ class AsyncAnthropicAuxiliaryClient(_AsyncAuxiliaryClientBase):
 
 class _BedrockCompletionsAdapter:
     """Translates ``chat.completions.create(**kwargs)`` into Bedrock Converse."""
+    AUXILIARY_BUDGET_UNSUPPORTED = True  # botocore retries/timeouts are not caller-bounded
 
     def __init__(self, region: str, model: str):
         self._region = region
@@ -7117,13 +7120,13 @@ def _create_with_progress_once(
     # total ceiling instead of idling out (#114938). Progress ticks only for
     # substantive stream payloads or a completed usable response.
     if (not _aux_progress_active() and not force_stream) or _client_streams_internally(client):
-        response = client.chat.completions.create(**kwargs)
+        response = budgeted_create(client, kwargs)
         if not _client_streams_internally(client):
             _notify_aux_provider_response()
         return response
     stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs, client)
     try:
-        chunks = client.chat.completions.create(**stream_kwargs)
+        chunks = budgeted_create(client, stream_kwargs)
     except Exception as exc:
         # Genuine provider failures aren't streaming's fault — surface unchanged so the
         # recovery chains see the same error as a plain call.
@@ -7135,7 +7138,7 @@ def _create_with_progress_once(
         logger.debug("Auxiliary %s: streamed request failed (%s); retrying non-streaming",
                      task or "call", exc)
         _notify_aux_dispatch()
-        response = client.chat.completions.create(**kwargs)
+        response = budgeted_create(client, kwargs)
         _notify_aux_provider_response()
         return response
     # Some shims (MoA quiet mode, defensive adapters) return a complete response despite
@@ -7955,11 +7958,6 @@ def _aux_recovery_ladder(
         return resp
     # Connection/timeout errors poison the cached client (closed transport, half-read
     # stream); evict so the next aux call rebuilds a fresh one.
-    # Reached only when no fallback answered, so the next auxiliary call rebuilds a fresh
-    # client instead of reusing the dead one. ``first_err`` is the narrowed error from the
-    # rungs above, not necessarily the original one. See issue #23432.
-    # Mirror the sync path: drop poisoned clients on connection/timeout so the next aux call rebuilds. See
-    # issue #23432.
     if _is_connection_error(first_err):
         try:
             _evict_cached_client_instance(client)
@@ -8026,7 +8024,7 @@ def call_llm(
     queue_started_at = time.monotonic()
     semaphore = _acquire_sync_aux_semaphore(task)
     if semaphore is not None:
-        semaphore.acquire()
+        acquire_auxiliary_slot(semaphore)
     request_started_at = time.monotonic()
     if latency_info is not None:
         latency_info["queue_wait_ms"] = _elapsed_ms(queue_started_at, request_started_at)
@@ -8113,6 +8111,7 @@ def _should_retry_same_provider(task: Optional[str], exc: Exception, tag: str) -
     """True when ``exc`` is a transient transport blip worth a same-provider retry; critical-path
     tasks skip it on a full-budget timeout (``_should_skip_same_provider_retry``) and go straight
     to fallback."""
+    check_auxiliary_budget()
     if not _is_transient_transport_error(exc):
         return False
     if _should_skip_same_provider_retry(task, exc):
@@ -8138,7 +8137,8 @@ def _start_recovery_ladder(
     first_err: Exception, req: _PreparedAuxRequest, retry_kwargs: dict[str, Any], *,
     task: Optional[str], async_mode: bool, route_info: Optional[dict[str, str]],
 ):
-    """Build the recovery-ladder generator for a failed primary request."""
+    """Build recovery only while the caller still permits another request."""
+    check_auxiliary_budget()
     return _aux_recovery_ladder(
         first_err, client=req.client, kwargs=req.kwargs, task=task, async_mode=async_mode,
         base_info=req.base_info, resolved_provider=req.resolved_provider,
@@ -8220,7 +8220,7 @@ def _call_llm_impl(
                 logger.info("Auxiliary %s: transient transport error (attempt %d/%d); "
                             "retrying same provider after %.1fs before fallback: %s",
                             task or "call", _attempt, _max_transient_retries, _backoff, _last_transient)
-                time.sleep(_backoff)
+                auxiliary_retry_wait(_backoff)
                 try:
                     return _primary()
                 except Exception as retry_transient:

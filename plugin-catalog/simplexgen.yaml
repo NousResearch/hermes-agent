@@ -1,16 +1,18 @@
 name: simplexgen
 title: SimplexGen
 repo: https://github.com/lee101/hermes-simplexgen
-sha: d7250bbb467edee37617d53291a048a4a486118f
-version: "0.2.0"
+sha: e634dbd829dc44265cee057a49da2c0a590e8eb7
+version: "0.3.0"
 maintainer: lee101
 tier: community
 category: tools
 docs_url: https://github.com/lee101/hermes-simplexgen#readme
 readme: true
 platforms: []
-description: "Generate images and 3D meshes (text/image to GLB via Pixal3D, TRELLIS.2, Hunyuan 3D, Hi3D, Rodin), then simplify, repair, voxelize, retopologize (QuadriFlow), UV-parameterize (rectangular surface parameterization), remesh and texture them through SimplexGen's hosted MCP server, with three workflow skills. Disclosure — connects Hermes to simplexgen.com/mcp with your SIMPLEXGEN_API_KEY; prompts and model/image URLs are sent to SimplexGen and may be forwarded to its model providers (fal.ai, RunPod); generation, texturing and mesh tools spend account credits (mesh ops 1-3 credits, charged on success); the server is marked untrusted so every tool without a read-only annotation needs approval; skills suggest curl to upload local files to a single-use URL and to download results."
+description: "Free local 3D mesh tools that need no account (defect inspection, repair, simplify, convert, transform, voxelize, 4-view preview, primitives, headless Blender ops) plus SimplexGen's hosted MCP server for AI image and 3D generation (Pixal3D, TRELLIS.2, Hunyuan 3D, Hi3D, Rodin), mesh texturing, retopo and UV charts, with four skills that route work local-first and recommend paid tools sparingly. Disclosure — a local stdio server (uv run --script, pinned PyPI dependencies installed on first start) reads mesh files you point it at and writes derived files beside them, makes no network calls, never receives your API key, and runs your installed Blender in background mode only when asked; the hosted server connects to simplexgen.com/mcp with your SIMPLEXGEN_API_KEY (only when set), sends prompts and image/model URLs to SimplexGen and on to its model providers (fal.ai, RunPod), spends account credits, and is marked untrusted so every tool without a read-only annotation needs approval; skills suggest curl to upload local files to a single-use URL and to download results."
 known_issues:
+  - "The local tools need uv on PATH; the first start downloads about 150 MB of pinned Python packages."
+  - "The hosted server connects only when SIMPLEXGEN_API_KEY is set; without it only the local tools are available."
   - "A SimplexGen paid plan is required to create an API key."
   - "An existing native mcp_servers.simplexgen configuration overrides the package connection and trust setting."
 # MCP tools are discovered from the remote server; the package registers no native tools or hooks.

@@ -1,0 +1,38 @@
+# Community catalog entry — openrouter-credits
+#
+# Owner-submitted: the PR author (`Leonard0429`) owns and maintains the repo below.
+# Exact-SHA pin (40-hex). No self-updating code: the plugin ships only Python
+# (`__init__.py` / `tools.py` / `dashboard/plugin_api.py`) and a static
+# `desktop/plugin.js`, and never fetches, downloads, or replaces itself.
+name: openrouter-credits
+repo: https://github.com/Leonard0429/openrouter-credit-dashboard
+sha: "938da54b3ddb37474a0a438d6c7aee98ac4b5321"
+description: "OpenRouter credit tracking, as an agent tool and a live desktop panel. The
+  openrouter_credits tool reports the current balance, spend for today / this week / this
+  month / all time, any spend cap on the API key, a burn rate measured from recorded
+  snapshots, and the estimated days of credit remaining. The desktop half adds a status-bar
+  chip with the live balance plus a full panel page (sidebar row + Cmd-K command) with the
+  spent-of-purchased meter, spend windows, burn rate, runway and a Record snapshot button,
+  refreshing every 60s. Disclosure: two read-only HTTPS GETs to the configured OpenRouter
+  base URL (/credits and /key), made in the Hermes process — the desktop renderer holds no
+  credential and only ever receives dollar amounts over the plugin's own scoped route
+  /api/plugins/openrouter-credits/ (GET /credits is read-only; only the tool and the panel's
+  explicit button record). The user's own OpenRouter key is read via Hermes'
+  agent.secret_scope, sent only to that base URL, and never logged or written to disk. The
+  only local write is a timestamped snapshot history (dollar amounts, no credentials) under
+  $HERMES_HOME/cache/openrouter-credits/. No telemetry, no subprocesses, no background work,
+  no prompt or OAuth flow, and nothing on the account is ever modified."
+maintainer: Leonard0429
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/Leonard0429/openrouter-credit-dashboard#readme
+version: "1.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - openrouter_credits
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - OPENROUTER_API_KEY

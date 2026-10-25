@@ -1,10 +1,15 @@
-import { act, cleanup, fireEvent, render } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { AppearanceSettings } from '@/app/settings/appearance-settings'
+import { SETTING_IDS, settingElementId } from '@/app/settings/settings-manifest'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { registry } from '@/contrib/registry'
+import { en } from '@/i18n/en'
 import { $paneStates, setPaneWidthOverride } from '@/store/panes'
 import { $connection } from '@/store/session'
+import { $sidebarHoverReveal, setSidebarHoverReveal } from '@/store/sidebar-hover-reveal'
 import { stubResizeObserver } from '@/test/jsdom'
 
 import { group, split } from '../model'
@@ -38,6 +43,7 @@ const registerPane = (id: string, title: string, data: Record<string, unknown>, 
 
 beforeEach(() => {
   window.localStorage.clear()
+  setSidebarHoverReveal(true)
   $hiddenTreePanes.set(new Set())
 
   registerPane('sessions', 'sessions', { collapsible: true, placement: 'left', width: '237px' }, 'session rows')
@@ -50,6 +56,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  setSidebarHoverReveal(true)
   $narrowViewport.set(false)
   $layoutTree.set(null)
   $connection.set(null)
@@ -67,6 +74,88 @@ const revealPane = (id: string) => {
 const overlayTab = (paneId: string) => document.querySelector<HTMLElement>(`[data-narrow-overlay-tab="${paneId}"]`)
 
 describe('narrow overlay of a stacked zone', () => {
+  it('lets the settings preference disable both hover edges without disabling explicit reveals', () => {
+    registerPane(
+      'files',
+      'Files',
+      { collapsible: true, placement: 'right', revealAliases: ['files-alias'] },
+      'file tree'
+    )
+    $layoutTree.set(split('row', [group(['sessions', 'bots']), group(['workspace']), group(['files'])]))
+
+    const { container } = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <AppearanceSettings subpage="window-layout" />
+        <NarrowOverlays />
+      </QueryClientProvider>
+    )
+
+    const toggle = screen.getByRole('switch', { name: en.settings.appearance.sidebarHoverRevealTitle })
+    const row = container.querySelector(`[id="${settingElementId(SETTING_IDS.appearance.sidebarHoverReveal)}"]`)
+
+    expect(row?.contains(toggle)).toBe(true)
+    expect(toggle.getAttribute('aria-checked')).toBe('true')
+
+    const edge = (side: string) => container.querySelector<HTMLElement>(`[data-sidebar-hover-edge="${side}"]`)
+    const overlay = () => container.querySelector<HTMLElement>('[data-narrow-overlay]')
+
+    const explicit = (id: string, mode?: 'open' | 'close') => {
+      act(() => window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id, mode } })))
+    }
+
+    // Default-on preserves hover on both edges; unpinned overlays follow the mouse.
+    fireEvent.mouseEnter(edge('left')!)
+    expect(overlay()?.dataset.narrowOverlay).toBe('sessions')
+    fireEvent.mouseLeave(overlay()!)
+    expect(overlay()).toBeNull()
+    fireEvent.mouseEnter(edge('right')!)
+    expect(overlay()?.dataset.narrowOverlay).toBe('files')
+
+    // Disabling live dismisses a hover reveal and removes the hover hit targets.
+    fireEvent.click(toggle)
+    expect($sidebarHoverReveal.get()).toBe(false)
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+    expect(overlay()).toBeNull()
+    expect(edge('left')).toBeNull()
+    expect(edge('right')).toBeNull()
+
+    // Explicit toggle/open/close intents (keyboard and titlebar) still work,
+    // including pane aliases and pinning across mouse leave.
+    explicit('sessions')
+    expect(overlay()?.dataset.narrowOverlay).toBe('sessions')
+    fireEvent.mouseLeave(overlay()!)
+    expect(overlay()).not.toBeNull()
+    explicit('sessions')
+    expect(overlay()).toBeNull()
+    explicit('files-alias', 'open')
+    expect(overlay()?.dataset.narrowOverlay).toBe('files')
+    explicit('files-alias', 'close')
+    expect(overlay()).toBeNull()
+
+    // Resizing cannot bypass the opt-out.
+    act(() => $narrowViewport.set(false))
+    expect(overlay()).toBeNull()
+    act(() => $narrowViewport.set(true))
+    expect(edge('left')).toBeNull()
+    expect(edge('right')).toBeNull()
+
+    // A settings flip never dismisses an explicitly pinned sidebar.
+    explicit('sessions', 'open')
+    fireEvent.click(toggle)
+    expect(edge('left')).not.toBeNull()
+    expect(edge('right')).not.toBeNull()
+    fireEvent.click(toggle)
+    expect(overlay()?.dataset.narrowOverlay).toBe('sessions')
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(overlay()).toBeNull()
+
+    // Re-enabling restores hover, not a stale unpinned reveal.
+    fireEvent.click(toggle)
+    expect(overlay()).toBeNull()
+    fireEvent.mouseEnter(edge('left')!)
+    expect(overlay()?.dataset.narrowOverlay).toBe('sessions')
+  })
+
   it('mirrors the zone tab strip so every stacked collapsible stays reachable', () => {
     const { getByTestId, queryByTestId } = render(<NarrowOverlays />)
 

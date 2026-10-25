@@ -785,6 +785,8 @@ catalog: CatalogTranslations
       sessionDensityCompact: string
       sessionDensityComfortable: string
       sessionDensityDetailed: string
+      sidebarHoverRevealTitle: string
+      sidebarHoverRevealDesc: string
       tabStripTitle: string
       tabStripDesc: string
       tabStripAuto: string

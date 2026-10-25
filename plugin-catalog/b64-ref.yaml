@@ -1,0 +1,17 @@
+name: b64-ref
+repo: https://github.com/olric3015/hermes-plugins
+sha: fed0ec9c449a815a81a4adf6fdc9d4c328207d32
+subdir: b64-ref
+description: "@b64: context references that decode encoded text for the model: @b64:<value> takes base64 (standard or URL-safe, padded or not), hex (0x48656c6c6f, 48:65:6c, \\x48\\x65), percent-encoding or a data: URI, told apart by the value's shape or picked with base64:, base64url:, hex: or url:, and attaches what it holds: text as text with control and invisible characters escaped, JSON pretty-printed, gzip and zlib inflated in memory (at most 1 MiB, one layer), and binary named by its format (PNG and GIF with their size, JPEG, PDF, ZIP, ELF, SQLite and more) with a hex dump of its first 128 bytes; notes point out a value that was cut short, padding that is off, a second layer of encoding and a JWT inside; the TUI and Desktop composer preview a value as you type it. Disclosure — reads only the text of the reference itself, using Python's base64, json, urllib.parse and zlib; nothing decoded is run, opened or saved; no network, no files read or written, no subprocess, no credentials read; the plugin keeps no copy of what it decodes, but the @b64: reference and the decoded contents become part of the message sent to your model provider and saved in the session history, so decode only values you are willing to share with it; register() only adds the @b64: reference provider."
+maintainer: olric3015
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/olric3015/hermes-plugins/tree/main/b64-ref
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

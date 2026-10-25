@@ -1,0 +1,35 @@
+name: youtube-dock
+repo: https://github.com/metamindedu/hermes-youtube-dock
+sha: 31d2635ed1ef49250dc89a5707281a5fa66dd76e
+title: YouTube Dock
+description: >-
+  Open your signed-in YouTube Home recommendations and Shorts in the existing
+  Hermes Desktop Browser beside your conversation, without pasting video URLs
+  or launching an external browser. Desktop-only SDK launcher; no agent tools,
+  hooks, middleware or API keys. Disclosure — explicit user clicks load YouTube
+  and its normal service/CDN requests in the native Browser; this plugin does
+  not read credentials, cookies, recommendations or watch history. No telemetry,
+  shell commands, backend service or self-updater. Uses the native preview
+  toggle (Hide for an already-open destination), not a dedicated PIP player.
+maintainer: metamindedu
+tier: community
+category: desktop
+requires_hermes: ">=0.22.2"
+version: "1.1.0"
+docs_url: https://github.com/metamindedu/hermes-youtube-dock
+screenshots:
+  - https://raw.githubusercontent.com/metamindedu/hermes-youtube-dock/31d2635ed1ef49250dc89a5707281a5fa66dd76e/docs/menu.png
+readme: true
+platforms: []
+known_issues:
+  - "v1.1.0 removes the rejected manual-setup beta completely. One-click Open preview/Hide is the only workflow; workspace pinning remains manual."
+  - "Activation attempts to remove only the obsolete manualPinGuide preference through plugin-scoped SDK storage. No old-value reads, replacement settings or clipboard access remain."
+  - "The host may reuse an existing Browser; pinning is visibility, not exclusive reservation. Native Windows Home/Shorts opening was checked; no fresh cross-platform, restart or long-running player certification is claimed."
+  - "Dedicated picture-in-picture is not included; uses the existing docked Browser."
+  - "Google sign-in and playback restrictions still apply; no browser-cookie import."
+  - "Original 1.0.0 launcher: Windows 11/Desktop 0.22.2 manually verified; macOS/Linux playback not manually tested."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

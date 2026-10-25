@@ -1,13 +1,13 @@
-"""Hosted Group Chat rooms (``groups.*``), cross-connection bot relay (``bot_relay.*``) and the
-dashboard browser controller (``browser.controller.*``).
+"""Hosted Group Chat rooms (``groups.*``) and cross-connection bot relay (``bot_relay.*``).
 
-Handlers: ``tui_gateway/methods_groups.py``, ``tui_gateway/methods_bot_relay.py``,
-``tui_gateway/methods_browser_control.py``. Room / event / page shapes are produced by
+Handlers: ``tui_gateway/methods_groups.py``, ``tui_gateway/methods_bot_relay.py``. Room / event / page shapes are produced by
 ``gateway/hosted_rooms.py`` (``_room_from_row`` / ``_event_from_row`` / ``read_events``) and
 ``gateway/hosted_room_replicas.py``; the RoomLink catalog by ``gateway/hosted_room_peer.py``.
 """
 
 from __future__ import annotations
+
+from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OkResult, OpenModel, ProfileParams
@@ -208,15 +208,24 @@ class PeerRouteStatus(Result):
     status: str
 
 
+class RoomMemberActivity(Result):
+    """One live room task: ``status`` is ``queued``, ``running`` or ``stopping``."""
+
+    member_id: str
+    status: str
+
+
 class RoomDriverStatus(Result):
     """``HostedRoomService.status(room_id)``; ``pending_actions`` rows are ``{kind: retry, task_id}``
-    or the driver's approval action (``kind: approval`` + run/session/approval context)."""
+    or the driver's approval action (``kind: approval`` + run/session/approval context).
+    ``member_activity`` lists live tasks in admission order (absent from older gateways)."""
 
     running: bool
     working: bool
     blocked: bool
     counts: dict[str, int]
     pending_actions: list[dict[str, JsonValue]]
+    member_activity: list[RoomMemberActivity] = Field(default_factory=list)
     peer_routes: list[PeerRouteStatus]
 
 
@@ -573,71 +582,6 @@ class BotRelayReplyParams(ProfileParams):
 
 method("bot_relay.reply", params=BotRelayReplyParams, result=OkResult,
        doc="Write a relayed reply and/or typed error for an envelope so the sender-side waiter resolves.")
-
-
-# ── browser controller ────────────────────────────────────────────────────────────────────────
-
-
-class BrowserControllerParams(Params):
-    """Every controller call names the session the controller is attached to."""
-
-    session_id: str
-
-
-class BrowserControllerRegisterParams(BrowserControllerParams):
-    controller_id: str
-    browser_profile_id: str
-    capabilities: list[str] | None = None
-    protocol_version: JsonValue | None = None  # checked exactly by the handler (an int today)
-    # Ignored: the principal is derived from the server-minted identity, never client-supplied.
-    principal_id: str | None = None
-
-
-class ControllerScope(Result):
-    principal_id: str
-    profile_id: str
-    session_id: str
-    controller_id: str
-    browser_profile_id: str
-    transport_family: str
-    capabilities: list[str]
-
-
-class BrowserControllerRegisterResult(Result):
-    scope: ControllerScope
-
-
-method("browser.controller.register", params=BrowserControllerRegisterParams,
-       result=BrowserControllerRegisterResult,
-       doc="Attach this connection as the browser controller for one session; fails closed (4403).")
-
-
-class BrowserControllerResultParams(BrowserControllerParams):
-    command_id: str
-    ok: JsonValue | None = None  # only the exact ``true`` counts as success
-    result: JsonValue | None = None
-    error: JsonValue | None = None
-
-
-class BrowserControllerResultResult(Result):
-    accepted: bool
-
-
-method("browser.controller.result", params=BrowserControllerResultParams,
-       result=BrowserControllerResultResult,
-       doc="Deliver one command result to the broker; accepted is false for unknown or settled command ids.")
-
-
-method("browser.controller.heartbeat", params=BrowserControllerParams, result=OkResult,
-       doc="Acknowledge a heartbeat only for this transport's own attached controller.")
-
-
-class BrowserControllerDetachResult(Result):
-    detached: bool = True
-
-
-method("browser.controller.detach", params=BrowserControllerParams, result=BrowserControllerDetachResult,
-       doc="Hard-detach only the controller owned by this authenticated transport.")
 
 
 __all__ = [

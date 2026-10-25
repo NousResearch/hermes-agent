@@ -452,6 +452,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 getattr(agent, "enabled_toolsets", None),
                 mcp_server_names=[s.name for s in mcp_servers],
             )
+            from agent.delegation_backends import saved_backend
+            agent._delegation_backend = saved_backend()  # the session routes on what its delegate_task is built from
             agent.tools = get_tool_definitions(
                 enabled_toolsets=agent.enabled_toolsets,
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None), quiet_mode=True,

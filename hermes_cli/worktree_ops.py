@@ -1223,10 +1223,10 @@ def _warn_worktree_footprint(repo_root: str) -> None:
     try:
         from hermes_cli.worktree_gc import worktrees_summary
 
-        count, size_mb = worktrees_summary(repo_root)
+        count, size_mb = worktrees_summary(repo_root, size_below_count=10)
         if count >= 10 or (size_mb or 0) >= 5120:
-            size_txt = f"{size_mb / 1024:.1f}GB" if size_mb else "unknown size"
-            logger.warning(".worktrees/ holds %d tree(s) (%s) — run `hermes worktree list` "
+            size_txt = f" ({size_mb / 1024:.1f}GB)" if size_mb else ""
+            logger.warning(".worktrees/ holds %d tree(s)%s — run `hermes worktree list` "
                            "to audit and `hermes worktree prune` to reclaim safely.", count, size_txt)
     except Exception:
         logger.debug("worktree summary failed", exc_info=True)

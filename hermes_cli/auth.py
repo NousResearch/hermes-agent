@@ -84,7 +84,7 @@ from hermes_cli.auth_codex import (
 from hermes_cli.auth_openrouter import _openrouter_pkce_login
 from hermes_cli.guest_handoff import note_store_write
 from hermes_cli.auth_qwen import (
-    _qwen_access_token_is_expiring, _qwen_cli_auth_path, _read_qwen_cli_tokens,
+    _qwen_access_token_is_expiring, _qwen_base_url, _qwen_cli_auth_path, _read_qwen_cli_tokens,
     _refresh_qwen_cli_tokens, _save_qwen_cli_tokens, get_qwen_auth_status,
     resolve_qwen_runtime_credentials)
 from hermes_cli.auth_constants import (

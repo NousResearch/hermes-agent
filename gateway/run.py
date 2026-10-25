@@ -1559,11 +1559,11 @@ def _restart_notification_pending() -> bool:
 
 
 def _planned_restart_notification_path() -> Path:
-    return _hermes_home / ".restart_pending.json"
+    from gateway.restart_notice import planned_restart_marker_path
+    return planned_restart_marker_path(_hermes_home)
 
 
 def _planned_restart_notification_pending() -> bool:
-    """Return True when a non-chat planned restart should notify home channels."""
     return _planned_restart_notification_path().exists()
 
 
@@ -2779,13 +2779,11 @@ def _is_control_interrupt_message(message: Optional[str]) -> bool:
 
 def _strip_response_attachments_for_direct_send(response: str, adapter) -> str:
     """Return the visible text portion of a response before direct send().
-    Only explicit ``MEDIA:`` attachments are stripped; bare paths/URLs stay visible. No broad regex after
-    ``extract_media()``: it deliberately preserves protected code spans and unvalidated tags.
-
-    Queued follow-up resends only replay explicit ``MEDIA:`` attachments in this path. Keep bare local paths
-    and ordinary image URLs visible because the post-stream uploader intentionally ignores them (#20834).
+    Explicit ``MEDIA:`` attachments and the image tags ``extract_images`` attaches are stripped, because
+    the post-stream uploader delivers both; bare local paths stay visible (it ignores them, #20834). No
+    broad regex after ``extract_media()``: it deliberately preserves protected code spans and unvalidated tags.
     """
-    _, cleaned = adapter.extract_media(response)
+    _, cleaned = BasePlatformAdapter.extract_images(adapter.extract_media(response)[1])
     return cleaned.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "").strip()
 
 
@@ -4471,7 +4469,7 @@ def _housekeeping_checkpoint_prune() -> None:
 
 def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
     """Drain each profile's worker queue through its matching live adapters. A credential-less satellite
-    profile (empty adapter map) drains through the primary's adapters routed by its own profile routes."""
+    profile (no bot of its own) drains through the primary's adapters routed by its own profile routes."""
     from cron import scheduler as cron_scheduler
     from cron import scheduler_preflight as sched_preflight
 
@@ -4480,14 +4478,14 @@ def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
             cron_scheduler.drain_delivery_queue(adapters, loop)
         return
     for profile_name, profile_home in _handoff_watch_scopes(runner):
-        if profile_name is None:
-            profile_adapters = adapters
-        else:
-            profile_adapters = getattr(runner, "_profile_adapters", {}).get(profile_name)
+        profile_adapters = (adapters if profile_name is None
+                            else getattr(runner, "_profile_adapters", {}).get(profile_name))
         if profile_adapters is None:
             continue
         with _profile_runtime_scope(profile_home or get_hermes_home()):
-            if profile_name is not None and not profile_adapters and adapters:
+            owned = (getattr(runner, "_profile_bot_platforms", None) or {}).get(profile_name)
+            if (profile_name is not None and adapters
+                    and not sched_preflight.has_credential_platform(profile_adapters, owned)):
                 routes = sched_preflight._primary_profile_routes_for_current_home()
                 if routes:
                     profile_adapters = sched_preflight.SharedRouteAdapters(adapters, routes)

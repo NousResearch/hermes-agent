@@ -10,6 +10,7 @@ from dataclasses import replace
 from datetime import datetime
 import json
 import logging
+import os
 
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
@@ -65,7 +66,24 @@ def _adapter_event(event, **changes):
     """An adapter's event at the envelope boundary: an absent media list (``None``) is no media.
     Any other non-list still reaches ``_validate_native`` and refuses."""
     changes.update({name: [] for name in _MEDIA_FIELDS if getattr(event, name) is None})
-    return replace(event, **changes) if changes else event
+    return _drop_remote_media(replace(event, **changes) if changes else event)
+
+
+def _drop_remote_media(event):
+    """An adapter that could not cache a download leaves its remote URL in ``media_urls`` (DingTalk
+    always does). Capture takes only local files, so that one entry refused the whole message, text
+    included: drop it and tell the agent instead. Malformed media lists still reach validation."""
+    urls, types = event.media_urls, event.media_types
+    if not isinstance(event.text, str) or _media_clause(event) is not None or all(map(os.path.isabs, urls)):
+        return event
+    kept = [index for index, url in enumerate(urls) if os.path.isabs(url)]
+    notes = [f"[The user sent an attachment ({types[index] if types else 'file'}) that could not be retrieved.]"
+             for index in range(len(urls)) if index not in kept]
+
+    def keep(values):
+        return [values[index] for index in kept] if values else values
+    return replace(event, text='\n'.join(filter(None, [event.text, *notes])), media_urls=keep(urls),
+                   media_types=keep(types), media_text_inlined=keep(event.media_text_inlined))
 
 
 def _refuse(event, reason, clause):

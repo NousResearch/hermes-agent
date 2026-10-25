@@ -657,13 +657,17 @@ class GatewayTurnPersistenceMixin:
                 status_hint = t("gateway.errors.hint_usage_limit")
         elif status_code == 400:
             status_hint = t("gateway.errors.hint_rejected")
-        elif getattr(e, "reason", None) == "launch_credentials_unavailable" and getattr(e, "field", None):
-            # The session's own frozen route credential is gone or changed: name it, not the model.
-            status_hint = f" {e.reason} ({e.field}: {e.detail or 'unavailable'})."
         from gateway.session_results import record_unexecuted_failure
+        if getattr(e, "reason", None) == "launch_credentials_unavailable":
+            # The session's own route key is gone or changed: /retry repeats it, /new is the way out.
+            from agent.turn_failure_copy import launch_credentials_copy
+            return record_unexecuted_failure(launch_credentials_copy(e), 'launch_credentials_unavailable')
+        # A local client (CLI, TUI, Desktop) is the operator at this host: its result carries the
+        # real cause, so its details line is not the chat apology with the log pointer cut off.
+        local_error = f"{type(e).__name__}: {e}"[:500] if source.platform == Platform.LOCAL else None
         return record_unexecuted_failure(self._hmwa_add_failed_turn_notice(
             t("gateway.errors.generic_failed_with_hint", hint=status_hint), PARTIAL_FAILED_TURN_NOTICE,
-        ))
+        ), error=local_error)
 
     def _hmwa_discard_stale_result(self, source, _quick_key, run_generation):
         """A newer run generation superseded this turn: drop its deferred post-delivery callback."""

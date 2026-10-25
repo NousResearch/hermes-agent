@@ -21,7 +21,7 @@
     "vitest": "4.1.12"
   },
   "dependencies": {
-    "@playwright/test": "1.62.1",
-    "zod": "4.4.3"
+    "@playwright/test": "1.64.0",
+    "zod": "4.6.5"
   }
 }

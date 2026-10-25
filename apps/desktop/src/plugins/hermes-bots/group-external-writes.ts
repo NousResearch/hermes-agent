@@ -71,7 +71,18 @@ export const SYNTHETIC_USER_ROW_PREFIXES = [
   '[Planning state preserved',
   '[ASYNC DELEGATION',
   '[OUT-OF-BAND',
-  'Cronjob Response:'
+  'Cronjob Response:',
+  "You've reached the maximum number of tool-calling iterations allowed"
+]
+
+/** The batched plumbing rows a count opens — `[IMPORTANT: 3 background
+ *  processes completed …` (tools/process_registry_notifications.py,
+ *  gateway/run_notifications.py) and `[IMPORTANT: 2 background subagent
+ *  delegations …` — so no fixed prefix can match them (#126286). Mirrors
+ *  `agent/context_compressor.py::_SYNTHETIC_USER_ROW_PATTERNS`; keep in step. */
+export const SYNTHETIC_USER_ROW_PATTERNS = [
+  /^\[IMPORTANT: \d+ background process/,
+  /^\[IMPORTANT: \d+ background subagent delegation/
 ]
 
 /** The Hermes-authored assistant row that closes a turn which failed before
@@ -86,13 +97,14 @@ export function failedTurnBoundaryRow(row: GroupTranscriptRow): boolean {
 /** A user row that carries no user words: typed scaffolding (auto-continue
  *  notes, steer markers, model-switch notices — anything but a skill
  *  invocation, which is the user's own `/command`) or an untyped row opening
- *  with one of the canonical prefixes. */
+ *  with one of the canonical prefixes or patterns. */
 export function syntheticGroupUserRow(row: GroupTranscriptRow, text = groupTranscriptRowText(row)): boolean {
   if (row.display_kind && row.display_kind !== 'skill_invocation') {
     return true
   }
 
   return SYNTHETIC_USER_ROW_PREFIXES.some(prefix => text.startsWith(prefix))
+      || SYNTHETIC_USER_ROW_PATTERNS.some(pattern => pattern.test(text))
 }
 
 /** The rows in `rows` the room engine did not write itself. A user row that

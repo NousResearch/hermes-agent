@@ -4,10 +4,15 @@
 // truncation. A capped per-proc backlog lets a tab opened mid-stream replay what
 // it missed, and lets a closed-then-reopened tab restore its history.
 
-type Writer = (chunk: string) => void
+/** `pty`: the process runs under a pseudo-terminal, so the viewer must honour a
+ *  bare LF (see pty-output.ts). Known only once the backend reported it. */
+type Writer = (chunk: string, pty: boolean) => void
 
 const writers = new Map<string, Writer>()
 const backlog = new Map<string, string>()
+// Sticky per process: a process never leaves its PTY, so once any source (live
+// chunk or process.list row) says PTY, the tab keeps that discipline.
+const ptyProcs = new Set<string>()
 const commandHeaders = new Map<string, string>()
 const lastSnapshots = new Map<string, string>()
 const seededCommands = new Set<string>()
@@ -29,7 +34,7 @@ const MAX_BACKLOG = 256_000
 const MAX_TRACKED_PROCS = 24
 const MAX_TOTAL_CHARS = 2_000_000
 
-/** Forget one process entirely. The four maps are evicted TOGETHER: `lastSnapshots`
+/** Forget one process entirely. The per-process maps are evicted TOGETHER: `lastSnapshots`
  *  is the delta fence for `backlog`, so dropping one without the other would make the
  *  next snapshot diff against a tail that is no longer there. */
 function forgetProc(procId: string): void {
@@ -37,6 +42,7 @@ function forgetProc(procId: string): void {
   commandHeaders.delete(procId)
   lastSnapshots.delete(procId)
   seededCommands.delete(procId)
+  ptyProcs.delete(procId)
 }
 
 /** Drop the least-recently-written unmounted processes until both ceilings hold.
@@ -75,7 +81,7 @@ export function registerAgentTerminalWriter(procId: string, write: Writer): () =
   const history = backlog.get(procId)
 
   if (history) {
-    write(history)
+    write(history, ptyProcs.has(procId))
   }
 
   return () => {
@@ -87,18 +93,27 @@ export function registerAgentTerminalWriter(procId: string, write: Writer): () =
 
 /** Append a streamed chunk: buffer it (capped) for future opens and write it to
  *  the live terminal, if one is mounted. */
-export function writeAgentTerminalChunk(procId: string, chunk: string): void {
+export function writeAgentTerminalChunk(procId: string, chunk: string, pty = false): void {
   if (!procId || !chunk) {
     return
   }
+
+  markAgentTerminalPty(procId, pty)
 
   const next = (backlog.get(procId) ?? '') + chunk
   // delete-then-set moves this process to the tail: a plain re-set would keep its
   // original slot and make the oldest-first eviction below pick a live process.
   backlog.delete(procId)
   backlog.set(procId, next.length > MAX_BACKLOG ? next.slice(-MAX_BACKLOG) : next)
-  writers.get(procId)?.(chunk)
+  writers.get(procId)?.(chunk, ptyProcs.has(procId))
   evictColdProcs()
+}
+
+/** Record that a process runs under a PTY (a no-op for pipe processes). */
+export function markAgentTerminalPty(procId: string, pty: boolean | undefined): void {
+  if (procId && pty) {
+    ptyProcs.add(procId)
+  }
 }
 
 /** Seed the tab with the command immediately, so an agent terminal never opens
@@ -120,7 +135,9 @@ export function seedAgentTerminalCommand(procId: string, command: string): void 
  *  fallback for older/not-yet-restarted gateways and a seed for tabs opened
  *  after output already exists. If it extends our current backlog, append only
  *  the delta; if the registry's rolling tail slid, reset to that tail. */
-export function syncAgentTerminalSnapshot(procId: string, output: string): void {
+export function syncAgentTerminalSnapshot(procId: string, output: string, pty = false): void {
+  markAgentTerminalPty(procId, pty)
+
   if (!procId || !output) {
     return
   }
@@ -162,6 +179,6 @@ export function syncAgentTerminalSnapshot(procId: string, output: string): void 
   lastSnapshots.set(procId, output)
   backlog.delete(procId)
   backlog.set(procId, next)
-  writers.get(procId)?.(`\x1bc${next}`)
+  writers.get(procId)?.(`\x1bc${next}`, ptyProcs.has(procId))
   evictColdProcs()
 }

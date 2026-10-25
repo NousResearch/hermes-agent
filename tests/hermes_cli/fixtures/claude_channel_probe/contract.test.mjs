@@ -13,6 +13,7 @@ import {
   assertNewPrivateOutputPath,
   claimNewPrivateOutputPath,
   assertSubscriptionAuth,
+  buildChannelNotification,
   closeChannelResources,
   readExpectedRoute,
   validateQuestion,
@@ -66,6 +67,14 @@ test("route, question and reply bounds are enforced at runtime", () => {
     () => validateReply({ correlation_id: route.correlation_id, answer: "x".repeat(2049) }, route),
     /answer too large/,
   );
+});
+
+test("Claude Channel metadata serializes the numeric ticket revision as a string", () => {
+  const route = readExpectedRoute(environment());
+  const notification = buildChannelNotification(question(route));
+  assert.equal(notification.params.meta.ticket_revision, "4");
+  assert.equal(typeof notification.params.meta.ticket_revision, "string");
+  assert.equal(notification.params.content, "Return the fixed marker only.");
 });
 
 test("preflight refuses provider credentials and non-subscription auth", () => {

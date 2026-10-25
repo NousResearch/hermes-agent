@@ -121,6 +121,25 @@ export function validateReply(argumentsValue, expectedRoute) {
   return { correlationId, answer };
 }
 
+export function buildChannelNotification(envelope) {
+  return {
+    method: "notifications/claude/channel",
+    params: {
+      content: envelope.question,
+      meta: {
+        correlation_id: envelope.correlation_id,
+        ticket_ref: envelope.ticket_ref,
+        assignment_id: envelope.assignment_id,
+        attempt_id: envelope.attempt_id,
+        owner_identity: envelope.owner_identity,
+        ticket_revision: String(envelope.ticket_revision),
+        authority_event_sha256: envelope.authority_event_sha256,
+        authority_scope: envelope.authority_scope,
+      },
+    },
+  };
+}
+
 export function assertSubscriptionAuth(status, env) {
   const present = FORBIDDEN_PROVIDER_ENV.filter((name) => Boolean(env[name]));
   if (present.length) throw new Error(`provider credential environment is not scrubbed: ${present.join(",")}`);

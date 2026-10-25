@@ -12,6 +12,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import {
   closeChannelResources,
+  buildChannelNotification,
   MAX_ANSWER_CHARS,
   MAX_CORRELATION_CHARS,
   MAX_ENVELOPE_BYTES,
@@ -134,22 +135,7 @@ const localServer = net.createServer((socket) => {
         socket.end(JSON.stringify({ type: "expired", correlation_id: envelope.correlation_id }) + "\n");
       }, ttlMs);
       pending.set(envelope.correlation_id, { socket, timer });
-      await mcp.notification({
-        method: "notifications/claude/channel",
-        params: {
-          content: envelope.question,
-          meta: {
-            correlation_id: envelope.correlation_id,
-            ticket_ref: envelope.ticket_ref,
-            assignment_id: envelope.assignment_id,
-            attempt_id: envelope.attempt_id,
-            owner_identity: envelope.owner_identity,
-            ticket_revision: envelope.ticket_revision,
-            authority_event_sha256: envelope.authority_event_sha256,
-            authority_scope: envelope.authority_scope,
-          },
-        },
-      });
+      await mcp.notification(buildChannelNotification(envelope));
     } catch (error) {
       socket.end(JSON.stringify({
         type: "error",

@@ -36,7 +36,7 @@ from hermes_cli.web_upload_limit import CHAT_IMAGE_MAX_BYTES
 from hermes_cli.web_server_surface import route_on
 from hermes_cli.web_server_files import (
     SANDBOX_NOT_FOUND, _agent_fs_path, _fs_path, _hosted_fs_read_guard, _is_unmapped_container_path,
-    _managed_file_entry, _managed_response_meta, _resolve_managed_path,
+    _managed_file_entry, _managed_response_meta, _resolve_managed_path, _session_workspace_key,
 )
 from hermes_cli.web_models import (
     ChatImageUpload, FileTicketRequest, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete,
@@ -1088,7 +1088,11 @@ async def _fs_download_path(path: str, profile: Optional[str], session_id: Optio
             raise HTTPException(status_code=404, detail="Session not found")
         session = await get_session_detail(session_id, profile)
         # Validate ownership even for absolute paths; never trust a client cwd.
-        return _agent_fs_path(path, cwd=session.get("cwd") or "", profile_home=profile_home)
+        cwd = session.get("cwd") or ""
+        return _agent_fs_path(
+            path, cwd=cwd, profile_home=profile_home,
+            workspace_key=_session_workspace_key(session_id, cwd),
+        )
     return _agent_fs_path(path, profile_home=profile_home)
 
 

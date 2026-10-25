@@ -7,6 +7,7 @@ import {
   type SyntaxHighlighterProps,
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
+import { useStore } from '@nanostores/react'
 import type { code as streamdownCode } from '@streamdown/code'
 import {
   Children,
@@ -20,6 +21,7 @@ import {
 } from 'react'
 import { defaultRemarkPlugins } from 'streamdown'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
@@ -124,12 +126,18 @@ function preprocessWithTailRepair(text: string): string {
 }
 
 function useOpenMediaFile(path: string) {
+  const view = useSessionView()
+  const storedId = useStore(view.$storedId)
+  const runtimeId = useStore(view.$runtimeId)
+  const sessionId = storedId || runtimeId || ''
   const [openFailed, setOpenFailed] = useState(false)
 
   const open = () => {
     if (window.hermesDesktop && isRemoteGateway()) {
       setOpenFailed(false)
-      void downloadGatewayMediaFile(path).catch(() => setOpenFailed(true))
+      void downloadGatewayMediaFile(path, sessionId ? { sessionId } : undefined).catch(() =>
+        setOpenFailed(true)
+      )
     } else {
       openExternalLink(mediaExternalUrl(path))
     }

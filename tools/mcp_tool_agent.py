@@ -251,6 +251,9 @@ def _pinned_tool_defs(saved, fresh, keep_bytes=False) -> tuple:
 def pinned_tool_defs(saved) -> list:
     """``saved``'s tool definitions as a fresh agent restores them, for an estimate with no agent built:
     pinned definitions keep their bytes, a legacy name list takes each tool's current registry schema."""
+    # With no agent built yet (gateway warm-up off, failed or still running), nothing has run tool
+    # discovery, so the registry would resolve no legacy name.
+    import model_tools
     return _pinned_tool_defs(saved, {}, keep_bytes=True)[2]
 
 

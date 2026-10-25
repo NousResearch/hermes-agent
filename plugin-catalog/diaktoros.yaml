@@ -1,0 +1,18 @@
+name: diaktoros
+repo: https://github.com/coe0718/diaktoros
+sha: baf20324f54360b2dfd44f855ab6292df8f742cc
+description: "Unattended GitHub pull-request review between two Hermes agents: one pushes fixes, a different one reviews, rounds are capped in verdicts, a watchdog reports silent stalls, and the loop never merges. Disclosure — runs unattended Hermes agent turns inside bubblewrap (terminal and file tools, no network, no credentials); a host-side broker and the CLI write to GitHub (reviews, comments, labels, issues, repo webhooks, and opt-in fixer pushes, which may push CI fixes, merge commits of the base into a PR's own branch to resolve conflicts, and issue-fix branches and PRs, including an opt-in auto-fix that hands issues its triage seat labels (never P0-P2, capped per day) to the fixer without a maintainer, plus an opt-in clean merge of the base into a review-only author's same-repository PR branch when it conflicts or falls behind, a branch the loop does not own; it never merges a PR) with repo-scope PAT files you provide; edits Hermes's webhook_subscriptions.json directly and its watchdog re-adds this loop's routes while armed; writes gate scripts into the seat profiles' scripts/ folders and creates one hermes cron job (its migrate command replaces the old hermes-review-loop job and copies that plugin's settings); its backup command writes a 0600 archive of the plugin's state, including webhook route secrets, to a path you choose, and restore writes one back into the Hermes home and recreates the cron job (restore only archives you made: a crafted one can place files anywhere under the Hermes home); downloads PR archives from codeload.github.com, failed CI job logs from GitHub's log storage (redirected, without the token) and Rust crates from crates.io on the host; an opt-in observer feed posts loop notices and an optional weekly report to the chat you name; opt-in shadow reviews spend a second profile's model tokens on reviews that are recorded but never posted; its optional Desktop page and local dashboard API read loop state and can re-arm a failed run as `hermes dk retry` would, and doctor compares the installed commit with the plugin's latest GitHub release (read-only); deletes its own state and closed-PR review dirs in roots you configure; on OAuth seats its host proxy may force Hermes token refreshes that rewrite ~/.claude, ~/.codex, ~/.qwen and profile auth.json credentials, and on Claude subscription logins it identifies as Claude Code (Claude Code user-agent, x-app and OAuth beta headers). Nothing runs until you arm a loop. Linux only."
+maintainer: coe0718
+tier: community
+category: automation
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/coe0718/diaktoros#readme
+version: "0.4.0"
+image: "https://raw.githubusercontent.com/coe0718/diaktoros/baf20324f54360b2dfd44f855ab6292df8f742cc/docs/banner.jpg"
+platforms:
+  - linux
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

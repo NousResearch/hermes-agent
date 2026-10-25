@@ -1,0 +1,14 @@
+name: cashew
+repo: https://github.com/magnus919/hermes-cashew
+sha: d89e59e63315f7c356c868a4ce7db64cb3c1aa1b
+description: Cashew — persistent thought-graph memory with local embeddings, organic decay, and autonomous
+  think cycles.
+maintainer: magnus919
+tier: community
+category: memory
+docs_url: https://github.com/magnus919/hermes-cashew#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

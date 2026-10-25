@@ -284,6 +284,26 @@ describe('session.info settles an incomplete live turn', () => {
 })
 
 describe('empty message.complete after streamed text (#95514)', () => {
+  it('keeps a reasoning-only stream and does not hydrate over it (#118755)', () => {
+    mountStream()
+
+    act(() => stream.handleEvent({ payload: {}, session_id: ACTIVE_SID, type: 'message.start' }))
+    act(() =>
+      stream.handleEvent({
+        payload: { text: 'The answer lives in reasoning.' },
+        session_id: ACTIVE_SID,
+        type: 'reasoning.delta'
+      })
+    )
+    act(() => stream.handleEvent({ payload: { text: '' }, session_id: ACTIVE_SID, type: 'message.complete' }))
+
+    const assistant = stream.state(ACTIVE_SID).messages.find(message => message.role === 'assistant')
+    expect(assistant?.parts.filter(part => part.type === 'reasoning').map(part => part.text)).toEqual([
+      'The answer lives in reasoning.'
+    ])
+    expect(hydrateFromStoredSession).not.toHaveBeenCalled()
+  })
+
   it('keeps streamed text and does not hydrate over it', () => {
     mountStream()
 

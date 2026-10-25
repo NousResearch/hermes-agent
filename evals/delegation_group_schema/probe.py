@@ -1,6 +1,6 @@
 """Offline same-config schema probe. Run in a fresh interpreter for each tree/policy.
 
-python probe.py /path/to/tree /tmp/receipt.json [--independent]
+python probe.py /path/to/tree receipt.json [--independent]
 Requires tiktoken; no model calls or model-quality claims.
 """
 

@@ -89,7 +89,7 @@ def _quant_label(filename: str) -> str:
 
 def repo_files(repo: str) -> list[HFFileGroup]:
     """The servable GGUFs in a repo, grouped: split parts collapse into one entry (first part is
-    what llama.cpp loads); mmproj/draft companions are excluded. Largest quant first."""
+    what llama.cpp loads); mmproj/draft/MTP-head companions are excluded. Largest quant first."""
     url = f"{_HF}/api/models/{urllib.parse.quote(repo)}/tree/main?recursive=true"
     files = _get_json(url)
 
@@ -100,7 +100,8 @@ def repo_files(repo: str) -> list[HFFileGroup]:
         if not path.lower().endswith(".gguf"):
             continue
         name = path.rsplit("/", 1)[-1].lower()
-        if name.startswith(("mmproj", "dspark")) or "draft" in name:
+        # An MTP head (unsloth's mtp-<model>-<quant>.gguf) drafts for its model; it cannot serve.
+        if name.startswith(("mmproj", "dspark", "mtp-")) or "draft" in name:
             continue
         size = int(f.get("size") or 0)
         m = _SPLIT_RE.search(path)
@@ -132,11 +133,3 @@ def rough_fit(total_bytes: int, budget) -> str:
 
 def priced_repo_files(repo: str, budget) -> list[HFFileGroup]:
     return [replace(g, fit=rough_fit(g.total_bytes, budget)) for g in repo_files(repo)]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from dataclasses import field  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

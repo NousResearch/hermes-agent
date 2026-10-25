@@ -7,10 +7,12 @@ only loads sessions and writes bytes.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from html import escape as html_escape
 import json
 from typing import Any, Dict, Iterable, Iterator, List, Literal, Optional, Tuple
+
+from hermes_cli.timefmt import coerce_epoch
 
 
 ExportFormat = Literal["jsonl", "markdown"]
@@ -37,7 +39,7 @@ def normalize_export_only(only: Optional[str]) -> Optional[ExportOnly]:
     raise ValueError(f"Unsupported session export filter: {only}")
 
 
-def render_sessions_export(sessions: Iterable[Dict[str, Any]], *, fmt: str = "jsonl", only: Optional[str] = None) -> str:
+def render_sessions_export(sessions: Iterable[dict[str, Any]], *, fmt: str = "jsonl", only: Optional[str] = None) -> str:
     """Render exported sessions in a stable, reusable format.
 
     ``fmt=jsonl`` with no filter keeps the legacy shape (one full session object per line);
@@ -59,7 +61,7 @@ def render_sessions_export(sessions: Iterable[Dict[str, Any]], *, fmt: str = "js
     else:
         multi_title, append_body = "Hermes sessions export", _append_session_messages
         headings = (lambda s: f"Session: {_heading_text(_session_title_or_id(s))}",) * 2
-    lines: List[str] = []
+    lines: list[str] = []
     single = len(session_list) == 1
     if not single:
         lines += [f"# {multi_title}", ""]
@@ -74,7 +76,7 @@ def render_sessions_export(sessions: Iterable[Dict[str, Any]], *, fmt: str = "js
     return "\n".join(lines) + "\n"
 
 
-def export_record_count(sessions: Iterable[Dict[str, Any]], *, only: Optional[str] = None) -> Tuple[int, str]:
+def export_record_count(sessions: Iterable[dict[str, Any]], *, only: Optional[str] = None) -> tuple[int, str]:
     """Return ``(count, noun)`` for status messages after an export."""
     session_list = list(sessions)
     if normalize_export_only(only) == "user-prompts":
@@ -82,16 +84,16 @@ def export_record_count(sessions: Iterable[Dict[str, Any]], *, only: Optional[st
     return len(session_list), "session"
 
 
-def iter_user_prompt_records(sessions: Iterable[Dict[str, Any]]) -> Iterator[Dict[str, Any]]:
+def iter_user_prompt_records(sessions: Iterable[dict[str, Any]]) -> Iterator[dict[str, Any]]:
     """Yield one normalized record for each user-authored prompt."""
     for session in sessions:
         session_id = str(session.get("id") or session.get("session_id") or "")
         prompts = [m for m in _messages(session) if m.get("role") == "user"]
         for index, message in enumerate(prompts, start=1):
-            record: Dict[str, Any] = {
+            record: dict[str, Any] = {
                 "session_id": session_id,
                 "index": index,
-                "created_at": _format_timestamp(message.get("timestamp")),
+                "created_at": _format_timestamp(message.get("timestamp"), session_id),
                 "role": "user",
                 "text": _message_text(message.get("content")),
             }
@@ -102,7 +104,7 @@ def iter_user_prompt_records(sessions: Iterable[Dict[str, Any]]) -> Iterator[Dic
             yield record
 
 
-def _append_prompt_records(lines: List[str], session: Dict[str, Any], *, heading_level: int) -> None:
+def _append_prompt_records(lines: list[str], session: dict[str, Any], *, heading_level: int) -> None:
     prompts = list(iter_user_prompt_records([session]))
     if not prompts:
         lines += ["_No user prompts found._", ""]
@@ -115,7 +117,7 @@ def _append_prompt_records(lines: List[str], session: Dict[str, Any], *, heading
         lines += [str(prompt.get("text") or ""), ""]
 
 
-def _append_session_messages(lines: List[str], session: Dict[str, Any], *, heading_level: int) -> None:
+def _append_session_messages(lines: list[str], session: dict[str, Any], *, heading_level: int) -> None:
     marker = "#" * heading_level
     visible_messages = [message for message in _messages(session) if message.get("role") != "system"]
     if not visible_messages:
@@ -123,7 +125,7 @@ def _append_session_messages(lines: List[str], session: Dict[str, Any], *, headi
         return
     for message in visible_messages:
         role = str(message.get("role") or "unknown")
-        timestamp = _format_timestamp(message.get("timestamp"))
+        timestamp = _format_timestamp(message.get("timestamp"), _session_id(session))
         suffix = f" - {timestamp}" if timestamp else ""
         text = _message_text(message.get("content"))
         if role == "tool":
@@ -138,7 +140,7 @@ def _append_session_messages(lines: List[str], session: Dict[str, Any], *, headi
             lines += [f"{marker} {label}{suffix}", "", text, ""]
 
 
-def _messages(session: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _messages(session: dict[str, Any]) -> list[dict[str, Any]]:
     return [message for message in session.get("messages") or [] if isinstance(message, dict)]
 
 
@@ -157,37 +159,37 @@ def _content_part_text(part: Any) -> str:
     return json.dumps(part, ensure_ascii=False, sort_keys=True)
 
 
-def _format_timestamp(value: Any) -> Optional[str]:
+def _format_timestamp(value: Any, session_id: Optional[str] = None) -> Optional[str]:
     if value is None:
         return None
-    if isinstance(value, (int, float)):
-        dt = datetime.fromtimestamp(float(value), tz=timezone.utc)
-    elif isinstance(value, datetime):
-        dt = (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+    if isinstance(value, datetime):
+        dt = (value if value.tzinfo else value.replace(tzinfo=UTC)).astimezone(UTC)
+    elif (ts := coerce_epoch(value, session_id=session_id)) is None:
+        return str(value)  # corrupt cell: odd-looking date, not an aborted export
     else:
-        return str(value)
+        dt = datetime.fromtimestamp(ts, tz=UTC)
     return dt.isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def _session_metadata_lines(session: Dict[str, Any]) -> List[str]:
-    lines: List[str] = [f"- Session ID: `{_session_id(session)}`"]
+def _session_metadata_lines(session: dict[str, Any]) -> list[str]:
+    lines: list[str] = [f"- Session ID: `{_session_id(session)}`"]
     for key, label in (("source", "Source"), ("model", "Model")):
         if session.get(key):
             lines.append(f"- {label}: `{session[key]}`")
     if title := session.get("title"):
         lines.append(f"- Title: {' '.join(str(title).splitlines()).strip()}")
-    if started := _format_timestamp(session.get("started_at")):
+    if started := _format_timestamp(session.get("started_at"), _session_id(session)):
         lines.append(f"- Started: {started}")
     if (message_count := session.get("message_count")) is not None:
         lines.append(f"- Messages: {message_count}")
     return lines
 
 
-def _session_id(session: Dict[str, Any]) -> str:
+def _session_id(session: dict[str, Any]) -> str:
     return str(session.get("id") or session.get("session_id") or "unknown")
 
 
-def _session_title_or_id(session: Dict[str, Any]) -> str:
+def _session_title_or_id(session: dict[str, Any]) -> str:
     return str(session.get("title") or "").strip() or _session_id(session)
 
 
@@ -205,6 +207,38 @@ def _fenced_text(text: str, *, language: str = "text") -> str:
 # --- Current-session save helper (shared by CLI /save and gateway /save) ---
 
 SAVE_FORMATS = ("json", "md", "html")
+SAVE_TRANSCRIPT_FORMATS = frozenset({"md", "html"})
+
+
+def export_projection(transcript: bool) -> dict[str, bool]:
+    """``export_session`` flags for an export. A transcript shows what the user sees, compaction-archived
+    turns included. A JSON snapshot is what an import restores, so it carries every stored row with its
+    ``active``/``compacted`` flags: live rows alone would drop every turn in-place compaction archived, and
+    ``import_sessions`` brings the flagged rows back archived, never as live context."""
+    return {"include_compacted": True} if transcript else {"include_inactive": True}
+
+
+def drop_undone_rows(export: dict[str, Any]) -> dict[str, Any]:
+    """Keep live and compaction-archived rows in a ``/save`` JSON snapshot; rows removed by /undo, rewind
+    or edit stay out. ``timings`` is rebuilt from the kept rows so it names no dropped row."""
+    from hermes_state_portability import _export_timings
+    export["messages"] = [m for m in export["messages"] if m["active"] or m["compacted"]]
+    export["timings"] = _export_timings(export["messages"], export.get("id"))
+    return export
+
+
+def load_save_snapshot(db: Any, session_id: str, fmt: str) -> Optional[dict[str, Any]]:
+    """The stored session a ``/save <fmt>`` writes, or None when it has no row. A JSON snapshot loads every
+    stored row in memory, so it is refused past ``sessions.max_export_messages`` (raises
+    ``SessionExportTooLargeError``), like ``hermes sessions export``."""
+    transcript = fmt in SAVE_TRANSCRIPT_FORMATS
+    if not transcript:
+        db.assert_export_safe(session_id)
+    export = db.export_session(session_id, **export_projection(transcript))
+    if export and not transcript:
+        drop_undone_rows(export)
+    return export
+
 
 SAVE_USAGE = """/save — export the current session to a file
 Usage: /save <format> [filename] [redact]
@@ -236,7 +270,7 @@ def normalize_save_format(fmt: Optional[str]) -> str:
     return _SAVE_FORMAT_ALIASES[token]
 
 
-def _render_html_for_save(session: Dict[str, Any]) -> str:
+def _render_html_for_save(session: dict[str, Any]) -> str:
     from hermes_cli.session_export_html import generate_html_export
 
     return generate_html_export(session)
@@ -249,7 +283,7 @@ _SAVE_RENDERERS = {
 }
 
 
-def render_session_for_save(session: Dict[str, Any], fmt: str) -> str:
+def render_session_for_save(session: dict[str, Any], fmt: str) -> str:
     """Render one exported session dict for /save."""
     renderer = _SAVE_RENDERERS.get(fmt)
     if renderer is None:

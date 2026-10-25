@@ -139,6 +139,25 @@ class TestNonInteractiveInheritance:
         assert su.find_project_root() == project_env["repo"].resolve()
         assert su.get_project_skills_dirs() != []
 
+    def test_session_cwd_beats_backend_launch_cwd(
+        self, project_env, monkeypatch, tmp_path
+    ):
+        """Desktop project skills follow the active session, not launch cwd."""
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        launcher = tmp_path / "desktop-launcher"
+        launcher.mkdir()
+        monkeypatch.chdir(launcher)
+        monkeypatch.setenv("TERMINAL_CWD", str(launcher))
+        _trust(project_env["config"], project_env["repo"])
+
+        tokens = set_session_vars(cwd=str(project_env["repo"]))
+        try:
+            assert su.find_project_root() == project_env["repo"].resolve()
+            assert su.get_project_skills_dirs() != []
+        finally:
+            clear_session_vars(tokens)
+
     def test_no_workdir_no_trust_inheritance(self, project_env, monkeypatch, tmp_path):
         # A surface running outside any repo (API server from home-like dir)
         # resolves no project even when OTHER repos are trusted.

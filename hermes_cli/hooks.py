@@ -43,14 +43,10 @@ def _cmd_list(_args) -> None:
     if not specs:
         print("No shell hooks configured in ~/.hermes/config.yaml.")
     else:
-        by_event: Dict[str, List] = {}
+        by_event: dict[str, list] = {}
         for spec in specs:
             by_event.setdefault(spec.event, []).append(spec)
-        approved = {
-            (e.get("event"), e.get("command"))
-            for e in shell_hooks.load_allowlist().get("approvals", [])
-            if isinstance(e, dict)
-        }
+        approved = shell_hooks.allowlisted_pairs()
         print(f"Configured shell hooks ({len(specs)} total):\n")
         for event in sorted(by_event):
             print(f"  [{event}]")
@@ -131,6 +127,7 @@ _DEFAULT_PAYLOADS = {
     },
     "on_session_finalize": {"session_id": "test-session"},
     "on_session_reset": {"session_id": "test-session"},
+    "on_session_delete": {"session_id": "test-session", "reason": "delete", "profile": "default"},
     "pre_api_request": {
         "session_id": "test-session", "task_id": "test-task", "platform": "cli",
         "model": "claude-sonnet-4-6", "provider": "anthropic",
@@ -145,18 +142,36 @@ _DEFAULT_PAYLOADS = {
         "api_call_count": 1, "api_duration": 1.234,
         "started_at": 1756000000.0, "ended_at": 1756000001.234, "first_chunk_at": 1756000000.512,
         "finish_reason": "stop", "message_count": 4, "response_model": "claude-sonnet-4-6",
-        "usage": {"input_tokens": 2048, "output_tokens": 512},
+        "usage": {"input_tokens": 2048, "output_tokens": 512}, "context_length": 200000,
         "assistant_content_chars": 1200, "assistant_tool_call_count": 0,
         # Per-advisor metrics on a MoA turn, None otherwise: MoA returns only the aggregator's
         # response, so without this an observer cannot see or price the fan-out.
         "moa_references": None,
+    },
+    "pre_auxiliary_call": {
+        "aux_task": "title_generation", "session_id": "test-session", "task_id": "test-task",
+        "turn_id": "test-turn", "api_request_id": "aux-0123abcd", "platform": "cli",
+        "model": "claude-haiku-4-5", "provider": "anthropic",
+        "base_url": "https://api.anthropic.com", "api_mode": "anthropic_messages",
+        "api_call_count": 1, "retry_count": 0, "streaming": False, "message_count": 2,
+        "tool_count": 0, "approx_input_tokens": 256, "request_char_count": 1024, "max_tokens": 64,
+    },
+    "post_auxiliary_call": {
+        "aux_task": "title_generation", "session_id": "test-session", "task_id": "test-task",
+        "turn_id": "test-turn", "api_request_id": "aux-0123abcd", "platform": "cli",
+        "model": "claude-haiku-4-5", "provider": "anthropic",
+        "base_url": "https://api.anthropic.com", "api_mode": "anthropic_messages",
+        "api_call_count": 1, "retry_count": 0, "streaming": False, "api_duration": 0.42,
+        "started_at": 1756000000.0, "ended_at": 1756000000.42, "finish_reason": "stop",
+        "response_model": "claude-haiku-4-5", "usage": {"input_tokens": 256, "output_tokens": 12},
+        "assistant_content_chars": 40, "assistant_tool_call_count": 0, "error": None, "error_type": None,
     },
     "subagent_stop": {
         "parent_session_id": "parent-sess", "child_role": None,
         "child_summary": "Synthetic summary for hooks test", "child_status": "completed",
         "tool_call_history": [{
             "tool_name": "write_file",
-            "tool_input": {"argument_keys": ["content", "path"], "targets": {"path": "/tmp/report.txt"}},
+            "tool_input": {"argument_keys": ["content", "path"], "targets": {"path": "notes/report.txt"}},
             "input_bytes": 128, "output_bytes": 32, "status": "ok",
         }],
         "duration_ms": 1234,
@@ -182,7 +197,7 @@ def _cmd_test(args) -> None:
         payload["tool_name"] = for_tool
     if getattr(args, "payload_file", None):
         try:
-            custom = json.loads(Path(args.payload_file).read_text(encoding="utf-8"))
+            custom = json.loads(Path(args.payload_file).read_text(encoding="utf-8-sig"))
             if isinstance(custom, dict):
                 payload.update(custom)
             else:
@@ -207,18 +222,20 @@ def _cmd_test(args) -> None:
         print()
 
 
-def _print_run_result(result: Dict[str, Any]) -> None:
+def _print_run_result(result: dict[str, Any]) -> None:
     if result.get("error"):
         print(f"      ✗ error: {result['error']}")
-        return
-    if result.get("timed_out"):
+    elif result.get("timed_out"):
         print(f"      ✗ timed out after {result['elapsed_seconds']}s")
-        return
-    print(f"      exit={result.get('returncode')}  elapsed={result.get('elapsed_seconds', 0)}s")
-    for stream in ("stdout", "stderr"):
-        text = (result.get(stream) or "").strip()
-        if text:
-            print(f"      {stream}: {_truncate(text, 400)}")
+    else:
+        print(f"      exit={result.get('returncode')}  elapsed={result.get('elapsed_seconds', 0)}s")
+        for stream in ("stdout", "stderr"):
+            text = (result.get(stream) or "").strip()
+            if text:
+                print(f"      {stream}: {_truncate(text, 400)}")
+    # run_once always sets ``parsed`` (agent/shell_hooks.py::_evaluate_result), so it is available even
+    # when the hook errored or timed out. A failing hook's decision is the one thing `hooks test` exists
+    # to show — failed-open and failed-closed must not render identically (#115968).
     parsed = result.get("parsed")
     if parsed:
         print(f"      parsed (Hermes wire shape): {json.dumps(parsed)}")
@@ -243,8 +260,9 @@ def _cmd_revoke(args) -> None:
         return
     print(f"Removed {removed} allowlist entry/entries for: {args.command}")
     print(
-        "Note: currently running CLI / gateway processes keep their "
-        "already-registered callbacks until they restart."
+        "Note: a running gateway stops running it within about 30 seconds (unless "
+        "--accept-hooks / HERMES_ACCEPT_HOOKS / hooks_auto_accept approves every hook there); "
+        "other running processes keep it until they restart."
     )
 
 

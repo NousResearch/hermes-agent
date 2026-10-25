@@ -258,6 +258,56 @@ export function todosFromMessageContent(content: unknown): null | TodoItem[] {
   return latest
 }
 
+/** Latest completed Todo result; arguments alone are never durable evidence. */
+function isConfirmedTodoResultPart(part: Record<string, unknown>): boolean {
+  if (part.unpairedStoredToolResult === true) {
+    return false
+  }
+
+  if (isTodoToolName(part.toolName)) {
+    return part.storedResultToolName === undefined || isTodoToolName(part.storedResultToolName)
+  }
+
+  if (part.toolName !== 'tool_call' || !isRecord(part.args)) {
+    return false
+  }
+
+  return (
+    isTodoToolName(part.storedResultToolName) &&
+    Array.isArray(part.args.calls) &&
+    part.args.calls.some(call => isRecord(call) && isTodoToolName(call.name))
+  )
+}
+
+export function latestSessionTodoSnapshot(
+  messages: readonly { parts?: unknown }[]
+): null | { todos: TodoItem[]; revision: number } {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const parts = messages[i]?.parts
+
+    if (!Array.isArray(parts)) {
+      continue
+    }
+
+    for (let j = parts.length - 1; j >= 0; j -= 1) {
+      const part = parts[j]
+
+      if (!isRecord(part) || part.type !== 'tool-call' || !isConfirmedTodoResultPart(part)) {
+        continue
+      }
+
+      const todos = parseTodos(part.result)
+      const revision = parseTodoRevision(part.result)
+
+      if (todos !== null && revision !== null) {
+        return { todos, revision }
+      }
+    }
+  }
+
+  return null
+}
+
 /** Current todo state for a whole transcript — the last list wins. */
 export function latestSessionTodos(messages: readonly { parts?: unknown }[]): null | TodoItem[] {
   for (let i = messages.length - 1; i >= 0; i -= 1) {

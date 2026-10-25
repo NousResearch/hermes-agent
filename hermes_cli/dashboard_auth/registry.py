@@ -7,7 +7,7 @@ import logging
 import threading
 from typing import List, Optional
 
-from hermes_constants import hermes_home_key
+from hermes_constants import hermes_home_key, normalize_scope
 from hermes_cli.dashboard_auth.base import DashboardAuthProvider, assert_protocol_compliance
 
 _log = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ _scoped_providers: dict[str, dict[str, DashboardAuthProvider]] = {}
 
 def _merged(scope: Optional[str] = None) -> dict[str, DashboardAuthProvider]:
     providers = dict(_providers)
-    providers.update(_scoped_providers.get(scope or hermes_home_key(), {}))
+    providers.update(_scoped_providers.get(hermes_home_key(scope), {}))
     return providers
 
 
@@ -37,6 +37,7 @@ def register_provider(provider: DashboardAuthProvider, *, scope: Optional[str] =
     """Raises ``TypeError`` on protocol violation, ``ValueError`` on a duplicate name."""
     assert_protocol_compliance(type(provider))
     with _lock:
+        scope = normalize_scope(scope)
         target = _target(scope, create=True)
         effective = target if scope is None else _merged(scope)
         if provider.name in effective:
@@ -54,6 +55,7 @@ def get_provider(name: str, *, scope: Optional[str] = None) -> Optional[Dashboar
 def snapshot_registration(
     name: str, *, scope: Optional[str] = None) -> Optional[DashboardAuthProvider]:
     with _lock:
+        scope = normalize_scope(scope)
         return _target(scope, create=False).get(name)
 
 
@@ -62,6 +64,7 @@ def restore_registration(
     *, scope: Optional[str] = None) -> bool:
     """Restore a host-owned provider registration if it is still current."""
     with _lock:
+        scope = normalize_scope(scope)
         target = _target(scope, create=True)
         if target.get(name) is not current:
             return False
@@ -74,20 +77,20 @@ def restore_registration(
     return True
 
 
-def list_providers(*, scope: Optional[str] = None) -> List[DashboardAuthProvider]:
+def list_providers(*, scope: Optional[str] = None) -> list[DashboardAuthProvider]:
     """All registered providers, in registration order."""
     with _lock:
         return list(_merged(scope).values())
 
 
-def list_token_providers() -> List[DashboardAuthProvider]:
+def list_token_providers() -> list[DashboardAuthProvider]:
     """Providers with ``supports_token`` True, in registration order. The ``token_auth`` seam
     consults only these, so OAuth/password-only providers are never asked to ``verify_token``;
     empty => a token-authable route fails closed (401)."""
     return [p for p in list_providers() if getattr(p, "supports_token", False)]
 
 
-def list_session_providers() -> List[DashboardAuthProvider]:
+def list_session_providers() -> list[DashboardAuthProvider]:
     """Providers with ``supports_session`` True (interactive cookie sessions); the login page,
     /auth/login and the gate's verify/refresh loops use only these."""
     return [p for p in list_providers() if getattr(p, "supports_session", True)]

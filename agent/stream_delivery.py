@@ -3,6 +3,7 @@
 Single-writer stream ownership, delta/reasoning hook fan-out, and interim assistant text dedup.
 Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
+import contextlib
 import logging
 import re
 import threading
@@ -295,6 +296,47 @@ class StreamDeliveryMixin:
     def _emit_stream_end(self, *, final_text: str, finished: bool, error: str | None) -> None:
         self._enqueue_stream_hook("on_stream_end", final_text=final_text, finished=finished, error=error)
 
+    def _scrub_stream_delta(self, text: str) -> str:
+        """Run one content delta through the stateful scrubbers and return visible text.
+
+        Split out of ``_fire_stream_delta`` so paths that must stay display-only
+        (tool-call suppressed content) still share the same scrubbing state instead
+        of delivering the raw delta.
+        """
+        # Stateful scrubbers: per-delta regex stripping destroyed downstream state machines when a
+        # tag was split across deltas; memory-context spans split across chunks must not leak to
+        # the UI. Legacy callers lack the scrubber attributes and get the whole-string fallbacks.
+        think_scrubber = getattr(self, "_stream_think_scrubber", None)
+        # See #5719.
+        scrubber = getattr(self, "_stream_context_scrubber", None)
+        text = think_scrubber.feed(text) if think_scrubber is not None else self._strip_think_blocks(text)
+        # Providers that inline reasoning (MiniMax-M3 <think>…</think>) send no reasoning delta, so the
+        # live reasoning pane would stay empty; forward what the scrubber stripped instead (#89647).
+        hidden = think_scrubber.last_hidden if think_scrubber is not None else ""
+        if hidden and not getattr(self, "_native_reasoning_streamed", False):
+            self._fire_reasoning_delta(hidden, inline=True)
+        return scrubber.feed(text) if scrubber is not None else sanitize_context(text)
+
+    def _deliver_suppressed_text(self, text: str) -> None:
+        """Display one suppressed tool-call preamble delta, scrubbed, and record it.
+
+        Tool-call turns do not stream their preamble as ordinary content, but the
+        display still has to see it: once the stream box closes the CLI drops
+        non-reasoning text, so this path stays the preamble's only outlet. The delta
+        is scrubbed before display *and* before it is recorded. Sending the raw text
+        to ``_record_streamed_assistant_text`` planted reasoning in
+        ``_current_streamed_assistant_text``, which the finalizer adopts as the
+        assistant reply when the terminal completion comes back empty (#95514).
+        Display-only: feeds neither TTS nor the plugin stream hooks.
+        """
+        if not self.stream_delta_callback:
+            return
+        with contextlib.suppress(Exception):
+            visible = self._scrub_stream_delta(text)
+            if visible:
+                self.stream_delta_callback(visible)
+                self._record_streamed_assistant_text(visible)
+
     def _fire_stream_delta(self, text: str) -> None:
         """Fire all registered stream delta callbacks (display + TTS)."""
         # A superseded stream must not interleave its tokens alongside the retry that replaced it.
@@ -309,19 +351,7 @@ class StreamDeliveryMixin:
             self._stream_needs_break = False
             text = "\n\n" + text
         if isinstance(text, str):
-            # Stateful scrubbers: per-delta regex stripping destroyed downstream state machines when a
-            # tag was split across deltas; memory-context spans split across chunks must not leak to
-            # the UI. Legacy callers lack the scrubber attributes and get the whole-string fallbacks.
-            think_scrubber = getattr(self, "_stream_think_scrubber", None)
-            # See #5719.
-            scrubber = getattr(self, "_stream_context_scrubber", None)
-            text = think_scrubber.feed(text) if think_scrubber is not None else self._strip_think_blocks(text)
-            # Providers that inline reasoning (MiniMax-M3 <think>…</think>) send no reasoning delta, so the
-            # live reasoning pane would stay empty; forward what the scrubber stripped instead (#89647).
-            hidden = think_scrubber.last_hidden if think_scrubber is not None else ""
-            if hidden and not getattr(self, "_native_reasoning_streamed", False):
-                self._fire_reasoning_delta(hidden, inline=True)
-            text = scrubber.feed(text) if scrubber is not None else sanitize_context(text)
+            text = self._scrub_stream_delta(text)
             # Only strip leading newlines on the first delta — mid-stream "\n" is legitimate markdown.
             # Check the parts list, not the joined property (joining per token copies the whole reply).
             if not prepended_break and not getattr(self, "_streamed_assistant_text_parts", None):

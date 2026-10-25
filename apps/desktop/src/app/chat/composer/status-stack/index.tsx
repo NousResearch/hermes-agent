@@ -316,7 +316,7 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
       key: 'retained-todo',
       node: (
         <StatusSection
-          defaultCollapsed
+          defaultCollapsed={false}
           icon={<Codicon className="text-muted-foreground/70" name="checklist" size="0.8rem" />}
           label={t.statusStack.previousTodos(done, retainedTodos.length)}
         >

@@ -455,6 +455,25 @@ def test_normalize_codex_response_prefers_summary_over_content_reasoning_parts()
     assert assistant_message.reasoning == "from summary"
 
 
+@pytest.mark.parametrize("summary", [None, []])
+def test_normalize_codex_response_joins_reasoning_text_parts_and_skips_other_types(summary):
+    """The OpenAI SDK parses an absent summary as ``[]``; several ``reasoning_text`` parts are
+    joined in order and parts of any other type are not reasoning (#144569)."""
+    response = SimpleNamespace(status="completed", output=[
+        SimpleNamespace(type="reasoning", id="rs_1", encrypted_content=None, summary=summary, text=None,
+                        content=[SimpleNamespace(type="reasoning_text", text="Step one."),
+                                 SimpleNamespace(type="other", text="ignored"),
+                                 SimpleNamespace(type="reasoning_text", text="Step two.")]),
+        SimpleNamespace(type="message", role="assistant", status="completed",
+                        content=[SimpleNamespace(type="output_text", text="Done.")]),
+    ])
+
+    assistant_message, _ = _normalize_codex_response(response, issuer_kind=None)
+
+    assert assistant_message.content == "Done."
+    assert assistant_message.reasoning == "Step one.\nStep two."
+
+
 def test_normalize_codex_response_reasoning_content_null_keeps_native_shape_working():
     """OpenAI-native reasoning items (no ``content`` at all) are unaffected."""
     response = SimpleNamespace(

@@ -1663,3 +1663,97 @@ class TestRedactForEgress:
         from agent import redact as R
         monkeypatch.setattr(R, "redact_sensitive_text", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
         assert R.redact_for_egress("sk-live-0123456789abcdef") == R.REDACTION_UNAVAILABLE
+
+class TestFlagAndKeyShapedCredentials:
+    """Credential shapes that every pass used to skip: names ending in ``key``, secrets
+    given as command-line flags, Azure connection-string keys, and base64 PEM keys."""
+
+    SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+    def test_key_qualified_field_names_are_secrets(self):
+        from agent.redact import is_secret_field_name
+
+        for name in (
+            "aws_secret_access_key",
+            "AWS_SECRET_ACCESS_KEY",
+            "SecretAccessKey",
+            "SECRET_KEY",
+            "secretKey",
+            "privateKey",
+            "signing_key",
+            "encryption_key",
+            "master_key",
+            "hmac_key",
+        ):
+            assert is_secret_field_name(name) is True, name
+
+    def test_names_that_merely_end_in_key_stay_readable(self):
+        from agent.redact import is_secret_field_name
+
+        for name in ("key", "public_key", "key_id", "hotkey", "keyboard", "cache_key", "monkey", "sortKey"):
+            assert is_secret_field_name(name) is False, name
+
+    def test_a_key_qualified_json_field_is_masked(self):
+        text = '{"aws_secret_access_key": "' + self.SECRET + '", "region": "eu-west-1"}'
+        out = redact_sensitive_text(text, force=True)
+        assert self.SECRET not in out
+        assert '"region": "eu-west-1"' in out
+
+    @pytest.mark.parametrize("command", [
+        "mysql -h db --password=S3cretPassw0rd!x",
+        "vault login --token=S3cretPassw0rd!x",
+        "deploy --api-key S3cretPassw0rd!x",
+        "docker login -p S3cretPassw0rd!x -u bob",
+        "kinit --password 'S3cretPassw0rd!x' bob",
+    ])
+    def test_a_secret_passed_as_a_flag_is_masked(self, command):
+        out = redact_sensitive_text(command, force=True)
+        assert "S3cretPassw0rd!x" not in out
+        assert "--" in out or " -p " in out  # the flag itself survives, so the command reads
+
+    def test_a_flag_reference_or_a_number_is_not_a_credential(self):
+        for text in ("deploy --token=$DEPLOY_TOKEN", "cmd --password ${DB_PASS}", "wait --token 60", "run -p 8080:80"):
+            assert redact_sensitive_text(text, force=True) == text
+
+    def test_connection_string_keys_are_masked(self):
+        text = (
+            "DefaultEndpointsProtocol=https;AccountName=acct;"
+            f"AccountKey={self.SECRET};EndpointSuffix=core.windows.net"
+        )
+        out = redact_sensitive_text(text, force=True)
+        assert self.SECRET not in out
+        assert "AccountName=acct" in out
+
+        bus = f"Endpoint=sb://ns.servicebus.windows.net/;SharedAccessKey={self.SECRET}"
+        assert self.SECRET not in redact_sensitive_text(bus, force=True)
+
+    @pytest.mark.parametrize("material", [
+        "-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nlQOYBF4kMaterialAAAABBBBCCCCDDDD\n-----END PGP PRIVATE KEY BLOCK-----",
+        "PuTTY-User-Key-File-3: ssh-rsa\nEncryption: none\nPrivate-Lines: 1\nAAAAB3NzaC1yc2ElQOYBF4kMaterialAAAABBBB\n",
+        "AGE-SECRET-KEY-1LQOYBF4KMATERIALAAAABBBBCCCCDDDD",
+    ])
+    def test_non_pem_private_key_formats_are_masked_on_every_surface(self, material):
+        from agent.redact import redact_for_egress, redact_terminal_output
+
+        leaked_value = "lQOYBF4kMaterialAAAABBBBCCCCDDDD"
+        for out in (
+            redact_sensitive_text(material, force=True),
+            redact_for_egress(material),
+            redact_terminal_output(material, "cat ~/.ssh/id_rsa"),
+        ):
+            assert leaked_value not in out
+            assert leaked_value.upper() not in out
+
+    def test_a_base64_pem_key_is_masked_on_every_surface(self):
+        from agent.redact import redact_for_egress, redact_terminal_output
+
+        blob = "LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlFcEFJQkFBS0NBUUVB" + "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo="
+        for text in (
+            '"client-key-data": "' + blob + '"',
+            "client-key-data: " + blob,
+            "kubectl config view --raw | grep key-data " + blob,
+        ):
+            assert blob not in redact_sensitive_text(text, force=True), text
+            assert blob not in redact_for_egress(text), text
+            assert blob not in redact_terminal_output(text, "cat kubeconfig"), text
+

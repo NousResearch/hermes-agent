@@ -230,6 +230,37 @@ _PREFIX_PATTERNS = [
 # and a bare ``password=…`` in a form body must not be swallowed greedily by ``\S+``. See #77484.
 _SECRET_ENV_NAMES = r"(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|PW|CREDENTIAL|AUTH)"
 _ENV_ASSIGN_RE = re.compile(rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2")
+# Command-line credentials. ``--password=…``, ``--token …`` and ``docker login -p …`` reach
+# the approval card and the chat egress verbatim because the ENV passes only look at
+# ``NAME=value`` (issue #143982). The flag name is kept so the reader still knows what was
+# passed; only the value is masked. ``-p`` is scoped to a container ``login`` because
+# everywhere else it is a port or a path.
+_CLI_SECRET_FLAG_RE = re.compile(
+    r"(?P<flag>(?<![\w-])--?(?:password|passwd|passphrase|pass|token|api[-_]?key|apikey"
+    r"|client[-_]?secret|access[-_]?key|auth[-_]?token|session[-_]?token|secret|bearer"
+    r"|credential)s?)"
+    r"(?P<sep>\s*=\s*|\s+)"
+    r"(?P<value>(?P<q>['\"])[^'\"]+(?P=q)|\S+)",
+    re.IGNORECASE,
+)
+_CLI_LOGIN_P_RE = re.compile(
+    r"(?P<flag>\b(?:docker|podman|nerdctl)\s+login\b[^\n]*?\s-p\s*)"
+    r"(?P<value>(?P<q>['\"])[^'\"]+(?P=q)|\S+)"
+)
+# Azure/SQL connection-string keys. They are ``Name=value`` inside a quoted string, so
+# every ENV pass declines them: the name is mixed case and carries no underscore boundary.
+_CONNSTR_SECRET_KEY_RE = re.compile(
+    r"(?P<flag>\b(?:AccountKey|SharedAccessKey|SharedAccessSignature|PrimaryKey|SecondaryKey)"
+    r"(?:\s*=\s*))"
+    r"(?P<value>[^;\s'\"&]+)",
+    re.IGNORECASE,
+)
+
+# Cheap pre-gates: every flag the regexes above can match contains one of these.
+_CLI_SECRET_FLAG_GATE = re.compile(r"-{1,2}[A-Za-z]")
+_CLI_LOGIN_GATE = re.compile(r"(?:docker|podman|nerdctl)\s+login\b", re.IGNORECASE)
+_CONNSTR_GATE = re.compile(r"(?:AccountKey|SharedAccessKey|PrimaryKey|SecondaryKey)", re.IGNORECASE)
+
 # Lowercase env names: only underscore-boundary forms (``openai_key=``) — NOT
 # bare ``password=``/``token=``, which appear in prose, URLs, and form bodies.
 # The lookbehind anchors each attempt to the start of an identifier run; without
@@ -295,7 +326,10 @@ _CFG_ANCHORED_RE = re.compile(
 # matches via ``token``. Quoted values defer to _JSON_FIELD_RE (lookahead).
 # NOTE(perf): possessive where the successor is disjoint; the leading class
 # stays backtrackable (see _CFG_DOTTED_RE).
-_YAML_CFG_NAMES = r"(?:api[ _.\-]?key|token|secret|passwd|password|credential)"
+_YAML_CFG_NAMES = (
+    r"(?:api[ _.\-]?key|token|secret|passwd|password|credential"
+    r"|client[ _.\-]?key[ _.\-]?data)"
+)
 _YAML_ASSIGN_RE = re.compile(
     rf"(^[ \t]*+{_LINE_NUMBER_GUTTER}[A-Za-z0-9_.\-]*{_YAML_CFG_NAMES}[A-Za-z0-9_.\-]*+)(:[ \t]*+)(?!['\"])([^\s&]++)",
     re.IGNORECASE | re.MULTILINE,
@@ -431,7 +465,19 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
 
 
 # JSON field patterns: "apiKey": "value", "token": "value", etc.
-_JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
+# ``key``-suffixed credential names (``aws_secret_access_key``, ``SECRET_KEY``,
+# ``privateKey``, ``signing_key``) and kubeconfig's ``client-key-data`` (a base64 PEM).
+# The bare word ``key`` stays out: it names cache keys and model limits. A qualifier
+# word has to sit in front of it, which is what the alternation spells out.
+_KEY_QUALIFIED_NAME = (
+    r"[\w.\-]*(?:secret|private|signing|encryption|encrypt|master|hmac|symmetric|access)"
+    r"[_.\-]?(?:key|Key|KEY)"
+)
+_JSON_KEY_NAMES = (
+    r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer"
+    r"|secret_value|raw_secret|secret_input|key_material|client[_.\-]?key[_.\-]?data"
+    rf"|{_KEY_QUALIFIED_NAME})"
+)
 _JSON_FIELD_RE = re.compile(rf'("{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"', re.IGNORECASE)
 # The same field inside a JSON-encoded string (``{"output": "{\\"api_key\\": \\"…\\"}"}``): every tool result
 # that wraps a config dump in JSON escapes the quotes, so the rule above never saw the value (#115104).
@@ -524,6 +570,38 @@ _SECRET_HEADER_RE = re.compile(rf"({_SECRET_HEADER_NAMES}\s*:\s*)(\S+)", re.IGNO
 _TELEGRAM_RE = re.compile(r"(?<!\d)(bot)?(\d{8,}):([-A-Za-z0-9_]{30,})")
 
 _PRIVATE_KEY_RE = re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----")
+# A base64-encoded PEM private key: kubeconfig's ``client-key-data`` and the ``*_b64``
+# fields around it (``kubectl config view --raw``, cloud-init, CI secrets). The name is
+# not reliable — kubeconfig writes ``client-key-data`` in YAML and JSON alike, and the
+# terminal path deliberately skips the assignment passes on source-shaped output — so the
+# rule keys on the payload: base64 that decodes to a ``BEGIN … PRIVATE KEY`` header.
+_B64_PEM_RE = re.compile(r"LS0tLS1CRUdJTi[A-Za-z0-9+/=]{60,}")
+# Private-key formats that are not PEM. All three reach the model on their own: PGP's
+# armour carries a \` BLOCK\` suffix so the PEM pattern never matched it, PuTTY's .ppk is
+# base64 under a \`Private-Lines:\` header (the usual SSH key format on Windows), and age
+# writes a bech32 AGE-SECRET-KEY-1… string.
+_PGP_PRIVATE_KEY_RE = re.compile(
+    r"-----BEGIN PGP PRIVATE KEY BLOCK-----[\s\S]*?-----END PGP PRIVATE KEY BLOCK-----"
+)
+_PUTTY_PRIVATE_LINES_RE = re.compile(
+    r"(?m)^(Private-Lines:[ \t]*[0-9]+[ \t]*\n)(?:[A-Za-z0-9+/=]{16,}[ \t]*\n?)+"
+)
+_AGE_SECRET_KEY_RE = re.compile(r"AGE-SECRET-KEY-1[0-9A-Z]{20,}")
+
+
+def _is_b64_pem_key(blob: str) -> bool:
+    """True when ``blob`` is base64 of a PEM private key block."""
+    import base64
+    import binascii
+
+    padded = blob + "=" * (-len(blob) % 4)
+    try:
+        decoded = base64.b64decode(padded, validate=False)
+    except (binascii.Error, ValueError):
+        return False
+    text = decoded[:64]
+    return text.startswith(b"-----BEGIN") and b"PRIVATE KEY" in text
+
 
 # Database connection strings: protocol://user:PASSWORD@host. The userinfo and
 # password groups forbid whitespace so a match can never span a line break (a
@@ -666,6 +744,36 @@ def _mask_token(token: str) -> str:
     return mask_secret(token, head=6, tail=4, floor=18)
 
 
+def _mask_flag_value(match: "re.Match[str]") -> str:
+    """Mask the value of a flag/connection-string key, keeping the flag and any quotes."""
+    value = match.group("value")
+    stripped = value.strip("'\"")
+    if not stripped:
+        return match.group(0)
+    # ``--password=$DB_PASS`` / ``--token=${TOKEN}`` name a variable; the reference is
+    # not the credential and masking it would make the command unreplayable.
+    if stripped[0] in "$<{%":
+        return match.group(0)
+    if stripped.isdigit():
+        return match.group(0)  # ``--token 60`` is a timeout, not a credential
+    masked = _mask_token(stripped)
+    start = match.start("value") - match.start(0)
+    end = match.end("value") - match.start(0)
+    return match.group(0)[:start] + masked + match.group(0)[end:]
+
+
+def _redact_cli_secrets(text: str) -> str:
+    """Mask credentials written as command-line flags and connection-string keys."""
+    if "=" in text or " " in text:
+        if _CLI_SECRET_FLAG_GATE.search(text):
+            text = _CLI_SECRET_FLAG_RE.sub(_mask_flag_value, text)
+        if _CLI_LOGIN_GATE.search(text):
+            text = _CLI_LOGIN_P_RE.sub(_mask_flag_value, text)
+    if _CONNSTR_GATE.search(text):
+        text = _CONNSTR_SECRET_KEY_RE.sub(_mask_flag_value, text)
+    return text
+
+
 def _is_python_repr_secret_key(key: str) -> bool:
     """Return True for exact secret keys or credential-suffixed key names."""
     folded = key.casefold()
@@ -679,7 +787,39 @@ def _is_python_repr_secret_key(key: str) -> bool:
     # ``TOKEN_COUNT`` / ``PASSWORD_POLICY`` / ``SECRET_NAME`` untouched.
     # Class widened per OpenHands/software-agent-sdk#4508 (their dict-entry
     # redaction was uppercase-only and leaked mixed-case keys).
-    return folded.endswith(_PYTHON_REPR_CREDENTIAL_SUFFIXES)
+    if folded.endswith(_PYTHON_REPR_CREDENTIAL_SUFFIXES):
+        return True
+    # Names ending in ``key`` where a qualifier says which kind of key it is:
+    # ``aws_secret_access_key``, ``SECRET_KEY``, ``privateKey``, ``signing_key``,
+    # ``encryption_key``, ``master_key``, ``hmac_key``. A bare ``key``, ``public_key``,
+    # ``hotkey`` and ``key_id`` stay untouched — they name cache keys, limits and ids.
+    return _is_qualified_key_name(key)
+
+
+_KEY_SECRET_QUALIFIERS = frozenset({
+    "secret", "private", "signing", "encryption", "encrypt", "master", "hmac",
+    "symmetric", "access",
+})
+
+
+def _key_name_words(key: str) -> list[str]:
+    """Split a field name into lower-case words: ``aws_secret_access_key`` and
+    ``awsSecretAccessKey`` both give ``[aws, secret, access, key]``."""
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
+    return [w for w in re.split(r"[^A-Za-z0-9]+", spaced.lower()) if w]
+
+
+def _is_qualified_key_name(key: str) -> bool:
+    """True for a ``…key`` field name whose qualifier makes it a credential.
+
+    ``access`` is in the qualifier set because AWS pairs an access-key id with the
+    secret that signs with it, and the id alone still identifies an account; it is
+    never a value safe to print in a chat approval card.
+    """
+    words = _key_name_words(key)
+    if len(words) < 2 or words[-1] != "key":
+        return False
+    return any(w in _KEY_SECRET_QUALIFIERS for w in words[:-1])
 
 
 def is_secret_field_name(key: object) -> bool:
@@ -965,6 +1105,11 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if not code_file:
         text = _redact_assignments(text, mask_nonreusable=file_read)
 
+    # Flags and connection-string keys carry a credential in command text, so they are not
+    # gated on code_file: the shape (``--password=`` / ``;AccountKey=``) is unambiguous, and
+    # the surfaces that leaked them (approval cards, chat status) run this pass anyway.
+    text = _redact_cli_secrets(text)
+
     if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
         text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
 
@@ -974,6 +1119,19 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
 
     if "BEGIN" in text and "-----" in text:
         text = _PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
+    if "LS0tLS1CRUdJTi" in text:
+        text = _B64_PEM_RE.sub(
+            lambda m: "[REDACTED PRIVATE KEY]" if _is_b64_pem_key(m.group(0)) else m.group(0),
+            text,
+        )
+    if "PGP PRIVATE KEY BLOCK" in text:
+        text = _PGP_PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
+    if "Private-Lines:" in text:
+        text = _PUTTY_PRIVATE_LINES_RE.sub(
+            lambda m: m.group(1) + "[REDACTED PRIVATE KEY]\n", text
+        )
+    if "AGE-SECRET-KEY-1" in text:
+        text = _AGE_SECRET_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
 
     # Database connection string passwords. With code_file=True, a password group that is a pure ``{...}``
     # brace expression is an f-string template reference (e.g. f"postgresql://{user}:{pass}@{host}"), not a

@@ -285,3 +285,188 @@ def test_docs_append_carries_tab_id_and_refuses_ambiguous_writes(api_module, mon
         api_module.docs_append(types.SimpleNamespace(doc_id="doc1", text="more", tab=None))
     err = json.loads(capsys.readouterr().err)
     assert "tabs" in err and len(err["tabs"]) == 3
+
+
+# =========================================================================
+# Slides / Docs replace
+# =========================================================================
+
+
+def _deck():
+    """A two-slide deck as the Slides API returns it (shape text + speaker notes)."""
+    def shape(text):
+        return {"shape": {"text": {"textElements": [{"textRun": {"content": text}}]}}}
+
+    return {
+        "presentationId": "deck1",
+        "title": "QA deck",
+        "slides": [
+            {
+                "objectId": "s1",
+                "pageElements": [shape("Alpha\n"), shape("01\n")],
+                "notesPage": {"pageElements": [shape("speaker note\n")]},
+            },
+            {"objectId": "s2", "pageElements": [shape("Beta\n")]},
+        ],
+    }
+
+
+def _mock_service(api_module, monkeypatch, **returns):
+    """Point build_service() at a mock and seed chained ``.execute()`` results.
+
+    A keyword names the attribute chain with underscores: ``presentations_get``
+    seeds ``service.presentations().get().execute()``,
+    ``spreadsheets_values_clear`` seeds ``service.spreadsheets().values().clear()``.
+    """
+    service = MagicMock()
+    for path, value in returns.items():
+        target = service
+        for attr in path.split("_"):
+            target = getattr(target, attr)()
+        target.execute.return_value = value
+    monkeypatch.setattr(api_module, "build_service", lambda *_args: service)
+    return service
+
+
+def test_slides_get_reports_index_object_id_texts_and_notes(api_module, monkeypatch, capsys):
+    _mock_service(api_module, monkeypatch, presentations_get=_deck())
+
+    api_module.slides_get(types.SimpleNamespace(presentation_id="deck1", slide=""))
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["title"] == "QA deck"
+    assert out["slideCount"] == 2
+    assert out["slides"][0] == {
+        "index": 1,
+        "objectId": "s1",
+        "texts": ["Alpha", "01"],
+        "notes": ["speaker note"],
+    }
+    # A slide without notes must not grow an empty "notes" key.
+    assert out["slides"][1] == {"index": 2, "objectId": "s2", "texts": ["Beta"]}
+
+
+def test_slides_get_slide_filter_accepts_index_or_object_id(api_module, monkeypatch, capsys):
+    """--slide takes a 1-based index or an objectId, so a value read from
+    `slides get` can be fed straight back into the write paths."""
+    _mock_service(api_module, monkeypatch, presentations_get=_deck())
+
+    for spec, expected in (("2", ["s2"]), ("s2", ["s2"]), ("1,s2", ["s1", "s2"])):
+        api_module.slides_get(types.SimpleNamespace(presentation_id="deck1", slide=spec))
+        out = json.loads(capsys.readouterr().out)
+        assert [s["objectId"] for s in out["slides"]] == expected
+        # slideCount stays the deck total, so a filtered read is still anchored.
+        assert out["slideCount"] == 2
+
+
+def test_slides_get_rejects_an_unknown_slide(api_module, monkeypatch):
+    _mock_service(api_module, monkeypatch, presentations_get=_deck())
+
+    with pytest.raises(SystemExit):
+        api_module.slides_get(types.SimpleNamespace(presentation_id="deck1", slide="9"))
+
+
+def test_slides_replace_scopes_page_object_ids_and_counts_occurrences(
+    api_module, monkeypatch, capsys
+):
+    service = _mock_service(
+        api_module,
+        monkeypatch,
+        presentations_get=_deck(),
+        presentations_batchUpdate={"replies": [{"replaceAllText": {"occurrencesChanged": 2}}]},
+    )
+
+    api_module.slides_replace(types.SimpleNamespace(
+        presentation_id="deck1", find="old", replace="new", slide="2", ignore_case=False,
+    ))
+
+    request = service.presentations().batchUpdate.call_args.kwargs["body"]["requests"][0]
+    assert request["replaceAllText"]["containsText"] == {"text": "old", "matchCase": True}
+    assert request["replaceAllText"]["replaceText"] == "new"
+    assert request["replaceAllText"]["pageObjectIds"] == ["s2"]
+    assert json.loads(capsys.readouterr().out)["occurrencesChanged"] == 2
+
+
+def test_slides_replace_without_slide_filter_covers_the_whole_deck(
+    api_module, monkeypatch, capsys
+):
+    service = _mock_service(
+        api_module,
+        monkeypatch,
+        presentations_batchUpdate={"replies": [{"replaceAllText": {"occurrencesChanged": 1}}]},
+    )
+
+    api_module.slides_replace(types.SimpleNamespace(
+        presentation_id="deck1", find="old", replace="new", slide="", ignore_case=True,
+    ))
+
+    request = service.presentations().batchUpdate.call_args.kwargs["body"]["requests"][0]
+    # No pageObjectIds key at all — an empty list would replace nothing.
+    assert "pageObjectIds" not in request["replaceAllText"]
+    assert request["replaceAllText"]["containsText"]["matchCase"] is False
+    assert json.loads(capsys.readouterr().out)["occurrencesChanged"] == 1
+
+
+def test_slides_thumbnail_uses_flat_thumbnail_size_and_saves_png(
+    api_module, monkeypatch, tmp_path, capsys
+):
+    thumb = {"contentUrl": "https://example.invalid/thumb.png", "width": 1600, "height": 900}
+    service = _mock_service(
+        api_module,
+        monkeypatch,
+        presentations_get=_deck(),
+        presentations_pages_getThumbnail=thumb,
+    )
+    downloads = []
+    monkeypatch.setattr(
+        api_module.urllib.request, "urlretrieve",
+        lambda url, path: downloads.append((url, str(path))),
+    )
+
+    out_file = tmp_path / "shots" / "slide1.png"
+    api_module.slides_thumbnail(types.SimpleNamespace(
+        presentation_id="deck1", slide="1", size="LARGE", out=str(out_file),
+    ))
+
+    # The python client wants the nested query param in its flat form.
+    assert service.presentations().pages().getThumbnail.call_args.kwargs == {
+        "presentationId": "deck1",
+        "pageObjectId": "s1",
+        "thumbnailProperties_thumbnailSize": "LARGE",
+    }
+    assert downloads == [("https://example.invalid/thumb.png", str(out_file))]
+    assert out_file.parent.exists()
+    assert json.loads(capsys.readouterr().out)["savedTo"] == str(out_file)
+
+
+def test_docs_replace_sends_tab_criteria_and_counts_occurrences(api_module, monkeypatch, capsys):
+    service = _mock_service(
+        api_module, monkeypatch,
+        documents_batchUpdate={"replies": [{"replaceAllText": {"occurrencesChanged": 3}}]},
+    )
+
+    api_module.docs_replace(types.SimpleNamespace(
+        doc_id="doc1", find="old", replace="new", tab="t.1", ignore_case=False,
+    ))
+
+    request = service.documents().batchUpdate.call_args.kwargs["body"]["requests"][0]
+    assert request["replaceAllText"]["tabsCriteria"] == {"tabIds": ["t.1"]}
+    out = json.loads(capsys.readouterr().out)
+    assert out["occurrencesChanged"] == 3
+    assert out["tab"] == "t.1"
+
+
+def test_docs_replace_without_tab_omits_tab_criteria(api_module, monkeypatch, capsys):
+    service = _mock_service(
+        api_module, monkeypatch,
+        documents_batchUpdate={"replies": [{"replaceAllText": {"occurrencesChanged": 0}}]},
+    )
+
+    api_module.docs_replace(types.SimpleNamespace(
+        doc_id="doc1", find="absent", replace="new", tab=None, ignore_case=False,
+    ))
+
+    request = service.documents().batchUpdate.call_args.kwargs["body"]["requests"][0]
+    assert "tabsCriteria" not in request["replaceAllText"]
+    # A find string that matches nothing reports 0 rather than raising.
+    assert json.loads(capsys.readouterr().out)["occurrencesChanged"] == 0

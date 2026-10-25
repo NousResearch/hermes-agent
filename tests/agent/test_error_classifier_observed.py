@@ -66,6 +66,17 @@ OBSERVED = [
         "Something unexpected happened while processing your request. Please try again in a moment, or contact us "
         "if the issue persists.")}),
      FailoverReason.server_error, True, False),
+    # Shared ChatGPT plan allowance spent: the gateway refuses every call with a 400 until the
+    # window resets and says bought credits will not help while sharing is on. As format_error
+    # it still fell back, but nothing benched the primary, so every turn re-sent the request to a
+    # route known to be capped (one dead call per turn, ~3 s each). rate_limit is what arms the
+    # cooldown; retryable stays False because the identical request cannot succeed.
+    ("nous-plan-sharing-cap", "nous", _status(openai.BadRequestError, 400, {"error": {"message": (
+        "ChatGPT plan sharing limit reached. Manage usage at https://chatgpt.com/#settings/Usage or wait for it "
+        "to reset. To use Nous credits, pause plan sharing in your Nous settings first, since buying credits "
+        "alone won't: https://portal.nousresearch.com/account-settings?link_highlight=openai"), "type":
+        "invalid_request_error"}}),
+     FailoverReason.rate_limit, False, True),
     ("router-no-workers", "custom", _status(openai.InternalServerError, 500, {"error": {
         "message": "No available workers (all circuits open or unhealthy)"}}),
      FailoverReason.server_error, True, False),

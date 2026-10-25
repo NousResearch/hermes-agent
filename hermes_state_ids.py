@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 SESSION_ID_PATTERN = re.compile(r"^\d{8}_\d{6}_")
@@ -58,3 +59,17 @@ def new_session_id(now: Optional[datetime] = None, *, hex_len: int = DEFAULT_HEX
     caller already captured (``agent.session_start``) so the id and the row agree to the second."""
     stamp = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
     return f"{stamp}_{uuid.uuid4().hex[:hex_len]}"
+
+
+def is_safe_session_file_id(session_id: object) -> bool:
+    """True when *session_id* is a single safe path component under ``sessions/``.
+
+    The id becomes ``<id>.json``/``<id>.jsonl``/``session_<id>.json`` on disk, so ``..``,
+    separators, absolute/drive prefixes, ``:`` (Windows drive-relative path or NTFS alternate
+    stream) and NUL are refused. Same rule as the cron job-id check in ``cron/jobs.py``. Glob
+    metacharacters are fine: the dump sweep ``glob.escape``s the id.
+    """
+    sid = str(session_id or "").strip()
+    if not sid or ".." in sid or any(c in sid for c in ("/", "\\", ":", "\x00")):
+        return False
+    return not Path(sid).is_absolute() and not Path(sid).drive

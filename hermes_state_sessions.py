@@ -24,6 +24,7 @@ from hermes_state_common import (
     _source_match_clause, emit_session_deleted, launch_stub_filter_sql,
 )
 from hermes_state_compression import _CHAIN_CAP, _UNSET_CREATED_SQL
+from hermes_state_ids import is_safe_session_file_id
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
@@ -1649,7 +1650,8 @@ class SessionSessionsMixin:
         ``request_dump_<id>_*.json``; OSError is swallowed so a filesystem hiccup never blocks a
         DB operation. Every historical writer name is swept because a "deleted" session's snapshot
         can carry plaintext secrets (#20334, #60207)."""
-        if sessions_dir is None:
+        # A path-unsafe id (``..``, separators, drive/``:``, NUL) never reaches the filesystem; the row still goes.
+        if sessions_dir is None or not is_safe_session_file_id(session_id):
             return
         targets = [sessions_dir / f"{session_id}{suffix}" for suffix in (".json", ".jsonl")]
         targets.append(sessions_dir / f"session_{session_id}.json")

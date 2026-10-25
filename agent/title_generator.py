@@ -20,6 +20,17 @@ from agent.auxiliary_task_config import authoritative_auxiliary_task
 from agent.context_compressor import LEGACY_SUMMARY_PREFIX
 from agent.delegation_context import is_dispatcher_owned_worker_context
 from agent.message_content import flatten_message_text
+# The prompt's example titles and every title-shape reject rule live in one
+# sibling module: the prompt's example lines and the reject set are rendered
+# from the same constants so they cannot drift apart, and the refusal-shaped
+# guard sits beside the echo guard it complements.
+from agent.title_rejection import (
+    EXAMPLE_ECHO_REJECT as _EXAMPLE_ECHO_REJECT,
+    PROMPT_GOOD_EXAMPLES as _PROMPT_GOOD_EXAMPLES,
+    PROMPT_VAGUE_EXAMPLE as _PROMPT_VAGUE_EXAMPLE,
+    is_prompt_example_echo as _is_prompt_example_echo,
+    is_rejection_shaped_title,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,29 +73,6 @@ _MAX_TITLE_WORDS = 12
 # Output budget for the title call: room for a fenced/prefixed JSON reply and for a reasoning model that
 # thinks despite the thinking-disabled request, without letting a runaway reply burn minutes.
 TITLE_MAX_TOKENS = 512
-
-# The example titles shown to the model in the prompt, and the echo-guard
-# set: when the opening message carries little topical signal, a small model
-# sometimes takes the cheapest schema-valid answer and parrots one of these
-# back verbatim — most visibly "Fix login button on mobile" naming sessions
-# that have nothing to do with a login button. The prompt's example lines are
-# rendered from these constants so the guard set and the prompt cannot drift
-# apart. Port of QwenLM/qwen-code#9709.
-_PROMPT_GOOD_EXAMPLES = (
-    "Fix login button on mobile",
-    "Postgres connection pool exhaustion",
-    "Friendly greeting",
-)
-_PROMPT_VAGUE_EXAMPLE = "Code changes"
-
-# "Friendly greeting" is deliberately NOT in the reject set: the prompt
-# instructs the model to produce it for bare greetings, so it is a legitimate
-# output, not an echo failure. The too-vague example is rejected too — a model
-# repeating the counter-example says nothing about the session, and the
-# derived title the guard falls back to is strictly more informative.
-_EXAMPLE_ECHO_REJECT = frozenset(
-    t.lower() for t in _PROMPT_GOOD_EXAMPLES if t != "Friendly greeting"
-) | {_PROMPT_VAGUE_EXAMPLE.lower()}
 
 # "Friendly greeting" is what the prompt asks for when the opener has no topic yet, so
 # it is the one model title that must NOT settle the session: it is persisted at
@@ -457,18 +445,6 @@ def _is_provisional_greeting_title(title: str) -> bool:
     return normalized in (_PROVISIONAL_GREETING_TITLE, _PROVISIONAL_GREETING_TITLE + " in chat")
 
 
-def _is_prompt_example_echo(title: str) -> bool:
-    """Return True when *title* is one of the prompt's own example titles.
-
-    Comparison is case-insensitive after stripping any leading/trailing run of
-    non-letter/non-digit characters, so bracket/quote wrappers cannot bypass
-    the guard — while ``_clean_title`` keeps brackets for real titles like
-    "(WIP) Fix build". Unicode-aware so full-width wrappers are covered too.
-    """
-    normalized = re.sub(r"^[\W_]+|[\W_]+$", "", title.strip(), flags=re.UNICODE).lower()
-    return normalized in _EXAMPLE_ECHO_REJECT
-
-
 def _is_guard_refusal(exc: Exception) -> bool:
     """True when *exc* is the on-device Apple FM input-classifier refusal.
 
@@ -548,6 +524,14 @@ def _request_title(
     # example). Port of QwenLM/qwen-code#9709.
     if title is not None and _is_prompt_example_echo(title):
         logger.debug("Rejecting prompt-example echo title: %r", title)
+        return None
+    # Refusal-shaped guard: a model that answers the opener instead of titling
+    # ("Unable to work with that request", "No content generated") names nothing
+    # a reader could find the session by. Reject rather than persist it, so the
+    # caller's derived title wins. Measured against the fleet's own stored
+    # titles — see agent.title_rejection.
+    if title is not None and is_rejection_shaped_title(title):
+        logger.debug("Rejecting refusal-shaped title output: %r", title)
         return None
     return title
 

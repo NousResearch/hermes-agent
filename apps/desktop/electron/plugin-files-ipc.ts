@@ -44,7 +44,9 @@ export function registerPluginFilesIpc(deps: PluginFilesIpcDeps): PluginFiles {
         title: label(labels?.title, 'Choose a folder')
       }
 
-      const picked = window ? await deps.dialog.showOpenDialog(window, options) : await deps.dialog.showOpenDialog(options)
+      const picked = window
+        ? await deps.dialog.showOpenDialog(window, options)
+        : await deps.dialog.showOpenDialog(options)
 
       if (picked.canceled || !picked.filePaths[0]) {
         return { ok: true, folder: null }

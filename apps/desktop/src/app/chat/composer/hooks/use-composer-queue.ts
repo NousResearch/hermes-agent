@@ -92,11 +92,13 @@ interface UseComposerQueueArgs {
 }
 
 /** Text kept in the composer, followed by the draft a queued-row edit interrupted (when it differs). */
-const withPreEditDraft = (text: string, draft: string) => (draft.trim() && draft !== text ? `${text}\n\n${draft}` : text)
+const withPreEditDraft = (text: string, draft: string) =>
+  draft.trim() && draft !== text ? `${text}\n\n${draft}` : text
 
 /** The owner answered with a named refusal: nothing was replaced. Anything else (a lost reply, a
  *  dropped connection) leaves the outcome unknown. */
-const isOwnerRefusal = (error: unknown) => typeof (error as { data?: { reason?: unknown } } | null)?.data?.reason === 'string'
+const isOwnerRefusal = (error: unknown) =>
+  typeof (error as { data?: { reason?: unknown } } | null)?.data?.reason === 'string'
 
 /**
  * The composer's queue engine — everything about queued turns: the per-session
@@ -320,7 +322,9 @@ export function useComposerQueue({
           const retained = unconfirmedRef.current
 
           const submissionId =
-            retained?.admissionId === entryId && retained.edited === edited ? retained.submissionId : crypto.randomUUID()
+            retained?.admissionId === entryId && retained.edited === edited
+              ? retained.submissionId
+              : crypto.randomUUID()
 
           serverSaveRef.current = save
 
@@ -333,7 +337,8 @@ export function useComposerQueue({
             // Cancelled, or cancelled and reopened: that later edit is not this save's to settle.
             const open = queueEditRef.current === save.edit
             // A known outcome spends the identity; an unknown one keeps it for the open edit's retry.
-            unconfirmedRef.current = outcome === 'unconfirmed' && open ? { admissionId: entryId, edited, submissionId } : null
+            unconfirmedRef.current =
+              outcome === 'unconfirmed' && open ? { admissionId: entryId, edited, submissionId } : null
 
             if (!open) {
               return

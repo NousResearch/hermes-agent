@@ -8,6 +8,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import logging
 import mimetypes
 import os
 import re
@@ -44,6 +45,7 @@ from hermes_cli.web_models import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
@@ -296,10 +298,12 @@ def _fs_git_branch(cwd: str) -> str:
 def _fs_backend(profile: Optional[str] = None):
     """Return the profile's SSH workspace adapter, or None for host-local FS.
 
-    A refused connection fails while the adapter is opened, before any path is
-    read. That is the same 503 the image route returns (``SSH workspace is
-    unavailable``), not an escaped 500. A missing file or a permission error
-    comes from an adapter that already connected, and keeps its own status.
+    Only an uncached adapter dials the host: the profile's first file request since the server
+    started, or the first after a setting the adapter is built from changes. When that dial fails,
+    or the settings cannot dial at all (no host or user, no ``ssh`` on PATH), the request answers
+    503 ``SSH workspace is unavailable`` and the log names the cause the 503 hides. A cached
+    adapter is not re-dialed here: a host that goes down after it connected fails the read itself,
+    which each route answers on its own.
     """
     from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError, get_ssh_workspace_fs
 
@@ -318,6 +322,7 @@ def _fs_backend(profile: Optional[str] = None):
     try:
         return get_ssh_workspace_fs(profile_key, terminal)
     except SshWorkspaceFsError as exc:
+        logger.warning("SSH workspace for profile %s is unavailable: %s", profile_key, exc.__cause__ or exc)
         _raise_fs_backend_error(exc)
 
 
@@ -354,15 +359,10 @@ def _is_host_file(path: str, profile: Optional[str]) -> bool:
 def _remote_fs_backend(path: str, profile: Optional[str]):
     """The SSH workspace reader for *path*, or None when this host owns it. The host's pastes and
     staged uploads are checked before the SSH machine is dialed, so they read back while that
-    machine is down; other paths answer 503 until it is back."""
-    from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
-
+    machine is down; every other path is the SSH machine's to answer (see ``_fs_backend``)."""
     if _is_host_file(path, profile):
         return None
-    try:
-        return _fs_backend(profile)
-    except SshWorkspaceFsError as exc:
-        _raise_fs_backend_error(exc)
+    return _fs_backend(profile)
 
 
 def _raise_fs_backend_error(exc: Exception) -> None:

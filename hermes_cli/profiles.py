@@ -1263,7 +1263,7 @@ def _copytree_keep_junctions(src: Path, dst: Path, ignore, dirs_exist_ok: bool =
             logger.warning("clone: skipped junction %s -> %s (%s)", link, target, exc)
 
 
-def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
+def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> Optional[dict]:
     """--clone-all: full copytree minus infrastructure/history, then strip runtime files
     and cloned single-use OAuth grants."""
     _copytree_keep_junctions(source_dir, profile_dir, _clone_all_copytree_ignore(source_dir))
@@ -1289,7 +1289,7 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
         )
     from agent.vault_store import VaultError, VaultStore
     try:  # a keychain-mode vault's copied pointer names the source's entry: the clone gets its own
-        VaultStore(profile_dir / "vault").own_copied_key(get_profile_dir(canon) / "vault")
+        return VaultStore(profile_dir / "vault").own_copied_key(get_profile_dir(canon) / "vault")
     except VaultError as exc:
         raise ValueError(f"Cannot copy the vault from {source_dir}: {exc}") from exc
 
@@ -1446,9 +1446,10 @@ def create_profile(
     # below has not removed yet.
     from hermes_cli.profiles_initialization import clone_staging_dir, discard_unpublished_vault_key, finish_profile_layout
     staging = clone_staging_dir(profile_dir)
+    clone_key = None  # the keychain entry made for this clone's vault, if any
     try:
         if clone_all and source_dir:
-            _clone_all_into(source_dir, staging, canon)
+            clone_key = _clone_all_into(source_dir, staging, canon)
         else:
             _bootstrap_profile_dir(staging, source_dir, sync_imports=sync_imports)
         if source_dir is not None and not clone_channels:
@@ -1459,7 +1460,7 @@ def create_profile(
         finish_profile_layout(staging, no_skills=no_skills, clone_all=clone_all, description=description, soul=soul)
         os.rename(staging, profile_dir)
     except BaseException:
-        discard_unpublished_vault_key(staging, source_dir if clone_all else None)
+        discard_unpublished_vault_key(clone_key)
         shutil.rmtree(staging, ignore_errors=True)
         raise
 

@@ -250,6 +250,29 @@ def test_a_clone_that_fails_to_publish_leaves_no_keychain_entry_behind(home, key
     assert VaultStore(source / "vault").resolve_secret(item)["password"] == _LOGIN["password"]
 
 
+def test_a_clone_failing_before_custody_never_deletes_the_source_entry(home, keychain, tmp_path, monkeypatch):
+    """Rollback deletes only the entry made for this clone, never one inferred from the source's files
+    (here the source vault moves away mid-clone, and the copy still names the source's entry)."""
+    from hermes_cli import auth
+    from hermes_cli.profiles import create_profile
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    source = home(".hermes", key_storage="keychain")
+    item = _add(VaultStore())
+    moved = tmp_path / "moved-vault"
+
+    def fail_mid_copy(profile_dir):
+        (source / "vault").rename(moved)
+        raise RuntimeError("dummy failure while the copy still names the source's entry")
+
+    monkeypatch.setattr(auth, "strip_cloned_single_use_oauth_grants", fail_mid_copy)
+    with pytest.raises(RuntimeError):
+        create_profile("vault-clone", clone_from="default", clone_all=True, no_alias=True)
+    assert len(keychain.entries) == 1
+    assert VaultStore(moved).resolve_secret(item)["password"] == _LOGIN["password"]
+
+
 def test_migration_whose_pointer_cannot_be_saved_leaves_no_untracked_entry(home, keychain, monkeypatch):
     from agent import vault_keychain
 

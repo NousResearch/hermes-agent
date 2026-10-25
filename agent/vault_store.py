@@ -337,38 +337,34 @@ class VaultStore:
         # reads would prefer over a working keychain entry. Callers hold the vault lock.
         atomic_write_bytes(self._key_path, key, mode=0o600, fsync_dir=True)
 
-    def own_copied_key(self, published_base: Path) -> None:
+    def own_copied_key(self, published_base: Path) -> Optional[dict]:
         """A ``--clone-all`` copy carries the source's ``vault.keyref``, which names the SOURCE's entry;
         the source moving its key to a file deletes that entry. Before the clone is published at
         ``published_base``, give it an entry of its own, so it never depends on another profile.
-        Raises VaultError when the keychain cannot be read or written: the clone must not be published
-        sharing the source's entry."""
+        Returns the new entry's ref (the caller deletes exactly that entry if publication fails), or
+        None when nothing was shared. Raises VaultError when the keychain cannot be read or written:
+        the clone must not be published sharing the source's entry."""
         from agent import vault_keychain as kc
 
         ref = kc.read_ref(self._keyref_path)
         if ref is None or self._key_path.exists():
-            return  # key file layout (a vault.key always wins on read): nothing is shared
+            return None  # key file layout (a vault.key always wins on read): nothing is shared
         try:
             key = kc.load_key(ref)
             if not self._decrypts(key):
-                return  # the source's own entry is already gone: the copy is no worse off than it
+                return None  # the source's own entry is already gone: the copy is no worse off than it
             mine = kc.new_ref(published_base)
             kc.store_key(mine, key)
         except kc.KeychainUnavailable as exc:
             raise VaultError(
                 f"its key is in the OS keychain, which this session cannot use ({exc}). Clone from a session "
                 "that can reach the keychain, or run `hermes vault key migrate --to file` on the source first.") from exc
-        kc.save_new_ref(self._keyref_path, mine)
-
-    def discard_copied_key(self, source_base: Path) -> None:
-        """Undo :meth:`own_copied_key` for a clone that was never published: delete the entry this copy
-        was given, never one the source's pointer names. Never raises (it runs while unwinding)."""
-        from agent import vault_keychain as kc
-
-        with suppress(VaultError):
-            mine, theirs = kc.read_ref(self._keyref_path), kc.read_ref(Path(source_base) / "vault.keyref")
-            if mine is not None and mine["account"] != (theirs or {}).get("account"):
-                kc.delete_key(mine)
+        try:
+            kc.write_ref(self._keyref_path, mine)
+        except OSError:
+            kc.delete_key(mine)  # the staged clone is discarded with this error, a landed pointer included
+            raise
+        return mine
 
     def _adopt(self, ref: dict) -> dict:
         """Give a moved vault (profile rename, or a clone made before clones got their own entry at

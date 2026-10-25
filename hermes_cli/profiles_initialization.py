@@ -18,11 +18,12 @@ def clone_staging_dir(profile_dir: Path) -> Path:
     return staging
 
 
-def discard_unpublished_vault_key(staging: Path, source_dir: Optional[Path]) -> None:
-    """A create that fails after a --clone-all copy got its own keychain entry must not leave it behind."""
-    if source_dir is not None and (staging / "vault").is_dir():
-        from agent.vault_store import VaultStore
-        VaultStore(staging / "vault").discard_copied_key(source_dir / "vault")
+def discard_unpublished_vault_key(ref: Optional[dict]) -> None:
+    """A create that fails after a --clone-all copy got its own keychain entry (``ref``, returned by
+    ``VaultStore.own_copied_key``) deletes exactly that entry; never one inferred from the source."""
+    if ref is not None:
+        from agent.vault_keychain import delete_key
+        delete_key(ref)
 
 
 def finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: bool,

@@ -202,10 +202,14 @@ KANBAN_BLOCK_SCHEMA = _schema(
 KANBAN_SCHEDULE_SCHEMA = _schema(
     "kanban_schedule",
     (
-        "Park your task as 'scheduled' while it waits for a time or external event. This ends the current run and makes the "
-        "task non-dispatchable until an orchestrator unblocks it; it does not "
-        "create a timer. Put any wake-up marker such as "
-        "``SCHEDULED_UNTIL=<ISO8601>`` in ``reason``."
+        "Park your task as 'scheduled' while it waits for a time or external event. "
+        "This ends the current run and makes the task non-dispatchable until the "
+        "dispatcher re-gates it. Put ``SCHEDULED_UNTIL=<timezone-aware ISO8601>`` in "
+        "``reason`` to wake on the first tick at/after that deadline, or "
+        "``WAKE_ON=<condition>`` for an owner recheck every 30 minutes. A future "
+        "deadline takes precedence. A recheck is not permission to proceed: verify "
+        "the condition first. Missing or malformed markers are surfaced as "
+        "needs-input blocks."
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),

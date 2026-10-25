@@ -1109,6 +1109,11 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
     to its own kanban_create result, and the response surfaces the
     ``subscribed`` flag so the orchestrator can react."""
     from tools import kanban_tools as kt
+    # An earlier test can leave the session ContextVars set (even to ""), and a set ContextVar wins over
+    # os.environ in get_session_env; clear them so this test reads its own monkeypatched env.
+    import gateway.session_context as _sc
+    _tokens = [(_v, _v.set(_sc._UNSET)) for _v in _sc._VAR_MAP.values()]
+    monkeypatch.setattr(_sc, "_tokens_for_test", _tokens, raising=False)
     monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
     monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-42")
     monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "thread-7")

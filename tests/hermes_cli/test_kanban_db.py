@@ -31,6 +31,14 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+@pytest.fixture(autouse=True)
+def _isolated_live_worker_procs(monkeypatch):
+    """On Windows ``_default_spawn`` parks every Popen in ``_live_worker_procs`` and the next
+    ``reap_worker_zombies`` polls it. Tests that fake ``subprocess.Popen`` (no ``poll``) must not
+    leave their handle behind for an unrelated later dispatch tick."""
+    monkeypatch.setattr(kbd, "_live_worker_procs", {})
+
+
 def _init_git_repo(repo: Path) -> None:
     repo.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True)
@@ -384,6 +392,50 @@ def test_rate_limit_exit_requeues_without_counting_failure(
         assert "crashed" not in outcomes
 
 
+@pytest.mark.parametrize("refusal,sticky", [
+    ("hermes: no dependency environment is committed for this install; run `hermes pm repair`", True),
+    ("hermes: some other failure the user should see", False),
+])
+def test_bootstrap_refusal_exit_blocks_after_one_attempt(kanban_home, monkeypatch, refusal, sticky):
+    """A worker whose own bootstrap refuses to start (exit 1, ``run `hermes pm repair```) died
+    before any agent code and would die identically on every respawn (one was re-claimed the
+    same second, then blocked by hand). It parks ``blocked`` + sticky on the FIRST death; any
+    other nonzero exit still gets the normal retry budget."""
+    import hermes_cli.kanban_db as _kb
+    import hermes_cli.kanban_db_connect as _kbc
+    from hermes_cli import kanban_db_dispatch as _kbd
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
+    with _kbc.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = _kb.create_task(conn, title="boot", assignee="a")
+        _kb.claim_task(conn, tid, claimer=f"{host}:w0")
+        pid = 71001
+        conn.execute("UPDATE tasks SET worker_pid=? WHERE id=?", (pid, tid))
+        conn.commit()
+        log = _kb.worker_log_path(tid)
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(refusal + "\r\n", encoding="utf-8")
+        _kbd._record_worker_exit(pid, _exited_status(1))
+
+        assert tid in _kbd.detect_crashed_workers(conn)
+        task = _kb.get_task(conn, tid)
+        gave_up = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='gave_up'", (tid,),
+        ).fetchone()
+        if sticky:
+            assert task.status == "blocked"
+            assert tid in getattr(_kbd.detect_crashed_workers, "_last_auto_blocked", [])
+            assert json.loads(gave_up["payload"])["startup_refusal"] is True
+            _kb.recompute_ready(conn)
+            assert _kb.get_task(conn, tid).status == "blocked"
+        else:
+            assert task.status == "ready"
+            assert gave_up is None
+
+
 @pytest.mark.parametrize("lane", ["ready", "review"])
 def test_terminal_provider_exit_blocks_after_one_attempt_in_either_lane(kanban_home, monkeypatch, lane):
     """A worker that exits ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE`` (credential revoked, model
@@ -562,6 +614,10 @@ def test_infrastructure_spawn_refusal_never_charges_the_card(
     failure on the same card still counts."""
     from tools import process_registry
 
+    # The systemd topology is Linux-only (the helper returns in_process elsewhere and reads
+    # os.getuid in its remedy text): simulate that host so the refusal path runs on Windows too.
+    monkeypatch.setattr(process_registry, "_IS_LINUX", True)
+    monkeypatch.setattr(os, "getuid", lambda: 1000, raising=False)
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway")
     monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", lambda: False)
@@ -801,7 +857,8 @@ def test_worktree_workspace_explicit_target_materializes_linked_worktree(kanban_
         capture_output=True,
         text=True,
     ).stdout
-    assert f"worktree {target}" in listed
+    # git prints forward slashes on every platform; str(target) is backslashed on Windows.
+    assert f"worktree {target.as_posix()}" in listed
     assert f"branch refs/heads/{branch}" in listed
 
 
@@ -1589,7 +1646,8 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
     assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
 
     monkeypatch.setenv("HERMES_BIN", "/opt/hermes/bin/hermes")
-    assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]
+    # An explicit path is made absolute for the host: on Windows a drive-less POSIX path gains the current drive.
+    assert kbd._resolve_hermes_argv() == [os.path.abspath("/opt/hermes/bin/hermes")]
 
 
 
@@ -1612,7 +1670,10 @@ def test_resolve_hermes_argv_module_actually_runs():
         with mock.patch.object(shutil, "which", return_value=None):
             argv = kbd._resolve_hermes_argv()
     offline = {**os.environ, "HTTPS_PROXY": "http://127.0.0.1:9", "https_proxy": "http://127.0.0.1:9", "NO_PROXY": "", "no_proxy": ""}
-    r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=30, check=False, env=offline)
+    # `--version` imports hermes_cli.main: ~4 s typically, but 10-50 s on a loaded Windows host
+    # (measured on an unpatched tree too), so a 30 s budget failed healthy installs. The timeout
+    # only has to separate slow from hung.
+    r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=180, check=False, env=offline)
     assert r.returncode == 0, (
         f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"
@@ -1665,7 +1726,7 @@ def test_default_spawn_pins_repo_root_on_module_worker_pythonpath(tmp_path, monk
     for resolved in ([sys.executable, "-m", "hermes_cli.main"], ["/opt/hermes/bin/hermes"]):
         monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda resolved=resolved: resolved)
         kbd._default_spawn(task, str(tmp_path / "ws"))
-        assert captured["cmd"][-3:] == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
+        assert captured["cmd"][-4:] == [sys.executable, "-P", "-m", "hermes_cli.kanban_worker_client"]
         assert captured["env"]["PYTHONPATH"].split(os.pathsep)[0] == root
 
 

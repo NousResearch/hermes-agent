@@ -12,6 +12,13 @@ Hermes Kanban is a durable task board, shared across all your Hermes profiles, t
 
 ### Completion checkpoints before the iteration cap
 
+For a bounded recurring tenant, set `kanban.worker_max_turns_by_tenant` in the
+assigned worker profile, for example `{"routine:commentary": 12}`. Exact matching
+leaves other tenants and profiles unchanged. The dispatcher passes the limit as
+`chat --max-turns`, so it overrides that worker's usual `agent.max_turns` without
+changing the profile's interactive chats. Limits must be positive integers;
+invalid limits refuse spawn rather than silently launching an unbounded worker.
+
 Dispatcher-owned workers get one checkpoint notice near 90% of their finite iteration
 budget, attached to a fresh tool result while another tool-capable call remains. Use
 `agent.budget_warning_ratio` to choose an earlier threshold. Tiny budgets warn no later
@@ -961,6 +968,7 @@ hermes kanban edit <id> [--title ...] [--body ...]     # edit task title / body 
         [--priority N]
 hermes kanban promote <id>...                          # move todo/blocked tasks to ready (recovery)
 hermes kanban schedule <id> --at <ISO8601>             # set/clear a task's scheduled_at start time
+hermes kanban schedule <id> "SCHEDULED_UNTIL=<ISO8601 with offset>"  # park until a deadline (see below)
 hermes kanban diagnostics [--json]                     # board health snapshot (alias: diag)
 hermes kanban link <parent_id> <child_id>
 hermes kanban unlink <parent_id> <child_id>
@@ -1022,6 +1030,27 @@ kanban:
   auto_promote_children: false
   default_workdir: ~/work/active-project
 ```
+
+### Parked follow-ups (`scheduled` state)
+
+`kanban_schedule` and `hermes kanban schedule <id> "<reason>"` end the current
+run and park the card. Put `SCHEDULED_UNTIL=<timezone-aware ISO8601>` in the
+reason: the first dispatcher tick at or after the deadline returns the card
+to `ready`, or `todo` if a prerequisite is still incomplete. A future deadline
+keeps it parked. The latest scheduled event is authoritative, so scheduling
+again replaces the old deadline. No separate host cron is needed.
+
+For an external condition, use `WAKE_ON=<condition>` instead. After 30 minutes,
+the dispatcher returns the card to its owner to recheck the condition. This is
+not permission to perform the waiting action: the owner must verify the
+condition, and schedule again if it remains unmet. If both markers are present,
+the deadline takes precedence. Worker concurrency and dependency gates still
+apply, so an eligible recheck may queue while the owner is busy.
+
+Missing, duplicate or malformed markers (including a timestamp without a
+timezone) move the card to a sticky `needs_input` block with a diagnostic
+comment, event and dispatcher warning, rather than leaving it parked forever.
+Correct the reason and schedule again, or unblock manually when appropriate.
 
 ### Scheduled task starts (`scheduled_at`)
 

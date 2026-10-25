@@ -11,6 +11,19 @@ import sqlite3
 from hermes_state_runtime import RuntimeStoreError
 
 
+def worker_turn_limit(config, tenant):
+    """Exact tenant limit from the assigned profile's own config (the owner's), else None."""
+    if not tenant:
+        return None
+    section = (config.get('kanban') or {}).get('worker_max_turns_by_tenant') or {}
+    raw = section.get(tenant) if isinstance(section, dict) else None
+    if raw is None:
+        return None
+    if type(raw) is not int or raw <= 0:
+        raise RuntimeStoreError('invalid_params')
+    return raw
+
+
 def build_kanban_policy(connection, params, config):
     from hermes_cli import kanban_db as kb
     from hermes_cli.profiles import resolve_profile_env
@@ -53,6 +66,9 @@ def build_kanban_policy(connection, params, config):
     for name, value in (('model', task.model_override), ('provider', task.provider_override), ('reasoning', task.reasoning_effort)):
         if value:
             params_policy[name] = value
+    limit = worker_turn_limit(config, task.tenant)
+    if limit is not None:
+        params_policy['max_turns'] = limit
     private = {}
     policy = build_policy(params_policy, config, private_secrets=private)
     if policy.model is None:

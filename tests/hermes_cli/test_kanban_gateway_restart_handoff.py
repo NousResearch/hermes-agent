@@ -143,7 +143,7 @@ def test_standalone_dispatcher_keeps_direct_worker_spawn(
     )
 
     assert kbd._default_spawn(task, str(workspace)) == 4243
-    assert captured_cmd == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
+    assert captured_cmd == [sys.executable, "-P", "-m", "hermes_cli.kanban_worker_client"]
 
 
 @pytest.mark.platforms("linux")

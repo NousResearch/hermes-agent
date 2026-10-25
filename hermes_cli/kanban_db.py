@@ -1173,7 +1173,8 @@ def create_task(
     Status: ``ready`` unless a parent is not ``done`` (``todo``); ``triage=True``
     forces ``triage``; ``initial_status="blocked"`` parks it for human ops.
     ``idempotency_key``: an existing non-archived task with the key is returned
-    instead of a duplicate. ``max_runtime_seconds``: cap before the dispatcher
+    instead of a duplicate; the lookup runs under the write lock, so concurrent
+    creators with one key insert once. ``max_runtime_seconds``: cap before the dispatcher
     SIGTERMs and re-queues. ``model_override``/``provider_override`` pin the
     worker model (provider requires model); ``reasoning_effort`` is independent.
     ``creator_task_id``: inherit durable session/subscriptions independently of
@@ -1221,17 +1222,6 @@ def create_task(
     parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
 
-    # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
-    # race may insert twice, the next lookup stabilises on the newest.
-    if idempotency_key:
-        row = conn.execute(
-            "SELECT id FROM tasks WHERE idempotency_key = ? "
-            "AND status != 'archived' "
-            "ORDER BY created_at DESC LIMIT 1", (idempotency_key,),
-        ).fetchone()
-        if row:
-            return row["id"]
-
     now = int(time.time())
 
     # Only persistent kinds inherit the board ``default_workdir``: a scratch
@@ -1248,6 +1238,16 @@ def create_task(
             # allow_nested: graph builders compose create_task under one outer
             # commit so the dispatcher never sees a half-built graph.
             with write_txn(conn, allow_nested=True):
+                # Idempotency lookup under the write lock: concurrent creators with one key
+                # serialise here, so exactly one inserts and the others return its id.
+                if idempotency_key:
+                    row = conn.execute(
+                        "SELECT id FROM tasks WHERE idempotency_key = ? "
+                        "AND status != 'archived' "
+                        "ORDER BY created_at DESC LIMIT 1", (idempotency_key,),
+                    ).fetchone()
+                    if row:
+                        return row["id"]
                 task_status, tenant = initial_task_state(conn, parents, initial_status, triage, tenant)
                 # Project worktree: fresh dir under the repo + deterministic
                 # branch, instead of the random ``wt/<id>`` worker fallback.
@@ -1467,9 +1467,12 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
             )
         if row["assignee"] != profile:
             # The failure streak is per task/profile; a new profile starts fresh.
+            # So does the block-loop counter: the new owner's first block is one
+            # block, not a same-cause recurrence of the previous owner's
+            # (block -> unblock -> reassign -> block must not trip the breaker).
             conn.execute(
                 "UPDATE tasks SET assignee = ?, consecutive_failures = 0, "
-                "last_failure_error = NULL WHERE id = ?", (profile, task_id),
+                "last_failure_error = NULL, block_recurrences = 0 WHERE id = ?", (profile, task_id),
             )
         else:
             conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
@@ -3869,8 +3872,8 @@ def schedule_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
-    """Park in ``scheduled`` (waiting on time, not a human; not dispatchable)
-    until ``unblock_task`` re-gates it."""
+    """Park in ``scheduled`` until the dispatcher re-gates the latest reason's
+    SCHEDULED_UNTIL deadline or WAKE_ON condition recheck; manual unblock also works."""
     with write_txn(conn):
         params: list[Any] = [task_id]
         sql = """

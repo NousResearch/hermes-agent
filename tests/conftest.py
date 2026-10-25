@@ -441,6 +441,21 @@ def _isolate_hermes_home(_hermetic_environment):
 
 
 @pytest.fixture(autouse=True)
+def _drop_leaked_live_worker_procs():
+    """On Windows ``_default_spawn`` parks every Popen in ``kanban_db_dispatch._live_worker_procs`` and the
+    next ``reap_worker_zombies`` polls it. A test that fakes ``subprocess.Popen`` (no ``poll``) leaves its
+    handle behind and fails an unrelated later dispatcher tick; empty the table around every test."""
+    def _clear():
+        mod = sys.modules.get("hermes_cli.kanban_db_dispatch")
+        live = getattr(mod, "_live_worker_procs", None)
+        if isinstance(live, dict):
+            live.clear()
+    _clear()
+    yield
+    _clear()
+
+
+@pytest.fixture(autouse=True)
 def _reset_foreground_exit_fence():
     """A test that drives a hard-exit path raises the one-way foreground-spawn fence; lower it after."""
     yield

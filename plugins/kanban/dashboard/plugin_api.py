@@ -1266,11 +1266,44 @@ def get_task_log(task_id: str, tail: Optional[int] = Query(None, ge=1, le=2_000_
         "size_bytes": size, "content": content or "", "truncated": bool(tail and size > tail)}
 
 
+def _resolve_dispatch_caps() -> tuple[Optional[int], Optional[int], Optional[int]]:
+    """Resolve manual-dispatch caps; unreadable or malformed config must not uncap a nudge."""
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.config_read_errors import FailedConfigRead
+
+        cfg = load_config()
+        if isinstance(cfg, FailedConfigRead) or not isinstance(cfg, dict):
+            raise ValueError("config could not be read")
+        kanban_cfg = cfg.get("kanban", {})
+        if not isinstance(kanban_cfg, dict):
+            raise ValueError("kanban config section is not a mapping")
+        caps = {}
+        for key in ("max_spawn", "max_in_progress", "max_in_progress_per_profile"):
+            raw = kanban_cfg.get(key)
+            if raw is None:
+                caps[key] = None
+                continue
+            if type(raw) not in (int, str) or kbd._positive_int(raw, 0) == 0:
+                raise ValueError(f"kanban.{key} must be a positive integer")
+            caps[key] = int(raw)
+        max_in_progress = kbd.resolve_max_in_progress(caps["max_in_progress"])
+    except Exception:
+        log.warning("kanban manual dispatch refused: cap configuration unresolved")
+        raise HTTPException(
+            status_code=503, detail="dispatch refused: kanban cap configuration could not be resolved")
+    return caps["max_spawn"], max_in_progress, caps["max_in_progress_per_profile"]
+
+
 @router.post("/dispatch")
-def dispatch(dry_run: bool = Query(False), max_n: int = Query(8, alias="max"), board: Optional[str] = Query(None)):
-    """Dispatch nudge so the UI doesn't wait out the 60 s dispatcher tick."""
+def dispatch(dry_run: bool = Query(False), max_n: Optional[int] = Query(None, alias="max"), board: Optional[str] = Query(None)):
+    """Nudge dispatch with configured caps. Explicit max overrides only the per-pass limit."""
+    cfg_max_spawn, max_in_progress, max_in_progress_per_profile = _resolve_dispatch_caps()
     with _board_conn(board) as (board, conn):
-        result = kbd.dispatch_once(conn, dry_run=dry_run, max_spawn=max_n, board=board)
+        result = kbd.dispatch_once(
+            conn, dry_run=dry_run, max_spawn=max_n if max_n is not None else cfg_max_spawn,
+            max_in_progress=max_in_progress,
+            max_in_progress_per_profile=max_in_progress_per_profile, board=board)
         try:
             return asdict(result)  # DispatchResult is a dataclass
         except TypeError:

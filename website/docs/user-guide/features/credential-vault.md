@@ -51,6 +51,27 @@ Sites that ask for a code after the password are handled the same way:
   to type. The agent tells you to complete it on your device and waits for
   the page to move on.
 
+### Counter-based authenticators (HOTP)
+
+The local vault also accepts `otpauth://hotp/...` links in the existing
+**Settings → Passwords & Logins → Add** form or `hermes vault add` prompt.
+Paste the full link into the masked authenticator field, never into chat.
+The link must include the provider's initial `counter` (0 through 2^64 − 1).
+Bare setup keys still mean TOTP; HOTP needs the full link. The vault supports
+6–8 digits and SHA1, SHA256 or SHA512, with defaults of 6 digits and SHA1.
+
+Each code request saves the next counter in the encrypted vault before it
+returns a code. A failed page fill or rejected code still consumes that
+counter. Do not retry blindly: repeated attempts can exceed the provider's
+look-ahead window. Resynchronize with the provider or re-enroll if needed.
+The final counter can be consumed once; further requests require re-enrollment.
+
+**Do not use duplicate active vault copies or restore stale HOTP state.** A
+backup restore, profile clone or re-enrollment with an old link can move the
+counter backward. The vault lock prevents concurrent consumption on one vault,
+not counter reuse across copies. After a restore, resynchronize with the
+provider or re-enroll before using HOTP.
+
 ## Already using 1Password or Bitwarden?
 
 Nothing to enable. If the `op` or `bw` command-line tool is installed and signed

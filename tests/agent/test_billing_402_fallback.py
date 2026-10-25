@@ -77,3 +77,22 @@ def test_auth_failure_is_not_eager_fallback(monkeypatch):
     """Auth has its own escalate-once branch; the eager gate must leave it alone."""
     monkeypatch.setattr("agent.turn_recovery.billing_failover_enabled", lambda: False)
     assert _decide(_classified(FailoverReason.auth)) is False
+
+
+def test_billing_with_production_rate_limit_flag_stays_terminal(monkeypatch):
+    """Production passes is_rate_limited=True for billing (_RATE_LIMIT_REASONS).
+
+    The rate-limit shortcut must not bypass the opt-in: default false stays terminal.
+    """
+    monkeypatch.setattr("agent.turn_recovery.billing_failover_enabled", lambda: False)
+    assert _decide(_classified(FailoverReason.billing), is_rate_limited=True) is False
+
+
+def test_billing_with_production_rate_limit_flag_and_opt_in(monkeypatch):
+    monkeypatch.setattr("agent.turn_recovery.billing_failover_enabled", lambda: True)
+    assert _decide(_classified(FailoverReason.billing), is_rate_limited=True) is True
+
+
+def test_billing_unverified_with_rate_limit_flag_never_jumps(monkeypatch):
+    monkeypatch.setattr("agent.turn_recovery.billing_failover_enabled", lambda: True)
+    assert _decide(_classified(FailoverReason.billing, billing_unverified=True), is_rate_limited=True) is False

@@ -660,7 +660,10 @@ def _should_eager_fallback(
     ``billing_unverified`` 402s never jump providers: an ambiguous signal must not
     switch routes.
     """
-    if is_rate_limited and wrapped_output_cap_budget is None:
+    # ``_RATE_LIMIT_REASONS`` also contains ``billing``; without this exclusion the
+    # rate-limit shortcut would fire for a 402 and bypass both the opt-in flag and the
+    # ``billing_unverified`` guard below.
+    if is_rate_limited and classified.reason != FailoverReason.billing and wrapped_output_cap_budget is None:
         return True
     if is_transport_failure and retry_count >= 2:
         return True

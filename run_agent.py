@@ -916,6 +916,16 @@ class AIAgent(
             turn_author = getattr(self, "_turn_author", None)
             if turn_author is not None:
                 sync_kwargs["turn_author"] = turn_author
+            metadata = {
+                "session_id": self.session_id or "",
+                "parent_session_id": getattr(self, "_parent_session_id", "") or "",
+                "lineage_key": getattr(self, "_gateway_session_key", "") or "",
+                "platform": getattr(self, "platform", "") or "",
+                "chat_id": getattr(self, "_chat_id", "") or "",
+                "thread_id": getattr(self, "_thread_id", "") or "",
+                "origin_kind": "direct",
+            }
+            sync_kwargs["metadata"] = {k: v for k, v in metadata.items() if v != ""}
             self._memory_manager.sync_all(user_text, response_text, **sync_kwargs)
             # Sibling of the build_turn_context() prefetch gate: don't key recall on zero-signal prompts.
             if not is_trivial_prompt(user_text):

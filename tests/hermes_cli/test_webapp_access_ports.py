@@ -109,6 +109,24 @@ def test_a_port_the_user_set_is_never_replaced(machine, configured):
     assert _webapp_block(machine["solo"])["port"] == configured
 
 
+def test_a_port_the_managed_scope_sets_is_the_one_the_callback_names(machine, tmp_path):
+    """An administrator's ``webapp.port`` wins over the profile's config when the gateway loads it, and
+    saving never writes over it: Start registers the callback on that port and writes none."""
+    from gateway.webapp_listener import listener_plan
+    from hermes_cli import managed_scope
+
+    managed = _write(tmp_path / "managed", "webapp:\n  port: 9555\n")
+    machine["monkeypatch"].setenv("HERMES_MANAGED_DIR", str(managed))
+    managed_scope.invalidate_managed_cache()
+    host, port, public_url, callback = webapp_access.plan("lan")
+    assert (port, callback) == (None, "http://192.168.1.50:9555/auth/callback")
+    assert machine["probed"] == []
+    webapp_access.serve(host, public_url, port)
+    assert "port" not in _webapp_block(machine["solo"])
+    bind_host, bind_port, mount, _reason = listener_plan(machine["solo"])
+    assert (bind_host, bind_port) == ("0.0.0.0", 9555) and mount is not None
+
+
 def test_with_no_free_port_start_refuses_and_names_the_setting(machine):
     machine["listening"].update(range(9121, 9221))
     with pytest.raises(webapp_access.WebappAccessError) as refused:

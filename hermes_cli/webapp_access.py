@@ -202,16 +202,21 @@ def _port_to_serve(home: Path, host: str) -> tuple[int, Optional[int]]:
 
 
 def _own_port(home: Path) -> Optional[object]:
-    """The ``webapp.port`` *home*'s ``config.yaml`` sets, valid or not (the gateway reports an invalid
-    one by name), or None when it sets none. The file as written: the defaults name a port for everyone."""
+    """The ``webapp.port`` *home*'s gateway is configured with, valid or not (the gateway reports an
+    invalid one by name), or None when neither *home*'s ``config.yaml`` nor the managed scope sets one.
+    The file as written with the managed overlay on top, as the gateway loads it (a managed port wins, and
+    ``save_config`` never writes over it), but without the defaults: they name a port for everyone."""
     from ruamel.yaml.error import YAMLError
 
+    from hermes_cli import managed_scope
     from hermes_cli.config import read_user_config_raw
 
     try:
         document = read_user_config_raw(Path(home) / "config.yaml")
     except (OSError, ValueError, YAMLError):  # the gateway reports an unreadable config itself
         return None
+    if isinstance(document, dict):
+        document = managed_scope.apply_managed_overlay(document)
     block = document.get("webapp") if isinstance(document, dict) else None
     return block.get("port") if isinstance(block, dict) else None
 

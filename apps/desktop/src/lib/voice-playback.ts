@@ -146,6 +146,15 @@ export async function resolveSpeakStreamUrl(owner?: OwnerScope): Promise<null | 
     const profile = owner?.profile || getApiRequestProfile()
     const connectionId = owner?.connectionId || getApiRequestConnection()
 
+    // A host whose gateway ticket opens only `/api/ws` mints the stream its own ticket.
+    if (desktop.getAudioWsUrl) {
+      return await withTimeout(
+        desktop.getAudioWsUrl({ connectionId, path: '/api/audio/speak-stream', profile }),
+        RECONNECT_ATTEMPT_TIMEOUT_MS,
+        `Timed out minting the speech stream URL for profile "${profile}"`
+      )
+    }
+
     // Both awaits below are IPC round-trips into the main process with no
     // timeout of their own (#93454) — a wedged main-process round-trip
     // otherwise hangs voice mode's "speaking" state forever instead of

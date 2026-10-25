@@ -29,8 +29,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from hermes_cli.plugin_host_wire import (
-    Channel, Opaque, PROTOCOL_VERSION, PluginHostUnsupported, bind_serving_request, decode, describe_signature,
-    encode, is_async_callable, serving_request,
+    Channel, Opaque, PROTOCOL_VERSION, PluginHostUnsupported, bind_serving_request, declared_member, decode,
+    describe_signature, encode, is_async_callable, restore_arguments, serving_request,
 )
 
 logger = logging.getLogger("hermes_cli.plugin_host_child")
@@ -230,7 +230,12 @@ class HostRuntime:
         return result
 
     def _encode_result(self, plugin_key: str, value: Any) -> Any:
-        return encode(value, functools.partial(self.ref_for, plugin_key, allow_objects=False))
+        def refs(obj: Any) -> Optional[dict]:
+            if _provider_base(obj) is not None:  # e.g. the engine ``clone_for_agent`` returns
+                return self._describe_object(plugin_key, obj)
+            return self.ref_for(plugin_key, obj, allow_objects=False)
+
+        return encode(value, refs)
 
     def _decode_args(self, params: dict[str, Any]):
         return decode(params.get("args") or [], None), decode(params.get("kwargs") or {}, None)
@@ -348,6 +353,9 @@ class HostRuntime:
         if method.startswith("_"):
             raise AttributeError(method)
         args, kwargs = self._decode_args(params)
+        base = _provider_base(obj)
+        if base is not None:  # the ABC's annotations say what Hermes passed (``home_path: Path``)
+            args, kwargs = restore_arguments(declared_member(base, method), args, kwargs)
         return self._encode_result(self.owners.get(ref, ""), self._run(getattr(obj, method)(*args, **kwargs)))
 
     def op_obj_getattr(self, params: dict[str, Any]) -> Any:
@@ -441,6 +449,18 @@ class _CapturingContext(RemotePluginContext):
 def _import_base(ref: str) -> type:
     module, attr = ref.split(":")
     return getattr(importlib.import_module(module), attr)
+
+
+def _provider_base(value: Any) -> Optional[type]:
+    """The provider ABC (``HOST_OBJECT_BASES``) ``value`` implements. Only an already-imported base
+    can match: a plugin object subclassing it imported it."""
+    from hermes_cli.plugin_isolation import HOST_OBJECT_BASES
+    for ref in HOST_OBJECT_BASES.values():
+        module, attr = ref.split(":")
+        base = getattr(sys.modules.get(module), attr, None)
+        if isinstance(base, type) and isinstance(value, base):
+            return base
+    return None
 
 
 def _is_provider_object(value: Any) -> bool:

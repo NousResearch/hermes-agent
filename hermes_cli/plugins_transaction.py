@@ -76,7 +76,7 @@ def _refresh_declared_dependencies(target: Path, staged: Path, manifest: dict, *
         return  # a disabled plugin's deps are admitted (and consented) by `hermes plugins enable`
     before, after = read_python_declaration(target), read_python_declaration(staged)
     added = tuple(spec for spec in after.install_requirements if spec not in before.install_requirements)
-    if not added and not (after.is_member and not before.is_member):
+    if not added and not (after.installs_packages and not before.installs_packages):
         return
     if not interactive:
         raise pc.PluginOperationError(

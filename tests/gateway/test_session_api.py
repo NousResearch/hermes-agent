@@ -696,7 +696,7 @@ def _register_session_model_route(app, adapter):
 def _patch_api_server_runtime(monkeypatch):
     monkeypatch.setattr(
         "gateway.run._resolve_runtime_agent_kwargs",
-        lambda: {
+        lambda target_model=None: {
             "provider": "openrouter",
             "api_key": "sk-global",
             "base_url": "https://openrouter.example/v1",

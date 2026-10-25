@@ -129,7 +129,7 @@ def _install_fakes(monkeypatch, mode):
     import tools.terminal_tool
 
     gateway_run = importlib.import_module("gateway.run")
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"})
     return gateway_run
 
 

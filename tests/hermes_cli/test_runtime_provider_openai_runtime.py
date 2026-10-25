@@ -15,7 +15,7 @@ _CODEX_STORE_CREDS = {"base_url": "https://chatgpt.com/backend-api/codex", "api_
 
 def _codex_rung(monkeypatch, rung: str) -> dict:
     """Isolate one openai-codex ladder rung; returns the kwargs for resolve_runtime_provider."""
-    monkeypatch.setattr(rp, "resolve_codex_runtime_credentials", lambda: dict(_CODEX_STORE_CREDS))
+    monkeypatch.setattr(rp, "resolve_codex_runtime_credentials", lambda **kw: dict(_CODEX_STORE_CREDS))
     if rung == "pool":
         entry = SimpleNamespace(api_key="tok", runtime_api_key="tok", base_url="", source="pool")
         monkeypatch.setattr(rp, "load_pool", lambda _p: SimpleNamespace(

@@ -26,7 +26,7 @@ def test_fast_session_override_includes_credential_pool(monkeypatch):
     )
     monkeypatch.setattr(
         "gateway.run._credential_pool_for_provider",
-        lambda provider: fake_pool if provider == "custom:hyper" else None,
+        lambda provider, target_model=None: fake_pool if provider == "custom:hyper" else None,
     )
 
     model, runtime = runner._resolve_session_agent_runtime(session_key="sess-1")

@@ -21,10 +21,12 @@ def _mock_client(api_key="test-key", base_url="https://api.anthropic.com"):
 class TestCredentialPoolPreservedOnAutoDetect:
     """Issue #63425: credential pool should survive provider auto-detection."""
 
-    def test_anthropic_pool_preserved_with_url_auto_detect(self):
+    def test_anthropic_pool_preserved_with_url_auto_detect(self, monkeypatch):
         """When provider=None and base_url=api.anthropic.com, the passed
         credential_pool should remain attached after auto-detection."""
         from agent.agent_init import init_agent
+        monkeypatch.setattr("agent.model_metadata.model_metadata_http.get",
+                            lambda *a, **kw: SimpleNamespace(status_code=200, json=lambda: {"data": []}))
 
         # Build a minimal agent-like object (like tests use object.__new__)
         from run_agent import AIAgent

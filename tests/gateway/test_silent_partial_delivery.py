@@ -306,7 +306,7 @@ async def _run_turn(monkeypatch, tmp_path, *, consumer_cls=None, session_id):
         )
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"}
     )
 
     adapter = CaptureAdapter()

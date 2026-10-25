@@ -562,7 +562,7 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"})
 
     source = SessionSource(
         platform=Platform.SLACK,
@@ -603,7 +603,7 @@ async def test_scheduled_heartbeat_suppresses_routine_progress_and_typing(monkey
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"})
 
     source = SessionSource(
         platform=Platform.TELEGRAM,
@@ -654,7 +654,7 @@ async def test_progress_carries_anchor_for_relay_discord_auto_thread(monkeypatch
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"})
 
     # Channel-initiating message: no thread_id yet, but the connector stamped
     # the prospective thread id (== the triggering message id). Relay ingress
@@ -713,7 +713,7 @@ async def test_progress_no_anchor_for_native_discord_thread_event(monkeypatch, t
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"})
 
     # No prospective_thread_id (event is IN a real thread already).
     source = SessionSource(
@@ -798,7 +798,7 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"})
 
     source = SessionSource(
         platform=Platform.TELEGRAM,
@@ -861,7 +861,7 @@ def test_discord_truncated_tool_url_links_to_full_destination(monkeypatch, tmp_p
     monkeypatch.setattr(
         gateway_run,
         "_resolve_runtime_agent_kwargs",
-        lambda: {"api_key": "***"},
+        lambda target_model=None: {"api_key": "***"},
     )
 
     source = SessionSource(
@@ -1106,7 +1106,7 @@ async def _run_with_agent(
     if config_data and "streaming" in config_data:
         runner.config.streaming = StreamingConfig.from_dict(config_data["streaming"])
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"})
     source = SessionSource(
         platform=platform,
         chat_id=chat_id,
@@ -1833,7 +1833,7 @@ async def test_run_agent_drops_tool_progress_after_generation_invalidation(monke
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"})
 
     source = SessionSource(
         platform=Platform.DISCORD,
@@ -1894,7 +1894,7 @@ async def test_run_agent_drops_interim_commentary_after_generation_invalidation(
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"})
 
     source = SessionSource(
         platform=Platform.DISCORD,
@@ -2031,7 +2031,7 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"})
 
     source = SessionSource(
         platform=Platform.TELEGRAM,
@@ -2084,7 +2084,7 @@ async def test_terminal_progress_verbose_shows_full_command(monkeypatch, tmp_pat
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"})
 
     source = SessionSource(
         platform=Platform.TELEGRAM,

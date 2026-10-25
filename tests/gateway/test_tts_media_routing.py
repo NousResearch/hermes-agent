@@ -548,7 +548,7 @@ async def test_queued_resend_branch_delivers_media_and_preserves_protected_examp
         stt_enabled=False,
     )
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"})
 
     source = SessionSource(
         platform=Platform.TELEGRAM,

@@ -294,7 +294,7 @@ async def test_internal_root_telegram_dm_event_bypasses_topic_lobby(
     runner._handle_message_with_agent = AsyncMock(return_value="agent response")
 
     monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"}
     )
 
     event = MessageEvent(
@@ -321,7 +321,7 @@ async def test_root_telegram_dm_new_shows_create_topic_instruction(monkeypatch):
     )
 
     monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"}
     )
 
     result = await runner._handle_message(_make_event("/new"))
@@ -368,7 +368,7 @@ async def test_managed_topic_binding_reuses_restored_session_over_static_lane_se
     runner._run_agent = AsyncMock(side_effect=fake_run_agent)
 
     monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"}
     )
 
     result = await runner._handle_message(_make_event("continue restored", thread_id="17585"))
@@ -389,7 +389,7 @@ async def test_telegram_group_prompt_is_not_topic_lobby_even_when_dm_topic_mode_
     runner._handle_message_with_agent = AsyncMock(return_value="group agent response")
 
     monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"}
     )
 
     result = await runner._handle_message(_make_group_event("hello group", thread_id="555"))
@@ -422,7 +422,7 @@ async def test_group_new_keeps_existing_reset_semantics_when_dm_topic_mode_enabl
     runner.session_store.reset_session.return_value = new_entry
 
     monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"}
     )
     # /new appends a random tip from hermes_cli.tips; one tip's text contains
     # the phrase "parallel work", which collides with the negative assertion
@@ -488,7 +488,7 @@ async def test_new_inside_telegram_topic_rewrites_binding_to_new_session(tmp_pat
     runner._agent_cache_lock = None
 
     monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"}
     )
 
     await runner._handle_message(_make_event("/new", thread_id="17585"))
@@ -567,7 +567,7 @@ async def test_topic_binding_follows_compression_tip_on_read(tmp_path, monkeypat
     )
 
     monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"}
     )
 
     await runner._handle_message(_make_event("follow up after compression", thread_id="17585"))
@@ -649,7 +649,7 @@ async def test_topic_root_command_lists_unlinked_sessions_for_restore(tmp_path, 
     )
 
     monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"}
     )
 
     result = await runner._handle_message(_make_event("/topic"))
@@ -676,7 +676,7 @@ async def test_first_message_inside_topic_records_topic_binding(tmp_path, monkey
     runner._handle_message_with_agent = AsyncMock(return_value="agent response")
 
     monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"}
     )
 
     source = _make_source(thread_id="17585")
@@ -776,7 +776,7 @@ async def test_topic_refuses_unauthorized_user(tmp_path, monkeypatch):
     runner._is_user_authorized = lambda _source: False  # Deny
 
     monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"}
     )
 
     result = await runner._handle_topic_command(_make_event("/topic"))

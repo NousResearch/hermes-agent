@@ -583,6 +583,7 @@ def test_codex_auth_status_reports_pool_only_credential(tmp_path, monkeypatch):
 
 def test_codex_runtime_pool_only_rate_limit_is_not_missing_auth(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr("hermes_cli.auth_codex._probe_codex_quota_restored", lambda *a, **kw: False)
     _write_auth_store(tmp_path, _codex_pool_only_store(exhausted=True))
 
     from hermes_cli.auth import AuthError, CODEX_RATE_LIMITED_CODE, resolve_codex_runtime_credentials

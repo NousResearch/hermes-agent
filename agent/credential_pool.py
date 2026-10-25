@@ -2752,36 +2752,6 @@ def _seed_minimax_singleton(seed: _Seeder) -> None:
         logger.debug("MiniMax OAuth token seed failed: %s", exc)
 
 
-def _seed_tokens_singleton(seed: _Seeder, auth_store: dict[str, Any]) -> None:
-    """Codex / xAI: surface the auth.json ``providers.<id>.tokens`` singleton as ``device_code``.
-
-    Hermes owns its own Codex auth state and does NOT auto-import
-    ~/.codex/auth.json: refresh tokens are single-use, so sharing them with
-    Codex CLI / VS Code causes refresh_token_reused races. Adoption is an
-    explicit one-time prompt via `hermes auth openai-codex`.
-    """
-    state, source_path = _load_provider_state_with_source(auth_store, seed.provider)
-    if owned_profile_reads_root_state(auth_store, seed.provider, source_path):
-        return
-    tokens = state.get("tokens") if isinstance(state, dict) else None
-    if not (isinstance(tokens, dict) and tokens.get("access_token")):
-        return
-    if seed.provider == "openai-codex":
-        base_url = auth_mod.DEFAULT_CODEX_BASE_URL
-        custom_label = str(state.get("label") or "").strip()
-    else:
-        base_url = auth_mod.DEFAULT_XAI_OAUTH_BASE_URL
-        custom_label = ""
-    seed.upsert("device_code", {
-        "auth_type": AUTH_TYPE_OAUTH,
-        "access_token": tokens.get("access_token", ""),
-        "refresh_token": tokens.get("refresh_token"),
-        "base_url": base_url,
-        "last_refresh": state.get("last_refresh"),
-        "label": custom_label or label_from_token(tokens.get("access_token", ""), "device_code"),
-    })
-
-
 def _seed_from_singletons(provider: str, entries: list[PooledCredential]) -> tuple[bool, set[str]]:
     seed = _Seeder(provider, entries)
     auth_store = _load_auth_store()
@@ -2800,7 +2770,8 @@ def _seed_from_singletons(provider: str, entries: list[PooledCredential]) -> tup
         # this gate the removal is undone on the next load_pool().
         if provider == "openai-codex" and seed.is_suppressed(provider, "device_code"):
             return seed.result
-        _seed_tokens_singleton(seed, auth_store)
+        from agent.credential_pool_singleton import seed_tokens_singleton
+        seed_tokens_singleton(seed, auth_store)
     return seed.result
 
 
@@ -3020,7 +2991,7 @@ def _seed_custom_pool(pool_key: str, entries: list[PooledCredential]) -> tuple[b
     return seed.result
 
 
-def load_pool(provider: str) -> CredentialPool:
+def load_pool(provider: str, *, base_url: Optional[str] = None) -> CredentialPool:
     provider = (provider or "").strip().lower()
     if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS:
         # One-time heal for installs that forked this grant across profiles
@@ -3094,4 +3065,5 @@ def load_pool(provider: str) -> CredentialPool:
             owns_provider = _profile_owns_pool_provider(provider)
         if not owns_provider:
             pool._borrowed_root_ids = set(disk_ids)
-    return pool
+    from agent.credential_pool_endpoints import restrict_pool_to_endpoint
+    return restrict_pool_to_endpoint(pool, base_url)

@@ -589,13 +589,16 @@ def _import_codex_cli_tokens() -> Optional[dict[str, str]]:
 def resolve_codex_runtime_credentials(
     *, force_refresh: bool = False, refresh_if_expiring: bool = True,
     refresh_skew_seconds: int = CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
-    read_only: bool = False) -> dict[str, Any]:
+    read_only: bool = False, target_model: Optional[str] = None) -> dict[str, Any]:
     """Resolve runtime credentials from Hermes's own Codex token store.
 
     ``read_only=True`` (status / doctor / pickers) reports the stored state as-is: no Codex CLI
     adoption, no token refresh, no auth-store write — and it wins over ``force_refresh``. A
     diagnostic that silently imports another program's rotating refresh token or spends one is a
     mutation the user never asked for (#68004).
+
+    ``target_model`` scopes pool eligibility to the actual request; omitted models conservatively
+    exclude every active model cooldown, regardless of the configured default.
 
     Falls back to the credential pool when the singleton (``providers.openai-codex.tokens``) has no
     usable access_token but the pool (``credential_pool.openai-codex``) does.
@@ -635,8 +638,8 @@ def resolve_codex_runtime_credentials(
                 str(exc.code or "auth_error"), observed_access_token=observed)
             if imported:
                 data = {"tokens": imported, "last_refresh": imported.get("last_refresh")}
-    if data is None:
-        pool_token, pool_base = _pool_codex_credential()
+    if _codex_pool_fallback_needed(data, target_model):
+        pool_token, pool_base = _pool_codex_credential(target_model)
         if pool_token and force_refresh and not read_only:
             # Pool-only setup: a forced refresh must rotate the pool entry, not resend its token.
             from agent.credential_pool import load_pool
@@ -656,7 +659,7 @@ def resolve_codex_runtime_credentials(
             if not read_only and _probe_codex_pool_entry_quota_restored(pool_rate_limit):
                 logger.info("Codex quota restored upstream — clearing stale pool cooldown(s).")
                 clear_codex_pool_quota_cooldowns()
-                pool_token, pool_base = _pool_codex_credential()
+                pool_token, pool_base = _pool_codex_credential(target_model)
                 if pool_token:
                     return _codex_runtime_result(
                         pool_token, source="credential_pool", last_refresh=None,
@@ -918,23 +921,51 @@ def _pool_entries(auth_store: dict[str, Any], provider_id: str) -> Optional[list
     return entries if isinstance(entries, list) else None
 
 
-def _pool_codex_credential() -> tuple[str, str]:
+def _codex_pool_entry_excluded(entry: dict[str, Any], target_model: Optional[str]) -> bool:
+    """Read-only eligibility shared by pool fallback and singleton aliases of pool accounts."""
+    from agent.credential_pool import (
+        PooledCredential, STATUS_DEAD, _exhausted_until, _parse_absolute_timestamp, model_cooldown_until,
+    )
+    credential = PooledCredential.from_dict("openai-codex", entry)
+    # Normalize persisted seconds/milliseconds/ISO resets for aliases as well as pool-only rows.
+    reset_at = _parse_absolute_timestamp(entry.get("last_error_reset_at")) or _exhausted_until(credential)
+    return (
+        credential.last_status == STATUS_DEAD
+        or model_cooldown_until(credential, target_model) is not None
+        or (reset_at is not None and reset_at > time.time())
+    )
+
+
+def _codex_pool_fallback_needed(data: Optional[dict[str, Any]], target_model: Optional[str]) -> bool:
+    """A singleton copy must not resurrect a pool account excluded for this request.
+
+    A different, valid singleton token remains authoritative, including after reauthentication.
+    Do not load/select a live pool here: status reads must not refresh or persist credentials.
+    """
+    if data is None:
+        return True
+    from hermes_cli.auth import read_credential_pool
+    token = _stripped(data["tokens"].get("access_token"))
+    return any(
+        _stripped(entry.get("access_token")) == token and _codex_pool_entry_excluded(entry, target_model)
+        for entry in _codex_pool_dicts(read_credential_pool("openai-codex"))
+    )
+
+
+def _pool_codex_credential(target_model: Optional[str] = None) -> tuple[str, str]:
     """``(access_token, row base_url)`` of the first pool entry with a non-empty access_token that is
-    not in an exhaustion cooldown window, so the caller routes the token to the host that row belongs
+    eligible for the requested model, so the caller routes the token to the host that row belongs
     to; ``("", "")`` when none is usable.
 
     Fallback for ``resolve_codex_runtime_credentials`` when the singleton has no creds; reads
     through ``read_credential_pool`` so a profile inherits the global-root pool (#34143)."""
-    from agent.credential_pool import _parse_absolute_timestamp
     from hermes_cli.auth import _nonempty_str, read_credential_pool
     try:
         for entry in _codex_pool_dicts(read_credential_pool("openai-codex")):
+            if _codex_pool_entry_excluded(entry, target_model):
+                continue
             token = entry.get("access_token")
-            # Same normaliser as ``_codex_pool_rate_limit_status``: a millisecond epoch compared
-            # raw reads as far-future here and as elapsed there, hiding a usable entry (#103349).
-            reset_at = _parse_absolute_timestamp(entry.get("last_error_reset_at"))
-            in_cooldown = reset_at is not None and reset_at > time.time()
-            if _nonempty_str(token) and not in_cooldown:
+            if _nonempty_str(token):
                 return token.strip(), _stripped(entry.get("base_url"))
     except Exception:
         logger.debug("Codex pool fallback lookup failed", exc_info=True)

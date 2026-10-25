@@ -733,7 +733,7 @@ def _creds_fallback(api_key, explicit_base_url, base_url, expiry, expiry_key, re
 
 def _explicit_codex(requested_provider, model_cfg, api_key, explicit_base_url, target_model):
     api_key, base_url, last_refresh = _creds_fallback(api_key, explicit_base_url, explicit_base_url or DEFAULT_CODEX_BASE_URL,
-                                                      None, "last_refresh", resolve_codex_runtime_credentials)
+                                                      None, "last_refresh", lambda: resolve_codex_runtime_credentials(target_model=target_model))
     return _runtime("openai-codex", "codex_responses", base_url, api_key, source="explicit", last_refresh=last_refresh,
                     requested_provider=requested_provider)
 
@@ -816,7 +816,7 @@ def _resolve_explicit_runtime(*, provider: str, requested_provider: str, model_c
 class _OAuthRuntimeSpec:
     """Env/auth-store OAuth providers resolved by a single credential call."""
 
-    resolve: Callable[[], dict[str, Any]]
+    resolve: Callable[[Optional[str]], dict[str, Any]]
     api_mode: Any  # str, or callable(model) -> str
     default_source: str
     expiry_key: str
@@ -827,13 +827,13 @@ class _OAuthRuntimeSpec:
 # ``resolve`` entries are late-bound lambdas so tests can monkeypatch the module-level
 # ``resolve_*_runtime_credentials`` names.
 _OAUTH_RUNTIME_PROVIDERS: dict[str, _OAuthRuntimeSpec] = {
-    "nous": _OAuthRuntimeSpec(_resolve_nous_creds, nous_api_mode, "portal", "expires_at",
+    "nous": _OAuthRuntimeSpec(lambda model: _resolve_nous_creds(), nous_api_mode, "portal", "expires_at",
                               "Auto-detected Nous provider but credentials failed"),
-    "openai-codex": _OAuthRuntimeSpec(lambda: resolve_codex_runtime_credentials(), "codex_responses", "hermes-auth-store",
+    "openai-codex": _OAuthRuntimeSpec(lambda model: resolve_codex_runtime_credentials(target_model=model), "codex_responses", "hermes-auth-store",
                                       "last_refresh", "Auto-detected Codex provider but credentials failed"),
-    "xai-oauth": _OAuthRuntimeSpec(lambda: resolve_xai_oauth_runtime_credentials(), "codex_responses", "hermes-auth-store",
+    "xai-oauth": _OAuthRuntimeSpec(lambda model: resolve_xai_oauth_runtime_credentials(), "codex_responses", "hermes-auth-store",
                                    "last_refresh", "Auto-detected xAI OAuth provider but credentials failed", DEFAULT_XAI_OAUTH_BASE_URL),
-    "qwen-oauth": _OAuthRuntimeSpec(lambda: resolve_qwen_runtime_credentials(), "chat_completions", "qwen-cli",
+    "qwen-oauth": _OAuthRuntimeSpec(lambda model: resolve_qwen_runtime_credentials(), "chat_completions", "qwen-cli",
                                     "expires_at_ms", "Qwen OAuth credentials failed"),
 }
 
@@ -842,7 +842,7 @@ def _resolve_oauth_runtime(provider, requested_provider, model_cfg, target_model
     """Runtime from an ``_OAUTH_RUNTIME_PROVIDERS`` spec; raises AuthError when the credential is
     stale/revoked/benched (``_ladder_rungs`` decides whether an "auto" request falls through)."""
     spec = _OAUTH_RUNTIME_PROVIDERS[provider]
-    creds = spec.resolve()
+    creds = spec.resolve(target_model)
     api_mode = spec.api_mode(_effective_model(model_cfg, target_model)) if callable(spec.api_mode) else spec.api_mode
     return _runtime(provider, api_mode, (creds.get("base_url") or "").rstrip("/") or spec.default_base_url,
                     creds.get("api_key", ""), source=creds.get("source", spec.default_source),

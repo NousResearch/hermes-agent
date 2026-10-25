@@ -176,7 +176,7 @@ async def test_run_agent_preserves_provider_request_overrides_on_gateway_path(mo
     monkeypatch.setattr(
         gateway_run,
         "_resolve_runtime_agent_kwargs",
-        lambda: {
+        lambda target_model=None: {
             "provider": "custom",
             "api_mode": "codex_responses",
             "base_url": "https://example.test/v1",
@@ -231,7 +231,7 @@ async def test_reused_agent_turn_merges_request_overrides_not_overwrite(monkeypa
     monkeypatch.setattr(
         gateway_run,
         "_resolve_runtime_agent_kwargs",
-        lambda: {
+        lambda target_model=None: {
             "provider": "custom",
             "api_mode": "codex_responses",
             "base_url": "https://example.test/v1",

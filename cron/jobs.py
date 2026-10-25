@@ -2334,6 +2334,25 @@ def note_fire_forward_failure(job_id: str, detail: str) -> bool:
     return _with_job(job_id, apply, False)
 
 
+def note_mcp_init_failure(job_id: str, detail: Optional[str]) -> bool:
+    """Record (as ``last_mcp_init_error``) that a run's MCP initialization failed — the run still
+    proceeds, just without MCP tools, so ``last_status`` stays green and this stamp is the only
+    job-level trace (`hermes cron doctor` reports it). ``detail=None`` (a later successful init)
+    clears the stamp."""
+    def apply(jobs, _i, job):
+        if detail is None:
+            if job.get("last_mcp_init_error") is None:
+                return False
+            job.pop("last_mcp_init_error", None)
+        else:
+            job["last_mcp_init_error"] = {
+                "at": _hermes_now().isoformat(), "detail": str(detail)[:500]}
+        save_jobs(jobs)
+        return True
+
+    return _with_job(job_id, apply, False)
+
+
 def _record_run_outcome(
     job: dict[str, Any], success: bool, error: Optional[str], delivery_error: Optional[str],
     status: Optional[str], now: str,

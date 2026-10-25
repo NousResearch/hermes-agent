@@ -710,6 +710,14 @@ def _cron_doctor_issues_for_job(job: dict[str, Any]) -> list[str]:
     if unverified := job.get("last_delivery_unverified"):
         issues.append("last delivery unverified (adapter acked without evidence): "
                       + _unverified_targets(unverified))
+    # MCP-init stamp (cron.scheduler._stamp_mcp_init_health): that run proceeded without its MCP
+    # tools but still booked a normal run, so this stamp is the only job-level trace. Cleared by
+    # the next successful init, so a lingering stamp means the failure is recent or recurring.
+    if mcp_err := job.get("last_mcp_init_error"):
+        at = str(mcp_err.get("at") or "?") if isinstance(mcp_err, dict) else "?"
+        detail = (mcp_err.get("detail") if isinstance(mcp_err, dict) else mcp_err) or ""
+        issues.append(f"last run started without MCP tools — MCP init failed at {at}: "
+                      f"{_short_reason(detail)}")
     # Dispatch records measure lateness, not whether the scheduler process was running.
     if isinstance(dispatch := job.get("last_dispatch"), dict):
         if label := _dispatch_kind_label(dispatch.get("kind")):

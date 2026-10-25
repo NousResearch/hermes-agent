@@ -112,3 +112,49 @@ def test_a_served_login_controls_its_own_stamped_chat_over_http(tmp_path):
                 control(stranger, sid)
     finally:
         db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('root_owner', ['basic:bob', None])
+async def test_editing_ones_own_branch_leaves_another_logins_parent_alone(tmp_path, root_owner):
+    """#144596 review F1: alice's branch of a compressed chat owned by bob (or by the host, unstamped)
+    is another conversation. Her pin, hide or archive on it flagged that parent too, while a direct
+    edit of the parent is refused. Her own chat's compression segments still move together."""
+    from types import SimpleNamespace
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_contract import SessionRef
+    from gateway.session_mutations import mutate_session
+    from hermes_state_runtime import begin_runtime_epoch
+    from tui_gateway.methods_session import _persist_branch
+
+    caps = frozenset({'session:read', 'session:control', 'session:create', 'session:operator'})
+    alice = Principal(_login('alice'), 'p', caps, 'http')
+
+    async def edit(sid, rid, payload):
+        params = {'session_id': sid, 'request_id': rid, 'payload': payload,
+                  'expected_revision': authority.db.get_session(sid)['runtime_revision'],
+                  'operation': 'archive' if 'archived' in payload else 'sidebar'}
+        return await mutate_session(authority, alice, SessionRef(authority.profile_id, sid), params)
+
+    with SessionDB(db_path=tmp_path / 'state.db') as db:
+        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='p', instance_id='owner',
+                                     db=db, epoch=begin_runtime_epoch(db, instance_id='owner'))
+        db.create_session('root', source='desktop', user_id=root_owner)
+        db.end_session('root', 'compression')
+        db.create_session('root-tip', source='desktop', user_id=root_owner, parent_session_id='root')
+        _persist_branch(db, 'alice-branch', 'root', 'Branch', [{'role': 'user', 'content': 'hi'}],
+                        source='desktop', cwd=None, profile_name=None, model='m', user_id='basic:alice')
+        # Her branch compressed: the continuation inherits the fork marker naming the old root.
+        db.end_session('alice-branch', 'compression')
+        db.create_session('alice-tip', source='desktop', user_id='basic:alice', parent_session_id='alice-branch',
+                          model_config={'_branched_from': 'root'})
+        with pytest.raises(RuntimeStoreError):
+            await edit('root', 'direct', {'pinned': True})
+        await edit('alice-branch', 'pin', {'pinned': True, 'hidden': True})
+        await edit('alice-tip', 'arch', {'archived': True})
+        for sid in ('root', 'root-tip'):
+            row = db.get_session(sid)
+            assert (row['pinned'], row['hidden'], row['archived']) == (0, 0, 0), sid
+        for sid in ('alice-branch', 'alice-tip'):
+            row = db.get_session(sid)
+            assert (row['pinned'], row['hidden'], row['archived']) == (1, 1, 1), sid

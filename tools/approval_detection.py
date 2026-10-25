@@ -12,6 +12,8 @@ import shlex
 import tempfile
 import unicodedata
 
+from tools.approval_self_kill import kill_argv_signals_pid, kill_runs_shell_builtin
+
 logger = logging.getLogger("tools.approval")
 
 # Sensitive write targets, matched via ~ / $HOME / $HERMES_HOME spellings. The resolved absolute
@@ -608,7 +610,9 @@ _SIMPLE_SHELL_LITERAL_RE = re.compile(r"^[A-Za-z0-9_./:@%+=,-]+$")
 _ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 _COMMAND_WRAPPER_WORDS = {"sudo", "env", "exec", "nohup", "setsid", "time", "command", "builtin",
                           "nice", "timeout", "stdbuf", "ionice", "chrt", "taskset", "chroot"}
-_SUDO_OPTIONS_WITH_ARG = {"-c", "--close-from", "-g", "--group", "-h", "--host", "-p", "--prompt", "-u", "--user"}
+_SUDO_OPTIONS_WITH_ARG = {"-c", "--close-from", "-g", "--group", "-h", "--host", "-p", "--prompt", "-u", "--user",
+                          "-C", "-D", "--chdir", "-R", "--chroot", "-r", "--role", "-T", "--command-timeout",
+                          "-t", "--type", "-U", "--other-user"}
 # Adapted from embwl0x's command-position work in #76063. Option operands are
 # data, not executable positions; option spelling remains case-sensitive.
 _COMMAND_WRAPPER_OPTIONS_WITH_ARG = {
@@ -623,11 +627,15 @@ _COMMAND_WRAPPER_OPTIONS_WITH_ARG = {
 }
 _COMMAND_WRAPPER_NON_EXECUTING_OPTIONS = {
     "command": {"-v", "-V"}, "chrt": {"-p", "--pid"},
-    "ionice": {"-p", "--pid", "--pgid", "--uid"}, "taskset": {"-p", "--pid"},
+    "ionice": {"-p", "--pid", "--pgid", "--uid"}, "taskset": {"-p", "--pid"}, "sudo": {"-l", "--list"},
 }
+# Wrappers whose query option still applies inside a short bundle (`command -pv`, `sudo -nlU root`).
+_COMMAND_WRAPPER_BUNDLED_QUERIES = {"command", "sudo"}
 _COMMAND_WRAPPER_POSITIONAL_ARGS = {"chroot": 1, "chrt": 1, "taskset": 1, "timeout": 1}
 _SHELL_COMMAND_TRANSITIONS = {"if", "then", "else", "elif", "do", "while", "until", "!"}
 _SHELL_REDIRECTION_RE = re.compile(r"(?:[0-9]+)?(?:>>|<<|<>|>&|<&|>\||[<>])")
+# Inside one command's argv, bash's `&>file` / `&>>file` (stdout and stderr) are redirections too.
+_ARGV_REDIRECTION_RE = re.compile(rf"&>>?|{_SHELL_REDIRECTION_RE.pattern}")
 
 _INTERPRETER_NAME_RES = tuple((family, re.compile(pattern)) for family, pattern in (
     ("python", r"py(?:\.exe)?|python[23]?(?:\.\d+)*(?:\.exe)?"), ("node", r"node(?:js)?(?:\.exe)?"),
@@ -697,6 +705,7 @@ _MAX_DETECTION_COMMAND_CHARS, _MAX_SEPARATOR_FREE_COMMAND_CHARS, _MAX_DETECTION_
 _PARSER_LIMIT_DESCRIPTION = "command parser limit exceeded"
 _MALFORMED_EXEC_DESCRIPTION = "command parser limit or malformed executable payload"
 _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION = "stop/restart hermes gateway via shell-spliced verb (kills running agents)"
+_SELF_KILL_DESCRIPTION = "kill own Hermes process (self-termination, PID {pid})"
 
 
 def _command_parser_limit_exceeded(command: str) -> bool:
@@ -1248,10 +1257,28 @@ def _mask_quoted_newlines_span(command: str, start: int, end: int) -> str:
     return "".join(out)
 
 
-def _iter_shell_command_word_spans(command: str):
-    """Yield command-position words that may be executable names."""
+def _owning_short_option(token: str, with_arg) -> str:
+    """The part of an option word that decides argument ownership: in a short bundle the first
+    argument-taking option owns the rest of the word, or the next word when it comes last
+    (``env -vu NAME`` is ``-v -u NAME``, ``exec -ca NAME`` is ``-c -a NAME``)."""
+    if token.startswith("--"):
+        return token
+    owner = next((k for k, char in enumerate(token[1:], 1) if "-" + char in with_arg), None)
+    return token if owner is None else "-" + token[owner:]
+
+
+def _short_bundle_flags(token: str, with_arg) -> set[str]:
+    """The options a short bundle sets, through the first argument-taking one (whose argument is
+    the rest of the word): ``sudo -nlU root`` sets ``-n``, ``-l`` and ``-U``."""
+    owner = next((k for k, char in enumerate(token[1:], 1) if "-" + char in with_arg), len(token) - 1)
+    return {"-" + char for char in token[1:owner + 1]}
+
+
+def _iter_shell_command_word_spans(command: str, *, wrappers: bool = False):
+    """Yield command-position words that may be executable names. With *wrappers*, each span
+    also carries the deobfuscated wrapper words before it in its command (``sudo``, ``env``)."""
     for pos in _iter_shell_command_starts(command):
-        wrapper, positionals = None, 0
+        wrapper, positionals, chain = None, 0, ()
         options, skip_arg = True, False
         while pos < len(command):
             redirect = _SHELL_REDIRECTION_RE.match(command, _skip_shell_whitespace(command, pos))
@@ -1271,26 +1298,30 @@ def _iter_shell_command_word_spans(command: str):
                 options = False
                 continue
             if wrapper and options and deobfuscated.startswith("-"):
-                option = deobfuscated.split("=", 1)[0]
+                with_arg = _COMMAND_WRAPPER_OPTIONS_WITH_ARG.get(wrapper, set())
+                # A bundled `env -vS` does not own the next word here: the split string's first word
+                # is the program env runs (`env -vS python3 -c pass`), so it stays a command position.
+                owned = _owning_short_option(deobfuscated, with_arg - {"-S"} if wrapper == "env" else with_arg)
+                option = owned.split("=", 1)[0]
                 if wrapper == "env" and (option == "--split-string" or deobfuscated.startswith("-S")):
                     # The split string and remaining argv form ONE command, handled
                     # by _env_split_payload; the suffix is not a new executable.
                     break
                 queries = _COMMAND_WRAPPER_NON_EXECUTING_OPTIONS.get(wrapper, set())
-                if option in queries or (wrapper == "command" and not option.startswith("--")
-                                         and set(option[1:]) & {"v", "V"}):
+                if option in queries or (wrapper in _COMMAND_WRAPPER_BUNDLED_QUERIES and not option.startswith("--")
+                                         and _short_bundle_flags(deobfuscated, with_arg) & queries):
                     break
-                skip_arg = "=" not in deobfuscated and option in _COMMAND_WRAPPER_OPTIONS_WITH_ARG.get(wrapper, set())
+                skip_arg = "=" not in owned and option in with_arg
                 continue
             if positionals:
                 positionals -= 1
                 continue
             if _ENV_ASSIGNMENT_RE.fullmatch(word):
                 continue
-            yield (word_start, word_end, word)
+            yield (word_start, word_end, word, chain) if wrappers else (word_start, word_end, word)
             if name not in _COMMAND_WRAPPER_WORDS:
                 break
-            wrapper, options = name, True
+            wrapper, options, chain = name, True, chain + (deobfuscated,)
             positionals = _COMMAND_WRAPPER_POSITIONAL_ARGS.get(name, 0)
 
 
@@ -1368,6 +1399,7 @@ def _env_split_payload(tokens: list[str]) -> str | None:
         token = tokens[index]
         if token == "--" or not token.startswith("-"):
             return None
+        token = _owning_short_option(token, _COMMAND_WRAPPER_OPTIONS_WITH_ARG["env"])
         option, equals, value = token.partition("=")
         if option == "--split-string" or token.startswith("-S"):
             attached = equals if option == "--split-string" else len(token) > 2
@@ -1545,12 +1577,57 @@ def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
     return contains_gateway_lifecycle_command(command)
 
 
-def detect_dangerous_command(command: str) -> tuple:
-    """Check dangerous patterns -> (is_dangerous, pattern_key, description)."""
+def _command_argv(command: str, pos: int) -> list[str]:
+    """Deobfuscated argument words of the simple command whose name ends at *pos*, up to its
+    separator or comment. Redirections and their targets are not arguments."""
+    argv = []
+    while True:
+        redirect = _ARGV_REDIRECTION_RE.match(command, _skip_shell_whitespace(command, pos))
+        if redirect:
+            _, pos, _ = _read_shell_word(command, redirect.end())
+            continue
+        start, pos, word = _read_shell_word(command, pos)
+        if start == pos or _is_shell_comment_start(command, start):
+            return argv
+        argv.append(_deobfuscate_shell_word_for_detection(word))
+
+
+def _command_kills_pid(command: str, pid: str) -> bool:
+    """Whether a real command-position ``kill`` sends a terminating signal to literal *pid*.
+
+    Static patterns cannot know the runtime PID, and quoted prose (``echo "kill 123"``) is not a
+    ``kill``. An ``env -S`` string is one more command, exec'd by env, so its ``kill`` is kill(1).
+    """
+    pending, seen = [(command, ())], set()
+    while pending:
+        source, outer = pending.pop()
+        if (source, outer) in seen:
+            continue
+        seen.add((source, outer))
+        for start, end, word, wrappers in _iter_shell_command_word_spans(source, wrappers=True):
+            executable = _deobfuscate_shell_word_for_detection(word)
+            name = os.path.basename(executable).lower()
+            if name == "kill" and kill_argv_signals_pid(
+                _command_argv(source, end), pid, shell_builtin=kill_runs_shell_builtin(executable, outer + wrappers),
+            ):
+                return True
+            if name == "env":
+                tokens = _shell_segment_tokens(_shell_command_segment(source, start), 0)
+                payload = _env_split_payload(tokens) if tokens else None
+                if payload:
+                    pending.append((payload, ("env",)))
+    return False
+
+
+def detect_dangerous_command(command: str, *, protect_local_pid: bool = True) -> tuple:
+    """Check dangerous patterns -> (is_dangerous, pattern_key, description). *protect_local_pid*
+    also flags a ``kill`` of this process's own PID; callers whose command runs in another PID
+    namespace (remote or container backends) turn it off."""
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
+    own_pid = str(os.getpid()) if protect_local_pid else None
     for command_variant in _command_detection_variants(command):
         command_lower = _lower_preserving_flags(command_variant)
         masked_lower: str | None = None
@@ -1564,6 +1641,13 @@ def detect_dangerous_command(command: str) -> tuple:
                     return (True, description, description)
             elif pattern_re.search(command_lower):
                 return (True, description, description)
+        # The variants include one with every command word deobfuscated, so a spliced `k''ill`
+        # still shows `kill` (or the `env` of an `env -S` string) to this cheap pre-check.
+        if own_pid and ("kill" in command_lower or "env" in command_lower) and _command_kills_pid(
+            command_variant, own_pid
+        ):
+            description = _SELF_KILL_DESCRIPTION.format(pid=own_pid)
+            return (True, description, description)
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):
         return (True, description, description)

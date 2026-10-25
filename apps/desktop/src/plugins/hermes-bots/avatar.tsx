@@ -189,6 +189,16 @@ export function blobShapeString(seedPart: string, kind: string) {
   return seedPart ? `blobatar:${seedPart}` : 'blobatar'
 }
 
+/** Escape a string for interpolation into a double-quoted HTML attribute.
+ *  JSON.stringify is NOT attribute escaping — its backslash quotes mean
+ *  nothing to the HTML parser, so a bot name like `x" onmouseover="…` broke
+ *  out of data-bot-face inside the dangerouslySetInnerHTML blob markup. */
+function escapeHtmlAttr(value: string): string {
+  return value.replace(/[&<>"']/g, ch => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch] as string
+  ))
+}
+
 /** Static SVG markup for a blob face, tagged data-bot-face so the roster's
  *  PNG backfill (pushLocalAvatars → rasterizeSvgToPng) still finds it. */
 function blobMarkup(shape: null | string | undefined, name: string, size: number) {
@@ -209,7 +219,7 @@ function blobMarkup(shape: null | string | undefined, name: string, size: number
   }
 
   try {
-    return blobatarSvg(seed, opts).replace('<svg ', '<svg data-bot-face=' + JSON.stringify(name) + ' ')
+    return blobatarSvg(seed, opts).replace('<svg ', '<svg data-bot-face="' + escapeHtmlAttr(name) + '" ')
   } catch {
     return null
   }

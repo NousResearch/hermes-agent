@@ -172,9 +172,16 @@ the gallery. There is no separate listing to maintain.
    reporting are opt-in. Reviewers summarise these as disclosure lines on the
    entry PR; undisclosed behaviour found in review is a request for changes.
 14. **Compatibility metadata is truthful.** `requires_hermes` is a SemVer floor
-   (`">=0.21.5"`), never a CalVer date, and never newer than the current release
-   (the loader skips the plugin otherwise). `version` matches the pinned code,
-   and Python dependencies resolve under Hermes's core constraints
+   (`">=0.21.5"`), never a CalVer date, and never newer than the current release.
+   The entry's `requires_hermes` is enforced: an install by catalog name refuses
+   on a Hermes it rejects, and `hermes plugins update` keeps an installed plugin
+   at its current pin until Hermes is updated. Declare the same floor in
+   `plugin.yaml` as well, because older Hermes versions enforce only that one
+   (the loader skips the plugin when it does not match). A portable package
+   (`plugin.json`) has no `requires_hermes` field, so the catalog entry's
+   `requires_hermes` is its only floor: set one when the package needs a recent
+   Hermes (a server declaration key an older release ignores). `version` matches the
+   pinned code, and Python dependencies resolve under Hermes's core constraints
    (`hermes plugins validate --install-deps` is what CI runs).
 15. **No skins or forks of bundled plugins.** A change to a bundled plugin is a
    PR against `hermes-agent`, not a competing listing, and vendor-lookalike skins

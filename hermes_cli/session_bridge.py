@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -41,6 +42,7 @@ _MAX_SNAPSHOT_TURN = 8_000
 _MAX_SOURCE_BYTES = 2_000_000
 _MAX_SOURCE_LINES = 10_000
 _SOURCE_HEAD_BYTES = 128_000
+_MAX_LOCAL_ENVELOPE = 64_000
 
 
 class BridgeError(RuntimeError):
@@ -64,6 +66,7 @@ class BridgeRequest:
     authorization_ref: str
     owner_uid: int
     profile_scope: str
+    ingress: dict[str, Any] | None
     backend: str
     kind: str
     target_session_id: str | None
@@ -118,7 +121,8 @@ class BridgeStore:
         if sys.platform.startswith("win"):
             raise BridgeError("session bridge is unavailable on Windows until SID ACL and Job Object isolation exist")
         self.profile_scope = str(get_hermes_home().expanduser().resolve())
-        self.path = path or (get_hermes_home() / "runtime" / "session_bridge.db")
+        self._canonical_path = (get_hermes_home() / "runtime" / "session_bridge.db").expanduser().resolve()
+        self.path = path or self._canonical_path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             self.path.parent.chmod(0o700)
@@ -153,6 +157,7 @@ class BridgeStore:
                     authorization_ref TEXT NOT NULL,
                     owner_uid INTEGER NOT NULL,
                     profile_scope TEXT NOT NULL,
+                    ingress_json TEXT,
                     request_digest TEXT NOT NULL,
                     backend TEXT NOT NULL,
                     kind TEXT NOT NULL,
@@ -177,6 +182,11 @@ class BridgeStore:
                     ON bridge_requests(status, backend, created_at);
                 """
             )
+            conn.execute("BEGIN IMMEDIATE")
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(bridge_requests)")}
+            if "ingress_json" not in columns:
+                conn.execute("ALTER TABLE bridge_requests ADD COLUMN ingress_json TEXT")
+            conn.commit()
 
     @staticmethod
     def _row(row: sqlite3.Row) -> BridgeRequest:
@@ -184,6 +194,8 @@ class BridgeStore:
         data["cancel_requested"] = bool(data["cancel_requested"])
         usage_json = data.pop("usage_json", None)
         data["usage"] = json.loads(usage_json) if usage_json else None
+        ingress_json = data.pop("ingress_json", None)
+        data["ingress"] = json.loads(ingress_json) if ingress_json else None
         data.pop("request_digest", None)
         data.pop("worker_pid", None)
         return BridgeRequest(**data)
@@ -193,6 +205,21 @@ class BridgeStore:
         source_session_id: str, authorization_ref: str, backend: str,
         kind: str, prompt: str, target_session_id: str | None = None,
     ) -> BridgeRequest:
+        ingress = {"kind": "asserted-cli", "owner_uid": self._uid(), "profile_scope": self.profile_scope}
+        return self._submit(
+            idempotency_key=idempotency_key, requester_principal=requester_principal,
+            source_session_id=source_session_id, authorization_ref=authorization_ref,
+            backend=backend, kind=kind, prompt=prompt, target_session_id=target_session_id,
+            ingress=ingress,
+        )
+
+    def _submit(
+        self, *, idempotency_key: str, requester_principal: str,
+        source_session_id: str, authorization_ref: str, backend: str,
+        kind: str, prompt: str, target_session_id: str | None,
+        ingress: dict[str, Any],
+    ) -> BridgeRequest:
+        """Internal insertion seam; trusted ingress evidence is derived by this module."""
         idempotency_key = _text(idempotency_key, "idempotency_key", limit=256)
         requester_principal = _text(requester_principal, "requester_principal")
         source_session_id = _text(source_session_id, "source_session_id")
@@ -216,6 +243,7 @@ class BridgeStore:
         digest = _request_digest(backend, kind, target_session_id, prompt)
         now = time.time()
         correlation_id = str(uuid.uuid4())
+        ingress_json = json.dumps(ingress, sort_keys=True, separators=(",", ":"))
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             existing = conn.execute(
@@ -230,11 +258,11 @@ class BridgeStore:
                 return self._row(existing)
             conn.execute(
                 "INSERT INTO bridge_requests (correlation_id,idempotency_key,requester_principal,"
-                "source_session_id,authorization_ref,owner_uid,profile_scope,request_digest,backend,kind,"
+                "source_session_id,authorization_ref,owner_uid,profile_scope,ingress_json,request_digest,backend,kind,"
                 "target_session_id,prompt,status,created_at,updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'queued',?,?)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'queued',?,?)",
                 (correlation_id, idempotency_key, requester_principal, source_session_id,
-                 authorization_ref, self._uid(), self.profile_scope, digest, backend, kind,
+                 authorization_ref, self._uid(), self.profile_scope, ingress_json, digest, backend, kind,
                  target_session_id, prompt, now, now),
             )
             row = conn.execute(
@@ -399,7 +427,104 @@ def capabilities() -> dict[str, dict[str, Any]]:
             "available": platform_ok,
             "reason": None if platform_ok else "Windows SID ACL and Job Object isolation are not implemented",
         },
+        "trusted_local_file_ingress": {
+            "available": platform_ok,
+            "authority": "same operating-system UID and Hermes profile",
+            "live_session_identity": False,
+        },
     }
+
+
+def submit_local_file(store: BridgeStore, path: Path) -> BridgeRequest:
+    """Submit one bounded owner-only JSON envelope from the profile runtime inbox.
+
+    This proves local file ownership and profile confinement.  It does not
+    manufacture Codex app identity or a live Claude-session authorization.
+    """
+    if store.path.expanduser().resolve() != store._canonical_path:
+        raise Unauthorized("trusted local file ingress requires the canonical Hermes profile spool")
+    inbox = store._canonical_path.parent / "session_bridge_inbox"
+    if inbox.exists() or inbox.is_symlink():
+        inbox_stat = inbox.lstat()
+        if stat.S_ISLNK(inbox_stat.st_mode) or not stat.S_ISDIR(inbox_stat.st_mode):
+            raise Unauthorized("local ingress inbox must be a non-symlink directory")
+    inbox.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        inbox.chmod(0o700)
+    except OSError:
+        pass
+    inbox_stat = inbox.stat()
+    if inbox_stat.st_uid != store._uid() or stat.S_IMODE(inbox_stat.st_mode) & 0o077:
+        raise Unauthorized("local ingress inbox must be owner-only and owned by the current principal")
+    path = Path(path).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    lexical = Path(os.path.abspath(path))
+    if lexical.parent.resolve() != inbox.resolve():
+        raise Unauthorized(f"local envelope must be directly inside {inbox}")
+    try:
+        before = lexical.lstat()
+    except OSError as exc:
+        raise BridgeError("local envelope is unavailable") from exc
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        raise Unauthorized("local envelope must be a non-symlink regular file")
+    if before.st_uid != store._uid():
+        raise Unauthorized("local envelope belongs to a different operating-system principal")
+    if stat.S_IMODE(before.st_mode) & 0o077:
+        raise Unauthorized("local envelope must not grant group or other permissions")
+    if before.st_size > _MAX_LOCAL_ENVELOPE:
+        raise BridgeError(f"local envelope exceeds {_MAX_LOCAL_ENVELOPE} bytes")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(lexical, flags)
+    try:
+        opened = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns) != (
+            before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns
+        ):
+            raise BridgeError("local envelope changed before capture")
+        chunks: list[bytes] = []
+        remaining = _MAX_LOCAL_ENVELOPE + 1
+        while remaining:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        after = os.fstat(fd)
+        if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) != (
+            opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns
+        ):
+            raise BridgeError("local envelope changed during capture")
+    finally:
+        os.close(fd)
+    if len(raw) > _MAX_LOCAL_ENVELOPE:
+        raise BridgeError(f"local envelope exceeds {_MAX_LOCAL_ENVELOPE} bytes")
+    try:
+        envelope = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise BridgeError("local envelope is not valid UTF-8 JSON") from exc
+    if not isinstance(envelope, dict) or envelope.get("schema") != "hermes.session-bridge-local/v1":
+        raise BridgeError("local envelope schema must be hermes.session-bridge-local/v1")
+    digest = hashlib.sha256(raw).hexdigest()
+    ingress = {
+        "kind": "same-uid-owned-file",
+        "owner_uid": store._uid(),
+        "profile_scope": store.profile_scope,
+        "source_ref": hashlib.sha256(str(lexical).encode()).hexdigest(),
+        "sha256": digest,
+        "bytes": len(raw),
+        "captured_at": time.time(),
+    }
+    return store._submit(
+        idempotency_key=envelope.get("idempotency_key"),
+        requester_principal=f"local-uid:{store._uid()}",
+        source_session_id=envelope.get("source_session_id"),
+        authorization_ref=envelope.get("authorization_ref"),
+        backend=envelope.get("backend"), kind=envelope.get("kind"),
+        target_session_id=envelope.get("target_session_id"),
+        prompt=envelope.get("prompt"), ingress=ingress,
+    )
 
 
 def _subscription_child_env(backend: str) -> dict[str, str]:

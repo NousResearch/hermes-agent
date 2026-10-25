@@ -146,7 +146,7 @@ def test_question_commands_use_fresh_disposable_sessions(tmp_path: Path, monkeyp
     request = bridge.BridgeRequest(
         correlation_id=str(uuid.uuid4()), idempotency_key="i", requester_principal="p",
         source_session_id="s", authorization_ref="a", owner_uid=bridge.BridgeStore._uid(),
-        profile_scope="/profile",
+        profile_scope="/profile", ingress={"kind": "test"},
         backend="claude", kind="question",
         target_session_id=target, prompt="question", status="running", attempt=1,
         lease_owner="w", lease_token=str(uuid.uuid4()), lease_expires_at=time.time() + 30,
@@ -469,3 +469,72 @@ def test_session_bridge_parser_requires_provenance_fields():
         "--prompt", "question",
     ])
     assert args.func.__name__ == "cmd_session_bridge"
+
+
+def test_owned_local_file_ingress_derives_identity_and_persists_provenance(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(bridge, "get_hermes_home", lambda: tmp_path / "profile")
+    store = bridge.BridgeStore()
+    inbox = store.path.parent / "session_bridge_inbox"
+    inbox.mkdir(parents=True)
+    envelope = inbox / "turn.json"
+    payload = {
+        "schema": "hermes.session-bridge-local/v1",
+        "idempotency_key": "written-turn-1",
+        "source_session_id": "operator-chat-1",
+        "authorization_ref": "direct-operator:2026-10-25",
+        "backend": "claude", "kind": "investigation",
+        "prompt": "Reply with TEXT-407.",
+    }
+    raw = json.dumps(payload).encode()
+    envelope.write_bytes(raw)
+    envelope.chmod(0o600)
+    request = bridge.submit_local_file(store, envelope)
+    assert request.requester_principal == f"local-uid:{store._uid()}"
+    assert request.source_session_id == "operator-chat-1"
+    assert request.ingress["kind"] == "same-uid-owned-file"
+    assert request.ingress["sha256"] == __import__("hashlib").sha256(raw).hexdigest()
+    assert request.ingress["profile_scope"] == store.profile_scope
+    replay = bridge.submit_local_file(store, envelope)
+    assert replay.correlation_id == request.correlation_id
+
+
+def test_owned_local_file_ingress_rejects_unsafe_source(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(bridge, "get_hermes_home", lambda: tmp_path / "profile")
+    store = bridge.BridgeStore()
+    inbox = store.path.parent / "session_bridge_inbox"
+    inbox.mkdir(parents=True)
+    outside = tmp_path / "outside.json"
+    outside.write_text("{}")
+    outside.chmod(0o600)
+    with pytest.raises(bridge.Unauthorized, match="directly inside"):
+        bridge.submit_local_file(store, outside)
+    target = inbox / "turn.json"
+    target.write_text("{}")
+    target.chmod(0o644)
+    with pytest.raises(bridge.Unauthorized, match="group or other"):
+        bridge.submit_local_file(store, target)
+    target.chmod(0o600)
+    link = inbox / "link.json"
+    link.symlink_to(target)
+    with pytest.raises(bridge.Unauthorized, match="non-symlink"):
+        bridge.submit_local_file(store, link)
+    custom = bridge.BridgeStore(tmp_path / "outside" / "bridge.db")
+    custom_inbox = custom.path.parent / "session_bridge_inbox"
+    custom_inbox.mkdir(parents=True)
+    custom_file = custom_inbox / "turn.json"
+    custom_file.write_text("{}")
+    custom_file.chmod(0o600)
+    with pytest.raises(bridge.Unauthorized, match="canonical Hermes profile spool"):
+        bridge.submit_local_file(custom, custom_file)
+
+
+def test_store_migrates_pre_ingress_spool_schema(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(bridge, "get_hermes_home", lambda: tmp_path / "profile")
+    db = tmp_path / "old.db"
+    store = bridge.BridgeStore(db)
+    with store._connect() as conn:
+        conn.execute("ALTER TABLE bridge_requests DROP COLUMN ingress_json")
+    store = bridge.BridgeStore(db)
+    with store._connect() as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(bridge_requests)")}
+    assert "ingress_json" in columns

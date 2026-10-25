@@ -12,11 +12,16 @@ def _emit(value) -> int:
 
 
 def cmd_session_bridge(args: argparse.Namespace) -> int:
-    from hermes_cli.session_bridge import BridgeStore, capabilities, request_dict, run_once
+    from hermes_cli.session_bridge import (
+        BridgeStore, capabilities, request_dict, run_once, submit_local_file,
+    )
 
     if args.bridge_action == "capabilities":
         return _emit(capabilities())
     store = BridgeStore()
+    if args.bridge_action == "submit-file":
+        from pathlib import Path
+        return _emit(request_dict(submit_local_file(store, Path(args.path))))
     if args.bridge_action == "submit":
         return _emit(request_dict(store.submit(
             idempotency_key=args.idempotency_key,
@@ -61,6 +66,11 @@ def build_session_bridge_parser(subparsers) -> None:
     submit.add_argument("--kind", required=True, choices=("question", "investigation"))
     submit.add_argument("--target-session")
     submit.add_argument("--prompt", required=True)
+
+    submit_file = actions.add_parser(
+        "submit-file", help="Submit an owner-only JSON envelope from the profile runtime inbox",
+    )
+    submit_file.add_argument("path")
 
     for name in ("status", "cancel"):
         action = actions.add_parser(name)

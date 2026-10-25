@@ -722,8 +722,24 @@ def _finish_codex_turn(agent, turn, messages: list[dict[str, Any]], *, original_
     return usage_result
 
 
+def _transform_codex_reply(agent, turn, turn_id: Any) -> dict[str, Any]:
+    """Run ``transform_llm_output`` on a finished codex reply before its rows are persisted, as
+    ``finish_text_response`` does on the generic loop: the user and the stored row get the rewrite."""
+    if turn.interrupted or turn.error is not None or not turn.final_text:
+        return {"final_response": turn.final_text}
+    from agent.turn_finalizer import apply_llm_output_transform
+    final, transformed, pre_transform = apply_llm_output_transform(agent, turn.final_text, turn_id=turn_id)
+    if transformed:
+        for message in reversed(turn.projected_messages or []):
+            if message.get("role") == "assistant" and message.get("content") == pre_transform:
+                message["content"] = final
+                break
+    return {"final_response": final, "response_transformed": transformed, "pre_transform_response": pre_transform}
+
+
 def run_codex_app_server_turn(agent, *, user_message: str, original_user_message: Any, messages: list[dict[str, Any]],
-                              effective_task_id: str, should_review_memory: bool = False) -> dict[str, Any]:
+                              effective_task_id: str, should_review_memory: bool = False,
+                              turn_id: Any = None) -> dict[str, Any]:
     """Hand the turn to a ``codex app-server`` subprocess and project its events into ``messages``.
     Returns the chat_completions result shape. The user message is ALREADY in ``messages`` — never append it again."""
     # Defense in depth for compression.checkpoint_required: agent init refuses the combination, but
@@ -753,6 +769,7 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     if getattr(turn, "should_retire", False):
         logger.warning("codex app-server session retired (turn error: %s)", turn.error)
         _close_codex_session(agent)
+    reply = _transform_codex_reply(agent, turn, turn_id)
     # The binding is published only once the transcript it belongs to is durable, and never for a
     # retired thread (the next agent would only resume into the same wedge).
     if _persist_projected_messages(agent, turn, messages) and not getattr(turn, "should_retire", False):
@@ -763,8 +780,7 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     return _turn_result(
         interrupt, messages, api_calls=1, completed=not turn.interrupted and turn.error is None, error=turn.error,
         # We flushed the projected rows ourselves (agent_persisted); the gateway must skip its own DB write.
-        final_response=turn.final_text, agent_persisted=True, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id,
-        **usage_result,
+        agent_persisted=True, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id, **reply, **usage_result,
     )
 
 

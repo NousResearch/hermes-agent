@@ -2112,6 +2112,9 @@ def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]
             # parked. The next fire re-parks (with a fresh notice) if the window is still closed.
             from cron.quota_hold import clear_state as _clear_quota_hold
             _clear_quota_hold(updated)
+            # Same for a pending stale-abort re-run (cron/stale_abort_retry.py).
+            from cron.stale_abort_retry import clear_state as _clear_stale_abort
+            _clear_stale_abort(updated)
         if {"schedule", "next_run_at", "enabled", "state"}.intersection(updates):
             # An explicit schedule/lifecycle rewrite supersedes any occurrence the dispatcher
             # left unclaimed — pause/resume/edit must not resurrect a slot from before the edit.
@@ -2435,6 +2438,7 @@ def mark_job_run(
     ladder_rung: bool = False,
     quota_hold_seconds: Optional[float] = None,
     recover_consumed_fire: bool = False,
+    stale_abort: bool = False,
 ) -> bool:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached.
@@ -2456,6 +2460,10 @@ def mark_job_run(
     it on every tick. ``recover_consumed_fire`` lets a scheduled sparse cron recover its
     consumed fire when the provider reopens; manual runs retain the natural schedule
     (cron/quota_hold.py, #89376).
+
+    ``stale_abort``: this failed run died on the stale-call circuit breaker before any model call
+    completed. Recurring jobs get exactly one automatic re-run at a jittered +30–60 min
+    (cron/stale_abort_retry.py); a re-run that aborts again is not requeued.
     """
     def apply(jobs, _i, job):
         if execution_id is not None and execution_id in job.get("canonical_completions", []):
@@ -2485,6 +2493,12 @@ def mark_job_run(
             quota_hold.plan_hold(job, quota_hold_seconds, recover_consumed_fire=recover_consumed_fire)
         else:
             quota_hold.clear_state(job)
+        from cron import stale_abort_retry
+        if not success and stale_abort and not is_terminal_job(job):
+            stale_abort_retry.plan_retry(job)
+        elif not stale_abort:
+            # Any other outcome (the model was reached, or a plain failure) spends the re-run.
+            stale_abort_retry.clear_state(job)
         save_jobs(jobs)
         return True
 
@@ -3069,8 +3083,10 @@ def _reanchor_stale_cron(d: _DueJob) -> bool:
     stale_class = _classify_stale_cron_next_run(d.schedule, d.raw_next_run_dt, d.next_run_dt)
     if stale_class == STALE_CRON_EXPR_EDIT:
         from cron.quota_hold import is_recovery_fire
+        from cron.stale_abort_retry import is_retry_fire as is_stale_abort_fire
         from cron.unreachable_retry import is_retry_fire
-        if is_recovery_fire(d.job, d.next_run) or is_retry_fire(d.job, d.next_run):
+        if (is_recovery_fire(d.job, d.next_run) or is_retry_fire(d.job, d.next_run)
+                or is_stale_abort_fire(d.job, d.next_run)):
             logger.info(
                 "cron.off_lattice_fire job='%s' id=%s expr=%r at=%s",
                 d.label, d.job.get("id"), d.schedule.get("expr"), d.next_run)

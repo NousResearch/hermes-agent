@@ -2673,6 +2673,10 @@ def run_job(
             _hold_s = hold_seconds_from_failure(e)
             if _hold_s:
                 job["_quota_hold_seconds"] = _hold_s
+            # Stale-call breaker abort with zero API calls: one re-run (cron/stale_abort_retry.py).
+            from cron.stale_abort_retry import is_stale_abort_failure
+            if is_stale_abort_failure(e, agent):
+                job["_stale_abort"] = True
         except Exception:  # classification must never mask the real failure
             logger.debug("Job '%s': unreachable-failure classification failed", job_id)
         # No audit row when we failed before the agent existed; the audit write must never raise.
@@ -3120,6 +3124,12 @@ def _save_compose_deliver(
             d.should_deliver = False
             logger.info(
                 "Job '%s': suppressing failure notice — automatic re-run pending", job["id"])
+    if d.should_deliver and not d.success and job.get("_stale_abort"):
+        # The single stale-abort re-run (cron/stale_abort_retry.py) will be parked: hold the notice.
+        from cron.stale_abort_retry import will_retry as _stale_will_retry
+        if _stale_will_retry(job):
+            d.should_deliver = False
+            logger.info("Job '%s': suppressing failure notice — stale-abort re-run pending", job["id"])
     # Not a substring check: bare "SILENT"/"NO_REPLY" or a report quoting "[SILENT]" must
     # not be swallowed; bracketed-prefix / trailing-line tolerance is kept.
     if d.should_deliver and d.success and _is_cron_silence_response(deliver_content):

@@ -129,7 +129,12 @@ def is_retry_run(job: dict[str, Any]) -> bool:
     from cron.occurrences import scheduled_instant
 
     instant = job.get("_scheduled_instant")
-    return instant is not None and scheduled_instant((job.get(STATE_KEY) or {}).get("at")) == instant
+    if instant is not None and scheduled_instant((job.get(STATE_KEY) or {}).get("at")) == instant:
+        return True
+    # The stale-abort re-run (cron/stale_abort_retry.py) is the same kind of re-run of an
+    # already-counted occurrence; every ``ladder_rung`` call site goes through this function.
+    from cron.stale_abort_retry import is_retry_run as _stale_abort_retry_run
+    return _stale_abort_retry_run(job)
 
 
 def plan_retry(job: dict[str, Any]) -> bool:

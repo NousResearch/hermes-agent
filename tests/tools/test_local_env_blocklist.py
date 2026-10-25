@@ -440,6 +440,26 @@ def test_builders_strip_runtime_markers_and_owned_paths(child_env, monkeypatch, 
     assert dict(os.environ) == before
 
 
+@pytest.mark.parametrize("builder", ["foreground", "background", "factory", "nonterminal"])
+def test_builders_strip_conda_activation_state_with_its_prefix(child_env, monkeypatch, builder):
+    # With CONDA_SHLVL>=1 and no CONDA_PREFIX, `conda activate` builds a deactivate stack for an
+    # environment it cannot resolve and crashes in every child shell (#109973). The installation
+    # pointers name conda itself, not an active environment, so they stay.
+    activation = {"CONDA_PREFIX": "/opt/conda/envs/hermes", "CONDA_SHLVL": "1",
+                  "CONDA_DEFAULT_ENV": "hermes", "CONDA_PROMPT_MODIFIER": "(hermes) "}
+    installation = {"CONDA_EXE": "/opt/conda/bin/conda", "CONDA_PYTHON_EXE": "/opt/conda/bin/python"}
+    for k, v in {**activation, **installation}.items():
+        monkeypatch.setenv(k, v)
+    factories = {
+        "foreground": lambda: local._make_run_env({}),
+        "background": lambda: local._sanitize_subprocess_env(dict(os.environ)),
+        "factory": local.build_subprocess_env,
+        "nonterminal": local.hermes_subprocess_env,
+    }
+    actual = observe_child(factories[builder](), [*activation, *installation])
+    assert actual == {**dict.fromkeys(activation), **installation}
+
+
 @pytest.mark.parametrize("builder,base_force,extra_force", [
     ("foreground", "base-forced", "extra-forced"),
     ("background", None, "extra-forced"),

@@ -409,6 +409,56 @@ describe('PreviewPane console state', () => {
     window.hermesDesktop = previousDesktop
   })
 
+  it('skips an annotate pick whose rect was lost crossing the process boundary', async () => {
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          target={{ kind: 'url', label: 'Preview', source: 'http://localhost:5174', url: 'http://localhost:5174' }}
+        />
+      )
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement & Record<string, unknown>
+    let waitCount = 0
+    let releaseEnd: ((event: unknown) => void) | undefined
+    Object.assign(webview, {
+      executeJavaScript: vi.fn(async (code: string) => {
+        if (code.includes('.wait()')) {
+          waitCount += 1
+
+          // The first pick comes back without its rect (#137992) — a value
+          // that crossed executeJavaScript, where the in-page emitter's
+          // TypeScript shape is not a guarantee. The second wait parks so the
+          // skipped pick's state update actually reaches a render.
+          if (waitCount === 1) {
+            return { type: 'pick-area' }
+          }
+
+          return new Promise(resolve => {
+            releaseEnd = resolve
+          })
+        }
+
+        return undefined
+      }),
+      getWebContentsId: () => 7
+    })
+
+    fireEvent.click(rendered.getByRole('button', { name: 'Annotate' }))
+
+    // Before the guard this built a draft with rect undefined, and flushing
+    // that render threw "reading 'x'" inside placeAnnotateCard — killing the
+    // pane. After it, the loop skips the pick and parks on the next wait.
+    await act(async () => {})
+    expect(waitCount).toBe(2)
+    expect(rendered.container.querySelector('[data-annotate-card]')).toBeNull()
+
+    await act(async () => {
+      releaseEnd?.({ type: 'end' })
+    })
+  })
+
   // The webview always runs on THIS machine, so a remote agent's localhost is
   // a different computer's localhost. The failure is honest but baffling
   // without saying so.

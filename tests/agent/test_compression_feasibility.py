@@ -68,24 +68,30 @@ def _make_agent(
 
 @pytest.mark.parametrize("main_context,aux_context", [(1_000_000, 512_000), (400_000, 80_000)])
 def test_aux_sync_keeps_lean_tail_policy(main_context, aux_context):
-    """Lowering only the trigger must not change window-relative retention."""
+    """Lean never gates the main trigger on the aux window: the summary input is sampled to a
+    bounded prompt and retention is window-relative, so threshold and aux ceiling stay untouched."""
     agent = _make_agent(main_context=main_context)
     compressor = agent.context_compressor = ContextCompressor(
         "test-main-model", config_context_length=main_context,
         threshold_percent=0.85, quiet_mode=True,
     )
+    threshold_before = compressor.threshold_tokens
+    assert threshold_before > aux_context
     before = compressor.tail_token_budget
     agent._emit_status = lambda message: None
     client = MagicMock(base_url="http://localhost/v1", api_key="test-key")
     with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "aux")), \
          patch("agent.model_metadata.get_model_context_length", return_value=aux_context):
         agent._check_compression_model_feasibility()
-        assert compressor.threshold_tokens == aux_context
+        assert compressor.threshold_tokens == threshold_before
+        assert compressor._aux_context_ceiling is None
         assert compressor.tail_token_budget == before
-        # Repeated feasibility and subsequent model recalibration retain policy.
+        # Repeated feasibility and subsequent model recalibration retain the trigger and policy.
         agent._check_compression_model_feasibility()
+        assert compressor.threshold_tokens == threshold_before
         assert compressor.tail_token_budget == before
         compressor.update_model("test-main-model", context_length=main_context)
+        assert compressor.threshold_tokens == threshold_before
         assert compressor.tail_token_budget == before
 
 
@@ -103,6 +109,7 @@ def test_aux_sync_legacy_tail_follows_lowered_threshold():
          patch("agent.model_metadata.get_model_context_length", return_value=512_000):
         agent._check_compression_model_feasibility()
     assert compressor.threshold_tokens == 512_000
+    assert compressor._aux_context_ceiling == 512_000
     assert compressor.tail_token_budget < before
     assert compressor.tail_token_budget == int(compressor.threshold_tokens * compressor.summary_target_ratio)
 
@@ -127,12 +134,14 @@ def test_fallback_activation_on_never_probed_session_stays_lazy():
 
 def test_fallback_activation_reprobes_aux_ceiling_and_keeps_it_durable():
     """Every main-runtime change re-probes the summariser and the clamp survives later window
-    corrections; a failed probe leaves the latch unset for the lazy compaction-time probe (#114707)."""
+    corrections; a failed probe leaves the latch unset for the lazy compaction-time probe (#114707).
+    Legacy tail: the clamp is the policy under test; lean keeps its window-relative trigger (#136170)."""
     from agent.chat_completion_helpers import _update_fallback_context_compressor
 
     agent = _make_agent(main_context=200_000)
     compressor = agent.context_compressor = ContextCompressor(
-        "test-main-model", config_context_length=200_000, threshold_percent=0.50, quiet_mode=True,
+        "test-main-model", config_context_length=200_000, threshold_percent=0.50,
+        tail_mode="legacy", quiet_mode=True,
     )
     notices = 0
 
@@ -199,7 +208,8 @@ def test_near_threshold_probe_clamps_before_first_compaction():
 
     agent = _make_agent(main_context=1_000_000)
     compressor = agent.context_compressor = ContextCompressor(
-        "test-main-model", config_context_length=1_000_000, threshold_percent=0.75, quiet_mode=True,
+        "test-main-model", config_context_length=1_000_000, threshold_percent=0.75,
+        tail_mode="legacy", quiet_mode=True,
     )
     agent._emit_status = lambda message: None
     agent._compression_feasibility_checked = False

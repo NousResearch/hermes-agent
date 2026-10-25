@@ -9,6 +9,7 @@ volume when a runtime install is unavoidable.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -62,6 +63,40 @@ def test_readonly_source_with_baked_fresh_deps_runs_in_place(
     assert sidecar_paths.resolve_sidecar_dir(source) == source
 
 
+_LOCAL_IMPORT_RE = re.compile(
+    r"""(?:from|import|export\s+[^;]*from)\s+['"]\./([^'"]+\.mjs)['"]"""
+)
+
+
+def test_mirror_files_cover_every_local_import_of_index_mjs() -> None:
+    """The mirror list must provision every module index.mjs imports locally.
+
+    Regression for #103051: send-format.mjs and stream-staleness.mjs were added
+    as imports without joining _MIRROR_FILES, so the mirrored sidecar crashed
+    with ERR_MODULE_NOT_FOUND on every start.
+    """
+    index = sidecar_paths.SOURCE_SIDECAR_DIR / "index.mjs"
+    imported = sorted(
+        {
+            match.group(1)
+            for match in _LOCAL_IMPORT_RE.finditer(index.read_text(encoding="utf-8"))
+            if match.group(1)
+        }
+    )
+    assert imported, "no local imports found — index.mjs layout changed?"
+    missing = [name for name in imported if name not in sidecar_paths._MIRROR_FILES]
+    assert not missing, (
+        "index.mjs imports modules that install-sidecar's mirror does not provision: "
+        f"{missing}. Add them to sidecar_paths._MIRROR_FILES."
+    )
+    # And every listed module must actually exist in the source tree.
+    absent = [
+        name for name in sidecar_paths._MIRROR_FILES
+        if not (sidecar_paths.SOURCE_SIDECAR_DIR / name).exists()
+    ]
+    assert not absent, f"_MIRROR_FILES references missing source files: {absent}"
+
+
 def test_mirror_refresh_updates_changed_files_and_keeps_node_modules(
     tmp_path, monkeypatch
 ) -> None:
@@ -91,11 +126,13 @@ def test_mirror_refresh_updates_changed_files_and_keeps_node_modules(
 @pytest.mark.platforms("linux")
 def test_dir_writable_probe(tmp_path) -> None:
     assert sidecar_paths.dir_writable(tmp_path) is True
+    if os.name == "nt":
+        pytest.skip("directory permissions probe requires POSIX")
     ro = tmp_path / "ro"
     ro.mkdir()
     ro.chmod(0o555)
     try:
-        if os.geteuid() == 0:  # pragma: no cover - root ignores perms
+        if getattr(os, "geteuid", lambda: -1)() == 0:  # pragma: no cover - root ignores perms
             pytest.skip("root bypasses directory permissions")
         assert sidecar_paths.dir_writable(ro) is False
     finally:

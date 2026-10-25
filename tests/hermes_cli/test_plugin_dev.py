@@ -251,3 +251,34 @@ def test_doctor_loads_model_provider_plugins_through_provider_discovery(tmp_path
     report = doctor_plugin(plugin)
     assert not report.ok
     assert any("registered no ProviderProfile" in f.message for f in report.findings)
+
+
+def test_doctor_reports_a_model_provider_that_raises_after_registering(tmp_path: Path) -> None:
+    """A plugin that registers its profile and THEN raises is still a failed load.
+
+    Model-provider discovery (``providers._import_plugin_dir``) logs an import exception into a
+    warning and drops the module, while any profile it registered before raising stays in the
+    registry. Judging the plugin by "did something register?" therefore printed OK for a plugin
+    that startup discovery was in fact discarding — and because the module is gone, that
+    profile's own ``create_client`` can neither import its client nor be reported as missing.
+    """
+    import providers
+    from hermes_cli.plugin_dev import doctor_plugin
+
+    plugin = tmp_path / "acme-half-registered"
+    plugin.mkdir()
+    (plugin / "plugin.yaml").write_text(
+        "name: acme-half-registered\nkind: model-provider\n", encoding="utf-8")
+    (plugin / "__init__.py").write_text(
+        "from providers import register_provider\nfrom providers.base import ProviderProfile\n"
+        "register_provider(ProviderProfile(name='acme-half-probe', auth_type='external_process',\n"
+        "                                  process_command='acme'))\n"
+        "raise TypeError(\"HermesOverlay() got an unexpected keyword argument 'keyless'\")\n",
+        encoding="utf-8")
+    registry_before = dict(providers._REGISTRY)
+
+    report = doctor_plugin(plugin)
+
+    assert not report.ok, report.format_text()
+    assert any("import raised TypeError" in f.message for f in report.findings), report.findings
+    assert providers._REGISTRY == registry_before, "a failed load must leave the registry untouched"

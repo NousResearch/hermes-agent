@@ -476,19 +476,24 @@ def _write_task_script() -> Path:
     # Also render the console-less .vbs launcher used by Scheduled Task and the Startup-folder fallback via
     # wscript.exe (issue #45599 fix A). The .cmd wrapper stays as a generated helper/compatibility artifact.
     vbs_path = script_path.with_suffix(".vbs")
-    _atomic_write(vbs_path, _build_gateway_vbs_script(*settings), vbs_path.with_name(vbs_path.name + ".tmp"))
+    _atomic_write(vbs_path, _build_gateway_vbs_script(*settings), vbs_path.with_name(vbs_path.name + ".tmp"),
+                  encoding="utf-16")
     return script_path
 
 
-def _atomic_write(path: Path, content: str, tmp: Path) -> None:
+def _atomic_write(path: Path, content: str, tmp: Path, *, encoding: str = "utf-8") -> None:
     """Write ``content`` verbatim (no newline translation) via ``tmp`` then rename over ``path``.
 
     The staging file is removed even when the rename fails: the Startup-folder caller stages
     inside the Startup folder itself, and Windows opens every file there at login — a leftover
     ``Hermes_Gateway.tmp`` pops up in Notepad after every sign-in (#114093).
+
+    ``.vbs`` launchers pass ``utf-16`` (BOM included): Windows Script Host decodes a BOM-less script
+    with the ANSI code page, so a non-ASCII install path reached python as mojibake, ``PYTHONPATH``
+    no longer imported ``hermes_cli`` and every task or Startup start died before logging a line.
     """
     try:
-        tmp.write_text(content, encoding="utf-8", newline="")
+        tmp.write_text(content, encoding=encoding, newline="")
         tmp.replace(path)
     finally:
         try:
@@ -605,7 +610,7 @@ def _install_startup_entry(script_path: Path) -> Path:
     """Write the Startup-folder fallback launcher. Returns its path."""
     entry = get_startup_entry_path()
     entry.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(entry, _build_startup_launcher(script_path), _startup_staging_path())
+    _atomic_write(entry, _build_startup_launcher(script_path), _startup_staging_path(), encoding="utf-16")
     legacy_entry = _legacy_startup_entry_path()
     try:
         if legacy_entry.exists():
@@ -660,6 +665,9 @@ def reconcile_autostart_launchers() -> tuple[list[str], list[str]]:
         if legacy.exists():  # _install_startup_entry swallows the unlink failure; both would fire at logon
             return [], [f"Could not remove legacy Windows login item: {legacy} (locked or access denied; it still fires at logon beside {entry})"]
         return [f"Migrated legacy Windows login item to: {entry}"], []
+    if get_startup_entry_path().exists():
+        # An entry from before the UTF-16 launchers is read in the ANSI code page at logon: rewrite it.
+        _install_startup_entry(get_task_script_path())
     return [], []
 
 

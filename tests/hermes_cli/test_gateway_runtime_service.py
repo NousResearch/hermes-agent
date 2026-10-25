@@ -295,6 +295,30 @@ def test_task_xml_binds_actual_action_and_principal(case, reason, tmp_path):
         verify_windows_task(xml, home, user, 'S-1-5-21-123')
 
 
+def test_task_launcher_for_a_non_ascii_home_is_utf16_and_still_verifies(tmp_path, monkeypatch):
+    """wscript.exe reads a BOM-less .vbs in the ANSI code page, so a non-ASCII HERMES_HOME (any CJK or
+    accented Windows username) reached python garbled and the gateway died before logging. The installed
+    launcher is UTF-16 with a BOM; ensure must verify it, and a UTF-8 one an older version wrote."""
+    import codecs
+    from hermes_cli import gateway_windows
+    from hermes_cli.gateway_runtime_service_identity import verify_windows_task
+
+    home = tmp_path / 'Usuário 方舟'
+    script = home / 'gateway-service' / 'Hermes_Gateway.cmd'
+    script.parent.mkdir(parents=True)
+    monkeypatch.setattr(gateway_windows, '_assert_windows', lambda: None)
+    monkeypatch.setattr(gateway_windows, 'get_task_script_path', lambda: script)
+    monkeypatch.setattr(gateway_windows, '_launcher_settings', lambda: (sys.executable, str(home), str(home), ''))
+    launcher = gateway_windows._write_task_script().with_suffix('.vbs')
+    raw = launcher.read_bytes()
+    assert raw.startswith(codecs.BOM_UTF16_LE) and str(home) in raw.decode('utf-16')
+    user = 'DOMAIN\\owner'
+    xml = gateway_windows._build_scheduled_task_xml('Hermes_Gateway', launcher, user)
+    verify_windows_task(xml, home, user, 'S-1-5-21-123')
+    launcher.write_bytes(raw.decode('utf-16').encode('utf-8'))
+    verify_windows_task(xml, home, user, 'S-1-5-21-123')
+
+
 @pytest.mark.parametrize("installed", [True, False])
 def test_task_discovery_skips_listing_lines_that_are_not_task_rows(tmp_path, monkeypatch, installed):
     """An orphaned TaskCache entry (OEM leftovers) makes ``schtasks /Query /FO CSV`` print a localized

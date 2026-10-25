@@ -258,13 +258,19 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     # Synced against opencode.ai/docs/go + live GET /zen/go/v1/models. Known-delisted models are
     # REMOVED (the live-first merge would otherwise keep offering a model that 401s): "ox-alpha-free"
-    # — the Go-subscription twin of Zen's Ox Alpha — was delisted 2026-09-09.
+    # — the Go-subscription twin of Zen's Ox Alpha — was delisted 2026-09-09. Re-synced 2026-10-19:
+    # "glm-5", "grok-4.5", "kimi-k2.5", "mimo-v2-pro", "mimo-v2-omni", "qwen3.5-plus" and
+    # "hy3-preview" now 400 "Model is unavailable" and were dropped, and the ids the endpoint serves
+    # but this floor omitted were added. "kimi-k3" stays first: [0] is the non-interactive default.
     "opencode-go": [
-        "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "gpt-5.6-luna", "grok-4.5", "glm-5.3",
-        "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5", "mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro",
-        "mimo-v2-omni", "minimax-m3", "minimax-m2.7", "minimax-m2.5", "deepseek-v4-pro",
-        "deepseek-v4-flash", "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus",
-        "qwen3.5-plus", "hy3", "hy3-preview", "muse-spark-1.2-contributor", "muse-spark-1.3-contributor",
+        "kimi-k3", "deepseek-v4.1-flash", "deepseek-v4-pro", "glm-5.1", "glm-5.2", "glm-5.3",
+        "glm-5.3-flash", "gpt-5.6-luna", "gpt-6-luna", "claude-haiku-5-5", "grok-4.6", "grok-4.7",
+        "muse-spark-1.2-contributor", "muse-spark-1.3-contributor", "omen-alpha", "hy3", "hy4-preview",
+        "kimi-k2.6", "kimi-k2.7-code", "mimo-v2.5", "mimo-v2.5-pro", "mimo-v2.6-flash", "mimo-v2.6-pro",
+        "minimax-m2.5", "minimax-m2.7", "minimax-m3", "minimax-m3.1-flash-free",
+        "gemini-4-argon-contributor", "longcat-2.0", "longcat-2.5-preview-free", "step-5-preview",
+        "beam-free", "qwen3.6-plus", "qwen3.7-plus", "qwen3.7-max", "qwen3.8-flash", "qwen3.8-max",
+        "deepseek-v4-flash",
     ],
     "kilocode": [
         "anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4",

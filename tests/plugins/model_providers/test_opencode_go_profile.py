@@ -310,3 +310,17 @@ def test_opencode_go_plan_windows_reach_usage_through_profile_hook(opencode_go_p
     assert [(w.label, w.used_percent) for w in snapshot.windows] == [
         ("Rolling window", 3.0), ("Weekly", 2.0), ("Monthly", 2.0)]
     assert snapshot.windows[0].reset_at == datetime(2026, 9, 16, 21, 44, 55, 176000, tzinfo=UTC)
+
+
+def test_opencode_go_auxiliary_default_is_in_curated_catalog(opencode_go_profile):
+    """The profile's default_aux_model must stay in lockstep with the curated
+    picker catalog: the Go relay 400s ``Model is unavailable`` for an id it no
+    longer serves, and an aux default the catalog cannot offer silently pushes
+    titling/compression onto the main agent model.
+
+    Durable against future model-generation bumps — it pins the invariant,
+    not a frozen model name.
+    """
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    assert opencode_go_profile.default_aux_model in _PROVIDER_MODELS["opencode-go"]

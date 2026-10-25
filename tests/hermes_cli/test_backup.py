@@ -1024,6 +1024,50 @@ class TestBackupEdgeCases:
 
 
 
+    def test_vanished_file_between_scan_and_read_is_not_an_error(self, tmp_path):
+        """Hermes deletes its own short-lived files while the archive runs; one that is
+        scan-listed but gone by the read is not an incomplete backup (#144066)."""
+        from hermes_cli.backup import _write_zip_entries
+        home = tmp_path / "home"
+        home.mkdir()
+        keep = home / "keep.txt"
+        keep.write_text("kept\n", encoding="utf-8")
+        gone = home / "gone.json"
+        errors: list[str] = []
+        out_zip = tmp_path / "out.zip"
+        with zipfile.ZipFile(out_zip, "w") as zf:
+            _write_zip_entries(
+                zf, [(gone, Path("gone.json")), (keep, Path("keep.txt"))], out_zip,
+                on_db_failure=lambda rel: errors.append(str(rel)),
+                on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"),
+                on_progress=lambda i: None, track_bytes=True)
+        assert errors == []
+        with zipfile.ZipFile(out_zip) as zf:
+            assert zf.namelist() == ["keep.txt"]
+
+    def test_backup_completes_when_a_scanned_file_vanishes(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        import hermes_cli.backup as backup_mod
+        real = backup_mod._iter_backup_files
+        phantom = hermes_home / "cron" / "admissions" / "gone.json"
+
+        def with_phantom(root, out, skipped=None):
+            yield from real(root, out, skipped)
+            yield phantom, Path("cron/admissions/gone.json")
+
+        monkeypatch.setattr(backup_mod, "_iter_backup_files", with_phantom)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        out_zip = tmp_path / "backup.zip"
+        assert backup_mod.run_backup(Namespace(output=str(out_zip))) is True
+        with zipfile.ZipFile(out_zip) as zf:
+            names = zf.namelist()
+        assert "config.yaml" in names
+        assert "cron/admissions/gone.json" not in names
+
+
 class TestImportEdgeCases:
     def _make_backup_zip(self, zip_path: Path, files: dict[str, str | bytes]) -> None:
         with zipfile.ZipFile(zip_path, "w") as zf:

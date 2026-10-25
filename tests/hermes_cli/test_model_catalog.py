@@ -205,6 +205,18 @@ class TestFetchFailure:
                 reset_hermes_home_override(token)
         assert "http://override" in calls, "profile beta skipped the override after alpha's failure"
 
+    def test_dead_override_on_the_manifest_url_keeps_the_fallback_chain(self, isolated_home):
+        """An override pointing at the (dead) main URL must not put the manifest's working
+        fallback URL into the override's backoff."""
+        from hermes_cli import model_catalog
+        cfg = {"enabled": True, "url": "http://master", "ttl_hours": 24.0,
+               "providers": {"openrouter": {"url": "http://master"}}}
+        with patch.object(model_catalog, "_load_catalog_config", return_value=cfg), \
+                patch.object(model_catalog, "_fetch_manifest",
+                             side_effect=lambda url, timeout: None if url == "http://master" else _valid_manifest()):
+            models = model_catalog.get_curated_openrouter_models()
+        assert models == [(m["id"], m["description"]) for m in _valid_manifest()["providers"]["openrouter"]["models"]]
+
     def test_unreachable_provider_override_is_not_refetched_on_every_call(self, isolated_home):
         from hermes_cli import model_catalog
         calls: list[str] = []

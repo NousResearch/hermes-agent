@@ -49,24 +49,26 @@ _catalog_cache: dict[str, Any] | None = None
 _catalog_cache_source_mtime: float = 0.0
 _catalog_cache_source_path: str = ""
 # ``monotonic()`` deadline before which a failed fetch is not retried (see FETCH_RETRY_DELAY_SECONDS),
-# keyed by (profile home key, URL): one gateway process serves many profiles.
-_fetch_retry_after: dict[tuple[str, str], float] = {}
+# keyed by (profile home key, "manifest" | "override", URL): one gateway process serves many profiles,
+# and a dead override must not skip the manifest's fallback chain when both share a URL.
+_fetch_retry_after: dict[tuple[str, str, str], float] = {}
 
 
-def _backoff_key(url: str) -> tuple[str, str]:
+def _backoff_key(kind: str, url: str) -> tuple[str, str, str]:
     from hermes_constants import hermes_home_key
-    return (hermes_home_key(), url)
+    return (hermes_home_key(), kind, url)
 
 
-def _backing_off(url: str) -> bool:
-    return time.monotonic() < _fetch_retry_after.get(_backoff_key(url), 0.0)
+def _backing_off(kind: str, url: str) -> bool:
+    return time.monotonic() < _fetch_retry_after.get(_backoff_key(kind, url), 0.0)
 
 
-def _note_fetch_result(url: str, ok: bool) -> None:
+def _note_fetch_result(kind: str, url: str, ok: bool) -> None:
+    key = _backoff_key(kind, url)
     if ok:
-        _fetch_retry_after.pop(_backoff_key(url), None)
+        _fetch_retry_after.pop(key, None)
     else:
-        _fetch_retry_after[_backoff_key(url)] = time.monotonic() + FETCH_RETRY_DELAY_SECONDS
+        _fetch_retry_after[key] = time.monotonic() + FETCH_RETRY_DELAY_SECONDS
 
 
 def clear_fetch_backoff() -> None:
@@ -263,10 +265,10 @@ def get_catalog(*, force_refresh: bool = False) -> dict[str, Any]:
             _spawn_catalog_swr_refresh(cfg["url"])
         return _remember(disk_data, disk_mtime)
 
-    if not force_refresh and disk_data is None and _backing_off(cfg["url"]):
+    if not force_refresh and disk_data is None and _backing_off("manifest", cfg["url"]):
         return {}
     fetched = _fetch_manifest_with_fallback(cfg["url"], DEFAULT_FETCH_TIMEOUT)
-    _note_fetch_result(cfg["url"], fetched is not None)
+    _note_fetch_result("manifest", cfg["url"], fetched is not None)
     if fetched is not None:
         _write_disk_cache(fetched)
         new_disk_data, new_mtime = _read_disk_cache()
@@ -315,10 +317,10 @@ def _fetch_provider_override(provider: str) -> dict[str, Any] | None:
     # Overrides are usually third-party self-hosted: skip the disk cache, re-request every call
     # (except during a failure backoff; the caller then falls back to the main manifest).
     override_url = override_url.strip()
-    if _backing_off(override_url):
+    if _backing_off("override", override_url):
         return None
     data = _fetch_manifest(override_url, DEFAULT_FETCH_TIMEOUT)
-    _note_fetch_result(override_url, data is not None)
+    _note_fetch_result("override", override_url, data is not None)
     return data
 
 

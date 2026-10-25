@@ -4519,7 +4519,12 @@ def _start_gateway_housekeeping(
     # Low disk + auto-prune undecided: ask on the home channel (two syscalls; snoozed per post).
     chores.append((1, "Auto-prune low-disk prompt", lambda: maybe_post_auto_prune_prompt(runner, loop)))
     if cron_provider is not None:
-        chores.append((5, "Misfire catch-up sweep", lambda: _housekeeping_misfire_catch_up(cron_provider, adapters, loop)))
+        # Per served profile: load_jobs()/claim_fire read the profile's own cron store, and the
+        # fire thread inherits this scope (scheduler_provider copies the context). An external
+        # provider has NO local tick loop — this sweep is the only backstop, so an unscoped sweep
+        # means a secondary profile's overdue jobs are never caught up under multiplex.
+        chores.append((5, "Misfire catch-up sweep", profile_scoped_chore(
+            runner, lambda: _housekeeping_misfire_catch_up(cron_provider, adapters, loop))))
     if cron_thread is not None:
         # The ticker's own guards keep its loop alive; this is the outer layer for a thread that has
         # already ended (#111010). Runs every tick so the outage is bounded by one housekeeping interval.

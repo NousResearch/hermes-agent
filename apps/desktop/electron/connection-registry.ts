@@ -641,9 +641,54 @@ export interface RosterAgent {
 
 export interface RosterProfileMetadata {
   display_name?: string
+  description?: string
   title?: string
   ui_meta?: Record<string, unknown>
   has_avatar?: boolean
+}
+
+/** Project credential-free `/api/profiles` fields into the metadata carried by
+ * the cross-connection roster. Empty strings are meaningful: they clear stale
+ * renderer values from a prior enumeration. */
+export function profileMetadataFromApiProfiles(profiles: unknown[]): Record<string, RosterProfileMetadata> {
+  return Object.fromEntries(
+    profiles
+      .map(profile => {
+        const record = profile && typeof profile === 'object' ? (profile as Record<string, unknown>) : {}
+        const name = String(record.name || '').trim()
+
+        if (!name) {
+          return null
+        }
+
+        const metadata: RosterProfileMetadata = {}
+
+        if (typeof record.display_name === 'string' && record.display_name.trim()) {
+          metadata.display_name = record.display_name.trim()
+        }
+
+        // `/api/profiles` names the Bot Mode title `bot_title`. Carry it even
+        // when empty so a refreshed remote row can clear stale renderer state.
+        if (typeof record.bot_title === 'string') {
+          metadata.title = record.bot_title.trim()
+        }
+
+        if (typeof record.description === 'string') {
+          metadata.description = record.description.trim()
+        }
+
+        if (record.ui_meta && typeof record.ui_meta === 'object') {
+          metadata.ui_meta = record.ui_meta as Record<string, unknown>
+        }
+
+        if (typeof record.has_avatar === 'boolean') {
+          metadata.has_avatar = record.has_avatar
+        }
+
+        return [name, metadata] as const
+      })
+      .filter((entry): entry is readonly [string, RosterProfileMetadata] => Boolean(entry))
+  )
 }
 
 /**

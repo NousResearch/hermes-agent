@@ -174,6 +174,7 @@ def test_a_delivery_sent_after_the_routed_scope_resets_lands_in_the_owning_profi
 
 class _FatalRunner(GatewayAdapterLifecycleMixin, GatewayStartupMixin):
     # The last non-retryable fatal parks the platform through the startup mixin (as in GatewayRunner).
+    _draining = _external_drain_active = False
 
     def __init__(self):
         self.adapters, self._failed_platforms, self._running = {}, {}, True

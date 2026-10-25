@@ -7,6 +7,7 @@ status looked healthy, every API client was gone, nothing retried. The startup s
 gate — every platform, not just api_server — so the same failure on any other platform is reported
 the same way.
 """
+import asyncio
 import logging
 import time
 from unittest.mock import AsyncMock
@@ -188,6 +189,41 @@ async def test_last_platform_lost_non_retryably_mid_run_keeps_the_gateway_up_deg
         assert state["platforms"]["telegram"]["error_code"] == "telegram_auth_error"
     finally:
         await real_stop()
+
+
+@pytest.mark.asyncio
+async def test_last_platform_parked_during_an_external_drain_keeps_draining_until_release(
+    monkeypatch, tmp_path
+):
+    """Parking must not overwrite an active drain: status stays ``draining`` while the dashboard's
+    drain holds, and the release reports ``degraded`` (not ``running``)."""
+    drain = {"requested": True}
+    monkeypatch.setattr("gateway.drain_control.drain_requested", lambda: drain["requested"])
+    adapter = _LostMidRunAdapter()
+    runner = _runner(
+        monkeypatch, tmp_path, {Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")},
+        lambda platform, platform_config: adapter,
+    )
+    assert await runner.start() is True
+
+    async def _drain_watcher_settles(active):
+        for _ in range(50):  # the watcher polls the marker every second
+            if runner._external_drain_active is active:
+                return
+            await asyncio.sleep(0.1)
+        raise AssertionError(f"external drain never became {active}")
+
+    try:
+        await _drain_watcher_settles(True)
+        await adapter.fail("telegram_auth_error")
+        assert await flush_runtime_status_async()
+        assert read_runtime_status()["gateway_state"] == "draining"
+        drain["requested"] = False
+        await _drain_watcher_settles(False)
+        assert await flush_runtime_status_async()
+        assert read_runtime_status()["gateway_state"] == "degraded"
+    finally:
+        await runner.stop()
 
 
 @pytest.mark.asyncio

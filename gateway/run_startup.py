@@ -105,7 +105,9 @@ class GatewayStartupMixin:
         if adapter.fatal_error_retryable or is_global_startup_conflict(adapter.fatal_error_code):
             return False
         self._startup_parked_platforms = True
-        self._update_runtime_status(self._serving_state())
+        # An active drain or shutdown owns the state; the drain release stamps _serving_state() itself.
+        if not (self._external_drain_active or self._draining or not self._running):
+            self._update_runtime_status(self._serving_state())
         logger.error(
             "%s is parked after a non-retryable error (fix it, then `hermes gateway restart`). The gateway "
             "is DEGRADED — it serves local clients and cron with no messaging platform. %s: %s",

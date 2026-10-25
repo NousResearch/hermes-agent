@@ -91,7 +91,7 @@ _PROFILE_IMPLICIT = frozenset({'session.create', 'session.list', 'session.info',
                                'prompt.submit', 'prompt.receipt', 'prompt.cancel', 'prompt.resolve_unknown',
                                'prompt.steer_queued', 'prompt.replace_queued',
                                'session.interrupt', 'session.events.since', 'session.mutate', 'session.stats',
-                               'approval.respond', 'clarify.respond'})
+                               'approval.respond', 'clarify.respond', 'handoff.request', 'handoff.state', 'handoff.fail'})
 
 
 def display_projection(history, profile_home):
@@ -228,6 +228,8 @@ class AuthorityConnection:
         handlers['clarify.lock'] = partial(clarify_lock, self)
         from gateway.session_connections import handlers as connection_handlers
         handlers.update(connection_handlers(self))
+        from gateway.session_handoff import handlers as handoff_handlers
+        handlers.update(handoff_handlers(self))
         from gateway.session_control_actions import control
         handlers['session.control'] = partial(control, self)
         from gateway.session_onboarding import handlers as onboarding_handlers

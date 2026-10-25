@@ -155,7 +155,7 @@ export function splitRewindSubmit(params: Record<string, unknown>): { rewind: Re
 // which never holds an owner session, and answers `session not found` (read by the renderer as a
 // reaped runtime). Refused by name until the owner serves them.
 // `preview.restart` is served by the owner (gateway/session_tui_side.py).
-const SIDECAR_SESSION_VERBS = new Set(['handoff.request', 'handoff.state', 'handoff.fail'])
+const SIDECAR_SESSION_VERBS = new Set<string>()
 
 // The manage_connections card's calls the owner serves for a session-owned operation (gateway/session_connections.py); any other session-owned connector call stays refused.
 const OWNER_CONNECTION_VERBS = new Set([

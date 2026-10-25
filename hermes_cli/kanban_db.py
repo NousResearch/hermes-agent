@@ -112,6 +112,7 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
 BLOCK_RECURRENCE_LIMIT = 2
+_TRIAGE_RESOLUTION_CAPABILITY = object()
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
 
@@ -2591,18 +2592,6 @@ class HallucinatedCardsError(ValueError):
         )
 
 
-class EmptyCompletionError(ValueError):
-    """``complete_task`` refused: no substantive ``result``, ``summary``, or
-    stored result. A ``ValueError`` so tool error handlers treat it as
-    recoverable. Review approvals are exempt (the human is the record)."""
-
-    def __init__(self, task_id: str):
-        self.task_id = task_id
-        super().__init__(
-            f"completion blocked: {task_id} has no result or summary evidence"
-        )
-
-
 class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
@@ -2640,7 +2629,7 @@ def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
-    fire_lifecycle_hook: bool = True, force: bool = False,
+    fire_lifecycle_hook: bool = True, force: bool = False, _triage_capability: object = None,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2658,39 +2647,67 @@ def complete_task(
     or ``summary``, or a stripped result already stored on the card. Empty or
     whitespace-only evidence raises :class:`EmptyCompletionError` after an
     auditable event. Approving a card out of ``review`` stays exempt.
+    ``triage`` is accepted only when CLI ``--force`` supplies the private
+    capability. Other callers that use ``force`` for live-claim recovery do not
+    silently gain permission to bypass triage.
     """
     now = int(time.time())
+    resolve_triage = force and _triage_capability is _TRIAGE_RESOLUTION_CAPABILITY
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
-    _gate_empty_completion(conn, task_id, result=result, summary=summary)
+    resolution_snapshot = _completion_state_snapshot(conn, task_id) if resolve_triage else None
+    if resolve_triage and not _triage_resolution_allowed(conn, task_id):
+        return False
+    _gate_empty_completion(
+        conn, task_id, result=result, summary=summary,
+        require_current_evidence=resolve_triage,
+    )
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
     )
-    handoff_summary = summary if summary is not None else result
-    acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
+    handoff_summary = None
+    acceptance = prepare_acceptance(
+        conn, task_id, expected_run_id, metadata,
+        resolve_triage=resolve_triage,
+    )
     if acceptance is False:
         return False
+    effective_result = result
     with write_txn(conn):
         # Hard invariant even for human review approval: a parent may have
         # reopened while this task waited.
         if not _parents_satisfied(conn, task_id):
             return False
-        if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
-            return False
         trow = conn.execute(
-            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
+            "SELECT status, result, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         prior_status = trow["status"] if trow else None
+        if resolve_triage and _completion_state_snapshot(conn, task_id) != resolution_snapshot:
+            return False
+        if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
+            return False
+        if not _substantive_text(effective_result):
+            effective_result = trow["result"] if trow else None
+        if _substantive_text(summary):
+            handoff_summary = summary
+        elif _substantive_text(result):
+            handoff_summary = result
+        else:
+            handoff_summary = effective_result
         # Refuse to close a LIVE worker's run without proof of ownership
         # (expected_run_id) or an explicit human override (force=True); see
         # _claim_is_live for what "live" means.
         if expected_run_id is None and not force and trow and _claim_is_live(trow):
             raise LiveClaimError(task_id)
-        sql = """
+        eligible_statuses = ["running", "ready", "blocked", "review"]
+        if resolve_triage:
+            eligible_statuses.append("triage")
+        placeholders = ", ".join("?" for _ in eligible_statuses)
+        sql = f"""
                 UPDATE tasks
                    SET status       = 'done',
                        result       = ?,
@@ -2701,9 +2718,9 @@ def complete_task(
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked', 'review')
+                   AND status IN ({placeholders})
                 """
-        params: tuple = (result, now, task_id)
+        params: tuple = (effective_result, now, task_id, *eligible_statuses)
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
             params = (*params, int(expected_run_id))
@@ -2716,7 +2733,7 @@ def complete_task(
             metadata=metadata,
         )
         # Never-claimed task: synthesize a run so the handoff fields survive.
-        if run_id is None and (summary or metadata or result or prior_status == "review"):
+        if run_id is None and (summary or metadata or effective_result or prior_status in {"review", "triage"}):
             synth_summary, synth_metadata = handoff_summary, metadata
             if prior_status == "review" and not synth_summary and not synth_metadata:
                 synth_summary = _REVIEW_APPROVED_NOTE
@@ -2724,15 +2741,23 @@ def complete_task(
             run_id = _synthesize_ended_run(
                 conn, task_id, outcome="completed", summary=synth_summary, metadata=synth_metadata,
             )
+        if prior_status == "triage" and resolve_triage:
+            _append_event(
+                conn,
+                task_id,
+                "triage_resolved",
+                {"resolution": "completed", "operator_override": True},
+                run_id=run_id,
+            )
         event_summary = handoff_summary
         if prior_status == "review" and not event_summary:
             event_summary = _REVIEW_APPROVED_NOTE
         _append_event(
             conn, task_id, "completed",
-            _completed_event_payload(result, event_summary, verified_cards, metadata),
+            _completed_event_payload(effective_result, event_summary, verified_cards, metadata),
             run_id=run_id,
         )
-    _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
+    _flag_phantom_prose_refs(conn, task_id, run_id, summary, effective_result, verified_cards)
     # Success wipes the breaker counter (history stays on the event log).
     _clear_failure_counter(conn, task_id)
     recompute_ready(conn)  # separate txn so children see ``done``
@@ -2773,40 +2798,6 @@ def _substantive_text(value: Optional[str]) -> bool:
     return bool(value is not None and str(value).strip())
 
 
-def _gate_empty_completion(
-    conn: sqlite3.Connection,
-    task_id: str,
-    *,
-    result: Optional[str],
-    summary: Optional[str],
-) -> None:
-    """Refuse a completion that would leave the card with no evidence.
-
-    Review approvals are exempt: a human vouches for the card and
-    ``_REVIEW_APPROVED_NOTE`` is the documented record.
-    """
-    row = conn.execute(
-        "SELECT status, result FROM tasks WHERE id = ?",
-        (task_id,),
-    ).fetchone()
-    if row is None:
-        return
-    if row["status"] == "review":
-        return
-    stored = row["result"]
-    if _substantive_text(result) or _substantive_text(summary) or _substantive_text(stored):
-        return
-    with write_txn(conn):
-        _append_event(
-            conn, task_id, "completion_blocked_empty_result",
-            {
-                "result_preview": _first_line(result, 200) or None,
-                "summary_preview": _first_line(summary, 200) or None,
-            },
-        )
-    raise EmptyCompletionError(task_id)
-
-
 def _stage_completion_artifacts(
     conn: sqlite3.Connection, task_id: str, metadata: dict, now: int, *,
     uploaded_by: str = "kanban_complete",
@@ -2822,41 +2813,6 @@ def _stage_completion_artifacts(
             size=path.stat().st_size, created_at=now, uploaded_by=uploaded_by,
         )
     return staged
-
-
-def _cleaned_artifact_paths(metadata: Any) -> list[str]:
-    """Non-blank string paths declared in ``metadata["artifacts"]``."""
-    if not isinstance(metadata, dict):
-        return []
-    raw = metadata.get("artifacts")
-    if not isinstance(raw, (list, tuple)):
-        return []
-    return [str(p).strip() for p in raw if isinstance(p, str) and str(p).strip()]
-
-
-def _completed_event_payload(
-    result: Optional[str], event_summary: Optional[str], verified_cards: list[str], metadata: Any,
-) -> dict:
-    """``completed`` event payload: first summary line (400 chars) so gateway
-    notifiers / dashboard WS render without a second round-trip; verified
-    cards; and ``metadata["artifacts"]`` promoted so the notifier can upload
-    them as native attachments without fetching the run row."""
-    # Mirror CLI's _show_voice_status: include STT/TTS provider availability so the user can tell at a
-    # glance *why* voice mode isn't working ("STT provider: MISSING ..." is the common case). ``record_key``
-    # mirrors the configured ``voice.record_key`` so the TUI can both bind it (frontend
-    # ``isVoiceToggleKey``) and display it in /voice status — previously the TUI hardcoded Ctrl+B and
-    # ignored the config (#18994).
-    payload: dict = {
-        "result_len": len(result) if result else 0,
-        "summary": _first_line(event_summary, 400) or None,
-    }
-    if verified_cards:
-        payload["verified_cards"] = verified_cards
-    if isinstance(metadata, dict):
-        cleaned = _cleaned_artifact_paths(metadata)
-        if cleaned:
-            payload["artifacts"] = cleaned
-    return payload
 
 
 def _flag_phantom_prose_refs(
@@ -4205,6 +4161,14 @@ def current_run_started_ats(conn: sqlite3.Connection, task_ids: Iterable[str]) -
 
 
 # --- Split modules (imported at the tail: they import this module as ``_kb``) ---
+from hermes_cli.kanban_db_completion import (
+    EmptyCompletionError,
+    _cleaned_artifact_paths,
+    completion_state_snapshot as _completion_state_snapshot,
+    completed_event_payload as _completed_event_payload,
+    gate_empty_completion as _gate_empty_completion,
+    triage_resolution_allowed as _triage_resolution_allowed,
+)
 from hermes_cli.kanban_db_boards import (
     _default_board_display_name,
     _dir_holds_board,

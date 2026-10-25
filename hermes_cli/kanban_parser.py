@@ -302,7 +302,8 @@ _SPECS = [
                   '"tests_run": 12}\'). Stored on the closing run.'),
         _arg("--force", action="store_true",
              help="Override the live-claim guard: complete a running, claimed task "
-                  "even without owning its run (closes the worker's run)."),
+                  "even without owning its run, or resolve a triage loop-breaker "
+                  "after independent verification."),
     ], help="Mark one or more tasks done"),
     _cmd("edit", [
         _TASK_ID,

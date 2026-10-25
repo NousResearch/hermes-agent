@@ -429,6 +429,28 @@ survives each unblock (it resets only on a successful `complete`). To keep an
 unblocked task in the work pool, resolve *why it keeps re-blocking* (unfinished
 parent, missing input, unmet capability) before unblocking, or raise
 `BLOCK_RECURRENCE_LIMIT` if the loop is expected.
+
+When the underlying work was completed outside the card—for example, an
+authorized owner committed and pushed the same working-copy changes—the
+operator can adopt that verified handoff without sending the already-specified
+card through the LLM specifier again:
+
+```bash
+hermes kanban complete t_abc --force \
+  --result "adopted verified owner handoff" \
+  --summary "Clean, pushed, and lineage-verified at abc123" \
+  --metadata '{"resolution":"adopted","commit":"abc123"}'
+```
+
+For a `triage` card, `--force` is an explicit operator override: completion
+requires fresh result or summary evidence from that invocation, still enforces
+any configured completion contract, records a `triage_resolved` audit event,
+resets the recurrence counter, and releases dependency-gated children. Do not
+use it to conceal unresolved divergence, failed tests, residual working-copy
+changes, or a live writer. Without `--force`, `complete` leaves the card in
+`triage` and prints the recovery instruction. This recovery path applies only
+to cards routed into Triage by the block-loop breaker; initially unspecified
+Triage cards must use the normal specification and promotion workflow.
 :::
 
 ## Enabling tools for a chat profile

@@ -19,7 +19,8 @@ const TAB =
 
 // Full height: with the strip's rule removed there is no last-pixel row to
 // leave uncovered, so tabs fill the bar and no sliver of gutter shows through.
-const TAB_HORIZONTAL = 'h-full min-w-0 max-w-48 not-first:border-l not-first:border-l-(--ui-stroke-quaternary)'
+const TAB_HORIZONTAL =
+  'h-full min-w-0 max-w-48 not-first:border-l not-first:border-l-(--ui-stroke-quaternary) group-data-[variant=sidebar]/pane-strip:max-w-none group-data-[variant=sidebar]/pane-strip:flex-1 group-data-[variant=sidebar]/pane-strip:basis-0'
 
 // A closeable tab's floor keeps short labels left of the close button.
 // A floor, not padding — a tab already wider than it pays nothing.
@@ -217,7 +218,7 @@ export const PaneTabLabel = React.forwardRef<HTMLElement, PaneTabLabelProps>(fun
 
   return (
     <Comp
-      className="flex h-full min-w-0 max-w-full items-center overflow-hidden px-2 text-left outline-none group-data-[vertical]/tab:h-auto group-data-[vertical]/tab:w-full group-data-[vertical]/tab:justify-center group-data-[vertical]/tab:py-2"
+      className="flex h-full min-w-0 max-w-full items-center overflow-hidden px-2 text-left outline-none group-data-[variant=sidebar]/pane-strip:justify-center group-data-[vertical]/tab:h-auto group-data-[vertical]/tab:w-full group-data-[vertical]/tab:justify-center group-data-[vertical]/tab:py-2"
       ref={ref}
       {...props}
     >
@@ -234,6 +235,8 @@ export const PaneTabLabel = React.forwardRef<HTMLElement, PaneTabLabelProps>(fun
 })
 
 interface PaneTabStripProps extends React.ComponentProps<'div'> {
+  /** Standing sidebar navigation shares the body's inset and divides its width equally. */
+  variant?: 'default' | 'sidebar'
   /** The scrolling tab list — receives `role="tablist"`. */
   children: React.ReactNode
   /** Ref on the scroller itself, for `useActiveTabVisible`. */
@@ -254,7 +257,7 @@ interface PaneTabStripProps extends React.ComponentProps<'div'> {
  * `data-zone-tabstrip`, drop carets) ride on the usual div props.
  */
 export const PaneTabStrip = React.forwardRef<HTMLDivElement, PaneTabStripProps>(function PaneTabStrip(
-  { children, className, listRef, trailing, titlebar = false, ...props },
+  { children, className, listRef, trailing, titlebar = false, variant = 'default', ...props },
   ref
 ) {
   return (
@@ -263,10 +266,12 @@ export const PaneTabStrip = React.forwardRef<HTMLDivElement, PaneTabStripProps>(
       // as one piece of chrome with the titlebar above it. No bottom rule — the
       // active tab's primary underline is the only seam.
       className={cn(
-        'group/pane-header relative flex min-w-0 shrink-0 select-none bg-(--ui-sidebar-surface-background) [--pane-tab-active-bg:var(--ui-sidebar-surface-background)]',
+        'group/pane-header group/pane-strip relative flex min-w-0 shrink-0 select-none bg-(--ui-sidebar-surface-background) [--pane-tab-active-bg:var(--ui-sidebar-surface-background)]',
         titlebar ? 'h-full flex-1 [-webkit-app-region:drag]' : 'h-7 [-webkit-app-region:no-drag]',
+        variant === 'sidebar' && 'px-2.5',
         className
       )}
+      data-variant={variant}
       ref={ref}
       {...props}
     >

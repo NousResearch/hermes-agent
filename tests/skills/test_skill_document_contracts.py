@@ -22,6 +22,7 @@ PRICE = "skills/productivity/product-price-monitor"
 WEEKLY = "skills/productivity/weekly-review-planning"
 SOCIAL = "optional-skills/creative/social-media-content-calendar"
 MCP = "optional-skills/mcp/mcp-oauth-remote-gateway"
+OSS_FORENSICS = "optional-skills/security/oss-forensics"
 
 
 def _document(skill):
@@ -99,6 +100,23 @@ def test_issue_to_pr_disciplines():
         assert text in body, text
     assert "sabotage" in body.lower() or "FAILS" in body
     assert "/home/" not in body and not re.search(r"[A-Z]:\\+Users", body)
+
+
+def test_oss_forensics_raw_secrets_stay_out_of_working_files():
+    _, body = _document(OSS_FORENSICS)
+    # "Log them internally only" read as permission to keep plaintext secrets
+    # anywhere in the investigation directory except the report (#134909).
+    assert "Log them internally only" not in body
+    guardrail = body.split("**Secret Redaction**", 1)[1].split("\n", 1)[0]
+    for surface in ("`iocs.md`", "sub-agent `context`", "evidence-store"):
+        assert surface in guardrail, surface
+    assert "references, not copies" in guardrail
+    assert "access-controlled" in guardrail
+    assert "Phase 7 archive" in guardrail
+    archive_step = body.split("Archive the full investigation directory", 1)[1].split(
+        "\n", 1
+    )[0]
+    assert "no plaintext secrets" in archive_step
 
 
 def test_optional_platform_declarations():

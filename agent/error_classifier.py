@@ -507,7 +507,7 @@ _REASONING_MANDATORY_PATTERN = "reasoning is mandatory"
 # in the structured 'param' tail (#115277). Shared with the auxiliary retry ladder
 # (``agent.auxiliary_client._is_unsupported_parameter_error``).
 UNSUPPORTED_PARAM_MARKERS = (
-    "unsupported parameter", "unsupported_parameter", "not supported", "does not support",
+    "unsupported parameter", "unsupported_parameter", "not supported", "not_supported", "does not support",
     "doesn't support", "is deprecated for this model",
     "unknown parameter", "unrecognized request argument", "unrecognized parameter",
     "invalid parameter", "extra inputs are not permitted",

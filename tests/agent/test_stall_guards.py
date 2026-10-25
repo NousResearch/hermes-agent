@@ -349,6 +349,24 @@ def test_detects_trailing_next_i():
     assert trailing_continue_intent("Step one complete. Next: I run the tests")
 
 
+def test_detects_trailing_dutch_intent():
+    # Dutch sessions announce the next action the same way; the guard must fire
+    # on the Dutch phrasings too, not only the English ones.
+    assert trailing_continue_intent("De config is gevonden. Laat me nu de tests draaien.")
+    assert trailing_continue_intent("Stap een is klaar. Ik ga nu de logs bekijken")
+    assert trailing_continue_intent("Bijna klaar. Ik zal nu de branch pushen.")
+    assert trailing_continue_intent("Dat is gedaan. Nu ga ik de linter draaien")
+
+
+def test_ignores_dutch_plain_finish_and_offers():
+    assert not trailing_continue_intent("De tests zijn geslaagd en de branch is gepusht.")
+    assert not trailing_continue_intent("Ik kan dat morgen doen als je wilt.")
+    # "laat me" mid-message with substantive content after it is not dangling.
+    assert not trailing_continue_intent(
+        "Laat me eerst de tradeoffs uitleggen. Ten eerste blijft het prefix stabiel."
+    )
+
+
 def test_ignores_intent_followed_by_more_content():
     # Intent phrase mid-message with substantive content after it — the model
     # already continued; nothing dangling.

@@ -3,7 +3,7 @@
 import builtins
 from unittest.mock import patch
 
-from hermes_cli.main import _set_process_title
+from hermes_cli.main_process_title import set_process_title
 
 
 def test_set_process_title_survives_unicode_decode_error_during_import():
@@ -20,11 +20,11 @@ def test_set_process_title_survives_unicode_decode_error_during_import():
         patch("builtins.__import__", side_effect=import_with_decode_failure),
         patch("platform.system", return_value="Windows"),
     ):
-        _set_process_title()
+        set_process_title()
 
 
-def test_set_process_title_logs_once_when_bytecode_is_corrupt(caplog):
-    """The fallback must not be silent — a permanent no-op is how #98593 was found."""
+def test_set_process_title_logs_the_decode_fallback(caplog):
+    """The fallback must not be silent: a permanent no-op is how #98620 was found."""
     import logging
 
     real_import = builtins.__import__
@@ -35,10 +35,10 @@ def test_set_process_title_logs_once_when_bytecode_is_corrupt(caplog):
         return real_import(name, *args, **kwargs)
 
     with (
-        caplog.at_level(logging.DEBUG, logger="hermes_cli.main"),
+        caplog.at_level(logging.DEBUG, logger="hermes_cli.main_process_title"),
         patch("builtins.__import__", side_effect=import_with_decode_failure),
         patch("platform.system", return_value="Windows"),
     ):
-        _set_process_title()
+        set_process_title()
 
     assert any("setproctitle" in r.message for r in caplog.records)

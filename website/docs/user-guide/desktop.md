@@ -32,6 +32,129 @@ hermes desktop
 
 That uses your current config, keys, sessions, and skills.
 
+## Use the Desktop workspace from a browser
+
+The gateway can serve this workspace to a normal browser: sessions, profiles, Capabilities, Messaging,
+Artifacts, scheduled jobs, the host file tree, Git review, previews and the terminal rail. This is
+**not the Web Dashboard**. Turn it on once, then open it with `hermes webapp`:
+
+```bash
+hermes config set webapp.enabled true
+hermes gateway restart
+hermes webapp
+```
+
+The gateway then serves the Webapp at `http://127.0.0.1:9120` (see [Configuration → Webapp](./configuration.md#webapp)
+for the host and port). `hermes webapp` builds the bundle when it is out of date, starts the gateway if
+it is not running, and opens a one-use sign-in link. Chats run on that gateway, the same process that
+serves the CLI, the native Desktop and messaging, so every surface sees one conversation with one queue.
+
+**Signing in.** The link works once, within 60 seconds. The browser exchanges it for a sign-in that it
+keeps in that tab, so reloading keeps you signed in, and so does a gateway restart. A fresh tab or a
+bare URL shows instructions instead of access: run `hermes webapp` again for a new link. **New
+Window**, profile windows and session pop-outs hand the sign-in over with their own one-use link. On
+Linux the gateway checks that the browser's connection belongs to your OS user; on Windows the link
+travels only in the browser launcher's command line, which other standard users cannot read. On macOS,
+the BSDs and WSL (where the Windows browser reaches the gateway through WSL's relay) neither holds, so
+the command prints the one-use link for you to open instead of opening a browser; until it is used it
+signs a browser in as you, so keep it private. `hermes webapp --sign-out` signs out every
+tab at once: their open connections close, Bot Desktop viewers included, and each shows the sign-in
+instructions. Behind the sign-in gate (below) it also signs out every browser that signed in with a
+dashboard account; each must sign in again. The account tokens such a login keeps in its cookies work
+on the Webapp only as that login (the gateway refuses them as a bearer token, on a connection's URL and
+on its token refresh), so they end with it. A native Hermes app that signed in to the gateway on its own stays signed in.
+
+For a named profile, `hermes -p work webapp` opens the Webapp on `work`. Profiles the default gateway
+serves share its Webapp; a standalone profile's own gateway serves its own when its config turns it on.
+
+**From another machine.** Set `webapp.host` to `0.0.0.0`; the gateway then requires the
+[dashboard sign-in gate](./features/web-dashboard.md#authentication-gated-mode) (username and password
+for a trusted LAN or VPN, OAuth/OIDC for anything internet-facing). Behind a reverse proxy or tunnel
+you run, keep the loopback host and set `webapp.public_url` to the address it serves instead; that
+requires the same sign-in. `hermes webapp` then opens the Webapp's address, where you sign in with
+your dashboard account: `webapp.public_url` when set; on the LAN, the address **Web Access → Start**
+registered Nous sign-in for, while it is still this machine's address and the Webapp's port; else the
+loopback address (a password provider, or sign-in you set up by hand for that address). One-use
+links serve only a Webapp that needs no sign-in. HTTPS is strongly recommended remotely and browsers
+require it for some microphone and clipboard features.
+
+:::warning Treat Webapp access like access to Hermes on the host
+A signed-in Webapp user can run arbitrary commands as the OS account running Hermes, run agent tools,
+use host files and Git, and reach that account's environment and credentials. Do not expose it without
+a sign-in provider. Prefer an SSH tunnel, Tailscale or another trusted VPN.
+:::
+
+`hermes webapp --status` shows whether the gateway serves the Webapp. When it cannot (the port is
+taken, sign-in is required and no sign-in provider is set up, or the Webapp's browser sign-in file
+`webapp/session-token` in the Hermes home cannot be read or written), the gateway still serves native
+clients and the status says why. The gateway reads these settings when it starts, so restart it after
+fixing the cause (`hermes gateway restart`). When the port was taken, the gateway also replaces the
+Webapp's sign-in, so open tabs need `hermes webapp` again. When the Webapp's bundle has not been built
+yet, the status says so instead: `hermes webapp` builds it, and the running gateway serves it without a
+restart.
+
+Browser-selected files and pasted or dropped images are staged under the active profile before they
+enter the normal attachment flow, with a **16 MiB** limit per file. Host files download through the
+browser's download manager, and supported audio and video play inline using the server's file-access
+rules. **Save Image** for
+cross-origin URLs needs CORS, with a **25 MiB** limit and a **30-second** deadline. Website links open
+in a separate tab; explicit URL previews use a sandboxed iframe that cannot open popups, so use **Open
+in browser** for sites that refuse embedding. Native-only features stay in Electron: global shortcuts,
+always-on-top overlays, OS-window inspection, external-terminal launch and the updater.
+
+Chats written before the gateway owned sessions show their history but cannot be continued from the
+browser until they are adopted: run `hermes sessions adopt` once on the host (`hermes -p <profile>
+sessions adopt` for another profile), or open them once in the native Desktop, TUI or CLI.
+
+### Open it from your phone or another computer
+
+In the native app, **Settings → Web Access** turns the Webapp on for other devices, behind sign-in with
+your Nous account (Providers → Accounts). It appears only in the native app on its local connection,
+and only that app can change it: a browser signed in over the network cannot.
+
+- **This network:** devices on the same Wi-Fi open `http://<this computer's address>:<port>`, where the
+  port is `webapp.port` (9120 unless you set another). This is plain HTTP: the connection is not
+  encrypted, so others on the network could read it. Use it only on a network you trust.
+- **My own URL:** an HTTPS address you already run (Tailscale Serve, a tunnel or a reverse proxy) that
+  forwards to `http://127.0.0.1:<port>`. It is saved as `webapp.public_url`. Never forward that port
+  from your router directly.
+
+**Start** builds the Webapp if it is missing or out of date (the same build `hermes webapp` runs, which
+can take a few minutes the first time), registers its sign-in address with your Nous account when that
+address changed, saves the `webapp:` settings and restarts the gateway, which reads them when it
+starts. While a chat is running the gateway refuses to restart: the pane shows **Restart needed**, the
+settings apply on the next restart, and **Restart gateway** restarts it once the chat ends. **Stop**
+turns the Webapp off the same way. A Webapp you turned on for this computer only
+(`webapp.enabled: true` without Web Access) shows as served on this computer.
+
+Web Access changes only the `webapp:` settings and keeps your `webapp.port`. It leaves
+`dashboard.public_url` alone, so a standalone dashboard you publish separately keeps its own address.
+Its Nous sign-in uses a sign-in client of its own, which the first Start registers with your Nous
+account and keeps in the gateway's home (`webapp/sign-in-registration.json`). Start never reads or
+writes `HERMES_DASHBOARD_OAUTH_CLIENT_ID` in `.env`, so turning Web Access on never changes the
+standalone dashboard's Nous sign-in. A standalone profile with its own gateway needs its own
+`webapp.port` to serve a Webapp beside the default gateway's. `hermes update` rebuilds the Webapp
+whenever a profile has it turned on.
+If that build fails, the gateway reports the Webapp unavailable, and the page says so, until
+`hermes webapp` rebuilds it.
+
+### Terminal in the Webapp
+
+The terminal rail opens the host's interactive shell, running as a child of the gateway, in your home
+folder unless `terminal.cwd` names another. Dropping files onto it uploads them to the host (**16 MiB**
+each) and types their paths. Refreshing the page or losing the connection detaches the terminal
+without ending its shell; the saved terminal tab reattaches to that shell and its profile. Hiding a
+terminal is not closing it; closing its tab ends the shell. A second browser tab attaching to the same
+terminal takes over the connection.
+
+Detached shells are kept for **15 minutes** while the gateway runs, up to **16 host terminals**
+including detached ones. A gateway restart or update ends them. Reconnecting replays up to **1 MiB** of
+recent output; full-screen programs may need their own redraw command.
+
+The bundle's npm dependencies install into `.build/webapp-workspace` in the checkout, separately from
+the native Desktop, and reinstall only when the lockfile changes. With lazy installs disabled, a plain
+`hermes webapp` does not install them; `--build-only` or `--force-build` does.
+
 ## What's in the app
 
 The desktop app is organized as a chat-first window with a left sidebar for navigation. It's built to allow managing multiple simultaneous agent conversations, configuring messaging providers, creating artifacts, browsing projects' folder structures, and working on multiple projects at once.
@@ -52,7 +175,7 @@ The center of the app. You get:
 - **A right-hand preview rail** — render web pages, files, and tool outputs side by side while you keep chatting.
 - **Hide vs. Close for stateful panes** — a zone holding a Browser (or HTML preview) or the Terminal pane offers **Hide** instead of Minimize. Hiding collapses the zone to its restore rail but keeps the pane's body mounted: a live page keeps its unsaved form input, timers, scroll position, and the agent's `drive_preview` automation target; a terminal keeps its running shell and scrollback; and **Restore** shows the same content without a reload. The hidden body is inert — it never takes keyboard shortcuts or steals composer focus. **Close** (the tab's ×) is what actually releases the page or shell.
 - **Comment mode in the in-app browser** — click **Annotate** in the preview browser bar, then click any element (or drag a box) on the live page and type a note; each saved comment stays as a numbered pin on the page. Saving a pin never sends a turn — when you're done, **Add N comments** attaches a cropped screenshot per pin and a short prompt naming each comment to the composer, and you still hit send yourself. Each element comment carries its CSS selector, its markup, and the computed styles that matter for layout, so the agent can find the element in your source instead of guessing from the picture. Password and hidden field values, and any attribute that looks like a key or token, are redacted on the page before the markup leaves it. Larger batches arrive grouped by which part of the page each comment sits in, so twenty-odd comments become a handful of pieces of work rather than one task each — and because the groups are separate DOM subtrees they usually touch separate files, which is what makes handing them to parallel workers safe. Pin numbers hold steady if you delete one, and switching chats clears the stack.
-- **Composer history and queue editing** — press the up/down arrow keys in an empty composer to recall and reuse previous prompts, and edit messages you've queued up before they're sent. Pressing Stop (or Esc) while turns are queued pauses the queue and expands it above the composer; resume it from there, or send, edit, and delete individual entries.
+- **Composer history and queue editing** — press the up/down arrow keys in an empty composer to recall and reuse previous prompts, and edit messages you've queued up before they're sent. Pressing Stop (or Esc) while turns are queued pauses the queue and expands it above the composer; resume it from there, or send, edit, and delete individual entries. The queue itself lives on the gateway, so it survives an app or gateway restart and every window attached to the same chat sees the same list. If the gateway restarts while a turn is mid-flight, that turn cannot be finished or safely repeated: the queue shows it as **Turn lost during restart** with a single **Discard** button, and the turns queued behind it wait until you discard it. Your text stays in the transcript to resend. (The gateway CLI has the same control as `/discard <admission_id>`.)
 - **Task progress above the composer** — expand the Tasks header to inspect each phase. Long lists stay bounded above the input; scroll inside the expanded list to reach the final tasks without moving the conversation.
 - **A conversation timeline rail** — long chats get a slim rail of markers along the edge of the transcript, one per prompt. Hover it to pop open the list of prompts, click one to jump straight to that point in the conversation. After a jump, **Show earlier** at the top of the transcript keeps paging backwards from that prompt all the way to the start of the session. (It appears once the chat has a handful of turns.)
 - **Reading-position memory** — returning to a session restores its saved distance from the bottom instead of always jumping to the latest message. Sessions left at the bottom continue following new output. Use **Scroll to bottom** to return to the live edge. Positions are kept in this Desktop installation's local storage; they are not synchronized through the backend.
@@ -104,10 +227,18 @@ The model picker lives in the **composer**, just left of the microphone. Click i
 The **microphone** is dictation; hover it and the other voice toggles fan out above it — **Read replies aloud** and the **wake word** ear. A toggle that is on shows as a solid disc. Starting a full voice conversation stays on the primary button to the right. In the HUD and in narrow tiles the same controls fold into one menu behind the mic instead. When dictation talks to the speech-to-text provider directly (client-direct voice), the request honours the same `stt.openai.timeout` budget (default 60 s) as the gateway's own transcription client, so a slow endpoint fails with "Transcription timed out" instead of leaving the mic stuck on transcribing.
 
 - **The composer picker is sticky UI state and never touches your default.** It's remembered locally (per device) and **follows** across new chats and restarts instead of snapping back to the default — pick a model once and the next `Cmd/Ctrl+N` opens on it. With a live chat, switching models scopes the change to that **current chat**; either way the selection rides along when the session is created/switched and is **never** written to the profile default — with one exception: on a fresh profile that has no `model.default`/`model.provider` configured yet, the first pick is persisted so the app has a real default instead of falling through to a stray API-key env var on restart. Persistence follows the same rule as `/model` (`model.persist_switch_by_default`); use **Settings → Model** to change the default deliberately. (Switching [profiles](#sessions--profiles) reseeds to that profile's own default.)
-- **Set the default in Settings → Model.** That "main" model is your **per-profile global default** — it's what new chats, crons, subagents, and auxiliary tasks start from, and it's the only place that writes it. Each [profile](#sessions--profiles) keeps its own default.
+- **Set the default in Settings → Model → Main model.** Choose a provider and model in their labeled rows, then click **Apply** below the model selector. Controls align to the right on wide windows and stack below their labels on narrow windows. The **Defaults** section has separate reasoning and speed controls where the model supports them. That "main" model is your **per-profile global default**, which new chats, crons, subagents, and auxiliary tasks start from. Each [profile](#sessions--profiles) keeps its own default.
 - **Per-model effort/fast presets.** Each model remembers its own reasoning effort and fast-mode choice in the desktop app, re-applied to the session whenever you pick that model. These presets are a desktop convenience and don't change crons or subagents.
 - **Favorite models.** Click the star on the left of a model row (or shift-click the row, the same gesture that pins a chat in the sidebar; Shift+Enter from the search box) to lift it into a **Favorites** section at the top of the picker. Starring never selects the model or closes the menu, so the same gesture undoes it. The section only appears once something is starred. Favorites show in the composer, in session tiles, and anywhere else a model is picked, because they are one stored preference. They persist per device, keep the order you starred them, and ignore the **Edit models** shortlist (a star IS an explicit "always show me this one"); a favorite for a provider that is not connected is kept and reappears when it reconnects. Searching is unaffected — a query lists every match in its provider's place.
 - **Mid-chat switches reset the prompt cache.** Switching the model inside a live chat means the next message re-reads the whole conversation at full input price (provider prompt caches are keyed to the model). Fine occasionally; on a long chat, a fresh chat on the new model is often cheaper than bouncing back and forth.
+
+#### Subagent models and limits
+
+Open **Settings → Model → Subagents** to choose a delegated agent's provider and model and adjust its turn limit, concurrency, timeout, and reasoning effort. Provider and model dropdowns have separate labeled rows, with controls aligned to the right on wide windows and stacked below their labels on narrow windows. The catalog and saved changes belong to the profile selected under **Applies to**.
+
+Provider and model changes remain a local draft until you click **Apply**. **Cancel**, leaving the page, or changing the settings profile discards an unapplied route. A provider switch requires a model; select **Use parent model** explicitly for a provider-only override, and make sure that provider supports the parent's model.
+
+**Inherit from main agent** uses the parent's model and credentials. **Custom model (use parent credentials)** overrides only the model. Existing direct endpoints are shown as **Direct endpoint override**. Applying a different route clears the superseded delegation endpoint, its stored key and its wire protocol together, without removing other request settings. If the catalog is unavailable, use **Custom provider...** and **Custom model…** to enter a route manually, or click **Retry** without losing your draft.
 
 ### File browser
 
@@ -118,6 +249,8 @@ Explore and preview the working directory without leaving the app — useful for
 Preview links above the composer are session suggestions, not a task-completion checklist. Dismissing one keeps historical tool rows from bringing it back after navigation or reload. A new successful tool completion can offer the file again. Read-only file inspection and failed writes do not create suggestions. Files with the same name show enough directory context to distinguish them; dismissing a suggestion does not delete its file or transcript. Changing a `/goal` does not erase a conversation's artifacts.
 
 When connected to a remote gateway, opening a file artifact downloads it through that gateway, using the artifact’s originating profile and session. Relative paths resolve against the session’s saved working directory; home-relative paths use the gateway’s home, never the Desktop machine’s home. Windows-style relative paths are recognized alongside forward-slash paths, and file URIs retain drive and network-share information for the gateway to interpret. Missing sessions or working directories produce an error rather than selecting a different local file.
+
+If Desktop closes before an image message is acknowledged, reopen its original chat. The **Restore image draft** button above the composer restores the saved text and image attachment together; press Send to retry the original submission. It never sends automatically or replaces a newer draft.
 
 The **Artifacts** view collects what your sessions generate — **images, files, and links** — into one searchable, browsable gallery. Open it from the sidebar, the command palette (**Artifacts — Browse generated outputs**), or a `nav.artifacts` shortcut you bind yourself. It indexes recent session outputs automatically; every artifact shows which session produced it with a jump back to that chat, and images and files open in a preview with download / open-in-browser / copy actions.
 
@@ -253,13 +386,9 @@ Manage providers, models, tools, and credentials from a real UI instead of editi
 - **Auxiliary-model warning** — if you switch the main model to a new provider while auxiliary tasks (titling, summarization, and similar helpers) are still pinned to another provider, the app warns you so you don't unknowingly split work across two providers.
 - **Per-task reasoning effort** — each row under **Settings → Model → Auxiliary models** has a reasoning selector next to its provider/model pick: a level, **Off**, or **inherit · main model effort** (the default, which removes the task's override). It is saved as `auxiliary.<task>.reasoning_effort` in `config.yaml`, the same key `hermes model` writes, and shows in the row's summary when set. Use it to run frequent helpers such as compression or titling at low or no reasoning while the main agent stays at high.
 - **VS Code Marketplace themes** — beyond the built-in theme presets, the appearance settings include a live VS Code Marketplace search: pick any color theme and the app downloads, converts, and installs it as a desktop theme. The same importer is available from the command palette (*Install theme*), and imported themes can be removed again from the appearance settings.
-- **Keep computer awake** — **Settings → Advanced → Keep computer awake** stops the machine from sleeping so long or overnight agent runs keep going (the display can still dim). **While working** holds the machine awake only while a turn is in flight and lets it sleep normally once the run finishes or fails; **Always** holds it whenever Hermes is open. This is a per-computer setting.
+- **Keep computer awake** — **Settings → Advanced → Keep computer awake** stops the machine from sleeping so long or overnight agent runs keep going (the display can still dim). **While working** holds the machine awake only while a turn is in flight and lets it sleep normally once the run finishes or fails; **Always** holds it whenever Hermes is open. **While working** is the default on a computer where nobody has picked a mode. If you turned it **Off** and a timed sleep interrupts a turn, Hermes offers **Keep awake while working** once on wake. Closing the lid or choosing Sleep still sleeps the machine, and on battery Windows may still sleep after its own timeout. This is a per-computer setting.
 
 First-run onboarding has been redesigned on a unified overlay design system, and you can pick **Choose provider later** to skip provider setup and get into the app first.
-
-#### What the setup chat knows about your computer
-
-The setup chat's first message carries a short block of facts, so it can name your computer and offer first tasks that fit it: the OS and its version, CPU, RAM, GPU class, whether it is a Spark, and your language. The block goes to the inference provider that the setup chat uses and stays in that chat's history. The name card offers your full name from the account record, but the name stays on this computer unless you pick it. To choose which plugins and first tasks to offer, setup also checks whether the apps those plugins drive are installed, such as Blender, and NVIDIA App and NVIDIA Broadcast on a Windows computer with an NVIDIA GPU. It looks in the usual install folders, on the `PATH`, and in the Windows list of installed programs, reads the version of each copy it finds, and for some apps reads the app's own runtime file to see whether it is running. Nothing else on the computer is read for setup. Setup keeps a small file in the setup profile's `setup-cards` folder with the machine line and your picks, and copies it into your first task chat. Both chats are saved on this computer like any other chat. With a remote backend, the facts describe the remote machine, not the computer in front of you.
 
 #### Per-profile settings: the "Applies to" scope
 
@@ -427,7 +556,7 @@ When you start Hermes from the application grid or menu (the launcher sets `DESK
 
 ## How it works
 
-The packaged app ships the Electron shell and a native React chat surface. On first launch it can install the Hermes Agent runtime into `HERMES_HOME` (`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows) — **the same layout a CLI install uses**, which is why the two are interchangeable. Bundled apps use their included backend. Without a bundled backend, resolution honours `HERMES_DESKTOP_HERMES_ROOT`, then the development checkout, then an explicit `HERMES_DESKTOP_HERMES` command override for packagers such as Nix, and finally a usable managed install. The command override takes precedence over the managed install so a Nix desktop cannot silently launch an older mutable runtime. The React renderer talks to a headless backend the app launches for you — a `hermes serve` process that serves the `tui_gateway` JSON-RPC/WebSocket API — and reuses the agent runtime rather than embedding `hermes --tui`. The desktop app is **self-contained**: it runs its own `hermes serve` backend and never opens or requires the [web dashboard](./features/web-dashboard.md). (Runtimes older than the `serve` command fall back to a headless `dashboard --no-open` automatically, so an app update never outruns its backend.) Install, backend-resolution, and self-update logic live in the Electron main process.
+The packaged app ships the Electron shell and a native React chat surface. On first launch it can install the Hermes Agent runtime into `HERMES_HOME` (`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows) — **the same layout a CLI install uses**, which is why the two are interchangeable. Bundled apps use their included backend. Without a bundled backend, resolution honours `HERMES_DESKTOP_HERMES_ROOT`, then the development checkout, then an explicit `HERMES_DESKTOP_HERMES` command override for packagers such as Nix, and finally a usable managed install. The command override takes precedence over the managed install so a Nix desktop cannot silently launch an older mutable runtime. The React renderer talks to the profile's **gateway**: on first use of a local profile the app runs `hermes gateway ensure`, which attaches to the gateway that serves that profile or, when there is none, starts it (an already-installed systemd/launchd service where one exists, otherwise a detached daemon; `ensure` never installs a service). One gateway per host serves every profile unless a profile is marked `gateway.standalone: true`, and Desktop dials it over `/api/ws` with one-use tickets — the same process `hermes chat`, the TUI and messaging channels use. That gateway is not tied to the app's lifetime: it keeps running after you quit and has no idle shutdown; stop it with `hermes gateway stop` (or the gateway controls in Settings). The desktop app is **self-contained**: it needs no separate `hermes serve` process and never opens or requires the [web dashboard](./features/web-dashboard.md). Install, backend-resolution, and self-update logic live in the Electron main process.
 
 ## Connecting to a remote backend
 

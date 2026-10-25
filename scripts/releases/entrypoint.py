@@ -13,8 +13,10 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 
+from scripts.releases import lanes as lane_set, stable
 from scripts.releases.draft_warning import draft_body
 from scripts.releases.versioning import (
     SEED, attempt_ref, derive_next_version, marker_ref, next_attempt,
@@ -24,6 +26,8 @@ from scripts.releases.versioning import (
 WORKFLOW = "stable-release.yml"
 # A fetch refspec may hold one ``*``; the parsers filter what the globs over-match.
 _ATTEMPT_GLOBS = ("rc.*", "abandoned-rc.*")
+# Local namespace for the remote's release-line branches, kept apart from the user's own remotes.
+_RELEASE_LINE_PREFIX = "hermes-release"
 
 
 class ReleaseRefused(RuntimeError):
@@ -58,21 +62,16 @@ def _claim_commit(repo: Path, tag: str) -> str:
 
 
 def _refresh_claims(repo: Path, remote: str) -> None:
-    _git(
-        repo, "fetch", remote,
-        "+refs/heads/main:refs/remotes/hermes-release/main",
-        *(f"+refs/tags/{glob}:refs/tags/{glob}" for glob in _ATTEMPT_GLOBS),
-    )
+    # Pruned, so a deleted release/* branch stops admitting commits. Tags are
+    # fetched separately: pruning there would delete local-only claim tags.
+    _git(repo, "fetch", "--prune", remote, *stable.release_line_refspecs(_RELEASE_LINE_PREFIX))
+    _git(repo, "fetch", remote, *(f"+refs/tags/{glob}:refs/tags/{glob}" for glob in _ATTEMPT_GLOBS))
 
 
-def _require_remote_main(repo: Path, commit: str) -> None:
-    result = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", commit, "refs/remotes/hermes-release/main"],
-        cwd=repo, capture_output=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise ReleaseRefused(f"{commit} is not on origin/main")
+def _require_release_line(repo: Path, commit: str) -> None:
+    """The commit must be on the remote's ``main`` or a ``release/*`` branch."""
+    if not _git(repo, *stable.release_line_contains(commit, _RELEASE_LINE_PREFIX)[1:]):
+        raise ReleaseRefused(f"{commit} is not on the remote's main or a release/* branch")
 
 
 def _claim_collision(repo: Path, remote: str, tag: str, error: Exception) -> ReleaseRefused:
@@ -115,17 +114,26 @@ def _outstanding_attempt(repo: Path, remote: str) -> tuple[str, int, str] | None
     return outstanding[0] if outstanding else None
 
 
+RUN_FIELDS = "databaseId,url,headBranch,headSha,displayTitle,status"
+
+
+def _is_claim_run(row: dict, claim_tag: str, commit: str) -> bool:
+    return stable.is_claim_run(
+        title=row.get("displayTitle"), head_branch=row.get("headBranch"),
+        head_sha=row.get("headSha"), claim_tag=claim_tag, commit=commit)
+
+
 def _attempt_run(execute, repository: str, ref: str, commit: str) -> dict | None:
     """The workflow run for ``ref`` at ``commit``, or None when none is listed."""
     raw = execute([
-        "gh", "run", "list", "--repo", repository, "--workflow", WORKFLOW,
-        "--branch", ref, "--json", "databaseId,url,headBranch,headSha,status",
+        "gh", "run", "list", "--repo", repository, "--workflow", WORKFLOW, "--limit", "100",
+        "--json", RUN_FIELDS,
     ])
     try:
         rows = json.loads(raw or "[]")
     except json.JSONDecodeError:
         return None
-    return next((row for row in rows if isinstance(row, dict) and row.get("headSha") == commit
+    return next((row for row in rows if isinstance(row, dict) and _is_claim_run(row, ref, commit)
                  and row.get("url") and row.get("databaseId") is not None), None)
 
 
@@ -191,25 +199,55 @@ def _changelog(repo: Path, repository: str, *, commit: str, tag: str, version: s
     )
 
 
+def _abandon_confirmed(outstanding: tuple[str, int, str], confirm_abandon: Callable[[str], bool],
+                       refusal: ReleaseRefused, *, repo: Path, remote: str, repository: str,
+                       execute, inspect) -> None:
+    """Abandon exactly the attempt the person approved, or raise ``refusal``.
+
+    The prompt can sit open while another operator abandons it and cuts the
+    next one; ``abandon`` would then clear that new attempt too. So the remote
+    is read again after the answer and anything but the same single attempt
+    is refused.
+    """
+    version, attempt, ref = outstanding
+    if not confirm_abandon(ref):
+        raise refusal
+    if _outstanding_attempt(repo, remote) != outstanding:
+        raise ReleaseRefused(f"{ref} changed while waiting for an answer — nothing was abandoned")
+    print(abandon_steps([_abandon_attempt(version, attempt, ref, repo=repo, remote=remote,
+                                          repository=repository, execute=execute, inspect=inspect)]),
+          file=sys.stderr)
+
+
 def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
             execute, autopublish: bool = False, no_changelog: bool = False,
-            skip_bundles: bool = False, skip_tests: bool = False,
+            lanes: frozenset[str] = lane_set.DEFAULT,
             published: tuple[str, str | None] = (SEED, None),
-            run_wait: float = 0, sleep=time.sleep) -> dict:
+            run_wait: float = 0, sleep=time.sleep,
+            confirm_abandon: Callable[[str], bool] | None = None, inspect=None) -> dict:
     """Claim the next attempt of the derived version, cut its draft, and start the gate.
 
     ``published`` is the stable channel's ``(version, commit)``; the commit is
-    None before the first publication. ``skip_bundles`` and ``skip_tests`` are
-    written into the claim, which is the one record every later job reads.
+    None before the first publication. ``lanes`` (what to build and test, see
+    scripts/releases/lanes.py) is written into the claim, which is the one
+    record every later job reads.
     ``run_wait`` is how many seconds to keep looking for the dispatched run;
     GitHub lists it a moment after the dispatch returns.
+    ``confirm_abandon`` is asked about an outstanding attempt's ref; only a
+    caller with a person at the terminal passes one. It is asked only after the
+    new cut has passed every check that can refuse it. A yes abandons that one
+    attempt (so it needs ``inspect``, which cancels runs and deletes the draft)
+    and the cut goes on; no confirmer, or a no, is the refusal.
     """
     _refresh_claims(repo, remote)
-    _require_remote_main(repo, commit)
+    _require_release_line(repo, commit)
     outstanding = _outstanding_attempt(repo, remote)
+    refusal = None
     if outstanding is not None:
-        raise _refuse_outstanding(outstanding, repo=repo, remote=remote,
-                                  repository=repository, execute=execute)
+        refusal = _refuse_outstanding(outstanding, repo=repo, remote=remote,
+                                      repository=repository, execute=execute)
+        if confirm_abandon is None:
+            raise refusal
     published_version, published_commit = published
     _require_ancestry(repo, commit, published_commit)
     version = derive_next_version(published=published_version, bump=bump)
@@ -237,6 +275,12 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
             "     Do this before step 2: once the retry claims this attempt, changelog numbers the next one.\n"
             "  2. Re-run the same release command with --no-changelog.\n"
             "  3. Edit changelog.md down in your editor and paste it into the draft release body.")
+    if refusal is not None:
+        # Everything that can refuse the new cut has run, so a yes cannot
+        # destroy the old attempt and then fail to replace it. The attempt
+        # number ignores markers, so abandoning does not change ``tag``.
+        _abandon_confirmed(outstanding, confirm_abandon, refusal, repo=repo, remote=remote,
+                           repository=repository, execute=execute, inspect=inspect)
     claim_epoch = _next_claim_epoch(repo, claims)
     claim = json.dumps({
         "schema": 1,
@@ -244,8 +288,8 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
         "attempt": attempt,
         "commit": commit,
         "autopublish": autopublish,
-        "skipBundles": skip_bundles,
-        "skipTests": skip_tests,
+        "lanes": sorted(lanes),
+        "lanesRevision": lane_set.LANES_REVISION,
         "claimEpoch": claim_epoch,
     }, sort_keys=True, separators=(",", ":"))
     subprocess.check_output(
@@ -290,7 +334,7 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
         finally:
             os.unlink(file.name)
         execute([
-            "gh", "workflow", "run", WORKFLOW, "--ref", tag, "--repo", repository,
+            "gh", "workflow", "run", WORKFLOW, "--ref", stable.CONTROLLER_BRANCH, "--repo", repository,
             "--raw-field", f"tag={tag}",
         ])
         run_url = _await_run(execute, repository, tag, wait=run_wait, sleep=sleep)
@@ -299,7 +343,7 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
     return {"version": version, "tag": tag, "commit": commit, "url": url, "repository": repository,
             "final_url": f"https://github.com/{repository}/releases/tag/v{version}",
             "run_url": run_url, "autopublish": autopublish,
-            "skip_bundles": skip_bundles, "skip_tests": skip_tests}
+            "lanes": lanes}
 
 
 RUN_POLL_SECONDS = 2
@@ -311,8 +355,8 @@ def _await_run(execute, repository: str, tag: str, *, wait: float, sleep) -> str
     polls = int(wait // RUN_POLL_SECONDS)
     for poll in range(polls + 1):
         run_url = _dispatched_run(execute([
-            "gh", "run", "list", "--repo", repository, "--workflow", WORKFLOW,
-            "--branch", tag, "--json", "databaseId,url,headBranch,status",
+            "gh", "run", "list", "--repo", repository, "--workflow", WORKFLOW, "--limit", "100",
+            "--json", RUN_FIELDS,
         ]), tag)
         if run_url or poll == polls:
             return run_url
@@ -326,7 +370,8 @@ def _dispatched_run(raw: str, tag: str) -> str:
         rows = json.loads(raw or "[]")
     except json.JSONDecodeError:
         return ""
-    matched = [row for row in rows if isinstance(row, dict) and row.get("headBranch") == tag and row.get("url")]
+    matched = [row for row in rows if isinstance(row, dict) and row.get("url")
+               and row.get("displayTitle") == stable.claim_run_title(tag)]
     if len(matched) != 1:
         return ""
     return str(matched[0]["url"])
@@ -399,13 +444,13 @@ def publish(version: str, *, repository: str, dispatch, inspect=None, head_versi
     return {"requested": tag, "version": version, "repository": repository}
 
 
-def _in_progress_runs(inspect, repository: str, tag: str) -> list[dict]:
+def _in_progress_runs(inspect, repository: str, tag: str, commit: str) -> list[dict]:
     """Release runs of ``tag`` that have not completed, as ``gh run list`` rows."""
     rows = json.loads(inspect([
-        "gh", "run", "list", "--repo", repository, "--workflow", WORKFLOW,
-        "--branch", tag, "--json", "databaseId,url,status", "--limit", "100",
+        "gh", "run", "list", "--repo", repository, "--workflow", WORKFLOW, "--limit", "100",
+        "--json", RUN_FIELDS,
     ]) or "[]")
-    return [row for row in rows if row["status"] != "completed"]
+    return [row for row in rows if row["status"] != "completed" and _is_claim_run(row, tag, commit)]
 
 
 def _abandon_attempt(version: str, attempt: int, tag: str, *, repo: Path, remote: str,
@@ -415,7 +460,7 @@ def _abandon_attempt(version: str, attempt: int, tag: str, *, repo: Path, remote
         draft = _release_view(tag, repository, inspect)
         if draft is not None and draft.get("isDraft") is not True:
             raise ReleaseRefused(f"{tag} is published and cannot be abandoned")
-        for run in _in_progress_runs(inspect, repository, tag):
+        for run in _in_progress_runs(inspect, repository, tag, _claim_commit(repo, tag)):
             execute(["gh", "run", "cancel", str(run["databaseId"]), "--repo", repository, "--force"])
             cancelled.append(run["url"])
         if draft is not None:
@@ -467,11 +512,19 @@ def next_steps(result: dict, *, bold: bool = False) -> str:
         "Release CI: " + (result.get("run_url")
                           or f"the run is not listed yet. Find {tag} at {actions_url}"),
     ]
-    if result["skip_bundles"]:
-        lines.append("Bundles are skipped. Only the tag, the GitHub release and the Docker image "
-                     "ship; the desktop, Termux and Store channels stay on the previous release.")
-    if result["skip_tests"]:
-        warning = "Tests are skipped, since you passed --skip-tests"
+    lanes = result["lanes"]
+    left_out = [name for name in lane_set.LEFT_OUT if name not in lanes]
+    if left_out:
+        effects = "; ".join(lane_set.LEFT_OUT[name] for name in left_out)
+        lines.append(f"Not built: {', '.join(left_out)}. {effects[0].upper()}{effects[1:]}.")
+    if lane_set.has_bundles(lanes) and not lane_set.advances_desktop(lanes):
+        lines.append("This is a partial desktop release: its packages are verified, but the desktop "
+                     "update channel and feeds stay on the previous release (they move only when "
+                     "windows and macos-arm64 are both built).")
+    untested = [name for name in lane_set.NAMES if name not in lanes and name not in lane_set.LEFT_OUT
+                and not (name == "termux-checks" and "termux" not in lanes)]
+    if untested:
+        warning = f"Not tested: {', '.join(untested)}"
         lines.append(f"\033[1m{warning}\033[0m" if bold else warning)
     lines.append(f"Draft release: {result['url']}")
     if result["autopublish"]:
@@ -484,10 +537,34 @@ def next_steps(result: dict, *, bold: bool = False) -> str:
     return "\n".join(lines)
 
 
+def _abandon_prompt() -> Callable[[str], bool] | None:
+    """A y/N prompt, N by default, when a person can answer it; None otherwise.
+
+    ``input`` writes its prompt to stdout when either stream is redirected, so
+    both must be terminals for the question to reach a person.
+    """
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return None
+
+    def confirm(ref: str) -> bool:
+        try:
+            answer = input(f"Abandon {ref} and cut a new attempt? [y/N] ")
+        except EOFError:
+            return False
+        return answer.strip().lower() in {"y", "yes"}
+
+    return confirm
+
+
 def cmd_release(args) -> None:
     """The ``release`` subcommand: claim, draft, dispatch."""
     from scripts import release as release_script
 
+    try:
+        lanes = lane_set.select(only=lane_set.parse_list(args.only), with_=lane_set.parse_list(args.with_lanes) or (),
+                                without=lane_set.parse_list(args.without_lanes) or ())
+    except ValueError as error:
+        raise SystemExit(f"release: {error}") from error
     repo = release_script.REPO_ROOT
     remote = release_script.resolve_push_remote(args.remote)
     repository = release_script.remote_github_repo(remote)
@@ -505,8 +582,9 @@ def cmd_release(args) -> None:
     result = release(
         commit, bump=args.bump, repo=repo, remote=remote, repository=repository,
         execute=execute, autopublish=args.autopublish, no_changelog=args.no_changelog,
-        skip_bundles=args.skip_bundles, skip_tests=args.skip_tests,
+        lanes=lanes,
         published=published_stable_identity(repository), run_wait=RUN_WAIT_SECONDS,
+        confirm_abandon=_abandon_prompt(), inspect=lambda command: _inspect(repo, command),
     )
     print(next_steps(result, bold=sys.stdout.isatty() and "NO_COLOR" not in os.environ))
 

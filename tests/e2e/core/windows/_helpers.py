@@ -91,7 +91,13 @@ class WinHome:
         return self.hermes_home / "state.db"
 
 
+#: Every home made this test, with its creation time: the lane's conftest stops the gateway a
+#: prompt auto-started for it (Desktop and CLI attach to one daemon that outlives the turn).
+MADE_HOMES: list[tuple[WinHome, float]] = []
+
+
 def make_home(tmp_path: Path, base_url: str, *, extra_config: str = "") -> WinHome:
+    since = time.time()
     root = tmp_path
     profile = root / "Users" / "e2e"
     hermes_home = profile / ".hermes"
@@ -105,6 +111,7 @@ def make_home(tmp_path: Path, base_url: str, *, extra_config: str = "") -> WinHo
         cfg.setdefault("display", {})["compact"] = True
 
     home.update_config(_hermetic)
+    MADE_HOMES.append((home, since))
     return home
 
 

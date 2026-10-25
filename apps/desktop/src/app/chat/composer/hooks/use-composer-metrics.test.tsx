@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { COMPOSER_HEIGHT_VAR, COMPOSER_SURFACE_HEIGHT_VAR, THREAD_SETTLED_CLEARANCE_VAR } from '@/app/chat/surface-vars'
 
+import { COMPOSER_MINIMAL_PX } from '../composer-utils'
+
 import { useComposerMetrics } from './use-composer-metrics'
 
 let composerText = ''
@@ -122,6 +124,84 @@ describe('useComposerMetrics', () => {
     surfaceHeight = 72
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+    delete window.document.documentElement.dataset.hermesDesktopHost
+  })
+
+  // Native Desktop collapses its composer at main's fixed widths and never
+  // splits the row into one column, whatever --composer-control-size resolves
+  // to (a theme's larger base font size grows that rem token).
+  it("keeps main's collapse widths in native Desktop whatever the control-size token measures", () => {
+    mockComposerRects()
+
+    const fitAt = (width: number) => {
+      dockWidth = width
+
+      const style = vi.spyOn(window, 'getComputedStyle').mockReturnValue({
+        getPropertyValue: (name: string) => (name === '--composer-control-size' ? '30px' : '')
+      } as unknown as CSSStyleDeclaration)
+
+      const { container, unmount } = renderHarness(false)
+
+      const fit = JSON.parse(container.querySelector<HTMLElement>('[data-slot="composer-root"]')!.dataset.fit!) as {
+        minimal: boolean
+        singleColumn: boolean
+      }
+
+      unmount()
+      style.mockRestore()
+
+      return fit
+    }
+
+    expect(fitAt(COMPOSER_MINIMAL_PX + 1)).toMatchObject({ minimal: false, singleColumn: false })
+    expect(fitAt(COMPOSER_MINIMAL_PX - 1)).toMatchObject({ minimal: true, singleColumn: false })
+    expect(fitAt(60)).toMatchObject({ minimal: true, singleColumn: false })
+  })
+
+  it('uses a single control column below the two-touch-target budget', () => {
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    dockWidth = 80
+    mockComposerRects()
+    vi.spyOn(window, 'getComputedStyle').mockReturnValue({
+      getPropertyValue: () => '44px'
+    } as unknown as CSSStyleDeclaration)
+    const { container } = renderHarness(false)
+    expect(JSON.parse(container.querySelector<HTMLElement>('[data-slot="composer-root"]')!.dataset.fit!)).toMatchObject(
+      {
+        minimal: true,
+        singleColumn: true
+      }
+    )
+    vi.restoreAllMocks()
+  })
+
+  it('collapses extra controls earlier when touch targets consume more width', () => {
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    dockWidth = COMPOSER_MINIMAL_PX + 1
+    mockComposerRects()
+
+    const minimalAt = (controlPx: number) => {
+      const style = vi.spyOn(window, 'getComputedStyle').mockReturnValue({
+        getPropertyValue: (name: string) => (name === '--composer-control-size' ? `${controlPx}px` : '')
+      } as unknown as CSSStyleDeclaration)
+
+      // Just past the point where desktop-size controls still fit.
+      const { container, unmount } = renderHarness(false)
+
+      const { minimal } = JSON.parse(
+        container.querySelector<HTMLElement>('[data-slot="composer-root"]')!.dataset.fit!
+      ) as {
+        minimal: boolean
+      }
+
+      unmount()
+      style.mockRestore()
+
+      return minimal
+    }
+
+    expect(minimalAt(24)).toBe(false)
+    expect(minimalAt(44)).toBe(true)
   })
 
   it('retains the running dock clearance when the turn settles, then releases it for the next run', () => {
@@ -280,6 +360,7 @@ describe('useComposerMetrics', () => {
         compactPill: width < 560,
         foldVoice: width < 260,
         minimal: width < 180,
+        singleColumn: false,
         stacked: width < 320,
         tight: width < 320
       })

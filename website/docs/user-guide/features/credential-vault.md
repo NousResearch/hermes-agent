@@ -42,7 +42,8 @@ Sites that ask for a code after the password are handled the same way:
   link a site shows when you enable 2FA; 1Password and Bitwarden items that
   hold a TOTP seed count too): Hermes generates the current code and enters
   it. Nobody is asked. Add the key in **Settings → Passwords & Logins → Add**
-  or `hermes vault add`; the item shows a *2FA auto* badge.
+  or `hermes vault add`; the item shows a *2FA auto* badge. Like the
+  password, the code is only generated for a page on the login's saved site.
 - **Code sent to your phone or email**: a small prompt appears in your
   surface ("Verification code for github.com"), you type the code, Hermes
   enters it into the page. The code never enters the conversation either.

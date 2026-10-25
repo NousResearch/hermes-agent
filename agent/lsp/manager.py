@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from agent.lsp import eventlog
 from agent.lsp.client import DIAGNOSTICS_DOCUMENT_WAIT, LSPClient, _diagnostic_key as _diag_key
+from agent.lsp.edit_check import EditChecks
 from agent.lsp.servers import (
     SERVERS, UNTRUSTED_SAFE_SERVERS, ServerContext, ServerDef, custom_servers, find_server_for_file, language_id_for,
 )
@@ -184,6 +185,7 @@ class LSPService:
         self._idle_reaper_task: Optional[asyncio.Task] = None
         # abs file path → diagnostics snapshot taken immediately before a write.
         self._delta_baseline: dict[str, _Diags] = {}
+        self._edit_checks = EditChecks()  # loop-thread state of start_edit_check
 
         if self._enabled and self._idle_timeout > 0:
             self._loop.run(self._start_idle_reaper(), timeout=2.0)
@@ -360,6 +362,20 @@ class LSPService:
             diags = []
         self._set_delta_baseline(os.path.abspath(file_path), diags or [])
 
+    def start_edit_check(self, file_path: str, *, pre_text: Optional[str], post_text: Optional[str] = None,
+                         owner: Optional[str] = None, carry: tuple = ()):
+        """Non-blocking post-write check (``agent.lsp.edit_check``): a Future of the diagnostics the edit
+        introduced, or None when LSP doesn't handle the file.  Replaces snapshot_baseline +
+        get_diagnostics_sync on the write path, which blocked the write on both waits.  ``owner`` = the
+        editing session; ``carry`` = its undelivered notes for the file this check takes over.
+        ``pre_text`` / ``post_text`` = the edit's own before/after content: the check diagnoses these
+        snapshots, never whatever another session has written to the file since."""
+        if not self.enabled_for(file_path):
+            return None
+        from agent.lsp import edit_check
+        return edit_check.start(self, file_path, pre_text=pre_text, post_text=post_text, owner=owner,
+                                carry=carry)
+
     def _set_delta_baseline(self, abs_path: str, diags: _Diags) -> None:
         """Store a baseline, refreshing recency (pop + reinsert) so eviction tracks write order.
         Callers run on arbitrary threads; the multi-step mutation needs the lock (callers don't hold it)."""
@@ -430,29 +446,45 @@ class LSPService:
             self._set_delta_baseline(abs_path, fresh)
         return diags
 
-    def _mark_broken_for_file(self, file_path: str, exc: BaseException) -> None:
-        """Mark the file's ``(server_id, root)`` pair broken after an outer timeout/error.
-        The outer ``_loop.run`` timeout cancels the in-flight spawn before ``_get_or_spawn`` could record
-        the failure; without this every later write would re-pay the full timeout.  Also kills any
-        half-initialized client and logs the failure once."""
+    def _detach_broken(self, file_path: str, exc: BaseException) -> Optional[LSPClient]:
+        """Mark the file's ``(server_id, root)`` pair broken after an outer timeout/error, drop its
+        client from the live maps and log the failure once; returns the dropped client for the caller
+        to shut down.  The outer timeout cancels the in-flight spawn before ``_get_or_spawn`` could
+        record the failure; without this every later write would re-pay the full timeout.  The one
+        owner of this cleanup: ``_mark_broken_for_file`` (tool threads) and
+        ``_mark_broken_for_file_async`` (the loop) only differ in how they await the shutdown."""
         srv = self._server_for(file_path)
         key = self._broken_key(srv, file_path) if srv is not None else None
         if key is None:
-            return
+            return None
         already_broken = self._is_broken(key)
         self._mark_broken(key)
         with self._state_lock:
             ckey = self._live_key(srv, key[1])
             client = self._clients.pop(ckey, None)
             self._last_used.pop(ckey, None)
+        if not already_broken:
+            eventlog.log_spawn_failed(key[0], key[1], exc)
+        return client
+
+    def _mark_broken_for_file(self, file_path: str, exc: BaseException) -> None:
+        """Tool-thread bridge of :meth:`_detach_broken`: shuts the client down through the loop."""
+        client = self._detach_broken(file_path, exc)
         if client is not None:
             try:
                 # Fire-and-forget shutdown — we're already on a slow path.
                 self._loop.run(client.shutdown(), timeout=1.0)
             except Exception:
                 pass
-        if not already_broken:
-            eventlog.log_spawn_failed(key[0], key[1], exc)
+
+    async def _mark_broken_for_file_async(self, file_path: str, exc: BaseException) -> None:
+        """Loop-side :meth:`_detach_broken` (``_mark_broken_for_file`` would block on the loop it runs on)."""
+        client = self._detach_broken(file_path, exc)
+        if client is not None:
+            try:
+                await asyncio.wait_for(client.shutdown(), timeout=1.0)
+            except Exception:  # best effort on an already-failed server; the pair is marked broken either way
+                logger.debug("shutdown of broken LSP client failed", exc_info=True)
 
     def shutdown(self) -> None:
         """Tear down all clients and stop the background loop."""
@@ -573,7 +605,13 @@ class LSPService:
             return await self._attach_root(srv, client, root)
         if not owner:
             try:
-                client = await spawning
+                # Shielded: cancelling this waiter (its caller timed out) must not cancel the spawn
+                # every other waiter of this root shares.
+                client = await asyncio.shield(spawning)
+            except asyncio.CancelledError:
+                if spawning.cancelled():
+                    return None  # the owner was cancelled mid-spawn
+                raise
             except Exception:
                 return None
             return await self._attach_root(srv, client, root) if client is not None else None
@@ -591,6 +629,8 @@ class LSPService:
         finally:
             with self._state_lock:
                 self._spawning.pop(key, None)
+            if not spawning.done():
+                spawning.cancel()  # owner cancelled/failed mid-spawn: release the waiters
 
     @staticmethod
     async def _attach_root(srv: ServerDef, client: LSPClient, root: str) -> LSPClient:

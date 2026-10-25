@@ -38,8 +38,9 @@ def _lazy(module, name):
     return getattr(__import__(module, fromlist=[name]), name)
 
 
-def _pin_profile_model(profile_dir, provider, model) -> None:
-    _lazy("hermes_cli.web_routers.profiles", "_write_profile_model")(profile_dir, provider, model)
+def _pin_profile_model(profile_dir, provider, model, base_url="") -> None:
+    _lazy("hermes_cli.web_routers.profiles", "_write_profile_model")(
+        profile_dir, provider, model, base_url=base_url)
 
 
 def _model_provider_params(params) -> tuple:
@@ -518,18 +519,29 @@ def _inherit_launch_model(path) -> bool:
     model_cfg = launch_cfg.get("model") or {}
     if not (model_cfg.get("provider") and model_cfg.get("default")):
         return False
-    # A custom `providers:` gateway travels with the model it backs (same seed as the CLI path). It is
+    # A custom endpoint travels with the model it backs (same seed as the CLI path). It is
     # written BEFORE the pin: the pin validates the pick inside the new profile, and an empty profile
     # rejects a provider it has not been told about ("Unknown provider").
     # Seeded from the RAW launch file so a ${VAR} api_key travels as the ref, not its value.
-    custom = _lazy("hermes_cli.profiles", "launch_model_seed")(read_user_config_raw()).get("providers")
-    if custom:
-        from hermes_cli.config import load_config, save_config
+    seed = _lazy("hermes_cli.profile_model_seed", "launch_model_seed")(read_user_config_raw())
+    if seed.get("providers") or seed.get("custom_providers"):
+        from hermes_cli.config import save_config
+        merge = _lazy("hermes_cli.profile_model_seed", "merge_endpoint_seed")
         with _hermes_home_scope(path):
-            cfg = load_config()
-            cfg["providers"] = {**(cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}), **custom}
-            save_config(cfg)
-    _pin_profile_model(path, str(model_cfg["provider"]), str(model_cfg["default"]))
+            save_config(merge(read_user_config_raw(), seed))
+    # Bare ``custom``/``local`` carries its endpoint into validation (the new profile's config names
+    # none); other providers ignore it. Validation needs the expanded URL, the profile keeps the
+    # launch file's spelling so a ${VAR} URL stays a ref.
+    _pin_profile_model(path, str(model_cfg["provider"]), str(model_cfg["default"]),
+                       str(model_cfg.get("base_url") or ""))
+    raw_url = ((read_user_config_raw() or {}).get("model") or {}).get("base_url")
+    if isinstance(raw_url, str) and "${" in raw_url:
+        from hermes_cli.config import save_config
+        with _hermes_home_scope(path):
+            cfg = read_user_config_raw() or {}
+            if isinstance(cfg.get("model"), dict) and cfg["model"].get("base_url") == model_cfg.get("base_url"):
+                cfg["model"]["base_url"] = raw_url
+                save_config(cfg)
     return True
 
 

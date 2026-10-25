@@ -54,6 +54,8 @@ from hermes_cli.doctor_state import (
     _check_cron_store,
     _check_directory_structure,
     _check_memory_provider,
+    _check_plugins_disabled_by_update,
+    _check_plugins_in_both_lists,
     _check_profiles,
     _check_skills_hub,
     _check_state_db,
@@ -124,7 +126,9 @@ DOCTOR_CHECKS = (
     ('External Tools', _check_git_and_rg), (None, _check_terminal_backend), (None, _check_node_and_browser),
     (None, _check_npm_audit), ('API Connectivity', _check_api_connectivity),
     ('Tool Availability', _check_tool_availability), ('Skills Hub', _check_skills_hub),
-    ('Memory Provider', _check_memory_provider), ('NeMo Relay Plugins', _check_relay_plugins),
+    ('Memory Provider', _check_memory_provider), (None, _check_plugins_disabled_by_update),
+    (None, _check_plugins_in_both_lists),
+    ('NeMo Relay Plugins', _check_relay_plugins),
     (None, _check_profiles),
 )
 
@@ -161,7 +165,7 @@ def _print_summary(should_fix: bool, total: Finding) -> None:
         print(color(f"  Found {len(remaining)} issue(s) to address:", Colors.YELLOW, Colors.BOLD))
         print()
         print(numbered)
-        if not should_fix:
+        if not should_fix and total.issues:
             print(color("  Tip: run 'hermes doctor --fix' to auto-fix what's possible.", Colors.DIM))
     else:
         print(color("─" * 60, Colors.GREEN))

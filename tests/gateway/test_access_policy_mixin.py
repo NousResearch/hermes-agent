@@ -29,11 +29,11 @@ def _scope(secrets):
 
 def _hosts():
     """One bare instance per own-policy class, attributes set exactly as the adapters do."""
-    from gateway.platforms.qqbot.adapter import QQAdapter
-    from gateway.platforms.weixin import WeixinAdapter
-    from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+    from plugins.platforms.qqbot.adapter import QQAdapter
+    from plugins.platforms.weixin.adapter import WeixinAdapter
+    from plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
     from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
-    from gateway.platforms.yuanbao import AccessPolicy
+    from plugins.platforms.yuanbao.adapter import AccessPolicy
     from plugins.platforms.wecom.adapter import WeComAdapter
 
     hosts = {

@@ -21,6 +21,7 @@ from hermes_cli.web_routers._common import http_failure
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_chat import _ws_auth_ok, _ws_request_is_allowed
 from hermes_cli.web_server_gateway import _read_dashboard_json_response, _split_text_for_speak_stream
+from hermes_cli.web_session_sockets import SPEAK_STREAM_SOCKET, TRANSCRIBE_STREAM_SOCKET
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 from hermes_cli.web_models import (
     AudioTranscriptionRequest,
@@ -72,7 +73,10 @@ async def _run_config_scoped(profile: Optional[str], fn):
         with _config_profile_scope(profile):
             return fn()
 
-    return await asyncio.get_running_loop().run_in_executor(None, _scoped)
+    # to_thread copies the request context: a secondary-profile native ticket's implicit
+    # scope (native_profile_scope's home override) must reach the worker, which
+    # run_in_executor drops, silently resolving the LAUNCH profile's config and keys.
+    return await asyncio.to_thread(_scoped)
 
 
 def _audio_extension_for_mime(mime_type: str) -> str:
@@ -246,13 +250,11 @@ async def get_elevenlabs_voices(profile: Optional[str] = None):
     )
 
     try:
-        loop = asyncio.get_running_loop()
-
         def _fetch() -> dict[str, Any]:
             with urllib.request.urlopen(request, timeout=10) as response:
                 return _read_dashboard_json_response(response)
 
-        payload = await loop.run_in_executor(None, _fetch)
+        payload = await asyncio.to_thread(_fetch)
     except urllib.error.HTTPError as exc:
         # An auth failure (bad/expired/scoped key) is a persistent, user-fixable
         # state and the desktop polls this on every settings open/focus, so
@@ -375,7 +377,7 @@ async def tts_lease(payload: TTSLeaseRequest, profile: Optional[str] = None):
             return release_tts_lease(lease)
 
     try:
-        result = await asyncio.get_running_loop().run_in_executor(None, _apply)
+        result = await asyncio.to_thread(_apply)
     except HTTPException:
         raise
     except Exception as exc:
@@ -503,7 +505,7 @@ async def stt_lease(payload: STTLeaseRequest, profile: Optional[str] = None):
         return release_stt_lease(lease)
 
     try:
-        result = await asyncio.get_running_loop().run_in_executor(None, _apply)
+        result = await asyncio.to_thread(_apply)
     except HTTPException:
         raise
     except Exception as exc:
@@ -524,7 +526,8 @@ async def transcribe_stream_ws(ws: WebSocket) -> None:
                ``{"type": "error", "message": ...}`` — also when no live STT is available, so the
                client falls back to ``POST /api/audio/transcribe`` with its recorded blob.
     """
-    if not _ws_auth_ok(ws):
+    # A socket ticket opens this stream only when minted for it (``/api/webapp/socket-ticket``).
+    if not _ws_auth_ok(ws, socket=TRANSCRIBE_STREAM_SOCKET):
         await ws.close(code=4401)
         return
     if not _ws_request_is_allowed(ws):
@@ -610,7 +613,8 @@ async def speak_stream_ws(ws: WebSocket) -> None:
                still speak per sentence via ``text_to_speech_tool`` and stream
                that PCM — the client POST is the last resort, not the Edge path.
     """
-    if not _ws_auth_ok(ws):
+    # A socket ticket opens this stream only when minted for it (``/api/webapp/socket-ticket``).
+    if not _ws_auth_ok(ws, socket=SPEAK_STREAM_SOCKET):
         await ws.close(code=4401)
         return
     if not _ws_request_is_allowed(ws):
@@ -635,7 +639,7 @@ async def speak_stream_ws(ws: WebSocket) -> None:
         return streamer, cap, cfg
 
     try:
-        streamer, cap, cfg = await loop.run_in_executor(None, _resolve)
+        streamer, cap, cfg = await asyncio.to_thread(_resolve)
     except Exception:
         _log.exception("speak-stream provider resolution failed")
         streamer, cap, cfg = None, 0, {}

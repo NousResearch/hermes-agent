@@ -187,6 +187,13 @@ class FakeLLMServer:
         with self._lock:
             self._script.extend(responses)
 
+    def drop_unconsumed(self) -> int:
+        """Discard scripted responses no request consumed; returns how many."""
+        with self._lock:
+            dropped = len(self._script)
+            self._script.clear()
+        return dropped
+
     def _next_main(self, record: dict[str, Any]) -> Response:
         if self._responder is not None:
             return self._responder(record)

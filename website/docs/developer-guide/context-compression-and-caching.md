@@ -4,7 +4,7 @@ Hermes Agent uses a dual compression system and Anthropic prompt caching to
 manage context window usage efficiently across long conversations.
 
 Source files: `agent/context_engine.py` (ABC), `agent/context_compressor.py` (default engine),
-`agent/prompt_caching.py`, `gateway/run_turn.py` (session hygiene), `agent/compression_facade.py` (search for `_compress_context`)
+`agent/prompt_caching.py`, `gateway/run_turn_hygiene.py` (session hygiene), `agent/compression_facade.py` (search for `_compress_context`)
 
 
 ## Bedrock context window cache
@@ -82,7 +82,7 @@ Hermes has two separate compression layers that operate independently:
 
 ### 1. Gateway Session Hygiene (85% threshold)
 
-Located in `gateway/run_turn.py` (search for `Session hygiene`). This is a **safety net** that
+Located in `gateway/run_turn_hygiene.py` (search for `Session hygiene`). This is a **safety net** that
 runs before the agent processes a message. It prevents API failures when sessions
 grow too large between turns (e.g., overnight accumulation in Telegram/Discord).
 
@@ -337,13 +337,22 @@ Consumers observe the mode rather than diffing session ids:
 
 Set `in_place: false` to restore the legacy rotating path, where each compaction commits a new session id linked to the previous one via `parent_session_id`.
 
+Canonical `/compress` uses the session's frozen `compression.in_place` and
+`min_tail_user_messages` settings too. In-place mode soft-archives the current physical
+transcript; rotating mode publishes a successor. Both keep the logical admission owner
+and previously issued input IDs unchanged, and commit the transcript, generation,
+revision and retry receipt together. Safe-mode sessions use code defaults rather than
+profile compression settings.
+
 ### Auxiliary feasibility and tail retention
 
 A smaller auxiliary compression model can lower the live compression trigger without
 changing the selected tail policy. In `lean` mode the selection budget remains based
 on the **main model's context window**: 2.5%, clamped to 10K–25K tokens, and never more
 than 20% of that window (the 10K floor alone is 61% of a 16K local window, so without the cap a
-small model's "protected" tail was the whole request and compaction reclaimed nothing). For example,
+small model's "protected" tail was the whole request and compaction reclaimed nothing), nor more than
+half of a compression trigger above the 2K minimum summary budget (a `threshold_tokens` of 12K on a 1M window would otherwise keep a 25K tail, so
+every pass stayed over the trigger and refused as "would grow"). For example,
 a 1M main model with a 512K auxiliary model retains a 25K
 selection budget even when feasibility lowers its trigger from 850K to 512K. Explicit `legacy` mode instead
 recomputes `threshold_tokens × target_ratio` (102,400 tokens at 512K × 0.20).
@@ -557,6 +566,20 @@ without `/steer` messages delivered after it) keeps its text results verbatim an
 results intact in the tail, so the model can use the output it requested. A round that alone
 exceeds 20% of the input budget (the context window minus the output reservation) can be
 summarized, and its older images are retired so compaction can still make room.
+
+#### Loaded skills across a compaction
+
+A skill's instructions are not kept verbatim forever, but the model is always told when they are
+gone. Every `skill_view` result that a pass stubs or summarizes away (whatever its size) carries
+`[SKILL_PRUNED: content lost in compression; reload with skill_view(name='…')]`, and the summary
+lists each such skill under `## Pruned Skills`. Whenever a marker survives anywhere in the compacted
+transcript, the handoff summary ends with a `## Skill Safety Rule` telling the model to reload the
+skill before relying on it; fresh sessions never carry that rule in their system prompt, since no
+marker can exist before the first compaction. Skills loaded inline by `/skill-name`, bundles,
+stacked invocations and gateway channel auto-load get the same marker when their turn is
+summarized, and the summary quotes that turn as typed (`/skill-name do X`) rather than the skill
+body. A reload after the boundary returns the full skill again. Skills preloaded with `-s` or
+`skills.auto_load` live in the system prompt and are never compacted.
 
 ### Phase 2: Determine Boundaries
 

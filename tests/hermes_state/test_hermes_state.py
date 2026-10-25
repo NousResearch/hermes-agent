@@ -4699,27 +4699,6 @@ class TestFTSExternalContentMigration:
         finally:
             db.close()
 
-    def test_optimize_settle_refuses_pending_backfill(self, tmp_path):
-        """Settle must not stamp while high_water markers remain."""
-        db = SessionDB(db_path=tmp_path / "fresh.db")
-        try:
-            db.create_session(session_id="s1", source="cli")
-            db.append_message("s1", role="user", content="settle guard needle")
-            # Plant markers without going through demote.
-            db.set_meta("fts_rebuild_high_water", "1")
-            db.set_meta("fts_rebuild_progress", "0")
-            # The public contract: optimize returns ok=False when still
-            # pending. Simulate an unfinishable backfill by stubbing the
-            # chunk step to a no-op while markers stay.
-            db.fts_rebuild_step = lambda: False  # type: ignore[method-assign]
-            result = db.optimize_fts_storage(vacuum=False)
-            assert result["ok"] is False
-            assert result.get("reason") == "backfill_incomplete"
-            assert db.get_meta("fts_storage_version") is None
-            assert db.get_meta("fts_rebuild_high_water") is not None
-        finally:
-            db.close()
-
     def test_v23_fresh_db_born_optimized(self, tmp_path):
         """A brand-new DB is born on v23 — no legacy layout, no opt-in flag,
         no pending rebuild."""

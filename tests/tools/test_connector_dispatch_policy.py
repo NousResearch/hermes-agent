@@ -121,3 +121,32 @@ def test_disabled_connections_cannot_be_called_through_a_stale_schema(monkeypatc
                         lambda **_: (_ for _ in ()).throw(AssertionError("disabled connector attempted I/O")))
     result = json.loads(registry.dispatch("manage_connections", {"action": "connect", "connectors": ["gmail"]}))
     assert "not available" in result["error"]
+
+
+def test_a_connector_batch_collects_the_union_of_data_use_and_keeps_it_out_of_the_result(monkeypatch):
+    import model_tools
+    from tools.connectors.data_use import collect_data_use
+    from tools.connectors.gateway import bridge, config
+    from tools.registry import invalidate_check_fn_cache
+
+    monkeypatch.setattr(config, "connectors_available", lambda: True)
+    monkeypatch.setattr(bridge, "connectors_available", lambda: True)
+    invalidate_check_fn_cache()
+    requires = {"gmail": ["no_training"], "googledrive": ["zero_retention"], "slack": None}
+
+    class Client:
+        def execute(self, planned, **_):
+            return [{"data": "row", "error": None, **({"data_use": requires[p.connector]} if requires[p.connector] else {})}
+                    for p in planned]
+
+    monkeypatch.setattr(bridge, "_default_client_factory", lambda call=None: Client())
+    calls = [{"name": f"connectors__{c}__READ", "arguments": {}} for c in requires]
+    with collect_data_use() as data_use:
+        raw = model_tools.handle_function_call(
+            "tool_call", {"calls": calls}, enabled_toolsets=["connections"], session_id="s", tool_call_id="batch-1",
+            turn_id="turn-1", skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
+            skip_tool_execution_middleware=True)
+
+    assert "data_use" not in raw
+    assert [r["response"] for r in json.loads(raw)["results"]] == ["row", "row", "row"]
+    assert data_use == {"no_training", "zero_retention"}

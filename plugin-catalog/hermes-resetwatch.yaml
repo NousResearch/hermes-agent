@@ -1,9 +1,9 @@
 name: hermes-resetwatch
 repo: https://github.com/Adolanium/hermes-resetwatch
-sha: 002c8c378cb6fa092241cbe94dcffa29bd26184e
-version: "0.2.23"
-image: https://raw.githubusercontent.com/Adolanium/hermes-resetwatch/002c8c378cb6fa092241cbe94dcffa29bd26184e/assets/catalog-banner.png
-description: "Track subscription quotas and reset times in Hermes Desktop. Disclosure — probe.py re-executes itself under the Hermes Python interpreter located via HERMES_PYTHON / VIRTUAL_ENV / the parent process or the Hermes installer's managed venv (HERMES_HOME/installs); it reads provider API keys from the Hermes .env, Hermes's own saved OAuth logins (auth.json credential pool, read-only), the Vaultwarden plugin's local secret cache (cache/vaultwarden_cache.json, read-only, only when Vaultwarden is the sole enabled secret source) and Docker s6 container env files, plus other coding-assistant CLIs' local logins (including macOS keychain entries), and sends each key only to its own vendor's usage endpoint."
+sha: 248af31d70c293915943a39611494c40bb066343
+version: "0.2.25"
+image: https://raw.githubusercontent.com/Adolanium/hermes-resetwatch/248af31d70c293915943a39611494c40bb066343/assets/catalog-banner.png
+description: "Track subscription quotas and reset times in Hermes Desktop. Disclosure — probe.py re-executes itself under the Hermes Python interpreter located via HERMES_PYTHON / VIRTUAL_ENV / the parent process or the Hermes installer's managed venv (HERMES_HOME/installs); it reads provider API keys from the Hermes .env, Hermes's own saved OAuth logins (auth.json credential pool, read-only), the Vaultwarden plugin's local secret cache (cache/vaultwarden_cache.json, read-only, only when Vaultwarden is the sole enabled secret source) and Docker s6 container env files, plus other coding-assistant CLIs' local logins (including macOS keychain entries). For GitHub Copilot (on by default) it tries COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN (through Hermes get_secret, else the process environment), then the Copilot editor's apps.json / hosts.json, then runs gh auth token (prompts disabled, 3-second limit), trying each token in turn until GitHub accepts one; it does not refresh or store that token. It sends each key only to its own vendor's usage endpoint, presenting the vendor client's identity headers where a private endpoint expects them (Claude Code and Codex CLI user agents; for Copilot the VS Code / Copilot Chat editor headers on api.github.com/copilot_internal/user, which GitHub does not document)."
 maintainer: Adolanium
 tier: community
 category: desktop

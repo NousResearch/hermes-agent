@@ -1,14 +1,13 @@
 name: hermes-telegram-business
-repo: https://github.com/NousResearch/hermes-official-plugins
-sha: c6f130d195298ace7d0e84bab8efdfa2bcdc57c8
+repo: https://github.com/NousResearch/hermes-labs-plugins
+sha: 0480b2e2947276b55b302d3288b30597d238ba51
 subdir: telegram-business
-description: 'Observe-with-approval Telegram Business Mode (secretary bot): every drafted customer reply
-  needs owner approval before it is sent.'
+description: "Observe-with-approval Telegram Business Mode (secretary bot): Hermes drafts replies to your customers' messages and DMs each draft to you with Send, Edit and Discard buttons; nothing reaches a customer until you tap Send. A Hermes Labs plugin: built by Nous Research, not supported. Disclosure — each customer message is sent to your active Hermes model to draft the reply, and drafts and connection records are stored locally in <HERMES_HOME>/telegram-business/state.db."
 maintainer: NousResearch
-tier: official
+tier: community
 category: platform
-docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/telegram-business
-image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/c6f130d195298ace7d0e84bab8efdfa2bcdc57c8/assets/telegram-business.jpg
+docs_url: https://github.com/NousResearch/hermes-labs-plugins/tree/main/telegram-business
+image: https://raw.githubusercontent.com/NousResearch/hermes-labs-plugins/0480b2e2947276b55b302d3288b30597d238ba51/assets/telegram-business.jpg
 platforms: []
 capabilities:
   provides_tools: []

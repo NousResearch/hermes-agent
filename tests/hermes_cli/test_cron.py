@@ -683,3 +683,93 @@ class TestSlashCronRunSkipped:
         out = capsys.readouterr().out
         assert "Job is paused/disabled; resume it before running." in out
         assert "Triggered" not in out and "next scheduler tick" not in out
+
+
+def _edit(*argv):
+    parser = argparse.ArgumentParser(prog="hermes")
+    subparsers = parser.add_subparsers(dest="command")
+    build_cron_parser(subparsers, cmd_cron=cron_command)
+    args = parser.parse_args(["cron", "edit", *argv])
+    return cron_command(args)
+
+
+class TestCronEditProviderModelPairing:
+    """A provider switch must not carry a model pin chosen for another provider."""
+
+    def test_provider_alone_refuses_to_carry_a_foreign_model_pin(self, tmp_cron_dir, capsys):
+        job = create_job(
+            prompt="Daily report", schedule="every 1h", model="grok-4.7", provider="xai")
+
+        assert _edit(job["id"], "--provider", "anthropic") == 1
+
+        out = capsys.readouterr().out
+        assert "Failed to update job" in out
+        assert "--model" in out
+        updated = get_job(job["id"])
+        assert (updated["model"], updated["provider"]) == ("grok-4.7", "xai")
+
+    def test_clearing_the_provider_also_refuses_while_a_model_is_pinned(self, tmp_cron_dir):
+        job = create_job(
+            prompt="Daily report", schedule="every 1h", model="grok-4.7", provider="xai")
+
+        assert _edit(job["id"], "--provider", "") == 1
+
+        updated = get_job(job["id"])
+        assert (updated["model"], updated["provider"]) == ("grok-4.7", "xai")
+
+    def test_provider_with_model_repins_both(self, tmp_cron_dir):
+        job = create_job(
+            prompt="Daily report", schedule="every 1h", model="grok-4.7", provider="xai")
+
+        assert _edit(
+            job["id"], "--provider", "anthropic", "--model", "claude-opus-5-5") == 0
+
+        updated = get_job(job["id"])
+        assert (updated["model"], updated["provider"]) == ("claude-opus-5-5", "anthropic")
+
+    def test_model_alone_keeps_the_provider(self, tmp_cron_dir):
+        job = create_job(
+            prompt="Daily report", schedule="every 1h", model="grok-4.7", provider="xai")
+
+        assert _edit(job["id"], "--model", "grok-5") == 0
+
+        updated = get_job(job["id"])
+        assert (updated["model"], updated["provider"]) == ("grok-5", "xai")
+
+    def test_restating_the_same_provider_is_allowed(self, tmp_cron_dir):
+        job = create_job(
+            prompt="Daily report", schedule="every 1h", model="grok-4.7", provider="xai")
+
+        assert _edit(job["id"], "--provider", "XAI") == 0
+
+        assert get_job(job["id"])["model"] == "grok-4.7"
+
+    def test_provider_on_a_job_without_a_model_pin_is_unchanged(self, tmp_cron_dir):
+        job = create_job(prompt="Daily report", schedule="every 1h")
+
+        assert _edit(job["id"], "--provider", "anthropic") == 0
+
+        updated = get_job(job["id"])
+        assert updated.get("provider") == "anthropic"
+        assert updated.get("model") is None
+
+    def test_unpin_with_provider_still_releases_both(self, tmp_cron_dir):
+        job = create_job(
+            prompt="Daily report", schedule="every 1h", model="grok-4.7", provider="xai")
+
+        assert _edit(job["id"], "--unpin") == 0
+
+        updated = get_job(job["id"])
+        assert (updated["model"], updated["provider"]) == (None, None)
+
+    def test_update_job_refuses_for_every_caller(self, tmp_cron_dir):
+        import cron.jobs
+
+        job = create_job(
+            prompt="Daily report", schedule="every 1h", model="grok-4.7", provider="xai")
+
+        with pytest.raises(ValueError, match="--model"):
+            cron.jobs.update_job(job["id"], {"provider": "anthropic"})
+
+        updated = get_job(job["id"])
+        assert (updated["model"], updated["provider"]) == ("grok-4.7", "xai")

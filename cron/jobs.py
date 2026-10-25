@@ -2002,6 +2002,30 @@ def _apply_pin_update(job: dict[str, Any], updates: dict[str, Any]) -> None:
         updates["provider"], updates["model"] = None, None
 
 
+def _reject_orphaned_model_pin(job: dict[str, Any], updates: dict[str, Any]) -> None:
+    """A provider change must restate the model. The per-job ``model`` pin was chosen for the job's
+    CURRENT provider; keeping it across a provider switch sends that name to a provider it was never
+    picked for (a 404, then a silent fallback). Clearing the pin instead is no fix: the job would
+    fall back to cron.model / the main model, which were chosen for the main provider, not the new
+    one. So an update that changes the effective provider of a job holding a model pin, without a
+    ``model`` in the same update, is refused. Same-provider (case-insensitive) updates, unpinned
+    jobs, and updates that also set or clear ``model`` (including ``pinned``) pass unchanged."""
+    if "provider" not in updates or "model" in updates:
+        return
+    model = _normalize_job_optional_text(job.get("model"))
+    if not model:
+        return
+    old = (_normalize_job_optional_text(job.get("provider")) or "").lower()
+    new = (_normalize_job_optional_text(updates.get("provider")) or "").lower()
+    if old == new:
+        return
+    raise ValueError(
+        f"Changing this job's provider to {new or 'the default provider'!s} would keep its model "
+        f"pin {model!r}, which was chosen for {old or 'the default provider'}. Pass --model with "
+        f"a model for the new provider (or --model {model} to keep it on purpose), or --unpin to "
+        "release both.")
+
+
 def _normalize_job_updates(job: dict[str, Any], updates: dict[str, Any]) -> None:
     """Normalize updates in place like create_job; invalid values raise BEFORE the merge. ``repeat``
     accepts the stored dict or a bare value (coerced, completed counter preserved)."""
@@ -2094,6 +2118,7 @@ def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]
         _rederive_repeat_for_schedule_change(job, updates)
         _normalize_job_updates(job, updates)
         _apply_pin_update(job, updates)
+        _reject_orphaned_model_pin(job, updates)
         updated = _apply_skill_fields({**job, **updates})
         _reject_terminal_activation(job, updated, job_id)
         # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.

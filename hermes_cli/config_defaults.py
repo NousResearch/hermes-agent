@@ -192,6 +192,27 @@ DEFAULT_CONFIG = {
         "environment_probe": True,
         # Bot Mode teammate-messaging protocol section (silent unless desktop Bot Mode manages it).
         "bot_mode_protocol": True,
+        # Hermes self-help guidance — injects a pointer to the Hermes docs
+        # and the hermes-agent skill so the model can answer questions about
+        # its own configuration, features, and capabilities.  Set False to
+        # suppress (saves ~60 tokens in the cached system prompt).
+        "help_guidance": True,
+        # Active-profile hint — names the Hermes profile the agent is
+        # running under and warns against cross-profile writes.  Set False
+        # to suppress (saves ~40 tokens).  Useful for single-profile
+        # installs or fully custom system prompts.
+        "profile_hint": True,
+        # Timestamp / session / model / provider line in the volatile tier.
+        # Includes conversation start date, timezone, and (when
+        # pass_session_id is set) the session ID.  Set False to suppress
+        # the entire block (saves ~30 tokens).  The model can still query
+        # time and identity via tools.
+        "timestamp_line": True,
+        # Environment hints — host OS, user home, cwd (local backends) or
+        # backend probe description (remote backends).  Set False to
+        # suppress the entire block (saves ~30 tokens).  The model can
+        # still discover environment facts via terminal tools.
+        "environment_hints": True,
         # Embedder-supplied text appended to the system prompt's environment-hints block, so a host
         # wrapping Hermes (sandbox runner, managed platform) can describe proxy/credential/ mount
         # layout without editing SOUL.md. Env HERMES_ENVIRONMENT_HINT overrides it.

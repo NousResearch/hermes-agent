@@ -196,6 +196,7 @@ class _NonStreamRequest:
             f"⚠️ No first stream event from provider in {int(elapsed)}s (codex stream, model: {self._model()}). "
             f"Reconnecting." + (f" {silent_hint}" if silent_hint else ""))
         self._abort_request("codex_ttfb_kill")
+        h._bump_stale_streak(agent)
         agent._emit_diagnostic_wait(f"⚠ no response from provider in {int(elapsed)}s — reconnecting...")
         agent._touch_activity(f"codex stream killed after {int(elapsed)}s with no first stream event")
         self._await_worker_after_kill(
@@ -213,6 +214,7 @@ class _NonStreamRequest:
             f"⚠️ Codex stream opened but made no model progress for {int(elapsed)}s "
             f"(model: {self._model()}). Reconnecting.")
         self._abort_request("codex_progress_kill")
+        h._bump_stale_streak(agent)
         agent._touch_activity(f"codex stream killed after {int(elapsed)}s without model progress")
         self._await_worker_after_kill(
             f"Codex stream produced no substantive model progress for {int(elapsed)}s "
@@ -235,6 +237,7 @@ class _NonStreamRequest:
             f"⚠️ Codex stream sent no events for {int(event_stale_elapsed)}s after {arm_point} "
             f"(model: {self._model()}). Reconnecting.")
         self._abort_request("codex_stream_idle_kill")
+        h._bump_stale_streak(agent)
         agent._touch_activity(f"codex stream killed after {int(event_stale_elapsed)}s with no SSE events")
         self._await_worker_after_kill(
             f"Codex stream produced no SSE events for {int(event_stale_elapsed)}s "

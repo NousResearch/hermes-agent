@@ -188,3 +188,22 @@ describe('useMicRecorder level meter', () => {
     expect(recording).toMatchObject({ meterFailed: false })
   })
 })
+
+describe('useMicRecorder capture constraints', () => {
+  it('requests an unprocessed take so the recognizer sees an intact onset', async () => {
+    const getUserMedia = vi.mocked(navigator.mediaDevices.getUserMedia)
+    const { result } = renderHook(() => useMicRecorder(copy))
+
+    await act(async () => {
+      await result.current.handle.start()
+    })
+
+    expect(getUserMedia).toHaveBeenCalledWith({
+      audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: true }
+    })
+
+    await act(async () => {
+      await result.current.handle.stop()
+    })
+  })
+})

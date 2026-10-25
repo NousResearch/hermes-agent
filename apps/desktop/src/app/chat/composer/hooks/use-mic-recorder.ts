@@ -285,8 +285,11 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     let stream: MediaStream
 
     try {
+      // The browser's noise suppressor re-attacks the signal at every voice
+      // onset, which is exactly where the recognizer needs a clean start
+      // (#135631); gain control keeps the level stable without it.
       stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true }
+        audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: true }
       })
     } catch (error) {
       throw micError(error, copy)

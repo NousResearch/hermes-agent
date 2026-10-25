@@ -33,6 +33,7 @@ import qrcode from 'qrcode-terminal';
 import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import { resolveDNSHost } from './link_preview_resolver.js';
 import {
   addMentions,
   buildPollPayload,
@@ -400,6 +401,10 @@ async function startSocket() {
     browser: ['Hermes Agent', 'Chrome', '120.0'],
     syncFullHistory: false,
     markOnlineOnConnect: false,
+    // Baileys forwards `options` into the link-preview fetch options. Without a resolver,
+    // link-preview-js cannot reject loopback/private targets (a DNS-rebinding SSRF window) and
+    // warns on every URL; with one it validates the resolved address and pins the connection to it.
+    options: { resolveDNSHost },
     // Required for Baileys 7.x: without this, incoming messages that need
     // E2EE session re-establishment are silently dropped (msg.message === null)
     getMessage: async (key) => {

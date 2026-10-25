@@ -141,3 +141,41 @@ def test_adoption_of_real_checkout_records_full_identity(tmp_path, monkeypatch):
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, env=git_env,
                           check=True, capture_output=True, text=True).stdout.strip()
     assert stamp["commit"] == head
+
+
+def test_profile_home_still_adopts_the_install_root_checkout(blessed_checkout, monkeypatch):
+    """No installer ever creates ``profiles/<name>/hermes-agent``: the blessed table is the
+    INSTALL root's, so a profile-scoped ``HERMES_HOME`` must not hide a shipped checkout and
+    leave it stampless (``hermes update`` then refuses the install)."""
+    profile = blessed_checkout.parent / "profiles" / "homelab-delegator"
+    profile.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+
+    assert step_adopt_blessed_checkout().get("adopted") == str(blessed_checkout)
+
+
+def test_custom_root_home_keeps_its_own_blessed_checkout(tmp_path, monkeypatch):
+    """An explicit non-``~/.hermes`` root is the root: its own ``hermes-agent`` stays blessed."""
+    root = tmp_path / "opt" / "data"
+    checkout = root / "hermes-agent"
+    (checkout / ".git").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("HERMES_INSTALL_ROOT", str(checkout))
+
+    assert step_adopt_blessed_checkout().get("adopted") == str(checkout)
+
+
+def test_unset_home_under_a_sticky_profile_adopts_the_install_root(blessed_checkout, monkeypatch):
+    """This step runs in the pre-profile bootstrap phase (``prepare_launch``), before the CLI
+    re-homes, so with ``HERMES_HOME`` unset the blessed table must come from the install root and
+    not from ``get_hermes_home()``'s sticky-``active_profile`` fallback. That the whole bootstrap
+    stays silent is pinned end-to-end by tests/hermes_cli/test_cli_profile_home_invariant.py."""
+    import hermes_constants
+
+    home = blessed_checkout.parent
+    (home / "active_profile").write_text("homelab-delegator\n", encoding="utf-8")
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setattr("hermes_constants._get_platform_default_hermes_home", lambda: home)
+    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
+
+    assert step_adopt_blessed_checkout().get("adopted") == str(blessed_checkout)

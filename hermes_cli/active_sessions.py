@@ -12,12 +12,13 @@ import logging
 import collections
 import math
 import os
+import re
 import time
 import uuid
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from hermes_constants import get_default_hermes_root, get_hermes_home, named_profile_is_live
 from utils import atomic_json_write
@@ -117,6 +118,59 @@ SESSION_COORDINATION_UNAVAILABLE = "SESSION_COORDINATION_UNAVAILABLE"
 PER_SESSION_EXCLUSIVE_SUBMIT = True
 
 
+# ── Desktop app-instance identity ─────────────────────────────────────────────
+# One Desktop app instance (one Electron installation) is named by the 32-hex
+# ``ownershipId`` its backend already carries on the argv:
+# ``--ssh-session-token-file <home>/.hermes/desktop-ssh/<ownershipId>/<nonce>.token``.
+# Leases record it so a NEW backend of the SAME Desktop instance can take over a chat its
+# predecessor still leases — the Desktop dials a fresh ``serve --isolated`` child per
+# connection, so a reconnect is always a different pid. A different Desktop instance, a
+# foreign pid, another profile or a holder that still has a live client keeps refusing.
+_DESKTOP_INSTANCE_ID: str = ""
+_DESKTOP_INSTANCE_ID_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def set_desktop_instance_id(value: Any) -> bool:
+    """Record this process's Desktop app-instance identity; False when it is not 32 lowercase hex.
+
+    Called once at backend startup (``hermes_cli.web_server.start_server``), derived from the
+    ``desktop-ssh/<ownershipId>/`` token path the Desktop already passes to its backend — the
+    identity is a startup argument, never a new environment variable.
+    """
+    global _DESKTOP_INSTANCE_ID
+    candidate = str(value or "").strip().lower()
+    if not candidate:
+        return False
+    if not _DESKTOP_INSTANCE_ID_RE.fullmatch(candidate):
+        logger.warning("Ignoring invalid Desktop instance identity (%d chars)", len(candidate))
+        return False
+    _DESKTOP_INSTANCE_ID = candidate
+    return True
+
+
+def desktop_instance_id() -> str:
+    """This process's Desktop app-instance identity, or "" when it is not a Desktop backend."""
+    return _DESKTOP_INSTANCE_ID
+
+
+# Name of the lease-metadata key that records the Desktop instance above, and of the key a
+# Desktop backend keeps current to say whether it still holds a LIVE client transport for the
+# chat. Both are additive metadata: existing consumers read ``live_session_id`` and ignore
+# anything else.
+DESKTOP_INSTANCE_METADATA_KEY = "desktop_instance_id"
+CLIENT_ATTACHED_METADATA_KEY = "client_attached"
+
+
+def lease_client_attached(entry: dict[str, Any]) -> Optional[bool]:
+    """``metadata.client_attached`` of a lease entry, or None when the holder never said.
+
+    None is deliberately NOT False: only an explicit "my client is gone" may authorise a
+    same-Desktop handoff (see ``try_acquire_active_session``'s ``supersede`` predicate).
+    """
+    value = (entry.get("metadata") or {}).get(CLIENT_ATTACHED_METADATA_KEY)
+    return value if isinstance(value, bool) else None
+
+
 class ActiveSessionRefusal(str):
     """Refusal message (a ``str``, so callers are untouched) with a machine-readable ``reason``."""
 
@@ -148,12 +202,34 @@ def _is_same_writer(entry: dict[str, Any], metadata: Optional[dict[str, Any]]) -
     return bool(existing_live and incoming_live) and existing_live == incoming_live
 
 
+def _supersede_holder(predicate, entry: dict[str, Any]) -> bool:
+    """Consult a caller-supplied supersede predicate; a raising one never grants a takeover."""
+    try:
+        return bool(predicate(entry))
+    except Exception:
+        logger.debug("Supersede predicate failed; refusing the takeover", exc_info=True)
+        return False
+
+
 def session_owner_details(session_id: str, entry: dict[str, Any]) -> str:
-    """The ``Details:`` line shared by every owner-refusal message."""
+    """The ``Details:`` line shared by every owner-refusal message.
+
+    Two things make a holder actionable in a bug report, and neither was in this line: its pid
+    (nothing else names the process, so the holder cannot be found in a log or with ``ps``) and a
+    correct reading of ``started_at``. That field is written when the entry is BUILT -- the claim --
+    so a re-claim resets it: one stored session was reported as "opened by desktop 26m ago" and then
+    as "opened by desktop 1h30m ago" within two hours, and both readings sent triage looking for a
+    chat of that age instead of at the lease that was refusing.
+
+    ``surface`` stays as the registry's own label. Several legitimate holders can record the same
+    one, so it is not an identity by itself; the pid is.
+    """
     surface = str(entry.get("surface") or "another surface")
+    pid = _registry_pid(entry.get("pid"))
+    holder = f"{surface} pid {pid}" if pid > 0 else surface
     started = _optional_float(entry.get("started_at"))
-    age = f" {format_age(time.time() - started)} ago" if started else ""
-    return f"Details: session {session_id} opened by {surface}{age}."
+    age = f" for {format_age(time.time() - started)}" if started else ""
+    return f"Details: session {session_id} is held by {holder}{age}."
 
 
 def session_already_owned_message(session_id: str, entry: dict[str, Any]) -> str:
@@ -482,6 +558,7 @@ def _lease_entry(
 def try_acquire_active_session(
     *, session_id: str, surface: str, config: Any, metadata: Optional[dict[str, Any]] = None,
     registry_home: str | Path | None = None, track_liveness: bool = False,
+    supersede: Optional[Callable[[dict[str, Any]], bool]] = None,
 ) -> tuple[Optional[ActiveSessionLease], Optional[str]]:
     """Acquire an active-session slot: ``(lease, None)`` or ``(None, ActiveSessionRefusal)``.
 
@@ -489,6 +566,15 @@ def try_acquire_active_session(
     owner per stored session); ``max_concurrent_sessions`` is resource POLICY, applied
     only when configured. ``registry_home`` lets profile-scoped backends share the owning
     profile's registry. Ownership uncertainty fails CLOSED (SESSION_COORDINATION_UNAVAILABLE).
+
+    ``supersede`` is an optional predicate over the CURRENT holder's registry entry; when it
+    returns True the holder's entry is REPLACED by this caller's (new lease id, this pid)
+    instead of refusing. It is how a Desktop backend re-dials a chat its own predecessor still
+    leases (see ``tui_gateway.session_lifecycle._same_desktop_holder_may_be_superseded``); the
+    decision is made under the same file lock that just proved the holder alive, so it can
+    never forget a live owner. The fresh lease id matters: the superseded runtime still holds
+    its old token and releases it on its own finalize, and a release must never drop a lease
+    that runtime no longer owns.
 
     Liveness tracking keeps richer desktop lifecycle semantics; ``registry_home`` lets profile-scoped
     backends share the owning profile's registry even when launched from another home. See #94595.
@@ -554,6 +640,18 @@ def try_acquire_active_session(
                     entries[index] = entry
                     _write_entries(state_path, entries)
                     return lease, None
+                # Same-Desktop-instance handoff (see the ``supersede`` contract above): the
+                # predicate ran against the entry the holder itself wrote, and the entry was
+                # just proven live by ``_prune_dead`` — so this replaces a live owner, never
+                # an unprovable one.
+                if supersede is not None and _supersede_holder(supersede, existing):
+                    entries[index] = entry
+                    _write_entries(state_path, entries)
+                    logger.info(
+                        "Took over active session %s from pid=%s surface=%s (superseded holder)",
+                        key, existing.get("pid"), existing.get("surface"),
+                    )
+                    return lease, None
                 return refuse(
                     session_already_owned_message(key, existing), SESSION_NOT_OWNED,
                     "Refused active session %s: already held by pid=%s surface=%s",
@@ -572,6 +670,77 @@ def try_acquire_active_session(
         _write_entries(state_path, entries)
 
     return lease, None
+
+
+def mark_active_session_client_attachment(lease: ActiveSessionLease, *, attached: bool) -> bool:
+    """Publish whether ``lease``'s runtime still holds a LIVE client transport for its chat.
+
+    A peer runtime of the same Desktop instance may take the lease over only while the holder has
+    no client for the chat (``tui_gateway.session_lifecycle._same_desktop_holder_may_be_superseded``),
+    and only the holder can answer that — so the holder keeps the answer in its own registry entry.
+    Returns True when the entry was found and rewritten; False when it is gone (the lease was
+    superseded, or already released) or the registry could not be read.
+    """
+    if lease is None or lease.released or not lease.enabled:
+        return False
+    state_path, lock_path = _lease_paths(lease)
+    try:
+        with _FileLock(lock_path):
+            loaded = _read_live_entries(
+                state_path, track_liveness=lease.track_liveness,
+                warn="Active-session registry is unavailable; keeping the previous "
+                     "client-attachment marker",
+                target_session_id=lease.session_id,
+            )
+            if loaded is None:
+                return False
+            entries = loaded[1]
+            own = next((e for e in entries if str(e.get("lease_id") or "") == lease.lease_id), None)
+            if own is None:
+                return False
+            metadata = dict(own.get("metadata") or {})
+            metadata[CLIENT_ATTACHED_METADATA_KEY] = bool(attached)
+            own["metadata"] = _clean_metadata(metadata)
+            own["updated_at"] = time.time()
+            _write_entries(state_path, entries)
+            return True
+    except Exception:
+        logger.debug("Failed to record client attachment for lease %s", lease.lease_id, exc_info=True)
+        return False
+
+
+def active_session_lease_is_current(lease: ActiveSessionLease) -> Optional[bool]:
+    """Whether ``lease`` is still the registry's entry for its session, or None when unprovable.
+
+    The lease id IS the ownership token: a superseding claim (``try_acquire_active_session``'s
+    ``supersede``) replaces the entry under a NEW id, and a same-process handoff
+    (``transfer_active_session``) deliberately keeps the id while the stored session id rotates —
+    so membership of the lease id, never of the session id or the surface, answers "is this token
+    still mine". A caller that cannot get an answer must fail CLOSED: serving a turn under a token
+    the registry no longer holds is the second writer the fence exists to prevent.
+
+    Read-only by construction: the row of whoever holds the session now is left exactly as it is.
+    The read is TARGETED at ``lease.session_id`` for the same reason the claim path's is (#113683):
+    an unrelated entry whose liveness cannot be judged must not turn this into "unprovable". It runs
+    against the lease's OWN registry (``_lease_paths``), like every other operation on this token —
+    that registry can be pinned to a different home than the caller's profile (#85431).
+    """
+    state_path, lock_path = _lease_paths(lease)
+    try:
+        with _FileLock(lock_path):
+            loaded = _read_live_entries(
+                state_path, track_liveness=lease.track_liveness,
+                warn="Active-session registry is unavailable; cannot verify a cached lease",
+                target_session_id=lease.session_id,
+            )
+    except Exception:
+        logger.debug("Active-session registry unreadable while verifying lease %s",
+                     lease.lease_id, exc_info=True)
+        return None
+    if loaded is None:
+        return None
+    lease_id = str(lease.lease_id)
+    return any(str(entry.get("lease_id") or "") == lease_id for entry in loaded[1])
 
 
 def release_active_session(lease: ActiveSessionLease) -> None:

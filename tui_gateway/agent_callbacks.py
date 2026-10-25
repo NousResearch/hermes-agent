@@ -138,6 +138,54 @@ def _emit_reasoning_delta(sid: str, text: str) -> None:
     _emit("reasoning.delta", sid, {"text": text, **({"verbose": True} if _session_verbose(sid) else {})})
 
 
+# Callbacks that fire only while a turn is really doing something. The cross-client lease handoff
+# reads their progress to separate a long turn from a wedged one, so they are its only heartbeat.
+_PROGRESS_CALLBACK_NAMES = (
+    "tool_start_callback", "tool_complete_callback", "tool_progress_callback", "tool_gen_callback",
+    "thinking_callback", "reasoning_callback", "status_callback",
+)
+
+
+def _touch_turn_progress(sid: str) -> None:
+    """Refresh the chat's durable turn marker from real progress. Best effort by contract.
+
+    A failure only costs the handoff its evidence, which reads as "unknown" and refuses a takeover,
+    so this can never turn a heartbeat problem into a lease problem.
+    """
+    try:
+        # This module's functions are rebound into server's globals, but the heartbeat is a plain
+        # module-level function: read the registry from its owner rather than rely on that rebind.
+        from tui_gateway.server import _sessions
+        session = _sessions.get(sid)
+        if not session:
+            return
+        key = session.get("_active_turn_marker_key")
+        if not key:
+            return
+        # Scope the refresh to this turn's immutable marker token: a superseded runtime's turn is still
+        # emitting progress events, but it must not refresh (or revive) the NEWER owner's marker for the
+        # same stored session key. Falling back to the process identity (no token) can only refresh a
+        # marker this very process wrote.
+        token = session.get("_active_turn_marker_token")
+        # ``_session_home`` lives in a module whose bodies are rebound onto server's globals, so it
+        # is not callable from here; resolve the same value explicitly (profile home first).
+        from hermes_constants import get_hermes_home
+        from tui_gateway.turn_marker import touch_turn_marker
+        touch_turn_marker(session.get("profile_home") or get_hermes_home(), str(key),
+                          identity={"turn_token": str(token)} if token else None)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).debug("turn progress heartbeat failed sid=%s", sid, exc_info=True)
+
+
+def _with_progress_heartbeat(sid: str, callback):
+    def wrapped(*args, **kwargs):
+        _touch_turn_progress(sid)
+        return callback(*args, **kwargs)
+
+    return wrapped
+
+
 def _agent_cbs(sid: str) -> dict:
     # Late import: bind_module rebinds this function to server.py's globals and skips plain imports.
     from tui_gateway.theme_bridge import theme_request
@@ -188,8 +236,12 @@ def _agent_cbs(sid: str) -> dict:
     if _load_interim_assistant_messages():
         callbacks["interim_assistant_callback"] = lambda text, *, already_streamed=False: _emit(
             "message.interim", sid, {"text": str(text), "already_streamed": bool(already_streamed)})
-    return callbacks
 
+    for _name in _PROGRESS_CALLBACK_NAMES:
+        _cb = callbacks.get(_name)
+        if callable(_cb):
+            callbacks[_name] = _with_progress_heartbeat(sid, _cb)
+    return callbacks
 
 def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
     """Intentional workspace move from the project_* tools: re-anchor the live session's cwd

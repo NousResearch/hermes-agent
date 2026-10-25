@@ -134,6 +134,47 @@ describe("createPtyCompositionForwarder", () => {
   });
 });
 
+describe("composition ended by a real key (#125517 family)", () => {
+  afterEach(() => vi.useRealTimers());
+
+  // SwiftKey ends a word with a real Enter: xterm finalizes the composition
+  // from the keydown and sends the word, then "\r". The compositionend that
+  // follows must not re-arm the fallback just because "\r" trails the word.
+  it("does not re-send a composition xterm already finalized before Enter", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.noteTerminalData("hello");
+    forwarder.noteTerminalData("\r");
+    forwarder.onCompositionEnd("hello");
+    vi.runAllTimers();
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  // A real space key during composition makes xterm send the word twice:
+  // once from the keydown ("hello"), once from compositionend reading the
+  // textarea tail ("hello "). Only the space is new.
+  it("forwards only what xterm appended when it finalizes a composition twice", () => {
+    vi.useFakeTimers();
+    const forwarder = createPtyCompositionForwarder(vi.fn());
+
+    expect(forwarder.filterTerminalData("hello")).toBe("hello");
+    expect(forwarder.filterTerminalData("hello ")).toBe(" ");
+    expect(forwarder.filterTerminalData("hello.")).toBe("hello.");
+  });
+
+  it("keeps a genuine repeat that arrives outside the echo window", () => {
+    vi.useFakeTimers();
+    const forwarder = createPtyCompositionForwarder(vi.fn());
+
+    expect(forwarder.filterTerminalData("hello")).toBe("hello");
+    vi.advanceTimersByTime(100);
+    expect(forwarder.filterTerminalData("hello ")).toBe("hello ");
+  });
+});
+
 describe("mobile IME double-send dedup (#115505)", () => {
   afterEach(() => vi.useRealTimers());
 

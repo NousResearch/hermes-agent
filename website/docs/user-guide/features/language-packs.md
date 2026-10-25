@@ -14,6 +14,12 @@ existing one — for the Python side (CLI approval prompts, gateway replies, too
 What a pack translates is the **static UI text**. Agent responses, tool output, logs and slash-command
 *names* stay as they are; to make the agent itself answer in another language, say so in your prompt.
 
+Agent retry, fallback and compression notices, and the explanations of a failed turn, use the same
+catalogs. The gateway and CLI translate them when displaying them. Status filters, logs and stored
+failure metadata keep the bundled English source, even when an English pack or overlay customizes
+the wording. Persisted failed-turn boundary markers also remain in English because they identify
+transcript structure. TUI and Desktop status events retain English for their client-side matchers.
+
 ## Where languages come from
 
 When Hermes looks up a string it walks these layers, top first, and takes the first hit:

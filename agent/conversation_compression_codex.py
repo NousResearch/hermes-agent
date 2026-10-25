@@ -110,7 +110,8 @@ def _compress_context_via_codex_app_server(
         agent._codex_session = None
     if failed:
         with contextlib.suppress(Exception):
-            agent._emit_warning(f"⚠ Codex app-server compaction failed: {result.error}")
+            from agent.i18n import tl
+            agent._emit_warning(tl("display.status.compress.codex_failed", error=result.error))
         # The transcript is returned unchanged, so the session is still over
         # threshold. Without a brake the next turn retries immediately.
         _record_codex_compaction_failure(agent, str(getattr(result, "error", None) or "compaction interrupted"))

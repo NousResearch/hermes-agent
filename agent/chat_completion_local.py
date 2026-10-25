@@ -14,6 +14,7 @@ import urllib.request
 from typing import Optional
 from urllib.parse import urlparse, urlsplit
 
+from agent.i18n import tl
 from utils import env_int
 
 logger = logging.getLogger(__name__)
@@ -85,17 +86,16 @@ def _managed_local_load_notice(agent, api_kwargs: dict) -> Optional[str]:
         model = str(api_kwargs.get("model", ""))
         progress = get_loading_progress().get(model)
         if progress is not None:
-            return (f"⏳ loading {model} into memory — {progress['percent']}% "
-                "(responses start once the model is loaded)")
+            return tl("display.wait.local_loading", model=model, percent=progress["percent"])
         prefill = get_prefill_progress(model)
         if prefill is None:
             return None
         processed = int(prefill["processed"])
         total = estimate_request_context_tokens(api_kwargs)
         if total and total >= processed:
-            return f"⚙ processing prompt — {max(0, min(100, round(processed / total * 100)))}%"
+            return tl("display.wait.local_prefill", percent=max(0, min(100, round(processed / total * 100))))
         # Counter past the estimate (estimator undercounted): no honest denominator, label-only.
-        return "⚙ processing prompt"
+        return tl("display.wait.local_prefill_unknown")
     except Exception:
         # A status line must never break the stream it describes.
         logger.debug("local load notice unavailable", exc_info=True)

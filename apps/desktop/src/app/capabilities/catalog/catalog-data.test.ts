@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { fetchCatalog, parseCatalog } from './catalog-data'
+import { clawhubLockLookupIds, fetchCatalog, parseCatalog } from './catalog-data'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -54,6 +54,20 @@ describe('public catalog data', () => {
 
     expect(entry.identifier).toBe('apple-design')
     expect(entry.installIdentifier).toBe('clawhub/apple-design')
+  })
+
+  it('treats a ClawHub lock id as the card install id', () => {
+    expect(clawhubLockLookupIds('@tmstudio667-commits/agent-git-oracle', 'clawhub')).toEqual([
+      '@tmstudio667-commits/agent-git-oracle',
+      'clawhub/agent-git-oracle'
+    ])
+    expect(clawhubLockLookupIds('agent-git-oracle', 'clawhub')).toEqual([
+      'agent-git-oracle',
+      'clawhub/agent-git-oracle'
+    ])
+    expect(clawhubLockLookupIds('skills-sh/browserbase/skills/browser', 'skills.sh')).toEqual([
+      'skills-sh/browserbase/skills/browser'
+    ])
   })
 
   it('keeps each plugin tier, pinned install target, and published detail metadata together', () => {

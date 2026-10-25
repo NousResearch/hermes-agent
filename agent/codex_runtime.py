@@ -865,6 +865,9 @@ class _CodexResponseAssembler:
 
     def __init__(self, *, model, on_text_delta, on_reasoning_delta, on_commentary_message, on_first_delta):
         self.model, self.on_text_delta, self.on_reasoning_delta = model, on_text_delta, on_reasoning_delta
+        # The compatibility .model field is requested, not runtime evidence.
+        # Preserve the terminal wire model separately; missing means unknown.
+        self.observed_model: str | None = None
         self.on_commentary_message, self.on_first_delta = on_commentary_message, on_first_delta
         self.output_items: list[Any] = []
         # output_index / first-observed sequence per output item, in lockstep, so settled pending calls merge
@@ -1021,6 +1024,8 @@ class _CodexResponseAssembler:
         if resp_obj is not None:
             self.terminal_usage, self.terminal_response_id = _event_field(resp_obj, "usage"), _event_field(resp_obj, "id")
             self.terminal_service_tier = _event_field(resp_obj, "service_tier")
+            wire_model = _event_field(resp_obj, "model")
+            self.observed_model = wire_model if isinstance(wire_model, str) and wire_model.strip() else None
             rstatus = _event_field(resp_obj, "status")
             if isinstance(rstatus, str):
                 self.terminal_status = rstatus
@@ -1085,7 +1090,8 @@ class _CodexResponseAssembler:
             raise RuntimeError("Codex Responses stream did not emit a terminal response")
         return SimpleNamespace(
             output=output, output_text="".join(self.text_deltas), usage=self.terminal_usage, status=self.terminal_status,
-            id=self.terminal_response_id, model=self.model, incomplete_details=self.terminal_incomplete_details,
+            id=self.terminal_response_id, model=self.model, observed_model=self.observed_model,
+            incomplete_details=self.terminal_incomplete_details,
             error=self.terminal_error, service_tier=self.terminal_service_tier)
 
 

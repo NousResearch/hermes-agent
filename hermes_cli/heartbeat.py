@@ -197,10 +197,11 @@ class HeartbeatManager:
     def _set_status(self, status: str, *, reanchor: bool = False) -> Optional[HeartbeatState]:
         if not self._state:
             return None
-        self._state.status = status
-        if reanchor:
-            self._state.last_fired_at = time.time()
-        save_heartbeat(self.session_id, self._state)
+        with _CLAIM_LOCK:  # a stop landing inside a claim's reread-then-write would be overwritten by it
+            self._state.status = status
+            if reanchor:
+                self._state.last_fired_at = time.time()
+            save_heartbeat(self.session_id, self._state)
         return self._state
 
     def pause(self) -> Optional[HeartbeatState]:

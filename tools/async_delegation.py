@@ -304,6 +304,11 @@ def recover_abandoned_delegations() -> int:
                 error = (f"Delegation owner exited before the unit finished; {done}/{len(recovered_results)} child "
                          "results were recorded and are included below, the rest are unknown.")
             diagnostics = {"last_known_status": last_state, "task_transcripts": task.get("task_transcripts") or {}}
+            # The tasks a re-dispatch must re-run: every recovered result still unknown, or the whole unit.
+            goals = task.get("goals") or ([task["goal"]] if task.get("goal") else [])
+            indexes = ([r["task_index"] for r in recovered_results if r.get("status") == "unknown"]
+                       if recovered_results else task.get("task_indexes") or list(range(len(goals))))
+            diagnostics["unfinished_tasks"] = [{"task_index": i, "goal": goals[i]} for i in indexes if i < len(goals)]
             # Verbatim transcript tails + a git snapshot of the owner's cwd, so the parent can
             # continue or re-dispatch from the event alone instead of opening files (#116000).
             from tools.async_delegation_recovery_hints import git_state_hint, transcript_tails

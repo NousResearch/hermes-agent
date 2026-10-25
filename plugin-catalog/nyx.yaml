@@ -1,0 +1,18 @@
+name: nyx
+repo: https://github.com/sixgodgit/nyx
+sha: b7418cc82587ff20c13c48783e04d57f00136e97
+subdir: hermes-plugin
+description: "Nyx: local, single-user long-term memory with no LLM on the write path. Every turn is logged verbatim and indexed (SQLite FTS5, optional embeddings); on top of that log Nyx keeps bi-temporal facts (what is true now, and what you believed on a given day), source trust (tool, delegation and bot output never becomes a fact about you), two-stage forgetting with a restorable quarantine, and secrets filtering before anything is stored, with an optional encrypted vault that hands a pasted key back to its owner only after human approval. Disclosure — memory is stored locally in ~/.neurobase (configurable); no network calls by default. Opt-in only: a configured embedding API receives memory text and queries; l3_llm sends profile, scene and recent-decision snippets to DeepSeek or OpenRouter; LLM extraction sends the sentence being extracted to an OpenAI-compatible endpoint you set (default 127.0.0.1). Keys are read through get_secret. The optional vault stores secrets encrypted (AES-256-GCM) with a master key in ~/.config/nyx/vault.key, or optionally in the OS keychain under Nyx's own service name; revealing one asks for approval through Hermes and is refused under cron and subagents. Adds a hermes nyx CLI (vault, doctor, scrub, repair, status). A separate opt-in companion plugin shipped in the same package, nyx-reveal, registers one transform_llm_output hook."
+maintainer: sixgodgit
+tier: community
+category: memory
+requires_hermes: ">=0.21.4"
+version: "7.15.3"
+docs_url: https://github.com/sixgodgit/nyx/tree/b7418cc82587ff20c13c48783e04d57f00136e97/hermes-plugin
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

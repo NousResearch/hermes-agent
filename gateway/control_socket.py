@@ -2,7 +2,7 @@
 versioned JSON verbs (``identify``, ``status``). A connectable socket with a well-formed ``identify``
 answer IS liveness — no PID-reuse heuristics. Never a TCP port: filesystem/pipe ACLs are the auth
 boundary. POSIX: ``$HERMES_HOME/gateway.sock`` (or a temp-dir socket + ``gateway.sock.path`` pointer
-file when the home path exceeds ``sun_path``); Windows: named pipe ``\\\\.\\pipe\\hermes-gateway-<hash>``.
+file when the home path exceeds ``sun_path`` or its filesystem refuses sockets); Windows: named pipe ``\\\\.\\pipe\\hermes-gateway-<hash>``.
 Wire contract: ONE request per connection — one JSON line in, one out, then the server closes.
 Consumers PREFER the socket and fall back to the state-file/scan layer when it doesn't answer.
 """
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import hashlib
 import inspect
 import json
@@ -35,6 +36,10 @@ _MAX_UNIX_PATH = 100  # sun_path limit is 104 on macOS/BSD, 108 on Linux; margin
 _MAX_REQUEST_BYTES = 64 * 1024
 _MAX_RESPONSE_BYTES = 512 * 1024
 _DEFAULT_CLIENT_TIMEOUT = 2.0
+# What a filesystem that cannot host an AF_UNIX node answers: a Docker Desktop (virtiofs) bind mount
+# refuses the socket, and an inode a previous container left there can be neither stat'ed nor
+# removed from inside (#123761). Not EADDRINUSE: a live sibling must keep failing loudly.
+_SOCKET_UNSUPPORTED_ERRNOS = frozenset({errno.EOPNOTSUPP, errno.ENOTSUP})
 
 
 def _home_hash(home: Path) -> str:
@@ -117,8 +122,9 @@ def resolve_server_socket_path(home: Path) -> tuple[Path, Optional[Path]]:
 def resolve_client_socket_path(home: Path) -> Optional[Path]:
     """Where a client should connect for ``home``, or None when nothing exists."""
     direct = Path(home) / _SOCKET_FILENAME
-    if direct.exists():
-        return direct
+    with contextlib.suppress(OSError):  # an un-stat-able stale inode (#123761) is absent, not an error
+        if direct.exists():
+            return direct
     with contextlib.suppress(OSError):
         pointer = Path(home) / _POINTER_FILENAME
         target = pointer.read_text(encoding="utf-8-sig").strip() if pointer.is_file() else ""
@@ -195,8 +201,8 @@ def build_status_payload() -> dict[str, Any]:
 
 class GatewayControlServer:
     """Gateway-owned control socket server (identify/status, v1): ``start()`` after the PID-file claim,
-    ``stop()`` on shutdown. All failures are non-fatal — the gateway never refuses to serve messaging
-    because its control socket couldn't bind; consumers fall back to the scan layer."""
+    ``stop()`` on shutdown. ``start()`` reports a bind failure as False and the gateway bootstrap
+    treats that as fatal: local clients attach only with tickets minted on this listener."""
 
     def __init__(self, home: Optional[Path] = None, *,
                  verb_handlers: Optional[dict[str, Callable[..., dict[str, Any]]]] = None) -> None:
@@ -223,11 +229,37 @@ class GatewayControlServer:
             return await (self._start_windows() if _IS_WINDOWS else self._start_posix())
         except Exception as exc:
             await self.stop()
-            logger.warning("Gateway control socket failed to start (non-fatal): %s", exc)
+            logger.warning("Gateway control socket failed to start: %s", exc)
             return False
 
     async def _start_posix(self) -> bool:
         bind_path, pointer_file = resolve_server_socket_path(self._home)
+        try:
+            bind_path = await self._bind_posix(bind_path, pointer_file)
+        except OSError as exc:
+            # A home that fits sun_path can still refuse the socket (Docker Desktop bind mounts,
+            # #123761): listen on the same private temp-dir socket + pointer an over-long home uses.
+            if pointer_file is not None or exc.errno not in _SOCKET_UNSUPPORTED_ERRNOS:
+                raise
+            logger.warning("Control socket cannot be created in %s (%s); listening in a private temp directory",
+                           self._home, exc.strerror or exc)
+            pointer_file = Path(self._home) / _POINTER_FILENAME
+            bind_path = await self._bind_posix(_fallback_socket_path(self._home), pointer_file)
+        self._bind_path = bind_path
+        info = bind_path.lstat()
+        self._file_identities[bind_path] = (info.st_dev, info.st_ino)
+        if pointer_file is not None:
+            _publish_pointer(pointer_file, bind_path)
+            self._pointer_file = pointer_file
+        for path in filter(None, (self._bind_path, self._pointer_file)):
+            info = path.lstat()
+            self._file_identities[path] = (info.st_dev, info.st_ino)
+        logger.info("Gateway control socket listening at %s", bind_path)
+        return True
+
+    async def _bind_posix(self, bind_path: Path, pointer_file: Optional[Path]) -> Path:
+        """Bind the listener at ``bind_path`` (moved to a squat-proof root when its shared-temp
+        directory is not private) and return where it actually listens."""
         if pointer_file is not None:
             with contextlib.suppress(FileExistsError):
                 bind_path.parent.mkdir(mode=0o700)
@@ -253,17 +285,7 @@ class GatewayControlServer:
             os.umask(old_umask)
         with contextlib.suppress(OSError):
             os.chmod(bind_path, 0o600)
-        self._bind_path = bind_path
-        info = bind_path.lstat()
-        self._file_identities[bind_path] = (info.st_dev, info.st_ino)
-        if pointer_file is not None:
-            _publish_pointer(pointer_file, bind_path)
-            self._pointer_file = pointer_file
-        for path in filter(None, (self._bind_path, self._pointer_file)):
-            info = path.lstat()
-            self._file_identities[path] = (info.st_dev, info.st_ino)
-        logger.info("Gateway control socket listening at %s", bind_path)
-        return True
+        return bind_path
 
     async def _start_windows(self) -> bool:
         from gateway.runtime_bootstrap_windows import NativeControlServer

@@ -47,6 +47,24 @@ def attempt_action(kind: str, task: Mapping[str, Any]) -> dict[str, Any]:
             "execution_generation": task["execution_generation"]}
 
 
+def _discussion_limits(root: Path) -> discussion.DiscussionLimits:
+    """Read the room owner's config, never the current member's profile scope."""
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.config import load_config
+
+    with _profile_runtime_scope(root, hydrate_secrets=False):
+        config = load_config()
+    rooms = config.get("hosted_rooms", {})
+    if not isinstance(rooms, Mapping):
+        raise discussion.DiscussionValidationError("hosted_rooms must be a mapping")
+    settings = rooms.get("discussion", {})
+    if not isinstance(settings, Mapping):
+        raise discussion.DiscussionValidationError("hosted_rooms.discussion must be a mapping")
+    return discussion.DiscussionLimits(
+        max_rounds=settings.get("max_rounds", discussion.MAX_DISCUSSION_ROUNDS),
+        max_messages=settings.get("max_messages", discussion.MAX_DISCUSSION_MESSAGES))
+
+
 def _hosted_room_turn_timeout_seconds() -> float:
     try:
         agent_timeout = float(os.getenv("HERMES_AGENT_TIMEOUT", "1800"))
@@ -79,10 +97,13 @@ class HostedRoomService:
         peer_routes: Mapping[tuple[str, str], PeerMemberRoute] | None = None,
         peer_clients: Mapping[Any, HostedRoomPeerClient] | None = None) -> None:
         self.server, self.db_path = server, Path(db_path or hosted_rooms.default_db_path())
+        self.discussion_limits = _discussion_limits(self.root)
         hosted_rooms.prune_disbanded_rooms(self.db_path)
         self._policy_lock = threading.RLock()
         self._pending_actions: dict[tuple[str, str], dict[str, Any]] = {}
-        self.policy_checkpoint = HostedRoomPolicyCheckpoint(self.db_path)
+        self.policy_checkpoint = HostedRoomPolicyCheckpoint(
+            self.db_path,
+            max_active_events=1 + 2 * discussion.MAX_DISCUSSION_MEMBERS * self.discussion_limits.max_rounds)
         self.rpc = self._make_rpc(server)
         self._link_load_error = None
         self._peer_route_status: dict[tuple[str, str], str] = {}
@@ -452,7 +473,7 @@ class HostedRoomService:
                 return
             decision = discussion.plan_next_task(
                 room, list(snapshot.events), local_profiles=self.room_profiles(room),
-                initial_watermarks=snapshot.watermarks, freeze_input_context=True)
+                initial_watermarks=snapshot.watermarks, freeze_input_context=True, limits=self.discussion_limits)
             if decision.status == "task" and decision.task is not None:
                 existing = driver.get_task_for_turn(self.db_path, decision.task.identity)
                 legacy_payload = dict(decision.task.payload)

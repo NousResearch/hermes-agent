@@ -2689,6 +2689,33 @@ group_sessions_per_user: true  # true = per-user isolation in groups/channels, f
 
 For the behavior details and examples, see [Sessions](./sessions.md) and the [Discord guide](./messaging/discord.md).
 
+## Native Hosted-Room Discussion Limits
+
+Native server-hosted rooms share these Discussion ceilings across all members
+within each discussion. They apply to all native hosted rooms owned by the service,
+not Desktop renderer-driven or mirrored rooms.
+
+```yaml
+hosted_rooms:
+  discussion:
+    max_rounds: 3      # Default maximum scheduling rounds per discussion
+    max_messages: 10   # Default total visible bot replies across all members
+```
+
+Both keys are optional; omitted keys retain the backward-compatible defaults of
+3 rounds and 10 replies. Values must be positive integers: `0`, negative values,
+`null`, booleans, strings (including quoted numbers or `"unlimited"`), and floats
+are not accepted. For example, set `max_rounds: 6` and `max_messages: 30` for a
+larger, still bounded discussion budget.
+
+Set these keys in the root owner's `config.yaml` alongside `shared-state.db`, not
+in an individual room member's profile configuration. Each server process reads
+them once at startup. Refresh every participating process sharing that room
+database, not just the service the client connects to, after changing them.
+
+These are ceilings, not targets or a guarantee of task completion. Discussions
+can settle early, and Stop and approval gates remain in effect.
+
 ## Unauthorized DM Behavior
 
 Control what Hermes does when an unknown user sends a direct message:

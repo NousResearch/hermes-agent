@@ -19,7 +19,7 @@ approval:
     approve: "approve,yes,ok,okay,confirm,y"
     deny: "deny,no,reject,cancel,n"
     always: "always,approve always,always approve"
-    session: "session,approve session,session approve"
+    session: "session,approve session,session approve,session approval"
     confirm_once: "approve,approve once,once,yes,ok,confirm"
     confirm_always: "always,always approve,remember"
     confirm_cancel: "cancel,nevermind,no,deny"

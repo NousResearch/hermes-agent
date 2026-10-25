@@ -125,12 +125,43 @@ def test_no_pending_approval_does_not_consume_conversational_yes():
         runner._handle_active_session_busy_message(_make_event("yes"), session_key)
     )
 
-    # No approval existed, so nothing was resolved — the "yes" is treated
-    # as ordinary text, not as a dangerous-command approval (design intent).
-    # (It still flows through normal busy handling, which may send a busy
-    # ack; the contract here is only that no approval was consumed.)
-    from tools.approval import _gateway_queues
-    assert session_key not in _gateway_queues
+@pytest.mark.parametrize(
+    "reply", ["session", "approve session", "session approve", "session approval"]
+)
+def test_plaintext_session_reply_resolves_approval_for_the_session(reply):
+    """#134817: the bare phrase "session approval" must resolve the blocking
+    approval with SESSION scope, exactly like its sibling phrasings."""
+    _clear_approval_state()
+    runner, adapter = _make_runner()
+    session_key, entry = _register_blocking_approval(runner)
+
+    handled = asyncio.run(
+        runner._handle_active_session_busy_message(_make_event(reply), session_key)
+    )
+
+    assert handled is True
+    assert entry.event.is_set()
+    assert entry.result == "session"
+    adapter._send_with_retry.assert_awaited()
     _clear_approval_state()
 
 
+def test_session_approval_without_pending_approval_is_not_consumed():
+    """#134817: "session approval" with NO blocking approval must stay
+    conversational — the phrase routes only while an approval is pending."""
+    _clear_approval_state()
+    runner, adapter = _make_runner()
+    source = _make_source()
+    session_key = runner._session_key_for_source(source)
+    # No approval registered.
+
+    asyncio.run(
+        runner._handle_active_session_busy_message(
+            _make_event("session approval"), session_key
+        )
+    )
+
+    from tools.approval import _gateway_queues
+
+    assert session_key not in _gateway_queues
+    _clear_approval_state()

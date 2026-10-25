@@ -26,6 +26,8 @@ import mimetypes
 import os
 import re
 import secrets
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -68,6 +70,7 @@ DEFAULT_MEDIA_PATH_PREFIX = "/line/media"
 # loopback probes on IPV6_V6ONLY=1 hosts. Pin via ``LINE_HOST`` / ``extra.host``.
 DEFAULT_HOST = None
 _WILDCARD_HOSTS = frozenset({"0.0.0.0", "::", ""})  # LINE can't fetch media from these → public URL required
+_NON_PUBLIC_HOSTS = _WILDCARD_HOSTS | frozenset({"127.0.0.1", "localhost", "::1"})
 DEFAULT_SLOW_RESPONSE_THRESHOLD = 45.0  # seconds; 0 disables the postback button
 # Catalog keys of the default copy (operators override per key via LINE_*_TEXT / extra.*);
 # resolved through ``t()`` in ``__init__``/at send time, never at import.
@@ -364,8 +367,12 @@ _OUTBOUND_MEDIA = {
     "image": (
         LINE_IMAGE_MAX_BYTES, "image exceeds 10 MB LINE limit",
         "LINE_PUBLIC_URL must be set to send images (LINE only accepts publicly reachable HTTPS URLs)"),
-    "audio": (LINE_AV_MAX_BYTES, "audio exceeds 200 MB LINE limit", "LINE_PUBLIC_URL must be set to send audio"),
-    "video": (LINE_AV_MAX_BYTES, "video exceeds 200 MB LINE limit", "LINE_PUBLIC_URL must be set to send video"),
+    "audio": (
+        LINE_AV_MAX_BYTES, "audio exceeds 200 MB LINE limit",
+        "LINE_PUBLIC_URL must be set to send audio (LINE only accepts publicly reachable HTTPS URLs)"),
+    "video": (
+        LINE_AV_MAX_BYTES, "video exceeds 200 MB LINE limit",
+        "LINE_PUBLIC_URL must be set to send video (LINE only accepts publicly reachable HTTPS URLs)"),
 }
 
 # Inbound media kinds → cached file extension.
@@ -373,6 +380,42 @@ _INBOUND_MEDIA_EXT = {"image": ".jpg", "audio": ".m4a", "video": ".mp4", "file":
 _INBOUND_AV_CACHERS = {"audio": cache_audio_from_bytes_async, "video": cache_video_from_bytes_async}
 _LIFECYCLE_EVENTS = frozenset({"follow", "unfollow", "join", "leave"})
 _ENV_SEED_KEYS = (("LINE_PORT", "port", int), ("LINE_HOST", "host", None), ("LINE_PUBLIC_URL", "public_url", None))
+
+
+def _probe_audio_duration_ms(path: Path | str) -> Optional[int]:
+    """Best-effort probe for audio file duration in milliseconds.
+
+    Checks standard library wave parser for .wav files, then ffprobe if installed
+    on PATH. Returns duration in milliseconds (at least 500 ms) or None on failure.
+    """
+    p = Path(path)
+    ext = p.suffix.lower()
+    if ext == ".wav":
+        try:
+            import wave
+            with wave.open(str(p), "rb") as wf:
+                frames = wf.getnframes()
+                rate = wf.getframerate() or 1
+                return max(500, int((frames / float(rate)) * 1000))
+        except Exception:
+            pass
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe:
+        try:
+            out = subprocess.check_output(
+                [
+                    ffprobe, "-v", "error", "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1", str(p),
+                ],
+                text=True, timeout=5, stdin=subprocess.DEVNULL,
+            ).strip()
+            if out:
+                sec = float(out)
+                if sec > 0:
+                    return max(500, int(sec * 1000))
+        except Exception:
+            pass
+    return None
 
 
 class LineAdapter(BasePlatformAdapter):
@@ -764,10 +807,10 @@ class LineAdapter(BasePlatformAdapter):
         return self._media_url(self._register_media(str(path.resolve())), path.name)
 
     def _missing_public_url(self) -> bool:
-        """True when no LINE_PUBLIC_URL is set and the bind host is wildcard/dual-stack ``None``."""
+        """True when no LINE_PUBLIC_URL is set and the bind host is wildcard or non-public loopback."""
         if self.public_base_url or getattr(self, "_shared_ingress_base", None):
             return False
-        return self.webhook_host is None or self.webhook_host in _WILDCARD_HOSTS
+        return self.webhook_host is None or self.webhook_host in _NON_PUBLIC_HOSTS
 
     def _check_media_file(self, kind: str, file_path: str) -> tuple[Optional[Path], Optional[SendResult]]:
         """Shared preflight for send_image_file/send_voice/send_video → ``(path, error)``."""
@@ -834,7 +877,15 @@ class LineAdapter(BasePlatformAdapter):
         path, err = self._check_media_file("audio", audio_path)
         if err:
             return err
-        msg = {"type": "audio", "originalContentUrl": self._serve_file(path), "duration": int(duration_ms)}
+        url = self._serve_file(path)
+        if not url.lower().startswith("https://"):
+            return SendResult(success=False, error=f"LINE audio URL must be HTTPS: {url}")
+        dur = duration_ms
+        if dur <= 1000:
+            probed = _probe_audio_duration_ms(path)
+            if probed is not None:
+                dur = probed
+        msg = {"type": "audio", "originalContentUrl": url, "duration": int(dur)}
         return await self._send_messages(chat_id, [msg])
 
     async def send_video(
@@ -857,7 +908,12 @@ class LineAdapter(BasePlatformAdapter):
             except Exception:
                 _unlink_quietly(tmp.name)
                 raise
-        msg = {"type": "video", "originalContentUrl": self._serve_file(path), "previewImageUrl": preview_url}
+        video_url = self._serve_file(path)
+        if not video_url.lower().startswith("https://"):
+            return SendResult(success=False, error=f"LINE video URL must be HTTPS: {video_url}")
+        if not preview_url.lower().startswith("https://"):
+            return SendResult(success=False, error=f"LINE video preview URL must be HTTPS: {preview_url}")
+        msg = {"type": "video", "originalContentUrl": video_url, "previewImageUrl": preview_url}
         return await self._send_messages(chat_id, [msg])
 
     async def _send_messages(

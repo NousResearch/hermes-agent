@@ -5,7 +5,7 @@ from prompt_toolkit.document import Document
 
 from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, command_desktop_meta, gateway_help_lines, infer_argument_mode, resolve_command
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter
-from hermes_cli.commands_platforms import _CMD_NAME_LIMIT, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, slack_app_manifest, slack_native_slashes, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands
+from hermes_cli.commands_platforms import (_CMD_NAME_LIMIT, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, discord_skill_commands_by_category, slack_app_manifest, slack_native_slashes, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands)
 
 
 def _completions(completer: SlashCommandCompleter, text: str):
@@ -172,6 +172,40 @@ class TestTelegramBotCommands:
         assert "btw" in names
         assert "queue" in names
         assert "steer" in names
+
+
+
+class TestSkillBundleGatewayCatalogs:
+    def test_bundle_is_advertised_on_telegram_and_discord_with_precedence(self, tmp_path, monkeypatch):
+        bundle_dir = tmp_path / "skill-bundles"
+        bundle_dir.mkdir()
+        (bundle_dir / "research.yaml").write_text(
+            "name: Research\ndescription: Combined research skills\nskills: [one, two]\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_BUNDLES_DIR", str(bundle_dir))
+        monkeypatch.setattr(
+            "hermes_cli.commands_platforms._gateway_available_commands", lambda: []
+        )
+        monkeypatch.setattr(
+            "hermes_cli.commands_platforms._iter_plugin_command_entries", lambda: iter([])
+        )
+        monkeypatch.setattr(
+            "hermes_cli.commands_platforms._iter_gateway_skills",
+            lambda _platform: iter([
+                ("/research", {"description": "A plain skill"}, ()),
+            ]),
+        )
+
+        menu, hidden = telegram_menu_commands()
+        assert ("research", "Combined research skills") in menu
+        assert hidden == 0
+        assert [name for name, _ in menu].count("research") == 1
+
+        categories, uncategorized, hidden = discord_skill_commands_by_category(set())
+        assert ("research", "Combined research skills", "/research") in uncategorized
+        assert hidden == 1
+        assert not categories
 
 
 

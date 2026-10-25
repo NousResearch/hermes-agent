@@ -26,6 +26,7 @@ from hermes_state_holders import read_only_db_uri
 
 from agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
+from hermes_cli.backup_config_paths import _get_config_path_value, _read_raw_yaml_dict, _set_config_path_value
 from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, profile_root_entry
 from hermes_cli.sizefmt import format_bytes as _format_size
@@ -323,12 +324,21 @@ def _should_exclude(rel_path: Path) -> bool:
     return name in _EXCLUDED_NAMES or name.startswith(_EXCLUDED_PREFIXES) or name.endswith(_EXCLUDED_SUFFIXES)
 
 
-def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional[set] = None):
+def _iter_backup_files(
+    hermes_root: Path,
+    out_path: Path,
+    skipped_dirs: Optional[set] = None,
+    skipped_symlinks: Optional[list] = None,
+):
     """Yield ``(abs_path, rel_path)`` for every file a full backup should hold.
 
     The one owner of the walk policy (directory pruning so os.walk never descends a multi-GB
     excluded tree, the root-only ``hermes-agent`` carve-out, root runtime trees, per-file rules),
     shared by ``hermes backup`` and the pre-update path so they can never drift.
+
+    Links are never archived (security). Pass *skipped_symlinks* to collect the relative paths of
+    linked directories and non-excluded file symlinks the walk drops, so callers can report them
+    instead of omitting a whole linked subtree silently.
     """
     for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
         rel_dir = Path(dirpath).relative_to(hermes_root)
@@ -340,7 +350,10 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
         if skipped_dirs is not None:
             skipped_dirs.update(str(rel_dir / d) for d in set(dirnames) - set(kept))
         # No walk may follow a junction.
-        dirnames[:] = [name for name in kept if not _is_link_path(Path(dirpath) / name)]
+        linked = {name for name in kept if _is_link_path(Path(dirpath) / name)}
+        if skipped_symlinks is not None:
+            skipped_symlinks.extend(str(rel_dir / d) for d in kept if d in linked)
+        dirnames[:] = [name for name in kept if name not in linked]
         for fname in filenames:
             rel = rel_dir / fname
             fpath = hermes_root / rel
@@ -349,6 +362,8 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
             if _should_exclude(rel):
                 continue
             if _is_non_regular_path(fpath):
+                if skipped_symlinks is not None and fpath.is_symlink():
+                    skipped_symlinks.append(str(rel))
                 continue
             with suppress(OSError, ValueError):
                 if fpath.resolve() == out_path.resolve():
@@ -616,7 +631,9 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
     logger.info("backup phase=scan status=started")
     print(f"Scanning {display_hermes_home()} ...")
     skipped_dirs: set = set()
-    files_to_add: list[tuple[Path, Path]] = list(_iter_backup_files(hermes_root, out_path, skipped_dirs))
+    skipped_symlinks: list[str] = []
+    files_to_add: list[tuple[Path, Path]] = list(
+        _iter_backup_files(hermes_root, out_path, skipped_dirs, skipped_symlinks))
     external_to_add, skipped_external = _collect_external_entries()
     if not files_to_add and not external_to_add:
         logger.info("backup phase=scan status=empty duration_ms=%.1f", (time.monotonic() - scan_started) * 1000)
@@ -665,6 +682,11 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
               "(not portable):\n" + "\n".join(f"    {p}" for p in sorted(skipped_external)[:10]))
     if skipped_dirs:
         print("\n  Excluded directories:\n" + "\n".join(f"    {d}/" for d in sorted(skipped_dirs)))
+    # A deliberate security skip, so it does not flip "Backup complete", but a whole linked
+    # subtree must not first go missing at restore time.
+    if skipped_symlinks:
+        _print_capped(f"\n  Symlinks skipped (not archived): {len(skipped_symlinks)}",
+                      sorted(skipped_symlinks), "    ")
     if errors:
         _print_capped(f"\n  Archive kept, but {len(errors)} file(s) could not be added:", errors, "  ")
     else:
@@ -1859,40 +1881,6 @@ _PROTECTED_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
 )
 
 
-def _read_raw_yaml_dict(path: Path) -> Optional[dict[str, Any]]:
-    """Parse ``path`` as a YAML mapping. ``None`` = missing/unreadable/non-dict."""
-    if not path.is_file():
-        return None
-    try:
-        import hermes_yaml as yaml
-
-        with open(path, "r", encoding="utf-8-sig") as f:
-            data = yaml.safe_load(f)
-    except Exception:
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def _get_config_path_value(data: dict[str, Any], dotted: tuple[str, ...]) -> Any:
-    node: Any = data
-    for key in dotted:
-        if not isinstance(node, dict):
-            return None
-        node = node.get(key)
-    return node
-
-
-def _set_config_path_value(data: dict[str, Any], dotted: tuple[str, ...], value: Any) -> None:
-    node = data
-    for key in dotted[:-1]:
-        child = node.get(key)
-        if not isinstance(child, dict):
-            child = {}
-            node[key] = child
-        node = child
-    node[dotted[-1]] = value
-
-
 def restore_config_model_settings_if_rewritten(
     snapshot_id: str,
     hermes_home: Optional[Path] = None,
@@ -2108,11 +2096,19 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
 def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional[Path]:
     scan_started = time.monotonic()
     logger.info("automatic backup phase=scan status=started")
+    skipped_symlinks: list[str] = []
     try:
-        files_to_add = list(_iter_backup_files(hermes_root, out_path))
+        files_to_add = list(_iter_backup_files(hermes_root, out_path, skipped_symlinks=skipped_symlinks))
     except OSError as exc:
         logger.warning("Full-zip backup: walk failed: %s", exc)
         return None
+    # This path has no interactive summary, so a linked subtree dropped from a pre-update or
+    # pre-migration backup is surfaced through the log instead.
+    if skipped_symlinks:
+        shown = ", ".join(sorted(skipped_symlinks)[:10])
+        more = len(skipped_symlinks) - 10
+        logger.warning("Full-zip backup: %d symlink(s) skipped (not archived): %s%s",
+                       len(skipped_symlinks), shown, f", ... and {more} more" if more > 0 else "")
     if not files_to_add:
         return None
     logger.info("automatic backup phase=scan status=complete duration_ms=%.1f files=%d",

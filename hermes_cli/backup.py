@@ -1102,7 +1102,7 @@ def _revive_gateway_after_import(hermes_root: Path) -> None:
 # directories (recursive); missing entries are skipped. Pairing data lives in platform JSON blobs
 # outside state.db, so it is listed explicitly — ``hermes update`` snapshots this set (#15733).
 _QUICK_STATE_FILES = (
-    "state.db", "config.yaml", ".env", "auth.json", "cron/jobs.json", "cron/executions.db",
+    "state.db", "config.yaml", "cron/jobs.json", "cron/executions.db",
     "gateway_state.json", "channel_directory.json", "channel_aliases.json", "processes.json",
     "gateway/discord_message_recovery.db",  # Discord reconnect replay ledger
     # Per-profile user stores, destroyed if the update flow replaces the file and the post-update

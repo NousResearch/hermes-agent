@@ -67,6 +67,30 @@ def test_moa_non_preset_is_one_shot_prompt():
     assert cli.model == "default"
     assert cli._pending_moa_restore_model["provider"] != "moa"
 
+def test_solo_queues_one_active_moa_turn_without_switching_models():
+    cli = _make_cli()
+    cli.provider = cli.requested_provider = "moa"
+    cli.model = "default"
+
+    with patch("cli._cprint"):
+        assert cli.process_command("/solo convert this markdown to PDF") is True
+
+    assert cli._pending_agent_seed == "convert this markdown to PDF"
+    assert cli._pending_moa_skip_references is True
+    assert cli.provider == "moa"
+    assert cli.model == "default"
+
+
+def test_solo_requires_an_active_moa_session():
+    cli = _make_cli()
+
+    with patch("cli._cprint") as print_mock:
+        assert cli.process_command("/solo convert this markdown to PDF") is True
+
+    assert cli._pending_agent_seed is None
+    assert getattr(cli, "_pending_moa_skip_references", False) is False
+    assert "only available while an MoA preset is active" in str(print_mock.call_args)
+
 class TestNormalizeMoaModel:
     """#56828: `-Q -m moa:<preset>` must route through the MoA virtual provider.
 
@@ -90,3 +114,13 @@ class TestNormalizeMoaModel:
             None,
             "openrouter:deepseek/deepseek-v4",
         )
+    def test_override_wins_over_explicit_provider(self):
+        # __init__ resolves requested_provider as
+        # ``_moa_provider_override or provider or ...``, so a moa: prefix must
+        # take precedence over an explicit --provider (the #56828 deepseek case
+        # where MoA was silently ignored).
+        from cli import _normalize_moa_model
+        override, model = _normalize_moa_model("moa:strategy")
+        requested_provider = override or "deepseek"
+        assert requested_provider == "moa"
+        assert model == "strategy"

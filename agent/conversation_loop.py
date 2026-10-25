@@ -1467,6 +1467,7 @@ class _LoopState:
     user_message: Any
     system_message: Any
     moa_config: Any
+    moa_skip_references: bool
     original_user_message: Any
     conversation_history: Any
     effective_task_id: Any
@@ -1634,6 +1635,7 @@ def _run_conversation_turn(
     persist_user_platform_id: Optional[str] = None,
     turn_author: Optional[dict[str, Any]] = None,
     moa_config: Optional[dict[str, Any]] = None,
+    moa_skip_references: bool = False,
     title_user_message: Optional[str] = None,
     prelude: Optional[Prelude] = None,
 ) -> dict[str, Any]:
@@ -1709,7 +1711,7 @@ def _run_conversation_turn(
     agent._last_turn_usage = None
 
     s = _LoopState(
-        system_message=system_message, moa_config=moa_config,
+        system_message=system_message, moa_config=moa_config, moa_skip_references=moa_skip_references,
         max_compression_attempts=getattr(agent, "max_compression_attempts", 3),
         **{f.name: getattr(_ctx, f.name.lstrip("_")) for f in fields(_LoopState) if f.name in _CTX_FIELDS},
     )
@@ -1795,6 +1797,7 @@ def run_conversation(
     persist_user_display_metadata: Optional[dict[str, Any]] = None,
     persist_user_platform_id: Optional[str] = None,
     moa_config: Optional[dict[str, Any]] = None,
+    moa_skip_references: bool = False,
     turn_author: Optional[dict[str, Any]] = None,
     title_user_message: Optional[str] = None,
     prelude: Optional[Prelude] = None,
@@ -1829,6 +1832,7 @@ def run_conversation(
                 persist_user_display_metadata=persist_user_display_metadata,
                 persist_user_platform_id=persist_user_platform_id,
                 moa_config=moa_config,
+                moa_skip_references=moa_skip_references,
                 turn_author=turn_author,
                 title_user_message=title_user_message,
                 prelude=prelude,

@@ -455,6 +455,11 @@ def test_capabilities_admit_missing_current_voice_connector(monkeypatch):
     assert scopes["cross_session_send_message"]["external_hermes_ingress"] is False
     assert scopes["mcp_channel"]["correlated_reply_supported"] is True
     assert scopes["mcp_channel"]["queued_message_cancellation"] is False
+    managed = value["codex"]["provider_transports"]["hermes_managed_app_server_thread"]
+    assert managed["protocol_callable"] is True
+    assert managed["production_adapter"] is False
+    assert managed["existing_app_owned_worker"] is False
+    assert managed["disposable_probe"]["turns"] == 1
     assert value["voice_connector"]["available"] is False
     assert "no callable local ingress" in value["voice_connector"]["reason"]
 

@@ -1,0 +1,9 @@
+{
+  "name": "esn-0407-claude-channel-probe",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2"
+  }
+}

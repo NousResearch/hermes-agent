@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "esn0407_channel": {
+      "command": "node",
+      "args": ["__ABSOLUTE_FIXTURE_DIR__/channel.mjs"],
+      "env": {
+        "ESN0407_CHANNEL_SOCKET": "__ABSOLUTE_PRIVATE_TEMP_DIR__/channel.sock"
+      }
+    }
+  }
+}

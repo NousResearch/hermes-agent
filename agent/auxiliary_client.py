@@ -6820,6 +6820,12 @@ def _build_call_kwargs(
     projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config, data_use_requirement(messages))
     kwargs.update(projection.top_level)
     merged_extra = _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm)
+    if isinstance(extra_body, dict) and "provider" in extra_body:
+        # Profile projections supply route DEFAULTS and must never clobber a task/caller-level
+        # explicit ``provider`` (auxiliary.<task>.extra_body.provider): the configured routing we
+        # inject in _project_provider_profile merges over the caller dict, so restore the override
+        # here - same contract #89425 guards with its ``"provider" not in extra_body`` check.
+        merged_extra["provider"] = extra_body["provider"]
     if "response_format" in merged_extra:
         from agent.auxiliary_structured_output import without_unsupported_response_format
         merged_extra = without_unsupported_response_format(merged_extra, provider_norm, effective_base, model, task)

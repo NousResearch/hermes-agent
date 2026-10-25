@@ -65,3 +65,23 @@ def test_per_model_overlay_wins_over_global_routing():
 def test_resolution_failure_degrades_to_no_routing():
     with patch("hermes_cli.config.load_config_readonly", side_effect=RuntimeError("config unreadable")):
         assert ac._aux_provider_preferences(model=_MODEL) == {}
+
+
+def _build_kwargs(extra_body: dict | None) -> dict:
+    with patch("hermes_cli.config.load_config_readonly", return_value=_ROUTING):
+        return ac._build_call_kwargs(
+            "openrouter", _MODEL, [{"role": "user", "content": "hi"}],
+            extra_body=extra_body, base_url="https://openrouter.ai/api/v1")
+
+
+def test_configured_routing_survives_the_full_builder():
+    eb = _build_kwargs(None)["extra_body"]
+    assert eb.get("provider", {}).get("only") == ["InferenceNet", "DeepInfra", "Cloudflare"]
+
+
+def test_explicit_caller_provider_wins_over_configured_routing():
+    # auxiliary.<task>.extra_body.provider is a per-task override: the profile projection
+    # supplies route defaults only (#89425's "provider" not in extra_body contract).
+    override = {"only": ["ChosenOnly"]}
+    eb = _build_kwargs({"provider": override})["extra_body"]
+    assert eb["provider"] == override

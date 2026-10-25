@@ -12,6 +12,7 @@ from typing import Callable, List, Optional
 
 from hermes_cli.browser_runtime import chromium_executable
 from hermes_cli.doctor import _section, check_info
+from hermes_cli.doctor_connectivity import redact_known_secrets, scrub_probe_error
 from hermes_cli.doctor_report import check_fail, check_ok, check_warn
 from utils import normalize_proxy_env_vars
 
@@ -92,7 +93,10 @@ def _keyed_probe(name: str, url: str, env_var: str, scheme: str, timeout: float)
     key = os.getenv(env_var, "").strip()
     if not key:
         return ProbeResult(name, "skip", "(not configured)")
-    resp = _http_get(url, headers={"Authorization": f"{scheme} {key}"}, timeout=timeout)
+    try:
+        resp = _http_get(url, headers={"Authorization": f"{scheme} {key}"}, timeout=timeout)
+    except Exception as e:
+        return ProbeResult(name, "fail", scrub_probe_error(e, key, key_hint=env_var))
     return _classify_http(name, resp, env_var)
 
 
@@ -116,12 +120,23 @@ def _probe_audio(kind: str, config: dict, timeout: float) -> ProbeResult:
     if not key:
         return ProbeResult(name, "warn", f"(provider '{provider}' configured but {env_var} is not set)")
     headers = {"xi-api-key": key} if scheme == "xi" else {"Authorization": f"Bearer {key}"}
-    result = _classify_http(name, _http_get(url, headers=headers, timeout=timeout), env_var)
+    try:
+        result = _classify_http(name, _http_get(url, headers=headers, timeout=timeout), env_var)
+    except Exception as e:
+        return ProbeResult(name, "fail", scrub_probe_error(e, key, key_hint=env_var))
     result.detail = f"({provider}) {result.detail}"
     return result
 
 
 # ── Orchestration ──
+
+_LIVE_KEY_VARS = [spec[1] for spec in list(_KEYED_PROBES.values()) + list(_AUDIO_PROBES.values())]
+
+
+def _live_known_secrets() -> list[str]:
+    """Values of every env var a live probe can send — backstop redaction for
+    the catch-alls below, which cannot know which probe raised."""
+    return [value for value in (os.getenv(name, "") for name in _LIVE_KEY_VARS) if value]
 
 _REPORTERS = {"pass": check_ok, "warn": check_warn, "fail": check_fail}
 
@@ -141,10 +156,12 @@ def _run_one(name: str, fn: Callable[[], ProbeResult], issues: list[str]) -> Pro
     try:
         result = fn()
     except TimeoutError as exc:
-        result = ProbeResult(name, "fail", f"(timed out: {exc})")
+        detail = redact_known_secrets(str(exc), _live_known_secrets())
+        result = ProbeResult(name, "fail", f"(timed out: {detail})")
     except Exception as exc:
         msg = str(exc) or exc.__class__.__name__
-        result = ProbeResult(name, "fail", f"(timed out: {msg})" if "time" in msg.lower() else f"({msg})")
+        detail = redact_known_secrets(msg, _live_known_secrets())
+        result = ProbeResult(name, "fail", f"(timed out: {detail})" if "time" in msg.lower() else f"({detail})")
     _report(result, issues)
     return result
 
@@ -189,5 +206,5 @@ def maybe_run_live_checks(args, issues: list[str]):
     try:
         return run_live_checks(issues)
     except Exception as exc:  # catch-all: doctor must survive
-        check_warn("Live backend probes crashed", f"({exc})")
+        check_warn("Live backend probes crashed", scrub_probe_error(exc, *_live_known_secrets()))
         return None

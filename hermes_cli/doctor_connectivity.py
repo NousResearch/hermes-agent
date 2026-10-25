@@ -42,6 +42,38 @@ def _skip(name: str) -> ProbeResult:
     return ProbeResult(name, [], [])
 
 
+def redact_known_secrets(text: str, secrets) -> str:
+    """Replace each exact secret value in ``text`` with ``***``.
+
+    The probe holds the secret it sent, so exact matching is airtight across
+    auth schemes (Bearer, Key, x-api-key, xi-api-key) and opaque credentials
+    where prefix-shaped redaction cannot apply.
+    """
+    for secret in secrets:
+        # The empty-string guard is load-bearing: "".replace would interleave
+        # "***" between every character of the message.
+        if secret and secret in text:
+            text = text.replace(secret, "***")
+    return text
+
+
+def scrub_probe_error(exc: BaseException, *secrets: str | None, key_hint: str = "") -> str:
+    """Parenthesized probe-failure detail that never echoes credential material.
+
+    A key with an embedded line break (bad paste) makes httpx reject the
+    header with the full value in the message (#144458) — and the repr escapes
+    the newline, so exact-value redaction cannot match it. Name that formatting
+    problem instead of the value; otherwise redact each exact secret the probe
+    sent and keep ordinary errors verbatim.
+    """
+    raw = str(exc) or type(exc).__name__
+    if "Illegal header value" in raw:
+        where = (f"check {key_hint} for line breaks or stray whitespace" if key_hint
+                 else "check the key for line breaks or stray whitespace")
+        return f"(invalid header value — {where})"
+    return f"({redact_known_secrets(raw, secrets)})"
+
+
 def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool:
     """True when a failed direct API-key probe is non-blocking because the same provider family's OAuth
     runtime path is already healthy: the failed row is still shown, but not promoted into the summary."""
@@ -142,7 +174,7 @@ def _probe_openrouter() -> ProbeResult:
         import httpx
         r = httpx.get(OPENROUTER_MODELS_URL, headers={"Authorization": f"Bearer {key}"}, timeout=10)
     except Exception as e:
-        return _row(name, "fail", f"({e})", ["Check network connectivity"])
+        return _row(name, "fail", scrub_probe_error(e, key, key_hint="OPENROUTER_API_KEY"), ["Check network connectivity"])
     if r.status_code == 200:
         return _row(name, "ok")
     detail, issue = _OPENROUTER_STATUS.get(r.status_code, (f"(HTTP {r.status_code})", None))
@@ -170,7 +202,7 @@ def _probe_anthropic() -> ProbeResult:
             headers["anthropic-beta"] = ",".join([b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA] + list(_OAUTH_ONLY_BETAS))
             r = httpx.get(url, headers=headers, timeout=10)
     except Exception as e:
-        return _row(name, "warn", f"({e})")
+        return _row(name, "warn", scrub_probe_error(e, key, key_hint="ANTHROPIC_API_KEY"))
     return _row(name, *{200: ("ok",), 401: ("fail", "(invalid API key)")}.get(r.status_code, ("warn", "(couldn't verify)")))
 
 
@@ -196,7 +228,7 @@ def _probe_apikey_provider(pname, env_vars, default_url, base_env, supports_heal
         if pname == "Alibaba/DashScope" and not base and r.status_code == 401:
             r = httpx.get("https://dashscope.aliyuncs.com/compatible-mode/v1/models", headers=headers, timeout=10)
     except Exception as e:
-        return _row(pname, "warn", f"({e})", label=label)
+        return _row(pname, "warn", scrub_probe_error(e, key, key_hint=env_vars[0]))
     if r.status_code == 401:
         return _row(pname, "fail", "(invalid API key)", [f"Check {env_vars[0]} in .env"], label=label)
     return _row(pname, "ok", label=label) if r.status_code == 200 else _row(pname, "warn", f"(HTTP {r.status_code})", label=label)
@@ -398,7 +430,7 @@ def _probe_github_token() -> ProbeResult:
             "Authorization": f"Bearer {get_env_value(var)}", "User-Agent": _HERMES_USER_AGENT,
             "Accept": "application/vnd.github+json"})
     except Exception as e:
-        return _row(name, "fail", f"({e})", ["Check network connectivity"])
+        return _row(name, "fail", scrub_probe_error(e, get_env_value(var), key_hint=var), ["Check network connectivity"])
     if r.status_code == 200:
         return _row(name, "ok", f"({var} from {where} accepted by api.github.com)")
     if r.status_code == 401:

@@ -181,7 +181,10 @@ export function reapRunBackends(shouldReap: (root: string) => boolean): string[]
   return roots
 }
 
-/** Reap the backends of every run whose runner is dead. */
-export function reapAbandonedRuns(): string[] {
-  return reapRunBackends(root => !runnerAlive(root))
+/**
+ * Reap the backends of every run whose runner is dead: host-wide, or only the runs whose root
+ * lies under `scope` (a test reaps its own fixtures, never another abandoned run on the host).
+ */
+export function reapAbandonedRuns(scope?: string): string[] {
+  return reapRunBackends(root => (scope === undefined || root.startsWith(scope + path.sep)) && !runnerAlive(root))
 }

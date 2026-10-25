@@ -38,32 +38,52 @@ function backendUnder(root: string): ChildProcess {
   return child
 }
 
+/** The pid and kernel start time of a runner that no longer exists: a killed run's `.runner.json`. */
+async function deadRunnerRecord(): Promise<string> {
+  const runner = spawn('sleep', ['300'], { stdio: 'ignore' })
+  const stat = fs.readFileSync(`/proc/${runner.pid}/stat`, 'utf8')
+  const start = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]
+  runner.kill('SIGKILL')
+  await exited(runner)
+
+  return JSON.stringify({ pid: runner.pid, start })
+}
+
+function tmpBase(): string {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'reaper-')))
+  dirs.push(base)
+
+  return base
+}
+
 describe.runIf(process.platform === 'linux')('reapAbandonedRuns', () => {
-  it("stops a killed runner's backends and removes its root; a live runner's backends are untouched", async () => {
-    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'reaper-')))
-    dirs.push(base)
+  it("stops a killed runner's backends and removes its root; a live runner's and an out-of-scope run's are untouched", async () => {
+    const base = tmpBase()
     const deadRoot = fs.mkdtempSync(path.join(base, 'pw-'))
     const liveRoot = fs.mkdtempSync(path.join(base, 'pw-'))
+    // Another abandoned run on the same host, outside the scope this reap is given.
+    const outsideRoot = fs.mkdtempSync(path.join(tmpBase(), 'pw-'))
 
-    // The killed run's record: the pid and kernel start time of a runner that no longer exists.
-    const runner = spawn('sleep', ['300'], { stdio: 'ignore' })
-    const stat = fs.readFileSync(`/proc/${runner.pid}/stat`, 'utf8')
-    const start = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]
-    runner.kill('SIGKILL')
-    await exited(runner)
-    fs.writeFileSync(path.join(deadRoot, '.runner.json'), JSON.stringify({ pid: runner.pid, start }))
+    fs.writeFileSync(path.join(deadRoot, '.runner.json'), await deadRunnerRecord())
+    fs.writeFileSync(path.join(outsideRoot, '.runner.json'), await deadRunnerRecord())
     recordRunOwner(liveRoot)
 
     const orphan = backendUnder(deadRoot)
     const concurrent = backendUnder(liveRoot)
+    const outside = backendUnder(outsideRoot)
 
-    expect(reapAbandonedRuns()).toContain(deadRoot)
+    expect(reapAbandonedRuns(base)).toEqual([deadRoot])
     expect(await exited(orphan)).toBe('SIGTERM')
     expect(fs.existsSync(deadRoot)).toBe(false)
 
-    expect(concurrent.exitCode).toBeNull()
-    expect(concurrent.signalCode).toBeNull()
-    expect(() => process.kill(concurrent.pid!, 0)).not.toThrow()
-    expect(fs.existsSync(liveRoot)).toBe(true)
+    for (const [survivor, root] of [
+      [concurrent, liveRoot],
+      [outside, outsideRoot]
+    ] as const) {
+      expect(survivor.exitCode).toBeNull()
+      expect(survivor.signalCode).toBeNull()
+      expect(() => process.kill(survivor.pid!, 0)).not.toThrow()
+      expect(fs.existsSync(root)).toBe(true)
+    }
   })
 })

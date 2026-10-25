@@ -29,16 +29,18 @@ def _now() -> float:
 
 
 @pytest.mark.asyncio
-async def test_interim_edit_skipped_when_slot_busy_but_final_edit_never_gated():
-    """An interim edit while the shared slot is held returns success with the SAME message id and makes
-    no API call; a finalize edit to the same chat still fires even though the slot is still held."""
+async def test_interim_edit_is_shed_while_final_edit_waits_for_budget(monkeypatch):
+    """A busy interim edit is shed, while a final edit waits and remains deliverable."""
     adapter = _adapter(AsyncMock())
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.asyncio.sleep", fake_sleep)
 
     result = await adapter.edit_message("c1", "900", "part one", finalize=False)
     assert result.success is True  # consumed a slot on the first real edit
-
-    busy = adapter._chat_outbound_slot_remaining( "c1")
-    assert busy > 0
 
     skipped = await adapter.edit_message("c1", "900", "part two", finalize=False)
     assert skipped.success is True and skipped.message_id == "900"
@@ -46,7 +48,8 @@ async def test_interim_edit_skipped_when_slot_busy_but_final_edit_never_gated():
 
     final = await adapter.edit_message("c1", "900", "part two final", finalize=True)
     assert final.success is True
-    assert adapter._bot.edit_message_text.await_count == 2  # the final edit is never gated
+    assert sleeps  # durable final edits wait for the shared budget rather than being shed
+    assert adapter._bot.edit_message_text.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -66,7 +69,6 @@ async def test_skipped_interim_edit_leaves_visible_prefix_untouched():
     assert consumer._flood_strikes == 0
     consumer._flood_strikes = 1
 
-    assert adapter._chat_outbound_slot_remaining("c1") > 0  # slot held: next interim edit is skipped
     assert await consumer._edit_existing("The answer is 42▌", finalize=False, is_turn_final=False)
     assert adapter._bot.edit_message_text.await_count == 1
     assert consumer._last_sent_text == "The answer▌"  # screen still shows the older preview

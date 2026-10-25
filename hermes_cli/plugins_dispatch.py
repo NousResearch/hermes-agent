@@ -561,8 +561,11 @@ class PluginDispatchMixin:
         return handle
 
     def holds_stream(self) -> bool:
-        """True while a loaded plugin's ``transform_llm_output`` registration declared ``hold_stream``."""
-        return any(r.hold_stream for owned in self._ownership_ledger.values() for r in owned)
+        """True while a loaded plugin's ``transform_llm_output`` registration declared ``hold_stream``.
+        Read under the discovery lock: a reload empties the ledger before plugins re-register, and a
+        turn deciding in that window would stream text the plugin must rewrite first."""
+        with self._discovery_lock:
+            return any(r.hold_stream for owned in self._ownership_ledger.values() for r in owned)
 
     async def ainvoke_hook(self, hook_name: str, **kwargs: Any) -> list[Any]:
         """:meth:`invoke_hook` for callers that are already on an event loop.

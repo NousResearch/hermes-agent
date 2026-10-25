@@ -63,3 +63,53 @@ def test_a_hold_on_a_hook_that_does_not_rewrite_the_reply_holds_nothing(hook, ca
     ctx.register_hook(hook, lambda **_: None, hold_stream=True)
     assert manager.holds_stream() is False
     assert "hold_stream" in caplog.text
+
+
+def test_a_turn_starting_during_a_plugin_reload_sees_the_settled_hold(tmp_path, monkeypatch):
+    """``reload-plugins`` unloads every registration, then loads them again. A turn that asks in
+    between must wait for the reload instead of reading the empty ledger and streaming raw text."""
+    import sys
+    import threading
+    import types
+
+    from hermes_cli import plugins
+
+    gate = types.ModuleType("hold_stream_reload_gate")
+    gate.loading, gate.entered, gate.release = threading.Event(), threading.Event(), threading.Event()
+    monkeypatch.setitem(sys.modules, gate.__name__, gate)
+    monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "0")
+    monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(tmp_path / "no-bundled"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    plugin = tmp_path / "plugins" / "redactor"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text(yaml.safe_dump({"name": "redactor", "version": "0.1.0"}))
+    (plugin / "__init__.py").write_text(
+        "import hold_stream_reload_gate as gate\n"
+        "def register(ctx):\n"
+        "    if gate.loading.is_set():\n"
+        "        gate.entered.set()\n"
+        "        gate.release.wait(10)\n"
+        "    ctx.register_hook('transform_llm_output', lambda response_text, **_: response_text, hold_stream=True)\n")
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": ["redactor"]}}))
+
+    plugins._reset_plugin_managers_for_tests()
+    try:
+        manager = plugins.get_plugin_manager()
+        manager.discover_and_load()
+        assert manager.holds_stream() is True
+        gate.loading.set()
+        reload = threading.Thread(target=manager.discover_and_load, kwargs={"force": True})
+        reload.start()
+        assert gate.entered.wait(10)  # the reload unloaded everything and is re-registering
+        answers: list[bool] = []
+        turn = threading.Thread(target=lambda: answers.append(manager.holds_stream()))
+        turn.start()
+        turn.join(0.5)
+        assert answers == []  # the turn waits while the plugin is mid-reload
+        gate.release.set()
+        reload.join(10)
+        turn.join(10)
+        assert answers == [True]
+    finally:
+        gate.release.set()
+        plugins._reset_plugin_managers_for_tests()

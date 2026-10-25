@@ -1,7 +1,7 @@
 name: hermes-handoff
 title: Hermes Handoff
 repo: https://github.com/yuzushi-dev/hermes-handoff
-sha: 850c13db71f6c8ed3fbbbb1075b8b729eee4a6e3
+sha: fc95cff80965a988880082cb75ee203ca9720e50
 version: "0.3.0"
 description: >-
   Profile-bound semantic session handoffs for CLI and Desktop with independent
@@ -18,13 +18,13 @@ category: automation
 # Conservative support boundary: admission validated on official stable v0.22.5.
 # Not a certification of full UI/CLI behavior or the oldest working release.
 requires_hermes: ">=0.22.5"
-docs_url: https://github.com/yuzushi-dev/hermes-handoff/blob/850c13db71f6c8ed3fbbbb1075b8b729eee4a6e3/README.md
+docs_url: https://github.com/yuzushi-dev/hermes-handoff/blob/fc95cff80965a988880082cb75ee203ca9720e50/README.md
 readme: true
 platforms: [linux]
 # Historical configuration-controls crop from a synthetic policy-rejection scenario
 # (opening rejected with HTTP409); not a fresh end-to-end run.
 screenshots:
-  - https://raw.githubusercontent.com/yuzushi-dev/hermes-handoff/850c13db71f6c8ed3fbbbb1075b8b729eee4a6e3/assets/hermes-handoff-ui-controls.png
+  - https://raw.githubusercontent.com/yuzushi-dev/hermes-handoff/fc95cff80965a988880082cb75ee203ca9720e50/assets/hermes-handoff-ui-controls.png
 known_issues:
   - Four private core imports for tool-policy preflight may break on a Hermes release.
   - Named-profile and bot workflows through another profile socket are not certified.

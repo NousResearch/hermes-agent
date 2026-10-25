@@ -597,6 +597,27 @@ class GatewayTurnPrepareMixin:
                 source, t("gateway.notify.no_home_channel", platform=platform_name.title(), sethome_cmd=sethome_cmd),
             )
 
+    # Short, machine-shaped marker: a verbose "The user sent a voice message..." wrapper made
+    # models answer about voice mode instead of the request. API-call-local only (see below).
+    VOICE_TRANSCRIPT_MARKER = "[voice:transcribed] "
+
+    @classmethod
+    def _hmwa_apply_voice_transcript_marker(cls, event, message_text, persist_user_message):
+        """Prefix in-context speech-to-text input with the voice marker; persist the clean text.
+
+        Mirrors the CLI's ``turn.voice_prefix`` (API-call-local, never stored) so both entry
+        points tell the model the same thing about the medium. Failures to transcribe never set
+        the flag, so an untranscribed audio note is not labelled as a transcript.
+        """
+        if not getattr(event, "_gateway_stt_transcribed", False):
+            return message_text, persist_user_message
+        if not isinstance(message_text, str) or not message_text.strip():
+            return message_text, persist_user_message
+        if message_text.startswith(cls.VOICE_TRANSCRIPT_MARKER):
+            return message_text, persist_user_message
+        clean = persist_user_message if persist_user_message is not None else message_text
+        return cls.VOICE_TRANSCRIPT_MARKER + message_text, clean
+
     def _hmwa_apply_message_timestamp(self, event, message_text):
         """Capture the platform event time as message metadata and keep the persisted transcript
         clean — strip any leading timestamp prefix and the Discord triggering-message note (a
@@ -728,6 +749,10 @@ class GatewayTurnPrepareMixin:
 
         message_text, persist_user_message, persist_user_timestamp = (
             self._hmwa_apply_message_timestamp(event, message_text)
+        )
+        # Voice marker rides the model-bound text only; the stored user row keeps the transcript.
+        message_text, persist_user_message = self._hmwa_apply_voice_transcript_marker(
+            event, message_text, persist_user_message,
         )
 
         # Stage the notes (one-shot; consumed in run_sync) AFTER the early-out so an aborted turn

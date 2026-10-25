@@ -103,6 +103,8 @@ class GatewayInboundTranscriptionMixin:
             )
         event._gateway_pending_stt_text = enriched_text
         event._gateway_pending_stt_transcripts = list(successful_transcripts)
+        # Lets the turn layer mark the inbound text as speech-to-text for the model only.
+        event._gateway_stt_transcribed = bool(successful_transcripts)
         return enriched_text, successful_transcripts
 
     async def _echo_pending_stt_transcripts_once(

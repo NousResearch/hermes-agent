@@ -1479,6 +1479,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         message_text, _successful_transcripts = await self._enrich_message_with_transcription(
             message_text, audio_paths,
         )
+        # Read by the turn layer: the model gets a voice marker, the stored row stays clean.
+        event._gateway_stt_transcribed = bool(_successful_transcripts)
         # Echo each successful transcript back immediately when configured so users can verify STT
         # quality in real time. On transcription failure do NOT send a hardcoded notice: that
         # bypassed the LLM and produced two replies; enrichment leaves one neutral marker instead.

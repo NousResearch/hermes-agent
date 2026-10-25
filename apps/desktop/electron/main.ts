@@ -435,6 +435,7 @@ import { onPreviewWatchOwnerDestroyed, sendPreviewFileChangedToOwner } from './p
 import { hasClosePreviewFlag, previewGuestInputAction } from './preview-guest-escape'
 import { commandFocusedGuest, notePreviewGuestHidden } from './preview-guest-offscreen'
 import { applyPreviewGuestAttachPrefs } from './preview-guest-throttle'
+import { previewKindForFile } from './preview-kind'
 import { PreviewReachRegistry } from './preview-reach'
 import { previewHttpUrlTarget } from './preview-url-target'
 import {
@@ -1720,8 +1721,6 @@ const MEDIA_MIME_TYPES = {
   '.webp': 'image/webp'
 }
 
-const PREVIEW_HTML_EXTENSIONS = new Set(['.html', '.htm'])
-const PREVIEW_PDF_EXTENSIONS = new Set(['.pdf'])
 const PREVIEW_WATCH_DEBOUNCE_MS = 120
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
 
@@ -5759,10 +5758,7 @@ async function previewFileTarget(rawTarget, baseDir) {
 
   const mimeType = mimeTypeForPath(resolved)
   const metadata = previewFileMetadata(resolved, mimeType)
-  const isHtml = PREVIEW_HTML_EXTENSIONS.has(ext)
-  const isImage = mimeType.startsWith('image/')
-  const isPdf = PREVIEW_PDF_EXTENSIONS.has(ext) || mimeType === 'application/pdf'
-  const previewKind = isHtml ? 'html' : isImage ? 'image' : isPdf ? 'pdf' : metadata.binary ? 'binary' : 'text'
+  const previewKind = previewKindForFile({ binary: metadata.binary, extension: ext, mimeType })
 
   return {
     binary: metadata.binary,

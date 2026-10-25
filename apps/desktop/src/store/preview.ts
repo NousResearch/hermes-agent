@@ -65,7 +65,7 @@ export interface PreviewTarget {
   /** `directory`/`missing` are typed non-previewable results from main-process
    * normalization (#101683): they never reach `openPreview` — callers branch on
    * them for the native folder action / not-found reporting instead. */
-  previewKind?: 'binary' | 'directory' | 'html' | 'image' | 'missing' | 'pdf' | 'text'
+  previewKind?: 'audio' | 'binary' | 'directory' | 'html' | 'image' | 'missing' | 'pdf' | 'text'
   renderMode?: PreviewRenderMode
   /** Tombstone set when a read/watch confirmed the file is gone. The tab stays
    *  open for the session showing an explicit "file no longer exists" state,

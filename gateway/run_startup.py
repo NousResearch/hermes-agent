@@ -1882,6 +1882,24 @@ class GatewayStartupMixin:
             thread_sessions_per_user=extra.get("thread_sessions_per_user", False), profile=handoff_profile,
         )
 
+    async def _handoff_repoint(self, dest, session_key: str, cli_session_id: str) -> None:
+        """Point the destination route at the handed-off conversation; ``switch_session`` ends the
+        route's prior session and reopens this one. A compressed chat continues on its tip: repoint
+        there, so its whole chain moves onto the lane together with the local receipt that guards it,
+        and a viewer still holding it open (the Desktop that ran /handoff) follows it (#143286)."""
+        db = self._session_db
+        target = (await db.get_compression_tip(cli_session_id) if db is not None else None) or cli_session_id
+        # Ensure a session_store entry exists for this key; switch_session then re-points it.
+        await self.async_session_store.get_or_create_session(dest.source)
+        switched = await self.async_session_store.switch_session(session_key, target, preserve_prompt_pin=False)
+        if switched is None:
+            raise RuntimeError(f"could not switch session key {session_key} → {target}")
+        from gateway.session_authorities import active_authority
+        authority = active_authority(self)
+        owner = authority.logical_owner(target) if authority is not None else None
+        if owner is not None and owner in authority.sessions:
+            authority._publish_route(dest.source, owner, session_key)
+
     async def _process_handoff(self, row: dict[str, Any], profile_name: Optional[str] = None) -> None:
         """Execute one handoff row; raises on failure (caller marks failed). ``profile_name`` (None =
         root) is the profile whose store queued it — load-bearing under multiplex: secondaries live in
@@ -1889,20 +1907,7 @@ class GatewayStartupMixin:
         cli_session_id = row["id"]
         dest = await self._handoff_resolve_destination(row, profile_name)
         session_key = self._handoff_session_key(dest, profile_name)
-        # Ensure a session_store entry exists for this key; switch_session then re-points it.
-        await self.async_session_store.get_or_create_session(dest.source)
-        # switch_session ends the prior session and reopens the CLI session under the new key.
-        switched = await self.async_session_store.switch_session(
-            session_key, cli_session_id, preserve_prompt_pin=False,
-        )
-        if switched is None:
-            raise RuntimeError(f"could not switch session key {session_key} → {cli_session_id}")
-        # The repoint retired the session's local receipt: a viewer still holding it open (the Desktop
-        # that ran /handoff) follows it onto the lane instead of meeting a receipt that is gone (#143286).
-        from gateway.session_authorities import active_authority
-        authority = active_authority(self)
-        if authority is not None and cli_session_id in authority.sessions:
-            authority._publish_route(dest.source, cli_session_id, session_key)
+        await self._handoff_repoint(dest, session_key, cli_session_id)
         # Evict the cached AIAgent (rebuild against the CLI session_id, like /resume) and clear stale
         # running-agent state so the synthetic turn isn't queued behind it.
         self._evict_cached_agent(session_key)

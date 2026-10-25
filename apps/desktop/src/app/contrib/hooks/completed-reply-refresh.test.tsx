@@ -160,6 +160,7 @@ function Harness({
     [activeSessionIdRef, selectedStoredSessionIdRef, updateSessionState, tile]
   )
   useBackgroundSync({
+    captureLiveStatusRequest: async () => ({ scope: { connectionId: null, profile: 'default' }, request: async () => ({ sessions: [] }) as never }),
     activeConnectionId: 'local',
     activeGatewayProfile: 'default',
     activeIsMessaging: false,

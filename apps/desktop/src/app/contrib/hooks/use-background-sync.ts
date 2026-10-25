@@ -37,6 +37,7 @@ import {
   sessionMatchesStoredId,
   setCurrentCwd
 } from '@/store/session'
+import { pendingReconnectStatusSources } from '@/store/session-reconnect-settles'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
 import {
   $sessionStates,
@@ -59,6 +60,7 @@ import {
 } from '@/store/todos'
 
 import type { ClientSessionState } from '../../types'
+import { type CapturedLiveStatusRequest, type CaptureLiveStatusRequest, type LiveStatusScope, liveStatusScopeKey, normalizeLiveStatusScope } from '../live-status-scope'
 import type { GatewayRequester } from '../types'
 
 interface ActiveTranscriptSession {
@@ -729,7 +731,7 @@ interface LiveSessionStatusResponse {
 // ever reaps what its OWN snapshot previously reported: background profiles are
 // served by different gateways and never appear in this profile's active_list,
 // so an unscoped reap would dark out every other profile's running rows.
-const liveRuntimeIdsByProfile = new Map<string, Set<string>>()
+const liveRuntimeIdsByScope = new Map<string, Set<string>>()
 
 // Renderer-wide keyboard warmth, tracked at module scope like the live-runtime
 // bookkeeping above: any keydown anywhere in the window marks activity, and a
@@ -773,9 +775,11 @@ export function resetTypingActivityTracking(): void {
 export function rehydrateLiveSessionStatuses(
   response: LiveSessionStatusResponse,
   nowMs = Date.now(),
-  profileKey = 'default',
+  scope: LiveStatusScope | string = 'default',
   stateAtRequest = $sessionStates.get()
 ): void {
+  const source = normalizeLiveStatusScope(scope)
+  const scopeKey = liveStatusScopeKey(source)
   const seen = new Set<string>()
   const workingStoredIds = new Set<string>()
 
@@ -790,7 +794,7 @@ export function rehydrateLiveSessionStatuses(
     }
 
     seen.add(runtimeSessionId)
-    noteLiveSessionSource(storedSessionId, session.source, profileKey)
+    noteLiveSessionSource(storedSessionId, session.source, source.profile)
 
     if (working) {
       workingStoredIds.add(storedSessionId)
@@ -863,7 +867,7 @@ export function rehydrateLiveSessionStatuses(
   // path so the busy→idle transition fires — that edge is what clears the
   // spinner AND marks the row unread ("your turn"). Only ids this profile
   // previously saw are eligible, so another profile's live rows are untouched.
-  const previouslyLive = liveRuntimeIdsByProfile.get(profileKey)
+  const previouslyLive = liveRuntimeIdsByScope.get(scopeKey)
 
   if (previouslyLive) {
     for (const runtimeSessionId of previouslyLive) {
@@ -898,23 +902,24 @@ export function rehydrateLiveSessionStatuses(
     }
   }
 
-  liveRuntimeIdsByProfile.set(profileKey, seen)
+  liveRuntimeIdsByScope.set(scopeKey, seen)
 
   // Completions the reconnect reconcile downgraded blind: this snapshot is the
   // terminal fact it lacked. Every parked session not reported working is
   // over, whether or not an earlier poll ever saw its runtime (a turn that
   // started just before the drop was never polled).
-  confirmReconnectSettlesExcept(workingStoredIds)
+  confirmReconnectSettlesExcept(workingStoredIds, scopeKey)
 }
 
 /** Forget every profile's live-runtime bookkeeping. A gateway wipe already
  *  drops the session states these ids point at, so a carried-over set would
  *  only reap runtimes that no longer exist. */
 export function resetLiveRuntimeTracking(): void {
-  liveRuntimeIdsByProfile.clear()
+  liveRuntimeIdsByScope.clear()
 }
 
 interface BackgroundSyncParams {
+  captureLiveStatusRequest: CaptureLiveStatusRequest
   activeConnectionId: null | string
   activeGatewayProfile: string
   activeIsMessaging: boolean
@@ -988,6 +993,7 @@ function visiblePoll(intervalMs: number, tick: () => void): () => void {
  * All the "the desktop websocket won't tell us, so poll" logic in one place.
  */
 export function useBackgroundSync({
+  captureLiveStatusRequest,
   activeConnectionId,
   activeGatewayProfile,
   activeIsMessaging,
@@ -1275,23 +1281,41 @@ export function useBackgroundSync({
       }
 
       inFlight = true
-      const stateAtRequest = $sessionStates.get()
+      const requestedScopes = new Set<string>()
+
+      const refreshSource = async (source?: LiveStatusScope) => {
+        const stateAtRequest = $sessionStates.get()
+        let captured: CapturedLiveStatusRequest | undefined
+
+        try {
+          captured = await captureLiveStatusRequest(source)
+
+          const key = liveStatusScopeKey(captured.scope)
+
+          if (cancelled || requestedScopes.has(key)) { return }
+
+          requestedScopes.add(key)
+
+          const response = await captured.request<LiveSessionStatusResponse>()
+
+          if (!cancelled) {
+            rehydrateLiveSessionStatuses(response, Date.now(), captured.scope, stateAtRequest)
+          }
+        } catch {
+          // An old gateway cannot confirm a parked claim. Fall back only for
+          // this exact source; a failure elsewhere says nothing about it.
+          const failedSource = captured?.scope ?? source
+
+          if (!cancelled && failedSource) {
+            confirmReconnectSettlesExcept(new Set(), liveStatusScopeKey(failedSource))
+          }
+        }
+      }
 
       try {
-        const response = await requestGateway<LiveSessionStatusResponse>('session.active_list', {})
-
-        if (!cancelled) {
-          rehydrateLiveSessionStatuses(response, Date.now(), activeGatewayProfile, stateAtRequest)
-        }
-      } catch {
-        // Older gateways may not expose session.active_list. Live stream events
-        // still work as before; leave the current sidebar state untouched —
-        // except completions the reconnect reconcile parked awaiting this
-        // snapshot: with no snapshot to confirm them they light now (the
-        // pre-#113029 behaviour) rather than never.
-        if (!cancelled) {
-          confirmReconnectSettlesExcept(new Set())
-        }
+        // Parked primary claims must not wait forever behind another Bot Chat.
+        // Each source gets its own RPC and ledger; no session lists are merged.
+        await Promise.all([refreshSource(), ...pendingReconnectStatusSources().map(source => refreshSource(source))])
       } finally {
         inFlight = false
 
@@ -1318,7 +1342,7 @@ export function useBackgroundSync({
     }
     // Keep the in-flight guard alive across change ticks; a slow response must
     // not create a new request (and invalidate the old result) on every tick.
-  }, [activeConnectionId, activeGatewayProfile, changeEventsAvailable, gatewayState, requestGateway])
+  }, [activeConnectionId, activeGatewayProfile, captureLiveStatusRequest, changeEventsAvailable, gatewayState])
 
   // sessions.changed also means the *stored* list may have new rows (a cron
   // run's session, an inbound messaging turn creating a thread). The full list

@@ -433,12 +433,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     [ambientRequestGateway, runtimeIdByStoredSessionIdRef, selectedStoredSessionIdRef, sessionStateByRuntimeIdRef]
   )
 
-  const requestGateway = useCallback<AmbientGatewayRequest>(
-    (method, params, timeoutMs, signal) => {
-      return dispatchSessionRpc(method, params, timeoutMs, signal)
-    },
-    [dispatchSessionRpc]
-  )
+  const requestGateway: AmbientGatewayRequest = dispatchSessionRpc
 
   const { loadMoreMessagingForPlatform, loadMoreSessions, refreshCronJobs, refreshMessagingSessions, refreshSessions } =
     useSessionListActions({ profileScope })
@@ -928,6 +923,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // Keep app data live while the gateway is open (on-connect reseed + the
   // cron / messaging / transcript visibility polls + fresh-draft reseed).
   useBackgroundSync({
+    captureLiveStatusRequest: dispatchSessionRpc.captureLiveStatusRequest,
     activeConnectionId,
     activeGatewayProfile,
     activeIsMessaging,

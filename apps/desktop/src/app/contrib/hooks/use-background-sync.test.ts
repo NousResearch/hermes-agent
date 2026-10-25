@@ -127,6 +127,7 @@ function useSyncHarness({
   )
 
   useBackgroundSync({
+    captureLiveStatusRequest: async () => ({ scope: { connectionId: null, profile: 'default' }, request: async () => ({ sessions: [] }) as never }),
     activeConnectionId: 'local',
     activeGatewayProfile: 'default',
     activeIsMessaging,
@@ -1263,6 +1264,7 @@ describe('typing-aware sessions.changed deferral', () => {
       refreshHermesConfig: vi.fn(),
       refreshMessagingSessions: vi.fn(),
       requestGateway: vi.fn(async () => ({ sessions: [] })) as never,
+      captureLiveStatusRequest: async () => ({ scope: { connectionId: null, profile: 'default' }, request: async () => ({ sessions: [] }) as never }),
       // Required by the hook's params. This harness never drives the
       // transcript path, so the updater just runs against a throwaway state —
       // but it must live in `stable` like every other prop, since a fresh

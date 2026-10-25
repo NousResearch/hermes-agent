@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from agent.chat_completion_helpers_tool_calls import _ToolCallAccumulator
-from agent.message_content import flatten_message_text
+from agent.message_content import delta_reasoning_text, flatten_message_text
 from agent.reasoning_summaries import separate_glued_reasoning_blocks
 
 
@@ -60,7 +60,7 @@ class RelayChatAccumulator:
         if text:
             self._content.append(text)
         self._reasoning_details.extend(delta.get("reasoning_details") or [])
-        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+        reasoning = delta_reasoning_text(delta)
         if reasoning:
             self._reasoning.append(separate_glued_reasoning_blocks(
                 self._reasoning[-1] if self._reasoning else "", reasoning))

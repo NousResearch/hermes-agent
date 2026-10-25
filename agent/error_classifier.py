@@ -546,7 +546,10 @@ _REASONING_REQUIRED_MARKERS = (
 # only the disabled level is invalid, so the floor step-up (the weakest accepted level) is the
 # right recovery. Neither the strip rung nor its "unsupported" wording matches this message, so
 # without these markers the title lane fails outright instead of retrying at the floor.
-_REASONING_LEVEL_REJECTION_MARKERS = ("must be one of", "invalid value for")
+# Self-hosted chat templates with a closed level set reject the value with a template exception
+# instead — "Unexpected reasoning effort none. Supported types are ..." — whose only stable
+# wording is the exception prefix, matched directly.
+_REASONING_LEVEL_REJECTION_MARKERS = ("must be one of", "invalid value for", "unexpected reasoning effort")
 
 
 def is_reasoning_level_rejection(error_msg: str) -> bool:

@@ -410,9 +410,40 @@ RETIRED_GENERATION_MANIFEST_VERSION = 1
 # pair that `hermes sessions recover --source <dir>/state.db` can open. Above it only the 100-byte
 # header is kept (the manifest says so): unlike the WAL inode, the main file survives process exit at
 # its path, and a multi-GB copy inside a shutdown path is a worse failure than a header-only artifact.
+# Operators can raise it via database.retired_generation_max_bytes (resolve_retired_generation_main_image_max_bytes).
 RETIRED_GENERATION_MAIN_IMAGE_MAX_BYTES = 512 * 1024 * 1024
 _CAPTURE_CHUNK_BYTES = 8 * 1024 * 1024
 _SQLITE_HEADER_BYTES = 100
+
+
+def resolve_retired_generation_main_image_max_bytes() -> int:
+    """The configured ``database.retired_generation_max_bytes`` capture cap (512 MiB default).
+
+    Late-imports the config reader exactly like ``hermes_state_wal.resolve_journal_mode``: this
+    module must stay dependency-light, and a config that cannot be read fails safe to the cap
+    compiled in here. A value that is present but not a positive integer also fails safe, with a
+    WARNING — a silently ignored cap would hide the very degradation it governs (#139724)."""
+    default = RETIRED_GENERATION_MAIN_IMAGE_MAX_BYTES
+    try:
+        from hermes_cli.config import load_config_readonly
+        database = (load_config_readonly() or {}).get("database", {})
+        raw = database.get("retired_generation_max_bytes") if isinstance(database, dict) else None
+    except Exception:
+        return default
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        value = -1  # int(True) would pass as 1; a boolean cap is a config error, not a cap
+    else:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = -1
+    if value <= 0:
+        logger.warning("database.retired_generation_max_bytes=%r is not a positive integer; "
+                       "using the %d-byte default", raw, default)
+        return default
+    return value
 
 
 class RetiredGenerationCaptureError(RuntimeError):
@@ -574,15 +605,23 @@ def capture_retired_wal_generation(
         if header is None:
             raise RetiredGenerationCaptureError(f"cannot read the main image header of {db_path}")
         main_size = os.stat(db_path).st_size
+        main_image_cap = resolve_retired_generation_main_image_max_bytes()
         main: dict[str, Any] = {"identity": list(_stat_db_file_identity(db_path) or ()) or None,
                                 "size": main_size, "header": _parse_sqlite_header(header)}
-        if main_size <= RETIRED_GENERATION_MAIN_IMAGE_MAX_BYTES:
+        if main_size <= main_image_cap:
             main.update(mode="copied", **_copy_main_image(db_path, staging / db_path.name, size=main_size))
         else:
+            logger.warning(
+                "The retired WAL generation of %s was captured, but its main image is %d bytes, over "
+                "the %d-byte cap (database.retired_generation_max_bytes): only the %d-byte header was "
+                "kept (manifest main.mode=header_only). The WAL itself is captured whole; raise the "
+                "cap before the next capture to also capture the main image.",
+                db_path, main_size, main_image_cap, _SQLITE_HEADER_BYTES)
             header_file = staging / (db_path.name + ".header")
             header_file.write_bytes(header)
             _fsync_path(header_file)
-            main.update(mode="header_only", file=header_file.name, bytes=len(header))
+            main.update(mode="header_only", file=header_file.name, bytes=len(header),
+                        cap_bytes=main_image_cap)
         manifest["main"] = main
         # Late import: utils pulls agent-side deps; the capture must stay dependency-light.
         from utils import atomic_json_write

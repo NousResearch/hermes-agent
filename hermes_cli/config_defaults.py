@@ -47,6 +47,9 @@ DEFAULT_CONFIG = {
         # WAL sizing pragmas (ints). None = SQLite defaults (autocheckpoint 1000 pages, no limit).
         "wal_autocheckpoint": None,
         "journal_size_limit": None,
+        # Retired-WAL forensic capture cap (bytes). Above it only the main-image header is kept
+        # (512 MiB default; see hermes_state_dbfile.capture_retired_wal_generation). None = default.
+        "retired_generation_max_bytes": None,
     },
     # Soft fd limit for long-running server processes; clamped to OS hard limit. 0/false/null = off.
     "runtime": {"nofile_soft_limit": 4096},

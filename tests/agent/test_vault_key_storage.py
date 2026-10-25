@@ -197,20 +197,27 @@ def test_cloned_and_renamed_keychain_vaults_never_share_or_overwrite_an_entry(ho
     assert VaultStore(renamed / "vault").resolve_secret(item)["password"] == _LOGIN["password"]
 
 
-def test_copied_vault_still_opens_when_its_own_pointer_cannot_be_written(home, keychain, monkeypatch):
+@pytest.mark.parametrize("pointer_landed", [False, True])
+def test_copied_vault_keeps_opening_when_saving_its_own_pointer_fails(home, keychain, monkeypatch, pointer_landed):
     from agent import vault_keychain
 
     work = home("work", key_storage="keychain")
     item = _add(VaultStore())
     clone = home("clone", key_storage="keychain")
     shutil.copytree(work / "vault", clone / "vault")
+    real_write_ref = vault_keychain.write_ref
 
-    def disk_full(*_a, **_k):
+    def failing_write_ref(path, ref):
+        if pointer_landed:  # the replace happened, a later step (temp cleanup) failed
+            real_write_ref(path, ref)
         raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr(vault_keychain, "write_ref", disk_full)
+    monkeypatch.setattr(vault_keychain, "write_ref", failing_write_ref)
     assert VaultStore().resolve_secret(item)["password"] == _LOGIN["password"]
-    assert len(keychain.entries) == 1, "the half-made entry is removed, not left behind on every retry"
+    # no half-made entry left behind; an entry the saved pointer names is never deleted
+    assert len(keychain.entries) == (2 if pointer_landed else 1)
+    monkeypatch.setattr(vault_keychain, "write_ref", real_write_ref)
+    assert VaultStore().resolve_secret(item)["password"] == _LOGIN["password"], "and on every later open"
 
 
 def test_cleanup_of_an_already_deleted_keychain_entry_completes(home, keychain):

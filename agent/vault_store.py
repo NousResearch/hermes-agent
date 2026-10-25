@@ -353,6 +353,11 @@ class VaultStore:
             kc.store_key(mine, key)
             kc.write_ref(self._keyref_path, mine)
         except (kc.KeychainUnavailable, OSError):
+            # The replace can land before the error (e.g. a temp-file cleanup failing on Windows): then
+            # the saved pointer already names the new entry, which must survive.
+            with suppress(VaultError):
+                if (kc.read_ref(self._keyref_path) or {}).get("account") == mine["account"]:
+                    return mine
             kc.delete_key(mine)  # no orphan per retry; the shared entry keeps serving reads
             logger.warning("could not give the copied vault in %s its own keychain entry", self._base, exc_info=True)
             return ref

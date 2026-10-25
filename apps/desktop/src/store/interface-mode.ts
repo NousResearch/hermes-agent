@@ -87,6 +87,7 @@ export interface ModeContext {
 
 export interface ModePolicy {
   fileBrowserOpen: boolean
+  groupWork: boolean
   hideCodeDiffs: boolean
   profileRailVisible: boolean
   reasoningCollapsedByDefault: boolean
@@ -106,6 +107,8 @@ type PolicyTable = { readonly [K in ModePolicyKey]?: PolicyEntry<K> }
 const SIMPLE_POLICY: PolicyTable = {
   // Hide-style panes rest closed; their keybinds and the agent still reveal them.
   fileBrowserOpen: false,
+  // Each stretch of thinking + tool calls rests as one line between replies.
+  groupWork: true,
   // Inline diffs are the review pane's job; the changed-files summary stays.
   hideCodeDiffs: true,
   // Without the statusbar, multi-gateway installs still need the rail even

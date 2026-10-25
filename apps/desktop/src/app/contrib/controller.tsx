@@ -43,6 +43,7 @@ import { NEW_SESSION_TITLE, sessionTitle as storedSessionTitle } from '@/lib/cha
 import {
   Download,
   FileText,
+  Layers3,
   LayoutDashboard,
   PanelBottom,
   PanelTop,
@@ -95,6 +96,7 @@ import { watchSessionPins } from '@/store/session-pin-sync'
 import { $botChatScopes } from '@/store/session-states'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
+import { $groupWork, setGroupWork } from '@/store/tool-view'
 import { isBrowserWindow, isHudWindow } from '@/store/windows'
 
 import { BrowserPopoutShell } from '../chat/browser-popout-shell'
@@ -390,6 +392,14 @@ registry.registerMany([
     keywords: ['simple', 'advanced', 'mode', 'interface', 'chrome', 'minimal', 'focus', 'distraction'],
     get: () => $interfaceMode.get() === 'simple',
     set: toggleSimpleMode
+  }),
+  paletteToggle({
+    id: 'view.groupWork',
+    label: 'Group work between replies',
+    icon: Layers3,
+    keywords: ['group', 'fold', 'collapse', 'tool calls', 'thinking', 'steps', 'work', 'chain of thought'],
+    get: () => $groupWork.get(),
+    set: setGroupWork
   }),
   paletteToggle({
     id: 'view.toggleTabStrip',

@@ -25,7 +25,7 @@ import {
   pickPrimaryPreviewTarget
 } from '@/components/assistant-ui/thread/content'
 import { MessageHoverTime } from '@/components/assistant-ui/thread/message-hover-time'
-import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/message-parts'
+import { MessageParts } from '@/components/assistant-ui/thread/message-parts'
 import { ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { ResponseMessageIds } from '@/components/assistant-ui/thread/response-group'
 import { ResponseLoadingIndicator, TurnActivityIndicator } from '@/components/assistant-ui/thread/status'
@@ -90,9 +90,9 @@ const EMPTY_PARTS: readonly unknown[] = []
 // render of every assistant message. React bails out of re-rendering a child
 // whose element identity is unchanged, so a status flip on the message root
 // (pending -> complete and back, N rows per stream flush) can no longer
-// descend into the parts subtree at all. Its props were already the module
-// constant MESSAGE_PARTS_COMPONENTS, so nothing per-message is captured here.
-const MESSAGE_PARTS = <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
+// descend into the parts subtree at all. MessageParts takes no props and
+// re-renders only when the "Group work between replies" setting flips.
+const MESSAGE_PARTS = <MessageParts />
 
 interface MessageActionProps {
   messageId: string

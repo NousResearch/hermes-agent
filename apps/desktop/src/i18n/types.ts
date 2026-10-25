@@ -770,6 +770,8 @@ catalog: CatalogTranslations
       colorModeDesc: string
       toolViewTitle: string
       toolViewDesc: string
+      groupWorkTitle: string
+      groupWorkDesc: string
       hideCodeDiffsTitle: string
       hideCodeDiffsDesc: string
       hideThreadTimelineTitle: string

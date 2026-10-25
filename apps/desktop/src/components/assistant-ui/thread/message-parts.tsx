@@ -1,4 +1,5 @@
 import {
+  MessagePrimitive,
   type ReasoningMessagePartComponent,
   type TextMessagePartProps,
   type ToolCallMessagePartProps,
@@ -20,6 +21,7 @@ import { setThemeCall } from '@/components/assistant-ui/theme-picker/args'
 import { ThemeTool } from '@/components/assistant-ui/theme-picker/theme-tool'
 import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/assistant-ui/thread/agent-delivery'
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
+import { makeWorkBlock } from '@/components/assistant-ui/thread/work-block'
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fallback'
 import { parseMaybeObject, toolCallFailed } from '@/components/assistant-ui/tool/fallback-model'
@@ -39,6 +41,7 @@ import { onboardingChatStore } from '@/store/onboarding-session'
 import { $reasoningCollapsedByDefault, $showReasoning } from '@/store/reasoning-disclosure'
 import { useForcedTextDirection } from '@/store/text-direction'
 import { $showToolActivity } from '@/store/tool-activity'
+import { $groupWork } from '@/store/tool-view'
 
 type TimelineToolCallProps = ToolCallMessagePartProps & { completedAt?: number; timestamp?: number }
 
@@ -475,3 +478,21 @@ export const MESSAGE_PARTS_COMPONENTS = {
   ToolGroup: ToolGroupSlot,
   tools: { Fallback: ChainToolFallback }
 } as const
+
+// "Group work between replies": one folded line per stretch of thinking +
+// tools. In chain-of-thought mode assistant-ui ignores tools/ToolGroup/
+// ReasoningGroup; the work block renders those parts itself with
+// MESSAGE_PARTS_COMPONENTS.
+export const WORK_BLOCK_PARTS_COMPONENTS = {
+  ChainOfThought: makeWorkBlock(MESSAGE_PARTS_COMPONENTS),
+  Text: MESSAGE_PARTS_COMPONENTS.Text
+}
+
+// Module-scope elements so a re-render of the message root never descends
+// into the parts (see assistant-message.tsx). Distinct keys: flipping the
+// setting remounts the parts instead of reconciling one mode into the other.
+const STOCK_PARTS = <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} key="stock" />
+const GROUPED_PARTS = <MessagePrimitive.Parts components={WORK_BLOCK_PARTS_COMPONENTS} key="grouped" />
+
+/** A message's parts: stock rows, or grouped into work lines when the setting is on. */
+export const MessageParts: FC = () => (useStore($groupWork) ? GROUPED_PARTS : STOCK_PARTS)

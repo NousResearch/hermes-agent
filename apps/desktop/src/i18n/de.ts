@@ -969,6 +969,8 @@ export const deOverrides = {
       colorModeDesc: 'Wählen Sie einen festen Modus oder lassen Sie Hermes Ihrer Systemeinstellung folgen.',
       toolViewTitle: 'Tool-Aufruf-Anzeige',
       toolViewDesc: 'Produkt versteckt rohe Tool-Payloads; Technisch zeigt vollständige Ein-/Ausgabe.',
+      groupWorkTitle: 'Arbeit zwischen Antworten gruppieren',
+      groupWorkDesc: 'Eine Zeile pro Abschnitt aus Denken und Tool-Aufrufen. Klicken, um die Schritte zu sehen.',
       hideCodeDiffsTitle: 'Code-Diffs ausblenden',
       hideCodeDiffsDesc:
         'Dateiänderungen als Tool-Zeilen mit Anzahl hinzugefügter/entfernter Zeilen anzeigen, ohne den Code.',

@@ -43,7 +43,14 @@ import {
   setTitlebarAppActionsSide,
   type TitlebarAppActionsSide
 } from '@/store/titlebar-app-actions'
-import { $hideCodeDiffs, $toolViewMode, setHideCodeDiffs, setToolViewMode } from '@/store/tool-view'
+import {
+  $groupWork,
+  $hideCodeDiffs,
+  $toolViewMode,
+  setGroupWork,
+  setHideCodeDiffs,
+  setToolViewMode
+} from '@/store/tool-view'
 import { $toursEnabled, setToursEnabled } from '@/store/tours'
 import {
   $translucency,
@@ -130,6 +137,54 @@ function ResumeLastSessionSetting() {
       label={a.resumeLastSessionTitle}
       onChange={update}
     />
+  )
+}
+
+// Tool Call Display and "Group work between replies", the two rows that pick
+// how tool calls show, as their own component (AppearanceSettings is over its
+// code-health caps and may only shrink). Simple mode decides both, and the
+// description says so, like the other mode-bound rows.
+function ToolDisplaySettings() {
+  const { t } = useI18n()
+  const a = t.settings.appearance
+  const toolViewMode = useStore($toolViewMode)
+  const toolViewShadowed = useStore($modeShadowed('toolViewMode'))
+  const groupWork = useStore($groupWork)
+  const groupWorkShadowed = useStore($modeShadowed('groupWork'))
+
+  const withModeNote = (description: string, shadowed: boolean) =>
+    shadowed ? `${description} ${t.interfaceMode.sessionNote}` : description
+
+  const toolOptions = [
+    { id: 'product', label: a.product },
+    { id: 'technical', label: a.technical }
+  ] as const
+
+  return (
+    <>
+      <ListRow
+        action={
+          <SegmentedControl
+            onChange={id => {
+              triggerHaptic('selection')
+              setToolViewMode(id)
+            }}
+            options={toolOptions}
+            value={toolViewMode}
+          />
+        }
+        description={withModeNote(a.toolViewDesc, toolViewShadowed)}
+        id={settingElementId(ids.toolView)}
+        title={a.toolViewTitle}
+      />
+      <ToggleRow
+        checked={groupWork}
+        description={withModeNote(a.groupWorkDesc, groupWorkShadowed)}
+        id={settingElementId(ids.groupWork)}
+        label={a.groupWorkTitle}
+        onChange={setGroupWork}
+      />
+    </>
   )
 }
 
@@ -413,8 +468,6 @@ interface AppearanceSettingsProps {
 export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const { t, isSavingLocale } = useI18n()
   const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
-  const toolViewMode = useStore($toolViewMode)
-  const toolViewShadowed = useStore($modeShadowed('toolViewMode'))
   const hideCodeDiffs = useStore($hideCodeDiffs)
   const hideCodeDiffsShadowed = useStore($modeShadowed('hideCodeDiffs'))
   const hideThreadTimeline = useStore($hideThreadTimeline)
@@ -497,11 +550,6 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
     profiles.find(profile => normalizeProfileKey(profile.name) === activeProfileKey)?.name ?? activeProfileKey
 
   const modeOptions = MODE_OPTIONS.map(({ id, icon }) => ({ icon, id, label: t.settings.modeOptions[id].label }))
-
-  const toolOptions = [
-    { id: 'product', label: a.product },
-    { id: 'technical', label: a.technical }
-  ] as const
 
   const sessionDensityOptions = [
     { id: 'compact', label: a.sessionDensityCompact },
@@ -1022,23 +1070,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
             />
           )}
 
-          {show('chat-display') && (
-            <ListRow
-              action={
-                <SegmentedControl
-                  onChange={id => {
-                    triggerHaptic('selection')
-                    setToolViewMode(id)
-                  }}
-                  options={toolOptions}
-                  value={toolViewMode}
-                />
-              }
-              description={withModeNote(a.toolViewDesc, toolViewShadowed)}
-              id={settingElementId(ids.toolView)}
-              title={a.toolViewTitle}
-            />
-          )}
+          {show('chat-display') && <ToolDisplaySettings />}
 
           {show('chat-display') && (
             <ToggleRow

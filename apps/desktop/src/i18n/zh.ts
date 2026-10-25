@@ -706,6 +706,8 @@ export const zhOverrides = {
       colorModeDesc: '选择固定模式，或让 Hermes 跟随系统设置。',
       toolViewTitle: '工具调用显示',
       toolViewDesc: '产品模式隐藏原始工具数据；技术模式显示完整输入/输出。',
+      groupWorkTitle: '将回复之间的工作分组',
+      groupWorkDesc: '每段思考和工具调用显示为一行。点击即可查看步骤。',
       hideCodeDiffsTitle: '隐藏代码差异',
       hideCodeDiffsDesc: '将文件编辑显示为带有新增和删除行数的内联工具行，不显示代码。',
       hideThreadTimelineTitle: '隐藏对话时间线条',

@@ -309,6 +309,8 @@ export const arSettings = {
       colorModeDesc: 'اختر الوضع الفاتح أو الداكن أو اتبع النظام.',
       toolViewTitle: 'عرض الأدوات',
       toolViewDesc: 'تحكم في كيفية عرض نشاط الأدوات داخل المحادثة.',
+      groupWorkTitle: 'تجميع العمل بين الردود',
+      groupWorkDesc: 'سطر واحد لكل مقطع من التفكير واستدعاءات الأدوات. انقر عليه لرؤية الخطوات.',
       hideCodeDiffsTitle: 'إخفاء فروق الكود',
       hideCodeDiffsDesc: 'عرض تعديلات الملفات كسطور أدوات مضمّنة مع عدد الأسطر المضافة والمحذوفة، دون عرض الكود.',
       hideThreadTimelineTitle: 'إخفاء أشرطة المخطط الزمني للمحادثة',

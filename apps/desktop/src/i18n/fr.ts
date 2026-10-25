@@ -973,6 +973,8 @@ export const frOverrides = {
       toolViewTitle: "Affichage des appels d'outil",
       toolViewDesc:
         'Le mode Produit masque les charges utiles brutes ; le mode Technique affiche les entrées/sorties complètes.',
+      groupWorkTitle: 'Regrouper le travail entre les réponses',
+      groupWorkDesc: "Une ligne par séquence de réflexion et d'appels d'outils. Cliquez dessus pour voir les étapes.",
       hideCodeDiffsTitle: 'Masquer les diffs de code',
       hideCodeDiffsDesc:
         'Afficher les modifications de fichiers sous forme de lignes d’outil avec le nombre de lignes ajoutées/supprimées, sans le code.',

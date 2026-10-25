@@ -945,6 +945,8 @@ export const en: Translations = {
       colorModeDesc: 'Pick a fixed mode or let Hermes follow your system setting.',
       toolViewTitle: 'Tool Call Display',
       toolViewDesc: 'Product hides raw tool payloads; Technical shows full input/output.',
+      groupWorkTitle: 'Group work between replies',
+      groupWorkDesc: 'One line per stretch of thinking and tool calls. Click it to see the steps.',
       hideCodeDiffsTitle: 'Hide code diffs',
       hideCodeDiffsDesc: 'Show file edits as inline tool rows with added/removed line counts, without the code.',
       hideThreadTimelineTitle: 'Hide thread timeline bars',

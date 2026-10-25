@@ -493,6 +493,8 @@ export const jaOverrides = {
       colorModeDesc: '固定モードを選ぶか、Hermes をシステム設定に合わせます。',
       toolViewTitle: 'ツール呼び出しの表示',
       toolViewDesc: 'プロダクト表示は生のツールペイロードを隠し、テクニカル表示は入出力をすべて表示します。',
+      groupWorkTitle: '返信の間の作業をまとめる',
+      groupWorkDesc: '思考とツール呼び出しのひと続きを 1 行にまとめます。クリックすると手順を表示します。',
       hideCodeDiffsTitle: 'コードの差分を非表示',
       hideCodeDiffsDesc: 'ファイル編集は追加・削除行数付きのインラインツール行で表示し、コードは表示しません。',
       hideThreadTimelineTitle: 'スレッドのタイムラインバーを非表示',

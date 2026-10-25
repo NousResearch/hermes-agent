@@ -972,6 +972,8 @@ export const esOverrides = {
       colorModeDesc: 'Elige un modo fijo o deja que Hermes siga la configuración del sistema.',
       toolViewTitle: 'Visualización de llamadas a herramientas',
       toolViewDesc: 'Producto oculta las cargas útiles sin procesar; Técnico muestra entrada/salida completas.',
+      groupWorkTitle: 'Agrupar el trabajo entre respuestas',
+      groupWorkDesc: 'Una línea por cada tramo de razonamiento y llamadas a herramientas. Haz clic para ver los pasos.',
       hideCodeDiffsTitle: 'Ocultar diffs de código',
       hideCodeDiffsDesc:
         'Muestra las ediciones de archivos como filas de herramienta con el recuento de líneas añadidas/eliminadas, sin el código.',

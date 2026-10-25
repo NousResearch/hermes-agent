@@ -33,25 +33,26 @@ def _translate_acp_cwd(cwd: str) -> str:
 def _normalize_cwd_for_compare(cwd: str | None) -> str:
     expanded = os.path.expanduser(str(cwd or ".").strip() or ".")
 
-    # Windows drive paths -> WSL mount form so history filters match across hosts.
+    if sys.platform == "win32" and re.match(r"^/mnt/[A-Za-z]/", expanded):
+        # Already in compare form; Windows realpath would re-prefix the
+        # current drive (C:\mnt\c\...) — just normalize the drive letter.
+        return f"/mnt/{expanded[5].lower()}/{expanded[7:]}"
+
+    # Resolve symlink aliases while the path is still native: translating a
+    # Windows drive path to /mnt/<drive>/... first makes Windows realpath
+    # treat it as drive-relative (C:\mnt\c\...), so aliases never resolve
+    # and history filters drop the workspace's own sessions (#144475).
+    try:
+        expanded = os.path.realpath(expanded)
+    except OSError:
+        expanded = os.path.normpath(expanded)
+
     translated = windows_path_to_wsl(expanded)
     if translated is not None:
-        expanded = translated
-    elif re.match(r"^/mnt/[A-Za-z]/", expanded):
-        expanded = f"/mnt/{expanded[5].lower()}/{expanded[7:]}"
-
-    # realpath resolves symlink aliases (macOS ``/var`` vs ``/private/var``, ``/tmp`` vs
-    # ``/private/tmp``) that otherwise drop a workspace's own sessions; it is lexical
-    # for missing paths (e.g. WSL-translated drives).
-    try:
-        # Resolve symlink aliases so equivalent spellings of the same directory compare equal — macOS
-        # reports editor workspaces as ``/var/...`` while sessions get stored under ``/private/var/...``
-        # (and ``/tmp`` vs ``/private/tmp``), which made ACP history filters silently drop a workspace's own
-        # sessions. WSL-translated Windows drives — keep the previous normpath behavior. Ported from
-        # PrimeIntellect-ai/prime-agent#628.
-        return os.path.realpath(expanded)
-    except OSError:
-        return os.path.normpath(expanded)
+        return translated
+    if re.match(r"^/mnt/[A-Za-z]/", expanded):
+        return f"/mnt/{expanded[5].lower()}/{expanded[7:]}"
+    return expanded
 
 
 def _build_session_title(title: Any, preview: Any, cwd: str | None) -> str:

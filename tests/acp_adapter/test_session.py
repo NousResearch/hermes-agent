@@ -3,6 +3,7 @@
 import contextlib
 import io
 import json
+import os
 import re
 from types import SimpleNamespace
 import pytest
@@ -347,6 +348,23 @@ class TestSymlinkAliasNormalization:
         state.history.append({"role": "user", "content": "hello"})
         listed = manager.list_sessions(cwd=str(alias))
         assert [s["session_id"] for s in listed] == [state.session_id]
+
+
+@pytest.mark.platforms("windows")
+class TestWindowsDriveCwdNormalization:
+    """Regression for #144475: translating a Windows drive path to /mnt/...
+    before realpath makes Windows realpath re-prefix the current drive
+    (C:\\mnt\\c\\...), so aliases never resolve and history filters drop the
+    workspace's own sessions."""
+
+    def test_native_drive_path_normalizes_to_wsl_form(self, tmp_path):
+        drive, rest = os.path.splitdrive(str(tmp_path))
+        expected = f"/mnt/{drive[0].lower()}/{rest.replace(chr(92), '/').lstrip('/')}"
+        assert acp_session._normalize_cwd_for_compare(str(tmp_path)) == expected
+
+    def test_normalized_form_is_stable(self, tmp_path):
+        once = acp_session._normalize_cwd_for_compare(str(tmp_path))
+        assert acp_session._normalize_cwd_for_compare(once) == once
 
 
 # ---------------------------------------------------------------------------

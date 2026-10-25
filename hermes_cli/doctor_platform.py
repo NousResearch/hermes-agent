@@ -12,7 +12,7 @@ from pathlib import Path
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import is_nix_install_method, recommended_update_command_for_method
 from hermes_cli.doctor_report import (
-    Finding, _fail_and_issue, _section, check_bool, check_fail, check_info, check_ok, check_warn, doctor_check,
+    Finding, _fail_and_issue, section, check_bool, check_fail, check_info, check_ok, check_warn, doctor_check,
     warn_on_error,
 )
 from hermes_constants import is_termux as _is_termux
@@ -189,7 +189,7 @@ def _check_s6_supervision(issues: list[str]) -> None:
         return
     if detect_service_manager() != "s6":
         return
-    _section("s6 Supervision")
+    section("s6 Supervision")
     mgr = S6ServiceManager()
     for static in ("main-hermes", "dashboard"):  # s6-rc symlinks under /run/service/, same s6-svstat probe
         up = mgr.is_running(static)
@@ -270,7 +270,7 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
     host_unit = user_systemd_unit_dir() / f"{_SERVICE_BASE}.service"
     if not (get_systemd_unit_path().exists() or host_unit.exists()):
         return
-    _section("Gateway Service")
+    section("Gateway Service")
     linger_enabled, linger_detail = get_systemd_linger_status()
     if linger_enabled is None:
         return check_warn("Could not verify systemd linger", f"({linger_detail})")
@@ -508,7 +508,7 @@ def _check_windows_gateway_autostart(should_fix: bool, f: Finding) -> None:
     redundant = gateway_windows.redundant_autostart_entries()
     if not redundant:
         return
-    _section("Windows Gateway Autostart")
+    section("Windows Gateway Autostart")
     if not should_fix:
         for path in redundant:
             check_warn("Redundant gateway login item", f"({path})")
@@ -590,7 +590,7 @@ def _check_command_installation(should_fix: bool, f: Finding) -> None:
     from hermes_cli.doctor import PROJECT_ROOT
     if sys.platform == "win32":
         return
-    _section("Command Installation")
+    section("Command Installation")
     from hermes_cli.config import detect_install_method
 
     method = detect_install_method(PROJECT_ROOT)

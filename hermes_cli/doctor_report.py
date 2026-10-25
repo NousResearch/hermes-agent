@@ -28,10 +28,13 @@ def check_bool(cond, ok, bad, *, fail: bool = False):
     return bool(cond)
 
 
-def _section(title: str) -> None:
+def section(title: str) -> None:
     """Print a doctor section banner: blank line + bold cyan ◆ title."""
     print()
     print(color(f"◆ {title}", Colors.CYAN, Colors.BOLD))
+
+
+_section = section  # original private spelling, kept as an alias
 
 
 def _fail_and_issue(text: str, detail: str, fix: str, issues: list[str]) -> None:

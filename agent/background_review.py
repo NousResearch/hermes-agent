@@ -793,7 +793,7 @@ def _snapshot_review_usage(review_agent: Any) -> Dict[str, Any]:
         **{key: getattr(review_agent, key, None) for key in ("model", "provider", "base_url")},
         **{key: int(getattr(review_agent, f"session_{key}", 0) or 0) for key in _USAGE_COUNTERS},
         "estimated_cost_usd": getattr(review_agent, "session_estimated_cost_usd", None),
-        # agent_init.py seeds session_cost_status="unknown" / session_cost_source="none"
+        # run_agent.py:427-428 seeds session_cost_status="unknown" / session_cost_source="none"
         # as CONSTRUCTOR DEFAULTS, so a fork that never priced a turn still carries them
         # — and _record_review_usage_to_parent only checks that counters are non-zero,
         # not that any turn was priced. Emitting that pair non-NULL makes insights.py

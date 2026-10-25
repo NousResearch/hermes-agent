@@ -148,21 +148,56 @@ def profile_scoped() -> bool:
 # (apply_yaml_config_fn, #25443)
 # ---------------------------------------------------------------------------
 
+# Marker prefix for values this bridge itself wrote into ``os.environ``. A CLI-started gateway
+# hands its environment to the restart child, so a bridged value outlives the YAML read that
+# produced it; without the marker the bridge would skip on the next start ("env is set") and the
+# edited YAML would never take effect (#109032's mirror image).
+BRIDGED_ENV_MARKER_PREFIX = "HERMES_BRIDGED_"
+
+
+def bridged_env_marker(name: str) -> str:
+    return f"{BRIDGED_ENV_MARKER_PREFIX}{name}"
+
+
+def _supplied_by_operator(name: str) -> bool:
+    """True when ``name`` came from the launch profile's ``.env``: a deliberate value that wins (#109032).
+
+    A ``.env`` entry can hold exactly the value a previous bridge wrote, so value comparison alone
+    cannot tell it from the bridge's own leftover — this is the one case it must not clobber.
+    """
+    try:
+        from hermes_cli.env_loader import launch_dotenv_keys
+    except ImportError:  # bridging must not fail because the loader is unavailable
+        return False
+    return name in launch_dotenv_keys()
+
+
 def yaml_env_setter() -> Callable[[str, Any], None]:
-    """``set_env(name, value)`` for ``apply_yaml_config_fn`` hooks: writes ``os.environ[name]`` only
-    when the var is unset (explicit env wins over YAML) and NEVER while a multiplexed secondary
+    """``set_env(name, value)`` for ``apply_yaml_config_fn`` hooks: writes ``os.environ[name]``
+    unless the operator set that var themselves, and NEVER while a multiplexed secondary
     profile's scope is active — the gateway loads every secondary's config inside
     ``_profile_runtime_scope``, so a write there would pin that profile's policy process-wide and the
     default profile's adapters would read it as their own (first-writer-wins poisoning, #80099).
     Hooks seed the same values into the returned ``extra`` so each profile's adapter reads its own.
     Lists are comma-joined; ``None`` is skipped.
+
+    Precedence is per *value*, not just per name: a var whose current value is the one this bridge
+    wrote last time is the bridge's own leftover (a restarted gateway inherits it) and is refreshed
+    from YAML, while any other preset value is an operator's and wins.
     """
     skip = profile_scoped()
 
     def set_env(name: str, value: Any) -> None:
-        if value is None or skip or os.getenv(name):
+        if value is None or skip:
             return
-        os.environ[name] = ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
+        bridged = ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
+        marker = bridged_env_marker(name)
+        current = os.getenv(name)
+        if current is not None and current.strip():
+            if current != os.getenv(marker) or _supplied_by_operator(name):
+                return  # the operator's value, not this bridge's leftover
+        os.environ[name] = bridged
+        os.environ[marker] = bridged
 
     return set_env
 

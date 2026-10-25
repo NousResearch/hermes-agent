@@ -50,7 +50,8 @@ from serving as an acceptance gate. Check Roots and the CFO ledger at their own
 authenticated boundaries.
 
 Before installing an exact candidate, rehearse its bytes and rollback entirely
-inside a temporary directory:
+inside a temporary directory. This harness is POSIX-only; it refuses other
+platforms until equivalent safe-root ownership and permission checks exist:
 
 ```bash
 python evals/artifact_review_install_rehearsal.py \

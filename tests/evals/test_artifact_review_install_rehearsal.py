@@ -162,3 +162,13 @@ def test_rehearsal_revalidates_head_after_snapshot(
     with pytest.raises(ValueError, match="HEAD changed"):
         rehearse(repo, commit, ["component.py"], safe_root=_safe_root(repo))
 
+
+def test_rehearsal_refuses_platform_without_posix_ownership_checks(
+    repo: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(rehearsal.os, "name", "nt")
+    with pytest.raises(RuntimeError, match="POSIX-only"):
+        rehearse(
+            repo, _git(repo, "rev-parse", "HEAD"), ["component.py"],
+            safe_root=_safe_root(repo),
+        )

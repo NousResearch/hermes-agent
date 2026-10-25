@@ -260,4 +260,3 @@ def build_artifact_review_evidence(
     }
     report["report_sha256"] = _digest(report)
     return report
-

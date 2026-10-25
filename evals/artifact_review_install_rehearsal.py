@@ -13,12 +13,16 @@ import json
 import os
 from pathlib import Path
 from pathlib import PurePosixPath
-import pwd
 import shutil
 import subprocess
 import tarfile
 import tempfile
 from typing import Sequence
+
+if os.name == "posix":
+    import pwd
+else:  # pragma: no cover - import boundary exercised by the explicit platform gate
+    pwd = None  # type: ignore[assignment]
 
 
 SCHEMA = "hermes.isolated-install-rollback-rehearsal/v2"
@@ -94,6 +98,11 @@ def _file_sha256(path: Path) -> str:
 
 
 def _validated_safe_root(repo: Path, safe_root: Path) -> Path:
+    if os.name != "posix" or pwd is None:
+        raise RuntimeError(
+            "isolated install rehearsal is POSIX-only because safe-root ownership "
+            "and mode checks have no equivalent Windows implementation"
+        )
     if safe_root.is_symlink():
         raise ValueError("safe root must be a real existing directory")
     safe_root = safe_root.resolve(strict=True)
@@ -245,4 +254,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

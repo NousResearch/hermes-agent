@@ -410,9 +410,12 @@ def retire_live_sessions(authority, session_ids, *, require_fence=False):
     release_launch_secrets(authority, session_ids)
     release_session_workspaces(authority, session_ids)
     from tools.async_delegation import allow_for_session
+    from gateway.session_vault_prompt import release_unlocks
     for sid in session_ids:
         # A closed session's refusal of new delegations (session_viewer_close) goes with its live state.
         allow_for_session((authority.profile_id, sid))
+        # So do the password managers it unlocked: this path never reaches the viewer-close settle.
+        release_unlocks(sid)
         candidate = authority.sessions.pop(sid, None)
         if candidate is not None and not candidate.superseded:  # its route is the newer session's
             evict = getattr(authority.runner, '_evict_cached_agent', None)

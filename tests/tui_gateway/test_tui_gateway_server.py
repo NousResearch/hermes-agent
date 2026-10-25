@@ -18748,14 +18748,14 @@ def test_decode_attach_base64_helper():
     import base64 as _b64
 
     raw = _b64.b64encode(b"hello").decode("ascii")
-    assert server._decode_attach_base64(raw, mime_prefix="image/") == b"hello"
+    assert server._decode_attach_base64(raw, mime_prefix="image/", max_bytes=5) == b"hello"
     assert (
-        server._decode_attach_base64(f"data:image/png;base64,{raw}", mime_prefix="image/")
+        server._decode_attach_base64(f"data:image/png;base64,{raw}", mime_prefix="image/", max_bytes=5)
         == b"hello"
     )
     # whitespace inside payload is tolerated
-    assert server._decode_attach_base64(raw[:4] + "\n" + raw[4:], mime_prefix="image/") == b"hello"
-    assert server._decode_attach_base64("@@@", mime_prefix="image/") is None
+    assert server._decode_attach_base64(raw[:4] + "\n" + raw[4:], mime_prefix="image/", max_bytes=5) == b"hello"
+    assert server._decode_attach_base64("@@@", mime_prefix="image/", max_bytes=5) is None
 
 
 def test_sniff_image_ext_magic_and_filename():

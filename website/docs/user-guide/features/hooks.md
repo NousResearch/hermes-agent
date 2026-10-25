@@ -454,7 +454,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
 | `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
-| `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
+| `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform`, `side_question_token` | Full prompt, response, and history. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
 | `pre_api_request` | Observer | Per provider attempt, immediately before the request; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | High sensitivity: legacy `user_message`, `conversation_history`, and `request_messages` are intentionally raw; prefer sanitized `request`. |
@@ -778,6 +778,7 @@ def my_callback(session_id: str, user_message: str, assistant_response: str,
 | `conversation_history` | `list` | Copy of the full message list after the turn completed |
 | `model` | `str` | The model identifier |
 | `platform` | `str` | Where the session is running |
+| `side_question_token` | `str \| None` | One-use token for [`ctx.side_question`](../../developer-guide/plugin-llm-access.md#asking-the-sessions-own-agent-ctxside_question), shared by every plugin of the session's profile; `None` unless a loaded plugin holds the `llm.side_question` capability, and always `None` for cron runs and subagent turns |
 
 **Fires:** In `agent/turn_finalizer.py` (`finalize_turn()`, called by `run_conversation()` in `agent/conversation_loop.py`), after the tool loop exits with a final response. Guarded by `if final_response and not interrupted` — so it does **not** fire when the user interrupts mid-turn or the agent hits the iteration limit without producing a response.
 
@@ -1776,7 +1777,10 @@ def my_callback(
 When CLI streaming is enabled, an append-only transform is printed after the
 streamed body. A transform that replaces the response is printed in full after
 the streamed body, labeled as a post-stream transformation, so replacement
-content is never silently lost.
+content is never silently lost. In the TUI, the desktop app and messaging chats
+that edit a streamed message in place, the streamed reply is replaced by the
+rewrite when the turn completes. The hook runs on the finished text, so the
+unrewritten reply is visible while it streams.
 
 ```python
 import os, re
@@ -1791,6 +1795,34 @@ def register(ctx):
 ```
 
 The hook is guarded on a non-empty, non-interrupted response — it will not fire on stop-button interrupts or empty turns. Exceptions are logged as warnings and do not break agent execution.
+
+#### Holding the reply until it is rewritten (`hold_stream=True`) {#hold-stream}
+
+The hook runs on the finished reply, so with streaming on the user watches the unrewritten text arrive and then sees it replaced. A plugin that must see the reply before the user does (redaction, policy filters) declares it when it registers:
+
+```python
+def register(ctx):
+    ctx.register_hook("transform_llm_output", redact, hold_stream=True)
+```
+
+While a plugin loaded in a profile holds the stream, that profile's sessions show the reply only as the rewritten final:
+
+| Surface | While the reply is held | When the turn ends |
+|---|---|---|
+| Messaging (Telegram, Discord, Slack, Matrix, …) | The platform's typing indicator; no draft, edit or native stream message | The rewrite is sent once as a normal message (a long one splits like any reply) |
+| Slack over Relay | Typing indicator; no `chat.*Stream` message | The rewrite, sent once |
+| TUI, desktop app, classic CLI, ACP editors | The usual busy/thinking indicator; no reply text | The rewrite, shown once |
+| API server (`/v1/chat/completions`, `/v1/responses`, streaming) | The response stream is open with no text | The rewrite is the response's only text |
+
+What else is held:
+
+- **Commentary** (model text sent between tool calls, `display.interim_assistant_messages`) never passes through `transform_llm_output`, so a held turn drops it. It stays in the model's context but is stored hidden, so resuming or reopening the session (TUI, desktop app, dashboard, classic CLI) does not show it either. The same goes for every other model text the user never got: an answer Hermes sent back for another try (late language-server errors, verify-on-stop), a reply cut by the output limit before its continuation, a call to an unknown tool.
+- **Every way a turn ends passes through the hook.** A reply cut by the output limit on every continuation, an iteration-budget summary, a provider or compression error, an interrupt: whatever text the turn ends with reaches the user only after `transform_llm_output` saw it, and model text is stored as the rewrite.
+- **A failing hook withholds the reply.** If no hook rewrote the reply and one raised or timed out, the user gets a short "reply withheld" notice, never the original.
+- **The hook set is fixed for the turn.** A held turn runs the `transform_llm_output` hooks that were loaded when it started, even if plugins are re-discovered mid-turn.
+- **Tool progress and reasoning** are not the reply and keep their own settings (`display.tool_progress`, `display.show_reasoning`). Turn them off as well if model output the plugin never saw must not reach the user.
+
+`hold_stream` applies to `transform_llm_output` only; on any other hook it is ignored with a warning. Plugins that register `transform_llm_output` without it keep normal streaming.
 
 ### API-request observer hooks
 
@@ -1810,7 +1842,7 @@ Fires for a failed provider attempt with status/retry timing, an `error` object,
 
 #### `pre_auxiliary_call` / `post_auxiliary_call`
 
-Auxiliary LLM calls — session titling, context compression, MoA advisors and the aggregator, vision, approval classification, memory and other side tasks — run outside the main tool-calling loop and do **not** fire `pre_api_request` / `post_api_request` (those stay turn-scoped, so a trace-per-turn plugin never sees side traffic by accident). Subscribe to `pre_auxiliary_call` / `post_auxiliary_call` instead: they fire once per physical provider attempt (retries and fallbacks included) with the same payload shape plus `aux_task` (the task name, e.g. `title_generation`, `compression`, `moa_aggregator`, `vision`). `session_id` / `task_id` / `turn_id` are the parent turn's when the call runs under one, empty otherwise; `api_request_id` (`aux-…`) is shared by every attempt of one logical call and `retry_count` distinguishes them. Both are observer-only and fail-open: a raising or timed-out callback is logged and the auxiliary task proceeds. `post_auxiliary_call` carries `error` / `error_type` when the attempt raised and `streaming: True` (with `usage`/`response` `None`) when the response is handed back as a stream.
+Auxiliary LLM calls — session titling, context compression, MoA advisors and the aggregator, vision, approval classification, memory and other side tasks — run outside the main tool-calling loop and do **not** fire `pre_api_request` / `post_api_request` (those stay turn-scoped, so a trace-per-turn plugin never sees side traffic by accident). Subscribe to `pre_auxiliary_call` / `post_auxiliary_call` instead: they fire once per physical provider attempt (retries and fallbacks included) with the same payload shape plus `aux_task` (the task name, e.g. `title_generation`, `compression`, `moa_aggregator`, `vision`, `plugin_side_question` for a plugin's [`ctx.side_question`](../../developer-guide/plugin-llm-access.md#asking-the-sessions-own-agent-ctxside_question), which also carries the asking plugin's `plugin_id`). `session_id` / `task_id` / `turn_id` are the parent turn's when the call runs under one, empty otherwise; `api_request_id` (`aux-…`) is shared by every attempt of one logical call and `retry_count` distinguishes them. Both are observer-only and fail-open: a raising or timed-out callback is logged and the auxiliary task proceeds. `post_auxiliary_call` carries `error` / `error_type` when the attempt raised and `streaming: True` (with `usage`/`response` `None`) when the response is handed back as a stream.
 
 ### `on_skill_lifecycle`
 

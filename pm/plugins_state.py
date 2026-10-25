@@ -11,6 +11,9 @@ import logging
 
 LOG = logging.getLogger(__name__)
 
+# plugins.<RECORD> maps each plugin an update disabled to {enabled, reason}: what to undo once it fits.
+RECORD = "disabled_by_update"
+
 
 def _profiles_root() -> Path:
     # Plugin discovery and dependency publication must use the same home root.
@@ -151,10 +154,38 @@ def enabled_plugins_ordered(*, proposed_home=None, enabled=None, disabled=None,
 
 def _provider_from_config(home: Path, config: dict[str, Any], *, installing: Path | None = None) -> Optional[str]:
     """The ``memory.provider`` key of an already-parsed config, when its
-    plugin dir exists (no dir = not a member)."""
+    plugin dir exists (no dir = not a member) and plugins.disabled does not park it."""
     provider = (config.get("memory") or {}).get("provider")
     if not provider or not provider.strip():
         return None
     name = provider.strip()
-    return name if (_is_directory(home / "plugins" / name) or
-                    (installing is not None and (home / "plugins" / name).resolve() == installing.resolve())) else None
+    plugin_dir = home / "plugins" / name
+    if installing is not None and plugin_dir.resolve() == installing.resolve():
+        return name
+    if not _is_directory(plugin_dir) or _parked(plugin_dir, config):
+        return None
+    return name
+
+
+def _parked(plugin_dir: Path, config: dict[str, Any]) -> bool:
+    """Whether plugins.disabled names this provider plugin. The provider loader honours the same
+    spellings (plugins.memory._explicitly_disabled), so a parked provider is never loaded and
+    installing its dependencies could only fail the generation for nothing."""
+    disabled = (config.get("plugins") or {}).get("disabled") or []
+    return bool(plugin_spellings(plugin_dir) & set(disabled))
+
+
+def plugin_spellings(plugin_dir: Path, key: str | None = None) -> set[str]:
+    """Every name a plugins list may use for this plugin: the selection key and its bare leaf, the
+    directory name and the manifest ``name:``. Read from the plugin itself, so it holds in any home."""
+    from pm.plugin_declarations import native_manifest_file, read_native_manifest
+
+    names = {plugin_dir.name} | ({key, key.rsplit("/", 1)[-1]} if key else set())
+    try:
+        manifest_file = native_manifest_file(plugin_dir)
+        if manifest_file is not None:
+            names.add(str(read_native_manifest(manifest_file).get("name") or ""))
+    except ValueError:
+        pass  # no readable manifest: the other spellings still hold
+    names.discard("")
+    return names

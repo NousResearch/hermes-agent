@@ -5,7 +5,11 @@ import { stageDroppedFilePath, useComposerActions } from '@/app/chat/hooks/use-c
 import { uploadComposerAttachment } from '@/app/session/hooks/use-prompt-actions'
 import type { HermesStagedUpload } from '@/global'
 import {
-  $composerAttachments, clearSessionDraft, type ComposerAttachment, stashSessionDraft, takeSessionDraft
+  $composerAttachments,
+  clearSessionDraft,
+  type ComposerAttachment,
+  stashSessionDraft,
+  takeSessionDraft
 } from '@/store/composer'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import { $connection, $sessions } from '@/store/session'
@@ -25,7 +29,10 @@ const file = () => new File(['payload'], 'notes.txt', { type: 'text/plain' })
 const pastedText = 'Pasted notes\nこんにちは 🌍'
 
 const rawAttachment = (path = source.path): ComposerAttachment => ({
-  id: `file:${path}`, kind: 'file', label: path.split('/').pop() || path, path
+  id: `file:${path}`,
+  kind: 'file',
+  label: path.split('/').pop() || path,
+  path
 })
 
 const attached = () => ({ attached: true, ref_text: refText, uploaded: true })
@@ -38,10 +45,12 @@ async function installBrowser(withProvenance = true) {
     const url = new URL(String(input), window.location.origin)
 
     if (url.pathname === '/api/chat/file-upload' && init?.method === 'POST') {
-      return new Response(JSON.stringify({
-        path: source.path,
-        ...(withProvenance ? { staged_upload: source } : {})
-      }))
+      return new Response(
+        JSON.stringify({
+          path: source.path,
+          ...(withProvenance ? { staged_upload: source } : {})
+        })
+      )
     }
 
     if (url.pathname === '/api/fs/read-data-url') {
@@ -76,16 +85,22 @@ describe('browser staged attachment transport', () => {
   it('keeps the picked filename readable while retaining the exact staged source identity', async () => {
     await installBrowser()
 
-    const { result } = renderHook(() => useComposerActions({
-      activeSessionId: null, currentCwd: '/workspace', requestGateway: vi.fn()
-    }))
+    const { result } = renderHook(() =>
+      useComposerActions({
+        activeSessionId: null,
+        currentCwd: '/workspace',
+        requestGateway: vi.fn()
+      })
+    )
 
     vi.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(function (this: HTMLInputElement) {
       Object.defineProperty(this, 'files', { configurable: true, value: [file()] })
       this.dispatchEvent(new Event('change'))
     })
 
-    await act(async () => { await result.current.pickContextPaths('file') })
+    await act(async () => {
+      await result.current.pickContextPaths('file')
+    })
     const picked = $composerAttachments.get()[0]!
 
     expect(picked.label).toBe('notes.txt')
@@ -106,22 +121,30 @@ describe('browser staged attachment transport', () => {
         const path = await stageDroppedFilePath({ file: file(), path: '' })
         attachment = rawAttachment(path)
       } else {
-        const { result } = renderHook(() => useComposerActions({
-          activeSessionId: null,
-          currentCwd: '/workspace',
-          requestGateway: vi.fn()
-        }))
+        const { result } = renderHook(() =>
+          useComposerActions({
+            activeSessionId: null,
+            currentCwd: '/workspace',
+            requestGateway: vi.fn()
+          })
+        )
 
         if (flow === 'picker') {
           vi.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(function (this: HTMLInputElement) {
             Object.defineProperty(this, 'files', { configurable: true, value: [file()] })
             this.dispatchEvent(new Event('change'))
           })
-          await act(async () => { await result.current.pickContextPaths('file') })
+          await act(async () => {
+            await result.current.pickContextPaths('file')
+          })
         } else if (flow === 'paste') {
-          await act(async () => { await result.current.attachPastedText(pastedText) })
+          await act(async () => {
+            await result.current.attachPastedText(pastedText)
+          })
         } else {
-          await act(async () => { await result.current.attachDroppedItems([{ file: file(), path: '' }]) })
+          await act(async () => {
+            await result.current.attachDroppedItems([{ file: file(), path: '' }])
+          })
         }
 
         expect($composerAttachments.get()[0]?.stagedUpload).toEqual(source)
@@ -137,12 +160,17 @@ describe('browser staged attachment transport', () => {
       const requestGateway = vi.fn(async () => attached() as never)
 
       const result = await uploadComposerAttachment(attachment, {
-        backendCwd: '/workspace', remote: true, requestGateway,
-        sessionId: 'owner-runtime', terminalBackend: 'docker'
+        backendCwd: '/workspace',
+        remote: true,
+        requestGateway,
+        sessionId: 'owner-runtime',
+        terminalBackend: 'docker'
       })
 
       expect(requestGateway).toHaveBeenCalledWith('file.attach', {
-        name: attachment.label, session_id: 'owner-runtime', staged_upload: source
+        name: attachment.label,
+        session_id: 'owner-runtime',
+        staged_upload: source
       })
       expect(result.refText).toBe(refText)
       expect(result.stagedUpload).toEqual(source)
@@ -176,7 +204,9 @@ describe('browser staged attachment transport', () => {
 
     for (const sessionId of ['first-composer', 'second-composer']) {
       const result = await uploadComposerAttachment(rawAttachment(), {
-        remote: true, requestGateway, sessionId
+        remote: true,
+        requestGateway,
+        sessionId
       })
 
       expect(result.stagedUpload).toEqual(source)
@@ -191,10 +221,15 @@ describe('browser staged attachment transport', () => {
     const path = await stageDroppedFilePath({ file: file(), path: '' })
     const requestGateway = vi.fn(async () => attached() as never)
     await uploadComposerAttachment(rawAttachment(path), {
-      remote: true, requestGateway, sessionId: 'runtime'
+      remote: true,
+      requestGateway,
+      sessionId: 'runtime'
     })
     expect(requestGateway).toHaveBeenCalledWith('file.attach', {
-      name: sourceName, path, session_id: 'runtime', data_url: 'data:text/plain;base64,cGF5bG9hZA=='
+      name: sourceName,
+      path,
+      session_id: 'runtime',
+      data_url: 'data:text/plain;base64,cGF5bG9hZA=='
     })
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
@@ -204,7 +239,8 @@ describe('browser staged attachment transport', () => {
     const path = await stageDroppedFilePath({ file: file(), path: '' })
     const attachment = { ...rawAttachment(path), stagedUpload: source }
 
-    const requestGateway = vi.fn()
+    const requestGateway = vi
+      .fn()
       .mockRejectedValueOnce(new Error('temporary write failure'))
       .mockResolvedValueOnce(attached())
 
@@ -224,9 +260,14 @@ describe('browser staged attachment transport', () => {
     let first = true
 
     const requestGateway = vi.fn(async (method: string) => {
-      if (method === 'session.resume') { return { session_id: 'new-runtime' } as never }
+      if (method === 'session.resume') {
+        return { session_id: 'new-runtime' } as never
+      }
 
-      if (first) { first = false; throw new Error('session not found') }
+      if (first) {
+        first = false
+        throw new Error('session not found')
+      }
 
       return attached() as never
     })
@@ -234,14 +275,19 @@ describe('browser staged attachment transport', () => {
     const recovered = vi.fn()
 
     const result = await uploadComposerAttachment(rawAttachment(), {
-      remote: true, requestGateway, sessionId: 'old-runtime', storedSessionId: 'stored-upload-recovery',
+      remote: true,
+      requestGateway,
+      sessionId: 'old-runtime',
+      storedSessionId: 'stored-upload-recovery',
       onSessionRecovered: recovered
     })
 
     expect(result.attachedSessionId).toBe('new-runtime')
     expect(recovered).toHaveBeenCalledWith('new-runtime')
     expect(requestGateway).toHaveBeenLastCalledWith('file.attach', {
-      name: sourceName, session_id: 'new-runtime', staged_upload: source
+      name: sourceName,
+      session_id: 'new-runtime',
+      staged_upload: source
     })
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
@@ -252,9 +298,13 @@ describe('browser staged attachment transport', () => {
       const fetchMock = await installBrowser()
       await stageDroppedFilePath({ file: file(), path: '' })
       const requestGateway = vi.fn().mockRejectedValue(new Error(message))
-      await expect(uploadComposerAttachment(rawAttachment(), {
-        remote: true, requestGateway, sessionId: 'runtime'
-      })).rejects.toThrow(message)
+      await expect(
+        uploadComposerAttachment(rawAttachment(), {
+          remote: true,
+          requestGateway,
+          sessionId: 'runtime'
+        })
+      ).rejects.toThrow(message)
       expect(requestGateway).toHaveBeenCalledTimes(1)
       expect(fetchMock).toHaveBeenCalledTimes(1)
     }
@@ -269,10 +319,17 @@ describe('browser staged attachment transport', () => {
       status: 413
     },
     { body: '<html><body><h1>502 Bad Gateway</h1></body></html>', message: /\(502\)/, status: 502 },
-    { body: JSON.stringify({ detail: 'Upload request is too large' }), message: /^Upload request is too large$/, status: 413 }
+    {
+      body: JSON.stringify({ detail: 'Upload request is too large' }),
+      message: /^Upload request is too large$/,
+      status: 413
+    }
   ])('reports a $status upload failure from its status or server detail', async ({ body, message, status }) => {
     seedWebappSession('test-token')
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(body, { status })))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(body, { status }))
+    )
     expect(installBrowserDesktopBridge()).toBe(true)
 
     for (const stage of [
@@ -325,11 +382,16 @@ describe('browser staged attachment transport', () => {
     const requestGateway = vi.fn(async () => attached() as never)
     const path = '/native/notes.txt'
     await uploadComposerAttachment(rawAttachment(path), {
-      remote, terminalBackend, requestGateway, sessionId: 'runtime'
+      remote,
+      terminalBackend,
+      requestGateway,
+      sessionId: 'runtime'
     })
     expect(readFileDataUrl).toHaveBeenCalledTimes(upload ? 1 : 0)
     expect(requestGateway).toHaveBeenCalledWith('file.attach', {
-      name: 'notes.txt', path, session_id: 'runtime',
+      name: 'notes.txt',
+      path,
+      session_id: 'runtime',
       ...(upload ? { data_url: 'data:text/plain;base64,cGF5bG9hZA==' } : {})
     })
   })

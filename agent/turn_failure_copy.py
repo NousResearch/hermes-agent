@@ -193,6 +193,11 @@ def is_max_iteration_handoff(result: Any) -> bool:
     return bool(str(result.get("final_response") or "").strip())
 
 
+def _copy(key: str, *, lang: Optional[str] = DEFAULT_LANGUAGE, **fields: Any) -> str:
+    """Canonical source for storage; layered translations only for an explicit presentation request."""
+    return str(tl(key, **fields)) if lang == DEFAULT_LANGUAGE else t(key, lang=lang, **fields)
+
+
 # ---- chat copy tables -----------------------------------------------------------------------
 # Values are catalog keys; the English source of every sentence is ``locales/en.yaml``.
 
@@ -268,7 +273,7 @@ def failure_cause_gloss(
         return None
     if key in _ASKER_GLOSS_KEYS and (subject, possessive) == _JOB_ASKER:
         key += "_job"
-    return t(key, lang=lang)
+    return _copy(key, lang=lang)
 
 
 # ---- site-code copy -------------------------------------------------------------------------
@@ -303,7 +308,7 @@ _SITE_COPY: dict[str, str] = {**_FAILURE_CODE_COPY, **_ONE_OFF_COPY}
 
 def _blank_missing_fields(key: str, fields: dict[str, Any]) -> None:
     """Give every placeholder of the English template that ``fields`` lacks an empty string."""
-    for _, name, _, _ in Formatter().parse(t(key, lang=DEFAULT_LANGUAGE)):
+    for _, name, _, _ in Formatter().parse(_copy(key, lang=DEFAULT_LANGUAGE)):
         if name:
             fields.setdefault(name, "")
 
@@ -326,15 +331,15 @@ def exhausted_copy(
     first_attempt = attempts == 1 and reason in _EXHAUSTED_FIRST_ATTEMPT_LEADS
     lead_key = (_EXHAUSTED_FIRST_ATTEMPT_LEADS if first_attempt else _EXHAUSTED_LEADS).get(
         reason, _EXHAUSTED_DEFAULT_LEAD)
-    lead = t(lead_key, lang=lang, label=label, attempts=attempts)
+    lead = _copy(lead_key, lang=lang, label=label, attempts=attempts)
     # A free-tier cutoff ends after one attempt, even for a reset shorter than two minutes.
     if reset_seconds is not None and (reset_seconds >= 120 or first_attempt and reset_seconds > 0):
         from agent.retry_utils import format_reset_window
-        situation = t("explainer.failure.exhausted_situation_reset", lang=lang,
+        situation = _copy("explainer.failure.exhausted_situation_reset", lang=lang,
                       window=format_reset_window(reset_seconds))
     else:
-        situation = t("explainer.failure.exhausted_situation_unavailable", lang=lang)
-    return t("explainer.failure.exhausted", lang=lang, lead=lead, situation=situation, summary=summary)
+        situation = _copy("explainer.failure.exhausted_situation_unavailable", lang=lang)
+    return _copy("explainer.failure.exhausted", lang=lang, lead=lead, situation=situation, summary=summary)
 
 
 def limit_reset_copy(resets_at: float, now: Optional[float] = None, lang: Optional[str] = DEFAULT_LANGUAGE) -> str:
@@ -346,9 +351,9 @@ def limit_reset_copy(resets_at: float, now: Optional[float] = None, lang: Option
     if remaining <= 0:
         return ""
     hours, minutes = divmod((remaining + 59) // 60, 60)
-    wait = (t("explainer.failure.limit_wait_hours", lang=lang, hours=hours, minutes=f"{minutes:02d}") if hours
-            else t("explainer.failure.limit_wait_minutes", lang=lang, minutes=minutes))
-    return t("explainer.failure.limit_resets", lang=lang,
+    wait = (_copy("explainer.failure.limit_wait_hours", lang=lang, hours=hours, minutes=f"{minutes:02d}") if hours
+            else _copy("explainer.failure.limit_wait_minutes", lang=lang, minutes=minutes))
+    return _copy("explainer.failure.limit_resets", lang=lang,
              time=time.strftime('%H:%M', time.localtime(resets_at)), wait=wait)
 
 
@@ -395,16 +400,16 @@ def nonretryable_copy(
     else:
         key = _NONRETRYABLE_COPY.get(classified.reason.value, _NONRETRYABLE_DEFAULT_COPY)
     prefix_hint = (
-        t("explainer.failure.model_prefix_hint", lang=lang, suggestion=prefix_suggestion)
+        _copy("explainer.failure.model_prefix_hint", lang=lang, suggestion=prefix_suggestion)
         if prefix_suggestion else ""
     )
-    body = t(key, lang=lang, label=label, model=model, home=display_hermes_home(), prefix_hint=prefix_hint,
+    body = _copy(key, lang=lang, label=label, model=model, home=display_hermes_home(), prefix_hint=prefix_hint,
              relogin=oauth_relogin_command(provider))
-    return t("explainer.failure.with_provider_detail", lang=lang, body=body, summary=summary)
+    return _copy("explainer.failure.with_provider_detail", lang=lang, body=body, summary=summary)
 
 
 def content_policy_copy(*, label: str, summary: str, lang: Optional[str] = DEFAULT_LANGUAGE) -> str:
-    return t("explainer.failure.content_policy", lang=lang, label=label, summary=summary)
+    return _copy("explainer.failure.content_policy", lang=lang, label=label, summary=summary)
 
 
 def short_detail(exc: Any, limit: int = 200) -> str:

@@ -3672,6 +3672,10 @@ display:
       vision_payloads_stripped: "📐 压缩已无法进一步缩小请求——已移除保留的图像负载，正在重试..."
       no_response_after_retries: "❌ 模型提供方在所有重试后仍未响应。请发送 /retry，或用 /model 切换模型。"
       stale_connections_cleaned: "🔌 检测到先前提供方故障遗留的失效连接——已自动清理。将使用新连接继续。"
+      rate_limited_failed_one: "❌ 尝试 {max} 次后仍受速率限制 — {summary}"
+      rate_limited_failed_reset_one: "❌ 尝试 {max} 次后仍受速率限制 — {summary}（{reset} 后重置）"
+      free_busy_wait: "⏱️ 免费模型繁忙。等待 {wait}秒（尝试 {attempt}/{max}）..."
+      free_busy_wait_reset: "⏱️ 免费模型繁忙。{reset} 后重置。等待 {wait}秒（尝试 {attempt}/{max}）..."
     compress:
       compacting: "🗜️ 正在压缩上下文——总结之前的对话以便继续..."
       heartbeat: "🗜️ 正在压缩上下文——仍在总结之前的对话以便继续..."
@@ -3796,7 +3800,6 @@ explainer:
     stream_dropped_tool_call: "模型在编写一个较大的操作时，与 {label} 的连接反复中断，因此没有执行任何操作。请检查网络并发送 /retry；把文件拆成更小的部分来请求也会有帮助。"
     stream_closed_tool_call: "{label} 在模型写完操作之前反复关闭流，且没有报告错误，因此没有执行任何操作。这通常是提供方或其前面的代理提前截断了较长的回复。请发送 /retry；把工作拆成更小的步骤也会有帮助。"
     local_processing_error: "Hermes 在处理模型回复时遇到内部错误，已停止本回合。你的消息已保存。发送 `continue` 重试，或用 /new 开始新会话。如果再次发生，请运行 `hermes doctor` 并分享错误详情。\n\n详情：{detail}"
-    reasoning_only: "⚠️ {model} 把全部输出预算都用在了思考上，没有写出答案。用 `/reasoning low` 降低推理强度，或用 /model 换一个模型。它最后的思考内容（可能包含答案）：\n\n{preview}"
     max_iterations_no_summary: "我在完成之前用完了本回合的步数（{limit} 次工具调用），也未能生成总结。发送 `continue` 继续，或在配置中调高 `max_iterations`。"
     nous_rate_limit: "请等待额度重置后发送 /retry，或用 /model 切换模型。为避免等待，可用 `hermes fallback add` 添加备用提供方。"
     exhausted_lead:
@@ -3805,6 +3808,7 @@ explainer:
       server_error: "{label} 在全部 {attempts} 次尝试中都返回了服务器错误"
       timeout: "{label} 在 {attempts} 次尝试中都未能及时响应"
       default: "{label} 在 {attempts} 次尝试后仍未回复"
+      first_rate_limit: "{label} 目前正在限制请求频率"
     exhausted_situation_reset: "它的用量上限将在 {window} 后重置。届时请发送 /retry，或用 /model 切换模型。"
     exhausted_situation_unavailable: "它似乎暂时不可用。请等一分钟后发送 /retry，或用 /model 切换模型。"
     exhausted: "{lead}——{situation}为避免以后再出现这种情况，请用 `hermes fallback add` 添加备用提供方。\n\n提供方返回：{summary}"
@@ -3816,6 +3820,7 @@ explainer:
       provider_policy_blocked: "{label} 因你账户上的某项策略（其数据/隐私设置，或模型上游提供方对该账户的封禁）拒绝了这个请求，因此模型没有回答，重试也无济于事。请向提供方核实账户情况，或用 /model 切换模型。"
       upstream_blocked: "{label} 前端的防火墙/CDN 在请求到达模型之前就拦截了它，所以你的密钥很可能没有问题。请通过该提供方的 extra_headers 设置自定义 User-Agent，检查代理/WAF 规则，或用 /model 切换提供方。"
       default: "{label} 拒绝了该请求，重试也无济于事。请用 /model 选择其他模型，或查看 `{home}/logs/agent.log` 中的详情。"
+      data_policy_denied: "此对话包含来自已连接应用的结果，只能发送给不使用您的数据训练的模型，而 {label} 的 '{model}' 无法保证这一点。请用 /model 切换模型，用 /compress 将结果替换为摘要，或用 /new 重新开始。免费模型均无法接收此内容：请升级套餐，或使用 /compress 或 /new。"
     auth_oauth: "{label} 拒绝了你的登录，因此无法访问模型。请重新登录：`{relogin}`。"
     auth_api_key: "{label} 拒绝了你的 API 密钥，因此无法访问模型。请在“设置 → 提供方”中更新，或在终端中运行 `hermes setup`。"
     model_prefix_hint: " 如果名称是你手动输入的，可能缺少厂商前缀——你是想输入“{suggestion}”吗？"
@@ -3853,6 +3858,8 @@ explainer:
     provider_policy_blocked: "AI 模型服务因账户上的某项策略拒绝了该请求"
     context_overflow: "它的请求过大，超出了模型的处理能力"
     context_overflow_job: "此任务的请求过大，超出了模型的处理能力"
+    data_policy_denied: "其上下文包含已连接应用的结果，需要不使用数据训练的模型"
+    data_policy_denied_job: "任务上下文包含已连接应用的结果，需要不使用数据训练的模型"
 tips:
   t001: "/bg <prompt> 会在独立会话中运行任务，当前会话保持空闲；/btw <question> 可就本次对话提一个旁支问题，而不打断当前进程。"
   t002: "/branch 会从当前会话分叉出一个新会话，让你探索另一条思路而不丢失已有进展。"

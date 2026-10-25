@@ -76,7 +76,7 @@ class _StatusTemplate(str):
     constant's own rendering (byte-identical for the matchers); the catalog entry is this text without format specs,
     filled with the spec-formatted values, so emit sites that only call ``.format()`` reach the chat localized."""
 
-    def __new__(cls, key: str, text: str) -> "_StatusTemplate":
+    def __new__(cls, key: str, text: str) -> _StatusTemplate:
         template = super().__new__(cls, text)
         template.key = key
         return template

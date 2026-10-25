@@ -3989,6 +3989,10 @@ display:
       vision_payloads_stripped: "📐 La compression ne parvient plus à réduire la requête — images conservées pour la vision retirées, nouvel essai..."
       no_response_after_retries: "❌ Le fournisseur du modèle n'a pas répondu malgré toutes les tentatives. Envoyez /retry, ou changez de modèle avec /model."
       stale_connections_cleaned: "🔌 Connexions périmées détectées suite à un précédent problème du fournisseur — nettoyées automatiquement. Poursuite avec une nouvelle connexion."
+      rate_limited_failed_one: "❌ Limite de fréquence après {max} tentative — {summary}"
+      rate_limited_failed_reset_one: "❌ Limite de fréquence après {max} tentative — {summary} (réinitialisation dans {reset})"
+      free_busy_wait: "⏱️ Le modèle gratuit est occupé. Attente de {wait}s (tentative {attempt}/{max})..."
+      free_busy_wait_reset: "⏱️ Le modèle gratuit est occupé. Réinitialisation dans {reset}. Attente de {wait}s (tentative {attempt}/{max})..."
     compress:
       compacting: "🗜️ Compaction du contexte — je résume le début de la conversation pour pouvoir continuer..."
       heartbeat: "🗜️ Compaction du contexte — je résume encore le début de la conversation pour pouvoir continuer..."
@@ -4121,7 +4125,6 @@ explainer:
     stream_dropped_tool_call: "La connexion à {label} n'a cessé de tomber pendant que le modèle écrivait une action volumineuse, rien n'a donc été exécuté. Vérifiez votre réseau et envoyez /retry ; demander le fichier en morceaux plus petits aide aussi."
     stream_closed_tool_call: "{label} a fermé le flux à plusieurs reprises avant que le modèle ait fini d'écrire son action, sans signaler d'erreur, rien n'a donc été exécuté. C'est généralement le fournisseur ou un proxy placé devant lui qui tronque les réponses longues. Envoyez /retry ; demander le travail en étapes plus petites aide aussi."
     local_processing_error: "Hermes a rencontré une erreur interne en traitant la réponse du modèle et a arrêté ce tour. Votre message est enregistré. Envoyez `continue` pour réessayer, ou démarrez une nouvelle session avec /new. Si cela se reproduit, lancez `hermes doctor` et partagez les détails de l'erreur.\n\nDétails : {detail}"
-    reasoning_only: "⚠️ {model} a consacré tout son budget de sortie à la réflexion et n'a jamais écrit de réponse. Réduisez son effort de raisonnement avec `/reasoning low`, ou changez de modèle avec /model. Ses dernières réflexions, qui contiennent peut-être la réponse :\n\n{preview}"
     max_iterations_no_summary: "J'ai épuisé mes étapes pour ce tour ({limit} appels d'outils) avant d'avoir terminé, et je n'ai pas pu produire de résumé. Envoyez `continue` pour poursuivre, ou augmentez `max_iterations` dans votre configuration."
     nous_rate_limit: "Attendez la réinitialisation puis envoyez /retry, ou changez de modèle avec /model. Pour éviter ces attentes, ajoutez un fournisseur de secours avec `hermes fallback add`."
     exhausted_lead:
@@ -4130,6 +4133,7 @@ explainer:
       server_error: "{label} a renvoyé une erreur serveur aux {attempts} tentatives"
       timeout: "{label} n'a répondu à temps à aucune des {attempts} tentatives"
       default: "{label} n'a pas répondu après {attempts} tentatives"
+      first_rate_limit: "{label} limite actuellement la fréquence des requêtes"
     exhausted_situation_reset: "sa limite d'utilisation se réinitialise dans {window}. Envoyez /retry ensuite, ou changez de modèle avec /model."
     exhausted_situation_unavailable: "il semble temporairement indisponible. Patientez une minute puis envoyez /retry, ou changez de modèle avec /model."
     exhausted: "{lead} — {situation} Pour éviter cela à l'avenir, ajoutez un fournisseur de secours avec `hermes fallback add`.\n\nRéponse du fournisseur : {summary}"
@@ -4141,6 +4145,7 @@ explainer:
       provider_policy_blocked: "{label} a refusé cette requête en raison d'une règle appliquée à votre compte (ses paramètres de données/confidentialité, ou un blocage posé sur le compte par le fournisseur amont du modèle), le modèle n'a donc pas répondu et réessayer n'aidera pas. Vérifiez le compte auprès du fournisseur, ou changez de modèle avec /model."
       upstream_blocked: "Un pare-feu/CDN placé devant {label} a bloqué la requête avant qu'elle n'atteigne le modèle, votre clé est donc probablement valide. Définissez un User-Agent personnalisé via les extra_headers du fournisseur, vérifiez les règles du proxy/WAF, ou changez de fournisseur avec /model."
       default: "{label} a rejeté la requête et réessayer n'aidera pas. Choisissez un autre modèle avec /model, ou consultez les détails dans `{home}/logs/agent.log`."
+      data_policy_denied: "Cette conversation contient un résultat d'une application connectée qui ne peut être envoyé qu'à un modèle n'utilisant pas vos données pour s'entraîner, et '{model}' chez {label} ne le garantit pas. Changez de modèle avec /model, utilisez /compress pour remplacer le résultat par un résumé, ou repartez avec /new. Aucun modèle gratuit ne peut recevoir ce contenu : passez à une offre payante, ou utilisez /compress ou /new."
     auth_oauth: "{label} a rejeté votre connexion, le modèle est donc inaccessible. Reconnectez-vous : `{relogin}`."
     auth_api_key: "{label} a rejeté votre clé API, le modèle est donc inaccessible. Mettez-la à jour dans Paramètres → Fournisseurs, ou lancez `hermes setup` dans un terminal."
     model_prefix_hint: " Si vous avez saisi le nom vous-même, il lui manque peut-être le préfixe du fournisseur — vouliez-vous dire '{suggestion}' ?"
@@ -4178,6 +4183,8 @@ explainer:
     provider_policy_blocked: "le service de modèle IA a refusé la requête en raison d'une règle appliquée au compte"
     context_overflow: "sa requête est devenue trop volumineuse pour le modèle"
     context_overflow_job: "la requête de la tâche est devenue trop volumineuse pour le modèle"
+    data_policy_denied: "son contexte contient un résultat d'application nécessitant un modèle sans entraînement sur les données"
+    data_policy_denied_job: "le contexte de la tâche contient un résultat d'application nécessitant un modèle sans entraînement sur les données"
 tips:
   t001: "/bg <prompt> exécute une tâche dans une session séparée pendant que la vôtre reste disponible ; /btw <question> répond à une question annexe sur cette conversation sans l'interrompre."
   t002: "/branch duplique la session actuelle pour explorer une autre piste sans perdre votre progression."

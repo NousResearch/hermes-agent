@@ -3689,6 +3689,10 @@ display:
       vision_payloads_stripped: "📐 A tömörítés nem tudta tovább csökkenteni a kérést — a megtartott képi adatok eltávolítva, újrapróbálás..."
       no_response_after_retries: "❌ A modellszolgáltató egyik újrapróbálkozásra sem válaszolt. Küldd el a /retry parancsot, vagy válts modellt a /model paranccsal."
       stale_connections_cleaned: "🔌 Egy korábbi szolgáltatói hibából visszamaradt elavult kapcsolatok észlelve — automatikusan megtisztítva. Folytatás új kapcsolattal."
+      rate_limited_failed_one: "❌ Gyakorisági korlát {max} próbálkozás után — {summary}"
+      rate_limited_failed_reset_one: "❌ Gyakorisági korlát {max} próbálkozás után — {summary} (visszaállítás: {reset})"
+      free_busy_wait: "⏱️ Az ingyenes modell foglalt. Várakozás: {wait}s (próbálkozás: {attempt}/{max})..."
+      free_busy_wait_reset: "⏱️ Az ingyenes modell foglalt. Visszaállítás: {reset}. Várakozás: {wait}s (próbálkozás: {attempt}/{max})..."
     compress:
       compacting: "🗜️ Kontextus tömörítése — összefoglalom a korábbi beszélgetést, hogy folytathassam..."
       heartbeat: "🗜️ Kontextus tömörítése — még összefoglalom a korábbi beszélgetést, hogy folytathassam..."
@@ -3813,7 +3817,6 @@ explainer:
     stream_dropped_tool_call: "A kapcsolat a(z) {label} szolgáltatóval folyamatosan megszakadt, miközben a modell egy nagy műveletet írt, ezért semmi sem futott le. Ellenőrizd a hálózatodat, és küldd el a /retry parancsot; az is segít, ha a fájlt kisebb részletekben kéred."
     stream_closed_tool_call: "A(z) {label} hibajelzés nélkül újra és újra lezárta a streamet, mielőtt a modell befejezte volna a művelet megírását, ezért semmi sem futott le. Ezt általában a szolgáltató vagy egy előtte álló proxy okozza, amely idő előtt levágja a hosszú válaszokat. Küldd el a /retry parancsot; az is segít, ha a munkát kisebb lépésekben kéred."
     local_processing_error: "A Hermes belső hibába ütközött a modell válaszának feldolgozása közben, és leállította ezt a kört. Az üzeneted mentve van. Küldj `continue` üzenetet az újrapróbáláshoz, vagy indíts új munkamenetet a /new paranccsal. Ha újra előfordul, futtasd a `hermes doctor` parancsot, és oszd meg a hiba részleteit.\n\nRészletek: {detail}"
-    reasoning_only: "⚠️ A(z) {model} a teljes kimeneti keretét gondolkodásra használta el, és nem írt választ. Csökkentsd az érvelési szintjét a `/reasoning low` paranccsal, vagy válts másik modellre a /model paranccsal. Az utolsó gondolatai, amelyekben benne lehet a válasz:\n\n{preview}"
     max_iterations_no_summary: "Ebben a körben elfogytak a lépéseim ({limit} eszközhívás), mielőtt befejeztem volna, és összefoglalót sem tudtam készíteni. Küldj `continue` üzenetet a folytatáshoz, vagy emeld meg a `max_iterations` értékét a konfigurációban."
     nous_rate_limit: "Várd meg a korlát visszaállását, és küldd el a /retry parancsot, vagy válts modellt a /model paranccsal. A várakozás elkerüléséhez adj hozzá tartalék szolgáltatót a `hermes fallback add` paranccsal."
     exhausted_lead:
@@ -3822,6 +3825,7 @@ explainer:
       server_error: "A(z) {label} mindegyik próbálkozásnál ({attempts}) szerverhibát adott vissza"
       timeout: "A(z) {label} egyik próbálkozásnál ({attempts}) sem válaszolt időben"
       default: "A(z) {label} {attempts} próbálkozás után sem válaszolt"
+      first_rate_limit: "a(z) {label} jelenleg korlátozza a kérések gyakoriságát"
     exhausted_situation_reset: "a használati kerete {window} múlva áll vissza. Utána küldd el a /retry parancsot, vagy válts modellt a /model paranccsal."
     exhausted_situation_unavailable: "úgy tűnik, átmenetileg nem érhető el. Várj egy percet, és küldd el a /retry parancsot, vagy válts modellt a /model paranccsal."
     exhausted: "{lead} — {situation} Hogy ez a jövőben ne forduljon elő, adj hozzá tartalék szolgáltatót a `hermes fallback add` paranccsal.\n\nA szolgáltató válasza: {summary}"
@@ -3833,6 +3837,7 @@ explainer:
       provider_policy_blocked: "A(z) {label} egy fiókodra vonatkozó szabályzat miatt elutasította ezt a kérést (az adatkezelési/adatvédelmi beállításai, vagy a modell upstream szolgáltatója által a fiókra tett tiltás miatt), így a modell nem válaszolt, és az újrapróbálás sem segít. Ellenőrizd a fiókot a szolgáltatónál, vagy válts modellt a /model paranccsal."
       upstream_blocked: "A(z) {label} előtt álló tűzfal/CDN letiltotta a kérést, mielőtt az elérte volna a modellt, így a kulcsoddal valószínűleg nincs gond. Állíts be egyéni User-Agentet a szolgáltató extra_headers beállításával, ellenőrizd a proxy/WAF szabályokat, vagy válts szolgáltatót a /model paranccsal."
       default: "A(z) {label} elutasította a kérést, és az újrapróbálás nem segít. Válassz másik modellt a /model paranccsal, vagy nézd meg a részleteket a `{home}/logs/agent.log` fájlban."
+      data_policy_denied: "Ez a beszélgetés egy csatlakoztatott alkalmazás eredményét tartalmazza, amely csak az adataival nem tanított modellnek küldhető el, a(z) '{model}' a(z) {label} szolgáltatónál pedig ezt nem garantálja. Váltson modellt a /model paranccsal, cserélje az eredményt összefoglalóra a /compress paranccsal, vagy kezdjen új beszélgetést a /new paranccsal. Ezt a tartalmat egyetlen ingyenes modell sem fogadhatja: váltson fizetős csomagra, vagy használja a /compress vagy /new parancsot."
     auth_oauth: "A(z) {label} elutasította a bejelentkezésedet, így a modell nem érhető el. Jelentkezz be újra: `{relogin}`."
     auth_api_key: "A(z) {label} elutasította az API-kulcsodat, így a modell nem érhető el. Frissítsd a Beállítások → Szolgáltatók menüben, vagy futtasd a `hermes setup` parancsot egy terminálban."
     model_prefix_hint: " Ha a nevet magad írtad be, hiányozhat belőle a gyártói előtag — erre gondoltál: '{suggestion}'?"
@@ -3870,6 +3875,8 @@ explainer:
     provider_policy_blocked: "az AI-modellszolgáltatás egy fiókra vonatkozó szabályzat miatt elutasította a kérést"
     context_overflow: "a kérése túl nagyra nőtt a modell számára"
     context_overflow_job: "a feladat kérése túl nagyra nőtt a modell számára"
+    data_policy_denied: "a kontextusa olyan alkalmazáseredményt tartalmaz, amelyhez az adatokkal nem tanított modell szükséges"
+    data_policy_denied_job: "a feladat kontextusa olyan alkalmazáseredményt tartalmaz, amelyhez az adatokkal nem tanított modell szükséges"
 tips:
   t001: "A /bg <prompt> külön munkamenetben futtat egy feladatot, miközben a jelenlegi szabad marad; a /btw <question> mellékes kérdésre válaszol erről a beszélgetésről, anélkül hogy megszakítaná."
   t002: "A /branch elágaztatja a jelenlegi munkamenetet, így más irányt is kipróbálhatsz a haladás elvesztése nélkül."

@@ -3672,6 +3672,10 @@ display:
       vision_payloads_stripped: "📐 La compressione non è riuscita a ridurre ulteriormente la richiesta — rimosse le immagini conservate, nuovo tentativo..."
       no_response_after_retries: "❌ Il provider del modello non ha risposto dopo tutti i tentativi. Invia /retry, oppure cambia modello con /model."
       stale_connections_cleaned: "🔌 Rilevate connessioni obsolete da un precedente problema del provider — ripulite automaticamente. Si prosegue con una nuova connessione."
+      rate_limited_failed_one: "❌ Limite di frequenza dopo {max} tentativo — {summary}"
+      rate_limited_failed_reset_one: "❌ Limite di frequenza dopo {max} tentativo — {summary} (ripristino tra {reset})"
+      free_busy_wait: "⏱️ Il modello gratuito è occupato. Attesa di {wait}s (tentativo {attempt}/{max})..."
+      free_busy_wait_reset: "⏱️ Il modello gratuito è occupato. Ripristino tra {reset}. Attesa di {wait}s (tentativo {attempt}/{max})..."
     compress:
       compacting: "🗜️ Compattazione del contesto — riassumo la conversazione precedente per poter continuare..."
       heartbeat: "🗜️ Compattazione del contesto — sto ancora riassumendo la conversazione precedente per poter continuare..."
@@ -3796,7 +3800,6 @@ explainer:
     stream_dropped_tool_call: "La connessione con {label} continuava a cadere mentre il modello scriveva un'azione di grandi dimensioni, quindi non è stato eseguito nulla. Controlla la rete e invia /retry; aiuta anche chiedere il file in parti più piccole."
     stream_closed_tool_call: "{label} continuava a chiudere lo stream prima che il modello finisse di scrivere la sua azione, senza segnalare errori, quindi non è stato eseguito nulla. Di solito è il provider, o un proxy davanti a esso, che tronca le risposte lunghe. Invia /retry; aiuta anche chiedere il lavoro in passaggi più piccoli."
     local_processing_error: "Hermes ha riscontrato un errore interno durante l'elaborazione della risposta del modello e ha fermato questo turno. Il tuo messaggio è salvato. Invia `continue` per riprovare, oppure avvia una nuova sessione con /new. Se succede di nuovo, esegui `hermes doctor` e condividi i dettagli dell'errore.\n\nDettagli: {detail}"
-    reasoning_only: "⚠️ {model} ha speso tutto il budget di output per ragionare e non ha mai scritto una risposta. Riduci il suo livello di ragionamento con `/reasoning low`, oppure passa a un altro modello con /model. I suoi ultimi pensieri, che potrebbero contenere la risposta:\n\n{preview}"
     max_iterations_no_summary: "Ho esaurito i passaggi per questo turno ({limit} chiamate a strumenti) prima di finire e non sono riuscito a produrre un riepilogo. Invia `continue` per proseguire, oppure aumenta `max_iterations` nella configurazione."
     nous_rate_limit: "Attendi il ripristino e invia /retry, oppure cambia modello con /model. Per evitare le attese, aggiungi un provider di riserva con `hermes fallback add`."
     exhausted_lead:
@@ -3805,6 +3808,7 @@ explainer:
       server_error: "{label} ha restituito un errore del server in tutti i {attempts} tentativi"
       timeout: "{label} non ha risposto in tempo in nessuno dei {attempts} tentativi"
       default: "{label} non ha risposto dopo {attempts} tentativi"
+      first_rate_limit: "{label} sta limitando la frequenza delle richieste"
     exhausted_situation_reset: "il suo limite di utilizzo si ripristina tra {window}. Invia /retry dopo, oppure cambia modello con /model."
     exhausted_situation_unavailable: "sembra temporaneamente non disponibile. Attendi un minuto e invia /retry, oppure cambia modello con /model."
     exhausted: "{lead} — {situation} Per evitarlo in futuro, aggiungi un provider di riserva con `hermes fallback add`.\n\nRisposta del provider: {summary}"
@@ -3816,6 +3820,7 @@ explainer:
       provider_policy_blocked: "{label} ha rifiutato questa richiesta a causa di una policy sul tuo account (le sue impostazioni di dati/privacy, o un blocco applicato all'account dal provider a monte del modello), quindi il modello non ha risposto e riprovare non servirà. Verifica l'account con il provider, oppure cambia modello con /model."
       upstream_blocked: "Un firewall/CDN davanti a {label} ha bloccato la richiesta prima che raggiungesse il modello, quindi la tua chiave probabilmente è a posto. Imposta uno User-Agent personalizzato tramite gli extra_headers del provider, controlla le regole del proxy/WAF oppure cambia provider con /model."
       default: "{label} ha rifiutato la richiesta e riprovare non servirà. Scegli un altro modello con /model, oppure controlla i dettagli in `{home}/logs/agent.log`."
+      data_policy_denied: "Questa conversazione contiene un risultato di un'app collegata che può essere inviato solo a un modello che non si addestra sui tuoi dati, e '{model}' su {label} non lo garantisce. Cambia modello con /model, usa /compress per sostituire il risultato con un riepilogo o ricomincia con /new. Nessun modello gratuito può ricevere questo contenuto: passa a un piano a pagamento oppure usa /compress o /new."
     auth_oauth: "{label} ha rifiutato il tuo accesso, quindi il modello non è raggiungibile. Accedi di nuovo: `{relogin}`."
     auth_api_key: "{label} ha rifiutato la tua chiave API, quindi il modello non è raggiungibile. Aggiornala in Settings → Providers, oppure esegui `hermes setup` in un terminale."
     model_prefix_hint: " Se hai digitato il nome a mano, potrebbe mancare il prefisso del produttore — intendevi '{suggestion}'?"
@@ -3853,6 +3858,8 @@ explainer:
     provider_policy_blocked: "il servizio del modello AI ha rifiutato la richiesta a causa di una policy sull'account"
     context_overflow: "la sua richiesta è diventata troppo grande per il modello"
     context_overflow_job: "la richiesta del job è diventata troppo grande per il modello"
+    data_policy_denied: "il suo contesto contiene un risultato di un'app che richiede un modello senza addestramento sui dati"
+    data_policy_denied_job: "il contesto dell'attività contiene un risultato di un'app che richiede un modello senza addestramento sui dati"
 tips:
   t001: "/bg <prompt> esegue un'attività in una sessione separata mentre quella corrente resta libera; /btw <question> risponde a una domanda a margine su questa conversazione senza interromperla."
   t002: "/branch crea una diramazione della sessione corrente, così puoi esplorare una direzione diversa senza perdere i progressi."

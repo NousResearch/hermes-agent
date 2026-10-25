@@ -3672,6 +3672,10 @@ display:
       vision_payloads_stripped: "📐 압축으로 요청을 더 줄일 수 없어요 — 보존된 이미지 페이로드를 제거하고 다시 시도하는 중..."
       no_response_after_retries: "❌ 모델 제공자가 모든 재시도 후에도 응답하지 않았어요. /retry를 보내거나 /model로 모델을 바꿔 보세요."
       stale_connections_cleaned: "🔌 이전 제공자 문제로 남은 오래된 연결을 감지해 자동으로 정리했어요. 새 연결로 계속 진행해요."
+      rate_limited_failed_one: "❌ {max}회 시도 후 요청 제한 — {summary}"
+      rate_limited_failed_reset_one: "❌ {max}회 시도 후 요청 제한 — {summary} ({reset} 후 초기화)"
+      free_busy_wait: "⏱️ 무료 모델이 혼잡합니다. {wait}초 대기 (시도 {attempt}/{max})..."
+      free_busy_wait_reset: "⏱️ 무료 모델이 혼잡합니다. {reset} 후 초기화됩니다. {wait}초 대기 (시도 {attempt}/{max})..."
     compress:
       compacting: "🗜️ 컨텍스트 압축 중 — 계속 진행할 수 있도록 이전 대화를 요약하는 중..."
       heartbeat: "🗜️ 컨텍스트 압축 중 — 아직 이전 대화를 요약하는 중..."
@@ -3796,7 +3800,6 @@ explainer:
     stream_dropped_tool_call: "모델이 큰 작업을 작성하는 동안 {label}과(와)의 연결이 계속 끊겨서 아무것도 실행되지 않았어요. 네트워크를 확인하고 /retry를 보내세요. 파일을 더 작은 조각으로 나눠 요청하는 것도 도움이 돼요."
     stream_closed_tool_call: "모델이 작업 작성을 끝내기 전에 {label}이(가) 오류 보고 없이 스트림을 계속 닫아서 아무것도 실행되지 않았어요. 보통 제공자나 그 앞단의 프록시가 긴 답변을 중간에 자르는 경우예요. /retry를 보내세요. 작업을 더 작은 단계로 나눠 요청하는 것도 도움이 돼요."
     local_processing_error: "모델의 답변을 처리하는 중 Hermes에서 내부 오류가 발생해 이번 턴을 멈췄어요. 메시지는 저장되어 있어요. `continue`를 보내 다시 시도하거나 /new로 새 세션을 시작하세요. 다시 발생하면 `hermes doctor`를 실행하고 오류 세부 정보를 공유해 주세요.\n\n세부 정보: {detail}"
-    reasoning_only: "⚠️ {model}이(가) 출력 예산을 모두 생각하는 데 써 버려서 답변을 작성하지 못했어요. `/reasoning low`로 추론 강도를 낮추거나 /model로 다른 모델로 바꿔 보세요. 마지막 생각 내용(답이 들어 있을 수 있어요):\n\n{preview}"
     max_iterations_no_summary: "끝내기 전에 이번 턴의 단계(도구 호출 {limit}회)를 모두 써 버렸고, 요약도 만들지 못했어요. `continue`를 보내 계속하거나 설정에서 `max_iterations`를 늘려 보세요."
     nous_rate_limit: "초기화될 때까지 기다린 뒤 /retry를 보내거나 /model로 모델을 바꿔 보세요. 기다리지 않으려면 `hermes fallback add`로 백업 제공자를 추가하세요."
     exhausted_lead:
@@ -3805,6 +3808,7 @@ explainer:
       server_error: "{label}이(가) {attempts}번의 시도 모두에서 서버 오류를 반환했어요"
       timeout: "{label}이(가) {attempts}번의 시도 중 한 번도 제때 응답하지 않았어요"
       default: "{label}이(가) {attempts}번 시도한 뒤에도 응답하지 않았어요"
+      first_rate_limit: "{label}에서 현재 요청 빈도를 제한하고 있습니다"
     exhausted_situation_reset: "사용 한도는 {window} 후에 초기화돼요. 그 뒤에 /retry를 보내거나 /model로 모델을 바꿔 보세요."
     exhausted_situation_unavailable: "일시적으로 사용할 수 없는 것 같아요. 1분 정도 기다린 뒤 /retry를 보내거나 /model로 모델을 바꿔 보세요."
     exhausted: "{lead} — {situation} 앞으로 이런 일을 피하려면 `hermes fallback add`로 백업 제공자를 추가하세요.\n\n제공자 응답: {summary}"
@@ -3816,6 +3820,7 @@ explainer:
       provider_policy_blocked: "{label}이(가) 계정에 적용된 정책(데이터/개인정보 설정 또는 모델의 상위 제공자가 계정에 건 차단) 때문에 이 요청을 거부해서 모델이 답변하지 않았고, 재시도해도 소용없어요. 제공자에서 계정을 확인하거나 /model로 모델을 바꿔 보세요."
       upstream_blocked: "{label} 앞단의 방화벽/CDN이 요청이 모델에 닿기 전에 차단했어요. 따라서 키에는 문제가 없을 가능성이 커요. 제공자의 extra_headers로 사용자 지정 User-Agent를 설정하거나, 프록시/WAF 규칙을 확인하거나, /model로 제공자를 바꿔 보세요."
       default: "{label}이(가) 요청을 거부했고 재시도해도 소용없어요. /model로 다른 모델을 선택하거나 `{home}/logs/agent.log`에서 세부 정보를 확인하세요."
+      data_policy_denied: "이 대화에는 데이터를 학습에 사용하지 않는 모델에만 전송할 수 있는 연결된 앱의 결과가 있으며, {label}의 '{model}'는 이를 보장하지 못합니다. /model로 모델을 바꾸거나, /compress로 결과를 요약으로 대체하거나, /new로 새로 시작하세요. 무료 모델은 이 콘텐츠를 받을 수 없습니다. 유료 요금제로 전환하거나 /compress 또는 /new를 사용하세요."
     auth_oauth: "{label}이(가) 로그인을 거부해서 모델에 연결할 수 없어요. 다시 로그인하세요: `{relogin}`."
     auth_api_key: "{label}이(가) API 키를 거부해서 모델에 연결할 수 없어요. 설정 → 제공자에서 키를 업데이트하거나 터미널에서 `hermes setup`을 실행하세요."
     model_prefix_hint: " 이름을 직접 입력했다면 공급업체 접두사가 빠졌을 수 있어요 — '{suggestion}'을(를) 입력하려던 건가요?"
@@ -3853,6 +3858,8 @@ explainer:
     provider_policy_blocked: "AI 모델 서비스가 계정에 적용된 정책 때문에 요청을 거부했어요"
     context_overflow: "요청이 모델이 처리하기에 너무 커졌어요"
     context_overflow_job: "이 작업의 요청이 모델이 처리하기에 너무 커졌어요"
+    data_policy_denied: "컨텍스트에 데이터를 학습에 사용하지 않는 모델이 필요한 연결된 앱의 결과가 있음"
+    data_policy_denied_job: "작업 컨텍스트에 데이터를 학습에 사용하지 않는 모델이 필요한 연결된 앱의 결과가 있음"
 tips:
   t001: "/bg <prompt>는 현재 세션을 그대로 두고 별도 세션에서 작업을 실행해요. /btw <question>은 대화를 끊지 않고 이 대화에 관한 부수적인 질문에 답해요."
   t002: "/branch는 현재 세션을 분기해서 진행 상황을 잃지 않고 다른 방향을 탐색할 수 있게 해요."

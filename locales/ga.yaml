@@ -3672,6 +3672,10 @@ display:
       vision_payloads_stripped: "📐 Níorbh fhéidir leis an dlúthú an t-iarratas a laghdú níos mó — baineadh na híomhánna a coinníodh, ag atriail..."
       no_response_after_retries: "❌ Níor fhreagair soláthraí na samhla tar éis na n-atrialacha uile. Seol /retry, nó athraigh an tsamhail le /model."
       stale_connections_cleaned: "🔌 Braitheadh seancheangail ó fhadhb roimhe seo leis an soláthraí — glanadh go huathoibríoch iad. Ag leanúint ar aghaidh le ceangal úr."
+      rate_limited_failed_one: "❌ Teorainn ráta tar éis {max} iarracht — {summary}"
+      rate_limited_failed_reset_one: "❌ Teorainn ráta tar éis {max} iarracht — {summary} (athshocrú i gceann {reset})"
+      free_busy_wait: "⏱️ Tá an tsamhail saor in aisce gnóthach. Ag fanacht {wait}s (iarracht {attempt}/{max})..."
+      free_busy_wait_reset: "⏱️ Tá an tsamhail saor in aisce gnóthach. Athshocrú i gceann {reset}. Ag fanacht {wait}s (iarracht {attempt}/{max})..."
     compress:
       compacting: "🗜️ Ag dlúthú an chomhthéacs — ag déanamh achoimre ar an gcomhrá níos luaithe ionas gur féidir liom leanúint ar aghaidh..."
       heartbeat: "🗜️ Ag dlúthú an chomhthéacs — fós ag déanamh achoimre ar an gcomhrá níos luaithe ionas gur féidir liom leanúint ar aghaidh..."
@@ -3796,7 +3800,6 @@ explainer:
     stream_dropped_tool_call: "Lean an ceangal le {label} ag titim fad a bhí an tsamhail ag scríobh gnímh mhóir, mar sin níor ritheadh aon rud. Seiceáil do líonra agus seol /retry; cabhraíonn sé freisin an comhad a iarraidh i bpíosaí níos lú."
     stream_closed_tool_call: "Lean {label} ag dúnadh an tsrutha sular chríochnaigh an tsamhail a gníomh a scríobh, gan earráid a thuairisciú, mar sin níor ritheadh aon rud. De ghnáth is é an soláthraí, nó seachfhreastalaí os a chomhair, a ghearrann freagraí fada. Seol /retry; cabhraíonn sé freisin an obair a iarraidh i gcéimeanna níos lú."
     local_processing_error: "Bhuail earráid inmheánach Hermes agus é ag láimhseáil fhreagra na samhla, agus stop sé an seal seo. Tá do theachtaireacht sábháilte. Seol `continue` chun triail eile a bhaint as, nó tosaigh seisiún nua le /new. Má tharlaíonn sé arís, rith `hermes doctor` agus roinn sonraí na hearráide.\n\nSonraí: {detail}"
-    reasoning_only: "⚠️ Chaith {model} a buiséad aschuir ar fad ag smaoineamh agus níor scríobh sí freagra riamh. Ísligh a hiarracht réasúnaíochta le `/reasoning low`, nó athraigh go samhail eile le /model. A smaointe deiridh, a bhféadfadh an freagra a bheith iontu:\n\n{preview}"
     max_iterations_no_summary: "Rith mé as céimeanna don seal seo ({limit} glao uirlise) sular chríochnaigh mé, agus níorbh fhéidir liom achoimre a thabhairt. Seol `continue` chun leanúint ar aghaidh, nó ardaigh `max_iterations` i do chumraíocht."
     nous_rate_limit: "Fan go n-athshocrófar é agus seol /retry, nó athraigh an tsamhail le /model. Chun fanacht a sheachaint, cuir soláthraí cúltaca leis le `hermes fallback add`."
     exhausted_lead:
@@ -3805,6 +3808,7 @@ explainer:
       server_error: "Thug {label} earráid freastalaí ar na {attempts} iarracht ar fad"
       timeout: "Níor fhreagair {label} in am ar aon cheann de na {attempts} iarracht"
       default: "Níor fhreagair {label} tar éis {attempts} iarracht"
+      first_rate_limit: "tá {label} ag teorannú ráta na n-iarratas faoi láthair"
     exhausted_situation_reset: "athshocraítear a theorainn úsáide i gceann {window}. Seol /retry ina dhiaidh sin, nó athraigh an tsamhail le /model."
     exhausted_situation_unavailable: "is cosúil nach bhfuil sé ar fáil go sealadach. Fan nóiméad agus seol /retry, nó athraigh an tsamhail le /model."
     exhausted: "{lead} — {situation} Chun é seo a sheachaint amach anseo, cuir soláthraí cúltaca leis le `hermes fallback add`.\n\nDúirt an soláthraí: {summary}"
@@ -3816,6 +3820,7 @@ explainer:
       provider_policy_blocked: "Dhiúltaigh {label} don iarratas seo mar gheall ar pholasaí ar do chuntas (a shocruithe sonraí/príobháideachais, nó bac a chuir soláthraí bunaidh na samhla ar an gcuntas), mar sin níor fhreagair an tsamhail agus ní chabhróidh triail eile. Seiceáil an cuntas leis an soláthraí, nó athraigh an tsamhail le /model."
       upstream_blocked: "Chuir balla dóiteáin/CDN os comhair {label} bac ar an iarratas sular shroich sé an tsamhail, mar sin is dócha go bhfuil d'eochair ceart go leor. Socraigh User-Agent saincheaptha trí extra_headers an tsoláthraí, seiceáil rialacha an tseachfhreastalaí/WAF, nó athraigh an soláthraí le /model."
       default: "Dhiúltaigh {label} don iarratas agus ní chabhróidh triail eile. Roghnaigh samhail eile le /model, nó seiceáil na sonraí in `{home}/logs/agent.log`."
+      data_policy_denied: "Tá toradh ó aip nasctha sa chomhrá seo nach féidir a sheoladh ach chuig samhail nach n-oiltear ar do chuid sonraí, agus ní ráthaíonn '{model}' ar {label} é sin. Athraigh samhail le /model, úsáid /compress chun achoimre a chur in áit an toraidh, nó tosaigh as an nua le /new. Ní féidir le haon samhail saor in aisce an t-ábhar seo a ghlacadh: uasghrádaigh, nó úsáid /compress nó /new."
     auth_oauth: "Dhiúltaigh {label} do do shíniú isteach, mar sin ní féidir an tsamhail a shroicheadh. Sínigh isteach arís: `{relogin}`."
     auth_api_key: "Dhiúltaigh {label} d'eochair API, mar sin ní féidir an tsamhail a shroicheadh. Nuashonraigh í in Settings → Providers, nó rith `hermes setup` i dteirminéal."
     model_prefix_hint: " Má chlóscríobh tú féin an t-ainm, b'fhéidir go bhfuil réimír an díoltóra in easnamh air — an é '{suggestion}' a bhí i gceist agat?"
@@ -3853,6 +3858,8 @@ explainer:
     provider_policy_blocked: "dhiúltaigh seirbhís na samhla AI don iarratas mar gheall ar pholasaí ar an gcuntas"
     context_overflow: "d'éirigh a iarratas rómhór don tsamhail"
     context_overflow_job: "d'éirigh iarratas an taisc rómhór don tsamhail"
+    data_policy_denied: "tá toradh ó aip nasctha ina chomhthéacs a éilíonn samhail nach n-oiltear ar shonraí"
+    data_policy_denied_job: "tá toradh ó aip nasctha i gcomhthéacs an taisc a éilíonn samhail nach n-oiltear ar shonraí"
 tips:
   t001: "Ritheann /bg <leid> tasc i seisiún ar leith fad a fhanann do sheisiún reatha saor; freagraíonn /btw <ceist> ceist thaobhach faoin gcomhrá seo gan cur isteach air."
   t002: "Déanann /branch forc den seisiún reatha ionas gur féidir leat treo eile a fhiosrú gan dul chun cinn a chailleadh."

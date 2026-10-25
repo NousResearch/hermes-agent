@@ -195,7 +195,7 @@ def _resolve_budget_fallback(
     return final_response, _turn_exit_reason, preserved_verification_fallback, interrupted
 
 
-def _pending_tool_tail_close(agent, final_response, interrupted, messages, logger) -> Optional[Tuple[str, str]]:
+def _pending_tool_tail_close(agent, final_response, interrupted, messages, logger) -> Optional[tuple[str, str]]:
     """``(English, display)`` close for a non-interrupted turn that fell out of the loop on a tool
     result with no follow-up text (the Desktop/TUI "silent stop", #55316/#54756), else None. The
     English text is the assistant row the tail close persists — the model reads it next turn —
@@ -222,7 +222,7 @@ def _pending_tool_tail_close(agent, final_response, interrupted, messages, logge
     return english, display
 
 
-def _english_error_text(final_response, localized: Optional[Tuple[str, str]]):
+def _english_error_text(final_response, localized: Optional[tuple[str, str]]):
     """``final_response`` with a localized lead swapped back to its English rendering, for the
     stored ``error`` the gateway matches (anything appended after the lead is kept)."""
     if localized and isinstance(final_response, str) and final_response.startswith(localized[1]):

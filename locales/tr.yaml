@@ -3672,6 +3672,10 @@ display:
       vision_payloads_stripped: "📐 Sıkıştırma isteği daha fazla küçültemedi — tutulan görsel verileri kaldırıldı, yeniden deneniyor..."
       no_response_after_retries: "❌ Model sağlayıcısı tüm yeniden denemelere rağmen yanıt vermedi. /retry gönderin veya /model ile model değiştirin."
       stale_connections_cleaned: "🔌 Önceki bir sağlayıcı sorunundan kalan bayat bağlantılar algılandı ve otomatik olarak temizlendi. Yeni bir bağlantıyla devam ediliyor."
+      rate_limited_failed_one: "❌ {max} denemeden sonra hız sınırı — {summary}"
+      rate_limited_failed_reset_one: "❌ {max} denemeden sonra hız sınırı — {summary} (sıfırlanma: {reset})"
+      free_busy_wait: "⏱️ Ücretsiz model meşgul. {wait}s bekleniyor (deneme {attempt}/{max})..."
+      free_busy_wait_reset: "⏱️ Ücretsiz model meşgul. Sıfırlanma: {reset}. {wait}s bekleniyor (deneme {attempt}/{max})..."
     compress:
       compacting: "🗜️ Bağlam sıkıştırılıyor — devam edebilmem için önceki konuşma özetleniyor..."
       heartbeat: "🗜️ Bağlam sıkıştırılıyor — devam edebilmem için önceki konuşma hâlâ özetleniyor..."
@@ -3796,7 +3800,6 @@ explainer:
     stream_dropped_tool_call: "Model büyük bir eylem yazarken {label} ile bağlantı sürekli koptu, bu yüzden hiçbir şey çalıştırılmadı. Ağınızı kontrol edip /retry gönderin; dosyayı daha küçük parçalar hâlinde istemek de yardımcı olur."
     stream_closed_tool_call: "{label}, model eylemini yazmayı bitirmeden akışı hiçbir hata bildirmeden sürekli kapattı, bu yüzden hiçbir şey çalıştırılmadı. Bunun nedeni genellikle sağlayıcının ya da önündeki bir proxy'nin uzun yanıtları erken kesmesidir. /retry gönderin; işi daha küçük adımlarla istemek de yardımcı olur."
     local_processing_error: "Hermes modelin yanıtını işlerken dahili bir hatayla karşılaştı ve bu turu durdurdu. Mesajınız kaydedildi. Yeniden denemek için `continue` gönderin veya /new ile yeni bir oturum başlatın. Tekrar olursa `hermes doctor` çalıştırın ve hata ayrıntılarını paylaşın.\n\nAyrıntılar: {detail}"
-    reasoning_only: "⚠️ {model} tüm çıktı bütçesini düşünmeye harcadı ve hiç yanıt yazmadı. Akıl yürütme düzeyini `/reasoning low` ile düşürün veya /model ile farklı bir modele geçin. Yanıtı içerebilecek son düşünceleri:\n\n{preview}"
     max_iterations_no_summary: "Bu turdaki adımlarım ({limit} araç çağrısı) iş bitmeden tükendi ve bir özet de üretemedim. Devam etmek için `continue` gönderin veya yapılandırmanızda `max_iterations` değerini yükseltin."
     nous_rate_limit: "Sınırın sıfırlanmasını bekleyip /retry gönderin veya /model ile model değiştirin. Beklememek için `hermes fallback add` ile bir yedek sağlayıcı ekleyin."
     exhausted_lead:
@@ -3805,6 +3808,7 @@ explainer:
       server_error: "{label}, {attempts} denemenin hepsinde sunucu hatası döndürdü"
       timeout: "{label}, {attempts} denemenin hiçbirinde zamanında yanıt vermedi"
       default: "{label}, {attempts} denemeden sonra da yanıt vermedi"
+      first_rate_limit: "{label} şu anda istek hızını sınırlıyor"
     exhausted_situation_reset: "kullanım sınırı {window} içinde sıfırlanıyor. Sonrasında /retry gönderin veya /model ile model değiştirin."
     exhausted_situation_unavailable: "geçici olarak kullanılamıyor gibi görünüyor. Bir dakika bekleyip /retry gönderin veya /model ile model değiştirin."
     exhausted: "{lead} — {situation} Bunun ileride yaşanmaması için `hermes fallback add` ile bir yedek sağlayıcı ekleyin.\n\nSağlayıcının yanıtı: {summary}"
@@ -3816,6 +3820,7 @@ explainer:
       provider_policy_blocked: "{label}, hesabınızdaki bir politika nedeniyle bu isteği reddetti (veri/gizlilik ayarları ya da modelin üst sağlayıcısının hesaba koyduğu bir engel); bu yüzden model yanıt vermedi ve yeniden denemek işe yaramaz. Hesabı sağlayıcıyla birlikte kontrol edin veya /model ile model değiştirin."
       upstream_blocked: "{label} önündeki bir güvenlik duvarı/CDN isteği modele ulaşmadan engelledi; yani anahtarınız büyük olasılıkla sorunsuz. Sağlayıcının extra_headers ayarıyla özel bir User-Agent belirleyin, proxy/WAF kurallarını kontrol edin veya /model ile sağlayıcı değiştirin."
       default: "{label} isteği reddetti ve yeniden denemek işe yaramaz. /model ile başka bir model seçin veya ayrıntılar için `{home}/logs/agent.log` dosyasına bakın."
+      data_policy_denied: "Bu konuşma, yalnızca verilerinizle eğitim yapmayan bir modele gönderilebilen bağlı uygulama sonucu içeriyor; {label} üzerindeki '{model}' bunu garanti edemiyor. /model ile model değiştirin, /compress ile sonucu bir özetle değiştirin veya /new ile yeniden başlayın. Hiçbir ücretsiz model bu içeriği alamaz: ücretli plana geçin ya da /compress veya /new kullanın."
     auth_oauth: "{label} oturum açma bilgilerinizi reddetti, bu yüzden modele ulaşılamıyor. Yeniden oturum açın: `{relogin}`."
     auth_api_key: "{label} API anahtarınızı reddetti, bu yüzden modele ulaşılamıyor. Ayarlar → Sağlayıcılar bölümünden güncelleyin veya terminalde `hermes setup` çalıştırın."
     model_prefix_hint: " Adı kendiniz yazdıysanız üretici öneki eksik olabilir — '{suggestion}' mi demek istediniz?"
@@ -3853,6 +3858,8 @@ explainer:
     provider_policy_blocked: "yapay zekâ model servisi, hesaptaki bir politika nedeniyle isteği reddetti"
     context_overflow: "isteği model için fazla büyüdü"
     context_overflow_job: "işin isteği model için fazla büyüdü"
+    data_policy_denied: "bağlamında, verilerle eğitim yapmayan bir model gerektiren bağlı uygulama sonucu var"
+    data_policy_denied_job: "görevin bağlamında, verilerle eğitim yapmayan bir model gerektiren bağlı uygulama sonucu var"
 tips:
   t001: "/bg <prompt> bir görevi ayrı bir oturumda çalıştırır, mevcut oturumunuz boş kalır; /btw <question> ise bu konuşma hakkındaki yan bir soruyu konuşmayı bölmeden yanıtlar."
   t002: "/branch mevcut oturumu çatallar; böylece ilerlemenizi kaybetmeden farklı bir yönü keşfedebilirsiniz."

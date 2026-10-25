@@ -118,7 +118,7 @@ def repetition_copy(stopping: str, outcome: str, refusal: str) -> tuple[str, str
     )
 
 
-def _repetition_abort(stopping: str, refusal: str, key: str) -> Tuple[str, str, str]:
+def _repetition_abort(stopping: str, refusal: str, key: str) -> tuple[str, str, str]:
     """``repetition_copy`` with the user copy replaced by its catalog key (one whole sentence per
     variant, so a translation never embeds an English clause)."""
     line, _, error = repetition_copy(stopping, "", refusal)

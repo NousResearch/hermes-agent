@@ -3672,6 +3672,10 @@ display:
       vision_payloads_stripped: "📐 A compressão não conseguiu reduzir mais a solicitação — as imagens retidas foram removidas, tentando novamente..."
       no_response_after_retries: "❌ O fornecedor do modelo não respondeu após todas as tentativas. Envie /retry ou troque de modelo com /model."
       stale_connections_cleaned: "🔌 Conexões obsoletas de um problema anterior do fornecedor foram detectadas e limpas automaticamente. Prosseguindo com uma nova conexão."
+      rate_limited_failed_one: "❌ Limite de frequência após {max} tentativa — {summary}"
+      rate_limited_failed_reset_one: "❌ Limite de frequência após {max} tentativa — {summary} (reinicia em {reset})"
+      free_busy_wait: "⏱️ O modelo gratuito está ocupado. Aguardando {wait}s (tentativa {attempt}/{max})..."
+      free_busy_wait_reset: "⏱️ O modelo gratuito está ocupado. Reinicia em {reset}. Aguardando {wait}s (tentativa {attempt}/{max})..."
     compress:
       compacting: "🗜️ Compactando o contexto — resumindo a conversa anterior para poder continuar..."
       heartbeat: "🗜️ Compactando o contexto — ainda resumindo a conversa anterior para poder continuar..."
@@ -3796,7 +3800,6 @@ explainer:
     stream_dropped_tool_call: "A conexão com {label} caiu repetidamente enquanto o modelo escrevia uma ação grande, então nada foi executado. Verifique sua rede e envie /retry; pedir o arquivo em partes menores também ajuda."
     stream_closed_tool_call: "{label} fechou o stream repetidamente antes que o modelo terminasse de escrever a ação, sem informar nenhum erro, então nada foi executado. Normalmente é o fornecedor, ou um proxy na frente dele, encurtando respostas longas. Envie /retry; pedir o trabalho em etapas menores também ajuda."
     local_processing_error: "O Hermes encontrou um erro interno ao processar a resposta do modelo e encerrou este turno. Sua mensagem está salva. Envie `continue` para tentar novamente ou inicie uma nova sessão com /new. Se acontecer de novo, execute `hermes doctor` e compartilhe os detalhes do erro.\n\nDetalhes: {detail}"
-    reasoning_only: "⚠️ {model} gastou todo o orçamento de saída pensando e nunca escreveu uma resposta. Reduza o esforço de raciocínio com `/reasoning low` ou troque para outro modelo com /model. Os últimos pensamentos dele, que podem conter a resposta:\n\n{preview}"
     max_iterations_no_summary: "Fiquei sem etapas neste turno ({limit} chamadas de ferramenta) antes de terminar e não consegui produzir um resumo. Envie `continue` para prosseguir ou aumente `max_iterations` na sua configuração."
     nous_rate_limit: "Aguarde a redefinição e envie /retry, ou troque de modelo com /model. Para evitar esperas, adicione um fornecedor de reserva com `hermes fallback add`."
     exhausted_lead:
@@ -3805,6 +3808,7 @@ explainer:
       server_error: "{label} retornou um erro de servidor em todas as {attempts} tentativas"
       timeout: "{label} não respondeu a tempo em nenhuma das {attempts} tentativas"
       default: "{label} não respondeu após {attempts} tentativas"
+      first_rate_limit: "{label} está limitando a frequência das solicitações"
     exhausted_situation_reset: "o limite de uso dele é redefinido em {window}. Envie /retry depois disso, ou troque de modelo com /model."
     exhausted_situation_unavailable: "parece estar temporariamente indisponível. Aguarde um minuto e envie /retry, ou troque de modelo com /model."
     exhausted: "{lead} — {situation} Para evitar isso no futuro, adicione um fornecedor de reserva com `hermes fallback add`.\n\nO fornecedor disse: {summary}"
@@ -3816,6 +3820,7 @@ explainer:
       provider_policy_blocked: "{label} recusou esta solicitação por causa de uma política da sua conta (as configurações de dados/privacidade dela, ou um bloqueio que o fornecedor de origem do modelo aplicou à conta), então o modelo não respondeu e tentar de novo não vai adiantar. Verifique a conta com o fornecedor ou troque de modelo com /model."
       upstream_blocked: "Um firewall/CDN na frente de {label} bloqueou a solicitação antes que ela chegasse ao modelo, então sua chave provavelmente está correta. Defina um User-Agent personalizado via extra_headers do fornecedor, verifique as regras do proxy/WAF ou troque de fornecedor com /model."
       default: "{label} rejeitou a solicitação e tentar de novo não vai adiantar. Escolha outro modelo com /model ou veja os detalhes em `{home}/logs/agent.log`."
+      data_policy_denied: "Esta conversa contém um resultado de uma aplicação conectada que só pode ser enviado a um modelo que não treine com seus dados, e '{model}' em {label} não garante isso. Troque de modelo com /model, use /compress para substituir o resultado por um resumo ou comece de novo com /new. Nenhum modelo gratuito pode receber este conteúdo: mude para um plano pago ou use /compress ou /new."
     auth_oauth: "{label} rejeitou seu login, então não é possível acessar o modelo. Faça login novamente: `{relogin}`."
     auth_api_key: "{label} rejeitou sua chave de API, então não é possível acessar o modelo. Atualize-a em Settings → Providers ou execute `hermes setup` em um terminal."
     model_prefix_hint: " Se você digitou o nome por conta própria, talvez esteja faltando o prefixo do fabricante — você quis dizer '{suggestion}'?"
@@ -3853,6 +3858,8 @@ explainer:
     provider_policy_blocked: "o serviço do modelo de IA recusou a solicitação por causa de uma política da conta"
     context_overflow: "a solicitação dele ficou grande demais para o modelo"
     context_overflow_job: "a solicitação da tarefa ficou grande demais para o modelo"
+    data_policy_denied: "seu contexto contém um resultado de aplicação que exige um modelo sem treinamento com os dados"
+    data_policy_denied_job: "o contexto da tarefa contém um resultado de aplicação que exige um modelo sem treinamento com os dados"
 tips:
   t001: "/bg <prompt> executa uma tarefa em uma sessão separada enquanto a atual fica livre; /btw <question> responde a uma pergunta paralela sobre esta conversa sem interrompê-la."
   t002: "/branch ramifica a sessão atual para que você explore outra direção sem perder o progresso."

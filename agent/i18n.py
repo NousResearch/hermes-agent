@@ -127,6 +127,7 @@ def _normalize_lang(value: Any, home: str | None = None) -> str:
     return resolve_language_id(value, home) or DEFAULT_LANGUAGE
 
 
+@lru_cache(maxsize=64)
 def _load_bundled(lang: str) -> dict[str, str]:
     """One bundled locale YAML flattened to dotted keys (empty dict on any failure — never crashes)."""
     path = _locales_dir() / f"{lang}.yaml"
@@ -153,7 +154,7 @@ def _load_catalog(lang: str, home: str | None = None) -> dict[str, str]:
         cached = _catalog_cache.get(key)
         if cached is not None:
             return cached
-    merged = _load_bundled(lang)
+    merged = dict(_load_bundled(lang))
     merged.update(i18n_layers.overlay_layer(home, lang))
     merged.update(i18n_layers.pack_layer(lang))
     with _catalog_lock:
@@ -198,6 +199,7 @@ def reset_language_cache() -> None:
     ``save_config`` changes ``display.language``, after a pack registers/unregisters, or after editing
     an overlay file)."""
     _config_language_cached.cache_clear()
+    _load_bundled.cache_clear()
     with _catalog_lock:
         _catalog_cache.clear()
         _supported_cache.clear()
@@ -234,6 +236,10 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
     if value is None:
         logger.debug("i18n miss: key=%r lang=%r", key, target)
         value = key
+    return _format_catalog_text(value, key, target, format_kwargs)
+
+
+def _format_catalog_text(value: str, key: str, target: str, format_kwargs: dict[str, Any]) -> str:
     if not format_kwargs:
         return value
     try:
@@ -253,15 +259,18 @@ class LocalizedText(str):
     active language. Wrappers that rebuild the string (``DiagnosticText``) copy ``i18n_key``/``i18n_kwargs``.
     """
 
-    def __new__(cls, english: str, key: str, format_kwargs: dict[str, Any] | None = None) -> "LocalizedText":
+    def __new__(cls, english: str, key: str, format_kwargs: dict[str, Any] | None = None) -> LocalizedText:
         text = super().__new__(cls, english)
         text.i18n_key, text.i18n_kwargs = key, format_kwargs or {}
         return text
 
 
 def tl(key: str, **format_kwargs: Any) -> LocalizedText:
-    """English rendering of ``key`` carrying the key, so a sink can localize it after matching."""
-    return LocalizedText(t(key, lang=DEFAULT_LANGUAGE, **format_kwargs), key, format_kwargs)
+    """Bundled English source carrying its key for presentation-time localization. English overlays
+    and packs customize display too; they must never rewrite what matchers or storage consume."""
+    source = _load_bundled(DEFAULT_LANGUAGE).get(key, key)
+    english = _format_catalog_text(source, key, DEFAULT_LANGUAGE, format_kwargs)
+    return LocalizedText(english, key, format_kwargs)
 
 
 def preload_catalogs() -> None:
@@ -280,8 +289,8 @@ def render_localized(text: Any) -> Any:
 
 __all__ = [
     "DEFAULT_LANGUAGE",
-    "LocalizedText",
     "SUPPORTED_LANGUAGES",
+    "LocalizedText",
     "get_language",
     "language_options",
     "preload_catalogs",

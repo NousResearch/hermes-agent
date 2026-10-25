@@ -3672,6 +3672,10 @@ display:
       vision_payloads_stripped: "📐 Kompressie kon die versoek nie verder verklein nie — behoue beelddata verwyder, herprobeer..."
       no_response_after_retries: "❌ Die modelverskaffer het na al die herpogings nie geantwoord nie. Stuur /retry, of verander modelle met /model."
       stale_connections_cleaned: "🔌 Verouderde verbindings van 'n vorige verskafferprobleem bespeur — outomaties opgeruim. Gaan voort met 'n nuwe verbinding."
+      rate_limited_failed_one: "❌ Tempolimiet ná {max} poging — {summary}"
+      rate_limited_failed_reset_one: "❌ Tempolimiet ná {max} poging — {summary} (herstel oor {reset})"
+      free_busy_wait: "⏱️ Die gratis model is besig. Wag {wait}s (poging {attempt}/{max})..."
+      free_busy_wait_reset: "⏱️ Die gratis model is besig. Herstel oor {reset}. Wag {wait}s (poging {attempt}/{max})..."
     compress:
       compacting: "🗜️ Konteks word gekompakteer — vroeëre gesprek word opgesom sodat ek kan voortgaan..."
       heartbeat: "🗜️ Konteks word gekompakteer — vroeëre gesprek word steeds opgesom sodat ek kan voortgaan..."
@@ -3796,7 +3800,6 @@ explainer:
     stream_dropped_tool_call: "Die verbinding met {label} het aanhou wegval terwyl die model 'n groot aksie geskryf het, so niks is uitgevoer nie. Kyk na jou netwerk en stuur /retry; dit help ook om die lêer in kleiner stukke te vra."
     stream_closed_tool_call: "{label} het die stroom telkens gesluit voordat die model klaar was om sy aksie te skryf, sonder om 'n fout te rapporteer, so niks is uitgevoer nie. Dit is gewoonlik die verskaffer of 'n proxy voor dit wat lang antwoorde kortknip. Stuur /retry; dit help ook om die werk in kleiner stappe te vra."
     local_processing_error: "Hermes het 'n interne fout teëgekom terwyl dit die model se antwoord hanteer het en het hierdie beurt gestop. Jou boodskap is gestoor. Stuur `continue` om weer te probeer, of begin 'n nuwe sessie met /new. As dit weer gebeur, voer `hermes doctor` uit en deel die foutbesonderhede.\n\nBesonderhede: {detail}"
-    reasoning_only: "⚠️ {model} het sy hele uitsetbegroting aan dink bestee en nooit 'n antwoord geskryf nie. Verlaag sy redeneervlak met `/reasoning low`, of skakel oor na 'n ander model met /model. Sy laaste gedagtes, wat die antwoord kan bevat:\n\n{preview}"
     max_iterations_no_summary: "My stappe vir hierdie beurt ({limit} gereedskapoproepe) het opgeraak voordat ek klaar was, en ek kon nie 'n opsomming lewer nie. Stuur `continue` om aan te gaan, of verhoog `max_iterations` in jou konfigurasie."
     nous_rate_limit: "Wag vir die terugstelling en stuur /retry, of verander modelle met /model. Om wagtye te vermy, voeg 'n terugvalverskaffer by met `hermes fallback add`."
     exhausted_lead:
@@ -3805,6 +3808,7 @@ explainer:
       server_error: "{label} het by al {attempts} pogings 'n bedienerfout teruggestuur"
       timeout: "{label} het by geeneen van die {attempts} pogings betyds geantwoord nie"
       default: "{label} het na {attempts} pogings nie geantwoord nie"
+      first_rate_limit: "{label} beperk tans die versoektempo"
     exhausted_situation_reset: "sy gebruikslimiet word oor {window} teruggestel. Stuur daarna /retry, of verander modelle met /model."
     exhausted_situation_unavailable: "dit lyk tydelik onbeskikbaar. Wag 'n minuut en stuur /retry, of verander modelle met /model."
     exhausted: "{lead} — {situation} Om dit in die toekoms te vermy, voeg 'n terugvalverskaffer by met `hermes fallback add`.\n\nVerskaffer het gesê: {summary}"
@@ -3816,6 +3820,7 @@ explainer:
       provider_policy_blocked: "{label} het hierdie versoek geweier weens 'n beleid op jou rekening (sy data-/privaatheidsinstellings, of 'n blokkering wat die model se stroomop-verskaffer op die rekening geplaas het), so die model het nie geantwoord nie en herprobeer sal nie help nie. Kyk na die rekening by die verskaffer, of verander modelle met /model."
       upstream_blocked: "'n Brandmuur/CDN voor {label} het die versoek geblokkeer voordat dit die model bereik het, so jou sleutel is waarskynlik in orde. Stel 'n pasgemaakte User-Agent via die verskaffer se extra_headers, kyk na die proxy/WAF-reëls, of verander verskaffers met /model."
       default: "{label} het die versoek verwerp en herprobeer sal nie help nie. Kies 'n ander model met /model, of kyk na die besonderhede in `{home}/logs/agent.log`."
+      data_policy_denied: "Hierdie gesprek bevat 'n resultaat van 'n gekoppelde toepassing wat slegs na 'n model mag gaan wat nie op jou data oplei nie, en '{model}' by {label} waarborg dit nie. Verander model met /model, gebruik /compress om die resultaat met 'n opsomming te vervang, of begin oor met /new. Geen gratis model kan hierdie inhoud ontvang nie: kies 'n betaalde plan, of gebruik /compress of /new."
     auth_oauth: "{label} het jou aanmelding verwerp, so die model kan nie bereik word nie. Meld weer aan: `{relogin}`."
     auth_api_key: "{label} het jou API-sleutel verwerp, so die model kan nie bereik word nie. Werk dit by in Instellings → Verskaffers, of voer `hermes setup` in 'n terminaal uit."
     model_prefix_hint: " As jy die naam self ingetik het, ontbreek die vervaardigervoorvoegsel dalk — bedoel jy '{suggestion}'?"
@@ -3853,6 +3858,8 @@ explainer:
     provider_policy_blocked: "die KI-modeldiens het die versoek geweier weens 'n beleid op die rekening"
     context_overflow: "sy versoek het te groot vir die model geword"
     context_overflow_job: "die taak se versoek het te groot vir die model geword"
+    data_policy_denied: "sy konteks bevat 'n toepassingresultaat wat 'n model vereis wat nie op data oplei nie"
+    data_policy_denied_job: "die taak se konteks bevat 'n toepassingresultaat wat 'n model vereis wat nie op data oplei nie"
 tips:
   t001: "/bg <prompt> voer 'n taak in 'n aparte sessie uit terwyl jou huidige een vry bly; /btw <question> beantwoord 'n newevraag oor hierdie gesprek sonder om dit te onderbreek."
   t002: "/branch vertak die huidige sessie sodat jy 'n ander rigting kan verken sonder om vordering te verloor."

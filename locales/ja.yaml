@@ -3672,6 +3672,10 @@ display:
       vision_payloads_stripped: "📐 圧縮ではこれ以上リクエストを小さくできません — 保持していた画像ペイロードを削除して再試行しています..."
       no_response_after_retries: "❌ モデルプロバイダーはすべての再試行後も応答しませんでした。/retry を送信するか、/model でモデルを切り替えてください。"
       stale_connections_cleaned: "🔌 以前のプロバイダーの問題で残った古い接続を検出し、自動的にクリーンアップしました。新しい接続で続行します。"
+      rate_limited_failed_one: "❌ {max} 回の試行後にレート制限 — {summary}"
+      rate_limited_failed_reset_one: "❌ {max} 回の試行後にレート制限 — {summary}（{reset} 後にリセット）"
+      free_busy_wait: "⏱️ 無料モデルは混雑しています。{wait}秒待機（試行 {attempt}/{max}）..."
+      free_busy_wait_reset: "⏱️ 無料モデルは混雑しています。{reset} 後にリセット。{wait}秒待機（試行 {attempt}/{max}）..."
     compress:
       compacting: "🗜️ コンテキストを圧縮しています — 続行できるよう、以前の会話を要約しています..."
       heartbeat: "🗜️ コンテキストを圧縮しています — 引き続き以前の会話を要約しています..."
@@ -3796,7 +3800,6 @@ explainer:
     stream_dropped_tool_call: "モデルが大きなアクションを書いている間に {label} との接続が何度も切れたため、何も実行されませんでした。ネットワークを確認して /retry を送信してください。ファイルを小さく分けて依頼するのも効果的です。"
     stream_closed_tool_call: "モデルがアクションを書き終える前に、{label} がエラーを報告しないままストリームを何度も閉じたため、何も実行されませんでした。通常は、プロバイダーかその手前のプロキシが長い返信を途中で打ち切っていることが原因です。/retry を送信してください。作業を小さなステップに分けて依頼するのも効果的です。"
     local_processing_error: "モデルの返信を処理中に Hermes で内部エラーが発生したため、このターンを停止しました。メッセージは保存されています。`continue` を送信して再試行するか、/new で新しいセッションを始めてください。再発する場合は `hermes doctor` を実行し、エラーの詳細を共有してください。\n\n詳細: {detail}"
-    reasoning_only: "⚠️ {model} は出力予算をすべて思考に使い切り、回答を書きませんでした。`/reasoning low` で推論の強度を下げるか、/model で別のモデルに切り替えてください。最後の思考内容 (回答が含まれている可能性があります):\n\n{preview}"
     max_iterations_no_summary: "完了する前にこのターンのステップ数 (ツール呼び出し {limit} 回) を使い切り、要約も作成できませんでした。`continue` を送信して続行するか、設定で `max_iterations` を引き上げてください。"
     nous_rate_limit: "リセットを待ってから /retry を送信するか、/model でモデルを切り替えてください。待ち時間を避けるには、`hermes fallback add` でバックアッププロバイダーを追加してください。"
     exhausted_lead:
@@ -3805,6 +3808,7 @@ explainer:
       server_error: "{label} は {attempts} 回の試行すべてでサーバーエラーを返しました"
       timeout: "{label} は {attempts} 回の試行のいずれにも時間内に応答しませんでした"
       default: "{label} は {attempts} 回試行しても応答しませんでした"
+      first_rate_limit: "{label} は現在リクエスト頻度を制限しています"
     exhausted_situation_reset: "使用量の上限は {window} 後にリセットされます。その後に /retry を送信するか、/model でモデルを切り替えてください。"
     exhausted_situation_unavailable: "一時的に利用できないようです。1 分ほど待ってから /retry を送信するか、/model でモデルを切り替えてください。"
     exhausted: "{lead} — {situation}今後これを避けるには、`hermes fallback add` でバックアッププロバイダーを追加してください。\n\nプロバイダーの応答: {summary}"
@@ -3816,6 +3820,7 @@ explainer:
       provider_policy_blocked: "{label} はアカウントのポリシー (データ/プライバシー設定、またはモデルの上流プロバイダーがアカウントにかけたブロック) によりこのリクエストを拒否したため、モデルは回答せず、再試行しても解決しません。プロバイダーでアカウントを確認するか、/model でモデルを切り替えてください。"
       upstream_blocked: "{label} の手前にあるファイアウォール/CDN が、モデルに届く前にリクエストをブロックしました。キーには問題がない可能性が高いです。プロバイダーの extra_headers でカスタム User-Agent を設定するか、プロキシ/WAF のルールを確認するか、/model でプロバイダーを切り替えてください。"
       default: "{label} がリクエストを拒否しました。再試行しても解決しません。/model で別のモデルを選ぶか、`{home}/logs/agent.log` で詳細を確認してください。"
+      data_policy_denied: "この会話には接続アプリの結果が含まれており、データを学習に使わないモデルにしか送信できませんが、{label} の '{model}' はそれを保証できません。/model でモデルを変更するか、/compress で結果を要約に置き換えるか、/new で新しく始めてください。無料モデルはこの内容を受け取れません。有料プランに変更するか、/compress または /new を使用してください。"
     auth_oauth: "{label} がサインインを拒否したため、モデルに接続できません。もう一度サインインしてください: `{relogin}`。"
     auth_api_key: "{label} が API キーを拒否したため、モデルに接続できません。設定 → プロバイダーで更新するか、ターミナルで `hermes setup` を実行してください。"
     model_prefix_hint: " 名前を手入力した場合、ベンダープレフィックスが抜けている可能性があります — '{suggestion}' のことですか？"
@@ -3853,6 +3858,8 @@ explainer:
     provider_policy_blocked: "AI モデルサービスがアカウントのポリシーによりリクエストを拒否しました"
     context_overflow: "リクエストがモデルにとって大きくなりすぎました"
     context_overflow_job: "このジョブのリクエストがモデルにとって大きくなりすぎました"
+    data_policy_denied: "コンテキストに、データを学習に使わないモデルを必要とする接続アプリの結果が含まれている"
+    data_policy_denied_job: "ジョブのコンテキストに、データを学習に使わないモデルを必要とする接続アプリの結果が含まれている"
 tips:
   t001: "/bg <prompt> は現在のセッションを空けたまま別セッションでタスクを実行します。/btw <question> は会話を中断せずに、この会話に関する補足の質問に答えます。"
   t002: "/branch は現在のセッションを分岐させ、進捗を失わずに別の方向を試せるようにします。"

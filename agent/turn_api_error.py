@@ -18,11 +18,12 @@ from typing import Any, Dict, Optional
 from agent.api_error_summary import is_provider_stream_parse_error
 from agent.error_classifier import RETRYABLE_CLIENT_REASONS, FailoverReason, classify_api_error
 from agent.i18n import tl
+from agent.turn_recovery_status import nonretryable_fallback_status
 from agent.turn_overflow import recover_from_overflow
 from agent.turn_recovery import (
     abort_turn_on_interrupt, compute_error_backoff, free_tier_cooldown_ends_turn,
     interruptible_backoff_sleep, log_api_error_attempt,
-    max_retries_exhausted_result, nonretryable_client_error_result, nonretryable_fallback_status, recover_after_classification,
+    max_retries_exhausted_result, nonretryable_client_error_result, recover_after_classification,
     recover_before_classification, route_classified_error, settle_delivered_partial,
 )
 

@@ -36,7 +36,7 @@ def test_routine_compression_status_is_filtered_in_english_and_opt_in_shows_it_l
     line = PREFLIGHT_COMPRESSION_STATUS_TEMPLATE.format(tokens=120000, threshold=100000)
     assert line == "📦 Preflight compression: ~120,000 tokens >= 100,000 threshold. This may take a moment."
 
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
     assert _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", line) is None
 
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {"compression": {"progress_notices": True}})

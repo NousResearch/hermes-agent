@@ -8,8 +8,8 @@
  * Companion to the additive PR "feat(plugins): expose Dialog/ConfirmDialog/
  * Toast/useToast/useConfirmDelete on the plugin SDK". See issue #50547.
  */
-import { beforeEach, describe, expect, it } from "vitest";
-import { exposePluginSDK } from "./registry";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { exposePluginSDK, setChatSubmitHandler } from "./registry";
 
 describe("plugin SDK dialog/toast surface", () => {
   beforeEach(() => {
@@ -18,6 +18,7 @@ describe("plugin SDK dialog/toast surface", () => {
       __HERMES_PLUGINS__: undefined,
       __HERMES_PLUGIN_SDK__: undefined,
     };
+    setChatSubmitHandler(null);
   });
 
   it("exposes Dialog + subcomponents on components", () => {
@@ -42,5 +43,37 @@ describe("plugin SDK dialog/toast surface", () => {
     // Original React hooks still present (no accidental removal).
     expect(typeof sdk.hooks.useState).toBe("function");
     expect(typeof sdk.hooks.useCallback).toBe("function");
+  });
+
+  it("forwards chat submit text through the host handler and reports unavailable chat", () => {
+    exposePluginSDK();
+    const sdk = (globalThis as unknown as {
+      window: {
+        __HERMES_PLUGIN_SDK__: {
+          host: { chat: { submitText: (text: string) => unknown } };
+        };
+      };
+    }).window.__HERMES_PLUGIN_SDK__;
+
+    expect(sdk.host.chat.submitText("attachment path")).toEqual({
+      ok: false,
+      reason: "inactive",
+    });
+
+    const disconnected = vi.fn(() => ({
+      ok: false as const,
+      reason: "disconnected" as const,
+    }));
+    setChatSubmitHandler(disconnected);
+    expect(sdk.host.chat.submitText("attachment path")).toEqual({
+      ok: false,
+      reason: "disconnected",
+    });
+    expect(disconnected).toHaveBeenCalledWith("attachment path");
+
+    const submit = vi.fn(() => ({ ok: true as const }));
+    setChatSubmitHandler(submit);
+    expect(sdk.host.chat.submitText("attachment path")).toEqual({ ok: true });
+    expect(submit).toHaveBeenCalledWith("attachment path");
   });
 });

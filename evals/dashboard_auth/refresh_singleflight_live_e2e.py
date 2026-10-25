@@ -65,7 +65,8 @@ threading.Thread(target=server.run, daemon=True).start()
 base = f"http://127.0.0.1:{port}"
 for _ in range(100):
     try:
-        urllib.request.urlopen(base + "/api/status", timeout=1); break
+        with urllib.request.urlopen(base + "/api/status", timeout=1):
+            break
     except Exception:
         time.sleep(0.1)
 

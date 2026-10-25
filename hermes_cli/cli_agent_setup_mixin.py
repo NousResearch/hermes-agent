@@ -575,6 +575,13 @@ class CLIAgentSetupMixin:
         self._restore_session_cwd(session_meta, quiet=quiet)
         self._restore_session_yolo(session_meta, quiet=quiet)
         self._restore_session_model(session_meta, quiet=quiet)
+        # The attachment's snapshot already carries the session's own effort (a ``/reasoning``
+        # pin, or a creation-time level) while ``reasoning_config`` still holds the launch
+        # profile's. Adopt it before the first frame, so ``-c/--continue`` reports the level the
+        # next turn will run instead of the profile's. The agent is not built yet on this path,
+        # so the resolver falls back to the snapshot.
+        from hermes_cli.cli_model_switch_mixin import _sync_cli_reasoning_from_session
+        _sync_cli_reasoning_from_session(self)
 
     def _reopen_session(self) -> None:
         """Clear ended_at so the resumed session is active again (best effort)."""

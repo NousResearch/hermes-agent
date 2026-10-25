@@ -59,15 +59,21 @@ def _sync_cli_reasoning_from_session(cli) -> None:
     will send — wins when the attachment reports one. An empty/absent value keeps the resolve's
     result (a session that follows its profile has no own level to adopt).
     """
-    agent = getattr(cli, "agent", None)
-    state_of = getattr(agent, "_state", None)
-    if not callable(state_of):
-        return
-    try:
-        info = state_of().info or {}
-    except Exception:
-        return
-    effort = str(info.get("reasoning_effort") or "").strip()
+    info = None
+    state_of = getattr(getattr(cli, "agent", None), "_state", None)
+    if callable(state_of):
+        try:
+            info = state_of().info or {}
+        except Exception:
+            info = None
+    if not info:
+        # The resumed agent is built lazily, so the attachment's own snapshot is the only place
+        # the session's level exists on the first frame. Adopt it here, at the source, so every
+        # reader of ``cli.reasoning_config`` agrees instead of each display point re-resolving.
+        snapshot = getattr(getattr(cli, "_session_db", None), "current", None)
+        if isinstance(snapshot, dict):
+            info = snapshot.get("info") or {}
+    effort = str((info or {}).get("reasoning_effort") or "").strip()
     if not effort:
         return
     from hermes_constants import parse_reasoning_effort
@@ -630,9 +636,6 @@ class CLIModelSwitchMixin:
                     "%s failed; keeping ambient credentials",
                     stored_provider, exc_info=True)
         _resolve_cli_reasoning(self)
-        # The gateway owns a resumed session's effort (a /reasoning pin); adopt it after the
-        # profile re-resolve above so /reasoning and the status bar show what the next turn runs.
-        _sync_cli_reasoning_from_session(self)
         # Mid-chat /resume swaps the live agent; on startup --resume _init_agent picks up
         # self.model / self.provider / self.reasoning_config.
         if self.agent is not None:

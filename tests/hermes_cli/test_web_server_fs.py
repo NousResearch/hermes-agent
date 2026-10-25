@@ -807,7 +807,7 @@ def test_fs_reads_translate_after_binding_profile_terminal_scope(client, tmp_pat
 
     from tools.terminal_scope import get_terminal_scope
 
-    def translate(path, session_key="", *, quiet=False):
+    def translate(path, session_key="", workspace_key="", *, quiet=False):
         if path == Path("/workspace/isolated report.txt") and get_terminal_scope() is not None:
             return target
         return None
@@ -871,6 +871,132 @@ def test_fs_download_maps_root_home_to_persistent_sandbox(client, monkeypatch, t
     assert response.content == b"PK\x03\x04zip"
 
 
+def _workspace_sandbox(sandbox: Path, cwd: Path) -> Path:
+    from tools.environments.path_utils import sanitize_task_id_for_path
+    from tools.terminal_tool import workspace_key_for
+
+    name = sanitize_task_id_for_path(f"default:ws:{workspace_key_for(str(cwd))}")
+    workspace = sandbox / "docker" / name / "workspace"
+    workspace.mkdir(parents=True)
+    return workspace
+
+
+def _session_detail(cwds: dict):
+    async def fake_detail(session_id, profile=None):
+        return {"cwd": cwds[session_id], "id": session_id}
+
+    return fake_detail
+
+
+def test_fs_download_maps_workspace_container_to_its_sandbox(client, monkeypatch, tmp_path):
+    """A persistent per-workspace container stores ``/workspace/note.txt`` under
+    ``sandboxes/docker/default_ws_<digest>-<hash>/workspace``, not the shared
+    ``default`` sandbox. The download must serve that session's file, and must
+    not scan every other workspace for the same relative path."""
+    from tools.terminal_tool import register_task_env_overrides, workspace_key_for
+
+    project = tmp_path / "project"
+    project.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    sandbox = tmp_path / "sandboxes"
+    own = _workspace_sandbox(sandbox, project)
+    foreign = _workspace_sandbox(sandbox, other)
+    shared = sandbox / "docker" / "default" / "workspace"
+    shared.mkdir(parents=True)
+    (own / "note.txt").write_bytes(b"session-file")
+    (own / "only.txt").write_bytes(b"only-session")
+    (foreign / "note.txt").write_bytes(b"other-file")
+    (shared / "note.txt").write_bytes(b"shared-file")
+    monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(sandbox))
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+    monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+    monkeypatch.delenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.web_routers.sessions.get_session_detail",
+        _session_detail({
+            "sess-ws": str(project),
+            "sess-other": str(other),
+            "sess-live": str(tmp_path / "missing-cwd"),
+        }),
+    )
+
+    # No session id must not scan workspace sandboxes. The shared default copy
+    # is the only match; a file that exists only under default_ws_* stays missing.
+    bare = client.get("/api/fs/download", params={"path": "/workspace/note.txt"})
+    assert bare.status_code == 200
+    assert bare.content == b"shared-file"
+    only = client.get("/api/fs/download", params={"path": "/workspace/only.txt"})
+    assert only.status_code == 404
+
+    response = client.get(
+        "/api/fs/download", params={"path": "/workspace/note.txt", "session_id": "sess-ws"},
+    )
+    assert response.status_code == 200
+    assert response.content == b"session-file"
+    other_hit = client.get(
+        "/api/fs/download", params={"path": "/workspace/note.txt", "session_id": "sess-other"},
+    )
+    assert other_hit.status_code == 200
+    assert other_hit.content == b"other-file"
+
+    digest = workspace_key_for(str(project))
+    register_task_env_overrides("sess-live", {
+        "cwd": str(tmp_path / "missing-cwd"),
+        "cwd_source": "session",
+        "workspace_key": digest,
+    })
+    try:
+        live = client.get(
+            "/api/fs/download", params={"path": "/workspace/note.txt", "session_id": "sess-live"},
+        )
+    finally:
+        from gateway.session_policy import unbind_turn_workspace
+        unbind_turn_workspace("sess-live")
+    assert live.status_code == 200
+    assert live.content == b"session-file"
+
+
+def test_fs_download_cwd_mount_wins_then_falls_back_to_workspace_sandbox(
+    client, monkeypatch, tmp_path,
+):
+    """With the host cwd mounted on ``/workspace``, that directory wins when the
+    file is there. When the container was still created as ``default:ws:`` and
+    the file only exists in its sandbox workspace, the download serves that copy."""
+    project = tmp_path / "project"
+    project.mkdir()
+    mounted = tmp_path / "mounted-cwd"
+    mounted.mkdir()
+    (mounted / "note.txt").write_bytes(b"mounted-file")
+    sandbox = tmp_path / "sandboxes"
+    own = _workspace_sandbox(sandbox, project)
+    (own / "note.txt").write_bytes(b"sandbox-file")
+    monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(sandbox))
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+    monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
+    monkeypatch.setenv("TERMINAL_CWD", str(mounted))
+    monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.web_routers.sessions.get_session_detail",
+        _session_detail({"sess-ws": str(project)}),
+    )
+
+    mounted_hit = client.get(
+        "/api/fs/download", params={"path": "/workspace/note.txt", "session_id": "sess-ws"},
+    )
+    assert mounted_hit.status_code == 200
+    assert mounted_hit.content == b"mounted-file"
+
+    (mounted / "note.txt").unlink()
+    sandbox_hit = client.get(
+        "/api/fs/download", params={"path": "/workspace/note.txt", "session_id": "sess-ws"},
+    )
+    assert sandbox_hit.status_code == 200
+    assert sandbox_hit.content == b"sandbox-file"
+
+
 @pytest.mark.platforms("windows")
 def test_agent_fs_path_translates_before_host_normalization(monkeypatch, tmp_path):
     """On a Windows gateway ``_fs_path("/workspace/x")`` anchors to the current
@@ -881,7 +1007,7 @@ def test_agent_fs_path_translates_before_host_normalization(monkeypatch, tmp_pat
     mapped = tmp_path / "x.txt"
     seen = []
 
-    def translate(candidate, session_key="", *, quiet=False):
+    def translate(candidate, session_key="", workspace_key="", *, quiet=False):
         seen.append(candidate.as_posix())
         return mapped
 

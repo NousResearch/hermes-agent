@@ -51,6 +51,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
+import { broadcastSessionsChanged } from '@/store/session-sync'
 import {
   applyWakeStartResult,
   applyWakeStatus,
@@ -1236,6 +1237,9 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             // stale until a profile switch (#123337).
             applySessionTitle(sessionId, finalTitle || null)
             await refreshSessions().catch(() => undefined)
+            // A rename in this window must reach the others' own session
+            // stores too (they re-pull the shared list on this ping).
+            broadcastSessionsChanged()
             renderSlashOutput(
               finalTitle
                 ? `Session title set: ${finalTitle}${queued ? ' (queued while session initializes)' : ''}`

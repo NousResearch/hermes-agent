@@ -60,6 +60,7 @@ import {
   closeAllOpenSessionTiles,
   requestForOwnedSession
 } from '@/store/session-states'
+import { broadcastSessionsChanged } from '@/store/session-sync'
 import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
@@ -774,6 +775,10 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
       // profile switch forced a refetch (#123337).
       applySessionTitle(sessionId, finalTitle || null)
       applyRenamedSessionTitle(sessionId, finalTitle || null)
+      // Other windows (and a pop-out showing this session) keep their own
+      // session store — tell them to re-pull the shared list so the new title
+      // shows without a profile switch.
+      broadcastSessionsChanged()
       notify({ durationMs: 2_000, kind: 'success', message: r.renamed })
       onOpenChange(false)
     } catch (err) {

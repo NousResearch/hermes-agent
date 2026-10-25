@@ -581,13 +581,6 @@ def load_hermes_dotenv(
             if os.environ.get(name) != value:
                 os.environ[name] = value
 
-    # The config backend is selected here — after the .env files, before the first config.yaml read
-    # (``_apply_external_secret_sources`` reads ``secrets:``) — so an unavailable backend stops the
-    # process before any reader could fall back to defaults (config-config design §4.4, D11/D32).
-    from hermes_cli.config_backend import get_config_backend
-
-    get_config_backend()
-
     # External sources are skipped for the updater (dotenv + managed env still load): ``update`` must not
     # import optional secret-manager libs (Bitwarden → cryptography → _rust.pyd) into the process replacing
     # that env on Windows, and a fresh retry after a deferred dependency install would otherwise make the

@@ -46,7 +46,7 @@ from hermes_constants import get_hermes_home, get_process_hermes_home
 from utils import atomic_replace, fast_safe_load, file_signature, mkstemp_beside
 from hermes_cli.config_issues import ConfigIssue, _issue
 from hermes_cli.config_backend import (
-    config_exists, config_version, probe_config_readable, read_config_doc, supports_file_tooling,
+    config_exists, config_version, probe_config_readable, read_config_doc,
     write_config_document)
 from hermes_cli.config_read_errors import (
     _CONFIG_PARSE_FAILURES, _FIX_PERMS, _FIX_YAML, FailedConfigRead, _backups_dir_display,
@@ -1180,12 +1180,9 @@ def _persist_migration(config: dict[str, Any]) -> None:
     persist values that DIFFER from the schema default, plus explicit removals/renames of user
     data. Every migration step MUST write through here (``save_config`` with default-stripping
     ON, no ``merge_existing``) so the invariant cannot regress one migration at a time. A migration
-    is Hermes' own write, never a user turning a feature off. A backend without file tooling
-    migrates in memory on read and never writes back (D12)."""
+    is Hermes' own write, never a user turning a feature off."""
     from hermes_cli.observability.shared_metrics_disabled import hermes_applied_write
 
-    if not supports_file_tooling():
-        return
     with hermes_applied_write():
         save_config(config)
 
@@ -2919,12 +2916,8 @@ def edit_config():
     if is_managed():
         managed_error("edit configuration")
         return
-    if not supports_file_tooling():
-        print("`hermes config edit` opens the local config file, and this config backend has none. "
-              "Use `hermes config set <key> <value>` instead.", file=sys.stderr)
-        return
     config_path = get_config_path()
-    if not config_path.exists():  # config-reader: ok — file tooling, gated on supports_file_tooling()
+    if not config_path.exists():  # config-reader: ok — file tooling (edits the local file)
         seed_config_file(config_path)
         print(f"Created {config_path}")
 

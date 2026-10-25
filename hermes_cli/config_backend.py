@@ -1,4 +1,4 @@
-"""Where the user config layer lives: the ``ConfigBackend`` seam (config-config design §4.1, D10/D11).
+"""Where the user config layer lives: the ``ConfigBackend`` seam (config-config design §4.1, D10).
 
 Every read and write of a profile's user ``config.yaml`` goes through the backend returned by
 :func:`get_config_backend` (``scripts/check_config_yaml_readers.py`` and
@@ -6,7 +6,7 @@ Every read and write of a profile's user ``config.yaml`` goes through the backen
 the hermes home (profile): one multiplexed process serves N profiles, and every config cache
 already keys on the config path, so a backend keeps per-home state.
 
-:class:`FileBackend` is the only backend in this build and is today's behaviour byte for byte:
+:class:`FileBackend` is the only backend and is today's behaviour byte for byte:
 the version is the ``file_signature`` stat tuple, reads are ``open`` + ``fast_safe_load`` and raise
 exactly what those raise (``FileNotFoundError`` for an absent file, ``OSError``, YAML errors), and
 writes are the ruamel round-trip writers in ``utils``. Callers keep their own error handling, so a
@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Protocol, Union, runtime_checkable
 
 CONFIG_FILENAME = "config.yaml"
-BACKEND_ENV = "HERMES_CONFIG_BACKEND"
 
 PathLike = Union[str, "os.PathLike[str]"]
 
@@ -32,9 +31,7 @@ PathLike = Union[str, "os.PathLike[str]"]
 class UserLayer:
     """One read of a profile's user layer."""
     doc: Any                    # the parsed root as written (None for an empty document)
-    version: tuple[Any, ...]    # the cache signature this doc was read at (etag for a remote backend)
-    locks: Mapping[str, str] = field(default_factory=dict)   # dotted prefix -> level that locks it
-    provenance: str = ""        # where the doc came from, for diagnostics
+    version: tuple[Any, ...]    # the cache signature this doc was read at
 
 
 @dataclass(frozen=True)
@@ -67,22 +64,11 @@ class ConfigBackend(Protocol):
 
     def exists(self, home: Path) -> bool: ...
 
+    def probe_readable(self, home: Path) -> None:
+        """Raise ``OSError`` while the user layer cannot be read; no parse."""
+        ...
+
     def write_changes(self, home: Path, changes: Changes) -> None: ...
-
-    def locked(self, home: Path, dotted: str) -> Optional[str]:
-        """The level that locks ``dotted`` (prefix-aware), or None."""
-        ...
-
-    def supports_file_tooling(self) -> bool:
-        """Whether tools that copy/edit/back up the config FILE (profile clone, backup/restore,
-        ``config edit``, last-known-good backups, ``migrate_config`` write-back) may run."""
-        ...
-
-
-class ConfigBackendUnavailable(SystemExit):
-    """The selected backend cannot serve config. A ``SystemExit`` on purpose: many config readers
-    fail open with ``except Exception`` → defaults, and serving defaults instead of the selected
-    backend's config is exactly the silent failure this must not become."""
 
 
 class FileBackend:
@@ -125,7 +111,7 @@ class FileBackend:
     def read_user_layer(self, home: Path) -> UserLayer:
         path = self.config_path(home)
         version = self.version_path(path)
-        return UserLayer(doc=self.read_path(path), version=version, provenance=str(path))
+        return UserLayer(doc=self.read_path(path), version=version)
 
     def read_user_doc_readonly(self, home: Path) -> Any:
         return self.read_path_readonly(self.config_path(home))
@@ -136,54 +122,21 @@ class FileBackend:
     def exists(self, home: Path) -> bool:
         return self.config_path(home).exists()
 
+    def probe_readable(self, home: Path) -> None:
+        path = self.config_path(home)
+        with open(path, "rb") as f:
+            f.read(1)
+
     def write_changes(self, home: Path, changes: Changes) -> None:
         self.write_path(self.config_path(home), changes)
-
-    def locked(self, home: Path, dotted: str) -> Optional[str]:
-        return None  # a local file has no levels; the managed scope is a separate overlay
-
-    def supports_file_tooling(self) -> bool:
-        return True
 
 
 _FILE_BACKEND = FileBackend()
 
 
-def _dotenv_backend_override() -> Optional[str]:
-    """``HERMES_CONFIG_BACKEND`` as the launch home's ``.env`` then the managed ``.env`` set it
-    (both load with override), or None. Consulted only on the refusal path."""
-    try:
-        from agent.secret_scope import load_env_file
-        from hermes_cli import managed_scope
-        from hermes_constants import get_process_hermes_home
-    except ImportError:  # a bare tree without the dotenv stack (pm runtime fixtures) has no .env layer
-        return None
-    value = load_env_file(get_process_hermes_home() / ".env").get(BACKEND_ENV)
-    managed_dir = managed_scope.get_managed_dir()
-    if managed_dir is not None:
-        value = load_env_file(managed_dir / ".env").get(BACKEND_ENV, value)
-    return value
-
-
 def get_config_backend() -> ConfigBackend:
-    """The backend selected by ``HERMES_CONFIG_BACKEND`` (default ``file``).
-
-    Read from the environment on every call, before any config read, so no config value can
-    select it (D11). Raises :class:`ConfigBackendUnavailable` for a backend this build lacks.
-    """
-    kind = os.environ.get(BACKEND_ENV, "").strip().lower() or "file"
-    if kind != "file":
-        # A config read can run before load_hermes_dotenv() (hermes_cli.config reads at import time):
-        # refuse only a value the launch home's .env / managed .env do not override, as that load will.
-        override = _dotenv_backend_override()  # None = no .env sets it; "" = an explicit reset to file
-        kind = (kind if override is None else override).strip().lower() or "file"
-    if kind == "file":
-        return _FILE_BACKEND
-    if kind == "remote":
-        raise ConfigBackendUnavailable(
-            f"{BACKEND_ENV}=remote: the remote config backend is not available in this build of "
-            "Hermes. Unset it to use the local config.yaml.")
-    raise ConfigBackendUnavailable(f"{BACKEND_ENV}={kind!r} is not a config backend (expected 'file').")
+    """The backend serving every home's user layer: the file backend, the only one there is."""
+    return _FILE_BACKEND
 
 
 class _ExplicitFile(FileBackend):
@@ -237,7 +190,8 @@ def config_version_or_none(config_path: PathLike) -> Optional[tuple[Any, ...]]:
 
 def version_token(version: Optional[tuple[Any, ...]]) -> float:
     """A number that changes with a backend ``version`` (0 = no config), for clients that only
-    compare successive values: the file backend's version leads with ``st_mtime_ns``, kept as seconds."""
+    compare successive values: the file backend's version leads with ``st_mtime_ns``, kept as seconds.
+    Any other int-led version is scaled the same way, which is fine: only changes are compared."""
     if not version:
         return 0
     if isinstance(version[0], int):
@@ -247,13 +201,9 @@ def version_token(version: Optional[tuple[Any, ...]]) -> float:
 
 
 def probe_config_readable(config_path: PathLike) -> None:
-    """Raise ``OSError`` while a local config file cannot be opened; no parse. A non-file user
-    layer has no local read to fail."""
+    """Raise ``OSError`` while a config file cannot be read; no parse."""
     backend, home = _route(config_path)
-    if isinstance(backend, FileBackend):
-        path = backend.config_path(home)
-        with open(path, "rb") as f:
-            f.read(1)
+    backend.probe_readable(home)
 
 
 def config_exists(config_path: PathLike) -> bool:
@@ -271,16 +221,3 @@ def write_config_key(config_path: PathLike, key_path: str, value: Any) -> None:
     """Set one dotted key (``None`` removes it) — ``atomic_roundtrip_yaml_update`` semantics."""
     backend, home = _route(config_path)
     backend.write_changes(home, Changes(unset=(key_path,)) if value is None else Changes(set={key_path: value}))
-
-
-def supports_file_tooling() -> bool:
-    """Gate for tools that copy, edit or back up the config FILE itself (§4.3, §4.7)."""
-    return get_config_backend().supports_file_tooling()
-
-
-def require_file_tooling(what: str) -> None:
-    """Refuse *what* (a file-copy tool) with a clear message when the backend has no config file."""
-    if not supports_file_tooling():
-        raise ConfigBackendUnavailable(
-            f"{what} copies the local config.yaml, and the {get_config_backend().name!r} config "
-            "backend has none. It is not available with this backend.")

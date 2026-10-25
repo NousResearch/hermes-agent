@@ -1,4 +1,4 @@
-"""The ConfigBackend seam (config-config design §4.1, D10/D11) and its reader gate."""
+"""The ConfigBackend seam (config-config design §4.1, D10) and its reader gate."""
 
 import sys
 from pathlib import Path
@@ -12,46 +12,21 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
-def home(tmp_path, monkeypatch):
-    monkeypatch.delenv(cb.BACKEND_ENV, raising=False)
+def home(tmp_path):
     h = tmp_path / "home"
     h.mkdir()
     return h
 
 
-class TestSelection:
+class TestRouting:
 
-    def test_default_is_file(self, home):
-        assert cb.get_config_backend().name == "file"
-        assert cb.supports_file_tooling() is True
-
-    @pytest.mark.parametrize("value", ["remote", "bogus"])
-    def test_unavailable_backend_fails_closed(self, home, monkeypatch, value):
-        # No config value can select the backend, and an unknown one never falls back to the file.
-        monkeypatch.setenv(cb.BACKEND_ENV, value)
-        with pytest.raises(cb.ConfigBackendUnavailable):
-            cb.get_config_backend()
-        with pytest.raises(cb.ConfigBackendUnavailable):
-            cb.read_config_doc(home / "config.yaml")
-
-    def test_launch_env_file_overrides_a_stale_shell_value_before_dotenv_loads(self, home, monkeypatch):
-        # A config read can precede load_hermes_dotenv(); the launch home's .env wins, as that load will.
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        monkeypatch.setenv(cb.BACKEND_ENV, "remote")
-        (home / ".env").write_text(f"{cb.BACKEND_ENV}=file\n", encoding="utf-8")
-        assert cb.get_config_backend().name == "file"
-
-    def test_empty_launch_env_value_resets_a_stale_shell_value_to_file(self, home, monkeypatch):
-        # ``HERMES_CONFIG_BACKEND=`` in the launch .env loads over the shell value as "", i.e. the default.
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        monkeypatch.setenv(cb.BACKEND_ENV, "remote")
-        (home / ".env").write_text(f"{cb.BACKEND_ENV}=\n", encoding="utf-8")
-        assert cb.get_config_backend().name == "file"
-
-    def test_explicit_non_config_file_ignores_backend(self, home, monkeypatch):
+    def test_explicit_non_config_file_never_reaches_the_backend(self, home, monkeypatch):
+        # Only ``<home>/config.yaml`` is a user layer; any other file is read where it is.
+        def no_backend():
+            raise AssertionError("an explicit file must not consult the backend")
+        monkeypatch.setattr(cb, "get_config_backend", no_backend)
         other = home / "import-source.yaml"
         other.write_text("a: 1\n", encoding="utf-8")
-        monkeypatch.setenv(cb.BACKEND_ENV, "remote")
         assert cb.read_config_doc(other) == {"a": 1}
 
 
@@ -144,7 +119,6 @@ def recording(monkeypatch, tmp_path):
     (home / "config.yaml").write_text(
         "# hand-tuned\nmodel:\n  default: my-model\nsecrets:\n  sources: []\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.delenv(cb.BACKEND_ENV, raising=False)
     for cache in (config_mod._LOAD_CONFIG_CACHE, config_mod._RAW_CONFIG_CACHE):
         cache.clear()
     backend = _RecordingBackend()
@@ -204,26 +178,6 @@ class TestPipelinesConsultTheBackend:
         assert [op for op, h in backend.calls if op == "write" and h == home] == ["write", "write"]
         text = (home / "config.yaml").read_text(encoding="utf-8")
         assert "# hand-tuned" in text and "other-model" in text and "kawaii" in text
-
-
-class TestFileTooling:
-
-    def test_file_backend_allows_it(self, home):
-        cb.require_file_tooling("x")
-
-    def test_backend_without_a_file_refuses_it(self, home, monkeypatch):
-        class NoFile(cb.FileBackend):
-            name = "nofile"
-
-            def supports_file_tooling(self):
-                return False
-        monkeypatch.setattr(cb, "get_config_backend", NoFile)
-        from hermes_cli.config_backups import backup_config
-        (home / "config.yaml").write_text("a: 1\n", encoding="utf-8")
-        assert backup_config(home / "config.yaml", "test") is None
-        with pytest.raises(cb.ConfigBackendUnavailable, match="Profile clone"):
-            from hermes_cli.profiles import _resolve_clone_source
-            _resolve_clone_source(None)
 
 
 class TestReaderGate:

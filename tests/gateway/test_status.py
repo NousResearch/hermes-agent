@@ -1351,6 +1351,23 @@ class TestPlannedStopMarker:
         assert result is True
         assert not (tmp_path / ".gateway-planned-stop.json").exists()
 
+    def test_consume_reports_validated_marker_before_unlink(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 42)
+        accepted = []
+
+        assert status.write_planned_stop_marker(os.getpid())
+        assert status.consume_planned_stop_marker_for_self(on_accepted=accepted.append) is True
+
+        assert len(accepted) == 1
+        assert accepted[0] == {
+            "target_pid": os.getpid(),
+            "target_start_time": 42,
+            "stopper_pid": os.getpid(),
+            "written_at": accepted[0]["written_at"],
+        }
+        assert not (tmp_path / ".gateway-planned-stop.json").exists()
+
 
     def test_consume_still_rejects_start_time_mismatch_when_both_known(
         self, tmp_path, monkeypatch

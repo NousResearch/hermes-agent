@@ -1941,10 +1941,25 @@ def _checkpoint_planned_stop(path: Path, record: dict[str, Any]) -> None:
             update_pause_record.mark_stop_consumed(path, record)
 
 
-def consume_planned_stop_marker_for_self() -> bool:
-    """Return True when the current process is being intentionally stopped."""
+def consume_planned_stop_marker_for_self(*, on_accepted: Optional[Callable[[dict[str, Any]], None]] = None) -> bool:
+    """Return True when the current process is being intentionally stopped.
+
+    ``on_accepted`` observes the validated request before its ordinary consumption unlinks it.
+    Shutdown diagnostics use it to retain safe requester provenance without weakening marker guards.
+    """
     from hermes_cli import update_pause_record
     path = _get_planned_stop_marker_path()
+
+    def _checkpoint_and_report(accepted_path: Path, record: dict[str, Any]) -> None:
+        _checkpoint_planned_stop(accepted_path, record)
+        if on_accepted is not None:
+            on_accepted(record)
+
+    def _record_and_report(accepted_path: Path, record: dict[str, Any]) -> None:
+        update_pause_record.mark_stop_accepted(accepted_path, record)
+        if on_accepted is not None:
+            on_accepted(record)
+
     try:
         paused = _update_pause_on_disk()
         if not paused:  # an earlier drain's receipt: its debt is settled
@@ -1953,14 +1968,14 @@ def consume_planned_stop_marker_for_self() -> bool:
         # gap between validating/consuming the marker and scheduling asynchronous stop.
         with update_pause_record._mutex(_PLANNED_STOP_MUTEX_WAIT_S) if paused else contextlib.nullcontext():
             return _consume_pid_marker_for_self(path, ttl_s=_PLANNED_STOP_MARKER_TTL_S,
-                                                on_consume=_checkpoint_planned_stop)
+                                                on_consume=_checkpoint_and_report)
     except OSError as exc:
         # The pause bookkeeping (a busy mutex, a checkpoint that cannot be written) never decides
         # whether this stop was planned: classify without consuming, and leave a receipt beside the
         # request so recovery keeps this drain owed after the request's TTL (mark_stop_accepted).
         logger.warning("Planned-stop checkpoint skipped (%s); the stop request stays on disk", exc)
         return _consume_pid_marker_for_self(_get_planned_stop_marker_path(), ttl_s=_PLANNED_STOP_MARKER_TTL_S,
-                                            keep=True, on_consume=update_pause_record.mark_stop_accepted)
+                                            keep=True, on_consume=_record_and_report)
 
 
 def planned_stop_marker_targets_self() -> bool:

@@ -692,6 +692,47 @@ async def test_context_command_keeps_configured_window_without_resident_agent():
     assert context_lookup.call_args.kwargs["config_context_length"] == 262_144
 
 
+@pytest.mark.asyncio
+async def test_context_command_hides_invented_window_for_an_unresolvable_model_label():
+    """#139492: a session labelled with a model the resolver cannot size (an MoA preset name, say)
+    falls through to DEFAULT_FALLBACK_CONTEXT. /context must not render that invented number as the
+    session's window — the same guard /status applies — while a catalog-listed model of that size
+    still shows it."""
+    from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
+
+    def _runner_for_label(label: str):
+        session_entry = SessionEntry(
+            session_key=build_session_key(_make_source()),
+            session_id=f"sess-context-{label}",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+        )
+        session_entry.last_prompt_tokens = 473_624
+        runner = _make_runner(session_entry)
+        runner._session_db._db.get_session.return_value = {"model": label}
+        return runner
+
+    def _patched():
+        return patch("gateway.run._load_gateway_config", return_value={}), patch(
+            "agent.model_metadata.get_model_context_length", return_value=DEFAULT_FALLBACK_CONTEXT
+        )
+
+    config_patch, length_patch = _patched()
+    with config_patch, length_patch:
+        result = await _runner_for_label("default")._handle_context_command(_make_event("/context"))
+    assert "Window:" not in result
+    assert f"{DEFAULT_FALLBACK_CONTEXT:,}" not in result
+    assert f"473,624 / {DEFAULT_FALLBACK_CONTEXT:,}" not in result
+
+    config_patch, length_patch = _patched()
+    with config_patch, length_patch:
+        listed = await _runner_for_label("grok-4")._handle_context_command(_make_event("/context"))
+    assert f"Window: {DEFAULT_FALLBACK_CONTEXT:,} tokens" in listed
+    assert f"In use: 473,624 / {DEFAULT_FALLBACK_CONTEXT:,} (100%)" in listed
+
+
 def _stub_agent(**overrides) -> SimpleNamespace:
     """Build a stub agent with the attributes _handle_context_command reads."""
     props = dict(

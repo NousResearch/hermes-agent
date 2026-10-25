@@ -10,6 +10,7 @@ import asyncio
 import logging
 import uuid
 from collections import deque
+from pathlib import Path
 from typing import Any, Callable, Deque, Dict
 
 import acp
@@ -75,6 +76,78 @@ def _upgrade_queue(tool_call_ids: dict[str, deque[str]], name: str) -> deque[str
     return queue
 
 
+# Tools whose edit is diffed against a before-state snapshot captured at call start.
+_SNAPSHOT_WRITE_TOOLS = frozenset({"write_file", "patch", "skill_manage"})
+# Tools that may have rewritten files on disk, so cached baselines must be re-read afterwards.
+_MUTATING_TOOLS = frozenset({"terminal", "write_file", "patch", "skill_manage"})
+
+
+def _cache_key(raw_path: Any) -> str | None:
+    """Absolute resolved cache key for ``raw_path``, or ``None`` when it is useless.
+
+    A model can emit a non-string path (``{"path": 1}``) or an unresolvable one; both used
+    to raise ``TypeError``/``OSError`` inside this (swallowed) callback and silently kill
+    the tool-completion path, so they are validated here instead."""
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None
+    try:
+        return str(Path(raw_path).resolve())
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _remember_cached_before(cache: dict[str, str | None], snapshot: Any) -> None:
+    """Store a write tool's before-state per path. First observation wins, so the baseline a
+    later diff is measured from stays the earliest one we saw."""
+    before = getattr(snapshot, "before", None)
+    if not isinstance(before, dict):
+        return
+    for raw_path, text in before.items():
+        key = _cache_key(raw_path)
+        if key is not None and key not in cache:
+            cache[key] = text
+
+
+def _remember_cached_path(cache: dict[str, str | None], raw_path: Any) -> None:
+    """Store what ``raw_path`` looks like right now (first observation wins)."""
+    key = _cache_key(raw_path)
+    if key is None or key in cache:
+        return
+    try:
+        cache[key] = Path(key).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        # Missing / binary / empty-on-read: an unusable baseline, but keep the path known so
+        # a later diff still reports its creation.
+        cache[key] = None
+
+
+def _refresh_cached_paths(cache: dict[str, str | None]) -> None:
+    """Re-read every cached baseline from disk after a mutation, so the next diff starts
+    from post-mutation state. A path that vanished is dropped from the cache."""
+    for key in list(cache):
+        try:
+            cache[key] = Path(key).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            cache.pop(key, None)
+        except (OSError, UnicodeDecodeError) as exc:
+            logger.debug("Failed to refresh ACP snapshot cache for %s: %s", key, exc)
+
+
+def _composite_snapshot(cache: dict[str, str | None] | None) -> Any:
+    """Before-state snapshot spanning every path observed this session, or ``None``.
+
+    Paths whose first observation found no file are skipped: with no baseline there is
+    nothing to diff against, and a ``None`` before-text would render as a full addition."""
+    if not cache:
+        return None
+    before: dict[str, str | None] = {path: text for path, text in cache.items() if text is not None}
+    if not before:
+        return None
+    from agent.display import LocalEditSnapshot
+
+    return LocalEditSnapshot(paths=[Path(p) for p in before], before=before)
+
+
 def close_tool_call(
     conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: dict[str, deque[str]],
     tool_call_meta: dict[str, dict[str, Any]], name: str, result: Any = None, is_error: bool = False,
@@ -119,6 +192,7 @@ def flush_open_tool_calls(
 def make_tool_progress_cb(
     conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: dict[str, deque[str]],
     tool_call_meta: dict[str, dict[str, Any]],
+    read_snapshots_cache: dict[str, str | None] | None = None,
     edit_approval_policy_getter: Callable[[], tuple[str, str | None]] | None = None,
     turn_state: dict[str, Any] | None = None,
 ) -> Callable:
@@ -128,7 +202,10 @@ def make_tool_progress_cb(
     Emits ``ToolCallStart`` for ``tool.started`` and tracks IDs in a FIFO per tool
     name so parallel same-name calls complete against the right ACP tool call.
     ``tool.completed`` closes that call with its own result — the step callback
-    only fires on the *next* step, which leaves a turn's last tools open."""
+    only fires on the *next* step, which leaves a turn's last tools open.
+
+    ``read_snapshots_cache`` is session-owned and survives across API rounds, which is
+    what lets a ``terminal`` diff files the model read or wrote in an earlier round."""
 
     def _tool_progress(event_type: str, name: str | None = None, preview: str | None = None, args: Any = None, **kwargs) -> None:
         if event_type == "tool.completed" and name:
@@ -139,6 +216,10 @@ def make_tool_progress_cb(
                 conn, session_id, loop, tool_call_ids, tool_call_meta, name, kwargs.get("result"),
                 is_error=bool(kwargs.get("is_error")),
             )
+            # The command may have rewritten files: re-read the cached baselines so the NEXT
+            # diff is measured from post-mutation disk state, not the pre-mutation one.
+            if read_snapshots_cache is not None and name in _MUTATING_TOOLS:
+                _refresh_cached_paths(read_snapshots_cache)
             return
         if event_type != "tool.started":
             return
@@ -150,14 +231,28 @@ def make_tool_progress_cb(
         queue.append(tc_id)
 
         snapshot = None
-        if name in {"write_file", "patch", "skill_manage"}:
+        if name in _SNAPSHOT_WRITE_TOOLS:
             try:
                 from agent.display import capture_local_edit_snapshot
 
                 snapshot = capture_local_edit_snapshot(name, args)
             except Exception:
                 logger.debug("Failed to capture ACP edit snapshot for %s", name, exc_info=True)
+        elif name == "terminal":
+            # A shell command's result carries no structural diff, so seed the before-state
+            # from everything observed this session. Copied (not referenced) at start, so the
+            # post-command refresh cannot retroactively change the diff being rendered.
+            snapshot = _composite_snapshot(read_snapshots_cache)
         tool_call_meta[tc_id] = {"args": args, "snapshot": snapshot}
+
+        # Cross-turn cache (session-owned; keys are absolute resolved paths). First
+        # observation wins, so a later diff is measured from the earliest baseline we saw
+        # rather than the state after several intermediate hops.
+        if read_snapshots_cache is not None:
+            if name in _SNAPSHOT_WRITE_TOOLS:
+                _remember_cached_before(read_snapshots_cache, snapshot)
+            elif name == "read_file" and isinstance(args, dict):
+                _remember_cached_path(read_snapshots_cache, args.get("path"))
 
         edit_diff = None
         if name in {"write_file", "patch"} and edit_approval_policy_getter is not None:
@@ -255,6 +350,7 @@ def make_message_cb(
 def make_step_cb(
     conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: dict[str, deque[str]],
     tool_call_meta: dict[str, dict[str, Any]], turn_state: dict[str, Any] | None = None,
+    read_snapshots_cache: dict[str, str | None] | None = None,
 ) -> Callable:
     """Create a ``step_callback(api_call_count: int, prev_tools: list)`` for AIAgent."""
 
@@ -291,6 +387,9 @@ def make_step_cb(
                 ))
                 if not queue:
                     tool_call_ids.pop(tool_name, None)
+                # Same post-mutation baseline refresh as the ``tool.completed`` path.
+                if read_snapshots_cache is not None and tool_name in _MUTATING_TOOLS:
+                    _refresh_cached_paths(read_snapshots_cache)
             if tool_name == "todo" and (plan_update := _build_plan_update_from_todo_result(result)) is not None:
                 _send_update(conn, session_id, loop, plan_update)
 

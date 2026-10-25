@@ -487,15 +487,17 @@ def _creation_policy(launch):
 
 
 def _launch_cwd():
-    """``session.create``'s ``cwd``, a host folder the owner checks on its own host. A folder chosen on
-    this host (the ``-w`` / ``/worktree new`` tree, or a local backend's TERMINAL_CWD) is sent as is, so
-    a vanished one is refused as on main rather than swapped for the checkout. Only a docker/ssh
-    ``terminal.cwd`` that is not a host directory (a path inside the sandbox) sends the launch dir, and
-    the backend keeps its own cwd (``terminal_uses_host_cwd``)."""
-    worktree = getattr(sys.modules.get("cli"), "_active_worktree", None)
-    if worktree and worktree.get("path"):
-        return os.path.realpath(worktree["path"])
+    """``session.create``'s ``cwd``, a host folder the owner checks on its own host. TERMINAL_CWD is the
+    folder this CLI has selected (``-w``, ``/worktree new`` and ``/resume`` all move it). A local backend
+    sends it as is, as on main. A docker/ssh one sends it when it is a host directory or the recorded
+    ``-w`` tree (a vanished tree is then refused as on main, not swapped for the checkout); otherwise
+    it is a path inside the sandbox, so the launch dir is sent and the backend keeps its own cwd
+    (``terminal_uses_host_cwd``). A tree no longer selected (a later /resume moved away) never decides."""
     terminal_cwd = os.getenv("TERMINAL_CWD")
+    trees = (getattr(sys.modules.get(name), "_active_worktree", None) for name in ("cli",))
+    recorded = {os.path.realpath(tree["path"]) for tree in trees if tree and tree.get("path")}
+    if terminal_cwd and os.path.realpath(terminal_cwd) in recorded:
+        return os.path.realpath(terminal_cwd)
     local = (os.getenv("TERMINAL_ENV") or "local").strip().lower() in ("", "local")
     return os.path.realpath(terminal_cwd if terminal_cwd and (local or os.path.isdir(terminal_cwd)) else os.getcwd())
 

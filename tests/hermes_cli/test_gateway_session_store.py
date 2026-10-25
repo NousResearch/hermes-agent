@@ -571,6 +571,28 @@ def test_a_removed_w_worktree_is_sent_so_the_gateway_refuses_it(store, monkeypat
     assert [p for m, p in client.calls if m == "session.create"][-1]["cwd"] == str(tree.resolve())
 
 
+@pytest.mark.parametrize("backend,mount", [("local", None), ("docker", "true")])
+def test_a_project_resumed_after_w_is_sent_not_the_w_worktree(store, monkeypatch, tmp_path, backend, mount):
+    """``hermes -w`` in A, ``/resume`` of a session from B, then ``/new``: the resume moves cwd and
+    TERMINAL_CWD to B but A stays recorded (its quit cleanup is still due), so A must not win."""
+    import sys
+    from hermes_cli.cli_session_mixin import CLISessionMixin
+    db, client = store
+    tree, project_b = tmp_path / "a" / ".worktrees" / "wt", tmp_path / "b"
+    tree.mkdir(parents=True)
+    project_b.mkdir()
+    monkeypatch.chdir(tmp_path / "a")
+    monkeypatch.setitem(sys.modules, "cli", types.SimpleNamespace(_active_worktree={"path": str(tree)}))
+    monkeypatch.setenv("TERMINAL_CWD", str(tree))
+    monkeypatch.setenv("TERMINAL_ENV", backend)
+    if mount:
+        monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", mount)
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    CLISessionMixin._restore_session_cwd(types.SimpleNamespace(), {"cwd": str(project_b)}, quiet=True)
+    db.create({"toolsets": ["file"]}, record_cwd=False)
+    assert [p for m, p in client.calls if m == "session.create"][-1]["cwd"] == str(project_b.resolve())
+
+
 def test_explicit_reasoning_max_turns_and_checkpoints_reach_session_create(store, monkeypatch):
     """Main's HermesCLI built AIAgent with the run's `--reasoning`, `--max-turns` and `--checkpoints`;
     the gateway now builds the agent, so `session.create` must carry them or the run silently uses

@@ -779,6 +779,19 @@ export const frOverrides = {
         disk: 'sur le disque',
         runtime: "à l'exécution"
       },
+      agent: {
+        setupInstalled:
+          "Fichiers installés ; l'activation n'a pas été modifiée. Ouvrez Plugins et activez ce plugin pour vérifier ou relancer la configuration.",
+        reviewSetup: 'Vérifier la configuration dans Plugins',
+        setupTitle: 'Configuration du plugin natif',
+        setupConfirm: 'Configurer et activer',
+        setupBusy: 'Configuration…',
+        setupTrust:
+          "Cela exécute du code de plugin de confiance sur le backend sélectionné. Les sessions existantes restent inchangées ; redémarrez le gateway pour l'activer."
+      },
+      agentHalfMissing: 'partie agent absente ici',
+      agentHalfMissingTip:
+        "Ceci est la partie desktop d'un plugin intégré, mais sa partie agent n'est pas installée sur le backend/profil actuellement connecté. Installez-la depuis Capacités → Plugins.",
       installModal: {
         installFromGit: 'Installer depuis Git',
         reviewRepository: 'Examiner le dépôt',

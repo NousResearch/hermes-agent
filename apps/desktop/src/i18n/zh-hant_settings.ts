@@ -69,6 +69,17 @@ export const zhHantSettings = {
     },
     plugins: {
       openFolder: '開啟桌面外掛資料夾',
+      agent: {
+        setupInstalled: '檔案已安裝；啟用狀態未變更。開啟外掛並啟用此外掛以檢查或重試設定。',
+        reviewSetup: '在外掛中檢查設定',
+        setupTitle: '原生外掛設定',
+        setupConfirm: '設定並啟用',
+        setupBusy: '正在設定…',
+        setupTrust: '這會在所選後端執行受信任的外掛程式碼。現有工作階段保持不變；重新啟動閘道後生效。'
+      },
+      agentHalfMissing: '此處缺少代理部分',
+      agentHalfMissingTip:
+        '這是隨附外掛的桌面部分，但其代理部分未安裝在目前連線的後端/設定檔上。請在 技能與工具 → 外掛 中安裝。',
       installModal: {
         installUncertain:
           'Hermes 已停止等待安裝結果，但外掛可能仍在安裝中。請關閉此視窗，重新掃描外掛清單後再嘗試安裝。',

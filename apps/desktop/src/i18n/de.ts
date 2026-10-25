@@ -778,6 +778,19 @@ export const deOverrides = {
         disk: 'auf Datenträger',
         runtime: 'Laufzeit'
       },
+      agent: {
+        setupInstalled:
+          'Dateien installiert; die Aktivierung wurde nicht geändert. Öffnen Sie Plugins und aktivieren Sie dieses Plugin, um die Einrichtung zu prüfen oder erneut zu versuchen.',
+        reviewSetup: 'Einrichtung unter Plugins prüfen',
+        setupTitle: 'Einrichtung des nativen Plugins',
+        setupConfirm: 'Einrichten und aktivieren',
+        setupBusy: 'Wird eingerichtet…',
+        setupTrust:
+          'Dadurch wird vertrauenswürdiger Plugin-Code auf dem ausgewählten Backend ausgeführt. Bestehende Sitzungen bleiben unverändert; starten Sie das Gateway neu, um ihn zu aktivieren.'
+      },
+      agentHalfMissing: 'Agent-Teil fehlt hier',
+      agentHalfMissingTip:
+        'Dies ist der Desktop-Teil eines gebündelten Plugins, aber sein Agent-Teil ist auf dem aktuell verbundenen Backend/Profil nicht installiert. Installieren Sie ihn unter Fähigkeiten → Plugins.',
       installModal: {
         installFromGit: 'Von Git installieren',
         reviewRepository: 'Repository prüfen',

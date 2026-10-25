@@ -16,6 +16,19 @@ export const jaPluginSettings = {
   },
   plugins: {
     openFolder: 'デスクトッププラグインフォルダーを開く',
+    agent: {
+      setupInstalled:
+        'ファイルをインストールしました。有効化の状態は変更されていません。プラグインを開いてこのプラグインを有効にすると、セットアップを確認または再試行できます。',
+      reviewSetup: 'プラグインでセットアップを確認',
+      setupTitle: 'ネイティブプラグインのセットアップ',
+      setupConfirm: 'セットアップして有効化',
+      setupBusy: 'セットアップ中…',
+      setupTrust:
+        '選択したバックエンドで信頼済みのプラグインコードを実行します。既存のセッションは変わりません。有効にするにはゲートウェイを再起動してください。'
+    },
+    agentHalfMissing: 'ここにはエージェント部分がありません',
+    agentHalfMissingTip:
+      'これは同梱プラグインのデスクトップ部分ですが、エージェント部分が現在接続中のバックエンド/プロファイルにインストールされていません。スキルとツール → プラグイン からインストールしてください。',
     installModal: {
       installUncertain:
         'Hermes はインストール結果の待機を終了しましたが、プラグインのインストールはまだ進行中の可能性があります。この画面を閉じ、再インストールする前にプラグイン一覧を再スキャンしてください。',
@@ -44,11 +57,13 @@ export const jaPluginSettings = {
 
 /** Japanese copy for the Capabilities ▸ Plugins tab: the page blurb and a plugin's folder access. */
 export const jaPluginsTab = {
-  pageBlurb:
-    'プラグインはこのアプリ、エージェント、または両方を拡張できます。それぞれに独立したスイッチがあります。',
+  enabledRestartRequired: (name: string) =>
+    `${name} を有効にしました。Python の依存関係は次回起動用にインストールされたため、読み込むには Hermes を再起動してください。`,
+  pageBlurb: 'プラグインはこのアプリ、エージェント、または両方を拡張できます。それぞれに独立したスイッチがあります。',
   folderAccess: {
     title: 'フォルダーへのアクセス',
-    hint: (name: string) => `${name} はこれらのフォルダー内のファイルを読み取り、変更できます。取り消しはすぐに反映されます。`,
+    hint: (name: string) =>
+      `${name} はこれらのフォルダー内のファイルを読み取り、変更できます。取り消しはすぐに反映されます。`,
     revoke: '取り消す',
     revokeLabel: (path: string) => `${path} へのアクセスを取り消す`,
     revoked: (name: string, path: string) => `${name} は ${path} を使用できなくなりました。`,

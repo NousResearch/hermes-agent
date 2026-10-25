@@ -782,6 +782,19 @@ export const esOverrides = {
         disk: 'en disco',
         runtime: 'en ejecución'
       },
+      agent: {
+        setupInstalled:
+          'Archivos instalados; la activación no cambió. Abre Plugins y activa este plugin para revisar o reintentar la configuración.',
+        reviewSetup: 'Revisar la configuración en Plugins',
+        setupTitle: 'Configuración del plugin nativo',
+        setupConfirm: 'Configurar y activar',
+        setupBusy: 'Configurando…',
+        setupTrust:
+          'Esto ejecuta código de plugin de confianza en el backend seleccionado. Las sesiones existentes no cambian; reinicia el gateway para activarlo.'
+      },
+      agentHalfMissing: 'falta la parte de agente aquí',
+      agentHalfMissingTip:
+        'Esta es la parte de escritorio de un plugin incluido, pero su parte de agente no está instalada en el backend/perfil conectado actualmente. Instálala desde Capacidades → Plugins.',
       installModal: {
         installFromGit: 'Instalar desde Git',
         reviewRepository: 'Revisar repositorio',

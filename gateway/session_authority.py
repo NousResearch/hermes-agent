@@ -452,7 +452,7 @@ class SessionAuthority:
             if sid in self.sessions:
                 self._schedule(SessionRef(self.profile_id, sid))
 
-    def _pause(self, ref, reason):
+    def _pause(self, ref, reason, admission_id=None):
         """The FIFO stopped without claiming its head. Committed rows stay queued for a later
         drain; process-local delivery/HTTP/producer waiters on this session are released,
         with the reason instead of a reply, so an adapter loop is never parked on a turn that
@@ -460,7 +460,21 @@ class SessionAuthority:
         ``session_busy`` is transient (a registered worker finishes and wakes the FIFO), so only
         the messaging delivery waiters are released for it; an API/webhook/Bot observer keeps
         waiting for the answer instead of reporting accepted work as a conflict."""
-        for row in list_session_admissions(self.db, session_id=ref.session_id):
+        pending = list_session_admissions(self.db, session_id=ref.session_id)
+        if not pending:
+            # Nothing is queued: the row this pause names already reached ``terminal`` or ``unknown``
+            # between the failed write and this call (a ``/discard``, or a settlement that committed
+            # while the retry ran). Raising ``unknown_execution`` here would print a fresh pause
+            # banner for a session whose FIFO is clear — the stale notice users then reply to. The
+            # named turn is settled, so its waiter is released without a reply (as ``cancel_queued``
+            # releases the row it resolved); any other waiter is left for its own settlement.
+            waiter = self.waiters.pop(admission_id, None) if admission_id else None
+            if waiter is not None and not waiter.done():
+                waiter.set_result(None)
+            if admission_id:
+                self.native_waiters.discard(admission_id)
+            return
+        for row in pending:
             admission_id = row['admission_id']
             if reason == 'session_busy' and admission_id not in self.native_waiters:
                 continue
@@ -468,6 +482,31 @@ class SessionAuthority:
             waiter = self.waiters.pop(admission_id, None)
             if waiter is not None and not waiter.done():
                 waiter.set_exception(RuntimeStoreError(reason))
+
+    def _fence_abandoned_claim(self, row):
+        """Fence this owner's claim ``unknown`` when no settlement will follow (a lost managed
+        worker, a cancelled drain, a dying process).
+
+        The turn is never replayed, and ``/discard`` resolves ``unknown`` only: left ``started``
+        in this owner's epoch, the row blocks the FIFO for good and the pause banner names a
+        command that does nothing. A row that already reached ``terminal``/``unknown`` is left
+        alone, and a claim another epoch took over is not ours to stamp. Best-effort and
+        synchronous on purpose: a drain being cancelled cannot await a tracked writer."""
+        admission_id = row['admission_id']
+        try:
+            current = get_session_admission(self.db, admission_id=admission_id)
+            if current is None or current['status'] != 'started' or current['owner_epoch'] != self.epoch:
+                return
+            from gateway.session_settlement_recovery import _mark_unknown
+            _mark_unknown(self, current)
+        except RuntimeStoreError:
+            # Ownership moved between the read and the stamp: not ours to fence any more.
+            return
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                'Could not fence abandoned claim %s; boot recovery stamps it at the next epoch',
+                admission_id, exc_info=True)
 
     async def admit_automation(self, adapter, event, identity, replaces=None):
         from gateway.session_automation import admit_automation
@@ -1238,7 +1277,7 @@ class SessionAuthority:
             from gateway.session_unattended_unknown import settle_unattended_unknown
             if await settle_unattended_unknown(self, ref):
                 return None, 'settled_unknown'
-            self._pause(ref, 'unknown_execution')
+            self._pause(ref, 'unknown_execution', row['admission_id'])
             raise
         except Exception:
             import logging
@@ -1286,6 +1325,11 @@ class SessionAuthority:
                 # replayed, so its deferred reset is dropped (the next turn re-detects the overflow),
                 # never left to fire after a later settled turn with a stale entry.
                 self.deferred_resets.pop(live.route, None)
+                # The claim is abandoned in THIS owner's epoch, where nothing else fences it: boot
+                # recovery stamps other-epoch rows only and ``/discard`` resolves ``unknown`` only,
+                # so the FIFO would stay wedged behind a ``started`` row and the pause banner would
+                # name a command that does nothing. Fence it before leaving so the way out works.
+                self._fence_abandoned_claim(row)
                 if isinstance(exc, ManagedExecutionUnknown):
                     return
                 raise
@@ -1319,7 +1363,7 @@ class SessionAuthority:
                         status = await recover_failed_settlement(self, row)
                     except RuntimeStoreError:
                         # Ownership moved; this owner may only release its process-local observers.
-                        self._pause(ref, 'unknown_execution')
+                        self._pause(ref, 'unknown_execution', admission_id)
                         return
                     # Discard can race the off-loop recovery stamp; its terminal decision wins.
                     current = get_session_admission(self.db, admission_id=admission_id)
@@ -1328,7 +1372,7 @@ class SessionAuthority:
                         from gateway.session_ingress import retain_unsettled_delivery
                         retain_unsettled_delivery(self, admission_id)
                         self._publish_pending(ref)
-                        self._pause(ref, 'unknown_execution')
+                        self._pause(ref, 'unknown_execution', admission_id)
                         return
                     # A write can commit before reporting failure. Re-read its exact result,
                     # then publish the terminal outcome rather than inventing uncertainty.
@@ -1340,9 +1384,13 @@ class SessionAuthority:
                         if captured is None:
                             # An operator discarded uncertainty while recovery yielded. There is
                             # no committed answer to replay; its queued successor may now run.
+                            # Released as a settled waiter, exactly as ``cancel_queued`` releases the
+                            # row it resolved, never with ``unknown_execution``: this row is already
+                            # terminal, so nothing is paused and the ingress must not print a pause
+                            # banner for a session whose FIFO is clear (the stale notice users reply to).
                             waiter = self.waiters.pop(admission_id, None)
                             if waiter is not None and not waiter.done():
-                                waiter.set_exception(RuntimeStoreError('unknown_execution'))
+                                waiter.set_result(None)
                             continue
                         settled = current
                         response = captured['result'].get('final_response') or ''

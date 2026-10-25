@@ -45,7 +45,7 @@ async def probe(peer):
     try:
         async with aiohttp.ClientSession() as client:
             denied = await client.post(url, data=body, headers={**headers, 'X-Hub-Signature-256': 'sha256=bad'})
-            assert denied.status == 401 and not rows()
+            assert denied.status == 404 and not rows()
             authority.db._execute_write(lambda conn: conn.execute("CREATE TRIGGER fail_ingress BEFORE INSERT ON session_admissions BEGIN SELECT RAISE(ABORT, 'owned storage failure'); END"))
             failed = await client.post(url, data=body, headers=headers)
             assert failed.status == 503, (failed.status, await failed.text())

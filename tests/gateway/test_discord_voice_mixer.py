@@ -197,4 +197,5 @@ def test_play_speech_streaming_reopens_ended_but_draining_child():
         if first._finished:
             break
     assert first._finished
-    assert nonzero > 20  # BOTH streams' audio actually played (20+ chunks audible)
+    assert nonzero >= 20  # BOTH streams' audio actually played (20 chunks audible; upstream's
+                          # reworked mixer child read path drains in exactly the pushed chunks)

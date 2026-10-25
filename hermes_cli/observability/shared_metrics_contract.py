@@ -281,7 +281,8 @@ MEMORY_OP_ORIGINS = frozenset({"background_review", "foreground"})
 # tool returned an error) or ``exception`` (it raised). Successes are ``none``.
 MEMORY_OP_FAILURE_CLASSES = frozenset({
     "ambiguous", "disabled", "drift", "exception", "gate_refused", "invalid_args", "missing_content",
-    "missing_old_text", "no_match", "none", "other", "over_budget", "provider_error", "read_failed",
+    "missing_old_text", "no_match", "none", "other", "over_budget", "provider_error", "read_action_failed",
+    "read_failed",
     "retry_cap", "scan_blocked", "staged", "stale_entry", "unknown", "would_empty",
 })
 CURATOR_OUTCOMES = frozenset({"failed", "skipped", "success"})

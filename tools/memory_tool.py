@@ -143,7 +143,8 @@ def _apply_write_gate(store: MemoryStore, action: str, target: str, content: Opt
 def _validate_single_op(store, action, target, content, old_text) -> Optional[str]:
     """Validate BEFORE the gate so an invalid write is rejected now, not at approve time.
     Missing ``old_text`` is recoverable (it can't be schema-required — needs a combinator
-    the Codex backend rejects): return the inventory plus a retry instruction."""
+    the Codex backend rejects): point at ``read`` (the one inventory accessor) plus a retry
+    instruction, instead of echoing the store into the failure."""
     if action == "add" and not content:
         FAILURE_CLASS.set("missing_content")
         return tool_error("Content is required for 'add' action.", success=False)
@@ -152,9 +153,10 @@ def _validate_single_op(store, action, target, content, old_text) -> Optional[st
         return json.dumps({
             "success": False,
             "error": (f"'{action}' needs old_text -- a short unique substring of the entry "
-                      f"to {action}. None was provided. Reissue the {action} with old_text "
-                      f"set to part of one of the current_entries below."),
-            "current_entries": store._entries_for(target), "usage": store._usage(target)}, ensure_ascii=False)
+                      f"to {action}. None was provided. Call memory(action='read') for the "
+                      f"current entries, then reissue the {action} with old_text set to part "
+                      f"of the intended entry."),
+            "usage": store._usage(target)}, ensure_ascii=False)
     if action == "patch" and not content:
         FAILURE_CLASS.set("missing_content")
         return tool_error(f"content (the new text for the old_text span) is required for 'patch' action. "
@@ -389,20 +391,27 @@ MEMORY_SCHEMA = {
         "corrections for that kind of work) belongs in the task's skill via skill_manage, "
         "where it loads only when relevant; memory is injected into every turn and must "
         "stay small.\n\n"
-        "IF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that "
-        "removes or shortens enough stale entries and adds the new one together.\n\n"
+        "IF FULL: an add is rejected with the usage shown. Read the current entries with "
+        "action='read', then reissue as ONE batch that removes or shortens enough stale "
+        "entries and adds the new one together.\n\n"
         "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
         "notes (environment, conventions, tool quirks, lessons).\n\n"
         "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
         "completed-work logs, temporary TODO state (use session_search for those). Reusable "
         "procedures belong in a skill, not memory."
     ),
-    # Each field is advertised once, inside operations[]. The handler still ACCEPTS the
-    # top-level single-op shape (action/content/old_text) and the new_text alias: models
-    # drift and older transcripts replay them.
+    # `action` (read-only) + `target` are advertised at the top level; write fields are
+    # advertised once, inside operations[]. The handler still ACCEPTS the top-level single-op
+    # shape (action/content/old_text) and the new_text alias: models drift and older transcripts
+    # replay them.
     "parameters": {
         "type": "object",
         "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["read"],
+                "description": "The action to perform (single-op shape). Omit when using 'operations'.",
+            },
             "target": {
                 "type": "string",
                 "enum": ["memory", "user"],
@@ -435,7 +444,7 @@ MEMORY_SCHEMA = {
                 },
             },
         },
-        "required": ["target", "operations"],
+        "required": ["target"],
     },
 }
 

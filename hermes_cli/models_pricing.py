@@ -572,11 +572,10 @@ def resolve_pricing_provider(provider: str, *, base_url: str = "") -> str:
         inferred = _infer_provider_from_url(base_url)
     except Exception:
         return ""
-    # ``_infer_provider_from_url`` is deliberately broad for user-facing hints. Pricing is a
-    # trust boundary: require an exact official hostname (or one of its explicit subdomains),
-    # never a mere substring such as ``openrouter.ai.attacker.invalid``.
+    # Pricing is a trust boundary: beyond ``_infer_provider_from_url``'s host-or-subdomain match,
+    # require a host-specific table entry (a "."/"-" suffix key does not count).
     if not inferred or not any(
-        provider == inferred and not host.startswith(".") and base_url_host_matches(base_url, host)
+        provider == inferred and host[0] not in ".-" and base_url_host_matches(base_url, host)
         for host, provider in _URL_TO_PROVIDER.items()
     ):
         return ""

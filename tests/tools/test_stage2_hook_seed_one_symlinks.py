@@ -1,4 +1,11 @@
-"""Regression tests for symlink-safe Docker stage2 first-boot seeds."""
+"""Regression tests for symlink-safe Docker stage2 first-boot seeds.
+
+Also guards the auth.json env-seed's permission posture (#126950): the
+credential write must be wrapped in a restrictive umask so the file is
+owner-only from the first instant (no 0644-then-tighten window under the
+ambient umask), and the re-tightening chmod must be non-fatal so a failing
+one cannot abort the boot with the credential stranded.
+"""
 from __future__ import annotations
 
 import re
@@ -108,3 +115,40 @@ def test_seed_one_is_quiet_for_existing_symlinked_files(
     assert proc.returncode == 0, proc.stderr
     assert outside_env.read_text() == "EXISTING=1\n"
     assert proc.stdout == ""
+
+
+def _auth_seed_block(text: str) -> str:
+    m = re.search(
+        r'(?m)^if \[ ! -f "\$HERMES_HOME/auth\.json" \] && '
+        r'\[ -n "\$\{HERMES_AUTH_JSON_BOOTSTRAP:-\}" \]; then\n'
+        r"(?:.*\n)*?^fi\n",
+        text,
+    )
+    assert m, "stage2-hook.sh must keep the auth.json first-boot seed block"
+    return m.group(0)
+
+
+def test_auth_seed_write_is_wrapped_in_umask_077(stage2_text: str) -> None:
+    """The auth.json seed must create the credential owner-only from the first
+    instant: the write runs inside a `umask 077` subshell (the .env seed's
+    pattern), never as a bare root-context redirect that lands 0644 under the
+    ambient umask until a later chmod catches up (#126950)."""
+    block = _auth_seed_block(stage2_text)
+    assert re.search(
+        r"\(umask 077 && printf '%s' \"\$HERMES_AUTH_JSON_BOOTSTRAP\" "
+        r'> "\$HERMES_HOME/auth\.json"\)',
+        block,
+    ), "auth.json seed write must be a single printf under `umask 077`"
+
+
+def test_auth_seed_chmod_failure_is_non_fatal(stage2_text: str) -> None:
+    """The re-tightening chmod must be silenced-or-warn, never a bare command:
+    under `set -eu` a failing chmod aborted the boot with the seeded credential
+    left behind — 0600 from creation now, so the failure only downgrades to a
+    warning (#126950's durable case)."""
+    block = _auth_seed_block(stage2_text)
+    assert re.search(
+        r'chmod 600 "\$HERMES_HOME/auth\.json" 2>/dev/null \\\n'
+        r'\s*\|\| echo "\[stage2\] Warning: could not tighten auth\.json permissions"',
+        block,
+    ), "the auth.json re-tighten must warn and continue instead of aborting"

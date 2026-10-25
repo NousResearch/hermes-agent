@@ -592,9 +592,7 @@ export class PlayerManager {
     const slot = this.requireSlot(owner)
     slot.error = null
     slot.status = 'loading'
-    await slot.guest.webContents.loadURL(
-      this.fixture ? this.options.fixtureUrl! : getPlayerService(slot.source).homeUrl
-    )
+    this.loadServicePage(slot, this.fixture ? this.options.fixtureUrl! : getPlayerService(slot.source).homeUrl)
   }
 
   private navigateHistory(owner: BrowserWindow, direction: 'back' | 'forward'): void {
@@ -675,13 +673,13 @@ export class PlayerManager {
     existing.runtime = runtime
     existing.status = 'loading'
     existing.error = null
-    await existing.guest.webContents.loadURL(this.serviceHomeUrl(source))
+    this.loadServicePage(existing, this.serviceHomeUrl(source))
   }
 
   private async reloadServiceHome(slot: Slot, source: PlayerSource): Promise<void> {
     slot.status = 'loading'
     slot.error = null
-    await slot.guest.webContents.loadURL(this.serviceHomeUrl(source))
+    this.loadServicePage(slot, this.serviceHomeUrl(source))
   }
 
   private async openNewSlot(owner: BrowserWindow, source: PlayerSource): Promise<void> {
@@ -765,7 +763,12 @@ export class PlayerManager {
       slot.guest.setBounds(slot.bounds)
     })
     this.publish()
-    await guest.webContents.loadURL(url)
+    this.loadServicePage(slot, url)
+  }
+
+  /** Page load completion must not hold the manager's command queue. */
+  private loadServicePage(slot: Slot, url: string): void {
+    void slot.guest.webContents.loadURL(url).catch(() => undefined)
   }
 
   private async resolveSourceRuntime(source: PlayerSource): Promise<PlayerSnapshot['runtime']> {
@@ -1404,7 +1407,8 @@ export class PlayerManager {
       this.publish()
     })
     wc.on('did-fail-load', (_event, code, _description, _url, isMainFrame) => {
-      if (!isMainFrame) {
+      // A newer user navigation commonly cancels the prior request with ERR_ABORTED.
+      if (!isMainFrame || Number(code) === -3) {
         return
       }
 

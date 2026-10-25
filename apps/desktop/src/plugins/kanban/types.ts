@@ -26,6 +26,10 @@ export interface KanbanTask {
   current_run_started_at?: null | number
   worker_pid?: null | number
   last_heartbeat_at?: null | number
+  /** The server's own clock for the read this card arrived in (`board.now`), stamped
+   *  on by `fetchBoard`. The freshness arc compares against THIS, so a client clock
+   *  that is minutes off cannot report a live worker as having no heartbeat. */
+  heartbeat_now?: null | number
   /** Typed block reason set by the backend on kanban_block (one of
    *  VALID_BLOCK_KINDS — `dependency`, `needs_input`, `capability`,
    *  `transient`; null for legacy/un-typed blocks). Kept across unblock, so

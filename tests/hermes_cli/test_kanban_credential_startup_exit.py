@@ -48,6 +48,32 @@ def test_credential_resolution_exit(monkeypatch, quiet, worker, kind, worker_exi
     assert exc.value.code == (worker_exit if worker else 1)
 
 
+def test_anthropic_model_rate_limit_exits_75_for_kanban_startup(monkeypatch):
+    """A model-specific Anthropic cooldown is a transient worker startup failure."""
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fixture")
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.resolve_anthropic_token",
+        lambda model=None: "other-model-token" if model is None else None,
+    )
+    from hermes_cli import runtime_provider
+
+    def resolve(**_kwargs):
+        runtime_provider._anthropic_token_or_raise(model="claude-fixture")
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", resolve)
+    shell = CLIAgentSetupMixin.__new__(CLIAgentSetupMixin)
+    shell.model = "claude-fixture"
+    shell.requested_provider = "anthropic"
+    shell._explicit_api_key = shell._explicit_base_url = None
+    shell._fallback_model = []
+    shell.tool_progress_mode = "off"
+
+    assert shell._ensure_runtime_credentials() is False
+    assert shell._credentials_rate_limited is True
+    assert cli._single_query_exit_code(
+        None, credentials_rate_limited=shell._credentials_rate_limited) == 75
+
+
 @pytest.mark.parametrize("result,expected", [
     ({"completed": True}, 0),
     ({"interrupted": True}, 130),

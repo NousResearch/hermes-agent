@@ -5080,6 +5080,13 @@
             ],
             "default": null,
             "title": "Settings Schema"
+          },
+          "tools": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tools",
+            "type": "array"
           }
         },
         "required": [
@@ -8701,6 +8708,21 @@
           "count": {
             "title": "Count",
             "type": "integer"
+          },
+          "open_requests": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/OpenRequestEntry"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Open Requests"
           }
         },
         "required": [
@@ -10391,6 +10413,21 @@
               }
             ],
             "default": null
+          },
+          "open_requests": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/OpenRequestEntry"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Open Requests"
           }
         },
         "required": [

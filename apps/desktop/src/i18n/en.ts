@@ -20,6 +20,7 @@ import { enModelSettings } from './en_model_settings'
 import { enNotices } from './en_notices'
 import { enNotifications } from './en_notifications'
 import { enOnboarding } from './en_onboarding'
+import { enPluginPreviewAccess } from './en_plugin_preview_access'
 import { enPluginUpdate } from './en_plugin_update'
 import { enPluginsTab } from './en_plugins_tab'
 import { enProjects } from './en_projects'
@@ -2136,6 +2137,7 @@ export const en: Translations = {
         `Pinned to commit ${sha}. Updates are refused until it is reinstalled with a new pin.`,
       pinnedBadge: (sha: string) => `pinned @ ${sha}`,
       ...enPluginUpdate,
+      ...enPluginPreviewAccess,
       uninstall: 'Uninstall',
       uninstallTip: (name: string, profile: string) => `Uninstall ${name} from ${profile}`,
       uninstallConfirmTitle: (name: string) => `Uninstall ${name}?`,

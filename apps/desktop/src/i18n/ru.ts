@@ -13,7 +13,8 @@ import { ruModelSettings } from './ru_model_settings'
 import { ruNotices } from './ru_notices'
 import { ruNotifications } from './ru_notifications'
 import { ruOnboarding } from './ru_onboarding'
-import { ruPluginSettings } from './ru_plugins'
+import { ruPluginPreviewAccess } from './ru_plugin_preview_access'
+import { ruPluginSettings, ruPluginsTab } from './ru_plugins'
 import { RU_NOUN, RU_PLURAL } from './ru_plural'
 import { ruProjects } from './ru_projects'
 import { ruSharedMetrics } from './ru_shared_metrics'
@@ -1416,9 +1417,7 @@ export const ruOverrides = {
   },
   skillDeepLink: ruSkillDeepLink,
   skills: {
-    plugins: {
-      pageBlurb: 'Плагин может расширять приложение, агента или оба сразу — у каждой части свой переключатель.'
-    },
+    plugins: { ...ruPluginPreviewAccess, ...ruPluginsTab },
     tabSkills: 'Навыки',
     tabToolsets: 'Инструменты',
     configuringProfile: 'Настраивается:',

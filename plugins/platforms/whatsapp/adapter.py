@@ -873,7 +873,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def send_video(self, chat_id: str, video_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
         return await self._send_media_to_bridge(chat_id, video_path, "video", caption)
 
-    async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
+    async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
+                         is_voice: Optional[bool] = None, **kwargs) -> SendResult:
+        # The bridge turns every "audio" send into a voice note (ptt, transcoded to Opus); a plain
+        # audio MEDIA file (is_voice=False: music, a sound effect) goes as a named document instead.
+        if is_voice is False:
+            return await self.send_document(chat_id, audio_path, caption=caption, reply_to=reply_to)
         return await self._send_media_to_bridge(chat_id, audio_path, "audio", caption)
 
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,

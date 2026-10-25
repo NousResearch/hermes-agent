@@ -4445,6 +4445,7 @@ export interface AgentPluginRow {
   update_target?: string | null
   pinned_sha?: string | null
   settings_schema?: PluginSettingField[] | null
+  tools?: string[]
 }
 export interface PluginServerRow {
   name: string
@@ -4981,6 +4982,7 @@ export interface CanonicalSnapshot {
   info: CanonicalSnapshotInfo
   pending_connection?: ConnectionRequestPayload | null
   todo_state?: TodoState | null
+  open_requests?: OpenRequestEntry[] | null
 }
 export interface CanonicalPendingAdmission {
   admission_id: string
@@ -5131,6 +5133,7 @@ export interface CanonicalEventsResult {
   truncated: boolean
   snapshot_required: boolean
   count: number
+  open_requests?: OpenRequestEntry[] | null
 }
 export interface CanonicalReplayEvent {
   type: string

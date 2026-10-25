@@ -112,6 +112,10 @@ export const enErrorCodes: ThreadCopy['errorCodes'] = {
     title: "This chat's folder is gone",
     body: 'The folder this chat works in was moved or deleted, so your message was not run. Recreate the folder, or use Move to project to give the chat another one, then retry.'
   },
+  launch_credentials_unavailable: {
+    title: "This chat's API key changed",
+    body: 'This chat started with an API key that has since changed or been removed, so your message was not sent. An open chat never switches to a different key on its own. Start a new session to use your current key.'
+  },
   SESSION_OWNER_UNCONFIRMED: {
     title: 'Your message may already be queued',
     body: 'The gateway did not confirm your message in time. If it was queued, it runs once the earlier turn finishes or is resolved. Check the chat before sending it again.'

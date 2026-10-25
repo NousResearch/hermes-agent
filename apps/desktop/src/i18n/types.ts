@@ -24,6 +24,7 @@ import type { ModelSettingsTranslations } from './types_model_settings'
 import type { NoticeTranslations } from './types_notices'
 import type { NotificationSettingsTranslations } from './types_notifications'
 import type { OnboardingTranslations } from './types_onboarding'
+import type { PluginPreviewAccessTranslations } from './types_plugin_preview_access'
 import type { PluginUpdateTranslations } from './types_plugin_update'
 import type { PluginsTabCopy } from './types_plugins_tab'
 import type { SidebarProjectsTranslations } from './types_projects'
@@ -1900,7 +1901,9 @@ catalog: CatalogTranslations
     skillArchivedTitle: string
     skillArchivedMessage: string
     tabPlugins: string
-    plugins: PluginUpdateTranslations & PluginsTabCopy & {
+    plugins: PluginUpdateTranslations &
+      PluginsTabCopy &
+      PluginPreviewAccessTranslations & {
       agentTitle: string
       agentBlurb: string
       pageBlurb: string

@@ -123,6 +123,7 @@ import { TermsButterbar } from '../shell/terms-butterbar'
 import { BASIC_TREE, DEFAULT_TREE, registerLayoutPresets } from './layout-presets'
 import { bindLayoutSides } from './layout-sides'
 import { FilesPane, LogsPane, ReviewPaneContent } from './panes'
+import { PluginPreviewConsentDialog } from './plugin-preview-consent-dialog'
 import { ContribWiring, WiredPane } from './wiring'
 import { WorkspacePageHeaderHostContext } from './workspace-page-header'
 
@@ -797,6 +798,7 @@ export function ContribController() {
       <ContribWiring>
         <AppContextMenu />
         <HudShell />
+        <PluginPreviewConsentDialog />
       </ContribWiring>
     )
   }
@@ -805,6 +807,7 @@ export function ContribController() {
     return (
       <ContribWiring>
         <BrowserPopoutShell />
+        <PluginPreviewConsentDialog />
       </ContribWiring>
     )
   }
@@ -818,6 +821,9 @@ export function ContribController() {
     >
       <ContribWiring>
         <AppContextMenu />
+        {/* App-owned answer to a plugin's ctx.preview.executeJavaScript. Plugins
+            run in every window kind, so each shell mounts it. */}
+        <PluginPreviewConsentDialog />
         <div
           className="flex h-screen min-h-0 w-screen flex-col bg-(--ui-bg-chrome) text-(--ui-text-primary)"
           // Window-glass hook: this div and the sidebar-wrapper above it are

@@ -1104,11 +1104,13 @@ def _repair_prompts_pin_names(row) -> list[str] | None:
 
 
 def _repair_prompts_lacks_skill_safety(row) -> bool:
-    # Only the Skill Safety guidance is a reliable marker: <available_skills> is legitimately
-    # absent when no skills are installed, but the guidance is emitted whenever skill_manage is.
-    from agent.prompt_builder import SKILL_SAFETY_HEADING
+    # Only the skill_manage guidance is a reliable marker: <available_skills> is legitimately absent when no
+    # skills are installed, but the guidance is emitted whenever skill_manage is. A prompt stored before the
+    # Skill Safety Rule moved to compaction carries that heading, under whichever opening line it was built with.
+    from agent.context_compressor_tail import SKILL_SAFETY_HEADING
+    from agent.prompt_builder import SKILLS_GUIDANCE
     prompt = (row.get("system_prompt") or "").strip()
-    return bool(prompt and SKILL_SAFETY_HEADING not in prompt)
+    return bool(prompt and SKILLS_GUIDANCE not in prompt and SKILL_SAFETY_HEADING not in prompt)
 
 
 def _cmd_repair_prompts(db, args):
@@ -1155,7 +1157,7 @@ def _cmd_repair_prompts(db, args):
                 if "skill_manage" in (pin or ()):
                     findings.append({
                         **entry,
-                        "reason": "Skill Safety guidance missing while the tools[] pin carries skill_manage",
+                        "reason": "skill_manage guidance missing while the tools[] pin carries skill_manage",
                     })
                 elif pin is None:
                     unverifiable.append({

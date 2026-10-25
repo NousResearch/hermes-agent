@@ -134,8 +134,9 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
         shutil.copy2(entry, target)
 
 
-def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Path, *, source: Path) -> None:
-    """Snapshot core and plugin build inputs into a fresh generation."""
+def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Path, *, source: Path,
+                        python: Path) -> None:
+    """Snapshot core and plugin build inputs into a fresh generation for the *python* that installs it."""
     source = source.resolve()
     if root.resolve() == source or source.is_relative_to(root.resolve()):
         raise InstallError("venv", "workspace must not replace the core source")
@@ -159,6 +160,7 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
         uv_policy.pop("exclude-newer", None)
         uv_policy.pop("exclude-newer-package", None)
         uv_policy["workspace"] = {"members": sorted(members)}
+        _solve_only_for(uv_policy, python)
         text = tomli_w.dumps(document)
     else:
         # A member-less generation syncs frozen against core's own lock.
@@ -180,6 +182,28 @@ def _without_release_age(text: str) -> str:
     import re
 
     return re.sub(r"(?m)^exclude-newer\s*=.*\n", "", text)
+
+
+def _solve_only_for(uv_policy: dict, python: Path) -> None:
+    """Narrow ``tool.uv.environments`` to the platform of the interpreter that installs the generation.
+
+    uv solves every platform the environments admit, and since uv 0.12.14 it fails the whole
+    lock when one fork has no wheels for a dependency: onnxruntime and torch ship none for
+    Android, so a Linux or macOS update evicted the plugin over a platform it never runs on.
+    A generation installs into one interpreter on one machine; only core's committed lock
+    has to cover every platform, and it never passes through here. The interpreter is asked
+    rather than this process, because PM can run under a bootstrap Python (an older Termux
+    interpreter reports ``linux``) while uv evaluates markers against *python*.
+    """
+    import subprocess
+
+    from pm.filesystem import native
+
+    probe = subprocess.run([native(python), "-I", "-c", "import platform, sys; print(sys.platform); print(platform.machine())"],
+                           capture_output=True, text=True, encoding="utf-8", check=True, timeout=60)
+    sys_platform, machine = probe.stdout.split()
+    host = f"sys_platform == {sys_platform!r} and platform_machine == {machine!r}"
+    uv_policy["environments"] = [f"({entry}) and {host}" for entry in uv_policy.get("environments") or []] or [host]
 
 
 def _is_member_candidate(plugin_dir: Path) -> bool:
@@ -390,7 +414,7 @@ def lock_and_sync(
     if root.exists() or root.is_symlink():
         raise InstallError("venv", f"workspace must be fresh: {root}")
     if replay is None:
-        _generate_pyproject(plugin_dirs, root, source=source)
+        _generate_pyproject(plugin_dirs, root, source=source, python=environment.python)
         if seed_lock is not None:
             (root / "uv.lock").write_bytes(seed_lock.read_bytes())
     else:

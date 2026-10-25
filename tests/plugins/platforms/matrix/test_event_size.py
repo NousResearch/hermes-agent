@@ -42,7 +42,8 @@ def _make_adapter():
 
 @pytest.mark.asyncio
 async def test_sends_and_budget_sized_edits_fit_one_event():
-    from gateway.platforms.base import SendResult, _custom_unit_to_cp
+    from gateway.platforms.base import SendResult
+    from gateway.platforms.base_chunking import _custom_unit_to_cp
 
     adapter = _make_adapter()
     sent, edits = [], []

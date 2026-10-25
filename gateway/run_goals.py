@@ -248,11 +248,13 @@ class GatewayGoalsMixin:
                 "goal continuation: status send failed: %s", getattr(result, "error", "unknown error"),
             )
 
-    async def _defer_goal_status_notice_after_delivery(self, source: Any, message: str) -> None:
+    async def _defer_goal_status_notice_after_delivery(
+        self, source: Any, message: str, *, generation: int | None = None,
+    ) -> None:
         """Send a /goal status line after the main response is delivered.
 
         The adapter sends the agent response after this caller returns, so for reading order use
-        its one-shot post-delivery callback when available, else deliver directly (never drop).
+        its post-delivery callback when available, else deliver directly (never drop).
         """
         adapter = self._goal_notice_adapter(source)
         if not adapter:
@@ -269,8 +271,11 @@ class GatewayGoalsMixin:
             session_key = self._session_key_for_source(source)
         if session_key and hasattr(adapter, "register_post_delivery_callback"):
             try:
-                active = getattr(adapter, "_active_sessions", {}).get(session_key)
-                generation = getattr(active, "_hermes_run_generation", None) if active is not None else None
+                if generation is None:
+                    # No turn generation was threaded in: fall back to the adapter's live slot.
+                    # Threading it is what keeps a superseded turn's notice off the newer turn.
+                    active = getattr(adapter, "_active_sessions", {}).get(session_key)
+                    generation = getattr(active, "_hermes_run_generation", None) if active is not None else None
                 adapter.register_post_delivery_callback(session_key, _deliver, generation=generation)
                 return
             except Exception as exc:
@@ -294,6 +299,7 @@ class GatewayGoalsMixin:
 
     async def _post_turn_goal_continuation(
         self, *, session_entry: Any, source: Any, final_response: str,
+        run_generation: int | None = None,
     ) -> None:
         """Run the goal judge after a gateway turn (AFTER delivery) and, if still active, enqueue a
         continuation through the adapter FIFO so a simultaneous real user message takes priority."""
@@ -326,7 +332,9 @@ class GatewayGoalsMixin:
         msg = decision.get("message") or ""
         # Deferred until the visible final response is delivered, else "✓ Goal achieved" precedes it.
         if msg and source is not None:
-            await self._defer_goal_status_notice_after_delivery(source, msg)
+            await self._defer_goal_status_notice_after_delivery(
+                source, msg, generation=run_generation,
+            )
         prompt = decision.get("continuation_prompt") or ""
         if not decision.get("should_continue") or not prompt or source is None:
             return
@@ -350,13 +358,19 @@ class GatewayGoalsMixin:
 
     async def _run_post_turn_hooks(
         self, *, agent_result: Any, source: Any, is_internal: bool, event: Any = None,
+        stale_turn: bool = False, run_generation: int | None = None,
     ) -> None:
-        """Run goal and loop bookkeeping after an agent turn returns."""
+        """Run goal and loop bookkeeping after an agent turn returns.
+
+        ``stale_turn`` marks a turn whose result was discarded by a newer run generation
+        (``_hmwa_discard_stale_result``): it must not drive /goal -- its text was never shown, and
+        any notice it registered would follow the NEWER turn's reply -- but an in-flight /loop tick
+        still has to be released, so the hooks run release-only rather than being skipped.
+        """
         from gateway.session_authorities import active_authority
         from gateway.session_viewer_automation import viewer_driven
         if viewer_driven(active_authority(self), getattr(source, "chat_id", None)):
             return  # the classic CLI viewer judges and continues through ``session.automation``
-        final_text = self._final_text_for_post_turn_hooks(agent_result, event)
         try:
             session_entry = await self.async_session_store.get_or_create_session(
                 source, touch_activity=not is_internal,
@@ -364,6 +378,21 @@ class GatewayGoalsMixin:
         except Exception as exc:
             logger.debug("post-turn session resolution failed: %s", exc)
             return
+        if stale_turn:
+            # Skipping the release entirely would strand ``awaiting_response=True``, and the
+            # wakeup watcher refuses to fire while it is set -- the /loop would die permanently.
+            # ``release_only`` reschedules the tick with no text, so a --until judge never grades a
+            # reply the user was not shown.
+            try:
+                await self._post_turn_loop_completion(
+                    session_entry=session_entry, source=source, final_response="",
+                    run_generation=run_generation, release_only=True,
+                )
+            except Exception as exc:
+                logger.debug("loop completion (stale release) hook failed: %s", exc, exc_info=True)
+            self._publish_local_control(source, only_if_present=True)
+            return
+        final_text = self._final_text_for_post_turn_hooks(agent_result, event)
         # Empty interrupted/errored responses must not drive /goal, but an in-flight /loop tick
         # still needs to be released and rescheduled. A failed turn with text (a refusal: its
         # folder is gone) is no evidence either (the TUI's hook skips it the same way): the tick is
@@ -374,7 +403,11 @@ class GatewayGoalsMixin:
             hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation))
         for label, hook in hooks:
             try:
-                await hook(session_entry=session_entry, source=source, final_response="" if failed else final_text)
+                await hook(
+                    session_entry=session_entry, source=source,
+                    final_response="" if failed else final_text,
+                    run_generation=run_generation,
+                )
             except Exception as exc:
                 logger.debug("%s hook failed: %s", label, exc)
         self._publish_local_control(source, only_if_present=True)
@@ -413,6 +446,7 @@ class GatewayGoalsMixin:
 
     async def _post_turn_loop_completion(
         self, *, session_entry: Any, source: Any, final_response: str,
+        run_generation: int | None = None, release_only: bool = False,
     ) -> None:
         """Complete a /loop wakeup tick after a gateway turn. No-op unless a tick is in flight
         (``awaiting_response``, set when the wakeup was injected); applies the LOOP_COMPLETE marker
@@ -430,8 +464,12 @@ class GatewayGoalsMixin:
         # so a served secondary's tick would be written into the DEFAULT profile's state.db.
         decision = await self._run_in_executor_with_context(mgr.complete_tick, final_response or "")
         msg = decision.get("message") or ""
-        if msg and source is not None:
-            await self._defer_goal_status_notice_after_delivery(source, msg)
+        if msg and source is not None and not release_only:
+            # ``release_only`` is the dropped-turn path: release/reschedule the tick, but never
+            # let its status notice follow a newer turn's reply.
+            await self._defer_goal_status_notice_after_delivery(
+                source, msg, generation=run_generation,
+            )
 
     async def _loop_wakeup_fire_one(
         self, sid: str, state: Any, now: float, warned_no_route: set, profile: Optional[str] = None,

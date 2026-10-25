@@ -20,6 +20,11 @@ import weakref
 from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import safe_url_for_log
+from gateway.turn_delivery import (
+    current_turn_delivery,
+    fire_turn_delivery,
+    turn_delivery_for_event,
+)
 
 from utils import normalize_proxy_url
 from agent.i18n import t
@@ -232,20 +237,6 @@ def utf16_len(s: str) -> int:
     return len(s.encode("utf-16-le")) // 2
 
 
-def _custom_unit_to_cp(s: str, budget: int, len_fn) -> int:
-    """Largest codepoint offset *n* with ``len_fn(s[:n]) <= budget`` (binary search)."""
-    if len_fn(s) <= budget:
-        return len(s)
-    lo, hi = 0, len(s)
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        if len_fn(s[:mid]) <= budget:
-            lo = mid
-        else:
-            hi = mid - 1
-    return lo
-
-
 def _prefix_within_utf16_limit(s: str, limit: int) -> str:
     """Longest prefix of *s* with UTF-16 length ≤ *limit*; never splits a surrogate pair."""
     return s[:_custom_unit_to_cp(s, limit, utf16_len)]
@@ -425,7 +416,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import fence_state_after
+from gateway.platforms.base_chunking import _custom_unit_to_cp, truncate_message
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
@@ -3425,12 +3416,27 @@ class BasePlatformAdapter(ABC):
         await self._stop_typing_quietly(chat_id, metadata)
 
     def register_post_delivery_callback(
-        self, session_key: str, callback: Callable, *, generation: int | None = None) -> None:
-        """Register a deferred callback to fire after the main response. Same-key registrations are
-        chained (both fire in order, per-callback exception isolation) so independent features
-        coexist; ``generation`` ties it to a gateway run — stale generations never overwrite a
-        fresher slot."""
+        self, session_key: str, callback: Callable, *, generation: int | None = None,
+        run_on_drop: bool = False,
+    ) -> None:
+        """Register a deferred callback to fire after the main response.
+
+        A registration made while a turn is executing belongs to THAT turn's record: ownership
+        is the record, not the chat session, so no generation matching is involved (and
+        ``generation=None`` -- the drain lane's fingerprint -- is irrelevant).  Registrations
+        made outside a turn keep the legacy session-keyed slot, with its original semantics:
+        same-key entries chain in registration order and a stale int generation cannot
+        overwrite a fresher slot.
+
+        ``run_on_drop`` marks release/cleanup work (background-review release, temporary-bubble
+        deletion): a superseded turn still runs it, because no delivery will ever free what it
+        holds.  Reply-ordered presentation is discarded with the dropped turn.
+        """
         if not session_key or not callable(callback):
+            return
+        record = current_turn_delivery.get()
+        if record is not None:
+            record.register(callback, run_on_drop=run_on_drop)
             return
         existing = self._post_delivery_callbacks.get(session_key)
         if existing is not None:
@@ -3552,18 +3558,33 @@ class BasePlatformAdapter(ABC):
         """Call the handler and send its reply inline, with retry, threading and
         ephemeral deletion — no session lifecycle (active-session bypass paths)."""
         thread_meta = _thread_metadata_for_event(event)
-        response = await self._message_handler(event)
-        text, eph_ttl = self._unwrap_ephemeral(response)
-        if not text:
-            return
-        if log_cmd is not None:
-            logger.info("[%s] Sending command '/%s' response (%d chars) to %s", self.name, log_cmd,
-                        len(text), event.source.chat_id)
-        result = await self._send_with_retry(
-            chat_id=event.source.chat_id, content=text, reply_to=_reply_anchor_for_event(event),
-            metadata=_mark_notify_metadata(thread_meta))
-        if eph_ttl > 0 and result.success and result.message_id:
-            self._schedule_ephemeral_delete(event.source.chat_id, result.message_id, eph_ttl)
+        turn_delivery = turn_delivery_for_event(event)
+        token = current_turn_delivery.set(turn_delivery)
+        try:
+            response = await self._message_handler(event)
+            # ``admit_message`` may have adopted the admission-keyed record for this turn: fire
+            # what the handler actually registered on, never the record of the event it opened.
+            turn_delivery = current_turn_delivery.get() or turn_delivery
+            text, eph_ttl = self._unwrap_ephemeral(response)
+            if not text:
+                return
+            if log_cmd is not None:
+                logger.info("[%s] Sending command '/%s' response (%d chars) to %s", self.name, log_cmd,
+                            len(text), event.source.chat_id)
+            result = await self._send_with_retry(
+                chat_id=event.source.chat_id, content=text, reply_to=_reply_anchor_for_event(event),
+                metadata=_mark_notify_metadata(thread_meta))
+            if eph_ttl > 0 and result.success and result.message_id:
+                self._schedule_ephemeral_delete(event.source.chat_id, result.message_id, eph_ttl)
+        finally:
+            # The inline reply is on the wire -- or deliberately absent, or the handler raised:
+            # every way out releases the turn's deferred callbacks.  This lane has no session
+            # lifecycle to fire them later, so an exception must not strand them either.  Read the
+            # record back BEFORE dropping the ContextVar: ``admit_message`` may have adopted the
+            # admission-keyed one for this turn.
+            turn_delivery = current_turn_delivery.get() or turn_delivery
+            current_turn_delivery.reset(token)
+            await turn_delivery.fire()
 
     def _media_delivery_scope(self, source: Optional[SessionSource]):
         """Routed home + terminal policy for post-handler text, media and error delivery;
@@ -4492,10 +4513,25 @@ class BasePlatformAdapter(ABC):
             text_content=text_content, images=images, media_files=media_files,
             local_files=local_files, force_document_attachments=force_document, pre_extract=pre_extract)
 
-    async def _fire_post_delivery_callback(self, session_key: str, interrupt_event: asyncio.Event) -> None:
-        """Run the one-shot post-delivery callback (bounded, errors swallowed). The generation is
-        read HERE — stamped on the interrupt event DURING the handler await; an earlier snapshot
-        would let stale runs fire a fresher run's callbacks."""
+    async def _fire_post_delivery_callback(
+        self, session_key: str, interrupt_event: asyncio.Event,
+        event: MessageEvent | None = None,
+        turn_delivery=None,
+    ) -> None:
+        """Run the turn's deferred callbacks (bounded, errors swallowed), then the legacy slot.
+
+        The turn record is fired first, by OBJECT: it is turn-owned, so no generation has to
+        match, and an event rewrite (``dataclasses.replace``) or a drain-side adoption cannot
+        leave this lifecycle firing a different record from the one the turn registered on.
+        ``turn_delivery`` is the record captured around the handler await; ``event`` is the
+        fallback for a caller that only has the event.  The session-keyed dict remains only for
+        registrations made outside a turn; its pop keeps the historical semantics (the
+        generation is read HERE — stamped on the interrupt event DURING the handler await; an
+        earlier snapshot would let stale runs fire a fresher run's callbacks)."""
+        if turn_delivery is not None:
+            await turn_delivery.fire()
+        elif event is not None:
+            await fire_turn_delivery(event)
         _post_cb = self.pop_post_delivery_callback(
             session_key, generation=getattr(interrupt_event, "_hermes_run_generation", None))
         if callable(_post_cb):
@@ -4540,6 +4576,12 @@ class BasePlatformAdapter(ABC):
         # Reuse the interrupt event handle_message() installed; new Event only if removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
+        # Everything the handler (and its post-turn hooks) defers belongs to THIS turn. Hold the
+        # record OBJECT: ``admit_message`` may adopt the drain's admission-keyed record while the
+        # handler runs, and this lifecycle must fire THAT one — never a record reached through an
+        # event that ``pre_gateway_dispatch`` rewrote.
+        turn_delivery = turn_delivery_for_event(event)
+        delivery_token = current_turn_delivery.set(turn_delivery)
         _thread_metadata = _thread_metadata_for_event(event)
         typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
         try:
@@ -4640,12 +4682,16 @@ class BasePlatformAdapter(ABC):
             if isinstance(e, (SystemExit, KeyboardInterrupt)):
                 raise
         finally:
+            # Read back the record the turn actually registered on (``admit_message`` installs the
+            # admission-keyed one for an admitted turn), then release the ContextVar.
+            turn_delivery = current_turn_delivery.get() or turn_delivery
+            current_turn_delivery.reset(delivery_token)
             await self._release_turn_marker(event)
             event._turn_marker_handoff = False  # a later run of this object clears its own marker
             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
             # alive.
             await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
-            await self._fire_post_delivery_callback(session_key, interrupt_event)
+            await self._fire_post_delivery_callback(session_key, interrupt_event, event, turn_delivery)
             # Callback work or a late refresh may have recreated typing — one final bounded stop.
             await self._stop_typing_refresh(
                 event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
@@ -4838,65 +4884,5 @@ class BasePlatformAdapter(ABC):
         MarkdownV2); default returns content as-is."""
         return content
 
-    @staticmethod
-    def truncate_message(content: str, max_length: int = 4096,
-                         len_fn: Optional[Callable[[str], int]] = None) -> list[str]:
-        """Split a long message into chunks preserving code blocks: a split inside a fence closes it
-        at the chunk end and reopens it (same language tag) in the next; multi-chunk output gets
-        ``(1/3)`` indicators. ``len_fn`` overrides ``len`` (``utf16_len`` for Telegram)."""
-        _len = len_fn or len
-        if _len(content) <= max_length:
-            return [content]
-        INDICATOR_RESERVE = 10   # room for " (XX/XX)"
-        FENCE_CLOSE = "\n```"
-        chunks: list[str] = []
-        remaining = content
-        carry_lang: Optional[str] = None  # language tag ("" ok) when previous chunk ended mid-fence
-        while remaining:
-            prefix = f"```{carry_lang}\n" if carry_lang is not None else ""
-            # Body budget after prefix/fence/indicator; floored so a tiny max_length can't stall.
-            headroom = max_length - INDICATOR_RESERVE - _len(prefix) - _len(FENCE_CLOSE)
-            if headroom < 1:
-                headroom = max(1, max_length // 2)
-            # Remainder fits in one final chunk; close a reopened fence if still open.
-            if _len(prefix) + _len(remaining) <= max_length - INDICATOR_RESERVE:
-                final_chunk = prefix + remaining
-                if carry_lang is not None and fence_state_after(remaining, True, carry_lang)[0]:
-                    final_chunk += FENCE_CLOSE
-                chunks.append(final_chunk)
-                break
-            # Natural split (newline, then space); a custom _len budget maps to a codepoint offset.
-            _cp_limit = (
-                _custom_unit_to_cp(remaining, headroom, _len) if _len is not len else headroom)
-            region = remaining[:_cp_limit]
-            split_at = region.rfind("\n")
-            if split_at < _cp_limit // 2:
-                split_at = region.rfind(" ")
-            if split_at < 1:
-                # Floor at one codepoint: a zero _cp_limit (max_length 0/1, or a surrogate pair
-                # wider than the utf16 budget) would never shrink ``remaining``; overshooting beats
-                # a hang.
-                split_at = max(1, _cp_limit)
-            # Don't split inside an inline code span: an unpaired backtick breaks MarkdownV2.
-            candidate = remaining[:split_at]
-            backtick_count = candidate.count("`") - candidate.count("\\`")
-            if backtick_count % 2 == 1:
-                last_bt = candidate.rfind("`")
-                while last_bt > 0 and candidate[last_bt - 1] == "\\":
-                    last_bt = candidate.rfind("`", 0, last_bt)
-                if last_bt > 0:
-                    safe_split = max(
-                        candidate.rfind(" ", 0, last_bt), candidate.rfind("\n", 0, last_bt))
-                    if safe_split > _cp_limit // 4:
-                        split_at = safe_split
-            chunk_body = remaining[:split_at]
-            remaining = remaining[split_at:].lstrip()
-            full_chunk = prefix + chunk_body
-            # Walk only chunk_body (not the prepended prefix) for the fence state.
-            in_code, lang = fence_state_after(chunk_body, carry_lang is not None, carry_lang or "")
-            carry_lang = lang if in_code else None
-            # Close the orphaned fence so the chunk stands alone.
-            chunks.append(full_chunk + FENCE_CLOSE if in_code else full_chunk)
-        if len(chunks) > 1:
-            chunks = [f"{chunk} ({i + 1}/{len(chunks)})" for i, chunk in enumerate(chunks)]
-        return chunks
+    # Moved to gateway/platforms/base_chunking.py; kept as an alias for adapters and plugins.
+    truncate_message = staticmethod(truncate_message)

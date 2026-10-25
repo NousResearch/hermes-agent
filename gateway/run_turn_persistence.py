@@ -666,10 +666,38 @@ class GatewayTurnPersistenceMixin:
             t("gateway.errors.generic_failed_with_hint", hint=status_hint), PARTIAL_FAILED_TURN_NOTICE,
         ))
 
-    def _hmwa_discard_stale_result(self, source, _quick_key, run_generation):
-        """A newer run generation superseded this turn: drop its deferred post-delivery callback."""
+    def _hmwa_discard_stale_result(self, source, _quick_key, run_generation, event=None):
+        """A newer run generation superseded this turn: CLOSE its deferred delivery record.
+
+        Closing (not merely clearing) is what makes the drop terminal: the caller still runs
+        ``_run_post_turn_hooks``, whose goal/loop registrations would otherwise re-arm work on a
+        turn whose reply the user never sees.  Release-only callbacks (background-review release,
+        temporary-bubble deletion) still RUN -- discarding them leaks the queue/UI they free.
+        """
         logger.info(
             "Discarding stale agent result for %s — generation %d is no longer current",
             _quick_key or "?", run_generation,
         )
         self._pop_post_delivery_callback(self._delivery_adapter_for(source), _quick_key, run_generation)
+        # In-turn registrations live on the turn's own record, not in the session slot.  The
+        # ContextVar is authoritative (the event may be a rewritten copy), with the event as
+        # fallback for a lane that runs outside the turn's context.
+        from gateway.turn_delivery import drop_turn_delivery
+        drop_turn_delivery(event)
+        # Remember WHICH turn was actually discarded.  The caller must not re-infer "stale" from
+        # the run generation afterwards: a /stop or /new that lands between delivery and the
+        # post-turn hooks makes a reply the user DID see look stale, and its /goal judge and
+        # loop verdict would be skipped for a turn that was never discarded.
+        runs = getattr(self, '_discarded_turn_runs', None)
+        if runs is None:
+            runs = self._discarded_turn_runs = set()
+        runs.add((_quick_key, run_generation))
+
+    def _consume_discarded_turn_run(self, _quick_key, run_generation):
+        """True (once) only for the turn ``_hmwa_discard_stale_result`` actually discarded."""
+        runs = getattr(self, '_discarded_turn_runs', None)
+        key = (_quick_key, run_generation)
+        if not runs or key not in runs:
+            return False
+        runs.discard(key)
+        return True

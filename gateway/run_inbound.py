@@ -1337,9 +1337,17 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                     _quick_key, exc.session_id,
                 )
                 return t("gateway.busy.another_turn_running")
+            # A superseded turn's result was discarded (_hmwa_discard_stale_result): it must not
+            # drive /goal (judge + continuation enqueue + status notice) -- that work would be
+            # attributed to the NEWER turn's delivery -- but an in-flight /loop tick still needs
+            # its release, so the hooks run in release-only mode rather than being skipped.
+            # Asked of the discard itself, never re-inferred from the generation: a /stop or /new
+            # after delivery would otherwise mark a reply the user saw as stale.
+            _turn_stale = self._consume_discarded_turn_run(_quick_key, _run_generation)
             try:
                 await self._run_post_turn_hooks(
                     agent_result=_agent_result, source=source, is_internal=is_internal, event=event,
+                    stale_turn=_turn_stale, run_generation=_run_generation,
                 )
             except Exception as _goal_exc:
                 logger.debug("post-turn hook failed: %s", _goal_exc)

@@ -370,6 +370,13 @@ async def _retire_profile_authority(authority, timeout=None):
         if not waiter.done():
             waiter.set_exception(RuntimeStoreError('runtime_draining'))
     authority.waiters.clear()
+    # No lane of this owner can deliver a reply any more: close every deferred-delivery record a
+    # drain left behind (a turn fenced unknown waiting for a Discard that this process will never
+    # run, say). Reply-ordered work is discarded -- the reply is not coming -- while release /
+    # cleanup callbacks run, so a review queue slot is not held by a dead owner.
+    from gateway.session_ingress import close_turn_delivery, turn_deliveries
+    for admission_id in list(turn_deliveries(authority)):
+        close_turn_delivery(authority, admission_id)
     return True
 
 

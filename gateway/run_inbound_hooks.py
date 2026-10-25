@@ -103,8 +103,14 @@ class GatewayInboundHooksMixin:
                 _new_text = _result.get("text")
                 if isinstance(_new_text, str):
                     from gateway.session_ingress_context import carry_callback
+                    from gateway.turn_delivery import adopt_turn_delivery
                     rewritten = dataclasses.replace(event, text=_new_text)
                     carry_callback(event, rewritten)
+                    # ``dataclasses.replace`` copies the declared fields only: the turn's deferred-
+                    # delivery record is an instance ATTRIBUTE, so carry it explicitly.  Otherwise
+                    # the rewritten turn registers on the new event's record while the lifecycle
+                    # that opened the turn fires the old one (G3).
+                    adopt_turn_delivery(event, rewritten)
                     event = rewritten
                 break
             if _action == "allow":

@@ -435,7 +435,7 @@ def _cp_budget(text, budget, len_fn):
     (callers guarantee ``len_fn(text) > budget``, so plain ``len`` needs no search)."""
     if len_fn is len:
         return budget
-    from gateway.platforms.base import _custom_unit_to_cp  # heavyweight; lazy
+    from gateway.platforms.base_chunking import _custom_unit_to_cp  # lightweight; lazy
     return _custom_unit_to_cp(text, budget, len_fn)
 
 

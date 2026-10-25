@@ -7,6 +7,12 @@ from dataclasses import replace
 
 from gateway.platforms.event import MessageEvent
 from gateway.session_envelope import restore_native
+from gateway.turn_delivery import (
+    adopt_turn_delivery,
+    current_turn_delivery,
+    fire_turn_delivery,
+    turn_delivery_for_event,
+)
 from hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
@@ -32,6 +38,27 @@ QUEUE_FULL_REPLY = ('⏳ Too many messages are already waiting in this conversat
                     'send this again after the current reply.')
 
 
+def _refusal_reply(exc: 'RuntimeStoreError') -> tuple[bool, str | None]:
+    """Map an admission refusal to ``(handled, reply)``.
+
+    ``handled=False`` means the caller must re-raise: only the refusals main answers with a notice
+    are listed here, and the trust/provenance clauses stay generic on purpose.
+    """
+    if exc.reason == 'stale_generation' and exc.field == 'route':
+        return True, None  # a later /stop or /new of the chat fenced it, as main cancels a queued row
+    if exc.reason == 'invalid_params' and exc.field:
+        # Refused before commit (_validate_native): a refusal notice instead of a generic turn error.
+        # The reply reaches the whole chat, so only content clauses are named; trust and provenance
+        # clauses (and any new one) stay generic, and gateway.log keeps the clause (``_refuse``).
+        named = f'{exc.reason}: {exc.field}' if exc.field in _CONTENT_CLAUSES else exc.reason
+        return True, (f'⚠️ Hermes refused this message ({named}), so it was not saved '
+                      'or answered. Ask the operator to check gateway.log.')
+    if exc.reason == 'queue_full':
+        # Nothing was committed (main's busy-queue cap): say so instead of a generic turn error.
+        return True, QUEUE_FULL_REPLY
+    return False, None
+
+
 async def admit_message(authority, event):
     from gateway.session_authority import messaging_admission
     accepted, committed = busy_acceptance.get(), busy_commit.get()
@@ -43,25 +70,25 @@ async def admit_message(authority, event):
         if committed is not None and not committed.done():
             committed.set_result(None)  # the row is durable (any status): a barrier may go on
     except RuntimeStoreError as exc:
-        if exc.reason == 'stale_generation' and exc.field == 'route':
-            return None  # a later /stop or /new of the chat fenced it, as main cancels a queued row
-        if exc.reason == 'invalid_params' and exc.field:
-            # Refused before commit (_validate_native): a refusal notice instead of a generic turn error.
-            # The reply reaches the whole chat, so only content clauses are named; trust and provenance
-            # clauses (and any new one) stay generic, and gateway.log keeps the clause (``_refuse``).
-            named = f'{exc.reason}: {exc.field}' if exc.field in _CONTENT_CLAUSES else exc.reason
-            return (f'⚠️ Hermes refused this message ({named}), so it was not saved '
-                    'or answered. Ask the operator to check gateway.log.')
-        if exc.reason != 'queue_full':
+        handled, reply = _refusal_reply(exc)
+        if not handled:
             raise
-        # Nothing was committed (main's busy-queue cap): say so instead of a generic turn error.
-        return QUEUE_FULL_REPLY
+        return reply
     finally:
         messaging_admission.reset(ingress)
     if receipt.status == 'terminal':
         return None
     # Only the delivery waiter is process-local; execution reads the committed snapshot.
     authority.native_waiters.add(receipt.admission_id)
+    # Publish the turn's record under its ADMISSION ID before the drain can claim the row (the
+    # drain may already have run: ``bind`` adopts whatever record the registry settled on). The
+    # ContextVar stays set for the REST OF THIS TASK, so this sender reads the exact record back
+    # after ``_message_handler`` returns — an event rewrite cannot redirect it to another object.
+    pre_existing = _registry(authority, 'turn_deliveries').get(receipt.admission_id)
+    turn_delivery = bind_turn_delivery(
+        authority, receipt.admission_id, event,
+        sender_record=current_turn_delivery.get(), adapter_sends=True)
+    current_turn_delivery.set(turn_delivery)
     waiter = authority.waiters.setdefault(receipt.admission_id, asyncio.get_running_loop().create_future())
     adopters = _marker_adopters(authority)
     if getattr(event, '_turn_marker_handoff', False):
@@ -79,16 +106,48 @@ async def admit_message(authority, event):
             del authority.waiters[receipt.admission_id]
         if adopters.get(receipt.admission_id) is event:
             del adopters[receipt.admission_id]
+        if pre_existing is None:
+            # The row settled before a turn registered a waiter: the record we just created
+            # belongs to a turn whose reply nobody will send. Drop it rather than strand it.
+            pop_turn_delivery(authority, receipt.admission_id)
         return None if status == 'terminal' else pause_notice(authority, receipt.ref, 'unknown_execution')
     if accepted is not None and not accepted.done():
         accepted.set_result(None)
     try:
-        return await asyncio.shield(waiter)
+        result = await asyncio.shield(waiter)
     except RuntimeStoreError as exc:
+        if pre_existing is None and exc.reason != 'unknown_execution':
+            # No turn will send a reply on this lane and none is retained for a Discard.
+            pop_turn_delivery(authority, receipt.admission_id)
         return pause_notice(authority, receipt.ref, exc.reason)
+    except BaseException:
+        # The sender task is being cancelled (stop, shutdown) or the wait was aborted: no adapter
+        # lifecycle is left to send this reply or fire its record.  Hand both back to the drain --
+        # clear the carried bit, and move a reply the drain already captured for THIS adapter into
+        # ``pending_deliveries`` so settlement sends it instead of losing it with the cancelled
+        # task (the shield kept the waiter alive; nobody else would resolve or deliver it).
+        authority.native_waiters.discard(receipt.admission_id)
+        if authority.waiters.get(receipt.admission_id) is waiter:
+            del authority.waiters[receipt.admission_id]
+        record = turn_deliveries(authority).get(receipt.admission_id)
+        if record is not None:
+            record.adapter_sends = False
+        captured_reply = waiter_replies(authority).pop(receipt.admission_id, None)
+        if captured_reply is not None:
+            authority.pending_deliveries[receipt.admission_id] = captured_reply
+        raise
     finally:
         if adopters.get(receipt.admission_id) is event:
             del adopters[receipt.admission_id]
+    # The drain may have created the record after our publish: adopt whichever one the registry
+    # settled on, hand it to this sender task, and stop tracking it by id (the sender owns firing).
+    turn_delivery = bind_turn_delivery(
+        authority, receipt.admission_id, event,
+        sender_record=current_turn_delivery.get(), adapter_sends=True)
+    current_turn_delivery.set(turn_delivery)
+    if _registry(authority, 'turn_deliveries').get(receipt.admission_id) is turn_delivery:
+        _registry(authority, 'turn_deliveries').pop(receipt.admission_id, None)
+    return result
 
 
 def _marker_adopters(authority):
@@ -141,6 +200,89 @@ def _registry(authority, name):
     return found
 
 
+def turn_deliveries(authority):
+    """admission_id -> the turn's deferred-delivery record (process-local, like the waiters)."""
+    return _registry(authority, 'turn_deliveries')
+
+
+def bind_turn_delivery(authority, admission_id, event=None, *, sender_record=None,
+                       adapter_sends=None):
+    """The ONE record for this turn, keyed by its admission id.
+
+    Either lane can arrive first — ``admit_message`` (the adapter / busy-observer task that owns
+    the delivery waiter, which passes the record it created) or ``execute_admission`` (the drain,
+    which passes none and adopts the registry's record or creates its own from the restored
+    event).  ``setdefault`` makes both share ONE object, so a ``pre_gateway_dispatch`` rewrite
+    between them can never leave the SENDER holding a different record from the one the turn
+    registers on: the admission id is the shared identity, not the MessageEvent (which
+    ``dataclasses.replace`` rebuilds).  The record is also attached to ``event`` for any lane that
+    resolves it from an event, but no lane depends on that.
+
+    ``adapter_sends`` is the CARRIED "a native adapter lifecycle owns this reply" bit: the lane
+    that knows (either one) stamps it, and ``deliver_settled`` reads it instead of inferring
+    ownership from the multi-tenant ``authority.waiters``."""
+    registry = _registry(authority, 'turn_deliveries')
+    record = registry.get(admission_id)
+    if record is None:
+        record = sender_record
+        if record is None and event is not None:
+            record = turn_delivery_for_event(event)
+        if record is None:
+            return None
+        registry[admission_id] = record
+    if adapter_sends:
+        record.adapter_sends = True
+    if event is not None:
+        try:
+            event._turn_delivery = record
+        except Exception:
+            logger.debug('Event refused the turn delivery record', exc_info=True)
+    return record
+
+
+def pop_turn_delivery(authority, admission_id):
+    return _registry(authority, 'turn_deliveries').pop(admission_id, None)
+
+
+def close_turn_delivery(authority, admission_id):
+    """CLOSED-drop a turn's record because nothing will ever deliver its reply.
+
+    Release/cleanup callbacks (``run_on_drop``) run now -- they free a queue slot or delete
+    per-turn UI that no delivery will release -- and reply-ordered callbacks are discarded.
+    Idempotent, and a later ``fire()`` is a no-op because the callbacks were consumed, so closing
+    is safe while a sender task is still unwinding."""
+    record = pop_turn_delivery(authority, admission_id)
+    if record is not None:
+        record.drop()
+    return record
+
+
+def close_unretained_turn_delivery(authority, admission_id):
+    """Close the record unless a Discard may still deliver this turn's reply.
+
+    ``retain_unsettled_delivery`` keeps the reply -- and therefore its record -- for
+    ``deliver_resolved``, which closes it when the Discard owes nothing.  Every other exit that
+    abandons an admission (a cancelled drain, a lost managed worker, settlement recovery that
+    lost ownership) leaves no lane to fire the record, so it must not stay in the registry."""
+    if admission_id in _registry(authority, 'unsettled_deliveries'):
+        return
+    close_turn_delivery(authority, admission_id)
+
+
+async def fire_settled_turn_delivery(authority, admission_id):
+    """Fire the record of a reply just handed to its live delivery waiter.
+
+    ``deliver_settled`` defers to this when a waiter -- not a native adapter lifecycle -- owns the
+    reply, so the deferred callbacks follow the handover instead of preceding it (a goal notice
+    must not reach the chat before the reply it annotates).  A native waiter is skipped: its
+    adapter task fires the record itself, after it sends."""
+    record = turn_deliveries(authority).get(admission_id)
+    if record is None or getattr(record, 'adapter_sends', False):
+        return
+    pop_turn_delivery(authority, admission_id)
+    await record.fire()
+
+
 def waiter_replies(authority):
     """admission -> the reply a live native waiter is about to send, kept only until the drain
     settles the turn, so a turn fenced ``unknown`` can still owe it to the chat."""
@@ -174,7 +316,21 @@ async def deliver_resolved(authority, admission_id, *, owed):
     if delivery is None:
         return
     if owed:
+        # The Discard released the adapter lifecycle that would have sent this reply, so the
+        # drain is the sender now -- and therefore the lane that fires the record. Clearing the
+        # carried bit keeps ``deliver_settled`` from handing it back to a sender that is gone.
+        record = turn_deliveries(authority).get(admission_id)
+        if record is not None:
+            record.adapter_sends = False
         authority.pending_deliveries[admission_id] = delivery
+    else:
+        # A Discard owes no answer, so it owes no status line either -- but it does owe the turn's
+        # release/cleanup callbacks (``run_on_drop``): no delivery will ever run them, and they
+        # free a queue slot or delete per-turn UI.  ``drop()`` runs exactly those and discards
+        # everything reply-ordered, so the record must be dropped, not merely discarded.
+        record = pop_turn_delivery(authority, admission_id)
+        if record is not None:
+            record.drop()
     await deliver_settled(authority, admission_id)
 
 
@@ -276,6 +432,15 @@ async def execute_admission(authority, ref, row):
     captured = {}
     result_token = execution_result.set(captured)
     token = executing_admission.set(True)
+    # Adopt the record the sender lane published under this admission id (or create it here for a
+    # recovered no-waiter turn). The id is the identity; ``event`` is only a carrier for lanes
+    # that resolve it from one, and it may be a different object from the sender's event.
+    # ``native`` (claimed above) is the CARRIED ownership bit: only a native adapter lifecycle
+    # sends this turn's reply and fires the record itself. The API, Webhook, Bot, Hosted and
+    # Managed lanes do not set it, so their turns are fired by whichever lane ends up delivering.
+    turn_delivery = bind_turn_delivery(
+        authority, row['admission_id'], event, adapter_sends=native)
+    delivery_token = current_turn_delivery.set(turn_delivery)
     # This drain, not the handler's unwind, releases the turn's crash marker (see below).
     event._turn_marker_handoff = True
     handed = False
@@ -328,6 +493,7 @@ async def execute_admission(authority, ref, row):
     finally:
         if not handed:
             await _release_turn_marker(authority, event)
+        current_turn_delivery.reset(delivery_token)
         executing_admission.reset(token)
         execution_result.reset(result_token)
         api_execution.reset(api_token)
@@ -372,23 +538,50 @@ async def _execution_scope(authority, home):
 
 async def deliver_settled(authority, admission_id):
     """Send a recovered no-waiter turn's reply after its terminal outcome committed. A send
-    failure cannot rewrite that outcome; it is logged, and inference never runs again."""
+    failure cannot rewrite that outcome; it is logged, and inference never runs again.
+
+    The turn's deferred callbacks are fired by whichever lane actually delivers the reply: this
+    one after its send, the native adapter lifecycle that owns the reply
+    (``record.adapter_sends``), or -- for a reply handed to a live waiter (API, Webhook, Bot,
+    Hosted) -- ``fire_settled_turn_delivery`` right after that handover.  No lane infers that
+    from ``authority.waiters``, which those lanes also fill -- an is_api turn has a waiter there
+    but no adapter send, and judging by it left the record neither sent, fired, nor dropped."""
     held = _held_markers(authority).pop(admission_id, None)
-    delivery = authority.pending_deliveries.get(admission_id)
-    if delivery is not None and admission_id in authority.native_waiters:
-        # ``admit_message`` registered its delivery waiter after this turn started: the drain
-        # hands that waiter the reply and its adapter lifecycle sends it, so this send is not owed.
+    record = turn_deliveries(authority).get(admission_id)
+    # CARRIED ownership bit, plus the late-registration fallback: only ``admit_message`` fills
+    # ``native_waiters`` (the other lanes only touch ``waiters``), so a native waiter that
+    # registered while the turn ran is still recognised as the sender.
+    adapter_sends = (bool(getattr(record, 'adapter_sends', False))
+                     or admission_id in authority.native_waiters)
+    if adapter_sends:
+        # A native adapter lifecycle owns this reply: its task sends it and fires the SAME record
+        # object afterwards, so this lane neither sends nor fires (and must not strand the record
+        # by dropping it -- the sender task reads it back from its context).
         authority.native_waiters.discard(admission_id)
-        authority.pending_deliveries.pop(admission_id)
+        authority.pending_deliveries.pop(admission_id, None)
         adopter = _marker_adopters(authority).get(admission_id)
         if held is not None and adopter is not None:
             _move_marker(held, adopter)
             held = None
-        delivery = None
+        if held is not None:
+            await _release_turn_marker(authority, held)
+        return
+    delivery = authority.pending_deliveries.get(admission_id)
     if delivery is None:
         if held is not None:
-            # Fenced unknown: no answer is owed, so no later boot may deliver one either.
+            # Fenced unknown: no answer is owed YET, so the record stays for the later resolved
+            # send (``deliver_resolved``), which fires it.
             await _release_turn_marker(authority, held)
+            return
+        if admission_id in authority.waiters:
+            # A live waiter (API, Webhook, Bot, Hosted) is about to be handed this reply by
+            # ``_resolve_settled_waiter``: fire the record AFTER that handover, never before it.
+            return
+        # Nothing on this lane sends (no reply, API/local, or a failed settlement): the turn's
+        # deferred callbacks must not be stranded in the registry -- fire them here.
+        record = pop_turn_delivery(authority, admission_id)
+        if record is not None:
+            await record.fire()
         return
     adapter, event, session_key, response, home = delivery
     try:
@@ -399,8 +592,20 @@ async def deliver_settled(authority, admission_id):
     finally:
         # Held until the send returns: an empty map means every settled reply was handed over.
         authority.pending_deliveries.pop(admission_id, None)
-        # The ledgered send already released the marker; an empty or failed send owes no more.
-        await _release_turn_marker(authority, event)
+        # Fire BY ID: this lane has no adapter lifecycle, and the record -- not the event object,
+        # which a rewrite may have replaced -- is the turn's identity.
+        record = pop_turn_delivery(authority, admission_id)
+        try:
+            # The ledgered send already released the marker; an empty or failed send owes no more.
+            # Release it BEFORE firing: a slow callback must not delay the durable release (nor
+            # skip it by cancellation after the fire).
+            await _release_turn_marker(authority, event)
+        finally:
+            # Even a failed/empty send owns its turn's deferred callbacks: never strand the notice.
+            if record is not None:
+                await record.fire()
+            else:
+                await fire_turn_delivery(event)
 
 
 async def deliver_response(adapter, event, session_key, response):
@@ -436,11 +641,19 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
         # Like the first message's lifecycle, this sender adopts the turn's crash marker and
         # releases it only once the reply is ledgered (the marker moves onto ``event``).
         event._turn_marker_handoff = getattr(adapter, 'gateway_runner', None) is not None
+        turn_delivery = turn_delivery_for_event(event)
+        delivery_token = current_turn_delivery.set(turn_delivery)
         try:
             response = await adapter._message_handler(event)
+            # ``admit_message`` may have adopted the drain's record for this admission: fire what
+            # the handler actually registered on, never the event's opening record.
+            turn_delivery = current_turn_delivery.get() or turn_delivery
             # The ledgered send releases the marker off the event it sends.
             _move_marker(event, delivery_event)
             delivery_event._turn_marker_handoff = event._turn_marker_handoff
+            # ``delivery_event`` is a ``dataclasses.replace`` copy, which does not carry the
+            # record; adopt it before the send so the busy lane's send owns the turn's callbacks.
+            adopt_turn_delivery(event, delivery_event)
             await deliver_response(adapter, delivery_event, session_key, response)
         except Exception as exc:
             if not accepted.done():
@@ -448,10 +661,17 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
             logger.error('[%s] Queued busy follow-up failed: %s', adapter.name, exc, exc_info=True)
             await adapter._notify_turn_error(delivery_event, exc)
         finally:
-            # Clears the marker if no ledgered send did, then wakes the drain's bounded wait,
-            # which listens on the adopter (``event``).
-            await adapter._release_turn_marker(delivery_event)
-            await adapter._release_turn_marker(event)
+            current_turn_delivery.reset(delivery_token)
+            try:
+                # Clears the marker if no ledgered send did, then wakes the drain's bounded wait,
+                # which listens on the adopter (``event``).  Released BEFORE the callbacks fire:
+                # a slow callback must not delay it (nor skip it by cancellation after the fire).
+                await adapter._release_turn_marker(delivery_event)
+                await adapter._release_turn_marker(event)
+            finally:
+                # A failed/short reply still owns its deferred callbacks; never strand them.
+                # Fired by OBJECT: the admission-keyed record, not the (possibly rewritten) event.
+                await turn_delivery.fire()
 
     token, commit_token = busy_acceptance.set(accepted), busy_commit.set(committed)
     try:

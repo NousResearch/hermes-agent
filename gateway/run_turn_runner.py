@@ -479,7 +479,18 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # main response is delivered.
         if ctx._status_adapter and ctx.session_key:
             if getattr(type(ctx._status_adapter), "register_post_delivery_callback", None) is not None:
-                ctx._status_adapter.register_post_delivery_callback(ctx.session_key, bg_release, generation=ctx.run_generation)
+                try:
+                    # run_on_drop: the release must still fire when this turn is DROPPED (superseded),
+                    # else the review queue's release_evt is never set and every later
+                    # "memory updated" notice queues behind it forever.
+                    ctx._status_adapter.register_post_delivery_callback(
+                        ctx.session_key, bg_release, generation=ctx.run_generation, run_on_drop=True,
+                    )
+                except TypeError:
+                    # Adapter/test double predating the run_on_drop classification.
+                    ctx._status_adapter.register_post_delivery_callback(
+                        ctx.session_key, bg_release, generation=ctx.run_generation,
+                    )
             else:
                 pdc = getattr(ctx._status_adapter, "_post_delivery_callbacks", None)
                 if pdc is not None:

@@ -1220,6 +1220,11 @@ class SessionAuthority:
                 # replayed, so its deferred reset is dropped (the next turn re-detects the overflow),
                 # never left to fire after a later settled turn with a stale entry.
                 self.deferred_resets.pop(live.route, None)
+                # No lane is left to deliver this turn, so its deferred-delivery record must be
+                # closed here: reply-ordered work is discarded, release/cleanup work runs (an
+                # abandoned record would keep a review queue slot or a typing bubble forever).
+                from gateway.session_ingress import close_unretained_turn_delivery
+                close_unretained_turn_delivery(self, admission_id)
                 if isinstance(exc, ManagedExecutionUnknown):
                     return
                 raise
@@ -1296,6 +1301,12 @@ class SessionAuthority:
                 if settled is None:
                     # Uncommitted (unknown or discarded): the user is not told an answer the FIFO lost.
                     self.pending_deliveries.pop(admission_id, None)
+                    # ...and no lane delivers this turn any more, so close its deferred-delivery
+                    # record (release/cleanup callbacks run; reply-ordered work is discarded). A
+                    # record retained for a Discard by ``retain_unsettled_delivery`` is kept --
+                    # ``deliver_resolved`` closes it when that resolution owes no answer.
+                    from gateway.session_ingress import close_unretained_turn_delivery
+                    close_unretained_turn_delivery(self, admission_id)
                 from gateway.session_ingress import waiter_replies
                 waiter_replies(self).pop(admission_id, None)
                 # Taken on every exit, so a turn that never settled leaves no reset for a later one.
@@ -1325,13 +1336,21 @@ class SessionAuthority:
         released = None
         if adopter is not None and getattr(adopter, '_gateway_active_turn_token', None):
             released = adopter._gateway_marker_released = asyncio.Event()
-        waiter = self.waiters.pop(admission_id, None)
-        if waiter is None or waiter.done():
-            return
-        waiter.set_result(response)
-        if released is not None and not (self.runner._draining or self.retiring):
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(released.wait(), _MARKER_RELEASE_WAIT_S)
+        try:
+            waiter = self.waiters.pop(admission_id, None)
+            if waiter is None or waiter.done():
+                return
+            waiter.set_result(response)
+            if released is not None and not (self.runner._draining or self.retiring):
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(released.wait(), _MARKER_RELEASE_WAIT_S)
+        finally:
+            # The reply is handed over: this lane's turn callbacks follow it, never precede it
+            # (``deliver_settled`` deferred them here). A native waiter is skipped -- its adapter
+            # task fires the record after it sends. Runs on every exit (no waiter, cancelled
+            # wait) so a record can never be left behind by a deduplicated handover.
+            from gateway.session_ingress import fire_settled_turn_delivery
+            await fire_settled_turn_delivery(self, admission_id)
 
 
 def backfill_legacy_session_owners(db):

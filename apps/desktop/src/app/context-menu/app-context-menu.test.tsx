@@ -1,7 +1,10 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { createRef, type RefObject } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { useComposerUndo } from '@/app/chat/composer/hooks/use-composer-undo'
+import { RICH_INPUT_SLOT } from '@/app/chat/composer/rich-editor'
 import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { ContextMenu, ContextMenuTrigger, HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
@@ -44,6 +47,37 @@ function attach(html: string): HTMLElement {
   document.body.appendChild(host)
 
   return host
+}
+
+/** A composer editor wired the way the app wires one: the rich-input slot marks
+ *  it as a composer, and the composer's REAL undo hook is mounted on it so its
+ *  undo recorder is registered against this very element. */
+function composer(text: string) {
+  const editor = document.createElement('div')
+
+  editor.setAttribute('contenteditable', 'true')
+  editor.setAttribute('role', 'textbox')
+  editor.dataset.slot = RICH_INPUT_SLOT
+  editor.textContent = text
+  // jsdom lacks the browser's isContentEditable.
+  Object.defineProperty(editor, 'isContentEditable', { configurable: true, value: true })
+  document.body.appendChild(editor)
+
+  const editorRef = createRef<HTMLDivElement>() as RefObject<HTMLDivElement | null>
+
+  editorRef.current = editor
+
+  const undo: { current: null | ReturnType<typeof useComposerUndo> } = { current: null }
+
+  const Harness = () => {
+    undo.current = useComposerUndo({ editorRef, syncDraftFromEditor: () => editor.textContent ?? '' })
+
+    return null
+  }
+
+  render(<Harness />)
+
+  return { editor, undo }
 }
 
 afterEach(() => {
@@ -203,6 +237,60 @@ describe('AppContextMenu', () => {
 
     expect(await screen.findByText('Add to dictionary')).toBeTruthy()
     expect(screen.getByText('the')).toBeTruthy()
+  })
+
+  // The app's own suggestion rows replace through Chromium's
+  // `replaceMisspelling` in main, which edits the field outside the composer's
+  // Range pipeline — the composer never sees a beforeinput to bank, so ⌘Z used
+  // to skip the correction and undo whatever came before it. The plugin rows in
+  // composer-menu.ts already record a point; this is the app's own path doing
+  // the same.
+  it("makes the app's own spelling replacement undoable", async () => {
+    const { editor, undo } = composer('teh quick fox')
+
+    const contextMenuSpellcheck = vi.fn((action: { kind: 'add' | 'replace'; word: string }) => {
+      // jsdom has no editing commands: stand in for Chromium's replace, which
+      // rewrites the field itself in main.
+      if (action.kind === 'replace') {
+        editor.textContent = (editor.textContent ?? '').replace('teh', action.word)
+      }
+
+      return Promise.resolve(true)
+    })
+
+    installBridge({
+      contextMenuSpellcheck: contextMenuSpellcheck as unknown as Window['hermesDesktop']['contextMenuSpellcheck']
+    })
+    mountMenu()
+
+    fireEvent.contextMenu(editor)
+    augmentSpellcheck({ misspelledWord: 'teh', suggestions: ['the'] })
+    fireEvent.click(await screen.findByText('the'))
+
+    await waitFor(() => expect(contextMenuSpellcheck).toHaveBeenCalledWith({ kind: 'replace', word: 'the' }))
+    expect(editor.textContent).toBe('the quick fox')
+
+    act(() => void undo.current!.undo())
+
+    expect(editor.textContent).toBe('teh quick fox')
+  })
+
+  it('leaves an editable with no composer undo stack on the plain replace path', async () => {
+    const contextMenuSpellcheck = vi.fn().mockResolvedValue(true)
+
+    installBridge({
+      contextMenuSpellcheck: contextMenuSpellcheck as unknown as Window['hermesDesktop']['contextMenuSpellcheck']
+    })
+    mountMenu()
+    const host = attach('<textarea>teh draft</textarea>')
+
+    fireEvent.contextMenu(host.querySelector('textarea')!)
+    augmentSpellcheck({ misspelledWord: 'teh', suggestions: ['the'] })
+    fireEvent.click(await screen.findByText('the'))
+
+    // A settings field has no composer behind it: the recorder lookup is a
+    // no-op, and the replace still dispatches.
+    await waitFor(() => expect(contextMenuSpellcheck).toHaveBeenCalledWith({ kind: 'replace', word: 'the' }))
   })
 
   it('runs edit verbs after the menu closed, with focus back on the editable', async () => {

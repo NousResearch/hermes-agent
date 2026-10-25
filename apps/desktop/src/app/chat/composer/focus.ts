@@ -63,6 +63,22 @@ const ATTACH_IMAGES_EVENT = 'hermes:composer-attach-images'
 const INSERT_REFS_EVENT = 'hermes:composer-insert-refs'
 const SUBMIT_EVENT = 'hermes:composer-submit'
 const VOICE_TOGGLE_EVENT = 'hermes:composer-voice-toggle'
+const SPELLCHECK_EVENT = 'hermes:composer-spellcheck'
+const SPELLCHECK_REPLY_EVENT = 'hermes:composer-spellcheck-reply'
+
+/** The spell-check state requested for one composer, echoed back by the
+ *  surface that applied it. */
+interface SpellcheckDetail {
+  enabled: boolean
+  target: ComposerTarget
+  /** Token the addressed surface echoes on {@link SPELLCHECK_REPLY_EVENT}. */
+  token: number
+}
+
+interface SpellcheckReplyDetail {
+  ok: boolean
+  token: number
+}
 const DICTATION_EVENT = 'hermes:composer-dictation'
 const MODEL_MENU_EVENT = 'hermes:composer-model-menu'
 
@@ -680,6 +696,101 @@ export const requestComposerDictation = (target: ComposerTarget | 'active' = 'ac
 
 export const onComposerDictationRequest = (handler: (target: ComposerTarget) => void) =>
   subscribe<{ target: ComposerTarget }>(DICTATION_EVENT, ({ target }) => handler(target))
+
+/**
+ * Turn Chromium's spell check (the red squiggles) on or off for ONE composer.
+ *
+ * The composer inputs have spell check OFF (#44415): browser spellcheck
+ * flagged code, paths and slash commands, which was more annoying than the
+ * squiggles were useful. That stays the default -- this verb does not change
+ * it for anyone.
+ *
+ * It exists for a plugin that ships a dictionary, where the user installed the
+ * plugin precisely to get spell checking. Chromium still decides WHAT is
+ * flagged; the plugin's control over that is its dictionary (`host.spellcheck`
+ * add/remove one word at a time), not this verb. This one only decides whether
+ * the composer is checked at all.
+ *
+ * ACKED, unlike the fire-and-forget mutations on this bus: the request carries
+ * a token and the addressed surface echoes whether it ACTUALLY applied the
+ * setting (a mounted surface with no editable attached yet has not). A plain
+ * dispatch could not say that -- the event is dropped when no surface is
+ * subscribed for the target, and the caller would be told "on" for a composer
+ * that never received it.
+ *
+ * FAIL-CLOSED and stateless: when no mounted surface claims the address, none
+ * answers within the settle window, or the claimant has nothing to write to,
+ * the promise settles false and NOTHING is remembered about it. There is
+ * deliberately no standing preference -- a stored one would make false mean
+ * both "not applied" and "applied when you open it", would outlive the plugin
+ * that asked for it (there is no unload hook to clear it), and would let a
+ * plugin address sessions that never existed. A plugin wanting the setting on a
+ * surface that is not mounted yet calls again once it is; false is the signal
+ * to retry.
+ */
+export const requestComposerSpellcheck = (
+  enabled: boolean,
+  target: ComposerTarget | 'active' = 'active'
+): Promise<boolean> => {
+  const pending = spellcheckReplies
+
+  if (!pending) {
+    return Promise.resolve(false)
+  }
+
+  const token = ++spellcheckToken
+  const resolvedTarget = resolve(target)
+
+  return new Promise<boolean>(settle => {
+    pending.set(token, settle)
+
+    dispatch<SpellcheckDetail>(SPELLCHECK_EVENT, { enabled, target: resolvedTarget, token })
+
+    // No claimant (unmounted address, mid-teardown) must not strand the
+    // promise: settle false and drop the slot.
+    window.setTimeout(() => {
+      if (pending.get(token) === settle) {
+        pending.delete(token)
+        settle(false)
+      }
+    }, SPELLCHECK_REPLY_TIMEOUT_MS)
+  })
+}
+
+export const onComposerSpellcheckRequest = (handler: (detail: SpellcheckDetail) => void) =>
+  subscribe<SpellcheckDetail>(SPELLCHECK_EVENT, handler)
+
+/**
+ * Subscriber-side ack for {@link requestComposerSpellcheck}: the surface that
+ * applied the setting reports the REAL outcome so the requester's promise
+ * settles. `ok: false` is a surface that claimed the address but had no
+ * editable to write to.
+ */
+export const ackComposerSpellcheck = (token: number | undefined, ok: boolean) => {
+  if (token === undefined || typeof window === 'undefined') {
+    return
+  }
+
+  window.dispatchEvent(new CustomEvent<SpellcheckReplyDetail>(SPELLCHECK_REPLY_EVENT, { detail: { ok, token } }))
+}
+
+const SPELLCHECK_REPLY_TIMEOUT_MS = 50
+
+let spellcheckToken = 0
+
+const spellcheckReplies = typeof window === 'undefined' ? null : new Map<number, (ok: boolean) => void>()
+
+if (typeof window !== 'undefined') {
+  window.addEventListener(SPELLCHECK_REPLY_EVENT, event => {
+    const reply = (event as CustomEvent<SpellcheckReplyDetail>).detail
+    const settle = reply && spellcheckReplies?.get(reply.token)
+
+    if (settle) {
+      spellcheckReplies?.delete(reply.token)
+      settle(reply.ok === true)
+    }
+  })
+}
 
 /** The chat surface inside the zone the pointer is over, if any. Mirrors the
  *  tab verbs' hover-first targeting (`tabTargetGroupId`, #74447): the model

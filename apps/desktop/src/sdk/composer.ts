@@ -5,6 +5,7 @@ import {
   requestComposerGetDraft,
   requestComposerInsertAcked,
   requestComposerSetDraft,
+  requestComposerSpellcheck,
   requestComposerSubmit
 } from '@/app/chat/composer/focus'
 import { freshDraftScope, takeSessionDraft } from '@/store/composer'
@@ -140,5 +141,54 @@ export const composerHost = {
     if (target !== null) {
       requestComposerFocus(target)
     }
+  },
+
+  /** Turn Chromium's spell check (the red squiggles) on or off for one
+   *  composer.
+   *
+   *  The inputs have spell check OFF by default (#44415) -- browser
+   *  spellcheck flagged code, paths and slash commands. This does not change
+   *  that for anyone: it is an opt-in for a plugin that ships its own
+   *  dictionary, where the user installed the plugin precisely to get spell
+   *  checking. Chromium still decides WHAT is flagged; a plugin cannot teach
+   *  it about code or paths here, only add/remove single words through
+   *  `host.spellcheck`.
+   *
+   *  Fail-closed, and it remembers nothing: this is a live setting for a
+   *  mounted composer, not a preference stored against the address. `true`
+   *  means a mounted surface applied it, right now. `false` means nothing
+   *  happened -- no surface answered for the address (a closed tile, an
+   *  unknown session, a non-boolean `enabled`) or the surface had no editable
+   *  to write to -- and nothing will apply later. A plugin that wants the
+   *  setting on a composer that is not mounted yet calls again once it is;
+   *  the `false` is its cue to retry. Addressing is the same as every other
+   *  verb -- `null` for the active composer, a session id for a specific one,
+   *  `'new'` for the fresh draft.
+   *
+   *  `sessionId` is ROUTING, not authorization: it picks which composer
+   *  answers, exactly like `setDraft`/`insertText`, and plugins already run
+   *  in-process with the app's own privileges. It is never checked against
+   *  the app's session list, so an id that names no session simply resolves to
+   *  a surface nobody holds and fails closed.
+   *
+   *  On macOS this also re-enables Chromium's smart quotes / dashes for the
+   *  composer: those substitutions ride the same spellcheck gate, and the app
+   *  keeps `autocorrect` on there for the user's custom Text replacements.
+   *
+   *  Asynchronous, because the answer depends on whether a mounted composer
+   *  actually claimed and applied the request -- a fire-and-forget call could
+   *  not tell "on" from "never arrived". */
+  setSpellcheck: (sessionId: null | string, enabled: boolean): Promise<boolean> => {
+    if (typeof enabled !== 'boolean') {
+      return Promise.resolve(false)
+    }
+
+    const { target } = resolveComposerAddress(sessionId)
+
+    if (target === null) {
+      return Promise.resolve(false)
+    }
+
+    return requestComposerSpellcheck(enabled, target)
   }
 }

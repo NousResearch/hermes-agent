@@ -625,6 +625,7 @@ host.composer: {
   insertText(sessionId: string | null, text: string, opts?: { mode?: 'block' | 'inline' | 'prefix' }): Promise<boolean>
   submit(sessionId: string | null, text: string): boolean
   focus(sessionId: string | null): void
+  setSpellcheck(sessionId: string | null, enabled: boolean): Promise<boolean>
 }
 ```
 
@@ -660,6 +661,48 @@ and its siblings; the pet-wallet row uses the [pet bubble](#pet-bubble) door):
 
 `sessionId` in the table is the id the plugin's UI is bound to; for a composer
 slot render it is `host.state.focusedSessionId.get()`.
+
+### Composer spell check — `host.composer.setSpellcheck` {#composer-spellcheck}
+
+The composer inputs have Chromium's spell check **off**: browser spellcheck
+flagged code, paths and slash commands, which was more annoying than the
+squiggles were useful. That is the default, and `setSpellcheck` does not
+change it for anyone.
+
+It is there for a plugin that ships a dictionary, where the user installed the
+plugin precisely to get spell checking. Chromium still decides *what* is
+flagged — this verb only decides *whether* the composer is checked. To teach
+the checker about a word, use the
+[spell-check dictionary](#spell-check-dictionary--hostspellcheck)
+(`host.spellcheck.addWord` / `removeWord`), which takes one bounded word at a
+time; there is no way to exempt code or paths from being flagged.
+
+```ts
+// Turn spell check on for the active composer.
+const applied = await host.composer.setSpellcheck(null, true)
+```
+
+Addressing matches the other composer verbs: `null` for the active composer,
+a session id for a specific one, `'new'` for the fresh draft. The setting is
+per-surface, so a plugin can spell check the primary composer and leave a
+tile alone. `sessionId` is routing, not authorization: it selects which
+composer answers (same as `setDraft`/`insertText`) and is not checked against
+the session list.
+
+The promise is fail-closed and the verb remembers nothing. `true` means a
+mounted composer applied the setting right now. `false` means nothing
+happened: no composer answered for the address (a closed tile, an unknown
+session), the composer had no editable to write to, or `enabled` was not a
+boolean — and nothing will apply later. In particular, a closed tile is not
+remembered: when the user opens it the composer keeps the app default (off).
+Call again once the surface is mounted — the `false` is the cue to retry, and
+it is the same signal `setDraft`/`insertText` give.
+
+On macOS, Chromium gates its punctuation substitutions on `autocorrect` and
+`spellcheck` together: with spell check on, the composer also regains smart
+quotes, dashes and ellipses (the app keeps `autocorrect` on there so the
+user's custom Text replacements still apply). Bear that in mind before opting
+a coding surface in.
 
 ### Session rows — decorations + the session list API
 

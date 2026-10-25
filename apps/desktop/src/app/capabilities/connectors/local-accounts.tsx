@@ -76,10 +76,12 @@ function AccountEditor({ entry, servers, serverName, profile, pending, onChanged
     cancelled.current = false
     setBusy(true)
     setError(null)
+    let created = false
 
     try {
       if (!savedName) {
         await createLocalAccount(name, entry.name, servers[serverName]?.tools, scope)
+        created = true
 
         if (!alive.current) {
           return
@@ -88,8 +90,6 @@ function AccountEditor({ entry, servers, serverName, profile, pending, onChanged
         if (!cancelled.current) {
           setSavedName(name)
         }
-
-        await onChanged()
       }
 
       if (isCancelled()) {
@@ -107,6 +107,7 @@ function AccountEditor({ entry, servers, serverName, profile, pending, onChanged
       }
 
       await onChanged()
+      created = false
 
       if (isCancelled()) {
         return
@@ -121,6 +122,18 @@ function AccountEditor({ entry, servers, serverName, profile, pending, onChanged
         setError(err instanceof Error ? err.message : String(err))
       }
     } finally {
+      // Keep the new entry out of background probes until OAuth succeeds. If sign-in
+      // fails or is cancelled, expose it for an explicit retry or removal instead.
+      if (created && alive.current) {
+        try {
+          await onChanged()
+        } catch (err) {
+          if (!cancelled.current) {
+            setError(err instanceof Error ? err.message : String(err))
+          }
+        }
+      }
+
       running.current = false
 
       if (alive.current) {

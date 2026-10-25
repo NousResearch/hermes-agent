@@ -97,6 +97,20 @@ describe('direct MCP additional accounts', () => {
     expect(oauth).toHaveBeenCalledTimes(2)
   })
 
+  it('publishes a new account only after OAuth succeeds, so its first probe sees authorized credentials', async () => {
+    let approve!: (value: { tools: [] }) => void
+    rpc.mockResolvedValue({ ok: true })
+    oauth.mockReturnValue(new Promise(resolve => { approve = resolve }))
+    const { refresh } = show()
+
+    await connect('work')
+    await waitFor(() => expect(oauth).toHaveBeenCalledTimes(1))
+    expect(refresh).not.toHaveBeenCalled()
+
+    approve({ tools: [] })
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1))
+  })
+
   it('rejects names that collide with an existing token or tool identity', async () => {
     show({ ...servers, notion_work: { url: 'https://another.example/mcp', auth: 'oauth' } })
     await connect('work')

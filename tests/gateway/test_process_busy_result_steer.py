@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.background_results import PROCESS_RESULT_MARKER, attach_to_tool_tail
+from agent.background_results import PROCESS_RESULT_MARKER, attach_to_tool_tail, confirm_attached
 from tests.gateway.test_completion_delivery import AdmittingHandler, _completion_event, _runner
 
 
@@ -49,7 +49,9 @@ def test_busy_completion_rides_the_running_turns_tool_result_not_a_new_turn(stee
     messages = _tool_tail()
 
     async def next_tool_batch():
-        assert attach_to_tool_tail(agent, messages) == 1
+        attached = attach_to_tool_tail(agent, messages)
+        assert len(attached) == 1
+        confirm_attached(agent, attached, True)  # the tool-progress flush persisted this row
         await runner._settle_carried_completions()  # the watcher tick
 
     assert asyncio.run(_deliver_while_busy(runner, agent, next_tool_batch)) is True
@@ -65,7 +67,7 @@ def test_completion_the_turn_never_carried_arrives_as_the_next_turn(steering_run
 
     assert asyncio.run(_deliver_while_busy(runner, agent, turn_ends_without_a_tool_call)) is True
     adapter.handle_message.assert_awaited_once()
-    assert attach_to_tool_tail(agent, _tool_tail()) == 0  # never also shown on a later tool result
+    assert attach_to_tool_tail(agent, _tool_tail()) == []  # never also shown on a later tool result
 
 
 def test_completion_already_read_with_process_wait_is_not_shown_again(steering_runner):
@@ -74,7 +76,7 @@ def test_completion_already_read_with_process_wait_is_not_shown_again(steering_r
 
     async def agent_waits_on_the_process_then_calls_a_tool():
         registry._completion_consumed.add("proc_reused")
-        assert attach_to_tool_tail(agent, messages) == 0
+        assert attach_to_tool_tail(agent, messages) == []
         await runner._settle_carried_completions()
 
     assert asyncio.run(_deliver_while_busy(runner, agent, agent_waits_on_the_process_then_calls_a_tool)) is True

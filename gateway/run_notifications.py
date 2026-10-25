@@ -26,6 +26,7 @@ from gateway.session import SessionEntry, SessionSource, SessionStore
 from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
 from gateway.run_notifications_update import GatewayUpdateNotificationsMixin
 from gateway.run_notifications_ownership import GatewayNotificationOwnershipMixin
+from gateway.run_notifications_busy_result import CarriedCompletion
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -141,19 +142,6 @@ def _local_completion_card(evt: dict) -> dict[str, str]:
         from tools.process_registry_notifications import heartbeat_display_text
         return {"display_kind": INTERNAL_NOTIFICATION_DISPLAY_KIND, "display_text": heartbeat_display_text(evt)}
     return {}
-
-
-@dataclasses.dataclass(frozen=True)
-class _CarriedCompletion:
-    """A claimed completion riding a running turn (``delegation.busy_result_mode: steer``): what
-    settling it later needs once a tool result carried it, or the turn ended without one."""
-
-    evt: dict
-    delegation_id: str
-    claim_id: str
-    identity: Any
-    siblings: tuple
-    waiter: Optional[asyncio.Future] = None  # a process completion's carry outcome
 
 
 def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
@@ -1347,16 +1335,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     self._record_coalesced_completion_siblings([event for event, _claim_id in sibling_claims])
 
     def _busy_result_mode(self, evt_type: str) -> str:
-        """The profile in scope's busy-result mode for ``evt_type``: ``queue`` (default) or ``steer``."""
-        from gateway.run import _load_gateway_config
-        from gateway.run_notifications_busy_result import BUSY_RESULT_MODE_KEYS
-        from hermes_cli.config import cfg_get
-        section, key = BUSY_RESULT_MODE_KEYS[evt_type]
-        mode = str(cfg_get(_load_gateway_config(), section, key, default="") or "queue").strip().lower()
-        if mode not in ("queue", "steer"):
-            logger.warning("%s.%s=%r is not 'queue' or 'steer'; using 'queue'", section, key, mode)
-            return "queue"
-        return mode
+        """The profile in scope's busy-result mode for ``evt_type`` (see the sibling module)."""
+        from gateway.run_notifications_busy_result import busy_result_mode
+        return busy_result_mode(evt_type)
 
     def _carry_completion_into_running_turn(self, synth_text: str, evt: dict, claim, identity, sibling_claims):
         """``steer`` mode: hand a claimed completion to the session's running agent, which appends it
@@ -1374,7 +1355,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         if self._busy_result_mode(evt["type"]) != "steer":
             return False
         from agent.background_results import offer
-        carried = _CarriedCompletion(evt, claim.delegation_id, claim.claim_id, identity, tuple(sibling_claims))
+        carried = CarriedCompletion(evt, claim.delegation_id, claim.claim_id, identity, tuple(sibling_claims))
         self.__dict__.setdefault("_carrying_agents", {})[id(agent)] = agent
         if evt["type"] == "completion":
             return offer_process_completion(agent, carried, synth_text)
@@ -1407,7 +1388,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             for carried, _text in undelivered:
                 await self._settle_carried_completion(carried, "defer")
 
-    async def _settle_carried_completion(self, carried: _CarriedCompletion, operation: str) -> None:
+    async def _settle_carried_completion(self, carried: CarriedCompletion, operation: str) -> None:
         from tools.process_registry import process_registry as _pr
         if carried.waiter is not None:  # a process completion: its waiting delivery call settles it
             if not carried.waiter.done():

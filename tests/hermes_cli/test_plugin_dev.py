@@ -251,3 +251,16 @@ def test_doctor_loads_model_provider_plugins_through_provider_discovery(tmp_path
     report = doctor_plugin(plugin)
     assert not report.ok
     assert any("registered no ProviderProfile" in f.message for f in report.findings)
+
+
+def test_doctor_loads_cron_provider_plugins_through_provider_discovery() -> None:
+    """Exclusive cron providers use their collector instead of PluginContext (#137419)."""
+    from hermes_cli.plugin_dev import doctor_plugin
+
+    chronos = Path(__file__).parents[2] / "plugins" / "cron_providers" / "chronos"
+
+    report = doctor_plugin(chronos)
+
+    assert report.ok, report.format_text()
+    assert report.manifest is not None
+    assert report.manifest.kind == "exclusive"

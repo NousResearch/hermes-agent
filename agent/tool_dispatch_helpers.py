@@ -26,6 +26,38 @@ from tools.threat_patterns import scan_for_threats
 
 logger = logging.getLogger(__name__)
 
+
+def deduplicate_tool_calls(tool_calls: list) -> list:
+    """Drop same-turn model stutter, but preserve ordered desktop operations.
+
+    Repeated clicks/keys are distinct inputs; even identical captures can observe
+    different states between them. Parameter equality is not replay identity for
+    computer_use. Its normal per-call validation and delivery guards still apply.
+    """
+    seen, unique = set(), []
+    for tc in tool_calls:
+        name, arguments = tc.function.name, tc.function.arguments
+        try:
+            parsed = json.loads(arguments)
+        except (TypeError, ValueError):
+            parsed = None
+        else:
+            arguments = json.dumps(parsed, separators=(",", ":"), sort_keys=True)
+        effective_name = name
+        if name == "tool_call" and isinstance(parsed, dict):
+            effective_name, _ = _peel_bridge_call(name, parsed)
+        if effective_name == "computer_use" and isinstance(parsed, dict):
+            unique.append(tc)
+            continue
+        key = (name, arguments)
+        if key in seen:
+            logger.warning("Removed duplicate tool call: %s", name)
+            continue
+        seen.add(key)
+        unique.append(tc)
+    return unique if len(unique) < len(tool_calls) else tool_calls
+
+
 # Interactive / user-facing tools never run concurrently: any of these in a batch is a barrier.
 _NEVER_PARALLEL_TOOLS = frozenset({"clarify", "manage_connections", "manage_catalog", "setup_beat", "set_theme"})
 

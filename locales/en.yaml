@@ -46,6 +46,7 @@ approval:
 
 gateway:
   approval_expired: "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
+  redelivered_due: "[Redelivered · originally due {when}]"
   draining: "⏳ Draining {count} active agent(s) before restart..."
   goal_cleared: "✓ Goal cleared."
   no_active_goal: "No active goal."

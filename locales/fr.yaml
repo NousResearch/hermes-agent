@@ -42,6 +42,7 @@ approval:
     second_one: "{count} seconde"
     second_other: "{count} secondes"
 gateway:
+  redelivered_due: "[Renvoyé · prévu à l'origine {when}]"
   approval_expired: "⚠️ Approbation expirée (l'agent n'attend plus). Demandez à l'agent de réessayer."
   draining: "⏳ Vidage de {count} agent(s) actif(s) avant redémarrage..."
   goal_cleared: "✓ Objectif effacé."

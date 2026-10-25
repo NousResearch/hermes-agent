@@ -42,6 +42,7 @@ approval:
     second_one: "{count} saniye"
     second_other: "{count} saniye"
 gateway:
+  redelivered_due: "[Yeniden gönderildi · özgün zamanı {when}]"
   approval_expired: "⚠️ Onay süresi doldu (ajan artık beklemiyor). Ajanın tekrar denemesini isteyin."
   draining: "⏳ Yeniden başlatmadan önce {count} aktif ajan bekleniyor..."
   goal_cleared: "✓ Hedef temizlendi."

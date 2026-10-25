@@ -69,13 +69,6 @@ def _note_fetch_result(url: str, ok: bool) -> None:
         _fetch_retry_after[_backoff_key(url)] = time.monotonic() + FETCH_RETRY_DELAY_SECONDS
 
 
-def clear_fetch_backoff() -> None:
-    """Forget the active profile's fetch failures so an explicit refresh retries every URL."""
-    from hermes_constants import hermes_home_key
-    home = hermes_home_key()
-    for key in [k for k in _fetch_retry_after if k[0] == home]:
-        del _fetch_retry_after[key]
-
 
 def _load_catalog_config() -> dict[str, Any]:
     """Load the ``model_catalog`` config block with defaults filled in."""
@@ -289,7 +282,6 @@ def refresh_catalogs() -> bool:
     Blocking; run it off the event loop."""
     if not _load_catalog_config()["enabled"]:
         return False
-    clear_fetch_backoff()  # provider overrides are re-asked too, not only the forced manifest
     catalog = get_catalog(force_refresh=True)
     try:
         from hermes_cli.models import fetch_nous_recommended_models, fetch_openrouter_models

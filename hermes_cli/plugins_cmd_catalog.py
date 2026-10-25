@@ -758,7 +758,7 @@ def _render_entries(entries: list[PluginCatalogEntry], console) -> None:
 
 
 def cmd_search(term: str = "", *, json_output: bool = False) -> None:
-    """Search the curated catalog (name/description/declared tools); empty term = browse everything."""
+    """Search the curated catalog (name/description/maintainer/declared tools); empty term = browse everything."""
     from hermes_cli.plugins_cmd import _console
     matches = filter_entries(load_catalog_live(), term)
     if json_output:

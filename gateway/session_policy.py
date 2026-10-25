@@ -540,13 +540,20 @@ def _with_entry_pick(params, config):
     built-in in raw provider resolution, so the bare spelling would route, and be frozen, as a
     different provider than the entry the profile runs (#140107). Only the held entry's bare key
     is that entry (Desktop's guard). A keyed entry's display name is not; a keyless legacy
-    ``custom_providers:`` entry's is (``configured_entry_key``). Other picks stay as they came.
+    ``custom_providers:`` entry's is (``configured_entry_key``). A bare ``custom`` pick is the billing
+    class a client echoed from the runtime, not a route: it names the configured entry serving its
+    endpoint/model, else (no endpoint picked) the profile's own entry. Other picks stay as they came.
     """
     from gateway.session_route_identity import configured_entry_key, profile_route_identity
     picked = params.get('provider')
     if not isinstance(picked, str):
         return params
     identity = profile_route_identity(config)
+    if picked.strip().lower() == 'custom':
+        from hermes_cli.runtime_provider_custom import routed_custom_identity
+        healed = routed_custom_identity(params.get('base_url'), params.get('model'), config) or (
+            identity if identity.startswith('custom:') and 'base_url' not in params else None)
+        return {**params, 'provider': healed} if healed else params
     if identity == 'auto' or picked.strip().lower() != (configured_entry_key(identity, config) or None):
         return params
     return {**params, 'provider': identity}
@@ -1031,7 +1038,7 @@ def _serving_local_desktop_within(scope):
 def policy_for_source(runner, source):
     from gateway.session_local import LocalSessionAdapter
     from gateway.config import Platform
-    if source.platform != Platform.LOCAL:
+    if source is None or source.platform != Platform.LOCAL:  # None: a history mount, which runs nothing
         return None
     adapter = runner._adapter_for_source(source)
     if isinstance(adapter, LocalSessionAdapter) and adapter.authorize_source(source):
@@ -1060,6 +1067,26 @@ def workspace_unavailable_result(policy) -> dict:
     return stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
                           "failed": True, "completed": False, "error": text},
                          "workspace_unavailable", False)
+
+
+def refused_turn_result(policy, exc) -> dict | None:
+    """A failed, never-run turn for an owner refusal at scope entry that an unchanged resend repeats
+    (gone working folder, changed launch key); None for any other refusal."""
+    from agent.error_surface import build_error_surface_from_result
+    from agent.turn_failure_copy import launch_credentials_copy, stamp_failure
+    if exc.reason == 'workspace_unavailable':
+        result = workspace_unavailable_result(policy)
+    elif exc.reason == 'launch_credentials_unavailable':
+        text = launch_credentials_copy(exc)
+        result = stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
+                                "failed": True, "completed": False, "error": text},
+                               "launch_credentials_unavailable", False)
+    else:
+        return None
+    # The descriptor makes settlement commit the explanation and its card as the transcript's
+    # failed-turn boundary (gateway_refusal_boundary), so a reopened chat still shows the way out.
+    result["error_surface"] = build_error_surface_from_result(result)
+    return result
 
 
 @contextmanager

@@ -10,3 +10,7 @@ removed:
 - name: or-picker
   reason: "Folded into openrouter-picker. Installing the provider alone left the picker broken. Install openrouter-picker."
   date: "2026-09-28"
+- name: hermes-resetwatch
+  repo: https://github.com/Adolanium/hermes-resetwatch
+  reason: "Pulled at maintainer discretion: probe.py reads provider API keys, Hermes saved OAuth logins (auth.json), the Vaultwarden secret cache, Docker s6 env files, and other coding CLIs' local credentials/keychain entries. Repo is set deliberately — unlike or-picker there is no replacement sharing the repo, so URL installs must be refused too."
+  date: "2026-10-25"

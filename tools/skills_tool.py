@@ -773,11 +773,11 @@ def _skill_view_with_bump(args, **kw):
             if (stub := dedup_skill_view(dedup_task_id, name, args.get("file_path"), parsed, result)) is not None:
                 return stub
             if resolved := parsed.get("name") or name:  # qualified forms return the canonical name
-                from tools.skill_usage import bump_use, bump_view
+                from tools.skill_usage import bump_view
+                # A view is a read, not a use: bump_use lives on the load path
+                # (agent/skill_commands.py, slash and preloaded blocks), so a review/curator fork
+                # that only looks at a skill no longer refreshes last_used_at for the stale timer.
                 bump_view(str(resolved))
-                # Viewing is actively loading the skill to act on it — that counts as use
-                # (the curator's stale timer keys off last_used_at).
-                bump_use(str(resolved), task_id=kw.get("task_id"), session_id=kw.get("session_id"))
     return result
 
 

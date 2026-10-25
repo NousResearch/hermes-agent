@@ -360,7 +360,9 @@ class TestSkillView:
         assert by_name["success"] is True
         assert "Step 1" in by_name["content"]
 
-    def test_registered_view_tracks_use_with_task_and_session(self, tmp_path):
+    def test_registered_view_counts_as_view_not_use(self, tmp_path):
+        """#144101: a view is a read. use_count/last_used_at move only on the load path, so a
+        review or curator fork that merely inspects a skill cannot postpone the stale timer."""
         from tools.skills_tool import _skill_view_with_bump
 
         with (
@@ -369,19 +371,11 @@ class TestSkillView:
             patch("tools.skill_usage.bump_use") as bump_use,
         ):
             _make_skill(tmp_path, "my-skill")
-            raw = _skill_view_with_bump(
-                {"name": "my-skill"},
-                task_id="task-view",
-                session_id="session-view",
-            )
+            raw = _skill_view_with_bump({"name": "my-skill"}, task_id="task-view")
 
         assert json.loads(raw)["success"] is True
         bump_view.assert_called_once_with("my-skill")
-        bump_use.assert_called_once_with(
-            "my-skill",
-            task_id="task-view",
-            session_id="session-view",
-        )
+        bump_use.assert_not_called()
 
 
     def test_view_reference_files(self, tmp_path):

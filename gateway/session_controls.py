@@ -157,6 +157,10 @@ class AuthorityConnection:
             raise RuntimeStoreError('profile_mismatch')
         registry = getattr(getattr(self.authority, 'runner', None), 'session_authorities', None)
         for sibling in (registry or ()):
+            # The slot is reserved before the authority exists. Skip it; a host-scoped
+            # attach waits in ``_routed_connection`` instead of reading ``profile_id`` here.
+            if sibling is None:
+                continue
             if sibling is not self.authority and profile_matches_home(profile, Path(sibling.profile_id)):
                 connection = self._siblings.get(sibling.profile_id)
                 # A re-served profile is a new authority under the same id: never keep routing to
@@ -167,6 +171,18 @@ class AuthorityConnection:
                     self._siblings[sibling.profile_id] = connection
                 return connection
         raise RuntimeStoreError('profile_mismatch')
+
+    async def _routed_connection(self, profile):
+        """Sibling connection for *profile*, after a host-scoped attach's in-progress start.
+
+        Hot-serve reserves the slot as None while ``initialize_session_authority`` is still
+        awaiting. The Desktop shared socket and the dashboard gate wait for that start.
+        A profile-bound grant does not: ``_sibling_for`` refuses it as a mismatch."""
+        if self.host_scoped:
+            registry = getattr(getattr(self.authority, 'runner', None), 'session_authorities', None)
+            while registry is not None and (pending := registry.starting(profile)) is not None:
+                await pending.wait()
+        return self._sibling_for(profile)
 
     def handlers(self):
         """Method → handler for every verb ``dispatch`` serves outside the group controls; each
@@ -261,7 +277,7 @@ class AuthorityConnection:
         profile = params.get('profile')
         if isinstance(profile, str) and profile:
             try:
-                routed = self._sibling_for(profile)
+                routed = await self._routed_connection(profile)
             except RuntimeStoreError as exc:
                 _log_refusal(getattr(self.actor, 'profile_id', None), method, exc)
                 return {'jsonrpc': '2.0', 'id': rid, 'error': {

@@ -11,6 +11,7 @@ scoped or not, exactly as before.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,9 @@ class SessionAuthorities:
         self.launch_key = hermes_home_key(launch_home)
         self._by_key: dict[str, object] = {}
         self._names: dict[str, str | None] = {}
+        # Set when a None slot is filled or dropped. Hot-serve publishes the slot before
+        # the authority exists, and a host-scoped attach waits on this instead of reading it.
+        self._starting: dict[str, asyncio.Event] = {}
         # A multiplexing runtime (configured, or one that ever served a second home) keeps the
         # scoped-lookup contract after its secondaries are removed: an unserved home is None.
         self.multiplexed = bool(multiplexed)
@@ -36,8 +40,15 @@ class SessionAuthorities:
             raise RuntimeError(f'duplicate session authority for {home}')
         self._by_key[key] = authority
         self._names[key] = name
+        if authority is None:
+            self._starting[key] = asyncio.Event()
         if key != self.launch_key:
             self.multiplexed = True
+
+    def _finish_start(self, key) -> None:
+        event = self._starting.pop(key, None)
+        if event is not None:
+            event.set()
 
     def replace(self, home, authority) -> None:
         """Fill the slot reserved by ``add(home, None, name=...)`` once the authority exists."""
@@ -45,6 +56,7 @@ class SessionAuthorities:
         if key not in self._by_key or self._by_key[key] is not None:
             raise RuntimeError(f'no reserved session authority slot for {home}')
         self._by_key[key] = authority
+        self._finish_start(key)
 
     def remove(self, home):
         """Drop *home*'s slot (a parked boot, a hot-unserved profile); returns the authority or None.
@@ -53,7 +65,25 @@ class SessionAuthorities:
         if key == self.launch_key:
             raise RuntimeError('the launch session authority cannot be removed')
         self._names.pop(key, None)
-        return self._by_key.pop(key, None)
+        removed = self._by_key.pop(key, None)
+        self._finish_start(key)
+        return removed
+
+    def starting(self, profile):
+        """Event for the unbuilt slot *profile* names, or None when nothing is waiting on it.
+
+        ``replace`` and ``remove`` set the event. A waiter then routes against the registry
+        as it stands: the new authority, or no such profile."""
+        from hermes_cli.profiles import profile_matches_home
+        for key, authority in list(self._by_key.items()):
+            if authority is not None:
+                continue
+            event = self._starting.get(key)
+            if event is None or event.is_set():
+                continue
+            if profile_matches_home(profile, Path(key)):
+                return event
+        return None
 
     def profile_name(self, authority):
         """Served profile name for *authority*; None for the launch profile (its adapters are

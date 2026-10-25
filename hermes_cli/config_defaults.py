@@ -73,6 +73,7 @@ DEFAULT_CONFIG = {
         "storage": "hermes-home",
     },
     "agent": {
+        "codex_turn_timeout": 600, "codex_idle_timeout": 1800, "codex_goal_rate_limit_delays": [],  # opt-in recovery
         # Turn cap. null = unlimited (default; caps caused silent mid-task truncation). Positive int
         # caps; "none"/"unlimited"/"inf"/0/-1 also mean unlimited (resolve_turn_limit).
         "max_turns": None,
@@ -667,10 +668,10 @@ DEFAULT_CONFIG = {
         "codex_gpt55_autoraise": True,
         # Show the one-time autoraise banner; False keeps the autoraise, hides the notice.
         "codex_gpt55_autoraise_notice": True,
-        # Codex app-server thread compaction mode. The codex agent owns the thread context, so
-        # Hermes' summarizer cannot shrink it. native = codex decides; hermes = Hermes' threshold
-        # triggers thread/compact/start; off = never auto-trigger.
+        # Codex owns its context: native = Codex decides; hermes = Hermes invokes thread/compact/start;
+        # off = Hermes never auto-triggers. Local summarization cannot shrink the native thread.
         "codex_app_server_auto": "native",
+        "codex_auto_compact_token_limit": None,  # null = model default; positive = earlier compaction
         # Opt in to OpenAI server-side compaction on the Responses API. Only gpt-5.6-family on
         # api.openai.com or the Codex backend; local compression stays as fallback.
         "codex_responses_native": False,
@@ -1395,10 +1396,9 @@ DEFAULT_CONFIG = {
     # Ephemeral prefill messages file — JSON list of {role, content} dicts injected at the start of
     # every API call for few-shot priming. Never saved to sessions/logs/trajectories.
     "prefill_messages_file": "",
-    # Goals — persistent cross-turn /goal loop: after each turn an aux-model judge checks if the
-    # goal is satisfied, else a continuation prompt re-enters the session until done, budget
-    # exhausted, or paused. Judge failures fail OPEN; the budget is the backstop.
+    # Hermes goals use a judge + turn budget; native Codex goals own their continuation.
     "goals": {
+        "runtime": "hermes", "codex_token_budget": 200000,  # native opt-in; 0/null = uncapped
         # Max continuation turns before auto-pause (/goal resume) — guards against judge false
         # negatives and unbounded spend.
         "max_turns": 20,

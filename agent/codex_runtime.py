@@ -527,11 +527,18 @@ def _store_codex_thread_id(agent, thread_id: str | None) -> None:
 def _start_codex_thread(agent) -> str:
     """``ensure_started`` with the fail-closed resume policy: a stored thread that codex cannot hand back
     (unknown id, rollout locked by a killed app-server, different thread) is dropped from the session row,
-    the user is told once on the status rail, and a fresh thread starts on the same client."""
+    the user is told once on the status rail, and a fresh thread starts on the same client. A bound active
+    native Goal instead pauses and raises: its cumulative ledger cannot move to a fresh thread."""
     from agent.transports.codex_app_server_session import CodexThreadResumeError
+    from agent.transports.codex_app_server import CodexAppServerError
     try:
         return agent._codex_session.ensure_started()
-    except CodexThreadResumeError as exc:
+    except (CodexAppServerError, TimeoutError) as exc:
+        from agent.codex_runtime_goals import pause_native_setup_failure
+        if pause_native_setup_failure(agent, str(exc)):
+            raise
+        if not isinstance(exc, CodexThreadResumeError):
+            raise
         logger.warning("%s; starting a new codex thread (session=%s)", exc.message, getattr(agent, "session_id", None))
         _store_codex_thread_id(agent, None)
         agent._emit_diagnostic_status(_CODEX_THREAD_RESUME_NOTICE)
@@ -605,20 +612,26 @@ def _ensure_codex_session(agent, messages: list[dict[str, Any]] | None = None) -
     turn's transcript (current user row last); a thread started from scratch is seeded with the prior turns."""
     developer_instructions = _codex_developer_instructions(agent)
     model_provider = _codex_model_provider(agent)
+    from agent.codex_runtime_goals import native_resume_thread, native_session_matches
+    goal_thread = native_resume_thread(agent)
     if getattr(agent, "_codex_session", None) is not None:
-        # Only a session whose recorded composition differs is stale; one attached without a record is kept.
+        # A bound active Goal also fences cached chat threads, even if the prompt has not changed.
         # The provider is fixed per thread (turn/start can switch the model, not the provider), so an
         # in-place switch to or from a named custom provider retires the thread too.
         recorded = getattr(agent, "_codex_session_prompt", None)
-        if recorded is None or (recorded == developer_instructions
-                                and getattr(agent, "_codex_session_model_provider", None) == model_provider):
+        composition_matches = recorded is None or (recorded == developer_instructions
+                              and getattr(agent, "_codex_session_model_provider", None) == model_provider)
+        if composition_matches and native_session_matches(agent._codex_session, goal_thread):
             return
         _close_codex_session(agent)
-    resume_thread_id = None if getattr(agent, "_codex_session_prompt", None) is not None else _stored_codex_thread_id(agent)
+    resume_thread_id = goal_thread or (None if getattr(agent, "_codex_session_prompt", None) is not None else _stored_codex_thread_id(agent))
     from agent.runtime_cwd import resolve_agent_cwd
     from agent.transports.codex_app_server_session import CodexAppServerSession, _ServerRequestRouting
     from hermes_cli.codex_runtime_switch import get_configured_codex_binary
     from hermes_cli.config import load_config
+    from agent.codex_context_policy import native_auto_compact_limit
+    config = load_config() or {}
+    compact_limit = native_auto_compact_limit(config)
     # Approval callback: Hermes' standard prompt flow when a CLI thread installed one. `hermes chat -q`, cron and
     # unattended platforms can have one registered with nobody to answer it, so they get none and fail closed at once.
     approval_callback = None
@@ -654,12 +667,13 @@ def _ensure_codex_session(agent, messages: list[dict[str, Any]] | None = None) -
     # so omitting it ran codex's own default instead of the selection.
     agent._codex_session = CodexAppServerSession(
         cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()), approval_callback=approval_callback,
-        codex_bin=get_configured_codex_binary(load_config()),
+        codex_bin=get_configured_codex_binary(config),
         request_routing=_ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests),
         on_event=make_codex_app_server_event_bridge(agent),
         developer_instructions=developer_instructions or None,
         model=_codex_wire_model(agent, model_provider), model_provider=model_provider,
         resume_thread_id=resume_thread_id, history_seed=history_seed,
+        auto_compact_token_limit=compact_limit,
     )
 
 
@@ -703,7 +717,7 @@ def _finish_codex_turn(agent, turn, messages: list[dict[str, Any]], *, original_
     # run_conversation() already bumped _turns_since_memory / _user_turn_count; only _iters_since_skill is ours.
     agent._iters_since_skill = getattr(agent, "_iters_since_skill", 0) + turn.tool_iterations
     _record_codex_app_server_compaction(agent, turn)
-    usage_result = _record_codex_app_server_usage(agent, turn, messages=messages)
+    usage_result = (turn.usage_result or {}) if getattr(turn, "usage_recorded", False) else _record_codex_app_server_usage(agent, turn, messages=messages)
     # Skill nudge check AFTER iters were incremented (same as chat_completions).
     should_review_skills = (0 < agent._skill_nudge_interval <= agent._iters_since_skill
                             and "skill_manage" in agent.valid_tool_names)
@@ -715,11 +729,26 @@ def _finish_codex_turn(agent, turn, messages: list[dict[str, Any]], *, original_
             original_user_message=original_user_message, final_response=turn.final_text, interrupted=False, messages=messages,
         ))
     # Background review fork: only when a trigger tripped AND a real final response exists.
-    if turn.final_text and not turn.interrupted and (should_review_memory or should_review_skills):
+    if turn.final_text and not turn.interrupted and turn.error is None and (should_review_memory or should_review_skills):
         _call_guarded(getattr(agent, "_spawn_background_review", None), "background review spawn raised", kwargs=dict(
             messages_snapshot=list(messages), review_memory=should_review_memory, review_skills=should_review_skills,
         ))
     return usage_result
+
+
+def _codex_terminal_response(turn) -> str:
+    """Keep partial text without allowing a streamed progress message to hide the failure."""
+    if turn.error:
+        from agent.codex_runtime_goals import public_codex_failure
+        response = f"Codex app-server task incomplete: {public_codex_failure(turn.error)}"
+    elif turn.interrupted:
+        response = "Codex app-server task interrupted; it did not complete."
+    else:
+        return turn.final_text
+    if turn.final_text:
+        from agent.codex_runtime_goals import public_codex_failure
+        response += f"\n\nLast assistant message (not a completion confirmation):\n{public_codex_failure(turn.final_text)}"
+    return response
 
 
 def run_codex_app_server_turn(agent, *, user_message: str, original_user_message: Any, messages: list[dict[str, Any]],
@@ -736,8 +765,9 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     try:
         _start_codex_thread(agent)
         wire_model = _codex_wire_model(agent, getattr(agent, "_codex_session_model_provider", None))
-        turn = agent._codex_session.run_turn(
-            user_input=user_message,
+        from agent.codex_runtime_goals import run_app_server_work
+        turn = run_app_server_work(
+            agent, user_message, messages=messages,
             model=wire_model, reasoning_effort=_codex_turn_effort(agent, wire_model),
             service_tier=_codex_turn_service_tier(agent))
     except Exception as exc:
@@ -761,9 +791,11 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         agent, turn, messages, original_user_message=original_user_message, should_review_memory=should_review_memory,
     )
     return _turn_result(
-        interrupt, messages, api_calls=1, completed=not turn.interrupted and turn.error is None, error=turn.error,
+        interrupt, messages, api_calls=getattr(turn, "native_turns", 0) or 1,
+        completed=not turn.interrupted and turn.error is None, error=turn.error,
         # We flushed the projected rows ourselves (agent_persisted); the gateway must skip its own DB write.
-        final_response=turn.final_text, agent_persisted=True, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id,
+        final_response=_codex_terminal_response(turn), agent_persisted=True,
+        codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id,
         **usage_result,
     )
 

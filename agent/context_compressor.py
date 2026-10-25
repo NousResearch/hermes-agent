@@ -52,6 +52,7 @@ from agent.turn_context import drop_stale_api_content
 from tools.todo_tool import TODO_INJECTION_HEADER
 
 logger = logging.getLogger(__name__)
+from agent.context_compressor_archive import _archive_watermark_for
 
 
 # Summary-route pin lives in a ContextVar (not on the shared compressor) so the retry after a stalled
@@ -395,33 +396,6 @@ class StaleHeldHistory(RuntimeError):
     winner's rows under the lease-less watermark and clone them back as a "concurrent tail" — two summary
     generations live. Prune and micro-compaction hold no compression lease, so they abort on this instead.
     """
-
-
-def _archive_watermark_for(session_db: Any, session_id: str, held: list[dict[str, Any]],
-                           start_watermark: Optional[int] = None) -> Optional[int]:
-    """The archive watermark for a commit that rewrites the history this process holds.
-
-    Without one, ``archive_and_compact`` archives every active row, including turns another surface appended
-    to the same session since this process loaded it (a Desktop session continued from Telegram) and rows
-    that arrived while the commit was being built. Those never reached this process, so they would be marked
-    summarized away with no summary holding them: still displayed and searchable, but gone from the model's
-    history. Capping at the newest row the process held sends them down the
-    concurrent-append path instead (cloned after the new set), the same rule the in-place compaction commit
-    applies. *start_watermark* is the store's watermark from before any slow step; it defaults to now.
-    A store without the watermark API keeps today's archive-everything commit.
-
-    Raises :class:`StaleHeldHistory` when the newest held exact row is no longer active. The in-place commit
-    falls back to the lease watermark there because its lease rules out an overlapping compaction; prune and
-    micro-compaction hold no lease, so for them that fallback would publish a stale generation beside the one
-    that won.
-    """
-    watermark_of = getattr(session_db, "get_active_message_watermark", None)
-    if not callable(watermark_of) or not callable(getattr(session_db, "get_message_role", None)):
-        return None
-    if start_watermark is None:
-        start_watermark = watermark_of(session_id)
-    from agent.conversation_compression import held_archive_watermark
-    return held_archive_watermark(session_db, session_id, start_watermark, held, stale_raises=True)
 
 
 def stamp_db_persisted_markers(messages: list[dict[str, Any]]) -> None:
@@ -5174,14 +5148,31 @@ Write only the summary body. Do not include any preamble or prefix."""
         self._last_compress_refused_would_grow = False
         self._last_summary_overload_degraded = False
         self._last_compression_made_progress = False
-        # Do NOT reset the *_failure flags: the cooldown early-return doesn't re-assert them, so a
-        # reset would fall through to the destructive static fallback (#29559). Success clears them.
+        # The *_failure flags are NOT reset unconditionally here: the cooldown early-return doesn't
+        # re-assert them, so an eager reset would fall through to the destructive static fallback
+        # (#29559). Success clears them; the expiry-scoped reset is at the end of this method.
         telemetry = self._begin_compression_telemetry(current_tokens=current_tokens)
         telemetry["chunk_count"] = 0
         # Manual /compress bypasses the failure cooldown and the structural no-op backoff (#93022).
         if force:
             self._clear_compression_failure_cooldown()
             self._structural_no_op_backoff_until = 0.0
+        # _last_summary_auth_failure / _last_summary_network_failure are set by _generate_summary() on
+        # a terminal failure and cleared on the next successful summary.  They must NOT be cleared
+        # eagerly on every compress() call: while the failure cooldown is active, _generate_summary()
+        # short-circuits in its cooldown early-return and returns None WITHOUT re-asserting the flags,
+        # so an eager clear would let the abort guard see False and fall through to the destructive
+        # static-fallback — the exact #29559 / #25585 data loss.  But letting them persist for the
+        # whole session is wrong in the other direction: after the cooldown lapses, a stale
+        # auth/network flag from a long-resolved blip forces every later generic summary failure onto
+        # the abort path, overriding abort_on_summary_failure=False for the rest of the session.
+        # Scope the flags to the failure episode: keep them while the cooldown is armed (the
+        # re-entrant call stays on the abort path), clear them once it has expired (force=True cleared
+        # it just above) so the next real attempt is classified fresh — _generate_summary() re-asserts
+        # them if the error persists.
+        if time.monotonic() >= self._summary_failure_cooldown_until:
+            self._last_summary_auth_failure = False
+            self._last_summary_network_failure = False
         return telemetry
 
     def _structural_no_op_result(self, telemetry: dict[str, Any], failure_class: str, reason: str,

@@ -701,10 +701,11 @@ def _systemctl_reset_and_restart(manage_cmd: list, svc_name: str, *, scope_cmd: 
     auto-restart can wedge a plain ``restart`` against RestartSec backoff and stay dead."""
     # Property reads need no manage-units privileges: narrow sudoers may permit
     # restart/reset-failed but deny show. Keep the same user/system manager scope.
-    from hermes_cli.update_cmd_fleet_unit_budget import systemd_restart_timeout
-    timeout = systemd_restart_timeout(scope_cmd if scope_cmd is not None else manage_cmd, svc_name)
+    from hermes_cli.update_cmd_fleet_unit_budget import run_unit_job, systemd_restart_timeout
+    scope_cmd = scope_cmd if scope_cmd is not None else manage_cmd
+    timeout = systemd_restart_timeout(scope_cmd, svc_name)
     _systemctl(manage_cmd + ["reset-failed", svc_name], timeout=10)
-    return _systemctl(manage_cmd + ["restart", svc_name], timeout=timeout)
+    return run_unit_job(manage_cmd, scope_cmd, "restart", svc_name, timeout=timeout)
 
 
 def _systemd_unit_owned_by_update(scope_cmd: list, svc_name: str) -> bool:
@@ -1268,17 +1269,15 @@ def _restart_one_systemd_gateway_unit(
         _main_pid, drain_budget, svc_name, self_restart_pending=self_restart_pending)
 
     if _graceful_ok:
-        from hermes_cli.update_cmd_fleet_unit_budget import service_restart_sec, systemd_restart_timeout
+        from hermes_cli.update_cmd_fleet_unit_budget import run_unit_job, service_restart_sec, systemd_restart_timeout
         # ``Restart=always`` respawns only after RestartSec (60s in our unit; dead time for a
         # voluntary restart). ``reset-failed`` + ``start`` skips it (~1-3s); if RestartSec already
         # elapsed, ``start`` is a no-op and we fall through to the poll. Needs manage-units
         # privileges; without them auto-restart still fires after RestartSec.
         if _manage_cmd is not None:
             _systemctl(_manage_cmd + ["reset-failed", svc_name], timeout=10)
-            _systemctl(
-                _manage_cmd + ["start", svc_name],
-                timeout=systemd_restart_timeout(scope_cmd, svc_name, start_only=True),
-            )
+            run_unit_job(_manage_cmd, scope_cmd, "start", svc_name,
+                         timeout=systemd_restart_timeout(scope_cmd, svc_name, start_only=True))
             if _wait_for_service_active(scope_cmd, svc_name, timeout=10.0):
                 restarted_services.append(svc_name)
                 return

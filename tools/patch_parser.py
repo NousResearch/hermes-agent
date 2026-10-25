@@ -343,7 +343,11 @@ def _fuzzy_replace_hunk(content: str, hunk: Hunk, pattern: str, replacement: str
     if spans and not own:
         return content, None, ("its search text is only found inside text an earlier hunk of this "
                                f"patch wrote — {_v4a_advice(hunk)}"), None
-    if len(own) == 1 and len(spans) > 1:  # every other match is this patch's own output
+    # Every other match is this patch's own output, but only when that output really contains the
+    # search text: a similarity strategy also matches an unrelated line that merely resembles it
+    # (the consumed hunk's replacement), and the one match left over is then not this hunk's site.
+    masked = [s for s in spans if not free(s)]
+    if len(own) == 1 and masked and all(pattern in content[a:b] for a, b in masked):
         return _window_edit(content, *own[0], pattern, replacement)
     new, count, strategy, error = fuzzy_find_and_replace(content, pattern, replacement)
     if count:

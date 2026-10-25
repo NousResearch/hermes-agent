@@ -1290,6 +1290,20 @@ class TestHunkTargetPrecedence:
         assert result.success is True, result.error
         assert final == f"{first}\nmid = 0\n{second}\n"
 
+    @pytest.mark.parametrize("source, old, first, second", [
+        ('host = "a"\nhost = "b"\n', 'host = "a"', 'host = "c"', 'host = "d"'),
+        ("a = 0\nb = 0\n", "a = 0", "a = 9", "a = 9"),
+    ], ids=["similar-line-left-over", "same-hunk-sent-twice"])
+    def test_a_consumed_hunk_is_never_applied_to_the_similar_line_left_over(
+            self, tmp_path, source, old, first, second):
+        body = f"@@\n-{old}\n+{first}\n@@\n-{old}\n+{second}"
+
+        result, fo, final = _apply_body(tmp_path, source, body)
+
+        assert result.success is False
+        assert "Found 2 matches" in (result.error or "")
+        assert fo.writes == [] and final == source
+
     def test_neighbouring_hunks_may_share_a_context_line(self, tmp_path):
         source = "a = 0\nb = 0\nc = 0\nd = 0\ne = 0\n"
         body = "@@\n a = 0\n-b = 0\n+b = 1\n c = 0\n@@\n c = 0\n-d = 0\n+d = 1\n e = 0"

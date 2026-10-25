@@ -199,7 +199,8 @@ async def run_gateway_chat(args, emitter=None):
             # Finite runs are stored as ``oneshot`` (hidden from human pickers, still CLI history);
             # an explicit ``--source`` always wins. A remote gateway predating the label stores ``cli``.
             sources = contract.get("sources", [])
-            source = getattr(args, "source", None) or ("oneshot" if oneshot and "oneshot" in sources else "cli")
+            from agent.session_source import create_surface
+            source = create_surface(getattr(args, "source", None) or ("oneshot" if oneshot and "oneshot" in sources else "cli"))
             if source not in sources:
                 raise GatewayClientError(f"Gateway does not support source {source!r}")
             parameters = contract.get("parameters", [])

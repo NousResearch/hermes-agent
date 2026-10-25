@@ -618,13 +618,20 @@ class AuthorityConnection:
         self.subscriptions[ref.session_id] = snapshot.subscription_id
         self._spawn_notice(ref)
         # Only local routes have a frozen local launch policy to project; with it, main's banner and
-        # status-bar inventory (tools, skills, MCP, version, branch) for that policy.
+        # status-bar inventory (tools, skills, MCP, version, branch) for that policy. A messaging chat
+        # has no policy to project, so it reports what its next turn resolves (its own /model and
+        # /reasoning picks included) — a viewer's effort pill otherwise waits on a session.info that
+        # no local policy refresh will ever publish (#142336).
         info = {'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL}
-        source = self.authority.sessions[snapshot.handle.ref.session_id].source
+        live = self.authority.sessions[snapshot.handle.ref.session_id]
+        source = live.source
         if source is not None and source.platform == Platform.LOCAL:
             from gateway.session_policy import policy_for_source, refresh_profile_hooks
             await asyncio.to_thread(refresh_profile_hooks, policy_for_source(self.authority.runner, source))
             info = await snapshot_info(self.authority, snapshot.handle.ref)
+        elif source is not None and source.platform is not None and source.platform != Platform.LOCAL:
+            from gateway.session_messaging_picks import messaging_route_info
+            info.update(messaging_route_info(self.authority.runner, live))
         from gateway.session_connections import pending_connection
         from gateway.session_server_requests import open_requests
         # Its home module, not tui_gateway.server: importing the stdio sidecar points sys.stdout at stderr.

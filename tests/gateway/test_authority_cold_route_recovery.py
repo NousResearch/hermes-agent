@@ -28,6 +28,21 @@ class _Runner(GatewayAuthorizationMixin):
         self.adapters = {}
         self._draining = False
 
+    # ``session.resume`` reports what a messaging chat's next turn resolves (#142336), which asks the
+    # runner for this chat's overrides. A cold fixture carries none, so these answer "not configured"
+    # rather than reaching for state a dead owner never left.
+    def _channel_override_for(self, source):
+        return None
+
+    def _session_model_override(self, session_key):
+        return None
+
+    def _resolve_session_reasoning_config(self, *, source=None, session_key=None, model=''):
+        return {}
+
+    def _resolve_session_service_tier(self, source=None, session_key=None):
+        return ''
+
 
 def _source(platform='telegram', chat_id='4242', profile=None, chat_name=None):
     from gateway.config import Platform

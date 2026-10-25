@@ -536,6 +536,31 @@ class MemoryStore:
         working[idx:idx + 1] = [patched]
         return None, previous_content, "none", patched
 
+    def preview_operation(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Validate a reviewed single operation on fresh locked data, without persisting."""
+        target = payload.get("target", "memory")
+        if target not in {"memory", "user"} or not self.target_enabled(target):
+            return _error("This memory target is unavailable.", "disabled")
+        action = payload.get("action")
+        content = (payload.get("content") or payload.get("new_text") or "").strip()
+        if action in {"add", "replace"} and (scan := _scan_memory_content(content)):
+            return _error(scan, "scan_blocked")
+        if action in {"replace", "remove"} and not payload.get("matched_entry"):
+            return _error("This proposal predates entry pinning. Recreate it before approving; nothing was applied.", "stale_entry")
+        def preview(entries, limit):
+            working = list(entries)
+            error, _, failure_class, _ = self._apply_batch_op(working, action, content,
+                (payload.get("old_text") or "").strip(), "This change", payload.get("matched_entry"))
+            if error:
+                return _error(error, failure_class)
+            count = len(ENTRY_DELIMITER.join(working))
+            if count > limit:
+                return _error(f"Not enough space: {count:,}/{limit:,} characters "
+                              f"({count - limit:,} over the limit).",
+                              failure_class="over_budget", capacity={'count': count, 'limit': limit, 'over': count - limit})
+            return {"success": True}
+        return self._mutate(target, preview, skip_drift=True)
+
     def apply_batch(self, target: str, operations: list[dict[str, Any]]) -> dict[str, Any]:
         """Apply add/replace/remove ops atomically against the FINAL budget, so one call
         can free space and add entries. All-or-nothing: any malformed / unmatched op or

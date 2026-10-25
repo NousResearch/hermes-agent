@@ -1832,6 +1832,10 @@ export { type BudgetedLoop, type BudgetedLoopOptions, createBudgetedLoop } from 
 /** The blank transcript as a contribution area: claim the sessions you own and
  *  render what stands in the gap. Core's own splash keeps a fresh draft. */
 export { CHAT_EMPTY_AREA, type ChatEmptyContribution, type ChatEmptyProps } from '@/lib/chat-empty'
+/** THE copy-to-clipboard path (CopyButton's): Electron's IPC first, the Clipboard API, and a
+ *  selection copy where an insecure origin has no Clipboard API. Never call
+ *  `navigator.clipboard.writeText` directly. */
+export { writeClipboardText } from '@/lib/clipboard'
 /** THE confirm flow for guarded model switches — when a gateway model-switch
  *  RPC answers `confirm_required` (data-policy / expensive-model guard),
  *  route it through this shared applier instead of forking a per-surface

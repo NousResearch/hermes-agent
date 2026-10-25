@@ -60,7 +60,9 @@ def _render(added: dict[str, str], removed: set[str]) -> str:
         return f"{_NOTE_PREFIX}{_ACCURATE_AGAIN}]"
     parts = [_NOTE_PREFIX]
     if added:
-        parts += [_ADDED_HEAD, *(added[name] or f"{_ROW}{name}" for name in sorted(added))]
+        # Rows re-indented to _ROW: a one-skill category's row sits at category depth in the index,
+        # and _parse reads names back only from _ROW lines.
+        parts += [_ADDED_HEAD, *(_ROW + (added[name].lstrip() or f"- {name}")[2:] for name in sorted(added))]
     if removed:
         parts.append(f"{_REMOVED_HEAD} {', '.join(sorted(removed))}")
     return "\n".join(parts) + "]"

@@ -1,0 +1,28 @@
+name: netplane
+repo: https://github.com/lEWFkRAD/netplane
+sha: 62c84d510bdb6d7599197f9028b2cb0d006c3c7d
+description: >-
+  Run and operate your own self-hosted Tailscale network (a Headscale control plane) from
+  inside Hermes: netplane_status health-checks the control plane (gRPC, API key, HTTPS
+  coordination endpoint, sandbox peer), netplane_nodes lists tailnet devices with addresses,
+  last-seen and online status, and netplane_preauth mints one-use or reusable preauth keys so
+  new machines join without browser login. Ships a desktop dashboard pane (health checks,
+  searchable node table, mint-key form with copyable tailscale up command) and a FastAPI
+  backend under /api/plugins/netplane. Headscale v0.29.6 protobuf stubs are bundled;
+  regenerate them with scripts/gen_proto.sh. Requires a running Headscale control plane with
+  gRPC enabled and its API key on disk (configure via plugin config: grpc_addr, apikey_file,
+  control_url); the plugin itself installs no server. Disclosure — read-only against the
+  control plane except preauth key creation, which registers a device when redeemed; the
+  gRPC address is admin-configured, so the plugin sends the API key only to that host;
+  node names, hostnames and IPs are read from your own control plane, never a third party.
+maintainer: lEWFkRAD
+tier: community
+category: tools
+docs_url: https://github.com/lEWFkRAD/netplane#readme
+version: "0.2.0"
+platforms: []
+capabilities:
+  provides_tools: [netplane_status, netplane_nodes, netplane_preauth]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

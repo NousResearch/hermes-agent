@@ -91,6 +91,23 @@ afterEach(() => {
 })
 
 describe('requestGatewayForProfile', () => {
+  it('an aborted profile warmup cannot activate its late socket', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop(vi.fn(async () => ({ port: 5151, profile: 'worker', token: 'fixture-token' })))
+    await ensureGatewayForProfile('default')
+    const gate = deferred<void>()
+    connectGate = gate.promise
+    const controller = new AbortController()
+    const outcome = ensureGatewayForProfile('worker', controller.signal).catch(error => error.name)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(secondaryGateways).toHaveLength(1)
+    controller.abort()
+    gate.resolve()
+    expect(await outcome).toBe('AbortError')
+    expect($gateway.get()).toBe(primary)
+  })
+
   it('requests through a pooled profile gateway without changing the active gateway', async () => {
     const primary = makePrimary()
     setPrimaryGateway(primary as never, 'default')

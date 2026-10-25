@@ -309,12 +309,15 @@ def _find_custom_identity(matches: Callable[[dict[str, Any]], bool],
         config = rp.load_config() if config is None else config
     except Exception:
         return None
-    found = []
+    first = None
     providers = config.get("providers")
     if isinstance(providers, dict):
         for ep_name, entry in providers.items():
             if isinstance(entry, dict) and is_provider_enabled(entry) and matches(entry):
-                found.append(custom_provider_slug(str(ep_name), str(ep_name)))
+                slug = custom_provider_slug(str(ep_name), str(ep_name))
+                if prefer is None or slug == prefer:
+                    return slug
+                first = first or slug
     try:
         custom_providers = rp.get_compatible_custom_providers(config)
     except Exception:
@@ -322,8 +325,11 @@ def _find_custom_identity(matches: Callable[[dict[str, Any]], bool],
     for entry in custom_providers or []:
         name = entry.get("name") if isinstance(entry, dict) else None
         if isinstance(name, str) and name.strip() and matches(entry):
-            found.append(custom_provider_slug(name, str(entry.get("provider_key", "") or "")))
-    return prefer if prefer in found else next(iter(found), None)
+            slug = custom_provider_slug(name, str(entry.get("provider_key", "") or ""))
+            if prefer is None or slug == prefer:
+                return slug
+            first = first or slug
+    return first
 
 
 def find_custom_provider_identity(base_url: str) -> Optional[str]:

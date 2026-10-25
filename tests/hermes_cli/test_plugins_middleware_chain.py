@@ -65,3 +65,41 @@ def test_request_middleware_in_place_mutation_does_not_leak(seen, kind, apply):
     # Each callback gets its own copy of the payload and of the pre-middleware snapshot.
     assert "meddler" not in result.payload["steps"]
     assert seen[kind][1] == result.original_payload == original == {"input": ["original"]}
+
+
+class TestAsyncMiddlewareCallbacks:
+    """``async def`` request middleware runs and its rewrite lands (#140140), like hook callbacks."""
+
+    def test_async_middleware_result_is_awaited_alongside_sync(self):
+        mgr = PluginManager()
+
+        def sync_rewrite(**kwargs):
+            return {"request": {**kwargs["request"], "sync": True}, "source": "sync"}
+
+        async def async_rewrite(**kwargs):
+            return {"request": {**kwargs["request"], "async": True}, "source": "async"}
+
+        mgr._middleware.setdefault("llm_request", []).extend([sync_rewrite, async_rewrite])
+        results = mgr.invoke_middleware("llm_request", _payload_key="request",
+                                        request={"messages": []}, original_request={"messages": []})
+        assert [r["source"] for r in results] == ["sync", "async"]
+
+    def test_async_middleware_resolves_under_a_running_loop(self, monkeypatch):
+        """Gateway handlers dispatch middleware from inside asyncio; a bare coroutine collected
+        there never runs, and the rewrite it returns must still compose into the chain."""
+        import asyncio
+
+        mgr = PluginManager()
+
+        async def async_rewrite(**kwargs):
+            return {"request": {**kwargs["request"], "async": True}, "source": "async"}
+
+        mgr._middleware.setdefault("llm_request", []).append(async_rewrite)
+        monkeypatch.setattr(plugins, "get_plugin_manager", lambda: mgr)
+
+        async def driver():
+            return apply_llm_request_middleware({"messages": []})
+
+        result = asyncio.run(driver())
+        assert result.payload == {"messages": [], "async": True}
+        assert [entry["source"] for entry in result.trace] == ["async"]

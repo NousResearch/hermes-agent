@@ -1,11 +1,11 @@
 name: cua-spaces
 repo: https://github.com/trycua/hermes-cua-spaces
-sha: 7f8db7cf8f6a3f2a887c6ef855ff668d3a312a63
+sha: 82bb8d31517d2d1b8f1ef7f64701558dcac8aea9
 subdir: ""
-description: "Cua's own plugin: runs Hermes's terminal, file and code tools inside a Cua Space, an isolated Linux machine you can watch live, as a terminal backend (`hermes config set terminal.backend cua`). Disclosure — installs the `cua` Python SDK (>=0.5.0,<0.6); every command the agent runs and every file it touches go to the Space: on this machine for a local Space, or on Cua's cloud (cua.ai) or a machine you name, using the sign-in `cua auth login` saved (the plugin never reads or stores a token, and keeps CUA_API_KEY/CUA_DAEMON_TOKEN out of the Space). With the default `space: create` it makes a fresh Space per session and deletes it when Hermes finishes (`delete_on_exit`); because that Space is a disposable sandbox, Hermes skips its dangerous-command prompts there, as it does for its other container backends. A Space you name is never deleted and keeps the prompts."
+description: "Cua's own plugin: runs Hermes's terminal, file and code tools inside a Cua Space, an isolated Linux, macOS or Windows machine you can watch live, as a terminal backend (`hermes config set terminal.backend cua`). On Hermes 0.22.3 and later, Bot Desktop, computer_use and the browser follow the terminal into the Space too (needs the `cua` command). Disclosure — installs the `cua` Python SDK (>=0.5.0,<0.8); every command the agent runs, every file it touches, and (on 0.22.3+) every screen, click and page the agent drives go to the Space: on this machine for a local Space, or on Cua's cloud (cua.ai) or a machine you name, using the sign-in `cua auth login` saved (the plugin never reads or stores a token, and keeps CUA_API_KEY/CUA_DAEMON_TOKEN out of the Space). Windows Spaces run Hermes's tools in Git Bash, like Hermes on a Windows PC: if the Space lacks Git for Windows or Python, the plugin installs them inside the Space (pinned official installers checked against SHA-256, `winget` fallback) and adds `C:\\c`-style drive aliases there. The optional `desktop` setting installs a desktop stack (VNC, Chromium, agent-browser, cua-driver) inside a Linux Space with sudo there. Nothing is installed on this machine. With the default `space: create` it makes a fresh Space per session and deletes it when Hermes finishes (`delete_on_exit`); because that Space is a disposable sandbox, Hermes skips its dangerous-command prompts there, as it does for its other container backends. A Space you name is never deleted and keeps the prompts."
 maintainer: trycua
 title: Cua Spaces
-version: "0.1.0"
+version: "0.4.0"
 tier: verified
 category: tools
 requires_hermes: ">=0.21.6"

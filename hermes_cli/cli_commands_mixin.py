@@ -233,9 +233,9 @@ def _refresh_tui_before_print(cli) -> None:
 def _print_lightpanda_engine_status() -> None:
     """``/browser status`` line(s) about ``browser.engine: lightpanda`` — silent unless set;
     says whether it is in use or which higher-precedence setting shadows it."""
-    if not _probe("tools.browser_tool_lightpanda_fallback", "_using_lightpanda_engine", False):
+    if not _probe("tools.browser_lightpanda", "using_lightpanda_engine", False):
         return
-    used, reason = _probe("tools.browser_tool_lightpanda_fallback", "lightpanda_engine_status", (None, None))
+    used, reason = _probe("tools.browser_lightpanda", "lightpanda_engine_status", (None, None))
     if reason is None:
         return
     if not used:
@@ -248,19 +248,6 @@ def _print_lightpanda_engine_status() -> None:
         return
     print(f"   {_t('browser.binary', path=lightpanda_bin)}" if lightpanda_bin
           else f"   {_t('browser.binary_not_found', hint=LIGHTPANDA_INSTALL_HINT)}")
-
-
-def _browser_use(cli, arg: str) -> None:
-    """/browser use [off] — toggle Browser Use mode (browser.backend); resets the session."""
-    from tools.browser_use_cli import set_browser_use_mode
-    if arg not in {"on", "off"}:
-        return _say_block(
-            _t("browser.use_usage"),
-            f"   {_t('browser.use_on_hint')}", f"   {_t('browser.use_off_hint')}")
-    set_browser_use_mode(arg == "on")
-    headline = _t("browser.use_enabled" if arg == "on" else "browser.use_disabled")
-    cli.new_session()
-    _say_block(headline, f"   {_t('browser.session_reset')}")
 
 
 def _launch_default_cdp_browser(port: int):
@@ -303,7 +290,7 @@ def _browser_connect(cli, cdp_url: str) -> None:
         return
     cdp_url, port = normalized
     # Clear any existing browser sessions so the next tool call uses the new backend
-    _probe("tools.browser_tool_lifecycle", "cleanup_all_browsers", None)
+    _probe("tools.browser_session_lifecycle", "cleanup_all_browsers", None)
     print()
     # Already serving CDP? For the default-local URL probe both loopbacks: a squatter
     # on 127.0.0.1:<port> (e.g. an IDE debugger) can push the browser to bind [::1] only.
@@ -322,14 +309,14 @@ def _browser_connect(cli, cdp_url: str) -> None:
         return _say_block(_t("browser.not_connected"))
     os.environ["BROWSER_CDP_URL"] = found
     # Eagerly start the CDP supervisor so pending_dialogs + frame_tree show up in the next snapshot.
-    _probe("tools.browser_tool_cdp", "_ensure_cdp_supervisor", None, "default")
+    _probe("tools.browser_session_cdp", "ensure_cdp_supervisor", None, "default")
     _say_block(_t("browser.connected"), f"   {_t('browser.endpoint', url=found)}")
     # Tell the model the CDP browser was made available on purpose.
     if hasattr(cli, '_pending_input'):
         cli._pending_input.put(
             "[System note: The user invoked /browser connect and connected your browser tools to "
             "a Chromium-family dev/debug browser via Chrome DevTools Protocol. "
-            "Your browser_navigate, browser_snapshot, browser_click, and other browser tools now "
+            "Your browser tools (browser_exec, browser_cdp) now "
             "control that CDP browser. The command itself is a signal that using browser tools for "
             "their current browser-related request is expected; do not wait for separate permission "
             "just because CDP is connected. This is typically a Hermes-managed isolated debug "
@@ -343,9 +330,9 @@ def _browser_disconnect(cli) -> None:
         return _say_block(_t("browser.already_default"))
     os.environ.pop("BROWSER_CDP_URL", None)
     with suppress(Exception):
-        from tools.browser_tool_lifecycle import cleanup_all_browsers
-        from tools.browser_tool_cdp import _stop_cdp_supervisor
-        _stop_cdp_supervisor("default")
+        from tools.browser_session_lifecycle import cleanup_all_browsers
+        from tools.browser_session_cdp import stop_cdp_supervisor
+        stop_cdp_supervisor("default")
         cleanup_all_browsers()
     _say_block(_t("browser.disconnected"), f"   {_t('browser.reverted')}")
     if hasattr(cli, '_pending_input'):
@@ -357,8 +344,7 @@ def _browser_disconnect(cli) -> None:
 # /browser status headline per local browser.engine value: (headline key, *detail keys) under
 # ``cli.commands.browser.*``; detail lines are indented at print time.
 _LOCAL_ENGINE_LINES = {
-    "lightpanda": ("status_lightpanda", "status_lightpanda_note", "status_lightpanda_fallback"),
-    "chrome": ("status_chrome",),
+    "lightpanda": ("status_lightpanda", "status_lightpanda_note"),
     "auto": ("status_auto",)}
 
 
@@ -370,10 +356,6 @@ def _local_engine_lines(engine: str) -> list:
 def _browser_status() -> None:
     current = os.environ.get("BROWSER_CDP_URL", "").strip()
     print()
-    if _probe("tools.browser_use_cli", "is_browser_use_cli_mode", False):
-        _pr(_t("browser.status_browser_use"), f"   {_t('browser.status_browser_use_note')}")
-        _print_lightpanda_engine_status()
-        return _say_block(f"   {_t('browser.status_use_off_hint')}")
     if current:
         _pr(_t("browser.status_connected"), f"   {_t('browser.endpoint', url=current)}")
         _print_lightpanda_engine_status()
@@ -387,12 +369,12 @@ def _browser_status() -> None:
         except Exception:
             print(f"   {_t('browser.status_unreachable')}")
     else:
-        provider = _probe("tools.browser_tool_cloud", "_get_cloud_provider", None)
+        provider = _probe("tools.browser_session_cloud", "get_cloud_provider", None)
         if provider is not None:
             print(_t("browser.status_cloud", provider=provider.display_name))
             _print_lightpanda_engine_status()
         else:
-            engine = _probe("tools.browser_tool_cloud", "_get_browser_engine", "auto")
+            engine = _probe("tools.browser_session_cloud", "get_browser_engine", "auto")
             _pr(*_local_engine_lines(engine))
             if engine == "lightpanda":
                 _print_lightpanda_engine_status()
@@ -402,7 +384,6 @@ def _browser_status() -> None:
 # /browser subcommand word → handler(cli, rest); ``rest`` is the raw (case-preserved)
 # remainder of the line. Adding a subcommand is one row here plus a usage line.
 _BROWSER_SUBCOMMANDS = {
-    "use": lambda cli, rest: _browser_use(cli, rest.lower() or "on"),
     "connect": lambda cli, rest: _browser_connect(cli, rest or DEFAULT_BROWSER_CDP_URL),
     "disconnect": lambda cli, rest: _browser_disconnect(cli),
     "status": lambda cli, rest: _browser_status(),
@@ -1597,7 +1578,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         _cp("\n" + _dim_line(_t("bundles.invoke_hint")))
 
     def _handle_browser_command(self, cmd: str):
-        """Handle /browser connect|disconnect|status|use — manage the live Chromium-family CDP connection."""
+        """Handle /browser connect|disconnect|status — manage the live Chromium-family CDP connection."""
         # The subcommand word is matched case-insensitively; the raw argument keeps
         # its case because a CDP URL's path segment is case-sensitive.
         parts = _command_arg(cmd).split(None, 1)
@@ -1607,7 +1588,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         if handler is None:
             _say_block(
                 _t("browser.usage"), "",
-                *(f"   {_t(f'browser.usage_{sub}')}" for sub in ("connect", "disconnect", "status", "use")))
+                *(f"   {_t(f'browser.usage_{sub}')}" for sub in ("connect", "disconnect", "status")))
             return
         from hermes_cli.gateway_side import connection_for
         if (connection := connection_for(self)) is not None:

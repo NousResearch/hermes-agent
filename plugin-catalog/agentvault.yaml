@@ -1,0 +1,25 @@
+name: agentvault
+title: Agent Vault
+repo: https://github.com/synnada-ai/agentvault-plugins
+sha: 6e0e3ded804cefb19b362736e5818c99cc061d48
+subdir: plugins/hermes
+version: "0.1.1"
+description: "Search archived coding conversations and retrieve exact session revisions through the separately installed Agent Vault macOS app. Launches the app's existing MCP server through sh; reads the authorized archive through its local daemon. Vault handles storage-provider traffic. No bundled binaries, telemetry, credential-file reads, self-updater, or new background service. Disclosure — launches the separately installed Agent Vault app's own bundled Node MCP server (/Applications/Agent Vault.app or VAULT_APP_PATH) through sh with your VAULT_MCP_TOKEN binding token; that server code ships with the app, not in this repository. Its tools return archived conversations from Cursor, Codex, Claude Code and Hermes stored under ~/.vault (or VAULT_HOME) into the model's context, which is sent to your model provider. The app handles its own storage-provider traffic; the plugin adds no telemetry, network calls, credential-file reads or background service."
+maintainer: synnada-ai
+tier: community
+category: tools
+requires_hermes: ">=0.22.4"
+docs_url: https://github.com/synnada-ai/agentvault-plugins/blob/6e0e3ded804cefb19b362736e5818c99cc061d48/plugins/hermes/README.md
+readme: true
+platforms: [macos]
+known_issues:
+  - Requires the separately installed, running Agent Vault app and an authorized Hermes binding.
+  - Existing mcp_servers.vault configuration takes precedence over the plugin server.
+capabilities:
+  provides_tools:
+    - mcp__vault__search_sessions
+    - mcp__vault__get_session
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - VAULT_MCP_TOKEN

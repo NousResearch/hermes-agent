@@ -751,14 +751,14 @@ live session. After the root fix in PR #122825 is installed, use
 `hermes sessions repair-prompts` to find rows that were already degraded.
 
 The scan is conservative: it only proposes a repair when the stored prompt is
-missing the `## Skill Safety` guidance **and** the persisted `tools[]` pin
+missing the `skill_manage` guidance line **and** the persisted `tools[]` pin
 contains `skill_manage` (which always emits that guidance). Rows with no
 readable pin, or with a `memory`-only pin (which is also a legitimate
 `toolsets: [memory]` setup), are reported as **unverifiable** and are not
 changed by this scan; clear them explicitly by `SESSION_ID` if needed. A
 memory-only row also becomes repairable on its own: once the session is resumed, its
 `tools[]` pin re-pins the full tool surface, after which a scan sees
-`skill_manage` without the Skill Safety guidance and clears it.
+`skill_manage` without that guidance line and clears it.
 
 ```bash
 # Report verified candidates and unverifiable rows; writes nothing

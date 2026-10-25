@@ -17,6 +17,10 @@ interface RowMeta {
   meta?: string
 }
 
+export function completionOptionId(prefix: string, item: Unstable_TriggerItem): string {
+  return `${prefix}-${encodeURIComponent(String(item.id))}`
+}
+
 /** The kind a row represents, for its icon. `@` rows carry it as the item type;
  *  `/` rows carry it as the completion group (Skills / Themes / Commands). */
 function rowKind(item: Unstable_TriggerItem, isSlash: boolean): string {
@@ -56,9 +60,11 @@ interface ComposerTriggerPopoverProps {
   activeIndex: number
   items: readonly Unstable_TriggerItem[]
   kind: '@' | '/' | ':'
+  listboxId: string
   loading: boolean
   onHover: (index: number) => void
   onPick: (item: Unstable_TriggerItem) => void
+  optionIdPrefix: string
   placement?: 'bottom' | 'top'
   /** The `@kind:` browse the list is filtered to, when there is one. Rendered
    *  as a header so the scope reads as the mode it is — the raw `@folder:` in
@@ -82,9 +88,11 @@ export function ComposerTriggerPopover({
   activeIndex,
   items,
   kind,
+  listboxId,
   loading,
   onHover,
   onPick,
+  optionIdPrefix,
   placement = 'top',
   scope
 }: ComposerTriggerPopoverProps) {
@@ -156,6 +164,7 @@ export function ComposerTriggerPopover({
       className={placement === 'bottom' ? COMPLETION_DRAWER_BELOW_CLASS : COMPLETION_DRAWER_CLASS}
       data-slot="composer-completion-drawer"
       data-state="open"
+      id={listboxId}
       onMouseDown={event => event.preventDefault()}
       ref={listRef}
       role="listbox"
@@ -196,14 +205,19 @@ export function ComposerTriggerPopover({
           lastGroup = group || lastGroup
           const active = index === activeIndex
           const refKind = referenceKind(rowKind(item, isSlash))
+          const optionId = completionOptionId(optionIdPrefix, item)
+          const accessibleLabel = description ? `${display}: ${description}` : display
 
           return (
             <Fragment key={item.id}>
               {showHeader && <div className={cn(GROUP_HEADER_CLASS, isFirstHeader ? 'pt-0.5' : 'pt-2')}>{group}</div>}
               <Tip delayDuration={400} label={kind === '/' ? description : undefined} placement="row" sideOffset={4}>
                 <button
+                  aria-label={accessibleLabel}
+                  aria-selected={active}
                   className={ROW_CLASS}
                   data-highlighted={active ? '' : undefined}
+                  id={optionId}
                   onClick={() => onPick(item)}
                   onMouseEnter={() => {
                     // React bails out when hovering the already-active row. Do
@@ -211,6 +225,8 @@ export function ComposerTriggerPopover({
                     hoverIndexRef.current = index === activeIndex ? -1 : index
                     onHover(index)
                   }}
+                  role="option"
+                  tabIndex={-1}
                   type="button"
                 >
                   {isEmoji ? (

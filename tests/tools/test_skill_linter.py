@@ -217,3 +217,28 @@ def test_oversized_body_flagged_above_budget_and_not_below():
     found = [f for f in lint_content(over) if f.rule == "oversized-body"]
     assert found and found[0].severity == WARNING
     assert "oversized-body" not in _rules(lint_content(under))
+
+
+def test_unclosed_backtick_fence_flagged():
+    # Everything after the unclosed fence renders as code: later headings vanish from
+    # fence-aware tooling, and the mistake is invisible in raw text.
+    content = CLEAN + "\n```bash\nrun-thing\n"
+    found = [f for f in lint_content(content) if f.rule == "fence-pairing"]
+    assert found and found[0].severity == WARNING
+
+
+def test_unclosed_tilde_fence_flagged():
+    content = CLEAN + "\n~~~\ntext\n"
+    assert "fence-pairing" in _rules(lint_content(content))
+
+
+def test_paired_fences_not_flagged():
+    content = CLEAN + "\n```bash\nrun-thing\n```\n"
+    assert "fence-pairing" not in _rules(lint_content(content))
+
+
+def test_other_marker_inside_open_fence_is_content():
+    # A ~~~ line inside an open ``` block is content of that block, not a fence of its own;
+    # only the opening marker type can close it (the nesting idiom).
+    content = CLEAN + "\n```\n~~~\nexample\n```\n"
+    assert "fence-pairing" not in _rules(lint_content(content))

@@ -337,7 +337,7 @@ def run_dump(args):
         "", "api_keys:", *_api_key_lines(show_keys),
         "", "features:",
         f"  toolsets:           {', '.join(toolsets) if toolsets else '(default)'}",
-        f"  mcp_servers:        {len(_section(config, 'mcp').get('servers') or {})}",
+        f"  mcp_servers:        {len(_section(config, 'mcp_servers'))}",
         f"  memory_provider:    {_section(config, 'memory').get('provider', '') or 'built-in'}",
         f"  gateway:            {_gateway_status()}",
         f"  platforms:          {', '.join(platforms) if platforms else 'none'}",

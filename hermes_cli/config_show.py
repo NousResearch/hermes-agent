@@ -21,7 +21,11 @@ def _mapping(value: Any) -> dict[str, Any]:
 
 
 def _percent(value: Any) -> str:
-    """Render a ratio as a percentage, accepting the numeric strings the runtime's ``float()`` reads."""
+    """Render a ratio as a percentage, accepting the numeric strings the runtime's ``float()`` reads.
+
+    Anything else (an explicit ``null`` included) is shown as-is: the agent's own ``float()``
+    rejects it at startup, so reporting the default here would hide the problem.
+    """
     try:
         return f"{float(value) * 100:.0f}%"
     except (TypeError, ValueError):

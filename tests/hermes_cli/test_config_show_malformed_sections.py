@@ -85,7 +85,7 @@ def _dump(home: Path, config_yaml: str, capsys) -> dict[str, str]:
 
 
 def test_dump_survives_malformed_sections(home, capsys):
-    rows = _dump(home, "terminal: docker\nmcp: x\nmemory: x\n", capsys)
+    rows = _dump(home, "terminal: docker\nmcp_servers: x\nmemory: x\n", capsys)
 
     assert rows["terminal"] == "local"
     assert rows["mcp_servers"] == "0"
@@ -93,11 +93,11 @@ def test_dump_survives_malformed_sections(home, capsys):
 
 
 def test_dump_valid_config_is_unchanged(home, capsys):
-    rows = _dump(home, "terminal:\n  backend: docker\nmcp:\n  servers:\n    a: {command: x}\n"
+    rows = _dump(home, "terminal:\n  backend: docker\nmcp_servers:\n  a: {command: x}\n  b: {url: http://x}\n"
                        "memory:\n  provider: honcho\n", capsys)
 
     assert rows["terminal"] == "docker"
-    assert rows["mcp_servers"] == "1"
+    assert rows["mcp_servers"] == "2"
     assert rows["memory_provider"] == "honcho"
 
 

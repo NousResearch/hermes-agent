@@ -43,7 +43,8 @@ def test_profiles_sharing_a_repo_prune_it_once_per_interval(tmp_path, monkeypatc
     pruned = []
     monkeypatch.setattr(worktree_ops, "_prune_stale_worktrees", lambda repo: pruned.append(repo))
     monkeypatch.setattr(sched, "_last_worktree_maintenance_at", None)
-    monkeypatch.setattr(sched, "_last_worktree_prune_at", {}, raising=False)
+    from cron import scheduler_worktree_maintenance as claims
+    monkeypatch.setattr(claims, "_last_worktree_prune_at", {})
 
     class _InlineThread:
         def __init__(self, target, args=(), **_kw):

@@ -4038,7 +4038,6 @@ _last_dead_owner_reap_at: dict[str, float] = {}
 # Worktree prune throttle: the cron tick is the only reliably periodic process on gateway boxes.
 _WORKTREE_MAINTENANCE_INTERVAL_SECONDS = 6 * 3600.0
 _last_worktree_maintenance_at: Optional[dict] = None  # profile home -> monotonic stamp
-_last_worktree_prune_at: dict[str, float] = {}  # resolved repo root -> monotonic stamp
 _worktree_maintenance_lock = threading.Lock()
 
 
@@ -4078,31 +4077,11 @@ def _worktree_maintenance_repos() -> list[str]:
     return [r for r in sorted(repos) if (Path(r) / ".worktrees").is_dir()]
 
 
-def _claim_due_worktree_repos(repos: list[str]) -> list[str]:
-    """The subset of *repos* not pruned within the interval by ANY profile this process serves,
-    stamped as claimed. Served profiles mostly resolve the same repos (the hermes checkout at
-    least), and every prune pass ends in a footprint probe of the whole ``.worktrees/``, so a
-    per-profile pass multiplied that disk walk by the profile count at the same second."""
-    now = time.monotonic()
-    due = []
-    with _worktree_maintenance_lock:
-        for repo in repos:
-            key = os.path.realpath(repo)
-            last = _last_worktree_prune_at.get(key)
-            if last is None or now - last >= _WORKTREE_MAINTENANCE_INTERVAL_SECONDS:
-                _last_worktree_prune_at[key] = now
-                due.append(repo)
-    return due
-
-
 def _maybe_run_worktree_maintenance() -> None:
     """Throttled worktree prune from the cron tick, on a daemon thread so the tick never waits on
     git. Same pruner as ``hermes -w`` startup (idle dirty/unpushed trees archived before removal,
-    live trees untouched). Repo discovery is throttled per profile home (each profile has its own
-    registry and jobs); the prune itself runs once per repo per interval across every served
-    profile, under the config of the profile that claims it first. The thread runs in
-    a copy of the caller's context so the profile-home override travels with it. Errors never
-    propagate: GC is hygiene, not scheduling."""
+    live trees untouched). Discovery is throttled per profile home, the prune once per repo across
+    served profiles. Runs in a copy of the caller's context (profile-home override); never raises."""
     global _last_worktree_maintenance_at
     import contextvars
 
@@ -4119,7 +4098,8 @@ def _maybe_run_worktree_maintenance() -> None:
 
     def _run() -> None:
         try:
-            repos = _claim_due_worktree_repos(_worktree_maintenance_repos())
+            from cron.scheduler_worktree_maintenance import claim_due_worktree_repos as claim
+            repos = claim(_worktree_maintenance_repos(), _WORKTREE_MAINTENANCE_INTERVAL_SECONDS)
             if not repos:
                 return
             from hermes_cli.worktree_ops import _prune_stale_worktrees

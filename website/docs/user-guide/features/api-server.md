@@ -728,6 +728,11 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 | `POST` | `/api/sessions/{id}/chat` | Run one synchronous agent turn |
 | `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `assistant.commentary` (mid-turn commentary: `message_id`, `text`, `already_streamed`; never folded into `assistant.completed`), `tool.started`, `tool.completed`, `tool.failed` (a tool that finished with an error), then a terminal `run.completed` / `run.failed` / `run.cancelled` event that matches how the turn ended (see [Terminal run status](../../developer-guide/programmatic-integration.md#terminal-run-status)) |
 
+Session list rows and session metadata include `cron_job_id` and `cron_execution_id` when a cron
+session can be tied to a scheduler admission. Legacy `cron_<job>_<timestamp>` sessions include
+the job id with a null execution id. Unattributed cron sessions and non-cron sessions omit both
+fields. Clients should use these fields rather than parse `local-*` session ids.
+
 `/v1/capabilities` advertises the full surface via `session_*` feature flags and `endpoints.session_*` entries so external UIs can detect support and fall back safely. Inline images are supported in `chat` and `chat/stream` payloads (multimodal-aware path).
 
 ```bash

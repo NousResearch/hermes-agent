@@ -117,7 +117,6 @@ from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
-from gateway.platforms.api_server_bot_chat import reset_local_title_owner
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
     validate_media_delivery_path)
@@ -2458,7 +2457,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "message_count", "tool_call_count", "input_tokens", "output_tokens",
             "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "estimated_cost_usd",
             "actual_cost_usd", "api_call_count", "parent_session_id", "last_active", "preview",
-            "_lineage_root_id", "pinned", "archived", "hidden")
+            "_lineage_root_id", "pinned", "archived", "hidden", "cron_job_id", "cron_execution_id")
         payload = {key: session.get(key) for key in safe_keys if key in session}
         # SQLite stores the flags as 0/1.
         payload.update(
@@ -2532,57 +2531,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     @_require_auth
     async def _handle_list_sessions(self, request: web.Request) -> web.Response:
-        """GET /api/sessions — list persisted Hermes sessions."""
-        db = await self._ensure_session_db_async()
-        if db is None:
-            return self._session_db_unavailable()
-        limit = self._parse_nonnegative_int(request.query.get("limit"), default=50, maximum=200)
-        offset = self._parse_nonnegative_int(request.query.get("offset"), default=0, maximum=1_000_000)
-        source = request.query.get("source") or None
-        include_children = _coerce_request_bool(request.query.get("include_children"), default=False)
-        # Exact-title lookup (`hermes peer dm` -> canonical "Bot Chat"). include_hidden is honored
-        # ONLY with a title filter: a blanket hidden listing stays off this client surface.
-        title_filter = (request.query.get("title") or "").strip() or None
-        include_hidden = bool(title_filter) and _coerce_request_bool(
-            request.query.get("include_hidden"), default=False)
-
-        async def _list() -> list:
-            # include_pinned back-fills pins past the recency window; search_query pushes the
-            # title needle into SQL (substring) so a hidden/old row is found, exact match below.
-            rows = await asyncio.to_thread(
-                db.list_sessions_rich, source=source, limit=limit, offset=offset,
-                include_children=include_children, order_by_last_active=True, include_pinned=True,
-                search_query=title_filter, include_hidden=include_hidden)
-            if title_filter:
-                rows = [s for s in rows if (s.get("title") or "").strip() == title_filter]
-            return rows
-
-        sessions = await _list() or (await reset_local_title_owner(db, title_filter, include_hidden, source))
-        if title_filter and not sessions:
-            # A canonical Bot Chat auto-archived by the orphan reaper would make `hermes peer dm`
-            # mint transient sessions: resurrect and re-list; deliberate archives stay put.
-            try:
-                # Recoverable-archive resurrection (#92687): a canonical Bot Chat archived by the ws-orphan
-                # reaper / older agent cleanup is invisible to list_sessions_rich (include_archived=False),
-                # which would fail `hermes peer dm` resolution and mint transient sessions — same accident
-                # the tui_gateway lookups heal.
-                from tools.bot_mode_probe import BOT_CHAT_TITLE
-
-                def _resurrect() -> bool:
-                    # Lookup + unarchive (a WRITE with the full write patience) as one worker-thread
-                    # hop: a contended lock parks this thread, never the event loop (#113772).
-                    stale = db.get_session_by_title(title_filter)
-                    return bool(stale and stale.get("archived") and db.unarchive_recoverable_session(stale["id"]))
-
-                if title_filter == BOT_CHAT_TITLE and await asyncio.to_thread(_resurrect):
-                    sessions = await _list()
-            except Exception:
-                pass  # resolution degrades to today's no-row behavior
-        # Back-filled pins arrive PAST the limit: counting them would report a page that doesn't exist.
-        windowed = sum(1 for s in sessions if not s.get("pinned"))
-        return web.json_response({
-            "object": "list", "data": [self._session_response(s) for s in sessions],
-            "limit": limit, "offset": offset, "has_more": windowed >= limit})
+        from gateway.platforms.api_server_sessions import list_sessions
+        return await list_sessions(self, request)
 
     @_require_auth
     async def _handle_create_session(self, request: web.Request) -> web.Response:
@@ -2657,11 +2607,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     @_require_auth
     async def _handle_get_session(self, request: web.Request) -> web.Response:
-        """GET /api/sessions/{session_id}."""
-        session, err = await self._get_existing_session_or_404(request.match_info["session_id"])
-        if err:
-            return err
-        return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
+        from gateway.platforms.api_server_sessions import get_session
+        return await get_session(self, request)
 
     @_require_auth
     async def _handle_patch_session(self, request: web.Request) -> web.Response:

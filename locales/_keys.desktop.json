@@ -2686,6 +2686,7 @@
     "rightSidebar.terminalDropControlTitle",
     "rightSidebar.terminalDropTooLarge",
     "rightSidebar.terminalDropTooLargeTitle",
+    "rightSidebar.terminalDropUnquotable",
     "rightSidebar.terminalDropUploadFailed",
     "rightSidebar.terminalHide",
     "rightSidebar.terminalNew",

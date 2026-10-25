@@ -366,11 +366,135 @@ function fishWords(text: string): string[] {
   return words
 }
 
+// POSIX sh (and bash, zsh, ksh, dash): inside '...' every character is literal and nothing escapes
+// a quote; outside quotes a backslash escapes the next character, ';' '&' '|' end a command, '#'
+// starts a comment, and '$' or '`' starts an expansion.
+function posixWords(text: string): string[] {
+  const words: string[] = []
+  let word = ''
+  let i = 0
+
+  const flush = () => {
+    if (word) {
+      words.push(word)
+    }
+
+    word = ''
+  }
+
+  while (i < text.length) {
+    const c = text[i]
+
+    if (c === "'") {
+      const end = text.indexOf("'", i + 1)
+
+      if (end === -1) {
+        return [...words, `${word}<unterminated>`]
+      }
+
+      word += text.slice(i + 1, end)
+      i = end + 1
+    } else if (c === '\\') {
+      word += text[i + 1] ?? ''
+      i += 2
+    } else if (';&|'.includes(c)) {
+      flush()
+      words.push(c)
+      i += 1
+    } else if (c === '#' && !word) {
+      words.push('#comment')
+
+      break
+    } else if (c === '$' || c === '`' || c === '"') {
+      words.push('<expansion>')
+      i += 1
+    } else if (/\s/.test(c)) {
+      flush()
+      i += 1
+    } else {
+      word += c
+      i += 1
+    }
+  }
+
+  flush()
+
+  return words
+}
+
+// csh and tcsh: as POSIX sh, except that '!' starts a history substitution everywhere, inside
+// single quotes too, unless a backslash escapes it (csh(1), "History substitution").
+function cshWords(text: string): string[] {
+  const words: string[] = []
+  let word = ''
+  let i = 0
+
+  const flush = () => {
+    if (word) {
+      words.push(word)
+    }
+
+    word = ''
+  }
+
+  while (i < text.length) {
+    const c = text[i]
+
+    if (c === "'") {
+      i += 1
+
+      while (i < text.length && text[i] !== "'") {
+        if (text[i] === '\\' && text[i + 1] === '!') {
+          i += 1
+        } else if (text[i] === '!') {
+          return [...words, '<history>']
+        }
+
+        word += text[i]
+        i += 1
+      }
+
+      if (i >= text.length) {
+        return [...words, `${word}<unterminated>`]
+      }
+
+      i += 1
+    } else if (c === '\\') {
+      word += text[i + 1] ?? ''
+      i += 2
+    } else if (c === '!') {
+      return [...words, '<history>']
+    } else if (';&|'.includes(c)) {
+      flush()
+      words.push(c)
+      i += 1
+    } else if (/\s/.test(c)) {
+      flush()
+      i += 1
+    } else {
+      word += c
+      i += 1
+    }
+  }
+
+  flush()
+
+  return words
+}
+
 // cmd.exe at its prompt first replaces %NAME% of every defined variable, inside double quotes too,
 // and leaves an undefined one as typed; then a '"' toggles quoting, '^' outside quotes takes the
-// next character literally and '&' outside quotes starts a new command.
-function cmdWords(text: string, env: Record<string, string>): string[] {
-  const expanded = text.replace(/%([^%]+)%/g, (whole, name: string) => env[name.toUpperCase()] ?? whole)
+// next character literally and '&' outside quotes starts a new command. With delayed expansion on
+// (cmd /V:ON, or DelayedExpansion in the registry) a line that still holds a '!' is read once more:
+// !NAME! is replaced by its value inside quotes too, a lone '!' is dropped, and '^' escapes.
+function cmdWords(text: string, env: Record<string, string>, { delayed = false } = {}): string[] {
+  const percent = text.replace(/%([^%]+)%/g, (whole, name: string) => env[name.toUpperCase()] ?? whole)
+
+  const expanded =
+    delayed && percent.includes('!')
+      ? percent.replace(/!([^!]*)!|!/g, (whole, name?: string) => (name ? (env[name.toUpperCase()] ?? '') : ''))
+      : percent
+
   const words: string[] = []
   let word = ''
   let quoted = false
@@ -471,5 +595,108 @@ describe("terminal drop types each path as one literal word of the terminal's sh
     for (const shell of ['sh', 'bash', 'zsh', '/usr/bin/zsh']) {
       expect(droppedText(shell, "/work/it's \\ a\u2019b!.txt")).toBe("'/work/it'\\''s \\ a\u2019b!.txt' ")
     }
+  })
+
+  const HOSTILE_POSIX_PATHS = [
+    "/work/it's; touch PWNED; '.txt",
+    '/work/$(touch PWNED) `id` $HOME.txt',
+    '/work/a\\b \\\' & | # " !!.txt',
+    '/work/plain.txt'
+  ]
+
+  it.each(['sh', 'ash', 'bash', 'dash', 'ksh', 'mksh', 'zsh', '/bin/bash', '-zsh', 'bash.exe'])(
+    'types every path as one literal POSIX word for %s',
+    shell => {
+      for (const path of HOSTILE_POSIX_PATHS) {
+        expect(posixWords(droppedText(shell, path))).toEqual([path])
+      }
+    }
+  )
+
+  it.each(['csh', 'tcsh', '/bin/tcsh'])('types every path as one literal word with no history substitution for %s', shell => {
+    for (const path of [...HOSTILE_POSIX_PATHS, '/home/me/x!!:s^e^;touch PWNED;^.txt', '/home/me/!-2']) {
+      expect(cshWords(droppedText(shell, path))).toEqual([path])
+    }
+  })
+
+  it('matches a shell by its program name, not by a directory or a longer name', () => {
+    // A directory named like cmd must not give bash the cmd quoting.
+    expect(posixWords(droppedText('/opt/cmd-tools/bin/bash', "/work/it's.txt"))).toEqual(["/work/it's.txt"])
+    expect(droppedText('C:\\Windows\\System32\\cmd.exe', 'C:\\work\\a b.txt')).toBe('"C:\\work\\a b.txt" ')
+    expect(droppedText('C:\\Program Files\\PowerShell\\7\\pwsh.exe', "C:\\it's.txt")).toBe("'C:\\it''s.txt' ")
+  })
+})
+
+describe('terminal drop in cmd with delayed expansion', () => {
+  const env = { HERMESPROBE: 'X"&calc&"Y', PATH: 'C:\\Windows\\system32' }
+
+  it('types the same words whether delayed expansion is on or off', () => {
+    for (const path of ['C:\\work\\a%HERMESPROBE%b.txt', 'C:\\work\\a^b & c.txt', 'C:\\work\\100%', 'C:\\work\\a b (1).txt']) {
+      const typed = droppedText('cmd.exe', path)
+      expect(cmdWords(typed, env)).toEqual([path])
+      expect(cmdWords(typed, env, { delayed: true })).toEqual([path])
+    }
+  })
+
+  // cmd can't be asked whether delayed expansion is on, and no quoting keeps a '!' literal in both
+  // modes: with it on, !HERMESPROBE! is replaced inside the quotes and a lone '!' is dropped.
+  it('never types a path holding "!" and names it in a warning', () => {
+    const { host, unbind, write } = bind('cmd.exe')
+
+    drop(host, transfer([], ['C:\\work\\a!HERMESPROBE!b.txt', 'C:\\work\\wow!.txt', 'C:\\work\\ok.txt']))
+
+    expect(typedText(write)).toBe('"C:\\work\\ok.txt" ')
+    const [warning] = $notifications.get()
+    expect(warning?.kind).toBe('warning')
+    expect(warning?.message).toContain('C:\\work\\a!HERMESPROBE!b.txt')
+    expect(warning?.message).toContain('C:\\work\\wow!.txt')
+    expect(warning?.message).not.toContain('ok.txt')
+    unbind()
+  })
+})
+
+// A shell the quoter does not name (nu, xonsh, elvish, an SSH session's remote shell) has quoting
+// rules of its own, so POSIX quotes could end early there. Only a path every shell reads as one
+// plain word is typed, as it is; any other is left out and named in a warning.
+describe('terminal drop into a shell the quoter does not name', () => {
+  it.each(['nu', 'xonsh', 'elvish', 'ssh', 'C:\\tools\\nu.exe', '/usr/local/bin/xonsh'])('types only plain paths for %s', shell => {
+    const { host, unbind, write } = bind(shell)
+
+    drop(
+      host,
+      transfer([], ['/home/me/notes_v2.md', '/home/me/a b.txt', "/home/me/it's.txt", '/home/me/$HOME', '~/x', '-rf', 'C:\\x'])
+    )
+
+    expect(typedText(write)).toBe('/home/me/notes_v2.md ')
+    const [warning] = $notifications.get()
+    expect(warning?.kind).toBe('warning')
+
+    for (const path of ['/home/me/a b.txt', "/home/me/it's.txt", '/home/me/$HOME', '~/x', '-rf', 'C:\\x']) {
+      expect(warning?.message).toContain(path)
+    }
+
+    expect(warning?.message).not.toContain('notes_v2.md')
+    unbind()
+  })
+
+  it('types nothing and focuses nothing when no dropped path is plain', () => {
+    const { focus, host, unbind, write } = bind('nu')
+
+    drop(host, transfer([], ['/home/me/a b.txt']))
+
+    expect(write).not.toHaveBeenCalled()
+    expect(focus).not.toHaveBeenCalled()
+    expect($notifications.get()[0]?.message).toContain('nu')
+    unbind()
+  })
+
+  it('reads a plain path as the same one word in every named shell', () => {
+    const path = '/home/me/v1.2/notes_v2-final.md'
+
+    expect(posixWords(`${path} `)).toEqual([path])
+    expect(cshWords(`${path} `)).toEqual([path])
+    expect(fishWords(`${path} `)).toEqual([path])
+    expect(powershellWords(`${path} `)).toEqual([path])
+    expect(cmdWords(`${path} `, {}, { delayed: true })).toEqual([path])
   })
 })

@@ -364,6 +364,11 @@ async def _start_gateway_start_control_socket(runner):
                            # live adapters' handlers (#87770); tools/prompt still wait for the next session.
                            "reload-plugins": reload_plugins_verb(runner, _main_loop)})
         _control_server.ticket_store = runner.session_ticket_store
+        # The Webapp's verbs answer from the socket's first moment ("starting" until the listener
+        # settles): a client polling a restarting gateway must never read "unknown verb" as a failure.
+        from gateway.webapp_listener import register_control_verbs
+        from hermes_constants import get_hermes_home
+        register_control_verbs(runner, get_hermes_home(), server=_control_server)
         if not await _control_server.start():
             _control_server = None
         else:

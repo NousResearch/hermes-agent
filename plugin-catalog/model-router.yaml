@@ -1,19 +1,21 @@
 name: model-router
 title: "Model Router"
 repo: https://github.com/metamindedu/hermes-model-router
-sha: d56c67da376d6115d5eefc1d1a5377b4212d344e
+sha: be99194089342c15cc4d50ca15058532a967ea72
 description: "Profile model settings, default-on Heavy/Light task routing, fallback controls, runtime limits and Fast inheritance. Reads Hermes profile configuration; explicit saves update selected profiles via the native CLI. Routed jobs launch background Hermes children using the user's configured providers/MCP and store private prompts/results locally. No separate credential store, telemetry, self-updater or approval bypass. Disclosure — after you trust and enable the plugin, routing defaults ON for every installed profile without a saved choice, including profiles that installed an earlier version and never saved one (the update turns it on); existing saved OFF and explicit skill opt-outs remain OFF. On enabled profiles, the model-callable `coding_route` tool starts detached background Hermes agents. They get file, terminal and code-execution tools in any existing folder the model names, run under that profile's credentials and approval policy (single-query mode: dangerous commands are refused unless `approvals.single_query_mode: approve`), and their per-job time limit can be set to none. Prompts and results are stored in `plugin-data/model-router/jobs/`. Saving settings writes model, delegation, auxiliary, fallback and `skills.disabled` keys into the config.yaml of the profiles listed in the preview (backups are taken first) and copies a skill into those profiles' `skills/` folders. From install, native subagents inherit the parent session's Fast (priority/ultrafast) tier on first-party OpenAI/Codex routes, which can raise costs."
 maintainer: metamindedu
 tier: community
 category: models
-version: "0.4.6"
+version: "0.4.7"
 docs_url: https://github.com/metamindedu/hermes-model-router#readme
 readme: true
 platforms:
   - windows
 screenshots:
-  - https://raw.githubusercontent.com/metamindedu/hermes-model-router/d56c67da376d6115d5eefc1d1a5377b4212d344e/docs/fast-inheritance.png
+  - https://raw.githubusercontent.com/metamindedu/hermes-model-router/be99194089342c15cc4d50ca15058532a967ea72/docs/fast-inheritance.png
 known_issues:
+  - "v0.4.7 also requests native completion wakes for validated default-local turns without a UI-session ID; configured-model quota can be used by continuation. Stop, busy, ownership and explicit notification opt-out remain native. Consume the owned terminal process result before reading the routed verdict; pre-consumption raw replay is not an exactly-once guarantee."
+  - "Cold PM binding selects only a verified already-imported generation; multi-argument sealed native launch layouts still fail closed. Windows noninteractive launches suppress console windows; skipped OS/permission tests do not establish other-platform coverage."
   - "Routing is default ON after package trust/activation only for installed profiles with no saved choice. Existing OFF/skill opt-outs remain OFF; install does not rewrite models/fallback consent/budgets or launch jobs. The advanced UI retains opt-out."
   - "Heavy/Light may use the same model in independent purpose-bound jobs. Same-model context separation does not provide different-model review diversity."
   - "Native YAML and served-runtime bootstrap compatibility are verified on Windows. Existing private core imports remain a host-version compatibility risk and are reported by plugin validation."

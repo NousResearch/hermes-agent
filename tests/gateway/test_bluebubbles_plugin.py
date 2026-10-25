@@ -318,14 +318,32 @@ class TestBlueBubblesAttachmentSend:
 
 
 class TestBlueBubblesWebhookUrl:
-    """_webhook_url property normalises local hosts to 'localhost'."""
+    """_webhook_url advertises a loopback LITERAL for local binds.
+
+    The registered URL is what BlueBubbles' Node server fetches, and Node resolves
+    'localhost' to ::1 first — so registering the name makes the webhook silently
+    unreachable whenever the listener bound only IPv4. Advertise 127.0.0.1 / [::1].
+    """
 
     def test_default_host(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
-        # Default webhook_host is 0.0.0.0 → normalized to localhost
-        assert "localhost" in adapter._webhook_url
+        # Default webhook_host is 0.0.0.0 → advertised as the 127.0.0.1 literal
+        assert "127.0.0.1" in adapter._webhook_url
+        assert "localhost" not in adapter._webhook_url
         assert str(adapter.webhook_port) in adapter._webhook_url
         assert adapter.webhook_path in adapter._webhook_url
+
+    @pytest.mark.parametrize(
+        ("configured", "expected"),
+        [("localhost", "127.0.0.1"), ("::1", "[::1]"), ("::", "[::1]"), ("0.0.0.0", "127.0.0.1")],
+    )
+    def test_local_hosts_never_advertise_the_name_localhost(self, monkeypatch, configured, expected):
+        adapter = _make_adapter(monkeypatch, webhook_host=configured)
+        assert f"http://{expected}:{adapter.webhook_port}" in adapter._webhook_url
+
+    def test_public_host_is_advertised_verbatim(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, webhook_host="bb.example.com")
+        assert adapter._webhook_url.startswith("http://bb.example.com:")
 
 
     def test_register_url_omits_query_when_no_password(self, monkeypatch):
@@ -625,3 +643,69 @@ class TestBlueBubblesPluginRegistration:
         assert policy is None or not policy.text_direct
         assert not hasattr(senders, "_send_bluebubbles")
         assert all(p["key"] != "bluebubbles" for p in wiz._PLATFORMS)
+
+
+class TestBlueBubblesInboundDedup:
+    """A replayed webhook must not reach handle_message twice.
+
+    BlueBubbles re-delivers webhooks after a reconnect/resume, so without dedup the
+    same iMessage runs twice — duplicate replies, duplicate tool calls.
+    """
+
+    @staticmethod
+    def _request(payload):
+        body = json.dumps(payload).encode()
+
+        class _Request:
+            query = {"password": "secret"}
+            headers: dict = {}
+
+            async def read(self):
+                return body
+
+        return _Request()
+
+    @staticmethod
+    def _payload(guid="G-1"):
+        return {
+            "type": "new-message",
+            "data": {
+                "guid": guid,
+                "text": "hello",
+                "chatGuid": "iMessage;-;+15551234567",
+                "handle": {"address": "+15551234567"},
+            },
+        }
+
+    def test_dedup_is_a_message_deduplicator_for_runner_handover(self, monkeypatch):
+        from gateway.platforms.helpers import MessageDeduplicator
+
+        adapter = _make_adapter(monkeypatch)
+        # The runner's reconnect handover (carry_inbound_dedup) adopts ._dedup, so it
+        # must be the shared type rather than a bespoke dict.
+        assert isinstance(adapter._dedup, MessageDeduplicator)
+
+    @pytest.mark.asyncio
+    async def test_replayed_guid_is_acknowledged_and_not_handled_twice(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter.handle_message = AsyncMock()
+        payload = self._payload()
+
+        first = await adapter._handle_webhook(self._request(payload))
+        second = await adapter._handle_webhook(self._request(payload))
+        await asyncio.sleep(0)
+
+        assert first.status == 200
+        assert second.status == 200
+        assert adapter.handle_message.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_distinct_guids_are_both_handled(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter.handle_message = AsyncMock()
+
+        await adapter._handle_webhook(self._request(self._payload("G-1")))
+        await adapter._handle_webhook(self._request(self._payload("G-2")))
+        await asyncio.sleep(0)
+
+        assert adapter.handle_message.await_count == 2

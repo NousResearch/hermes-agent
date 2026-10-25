@@ -664,6 +664,94 @@ _SUDO_STDIN_BLOCK = [
     "sudo -S apt-get install foo",
     "echo password | sudo -S systemctl restart nginx",
     "sudo -k && sudo -S whoami",
+    # Wrapper spellings - sudo reached through another command still reads stdin
+    "env sudo -S whoami",
+    "env FOO=1 sudo -S whoami",
+    "time sudo -S whoami",
+    "nohup sudo -S whoami",
+    "nice sudo -S whoami",
+    "timeout 60 sudo -S whoami",
+    "command sudo -S whoami",
+    "sudo sudo -S whoami",
+    # Command-position spellings a separator-anchored regex cannot see
+    "(sudo -S whoami)",
+    "{ sudo -S whoami; }",
+    "if true; then sudo -S whoami; fi",
+    "x=$(sudo -S whoami)",
+    # Option spellings between sudo and -S
+    "sudo -E -S whoami",
+    "sudo -u root -S whoami",
+    "sudo --user=root -S whoami",
+    "sudo -p 'pw: ' -S whoami",
+    "sudo -ES whoami",
+    "sudo --stdin whoami",
+    # Payloads executed by a shell carrier
+    "bash -c 'sudo -S whoami'",
+    "sh -c 'echo pw | sudo -S whoami'",
+    "env -S 'sudo -S whoami'",
+    "eval 'sudo -S whoami'",
+    "builtin eval 'sudo -S whoami'",
+    # Redirects ahead of or amid the option run still reach sudo's argv
+    "sudo </tmp/in -S whoami",
+    "sudo 2>/dev/null -S whoami",
+    "sudo -S </tmp/in whoami",
+    # fd-duplication and &>-form redirects are redirections, not separators
+    "sudo 2>&1 -S whoami",
+    "sudo &>/dev/null -S whoami",
+    "sudo &>>/dev/null -S whoami",
+    "sudo <&0 -S whoami",
+    "sudo >/dev/null 2>&1 -S whoami",
+    # sudoedit is the sudo binary family and accepts -S
+    "sudoedit -S /etc/hosts",
+    "/usr/bin/sudoedit -S /etc/hosts",
+    # Redirects between an option and its operand
+    "sudo -u >/dev/null root -S whoami",
+    # Interspersed VAR=value assignments: sudo parses options through them
+    "sudo FOO=1 -S whoami",
+    # sudo operand-taking options ahead of -S
+    "sudo -C 3 -S whoami",
+    "sudo -D /tmp -S whoami",
+    "sudo -R /tmp -S whoami",
+    "sudo -T 5 -S whoami",
+    "sudo -a auth -S whoami",
+    "sudo -r role -S whoami",
+    "sudo -t type -S whoami",
+    "sudo -U root -S whoami",
+    "sudo --chdir /tmp -S whoami",
+    "sudo --chroot=/tmp -S whoami",
+    "sudo --command-timeout 5 -S whoami",
+    "sudo --role role -S whoami",
+    "sudo --type type -S whoami",
+    "sudo --other-user root -S whoami",
+    "sudo --login-class cls -S whoami",
+    "sudo --auth-type a -S whoami",
+    # getopt_long accepts unambiguous long-option prefixes
+    "sudo --st whoami",
+    "sudo --stdi whoami",
+    "sudo --u root -S whoami",
+    # Bare -l takes only an attached operand; a separate -S is still a flag
+    "sudo -l -S whoami",
+    # Carriers nested inside env/eval payloads re-enter the walk
+    "eval 'bash -c \"sudo -S whoami\"'",
+    "env -S 'bash -c \"sudo -S whoami\"'",
+    # env -S operand spellings: dynamic expansion fails closed, bundled clusters work
+    "env -S 'F=-S sudo ${F} whoami'",
+    "env -S 'sudo -S ${DUMMY}x'",
+    "env -iS'sudo -S whoami'",
+    # ANSI-C quoting decodes before detection
+    "eval $'sudo -S whoami'",
+    "bash -c $'sudo -S whoami'",
+    "$'s\\165do' -S whoami",
+    "sudo $'-S' whoami",
+    # case-clause bodies are command positions
+    "case a in a) sudo -S whoami;; esac",
+    # Obfuscated spellings of the sudo word or its flag
+    "s\\udo -S whoami",
+    '"sudo" -S whoami',
+    "/usr/bin/sudo -S whoami",
+    "sudo -''S whoami",
+    "sudo -u root sudo -S whoami",
+    "chroot /tmp sudo -S whoami",
 ]
 
 _SUDO_STDIN_ALLOW = [
@@ -676,22 +764,97 @@ _SUDO_STDIN_ALLOW = [
     "some_tool -S thing",
     # Literal text mention of sudo
     "echo 'use sudo -S to pipe passwords'",
+    # sudo as data, not a command word
+    "echo sudo -S hello",
+    "git commit -m 'ran sudo -S yesterday'",
+    # Single-quoted command substitution is literal text, not executed
+    "echo '$(sudo -S whoami)'",
+    # -s (shell) is not -S (stdin): the guard must keep flag case intact
+    "sudo -s whoami",
+    # -uS is -u with operand "S", not -S; -p consumes its operand
+    "sudo -uS whoami",
+    "sudo -p 'pw: ' whoami",
+    # A valueless long option does not swallow the next token
+    "sudo --verbose -s whoami",
+    # eval payloads without a command-position sudo stay benign
+    "eval 'echo sudo -S'",
+    "env -S 'echo hi'",
+    # -lS is -l with attached list operand "S"; -u consumes -S as its operand here
+    "sudo -lS whoami",
+    "sudo -u >/dev/null -S whoami",
+    # env -S running a non-sudo argv, even with expansion text present
+    "env -S 'echo sudo $V'",
+    # Remote sudo is the ssh host's problem, not the local guard's
+    "ssh host sudo -S whoami",
 ]
 
 _SUDO_STDIN_BLOCK_YOLO = [
     "sudo -S whoami",
     "echo hunter2 | sudo -S apt-get install",
+    "env sudo -S whoami",
+    "(sudo -S whoami)",
+    "bash -c 'sudo -S whoami'",
+    "sudo -u root -S whoami",
+    "sudoedit -S /etc/hosts",
+    "sudo 2>&1 -S whoami",
+    "sudo --st whoami",
+    "case a in a) sudo -S whoami;; esac",
 ]
 
 
-def test_sudo_stdin_guard_detects_without_password():
+def test_sudo_stdin_guard_detects_without_password(monkeypatch):
     """sudo -S is dangerous when SUDO_PASSWORD is not configured."""
     import tools.approval as approval_mod
 
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
     for cmd in _SUDO_STDIN_BLOCK:
         is_blocked, desc = approval_mod._check_sudo_stdin_guard(cmd)
         assert is_blocked, f"expected sudo stdin guard to block {cmd!r}"
         assert "sudo" in desc.lower()
+
+
+def test_sudo_stdin_guard_allows_non_stdin_sudo(monkeypatch):
+    """sudo spellings without -S, and sudo-as-data, stay allowed."""
+    import tools.approval as approval_mod
+
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    for cmd in _SUDO_STDIN_ALLOW:
+        is_blocked, _ = approval_mod._check_sudo_stdin_guard(cmd)
+        assert not is_blocked, f"sudo stdin guard over-matched {cmd!r}"
+
+
+def test_sudo_stdin_guard_blocks_under_yolo(clean_session, monkeypatch):
+    """sudo -S is a floor: yolo cannot bypass it in the full guard chain."""
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+
+    for cmd in _SUDO_STDIN_BLOCK_YOLO:
+        result = check_all_command_guards(cmd, "local")
+        assert result["approved"] is False, f"yolo leaked sudo -S on {cmd!r}"
+        # Attribution: the stdin guard itself fired, not an unrelated floor
+        assert "sudo" in result["message"].lower(), f"wrong block source on {cmd!r}"
+
+
+def test_sudo_stdin_guard_inert_when_password_configured(monkeypatch):
+    """With SUDO_PASSWORD set, -S is the sanctioned path and the guard stays off."""
+    import tools.approval as approval_mod
+
+    monkeypatch.setenv("SUDO_PASSWORD", "hunter2")
+    for cmd in ("sudo -S whoami", "env sudo -S whoami", "bash -c 'sudo -S whoami'"):
+        is_blocked, _ = approval_mod._check_sudo_stdin_guard(cmd)
+        assert not is_blocked, f"guard fired despite SUDO_PASSWORD on {cmd!r}"
+
+
+def test_sudo_stdin_guard_fails_closed_on_unparseable(monkeypatch):
+    """Oversized or over-nested input is blocked, never silently allowed."""
+    import tools.approval as approval_mod
+
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    is_blocked, _ = approval_mod._check_sudo_stdin_guard("x" * 200_000)
+    assert is_blocked
+    # A carrier chain deeper than the variant budget fails closed, and stays fast.
+    is_blocked, _ = approval_mod._check_sudo_stdin_guard("x;" + "eval " * 3200 + "'echo hi'")
+    assert is_blocked
 
 
 def test_sudo_stdin_guard_container_bypass(clean_session):

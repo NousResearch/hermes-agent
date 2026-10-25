@@ -501,6 +501,7 @@ class TestWindowlessGatewayRestartSpec:
         assert new_argv[1:] == argv[1:]
         assert cwd == "C:/hermes"
         assert env["VIRTUAL_ENV"] == str(Path("C:/venv"))
+        assert env["PYTHONUTF8"] == "1"  # keep the respawn tree in UTF-8 mode (#127633)
         assert "PYTHONPATH" in env
 
 

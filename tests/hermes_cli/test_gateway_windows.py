@@ -393,6 +393,27 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert content.endswith("\r\n")
 
 
+def test_gateway_launchers_export_pythonutf8(monkeypatch):
+    """Every launcher surface must set PYTHONUTF8=1 alongside PYTHONIOENCODING: PYTHONIOENCODING
+    only covers stdio streams, while ``locale.getpreferredencoding()`` stays at the ANSI/OEM code
+    page (cp936 on a zh-CN host), so subprocess reader threads and plugin imports that decode a
+    child's UTF-8 output die with UnicodeDecodeError (#127633). ``_decode_schtasks_output``
+    already documents "the launcher sets ``PYTHONUTF8=1``" — the generated scripts must match."""
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (r"C:\venv\Scripts\python.exe", Path(r"C:\venv"), []),
+    )
+    cmd = gateway_windows._build_gateway_cmd_script(
+        r"C:\venv\Scripts\python.exe", r"C:\Hermes", r"C:\Hermes", ""
+    )
+    vbs = gateway_windows._build_gateway_vbs_script(
+        r"C:\venv\Scripts\python.exe", r"C:\Hermes", r"C:\Hermes", ""
+    )
+    assert 'set "PYTHONUTF8=1"' in cmd
+    assert 'env.Item("PYTHONUTF8") = "1"' in vbs
+
+
 def test_atomic_write_leaves_no_staging_file_when_swap_fails(monkeypatch, tmp_path):
     """The Startup folder is the staging dir: a leftover .tmp there is opened by Windows at every login."""
     startup = tmp_path / "Startup"

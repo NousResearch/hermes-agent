@@ -585,11 +585,17 @@ class HostedRoomService:
             pending_actions.extend(
                 dict(action) for (action_room_id, _member_id), action
                 in self._pending_actions.items() if action_room_id == room_id)
+        # Who is answering right now: clients render per-member working indicators from it.
+        member_activity = [
+            {"member_id": str(task["payload"].get("target_member_id") or task["payload"]["target_profile"]),
+             "status": str(task["status"])}
+            for task in tasks if task["status"] in _LIVE_STATUSES]
         return {
-            "running": runtime["running"], "working": any(counts.get(s) for s in _LIVE_STATUSES),
+            "running": runtime["running"], "working": bool(member_activity),
             "blocked": room_id in runtime["blocked_rooms"]
             or bool(counts.get("indeterminate") or counts.get("stopping")),
             "counts": dict(counts), "pending_actions": pending_actions,
+            "member_activity": member_activity,
             "peer_routes": self._route_statuses(room_id)}
 
 

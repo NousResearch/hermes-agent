@@ -269,7 +269,7 @@ def cmd_check_updates(args: Any | None = None) -> None:
     console = Console()
     plugins_dir = _pc()._plugins_dir()
 
-    from hermes_cli.plugins_updates import run_checks
+    from hermes_cli.plugins_updates import held_for_newer_hermes, run_checks
 
     from hermes_cli.plugins_cadence import record_check_results, snapshot_installs
 
@@ -290,6 +290,8 @@ def cmd_check_updates(args: Any | None = None) -> None:
     for r in results:
         if r.needs_fixing:
             status = f"[red]needs fixing[/red]\n[dim]{r.needs_fixing}[/dim]"
+        elif r.update_available is True and (held := held_for_newer_hermes(r)):
+            status = f"[yellow]update available after updating Hermes[/yellow]\n[dim]{held}[/dim]"
         elif r.update_available is True:
             status = "[green]update available[/green]"
         elif r.update_available is False:

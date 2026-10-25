@@ -278,7 +278,7 @@ async def test_gateway_shutdown_reports_a_live_owned_run_as_interrupted(tmp_path
     adapter._run_streams["run-1"] = queue
     launch = runs_mod._RunLaunch(
         adapter, "run-1", queue, "bot-chat", None, True, "ping", [], False, agent_kwargs={},
-        request_profile=None, browser_control_principal=None, browser_control_transport_family=None)
+        request_profile=None)
     waiting = asyncio.Event()
 
     async def _receipt_never_arrives(*_a, **_k):

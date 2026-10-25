@@ -18,7 +18,10 @@ function compilerPreset() {
  *  lockfile and this config (the preset and its filter) pin the toolchain it keys on. The
  *  cache lives under node_modules: ignored, and outside every freshness hash. */
 async function cachedCompilerPass(command: string) {
-  return withCompilerCache(await babel({ presets: [compilerPreset()] }), {
+  // Babel resolves the compiler preset's plugin from its cwd. Pin it here: the
+  // Webapp build runs Vite from the checkout root, which a fresh clone leaves
+  // without node_modules (its dependencies live in the private workspace).
+  return withCompilerCache(await babel({ cwd: __dirname, presets: [compilerPreset()] }), {
     command,
     cacheRoot: path.join(__dirname, 'node_modules/.cache/hermes-react-compiler'),
     base: __dirname,

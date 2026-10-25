@@ -148,6 +148,8 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
 
       <AutoArchiveSetting />
 
+      <RecentsShowA2ASetting />
+
       <SectionHeading
         icon={Archive}
         meta={sessions.length ? String(sessions.length) : undefined}
@@ -317,6 +319,89 @@ function AutoArchiveSetting() {
           title={s.autoArchiveDaysLabel}
         />
       )}
+    </div>
+  )
+}
+
+// A2A peer dispatches are machine-to-machine work, hidden from the sidebar recents by default
+// (they sit in the built-in machine-source list with cron/kanban). This is the user-facing way
+// back in: the same `sessions.recents_show_a2a` key the recents fetch reads. Session search
+// ignores it on purpose, so a hidden A2A session stays findable.
+function RecentsShowA2ASetting() {
+  const { t } = useI18n()
+  const s = t.settings.sessions
+  const [config, setConfig] = useState<HermesConfigRecord | null>(null)
+  const [enabled, setEnabled] = useState(false)
+
+  useEffect(() => {
+    // Config REST is only reachable through the Electron bridge; skip in
+    // non-Electron contexts (tests/storybook) rather than throwing.
+    if (!window.hermesDesktop) {
+      return
+    }
+
+    let alive = true
+
+    void getHermesConfigRecord()
+      .then(record => {
+        if (!alive) {
+          return
+        }
+
+        const sessions = (record.sessions ?? {}) as Record<string, unknown>
+        setConfig(record)
+        setEnabled(Boolean(sessions.recents_show_a2a))
+      })
+      .catch(() => {
+        // Leave the control unmounted if config can't be read.
+      })
+
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const persist = useCallback(
+    async (show: boolean) => {
+      if (!config) {
+        return
+      }
+
+      const sessions = { ...((config.sessions ?? {}) as Record<string, unknown>), recents_show_a2a: show }
+      // Read the route at save time from the record itself, and carry it onto the
+      // replacement snapshot so the next save still targets the gateway that served the
+      // original GET.
+      const writeScope = peekConfigReadOrigin(config)
+
+      setConfig(retainConfigReadOrigin({ ...config, sessions }, config))
+
+      try {
+        // Sparse patch: PUT /api/config deep-merges, and echoing the cached snapshot would
+        // overwrite keys other surfaces changed since it loaded.
+        await saveHermesConfig({ sessions: { recents_show_a2a: show } }, writeScope)
+      } catch (err) {
+        notifyError(err, s.recentsShowA2AFailed)
+      }
+    },
+    [config, s.recentsShowA2AFailed]
+  )
+
+  if (!config) {
+    return null
+  }
+
+  return (
+    <div className="mb-6">
+      <ToggleRow
+        checked={enabled}
+        description={s.recentsShowA2ADesc}
+        id={settingElementId(SETTING_IDS.sessions.recentsShowA2A)}
+        label={s.recentsShowA2ATitle}
+        onChange={on => {
+          setEnabled(on)
+          void persist(on)
+        }}
+      />
     </div>
   )
 }

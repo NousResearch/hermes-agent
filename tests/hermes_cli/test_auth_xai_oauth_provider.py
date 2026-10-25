@@ -11,7 +11,6 @@ from hermes_cli.auth import (
     AuthError,
     DEFAULT_XAI_OAUTH_BASE_URL,
     _read_xai_oauth_tokens,
-    _refresh_xai_oauth_tokens,
     _save_xai_oauth_tokens,
     get_xai_oauth_auth_status,
     refresh_xai_oauth_pure,
@@ -172,6 +171,7 @@ def test_refresh_xai_oauth_tokens_preserves_active_provider(tmp_path, monkeypatc
     auth_path = hermes_home / "auth.json"
     raw = json.loads(auth_path.read_text())
     raw["active_provider"] = "openrouter"
+    raw["providers"]["xai-oauth"]["last_auth_error"] = {"code": "superseded"}
     auth_path.write_text(json.dumps(raw))
 
     new_access = _jwt_with_exp(int(time.time()) + 7200)
@@ -188,16 +188,12 @@ def test_refresh_xai_oauth_tokens_preserves_active_provider(tmp_path, monkeypatc
 
     monkeypatch.setattr("hermes_cli.auth.refresh_xai_oauth_pure", _fake_pure)
 
-    tokens = _read_xai_oauth_tokens()["tokens"]
-    _refresh_xai_oauth_tokens(
-        tokens,
-        token_endpoint="https://auth.x.ai/oauth2/token",
-        timeout_seconds=5.0,
-    )
+    resolve_xai_oauth_runtime_credentials(force_refresh=True)
 
     after = json.loads(auth_path.read_text())
     assert after["active_provider"] == "openrouter"
     assert after["providers"]["xai-oauth"]["tokens"]["access_token"] == new_access
+    assert "last_auth_error" not in after["providers"]["xai-oauth"]
 
 
 def test_read_xai_oauth_tokens_missing(tmp_path, monkeypatch):

@@ -42,8 +42,9 @@ def _token_pair(tokens: Any) -> tuple[str, str]:
 
 def _xai_oauth_state_from_store(auth_store: dict[str, Any]) -> Optional[dict[str, Any]]:
     """Return usable xAI OAuth state from provider state or credential pool."""
-    from hermes_cli.auth import _load_provider_state
-    state = _load_provider_state(auth_store, "xai-oauth")
+    from hermes_cli.auth import _provider_state_in
+    # Inspect only this store: a fallback here loses the grant's provenance.
+    state = _provider_state_in(auth_store, "xai-oauth")
     if isinstance(state, dict) and all(_token_pair(state.get("tokens"))):
         return state
 
@@ -70,13 +71,31 @@ def _xai_oauth_state_has_usable_tokens(state: Optional[dict[str, Any]]) -> bool:
     return isinstance(state, dict) and all(_token_pair(state.get("tokens")))
 
 
+def _load_xai_oauth_state_with_source(
+    auth_store: dict[str, Any], *, include_pool: bool = True,
+) -> tuple[Optional[dict[str, Any]], Optional[Path]]:
+    """Resolve usable tokens and their owner together, including pool-only grants."""
+    from hermes_cli.auth import _auth_file_path, _global_auth_file_path, _load_global_auth_store, _provider_state_in
+    # Pool seeding must not turn an independent pooled account into a singleton alias.
+    read_state = _xai_oauth_state_from_store if include_pool else lambda store: _provider_state_in(store, "xai-oauth")
+    state = read_state(auth_store)
+    if _xai_oauth_state_has_usable_tokens(state):
+        return state, _auth_file_path()
+    root_state = read_state(_load_global_auth_store())
+    if _xai_oauth_state_has_usable_tokens(root_state):
+        return root_state, _global_auth_file_path()
+    if state is not None:
+        return state, _auth_file_path()
+    return (root_state, _global_auth_file_path()) if root_state is not None else (None, None)
+
+
 def _read_xai_oauth_tokens(*, _lock: bool = True) -> dict[str, Any]:
-    from hermes_cli.auth import _load_global_auth_store
-    state = _xai_oauth_state_from_store(_load_auth_store_maybe_locked(_lock))
-    if not _xai_oauth_state_has_usable_tokens(state):
-        global_state = _xai_oauth_state_from_store(_load_global_auth_store())
-        if _xai_oauth_state_has_usable_tokens(global_state):
-            state = global_state
+    state, _ = _load_xai_oauth_state_with_source(_load_auth_store_maybe_locked(_lock))
+    return _xai_oauth_token_data(state)
+
+
+def _xai_oauth_token_data(state: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Validate the selected owner's state without falling back to a different grant."""
     if not state:
         raise _xai_err(
             "No xAI OAuth credentials stored. Select xAI Grok OAuth (SuperGrok / Premium+) in `hermes model`.",
@@ -127,12 +146,12 @@ def _write_through_xai_oauth_to_global_root(state: dict[str, Any]) -> None:
 def _save_xai_oauth_tokens(
     tokens: dict[str, Any], *, discovery: Optional[dict[str, Any]] = None, redirect_uri: str = "",
     last_refresh: Optional[str] = None, auth_mode: str = "oauth_device_code",
-    set_active: bool = True,
+    set_active: bool = False,
 ) -> None:
-    """Persist xAI OAuth tokens; *set_active* also promotes ``xai-oauth`` to ``active_provider``.
+    """Persist credentials without selecting a chat provider by default.
 
-    Pass ``set_active=False`` for side-tool bootstrap (TTS/setup, tools config, dashboard, refresh)
-    so inference routing is unchanged.
+    Interactive login activates through the coordinated config transaction. The explicit
+    *set_active* override remains available for existing integrations.
     """
     from hermes_cli.auth import _auth_store_lock, _global_auth_file_path, _load_auth_store, _load_provider_state_with_source, _same_path, _save_auth_store, _store_provider_state, _utc_now_z, _write_through_xai_oauth_to_global_root
     if last_refresh is None:
@@ -145,6 +164,7 @@ def _save_xai_oauth_tokens(
         state, source_path = _load_provider_state_with_source(auth_store, "xai-oauth")
         state = state if state is not None else {}
         state.update(tokens=tokens, last_refresh=last_refresh, auth_mode=auth_mode)
+        state.pop("last_auth_error", None)
         if discovery:
             state["discovery"] = discovery
         if redirect_uri:
@@ -352,15 +372,13 @@ def refresh_xai_oauth_pure(
 
 
 def _refresh_xai_oauth_tokens(
-    tokens: dict[str, Any], *, token_endpoint: str, redirect_uri: str = "", timeout_seconds: float
+    tokens: dict[str, Any], *, token_endpoint: str, redirect_uri: str = "", timeout_seconds: float,
+    source: tuple,
 ) -> dict[str, Any]:
     # Keep the stored auth_mode (legacy logins may carry ``oauth_pkce``): refresh must not relabel it.
-    from hermes_cli.auth import _load_auth_store, _load_provider_state, refresh_xai_oauth_pure
-    try:
-        state = _load_provider_state(_load_auth_store(), "xai-oauth") or {}
-        auth_mode = str(state.get("auth_mode") or "oauth_device_code")
-    except Exception:
-        auth_mode = "oauth_device_code"
+    from hermes_cli.auth import _save_provider_state_to_source, refresh_xai_oauth_pure
+    store, source_state, source_path = source
+    state = dict(source_state or {})
     refreshed = refresh_xai_oauth_pure(
         _clean(tokens.get("access_token")), _clean(tokens.get("refresh_token")),
         token_endpoint=token_endpoint, timeout_seconds=timeout_seconds,
@@ -374,35 +392,50 @@ def _refresh_xai_oauth_tokens(
         updated_tokens["expires_in"] = refreshed["expires_in"]
     if refreshed.get("token_type"):
         updated_tokens["token_type"] = refreshed["token_type"]
-    # set_active=False: side tools (TTS) refresh xAI tokens while chat routes elsewhere.
-    _save_xai_oauth_tokens(
-        updated_tokens, discovery={"token_endpoint": token_endpoint}, redirect_uri=redirect_uri,
-        last_refresh=refreshed["last_refresh"], auth_mode=auth_mode, set_active=False,
-    )
+    state.update(tokens=updated_tokens, last_refresh=refreshed["last_refresh"])
+    state.pop("last_auth_error", None)
+    state.setdefault("auth_mode", "oauth_device_code")
+    state["discovery"] = {**state.get("discovery", {}), "token_endpoint": token_endpoint}
+    if redirect_uri:
+        state["redirect_uri"] = redirect_uri
+    _save_provider_state_to_source(store, "xai-oauth", state, source_path)
     return updated_tokens
 
 
-def _quarantine_xai_oauth_tokens(exc: AuthError) -> None:
+def _quarantine_xai_oauth_tokens(
+    exc: AuthError, *, source: tuple, failed_tokens: dict[str, Any],
+    reason: str = "runtime_refresh_failure",
+) -> None:
     """Clear dead xAI tokens after a terminal (400/401/403) refresh failure so later sessions fail fast.
 
     Best-effort: persistence failures are logged and swallowed; the caller re-raises regardless.
     """
-    from hermes_cli.auth import _last_auth_error_marker, _load_auth_store, _load_provider_state, _save_auth_store, _store_provider_state
+    from hermes_cli.auth import _last_auth_error_marker, _load_auth_store, _save_auth_store, _store_provider_state
     try:
-        store = _load_auth_store()
-        state = _load_provider_state(store, "xai-oauth") or {}
+        _, source_state, source_path = source
+        # The transaction still holds this owner's lock. Never create a profile shadow,
+        # and remove pooled aliases in the SAME write or resolution resurrects the grant.
+        store = _load_auth_store(source_path)
+        state = dict(source_state or {})
         tokens = dict(state.get("tokens") or {})
-        tokens.pop("access_token", None)
-        tokens.pop("refresh_token", None)
-        # Capture the previous singleton tokens BEFORE overwriting them. The pool-sync step uses this to
-        # distinguish legacy singleton-aliases (which should be refreshed) from independent accounts that
-        # ``hermes auth add openai-codex`` created (which must not be overwritten — see #39236).
-        state["tokens"] = tokens
-        state["last_auth_error"] = _last_auth_error_marker(
-            "xai-oauth", exc, reason="runtime_refresh_failure", default_code="xai_refresh_failed",
-        )
-        _store_provider_state(store, "xai-oauth", state, set_active=False)
-        _save_auth_store(store)
+        failed_access, failed_refresh = _token_pair(failed_tokens)
+        if _clean(tokens.get("refresh_token")) == failed_refresh:
+            tokens.pop("access_token", None)
+            tokens.pop("refresh_token", None)
+            state["tokens"] = tokens
+            state["last_auth_error"] = _last_auth_error_marker(
+                "xai-oauth", exc, reason=reason, default_code="xai_refresh_failed",
+            )
+            _store_provider_state(store, "xai-oauth", state, set_active=False)
+        pool = store.get("credential_pool", {})
+        entries = pool.get("xai-oauth", [])
+        pool["xai-oauth"] = [row for row in entries if not (
+            isinstance(row, dict) and (
+                (failed_refresh and _clean(row.get("refresh_token")) == failed_refresh)
+                or (failed_access and _clean(row.get("access_token")) == failed_access)
+            )
+        )]
+        _save_auth_store(store, target_path=source_path)
     except Exception as save_exc:
         logger.debug("xAI OAuth: failed to persist quarantined state: %s", save_exc)
 
@@ -418,7 +451,7 @@ def resolve_xai_oauth_runtime_credentials(
     *, force_refresh: bool = False, refresh_if_expiring: bool = True,
     refresh_skew_seconds: Optional[int] = None,
 ) -> dict[str, Any]:
-    from hermes_cli.auth import _auth_store_lock, _is_terminal_xai_oauth_refresh_error, _refresh_xai_oauth_tokens, _xai_oauth_discovery
+    from hermes_cli.auth import _provider_state_transaction, _is_terminal_xai_oauth_refresh_error, _refresh_xai_oauth_tokens, _xai_oauth_discovery
 
     def _should_refresh(data: dict[str, Any]) -> bool:
         access_token = _clean(data["tokens"].get("access_token"))
@@ -434,9 +467,11 @@ def resolve_xai_oauth_runtime_credentials(
     tokens = dict(data["tokens"])
     refresh_timeout_seconds = env_float("HERMES_XAI_REFRESH_TIMEOUT_SECONDS", 20)
     if _should_refresh(data):
-        with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
-            # Re-read under the lock: a concurrent caller may already have rotated the grant.
-            data = _read_xai_oauth_tokens(_lock=False)
+        with _provider_state_transaction(
+            "xai-oauth", timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0),
+        ) as source:
+            # Use the exact state re-read under its owner lock, not a second fallback lookup.
+            data = _xai_oauth_token_data(source[1])
             tokens = dict(data["tokens"])
             if _should_refresh(data):
                 token_endpoint = (
@@ -446,11 +481,11 @@ def resolve_xai_oauth_runtime_credentials(
                 try:
                     tokens = _refresh_xai_oauth_tokens(
                         tokens, token_endpoint=token_endpoint, redirect_uri=_clean(data.get("redirect_uri")),
-                        timeout_seconds=refresh_timeout_seconds,
+                        timeout_seconds=refresh_timeout_seconds, source=source,
                     )
                 except AuthError as exc:
                     if _is_terminal_xai_oauth_refresh_error(exc):
-                        _quarantine_xai_oauth_tokens(exc)
+                        _quarantine_xai_oauth_tokens(exc, source=source, failed_tokens=tokens)
                     raise
 
     return {
@@ -464,7 +499,9 @@ def resolve_xai_oauth_runtime_credentials(
     }
 
 
-def _login_xai_oauth(args, pconfig: ProviderConfig, *, force_new_login: bool = False) -> None:
+def _login_xai_oauth(
+    args, pconfig: ProviderConfig, *, force_new_login: bool = False, update_config: bool = True,
+) -> None:
     from hermes_cli.auth import _is_remote_session, _offer_existing_oauth_credentials, _print_login_success, _update_config_for_provider, _xai_oauth_device_code_login, resolve_xai_oauth_runtime_credentials, unsuppress_credential_source
     del pconfig
 
@@ -473,7 +510,7 @@ def _login_xai_oauth(args, pconfig: ProviderConfig, *, force_new_login: bool = F
         resolve=resolve_xai_oauth_runtime_credentials,
         is_expiring=_xai_access_token_is_expiring,
         display_name="xAI OAuth",
-        default_base_url=DEFAULT_XAI_OAUTH_BASE_URL,
+        default_base_url=DEFAULT_XAI_OAUTH_BASE_URL, update_config=update_config,
     ):
         return
 
@@ -491,13 +528,14 @@ def _login_xai_oauth(args, pconfig: ProviderConfig, *, force_new_login: bool = F
     _save_xai_oauth_tokens(
         creds["tokens"], discovery=creds.get("discovery"),
         redirect_uri=creds.get("redirect_uri", ""), last_refresh=creds.get("last_refresh"),
-        auth_mode="oauth_device_code",
+        auth_mode="oauth_device_code", set_active=False,
     )
     # Explicit re-login re-enables the credential: clear the ``device_code`` suppression marker left
     # by ``hermes auth remove xai-oauth``. Deliberately NOT inside _save_xai_oauth_tokens — the
-    # refresh hot path shares that helper and must never mutate suppression state.
+    # non-interactive credential writers must never mutate suppression state.
     unsuppress_credential_source("xai-oauth", "device_code")
-    config_path = _update_config_for_provider("xai-oauth", creds.get("base_url", DEFAULT_XAI_OAUTH_BASE_URL))
+    config_path = (_update_config_for_provider(
+        "xai-oauth", creds.get("base_url", DEFAULT_XAI_OAUTH_BASE_URL)) if update_config else None)
     _print_login_success("xai-oauth", config_path, show_auth_state=True)
 
 

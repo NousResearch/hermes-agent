@@ -33,3 +33,21 @@ async def test_remote_media_url_is_dropped_with_a_note_instead_of_refusing_the_m
         assert envelope['event']['media_types'] == ['video/mp4']
     finally:
         authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_an_attachment_only_message_stores_just_the_note(tmp_path, monkeypatch):
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    monkeypatch.setenv('WHATSAPP_ALLOWED_USERS', '15551234567')
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
+    adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={'session_path': str(tmp_path / 'wa')}))
+    runner.adapters = {Platform.WHATSAPP: adapter}
+    authority = await initialize_session_authority(runner, profile_id='default', instance_id='remote-media-only')
+    event = MessageEvent(text='', message_type=MessageType.PHOTO, message_id='m2',
+                         source=adapter.build_source(chat_id=CHAT, user_id=CHAT, chat_type='dm'),
+                         media_urls=['https://static.dingtalk.com/media/abc.png'], media_types=['image/png'])
+    try:
+        payload = await prepare_native(runner, event)
+        assert payload['text'] == '[The user sent an attachment (image/png) that could not be retrieved.]'
+    finally:
+        authority.db.close()

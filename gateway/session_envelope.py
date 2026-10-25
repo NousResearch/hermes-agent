@@ -77,13 +77,13 @@ def _drop_remote_media(event):
     if not isinstance(event.text, str) or _media_clause(event) is not None or all(map(os.path.isabs, urls)):
         return event
     kept = [index for index, url in enumerate(urls) if os.path.isabs(url)]
-    notes = ''.join(f"\n[The user sent an attachment ({types[index] if types else 'file'}) that could not be retrieved.]"
-                    for index in range(len(urls)) if index not in kept)
+    notes = [f"[The user sent an attachment ({types[index] if types else 'file'}) that could not be retrieved.]"
+             for index in range(len(urls)) if index not in kept]
 
     def keep(values):
         return [values[index] for index in kept] if values else values
-    return replace(event, text=event.text + notes, media_urls=keep(urls), media_types=keep(types),
-                   media_text_inlined=keep(event.media_text_inlined))
+    return replace(event, text='\n'.join(filter(None, [event.text, *notes])), media_urls=keep(urls),
+                   media_types=keep(types), media_text_inlined=keep(event.media_text_inlined))
 
 
 def _refuse(event, reason, clause):

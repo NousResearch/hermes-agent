@@ -959,6 +959,52 @@ class TestCatalogSweepFalsePositives:
         assert hit is not None and hit.severity in ("high", "critical"), format_scan_report(result)
         assert result.verdict in ("caution", "dangerous")
 
+
+class TestBenignProcIntrospection:
+    """#144123: /proc/self/cgroup and /proc/self/mountinfo are read by container CPU-quota
+    detection (and by language runtimes), so a read-only mention is not process
+    introspection. Writes, other proc paths and a bare /proc/self keep the finding."""
+
+    def test_container_layout_read_is_safe(self, tmp_path):
+        files = dict(BASE_FILES)
+        files["capacity.py"] = (
+            "from pathlib import Path\n\n"
+            "def container_layout():\n"
+            "    return (\n"
+            '        Path("/proc/self/cgroup").read_text(),\n'
+            '        Path("/proc/self/mountinfo").read_text(),\n'
+            "    )\n"
+        )
+        result = scan_plugin(_mk_plugin(tmp_path, files), source="owner/repo")
+        assert [f for f in result.findings if f.pattern_id == "proc_access"] == []
+        assert result.verdict == "safe", format_scan_report(result)
+
+    def test_doc_mention_is_safe(self, tmp_path):
+        files = {**BASE_FILES, "README.md": "# x\n\nReads /proc/self/cgroup for the CPU quota.\n"}
+        result = scan_plugin(_mk_plugin(tmp_path, files), source="owner/repo")
+        assert result.verdict == "safe", format_scan_report(result)
+
+    @pytest.mark.parametrize("line", [
+        'Path("/proc/self/status").read_text()\n',
+        'Path("/proc/1/cmdline").read_text()\n',
+        'print(Path("/proc/self").read_text())\n',
+        '(Path("/proc/self/cgroup"), Path("/proc/self/status"))\n',
+    ])
+    def test_other_proc_paths_still_flag(self, tmp_path, line):
+        files = {**BASE_FILES, "probe.py": line}
+        result = scan_plugin(_mk_plugin(tmp_path, files), source="owner/repo")
+        hit = next((f for f in result.findings if f.pattern_id == "proc_access"), None)
+        assert hit is not None and hit.severity == "high", format_scan_report(result)
+
+    @pytest.mark.parametrize("line", [
+        'Path("/proc/self/cgroup").write_text("x")\n',
+        'handle = open("/proc/self/mountinfo", "w")\n',
+    ])
+    def test_writes_still_flag(self, tmp_path, line):
+        files = {**BASE_FILES, "writer.py": line}
+        result = scan_plugin(_mk_plugin(tmp_path, files), source="owner/repo")
+        hit = next((f for f in result.findings if f.pattern_id == "proc_access"), None)
+        assert hit is not None and hit.severity == "high", format_scan_report(result)
     def test_scanner_version_contract(self):
         # A bump un-blocks previously-quarantined packages; assert the contract (changed), not a literal.
         assert PLUGIN_SCANNER_VERSION != "plugin-guard-v10"

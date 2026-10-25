@@ -11,6 +11,7 @@ needs confirmation, ``dangerous`` is blocked and ``--force`` does NOT override.
 from __future__ import annotations
 
 import ast
+import re
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
@@ -27,7 +28,7 @@ from tools.skills_guard import (
     Finding, ScanResult, SUSPICIOUS_BINARY_EXTENSIONS, _determine_verdict, format_scan_report,
     scan_file)
 
-PLUGIN_SCANNER_VERSION = "plugin-guard-v11"
+PLUGIN_SCANNER_VERSION = "plugin-guard-v12"
 
 # Never scanned: VCS internals, caches, vendored envs.
 EXCLUDED_DIRS = {
@@ -181,6 +182,8 @@ def _filter_findings(findings: list[Finding], rel_path: str, file_path: Path) ->
             f.severity = DOC_PROSE_DEMOTIONS[f.pattern_id]
         line = lines[f.line - 1] if 0 < f.line <= len(lines) else f.match
         joined = logical_line(lines, f.line - 1) if 0 < f.line <= len(lines) else line
+        if f.pattern_id == "proc_access" and _is_benign_proc_read(joined):
+            continue
         f.severity = _context_severity(f, rel_path, line, joined, doc_prose or locale_catalog, is_code,
                                        locale_catalog)
         if _is_defensive_documentation(f, rel_path):
@@ -202,6 +205,20 @@ def _filter_findings(findings: list[Finding], rel_path: str, file_path: Path) ->
 
 
 _SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+
+# /proc files every process may read about itself: cgroup membership and mount layout.
+# Container CPU-quota detection needs them to find the controller hierarchy, and language
+# runtimes read them for container resource discovery, so a read-only mention is not
+# process introspection (#144123). A write or any other /proc path keeps the finding.
+_BENIGN_PROC_PATHS = frozenset({"/proc/self/cgroup", "/proc/self/mountinfo"})
+_PROC_PATH_RE = re.compile(r"/proc/(?:self|\d+)/[\w.\-/]*")
+_PROC_WRITE_RE = re.compile(r"write_text|write_bytes|\.write\s*\(|open\s*\([^)]*['\"][wa]|>\s*/proc/")
+
+
+def _is_benign_proc_read(text: str) -> bool:
+    """True when every /proc path on *text* is the cgroup/mountinfo pair and none is written."""
+    paths = [m.group(0).rstrip("/") for m in _PROC_PATH_RE.finditer(text)]
+    return bool(paths) and all(p in _BENIGN_PROC_PATHS for p in paths) and not _PROC_WRITE_RE.search(text)
 
 
 def _at_most(severity: str, cap: str) -> str:

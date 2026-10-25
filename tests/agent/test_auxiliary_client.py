@@ -2526,6 +2526,27 @@ class TestKimiTemperatureOmitted:
         assert "temperature" not in kwargs
 
     @pytest.mark.parametrize(
+        "model,expected",
+        [
+            # The Kimi Code endpoint's K3 ids carry no ``kimi`` in the bare name (#142365):
+            # the aux call must still omit temperature or the endpoint 400s every request.
+            ("k3", True),
+            ("k3-256k", True),
+            ("kimi-coding/k3", True),
+            ("kimi-k3-cot", True),
+            ("kimi-for-coding", True),
+            ("moonshotai/kimi-k2.6", True),
+            ("anthropic/claude-sonnet-4-6", False),
+            ("deepseek-chat", False),
+            ("mk3000", False),  # ``k3`` only as a delimited token, never a substring
+        ],
+    )
+    def test_kimi_detection_covers_the_code_endpoint_k3_ids(self, model, expected):
+        from agent.auxiliary_client import _is_kimi_model
+
+        assert _is_kimi_model(model) is expected
+
+    @pytest.mark.parametrize(
         "model",
         [
             "anthropic/claude-sonnet-4-6",

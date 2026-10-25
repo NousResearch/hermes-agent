@@ -25,6 +25,7 @@ from agent.reasoning_effort import (
     KIMI_K3_OVERRIDES,
     OPENAI_COMPAT_WIRE_EFFORTS,
     clamp_effort,
+    is_kimi_k3_slug,
     kimi_supported_efforts,
     requested_effort,
 )
@@ -186,3 +187,13 @@ class TestRequestedEffort:
         assert requested_effort({"enabled": False, "effort": "high"}) is None
         assert requested_effort("not-a-dict") is None
         assert requested_effort({"effort": ""}) is None
+
+
+class TestIsKimiK3Slug:
+    @pytest.mark.parametrize("model", ["k3", "k3-256k", "kimi-k3", "kimi-k3-cot", "moonshotai/kimi-k3", "K3"])
+    def test_code_endpoint_k3_ids_match(self, model):
+        assert is_kimi_k3_slug(model) is True
+
+    @pytest.mark.parametrize("model", ["kimi-k2.6", "kimi-for-coding", "mk3000", "deepseek-chat", None, ""])
+    def test_everything_else_does_not(self, model):
+        assert is_kimi_k3_slug(model) is False

@@ -114,6 +114,17 @@ def codex_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
     )
 
 
+def is_kimi_k3_slug(model: Optional[str]) -> bool:
+    """True for the Kimi Code endpoint's K3 ids (``k3``, ``k3-256k``, ``kimi-k3*``).
+
+    The bare ids carry no ``kimi`` in the name, so name-prefix Kimi detectors miss
+    them (#142365) — every Kimi heuristic should share this check instead of growing
+    its own prefix list.
+    """
+    m = (model or "").strip().lower().split("/")[-1]
+    return bool(_KIMI_K3_SLUG_RE.search(m))
+
+
 def kimi_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
     """Supported effort set for a Moonshot/Kimi slug (bare ``k3``, ``k3-256k``, ``kimi-k3*`` → K3).
 
@@ -121,8 +132,7 @@ def kimi_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
     documented set is low/high/max. Everything earlier speaks low/medium/high. Boundary-matched so K2-era
     names (``kimi-k2.6``) never match (detection regex from #76427 by @ruizanthony).
     """
-    m = (model or "").strip().lower().split("/")[-1]
-    return KIMI_K3_EFFORTS if _KIMI_K3_SLUG_RE.search(m) else KIMI_K2_EFFORTS
+    return KIMI_K3_EFFORTS if is_kimi_k3_slug(model) else KIMI_K2_EFFORTS
 
 
 def clamp_effort(

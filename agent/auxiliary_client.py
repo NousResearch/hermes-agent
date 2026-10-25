@@ -590,9 +590,15 @@ def _bare_model(model: Optional[str]) -> str:
 
 
 def _is_kimi_model(model: Optional[str]) -> bool:
-    """True for any Kimi / Moonshot model that manages temperature server-side."""
+    """True for any Kimi / Moonshot model that manages temperature server-side.
+
+    The Kimi Code endpoint serves K3 as ``k3`` / ``k3-256k`` — no ``kimi`` in the bare
+    name — so the prefix test alone misses it and the aux call goes out with a
+    temperature the endpoint rejects (#142365); share the K3 slug check instead.
+    """
+    from agent.reasoning_effort import is_kimi_k3_slug
     bare = _bare_model(model)
-    return bare.startswith("kimi-") or bare == "kimi"
+    return bare.startswith("kimi-") or bare == "kimi" or is_kimi_k3_slug(bare)
 
 
 def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:

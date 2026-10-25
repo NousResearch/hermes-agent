@@ -405,3 +405,61 @@ def test_reclaim_ignores_unknown_pid_and_never_raises():
         assert pi.reap_orphaned_backend_owner(999, 9.0, kill_fn=lambda pid: None) is None
     with patch.object(pi, "ledger_entries", side_effect=RuntimeError("boom")):
         assert pi.reap_orphaned_backend_owner(555, 55.0, kill_fn=lambda pid: None) is None
+
+
+# ---------------------------------------------------------------------------
+# Birth unit space: persisted births stay epoch, in-flight ones are stable
+# ---------------------------------------------------------------------------
+
+def _proc_with_impl(create_time=100.0, stable=999.0, raise_type_error=False):
+    """A psutil.Process stand-in with a real platform implementation behind ``_proc``."""
+    impl = MagicMock()
+    if raise_type_error:
+        impl.create_time.side_effect = TypeError("unexpected keyword argument 'monotonic'")
+    else:
+        impl.create_time.return_value = stable
+    proc = MagicMock()
+    proc.pid = 4242
+    proc.create_time.return_value = create_time
+    proc._proc = impl
+    return proc
+
+
+def test_stable_birth_uses_the_platform_monotonic_start():
+    proc = _proc_with_impl(create_time=1_792_945_751.43, stable=9534.43)
+    assert pi.process_birth(proc, stable=True) == pytest.approx(9534.43)
+    proc._proc.create_time.assert_called_with(monotonic=True)
+
+
+def test_default_birth_keeps_create_time_for_persisted_identities():
+    """The spawn ledger and kanban owner bindings store this value and compare it across runs.
+    Changing its unit space would silently invalidate every entry an older build wrote."""
+    proc = _proc_with_impl(create_time=1_792_945_751.43, stable=9534.43)
+    assert pi.process_birth(proc) == pytest.approx(1_792_945_751.43)
+
+
+def test_stable_birth_falls_back_when_the_platform_has_no_monotonic_read():
+    proc = _proc_with_impl(create_time=1_792_945_751.43, raise_type_error=True)
+    assert pi.process_birth(proc, stable=True) == pytest.approx(1_792_945_751.43)
+
+
+def test_stable_birth_matches_across_processes():
+    """The regression this fixes: a boot-time step moved ``create_time()`` between the worker's
+    hello (recorded in its own process) and the owner's claim check (a different process), so the
+    exact-match identity check refused a live managed worker. The stable birth must read the same
+    from either process."""
+    import psutil
+
+    target = os.getpid()
+    here = pi.process_birth(psutil.Process(target), stable=True)
+    repo_root = Path(pi.__file__).resolve().parents[1]
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "import sys, psutil;"
+         "sys.path.insert(0, sys.argv[2]);"
+         "from hermes_cli.process_identity import process_birth;"
+         "print(repr(process_birth(psutil.Process(int(sys.argv[1])), stable=True)))",
+         str(target), str(repo_root)],
+        capture_output=True, text=True, check=True,
+    )
+    assert float(out.stdout.strip()) == pytest.approx(here, abs=0.01)

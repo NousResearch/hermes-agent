@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import psutil
 import pytest
 
+from hermes_cli.process_identity import process_birth
 from hermes_state import SessionDB
 from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc, websocket
@@ -31,7 +32,9 @@ LAUNCHER = ('import subprocess, sys\n'
 
 def _hello(pid):
     proc = psutil.Process(pid)
-    return {'type': 'hello', 'pid': pid, 'birth': proc.create_time(),
+    # Mirrors managed_worker.hello(): the caller-independent birth, so a clock step between this
+    # process and the owner cannot make the same live pid read as a different incarnation.
+    return {'type': 'hello', 'pid': pid, 'birth': process_birth(proc, stable=True),
             'ancestors': [p.pid for p in proc.parents()[:4]]}
 
 
@@ -63,7 +66,10 @@ def test_owner_binds_reservation_to_verified_descendant_of_the_handle_only(tmp_p
                 reserve_admission_worker(authority, hello=_hello(os.getpid()), **kwargs)
             assert db._read_one('SELECT COUNT(*) FROM worker_executions')[0] == 0
             scope = reserve_admission_worker(authority, hello=_hello(real), **kwargs)
-            assert (scope['pid'], scope['birth']) == (real, psutil.Process(real).create_time())
+            # The reservation hands back the identity every process agrees on, not the
+            # epoch create_time() whose boot-time reference the caller re-reads.
+            assert (scope['pid'], scope['birth']) == (
+                real, process_birth(psutil.Process(real), stable=True))
             assert scope['pid'] != launcher.pid
     finally:
         # The real interpreter first, while it is still the launcher's child: killing the launcher

@@ -448,7 +448,8 @@ def hello():
     import psutil
     from hermes_cli.process_identity import process_birth
     me = psutil.Process()
-    return {'pid': me.pid, 'birth': process_birth(me), 'ancestors': [p.pid for p in me.parents()[:3]]}
+    return {'pid': me.pid, 'birth': process_birth(me, stable=True),
+            'ancestors': [p.pid for p in me.parents()[:3]]}
 
 
 def main():

@@ -63,20 +63,33 @@ def install_id(project_root: Optional[Path] = None) -> str:
     return hashlib.sha256(canonical.encode("utf-8", "replace")).hexdigest()[:12]
 
 
-def process_birth(proc) -> float:
-    """A managed worker's identity birth for the ``psutil.Process`` *proc*, the same in every process.
+def process_birth(proc, *, stable: bool = False) -> float:
+    """A managed worker's identity birth for the ``psutil.Process`` *proc*.
 
-    On macOS psutil shifts ``create_time()`` by ``abs(INIT_BOOT_TIME - boot_time())``
-    (``psutil._psosx.adjust_proc_create_time``), with a boot-time reference frozen when psutil
-    was imported in the CALLING process. After a clock step (NTP, sleep/wake) a long-lived
-    gateway owner and a freshly spawned worker read different births for the same process, and
-    the exact identity match refused every managed worker (#140580). The kernel's own start
-    (``monotonic=True``: the unadjusted ``kinfo_proc`` epoch start) is what every process sees.
-    Other platforms keep ``create_time()``: Linux and Windows apply no per-process reference.
+    ``create_time()`` is the epoch start plus a boot-time reference that the CALLER re-reads, so an
+    exact identity match on it refuses live workers whenever the host clock steps:
+
+    * macOS: psutil shifts it by ``abs(INIT_BOOT_TIME - boot_time())``
+      (``psutil._psosx.adjust_proc_create_time``), with a boot-time reference frozen when psutil
+      was imported in the CALLING process (#140580).
+    * Linux: psutil adds ``boot_time()``, re-read from ``/proc/stat btime`` on EVERY call. A btime
+      step (NTP, sleep/wake, WSL2 clock resync) therefore moves ``create_time()`` for the same live
+      pid between two readings, and an exact-match check refused live managed workers
+      (``birth_matches=False`` on a running, same-user, non-zombie pid).
+
+    ``stable=True`` returns the unadjusted kernel start instead — ``monotonic=True`` on the platform
+    implementation: macOS's ``kinfo_proc`` epoch start, Linux's jiffies-since-boot. Every process
+    reads the same value for the same pid, so it is the right identity for a birth recorded in one
+    process and verified in another (the managed-worker hello/reserve/claim handshake, which lives
+    only as long as the processes it describes). Windows' implementation has no such keyword; the
+    ``TypeError`` below falls back to ``create_time()`` there.
+
+    The default stays ``create_time()``: births that are PERSISTED and compared across runs (the
+    spawn ledger, kanban owner bindings) keep their existing epoch unit space, so entries written by
+    an older build still compare. Mixing the two unit spaces is a bug — pick one per stored value.
     Raises ``psutil.Error`` like ``create_time()``.
     """
-    import psutil
-    if getattr(psutil, "MACOS", False):
+    if stable:
         platform_proc = getattr(proc, "_proc", None)
         if platform_proc is not None:
             try:
@@ -84,6 +97,21 @@ def process_birth(proc) -> float:
             except TypeError:  # a psutil without the monotonic read: fall back to the adjusted one
                 pass
     return float(proc.create_time())
+
+
+def birth_matches(proc, recorded, *, stable: bool = True) -> bool:
+    """Does ``recorded`` name this incarnation of ``proc``?
+
+    Accepts either unit space: the caller-independent birth this build records (``stable``), or the
+    epoch ``create_time()`` a build predating it would have recorded. A value already on disk, or a
+    worker started by an older build, therefore still matches the process it describes instead of
+    being read as a reused pid. Raises ``psutil.Error`` like ``create_time()``.
+    """
+    if recorded is None:
+        return False
+    if process_birth(proc, stable=stable) == recorded:
+        return True
+    return float(proc.create_time()) == float(recorded)
 
 
 def _process_create_time(pid: Optional[int] = None) -> Optional[float]:

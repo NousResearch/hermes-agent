@@ -33,6 +33,7 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { resolveRememberedActivePane, workspaceScopeKey } from '@/components/pane-shell/workspace-scope'
 import type { WorkspaceMode } from '@/contrib/types'
+import { dropBrowserProfilePrefs, migrateBrowserProfilePrefs } from '@/lib/browser-profile-prefs'
 import { finalizeInterruptedMessages, sealOpenToolParts } from '@/lib/chat-messages'
 import { tileFocusStampOnFocusChange } from '@/lib/session-timer-since'
 import { stableArray } from '@/lib/stable-array'
@@ -2832,9 +2833,8 @@ export function dropTilesForProfile(
   }
 
   persistTiles()
-  // The rail is a profile-keyed family too: a deleted profile's tabs must not
-  // outlive it, or a later profile of the same name inherits them.
   dropPreviewTabsForProfile(name)
+  dropBrowserProfilePrefs(name)
 }
 
 /**
@@ -2898,9 +2898,8 @@ export function migrateTilesForProfile(oldProfile: string, newProfile: string): 
   migrateSessionOwnerHintsForProfile(from, to)
   migratePreviewArtifactsForProfile(from, to)
   migrateStatusDrawersForProfile(from, to)
-  // Sibling family: the rail's profile-keyed buckets move with the rename, or
-  // the renamed profile opens with an empty rail and the old name keeps them.
   migratePreviewTabsForProfile(from, to)
+  migrateBrowserProfilePrefs(from, to)
 }
 
 /** ⌘⇧T — reopen the most recently closed tab where it was, then focus it.

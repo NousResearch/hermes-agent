@@ -1,8 +1,54 @@
-import { readKey } from './storage'
+import { normalizeBasePath } from '@hermes/shared'
+
+import type { BrowserHostGlobals } from './platform'
+import { readKey, writeKey } from './storage'
 
 interface BrowserSettingsOptions {
   basePath: string
   currentProfile: () => null | string
+}
+
+/** This page's hosted gateway, the same scope `createBrowserSettings` keys on. */
+export function browserPageBasePath(): string {
+  return normalizeBasePath((window as Window & BrowserHostGlobals).__HERMES_BASE_PATH__)
+}
+
+export function browserDefaultProjectDirKey(basePath: string, profile: string): string {
+  return `hermes:browser:default-project-dir:${JSON.stringify([basePath || '/', profile.trim() || 'default'])}`
+}
+
+/** The profile's own default folder, or '' when it never chose one. */
+export function readBrowserDefaultProjectDir(basePath: string, profile: string): string {
+  return readKey(browserDefaultProjectDirKey(basePath, profile))?.trim() || ''
+}
+
+/** Rename keeps the folder with the profile. A destination that already chose
+ * one keeps it; the old key is dropped either way so the name can be reused. */
+export function migrateBrowserFolderPref(basePath: string, from: string, to: string): void {
+  const sourceKey = browserDefaultProjectDirKey(basePath, from)
+  const destKey = browserDefaultProjectDirKey(basePath, to)
+
+  if (sourceKey === destKey) {
+    return
+  }
+
+  const source = readKey(sourceKey)
+
+  if (source === null) {
+    return
+  }
+
+  const next = source.trim()
+
+  if (next && readKey(destKey) === null) {
+    writeKey(destKey, next)
+  }
+
+  writeKey(sourceKey, null)
+}
+
+export function dropBrowserFolderPref(basePath: string, profile: string): void {
+  writeKey(browserDefaultProjectDirKey(basePath, profile), null)
 }
 
 /**
@@ -18,8 +64,7 @@ export function createBrowserSettings({
   basePath,
   currentProfile
 }: BrowserSettingsOptions): Window['hermesDesktop']['settings'] {
-  const key = () =>
-    `hermes:browser:default-project-dir:${JSON.stringify([basePath || '/', currentProfile()?.trim() || 'default'])}`
+  const key = () => browserDefaultProjectDirKey(basePath, currentProfile()?.trim() || 'default')
 
   return {
     getDefaultProjectDir: async () => ({

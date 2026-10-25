@@ -1,6 +1,7 @@
 import type { DesktopProfileRoute } from '@/global'
 import { requireBrowserConnection } from '@/lib/browser-connection'
 
+import { browserStartupProfileKey } from './browser-startup-profile'
 import { readJson } from './storage'
 
 interface BrowserProfileOptions {
@@ -25,7 +26,7 @@ export function createBrowserProfileBridge({
   openWindow
 }: BrowserProfileOptions): Pick<Window['hermesDesktop'], 'openWindow' | 'profile'> {
   // localStorage supplies origin isolation; the base path separates colocated servers.
-  const storageKey = `hermes:webapp:default-profile:${basePath || '/'}`
+  const storageKey = browserStartupProfileKey(basePath)
   const listeners = new Set<(route: DesktopProfileRoute | null) => void>()
 
   const requireRoute = (value: unknown): DesktopProfileRoute => {

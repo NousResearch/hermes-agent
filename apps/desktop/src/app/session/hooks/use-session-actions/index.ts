@@ -1004,12 +1004,8 @@ export function useSessionActions({
       const listed = options?.listed ?? true
 
       try {
-        // A tile anchored at a project path belongs to the profile the project
-        // tree is rendered under — the same owner the fresh-draft "+" pins
-        // (#79005). The occupied-chat "+" and project-row drags reach this
-        // path instead, where a stale $newChatProfile pin would otherwise win
-        // and land the session in the wrong profile (#124265). All-profiles
-        // view has no owner and keeps the ordinary fallback.
+        // Project-path tiles take the tree's profile (#79005 / #124265). A stale
+        // $newChatProfile pin must not win for the occupied-chat "+" or a project drag.
         const projectOwnerProfile =
           options?.profile === undefined && typeof options?.cwd === 'string'
             ? (projectProfile() ?? undefined)
@@ -1065,7 +1061,11 @@ export function useSessionActions({
         }
 
         const cwd =
-          options?.cwd === null ? '' : typeof options?.cwd === 'string' ? options.cwd.trim() : resolveNewSessionCwd()
+          options?.cwd === null
+            ? ''
+            : typeof options?.cwd === 'string'
+              ? options.cwd.trim()
+              : resolveNewSessionCwd(requestedProfile)
 
         // #52589 provenance for the tile path: an explicitly-passed cwd is a
         // deliberate workspace pick; a resolved default is inherited.

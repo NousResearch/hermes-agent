@@ -1445,6 +1445,8 @@ def _record_task_failure(
                 detail = {"failures": failures, "retry_status": retry_status}
                 if infrastructure:
                     detail["infrastructure"] = True
+                if event_payload_extra:
+                    detail.update(event_payload_extra)
                 run_id = _kb._end_run(
                     conn, task_id, outcome=outcome, status=outcome, error=error, metadata=detail,
                 )
@@ -1480,6 +1482,7 @@ def _record_task_failure(
                     "effective_limit": effective_limit,
                     "limit_source": limit_source,
                     "retry_status": retry_status,
+                    **(event_payload_extra or {}),
                 },
             )
         if force_trip:

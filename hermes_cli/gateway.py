@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from hermes_cli import gateway_service_owner, setup_platforms
+from hermes_cli.gateway_service_paths import build_wsl_interop_paths as _build_wsl_interop_paths
 
 # UV's bundled Python ships a minimal PATH; ensure launchctl/systemctl are discoverable.
 if os.name == "posix":
@@ -2956,44 +2957,6 @@ def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
         str(home / ".npm-global" / "bin"),  # npm global packages
     ]
     return [p for p in candidates if p not in path_entries and Path(p).exists()]
-
-
-def _build_wsl_interop_paths(path_entries: list[str]) -> list[str]:
-    """WSL Windows-interop PATH entries for generated units: systemd services don't inherit the
-    Windows PATH (``/mnt/c/WINDOWS/System32``…), so ``powershell.exe``/``cmd.exe`` break unless persisted.
-
-    Only the which()-resolved tool dirs and the hardcoded System32 family belong here. The
-    shell PATH is deliberately NOT scraped: WSL appends every Windows PATH entry (Desktop app,
-    git, node dirs under ``/mnt/``) ahead of the interop defaults, and persisting those into the
-    unit makes the gateway open 9p (Plan 9 interop) connections to each of them at start — enough
-    to exhaust the 9p server connection limit (#73163). Interop tools don't need them."""
-    if not is_wsl():
-        return []
-
-    candidates: list[str] = []
-    for executable in ("powershell.exe", "cmd.exe", "explorer.exe", "wsl.exe"):
-        resolved = shutil.which(executable)
-        if resolved:
-            candidates.append(str(Path(resolved).parent))
-    candidates += [
-        entry
-        for entry in (
-            "/mnt/c/WINDOWS/system32",
-            "/mnt/c/WINDOWS",
-            "/mnt/c/WINDOWS/System32/Wbem",
-            "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/",
-            "/mnt/c/WINDOWS/System32/OpenSSH/",
-        )
-        if Path(entry).exists()
-    ]
-
-    result: list[str] = []
-    seen = set(path_entries)
-    for entry in candidates:
-        if entry and entry not in seen:
-            seen.add(entry)
-            result.append(entry)
-    return result
 
 
 def _remap_path_for_user(path: str, target_home_dir: str) -> str:

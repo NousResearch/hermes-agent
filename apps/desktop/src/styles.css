@@ -1334,6 +1334,129 @@
   --arc-c2: color-mix(in srgb, var(--arc-c1) 45%, transparent);
 }
 
+/* Power usage → Low (Appearance). In `low` the
+   sidebar's travelling arc is removed outright — not frozen: a static ring says
+   nothing the dot cannot, and the ring is a 240%-scaled repeating-gradient layer
+   that Chromium re-rasters every frame while any session runs (measured 19.5% of
+   one core idle at 1080p60, 2.1% with every animation cancelled). The row's own
+   status dot carries the cue instead: same element, same per-state colour, with
+   its opacity animated only while a turn is actually producing.
+   `normal` stays the default, so this changes nothing until it is opted into. */
+:root[data-power-usage='low'] .arc-border.arc-row {
+  display: none;
+}
+
+/* Same class, different surface: the HUD composer's 2px arc (`.arc-composer`)
+   is the same travelling gradient. The HUD has no status dot to hand the cue
+   to, so its ring stays as a STATIC marker rather than disappearing — it still
+   says "this session is running", at zero per-frame cost. */
+:root[data-power-usage='low'] .arc-border.arc-composer::before {
+  animation: none;
+}
+
+/* Low power usage's activity cue: a slow, deliberately stepped breathe —
+   35% → 60% → 100% → 60% over 3 s, one change every 750 ms (1.33 changes per
+   second). Interpolation is what costs: a smooth opacity curve asks the
+   compositor for a new frame every vsync (60 changes/s) for as long as a turn
+   runs, which measured worse than the arc it replaced. Four discrete states
+   means four composites per cycle instead of 180, and at 750 ms apart the
+   frame-delivery jitter that made the fast stepped version stutter is invisible.
+   `will-change` keeps the 6 px layer composited; opacity keeps it off the paint
+   path. */
+@keyframes status-dot-breathe {
+  0% {
+    opacity: 0.35;
+  }
+  25% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+  75% {
+    opacity: 0.6;
+  }
+  100% {
+    opacity: 0.35;
+  }
+}
+
+.status-dot-breathe {
+  will-change: opacity;
+  animation: status-dot-breathe 3s steps(1, end) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-dot-breathe {
+    opacity: 1;
+    animation: none;
+  }
+}
+
+/* Power usage → Low, chat surface. Same rule as the sidebar cue: keep the
+   information, stop the frame production. Everything below runs only while a
+   turn is in flight, and interpolating any of it asks the compositor for a
+   value every vsync for the whole turn — so each one either steps (a few
+   discrete updates per cycle) or loses the motion it did not need. */
+
+/* Glyph spinner: already discrete (steps(N) over N frames), so only the rate is
+   wrong — 10 frames over 800 ms is 12.5 updates/s. Stretching the cycle halves
+   that without changing the frames or the clip. */
+:root[data-power-usage='low'] .glyph-spinner__strip {
+  animation-duration: 2s;
+}
+
+/* Thread timeline's busy tick: an interpolated opacity breathe at 60 fps. */
+:root[data-power-usage='low'] .thread-timeline-tick[aria-busy='true'] [data-slot='timeline-bar'] {
+  animation: timeline-loading 1.6s steps(2, end) infinite alternate;
+}
+
+/* Streaming code cards glow by animating box-shadow — a main-thread paint on
+   every frame, the most expensive thing in the transcript while output streams.
+   Low keeps the one-shot entrance and drops the pulse. */
+:root[data-power-usage='low']
+  [data-slot='aui_assistant-message-content']
+  .aui-md
+  [data-slot='code-card'][data-streaming='true'] {
+  animation: code-card-stream-enter 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Indeterminate progress (pet hatching): travel is compositor-only but
+   continuous; step it rather than sliding smoothly. */
+:root[data-power-usage='low'] .progress-slide {
+  animation-duration: 2.3s;
+  animation-timing-function: steps(6, end);
+}
+
+/* Live-label shimmer (the left-to-right wave on "Running N commands", tool rows
+   and streaming status labels) animates `background-position` — a main-thread
+   repaint on every frame, and it stays mounted for the whole time a label is
+   live. Low swaps the sweep for two brightness states (75% / 100%) at the same
+   cadence the status dot uses — one change every 750 ms, so 1.33 composited
+   opacity updates per second instead of sixty paints. */
+@keyframes label-breathe {
+  0% {
+    opacity: 0.75;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.75;
+  }
+}
+
+:root[data-power-usage='low'] .shimmer {
+  animation: label-breathe 1.5s steps(1, end) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-power-usage='low'] .shimmer {
+    opacity: 1;
+    animation: none;
+  }
+}
+
 /* HUD composer — same travelling arc as a working sidebar row, 2px and pill-
    rounded to match the bar. */
 .arc-border.arc-composer,

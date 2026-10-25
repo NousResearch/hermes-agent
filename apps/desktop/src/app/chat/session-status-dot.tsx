@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import { type Translations, useI18n } from '@/i18n'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
+import { $powerUsage } from '@/store/power-usage'
 import { $sessionColorById, sessionColorFor } from '@/store/session-color'
 import { $sessionDotStateById, type SessionDotState } from '@/store/session-dot-state'
 import type { SessionInfo } from '@/types/hermes'
@@ -50,12 +51,14 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
     role: 'status',
     title: r => r.sessionRunning
   },
-  // Hollow muted — a terminal(background=true) process outlived the turn. An
-  // outline reads as "still open" without claiming the model is working; a
-  // filled grey dot read as finished, the opposite of what this means.
+  // Hollow violet — a terminal(background=true) process or a delegated subagent
+  // outlived the turn. An outline reads as "still open" without claiming the
+  // model is working; the violet separates "something of mine is still running"
+  // from the accent blue of a live turn, the amber of a blocking prompt and the
+  // emerald of unread. Grey read as finished, which is the opposite of this.
   background: {
     ariaLabel: r => r.backgroundRunning,
-    className: `${DOT_BASE} border border-(--ui-text-tertiary)`,
+    className: `${DOT_BASE} border border-(--ui-purple)`,
     role: 'status',
     title: r => r.backgroundRunning
   },
@@ -139,6 +142,22 @@ export function SessionStatusDot({ storedSessionId, session, branchStem, classNa
 
   const variant = DOT_VARIANTS[dotState]
 
+  // Low power usage retires the row's travelling arc, so this same dot carries the
+  // motion instead. `stalled` breathes too: the turn is still authoritatively
+  // running, and stopping the cue on a quiet stretch is exactly the stutter
+  // this replaced. needs-input stays static — amber means "act", not "moving".
+  //
+  // `background` breathes in BOTH modes: a terminal(background=true) process or
+  // a delegated subagent runs for minutes or hours after the turn ends, and the
+  // arc deliberately does not cover that state (a travelling ring at 60 fps for
+  // an hour is the very cost this work removed). Four composites per 3 s cycle
+  // is the cheapest honest way to say "still running" — so it does not wait for
+  // the power-usage setting. (store/power-usage.ts has the cost numbers.)
+  const powerUsage = useStore($powerUsage)
+
+  const breathes =
+    dotState === 'background' || (powerUsage === 'low' && (dotState === 'working' || dotState === 'stalled'))
+
   return (
     <span className={cn('flex items-center gap-0.5', className)}>
       {branchStem ? (
@@ -154,7 +173,7 @@ export function SessionStatusDot({ storedSessionId, session, branchStem, classNa
       ) : (
         <span
           aria-label={variant.ariaLabel?.(r)}
-          className={variant.className}
+          className={cn(variant.className, breathes && 'status-dot-breathe')}
           role={variant.role}
           title={variant.title?.(r)}
         />

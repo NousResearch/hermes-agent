@@ -9,7 +9,7 @@ import sqlite3
 
 import pytest
 
-from cron import jobs
+from cron import executions, jobs
 from gateway import session_cron
 from hermes_state import SessionDB
 from hermes_state_runtime import RuntimeStoreError
@@ -47,6 +47,32 @@ async def test_unified_runs_are_listed_with_legacy_runs_and_only_for_their_job(o
     assert beta_runs[0].get('cron_execution_id') == beta_fire
     assert alpha_runs[0]['preview'] == f'run {alpha}'
     assert [r['id'] for r in db.list_cron_job_runs(alpha, limit=1, offset=1)] == [legacy]
+
+
+@pytest.mark.asyncio
+async def test_terminal_admission_without_a_stored_result_reports_a_diagnosable_error(owner):
+    """FIX-773: a satellite cron turn dropped at gateway intake settles its admission
+    'completed' with an empty answer and no stored cron_result. The status fallback must
+    not echo the raw outcome into the error slot — that booked the failed run as
+    error='completed', which reads like a success."""
+    from hermes_state_runtime import claim_session_input, settle_session_input
+    job = jobs.create_job(prompt='report', schedule='every 1h', deliver='local')['id']
+    execution_id = executions.create_execution(job, source='test')['id']
+    receipt = await session_cron.operation(
+        owner, 'submit', {'job_id': job, 'request_id': execution_id, 'extra_prompt': None})
+    row = claim_session_input(owner.db, epoch=owner.epoch, session_id=receipt['session_id'])
+    assert isinstance(row, dict)
+    settled = settle_session_input(owner.db, epoch=owner.epoch,
+                                   admission_id=row['admission_id'],
+                                   generation=row['generation'], outcome='completed')
+    assert settled['status'] == 'terminal'
+    state = await session_cron.operation(
+        owner, 'status', {'session_id': receipt['session_id'], 'admission_id': row['admission_id']})
+    assert state['status'] == 'terminal'
+    success, output, answer, error = state['result']
+    assert (success, output, answer) == (False, '', '')
+    assert error != 'completed'
+    assert 'without a scheduler result' in error and 'completed' in error
 
 
 @pytest.mark.asyncio

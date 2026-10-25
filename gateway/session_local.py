@@ -450,6 +450,15 @@ def local_session_info(authority, ref):
         if warning := ' '.join(filter(None, notices)):
             info['config_warning'] = warning
     info.update(_classic_cli_fields(authority, ref, live, agent, policy))
+    # The viewer fences lifecycle events on the owner's execution stamp (B2-18): once a submit
+    # response set its generation, a session.info without one is dropped as stale, so a committed
+    # /model or /reasoning pick stays invisible until the next turn resettles the info. Stamp the
+    # snapshot like _publish_pending already does.
+    import contextlib
+    with contextlib.suppress(Exception):
+        row = authority.db.get_session(ref.session_id) or {}
+        info['authority_epoch'] = authority.epoch
+        info['execution_generation'] = row['runtime_generation']
     return info
 
 

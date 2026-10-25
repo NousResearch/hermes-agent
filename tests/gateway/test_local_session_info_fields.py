@@ -33,6 +33,26 @@ async def test_session_info_carries_the_classic_cli_fields(tmp_path, monkeypatch
         {**info, 'profile_name': 'default', 'desktop_protocol': 'hermes-gateway-v1', 'lazy': False})
 
 
+@pytest.mark.asyncio
+async def test_session_info_carries_the_execution_stamp(tmp_path, monkeypatch):
+    """A viewer fences session.info on the owner's execution stamp (B2-18): an unstamped snapshot is
+    dropped as stale once a submit response set its generation, so a committed /model or /reasoning
+    pick looks inert until the next turn resettles the info."""
+    from gateway.session_contract import SessionRef
+    from gateway.session_local import local_session_info
+    from tests.gateway.test_surface_admission import _authority
+
+    async def answer(event):
+        return 'ok'
+    authority = await _authority(tmp_path, monkeypatch, answer)
+    authority.runner._cached_agent_for = lambda route: SimpleNamespace(
+        model='m', provider='custom', api_mode='chat_completions', reasoning_config=None)
+    info = local_session_info(authority, SessionRef('p', 's'))
+    row = authority.db.get_session('s')
+    assert info['authority_epoch'] == authority.epoch
+    assert info['execution_generation'] == row['runtime_generation']
+
+
 def test_local_viewer_title_republishes_session_info(monkeypatch):
     from gateway.run_turn_runner import TurnRunner
     published = []

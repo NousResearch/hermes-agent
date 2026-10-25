@@ -3952,8 +3952,9 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         self._clear_compression_failure_cooldown()
         self._summary_model_fallen_back = False
         self._last_summary_error = None
-        for flag, _class, _msg in _TERMINAL_SUMMARY_FAILURES:
-            setattr(self, flag, False)
+        self._clear_terminal_summary_failures()
+        # The provider answered a summary again: the sustained-overload budget restarts (#123167).
+        self._reset_consecutive_overload_aborts()
 
     def _build_summary_prompt(
         self, content_to_summarize: str, summary_budget: int, focus_topic: Optional[str],

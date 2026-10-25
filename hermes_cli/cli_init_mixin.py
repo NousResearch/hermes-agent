@@ -147,6 +147,12 @@ class CLIInitMixin:
         from hermes_cli.cli_modern_layout import busy_input_mode_from_config, layout_from_config, set_active
         self._modern_layout = layout_from_config(display)  # display.cli_layout: modern | classic
         set_active(self._modern_layout)
+        # display.answer_wrap: "word" wraps prose rows to the terminal width (reads better in a
+        # terminal that cuts at the last cell) at the cost of hard newlines in copied text. Never
+        # for piped output: a redirected transcript keeps its original rows.
+        import sys as _sys
+        from hermes_cli.cli_modern_layout import answer_wrap_from_config
+        self._answer_wrap_word = answer_wrap_from_config(display) and _sys.stdout.isatty()
         # busy_input_mode: "interrupt" (redirect the run) | "queue" (next turn) | "steer" (inject mid-run).
         _bim = busy_input_mode_from_config(display)
         self.busy_input_mode = _bim if _bim in ("queue", "steer") else "interrupt"

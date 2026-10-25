@@ -436,12 +436,26 @@ class CLIStreamMixin:
                 self._stream_prefilt = self._stream_prefilt[-_MAX_CLOSE_TAG_LEN:]
             return
 
-    def _emit_stream_line(self, printed_line: str) -> None:
-        """Print one response line with the skin's true-color text escape (if any)."""
+    def _emit_stream_line(self, printed_line: str, *, source_row: str | None = None) -> None:
+        """Print one response line with the skin's true-color text escape (if any).
+
+        ``source_row`` is the same row before markdown stripping: with ``final_response_markdown:
+        strip`` the fence markers are gone from what prints, and only the source can still say
+        whether a row is code."""
         from cli import _RST, _STREAM_PAD, _cprint
         _tc = getattr(self, "_stream_text_ansi", "")
-        _cprint(
-            f"{_STREAM_PAD}{_tc}{printed_line}{_RST}" if _tc else f"{_STREAM_PAD}{printed_line}")
+        rows = [printed_line]
+        # display.answer_wrap: "word" breaks prose onto word boundaries itself instead of letting
+        # the terminal cut at the last cell. Code fences, indented code and table rows are left
+        # whole, and a resize no longer re-flows these rows.
+        if getattr(self, "_answer_wrap_word", False) and getattr(self, "_modern_layout", False):
+            from cli import _terminal_width_for_streaming
+            from hermes_cli.cli_modern_layout import wrap_stream_row
+            rows, self._wrap_in_fence = wrap_stream_row(
+                printed_line, _terminal_width_for_streaming(), source_row=source_row,
+                fence=getattr(self, "_wrap_in_fence", None))
+        for row in rows:
+            _cprint(f"{_STREAM_PAD}{_tc}{row}{_RST}" if _tc else f"{_STREAM_PAD}{row}")
 
     def _flush_stream_table_buf(self) -> None:
         """Emit the held table block re-aligned as a whole. Cell-level markdown is stripped FIRST
@@ -519,12 +533,14 @@ class CLIStreamMixin:
                 self._stream_table_buf.append(line)
                 self._in_stream_table = True
                 continue
+            source = line
             if self.final_response_markdown == "strip":
                 line = _strip_markdown_syntax(line)
-            self._emit_stream_line(line)
+            self._emit_stream_line(line, source_row=source)
 
-        # Partial lines are emitted ONLY at real newlines (no hard-wrapping — the terminal
-        # soft-wraps, so highlight-copy yields the original text). For TTFT perception, mirror
+        # Partial lines are emitted ONLY at real newlines: with display.answer_wrap at its default
+        # ("terminal") the terminal soft-wraps and highlight-copy yields the original text; "word"
+        # wraps completed rows here instead (see _emit_stream_line). For TTFT perception, mirror
         # the tail of a long unfinished paragraph into the status-bar spinner.
         if (
             self._stream_buf
@@ -563,8 +579,9 @@ class CLIStreamMixin:
         if getattr(self, "_stream_table_buf", None):
             self._flush_stream_table_buf()
         if self._stream_buf:
-            line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
-            self._emit_stream_line(line)
+            source = self._stream_buf
+            line = _strip_markdown_syntax(source) if self.final_response_markdown == "strip" else source
+            self._emit_stream_line(line, source_row=source)
             self._stream_buf = ""
         if self._stream_box_opened and getattr(self, "_stream_box_live", False):
             if getattr(self, "_modern_layout", False):
@@ -593,6 +610,7 @@ class CLIStreamMixin:
         self._stream_table_buf = []
         self._in_stream_table = False
         self._stream_box_live = False
+        self._wrap_in_fence = None  # display.answer_wrap: the open ``` fence of this answer, if any
 
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""

@@ -703,8 +703,24 @@ class CLIChatTurnMixin:
             elif modern:
                 from hermes_cli.cli_modern_layout import answer_label, closing_separator
                 _cprint(answer_label())
-                ChatConsole().print(_render_final_assistant_content(response, mode=self.final_response_markdown),
-                                    style=_resp_text, soft_wrap=True)  # terminal wraps; resize re-flows
+                # soft_wrap leaves the row to the terminal (clean copy, ragged edge). With
+                # display.answer_wrap: word, prose is broken on word boundaries — raw/strip text
+                # through the same selective wrapper as the stream (rich would wrap fenced code
+                # and split URLs too), and rendered markdown by rich itself.
+                _word = getattr(self, "_answer_wrap_word", False)
+                if _word and self.final_response_markdown in ("raw", "strip"):
+                    from cli import _terminal_width_for_streaming, realign_markdown_tables
+                    from hermes_cli.cli_modern_layout import wrap_answer_rows
+                    _strip = self.final_response_markdown == "strip"
+                    _rows = wrap_answer_rows(response, _terminal_width_for_streaming(), strip=_strip)
+                    _text = "\n".join(_rows)
+                    if _strip:  # the strip path always re-padded tables; keep that
+                        _text = realign_markdown_tables(_text, _terminal_width_for_streaming())
+                    ChatConsole().print(_render_final_assistant_content(_text, mode="raw"),
+                                        style=_resp_text, soft_wrap=True)
+                else:
+                    ChatConsole().print(_render_final_assistant_content(response, mode=self.final_response_markdown),
+                                        style=_resp_text, soft_wrap=not _word)
                 _cprint(closing_separator(True))
             else:
                 ChatConsole().print(Panel(

@@ -852,6 +852,10 @@ DEFAULT_CONFIG = {
         # `hermes`/`hermes chat` launches "cli" (prompt_toolkit REPL) | "tui" (Ink); --cli, --tui, HERMES_TUI=1 win.
         # cli_layout = the REPL's look: "modern" (glyph rows, status under the composer) | "classic" (boxed panels).
         "interface": "cli", "cli_layout": "modern",
+        # answer_wrap = who breaks a long answer row: "terminal" (default: the row is printed whole,
+        # so copied text has no inserted newlines, but the terminal cuts at the last cell, often
+        # mid-word) | "word" (prose rows are broken on word boundaries here; copy comes back wrapped).
+        "answer_wrap": "terminal",
         # Native TUI uses the terminal's primary buffer and scrollback instead of the custom
         # alternate-screen viewport. Flags win: `--native` / `--tui-native` and `--cli`.
         "tui_native": False,

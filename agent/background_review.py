@@ -1146,6 +1146,17 @@ def _release_fork_clients(review_agent: Any) -> None:
         review_agent.release_clients()
 
 
+def release_cache_parity_fork(parent_agent: Any, fork: Any, *, task: str) -> dict[str, Any]:
+    """Teardown for a one-shot :func:`build_cache_parity_fork` caller (``/btw``, plugin side
+    questions): attribute the fork's usage to the parent session under ``task``, then release
+    only its clients (never ``close()``, which tears down the shared session's terminal sandbox,
+    browser and file state). Never raises; returns the usage snapshot."""
+    usage = _snapshot_review_usage(fork)
+    _record_review_usage_to_parent(parent_agent, usage, task=task)
+    _release_fork_clients(fork)
+    return usage
+
+
 def _run_review_fork(
     agent: Any, messages_snapshot: list[dict], prompt: str, task_cfg: Optional[dict[str, Any]],
     review_run: Optional[_BackgroundReviewRun], st: _ReviewForkState, review_memory: bool = False,

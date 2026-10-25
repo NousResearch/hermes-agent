@@ -192,21 +192,6 @@ def _answer_text(fork: Any, assistant_message: Any) -> Optional[str]:
     return fork._strip_think_blocks(text or "").strip() or None
 
 
-def _teardown(parent: Any, fork: Any, audit: _Audit) -> None:
-    """Attribute usage to the parent session, then release the fork; never raises."""
-    from agent.background_review import _record_review_usage_to_parent, _snapshot_review_usage
-
-    def _attribute() -> None:
-        audit.usage = _snapshot_review_usage(fork)
-        _record_review_usage_to_parent(parent, audit.usage, task=SIDE_QUESTION_ORIGIN)
-
-    for step in (_attribute, fork.shutdown_memory_provider, fork.close):
-        try:
-            step()
-        except Exception:
-            logger.debug("side question teardown step failed", exc_info=True)
-
-
 def _log_audit(audit: _Audit) -> None:
     usage = audit.usage
     logger.info(
@@ -227,6 +212,8 @@ def ask_text_only(
     provider error or an empty / tool-call-only reply. The request parameters (tools, reasoning,
     max_tokens, tool_choice) are the parent's verbatim: changing any of them changes the cache
     key, and an inherited thinking budget 400s against a smaller max_tokens."""
+    from agent.background_review import release_cache_parity_fork
+
     audit = _Audit(plugin_id)
     parent = capture.parent_ref()
     refusal = "parent_gone" if parent is None else _agent_provider_refusal(parent)
@@ -264,5 +251,5 @@ def ask_text_only(
         if timer is not None:
             timer.cancel()
         if fork is not None:
-            _teardown(parent, fork, audit)
+            audit.usage = release_cache_parity_fork(parent, fork, task=SIDE_QUESTION_ORIGIN)
         _log_audit(audit)

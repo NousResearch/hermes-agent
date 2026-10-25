@@ -276,6 +276,63 @@ def test_side_call_writes_only_one_usage_row(provider, issued, tmp_path):
     assert {p.name: p.read_bytes() for p in memories.iterdir()} == memory_before
 
 
+def test_side_call_leaves_the_parent_sessions_terminal_environment_alive(provider, issued):
+    """The fork shares the parent's session_id, and CLI/gateway key a session's terminal
+    sandbox by it: tearing the fork down must not tear down the session's live tool state."""
+    from tools import terminal_tool
+
+    class _Env:
+        cleaned = False
+
+        def cleanup(self, **_kwargs):
+            _Env.cleaned = True
+
+    parent = _make_parent(session_id="sess-env")
+    _run_parent_turn(parent, provider, tool_round=False)
+    env = _Env()
+    terminal_tool._active_environments["sess-env"] = env
+    try:
+        provider.replies.append(_response("Ask: why 42?", usage=_usage()))
+        assert redeem_side_question(issued[-1], SIDE_PROMPT, plugin_id="next-prompt") == "Ask: why 42?"
+        assert terminal_tool._active_environments.get("sess-env") is env
+        assert not _Env.cleaned
+    finally:
+        terminal_tool._active_environments.pop("sess-env", None)
+
+
+def test_side_call_runs_under_the_turns_profile_and_secret_scope(provider, issued, tmp_path):
+    """The plugin redeems from its own thread, where no profile is bound; the request still
+    resolves the parent turn's HERMES_HOME and secret scope."""
+    from agent.secret_scope import current_secret_scope_home, reset_secret_scope, set_secret_scope
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    profile_home = tmp_path / "profiles" / "work"
+    profile_home.mkdir(parents=True)
+    parent = _make_parent()
+    home_token = set_hermes_home_override(profile_home)
+    scope_token = set_secret_scope({"OPENROUTER_API_KEY": "sk-work"}, profile_home=str(profile_home))
+    try:
+        _run_parent_turn(parent, provider, tool_round=False)
+    finally:
+        reset_secret_scope(scope_token)
+        reset_hermes_home_override(home_token)
+
+    seen: dict = {}
+
+    def _reply():
+        seen.update(home=str(get_hermes_home()), secret_home=current_secret_scope_home())
+        return _response("Ask: why 42?", usage=_usage())
+
+    provider.replies.append(_reply)
+    answers: list = []
+    worker = threading.Thread(
+        target=lambda: answers.append(redeem_side_question(issued[-1], SIDE_PROMPT, plugin_id="next-prompt")))
+    worker.start()
+    worker.join(10)
+    assert answers == ["Ask: why 42?"]
+    assert seen == {"home": str(profile_home), "secret_home": str(profile_home)}
+
+
 # ── 4. no recursive post_llm_call ────────────────────────────────────────────────────────
 
 

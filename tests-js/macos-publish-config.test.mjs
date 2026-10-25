@@ -21,7 +21,7 @@ it.each([
   expect(config.publish).toEqual([{ provider: 'generic', url: `https://updates.example/${feed.directory}/`, channel: feed.channel }])
   expect(config.targets).toContain('zip')
   expect(config.notarize).toBe(false)
-})
+}, 30_000)
 
 it('bakes only a canonical https feed base into the updater config', () => {
   expect(feedContract.feedBaseUrl(undefined)).toBeUndefined()

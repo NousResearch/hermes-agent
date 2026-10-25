@@ -369,6 +369,28 @@ class TestBuildContextFilesPrompt:
         assert "Ruff for linting" in result
         assert "Project Context" in result
 
+    def test_copilot_instructions_load_with_agents_md(self, tmp_path):
+        """GitHub Copilot combines .github/copilot-instructions.md with AGENTS.md, so both load; a path-specific
+        .instructions.md loads with its frontmatter stripped and its applyTo scope stated in the heading."""
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "AGENTS.md").write_text("Agents: run make test.")
+        (tmp_path / ".github" / "instructions" / "web").mkdir(parents=True)
+        (tmp_path / ".github" / "copilot-instructions.md").write_text("Copilot: prefer pnpm.")
+        (tmp_path / ".github" / "instructions" / "web" / "ts.instructions.md").write_text(
+            '---\napplyTo: "**/*.ts,**/*.tsx"\n---\nUse strict TypeScript.')
+        result = build_context_files_prompt(cwd=str(tmp_path))
+        assert "run make test" in result and "prefer pnpm" in result
+        assert ("## .github/instructions/web/ts.instructions.md (applies only to files matching: **/*.ts,**/*.tsx)"
+                "\n\nUse strict TypeScript.") in result
+
+    def test_copilot_instructions_alone_outrank_claude_md(self, tmp_path):
+        """Without AGENTS.md, Copilot instructions still load as the AGENTS-tier type, ahead of CLAUDE.md."""
+        (tmp_path / ".github").mkdir()
+        (tmp_path / ".github" / "copilot-instructions.md").write_text("Copilot: prefer pnpm.")
+        (tmp_path / "CLAUDE.md").write_text("Claude rules.")
+        result = build_context_files_prompt(cwd=str(tmp_path))
+        assert "prefer pnpm" in result and "Claude rules" not in result
+
     # --- AGENTS.md directory chain (port of grok-cli instructions.ts) ---
 
     def test_agents_md_chain_merges_root_to_cwd(self, tmp_path):

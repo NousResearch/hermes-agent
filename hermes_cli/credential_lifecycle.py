@@ -93,50 +93,52 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> list[st
     config_path = get_config_path()
     if not config_path.exists():
         return []
-    try:
-        user_config = read_user_config_raw(config_path)
-    except Exception:
-        return []
-    if not user_config:
-        return []
+    from hermes_cli.config_write_lock import config_write_lock
+    with config_write_lock(config_path):
+        try:
+            user_config = read_user_config_raw(config_path)
+        except Exception:
+            return []
+        if not user_config:
+            return []
 
-    touched: list[str] = []
+        touched: list[str] = []
 
-    def _fix(section: Any, key_path: str, fields: tuple[str, ...] = ("api_key", "api")) -> None:
-        # "api" is the legacy alias for model.api_key in older configs. In the keyed ``providers``
-        # schema ``api`` means the base_url, not a credential, so that section passes
-        # ``fields=("api_key",)``.
-        if not isinstance(section, dict):
-            return
-        for field in fields:
-            current = section.get(field)
-            if isinstance(current, str) and current == old_value:
-                if new_value:
-                    section[field] = new_value
-                else:
-                    section.pop(field, None)
-                touched.append(f"{key_path}.{field}")
+        def _fix(section: Any, key_path: str, fields: tuple[str, ...] = ("api_key", "api")) -> None:
+            # "api" is the legacy alias for model.api_key in older configs. In the keyed ``providers``
+            # schema ``api`` means the base_url, not a credential, so that section passes
+            # ``fields=("api_key",)``.
+            if not isinstance(section, dict):
+                return
+            for field in fields:
+                current = section.get(field)
+                if isinstance(current, str) and current == old_value:
+                    if new_value:
+                        section[field] = new_value
+                    else:
+                        section.pop(field, None)
+                    touched.append(f"{key_path}.{field}")
 
-    def _items(value: Any, allow_list: bool):
-        if isinstance(value, dict):
-            return value.items()
-        return enumerate(value) if allow_list and isinstance(value, list) else ()
+        def _items(value: Any, allow_list: bool):
+            if isinstance(value, dict):
+                return value.items()
+            return enumerate(value) if allow_list and isinstance(value, list) else ()
 
-    _fix(user_config.get("model"), "model")
-    for task, slot_cfg in _items(user_config.get("auxiliary"), False):
-        _fix(slot_cfg, f"auxiliary.{task}")
-    for name, entry in _items(user_config.get("custom_providers"), True):
-        _fix(entry, f"custom_providers.{name}")
+        _fix(user_config.get("model"), "model")
+        for task, slot_cfg in _items(user_config.get("auxiliary"), False):
+            _fix(slot_cfg, f"auxiliary.{task}")
+        for name, entry in _items(user_config.get("custom_providers"), True):
+            _fix(entry, f"custom_providers.{name}")
 
-    # ``providers.<id>.api_key`` (v12+) is where dashboard/desktop write custom-endpoint
-    # credentials. It is a real inline secret with higher precedence than the env var, so a stale
-    # copy shadows a rotation (persistent 401 with a key the UI no longer shows) and survives a
-    # removal that promised to clear EVERY store.
-    for provider_id, entry in _items(user_config.get("providers"), False):
-        _fix(entry, f"providers.{provider_id}", fields=("api_key",))
+        # ``providers.<id>.api_key`` (v12+) is where dashboard/desktop write custom-endpoint
+        # credentials. It is a real inline secret with higher precedence than the env var, so a stale
+        # copy shadows a rotation (persistent 401 with a key the UI no longer shows) and survives a
+        # removal that promised to clear EVERY store.
+        for provider_id, entry in _items(user_config.get("providers"), False):
+            _fix(entry, f"providers.{provider_id}", fields=("api_key",))
 
-    if touched:
-        atomic_config_replace(config_path, user_config)
+        if touched:
+            atomic_config_replace(config_path, user_config)
     return touched
 
 

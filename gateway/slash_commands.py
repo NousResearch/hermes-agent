@@ -93,10 +93,12 @@ def _write_raw_config_leaf(config_path: Path, keys: tuple, value) -> None:
     """Set one leaf through a strict raw round-trip. The behavioral read is fail-open (``{}``) and
     expanded, so writing it back wipes the file after a read error and persists ``${VAR}`` values."""
     from hermes_cli.config import read_user_config_raw
-    raw = read_user_config_raw(config_path)
-    *parents, leaf = keys
-    _nested_dict(raw, *parents)[leaf] = value
-    atomic_config_write(config_path, raw)
+    from hermes_cli.config_write_lock import config_write_lock
+    with config_write_lock(config_path):
+        raw = read_user_config_raw(config_path)
+        *parents, leaf = keys
+        _nested_dict(raw, *parents)[leaf] = value
+        atomic_config_write(config_path, raw)
 
 
 def _preview(text: str, limit: int = 60) -> str:
@@ -257,9 +259,11 @@ class GatewaySlashCommandsMixin(
         session_key = self._session_key_for_source(event.source)
 
         def _set_approval(enabled: bool):
-            user_config = read_user_config_raw(config_path)
-            user_config.setdefault(section, {})["write_approval"] = bool(enabled)
-            atomic_config_write(config_path, user_config)
+            from hermes_cli.config_write_lock import config_write_lock
+            with config_write_lock(config_path):
+                user_config = read_user_config_raw(config_path)
+                user_config.setdefault(section, {})["write_approval"] = bool(enabled)
+                atomic_config_write(config_path, user_config)
             # Evict any cached agent for this session so the next message rebuilds with the correct
             # session_id end-to-end — mirrors /branch and /reset. Without this, the cached AIAgent (and its
             # memory provider, which cached `_session_id` during initialize()) keeps writing into the wrong

@@ -591,7 +591,8 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
   const profile = useValue(host.state.profile)
   const binding = canonicalGroupBindingFor(bindings, { connectionId: connectionId ?? '', profile }, props.group, props.origin ?? 'name')
 
-  if (binding) {return <CanonicalGroupWorkspace binding={binding} onBack={props.onBack} visible={props.visible} />}
+  // The in-panel fallback has no tab to close, so leaving deselects the room, as in the legacy view.
+  if (binding) {return <CanonicalGroupWorkspace binding={binding} onBack={props.onBack ?? (() => $groupChatWorkspace.set(null))} visible={props.visible} />}
 
   return <GroupExecutionGate {...props} />
 }

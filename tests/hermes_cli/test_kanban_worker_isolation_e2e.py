@@ -82,19 +82,37 @@ def _drive_spawn(kb, kbd, monkeypatch, task, workspace, agent_home: str, popen_s
     Returns the recorded subprocess pid (always 4242 in tests). Does NOT
     actually exec the worker -- the worker argv is what we are asserting on.
     """
+    from hermes_cli import worker_isolate as wi
+
     monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
     monkeypatch.setenv("HERMES_AGENT_HOME", agent_home)
+    # The userns probe (calls ``subprocess.run(["unshare", "--user",
+    # "--map-root-user", "true"])``) runs before the worker argv is built.
+    # Stubbing it makes the dispatcher fire as if this host supports the
+    # sandbox without needing a real ``Popen`` from inside the test.
+    monkeypatch.setattr(wi, "_userns_available", lambda: True)
 
     class _Fake:
         pid = 4242
+        returncode = 0
 
-    def _fake_popen(cmd, *args, **kwargs):
-        popen_seen["cmd"] = list(cmd)
-        popen_seen["cwd"] = kwargs.get("cwd")
-        popen_seen["env"] = dict(kwargs.get("env") or {})
-        return _Fake()
+        def __init__(self, cmd, *args, **kwargs):
+            cmd_list = list(cmd) if hasattr(cmd, "__iter__") else [str(cmd)]
+            popen_seen["cmd"] = cmd_list
+            popen_seen["cwd"] = kwargs.get("cwd")
+            popen_seen["env"] = dict(kwargs.get("env") or {})
+            self.cmd = cmd_list
 
-    monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(subprocess, "Popen", _Fake)
     return kbd._default_spawn(task, workspace)
 
 

@@ -72,6 +72,12 @@ def test_managed_gateway_worker_is_spawned_in_restart_safe_scope(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "must-not-cross-profile")
     monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: True)
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    # ``worker_isolate._userns_available`` probes ``unshare --user
+    # --map-root-user true`` via ``subprocess.run`` (which itself calls the
+    # Popen fake); without this stub the probe's invocation pollutes
+    # ``captured_cmd`` before the worker's argv is built.
+    from hermes_cli import worker_isolate as wi
+    monkeypatch.setattr(wi, "_userns_available", lambda: True)
     monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: True)
     monkeypatch.setattr("tools.process_registry._systemd_run_user_scope_available", lambda: True)
     monkeypatch.setattr("tools.process_registry._worker_memory_max_bytes", lambda: 536_870_912)
@@ -133,6 +139,12 @@ def test_standalone_dispatcher_keeps_direct_worker_spawn(
     # Standalone = no systemd unit at all (CI runners inherit INVOCATION_ID).
     monkeypatch.delenv("INVOCATION_ID", raising=False)
     monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kwargs: captured_cmd.extend(cmd) or FakeProc())
+    # Same probe pollution guard as the managed-gateway test:
+    # ``worker_isolate._userns_available`` would otherwise inject
+    # ``unshare --user --map-root-user true`` into ``captured_cmd`` before
+    # the worker argv is built.
+    from hermes_cli import worker_isolate as wi
+    monkeypatch.setattr(wi, "_userns_available", lambda: True)
     monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: False)
     monkeypatch.setattr(
         "tools.process_registry._systemd_run_user_scope_available",

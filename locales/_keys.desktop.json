@@ -263,6 +263,8 @@
     "assistant.thread.errorCodes.rate_limit.title",
     "assistant.thread.errorCodes.server_error.body",
     "assistant.thread.errorCodes.server_error.title",
+    "assistant.thread.errorCodes.session_read_only.body",
+    "assistant.thread.errorCodes.session_read_only.title",
     "assistant.thread.errorCodes.ssl_cert_verification.body",
     "assistant.thread.errorCodes.ssl_cert_verification.title",
     "assistant.thread.errorCodes.stream_drop.body",

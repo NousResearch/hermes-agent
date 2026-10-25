@@ -169,7 +169,7 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
           style={{ height: CHART_HEIGHT_PX }}
         >
           {daily.map((d) => {
-            const total = d.input_tokens + d.output_tokens;
+            const total = d.input_tokens + d.cache_read_tokens + d.output_tokens;
             const inputH = Math.round(
               (d.input_tokens / maxTokens) * CHART_HEIGHT_PX,
             );
@@ -187,6 +187,9 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
                     <div className="font-medium">{formatDate(d.day)}</div>
                     <div>
                       {t.analytics.input}: {formatTokens(d.input_tokens)}
+                    </div>
+                    <div>
+                      {t.analytics.cacheRead}: {formatTokens(d.cache_read_tokens)}
                     </div>
                     <div>
                       {t.analytics.output}: {formatTokens(d.output_tokens)}
@@ -257,6 +260,7 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
                 <SortHeader label={t.analytics.date} col="day" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
                 <SortHeader label={t.sessions.title} col="sessions" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
                 <SortHeader label={t.analytics.input} col="input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
+                <SortHeader label={t.analytics.cacheRead} col="cache_read_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
                 <SortHeader label={t.analytics.output} col="output_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
               </tr>
             </thead>
@@ -275,6 +279,11 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
                   <td className="text-right py-2 px-4">
                     <span style={{ color: "var(--series-input-token)" }}>
                         {formatTokens(d.input_tokens)}
+                      </span>
+                  </td>
+                  <td className="text-right py-2 px-4">
+                    <span style={{ color: "#60a5fa" }}>
+                        {formatTokens(d.cache_read_tokens)}
                       </span>
                   </td>
                   <td className="text-right py-2 pl-4">
@@ -545,14 +554,31 @@ export default function AnalyticsPage() {
                 <Stats
                   items={[
                     {
-                      label: t.analytics.totalTokens,
+                      label: {
+                        key: "totalTokens",
+                        node: (
+                          <>
+                            {t.analytics.totalTokens}
+                            <span className="opacity-50">
+                              {" · "}
+                              {t.analytics.inclCacheRead}
+                            </span>
+                          </>
+                        ),
+                      },
                       value: formatTokens(
-                        data.totals.total_input + data.totals.total_output,
+                        data.totals.total_input +
+                          data.totals.total_cache_read +
+                          data.totals.total_output,
                       ),
                     },
                     {
                       label: t.analytics.input,
                       value: formatTokens(data.totals.total_input),
+                    },
+                    {
+                      label: t.analytics.cacheRead,
+                      value: formatTokens(data.totals.total_cache_read),
                     },
                     {
                       label: t.analytics.output,

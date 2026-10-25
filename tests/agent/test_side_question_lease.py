@@ -109,6 +109,18 @@ def test_no_token_for_a_persist_disabled_fork(executor, consented):
     assert issue_side_question_token(_agent(_persist_disabled=True), [], "turn-1") is None
 
 
+def test_no_token_for_a_cron_run(executor, consented):
+    """A scheduled job has nobody watching: a plugin must not spend the main model on it."""
+    assert issue_side_question_token(_agent(platform="cron"), [], "turn-1") is None
+    assert isinstance(issue_side_question_token(_agent(platform="telegram"), [], "turn-1"), str)
+
+
+def test_no_token_for_a_subagent_turn(executor, consented):
+    """A delegated child's turn is unattended work inside the parent's turn."""
+    assert issue_side_question_token(_agent(_delegate_depth=1), [], "turn-1") is None
+    assert isinstance(issue_side_question_token(_agent(_delegate_depth=0), [], "turn-1"), str)
+
+
 def test_capture_is_frozen_at_issue(executor, consented):
     messages = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
     agent = _agent()  # the lease holds its parent weakly
@@ -197,6 +209,25 @@ def test_bad_prompt_is_none_and_consumes_the_lease(executor, consented, prompt):
     assert executor == []
 
 
+def test_another_profile_cannot_redeem_the_lease(executor, consented, tmp_path):
+    """A lease is bound to the profile home it was issued in: a plugin context from another
+    profile's manager (granted there too) gets None and leaves the lease to its owner."""
+    other_home = tmp_path / "profiles" / "other"
+    other_home.mkdir(parents=True)
+    (other_home / "config.yaml").write_text(yaml.safe_dump(
+        {"plugins": {"enabled": ["next-prompt"], "entries": {"next-prompt": {"granted_capabilities": [CAP]}}}}),
+        encoding="utf-8")
+    foreign = PluginContext(consented._plugins["next-prompt"].manifest,
+                            plugins_mod.PluginManager(scope_key=str(other_home)))
+    agent = _agent()  # the lease holds its parent weakly
+    token = issue_side_question_token(agent, [], "turn-1")
+
+    assert foreign.side_question(token, "q") is None
+    assert redeem_side_question(token, "q", plugin_id="next-prompt", home=other_home) is None
+    assert executor == []
+    assert _ctx(consented, "next-prompt").side_question(token, "q") == "answer for next-prompt"
+
+
 @pytest.mark.parametrize("given, used", [(0.5, 0.5), (600, 60.0), (0, 15.0), (-3, 15.0), (float("nan"), 15.0), ("x", 15.0)])
 def test_timeout_is_clamped(executor, consented, given, used):
     agent = _agent()  # the lease holds its parent weakly
@@ -260,7 +291,7 @@ def _observed_turn_with_side_question(monkeypatch, side_reply) -> list[dict]:
         f"EVENTS = pathlib.Path({str(events)!r})\n\n"
         "def _log(name, **kw):\n"
         "    row = {'event': name, 'aux_task': kw.get('aux_task'), 'usage': kw.get('usage'),\n"
-        "           'error_type': kw.get('error_type')}\n"
+        "           'error_type': kw.get('error_type'), 'plugin_id': kw.get('plugin_id')}\n"
         "    with EVENTS.open('a') as fh:\n"
         "        fh.write(json.dumps(row, default=str) + '\\n')\n\n"
         "def register(ctx):\n"
@@ -300,14 +331,17 @@ def _observed_turn_with_side_question(monkeypatch, side_reply) -> list[dict]:
 
 def test_side_request_fires_auxiliary_hooks_not_turn_request_hooks(monkeypatch):
     """Turn-scoped observers (``pre/post_api_request``) see only the turn's own request; the
-    side request reports through ``pre/post_auxiliary_call`` with ``aux_task='side_question'``."""
+    side request reports through ``pre/post_auxiliary_call`` as ``plugin_side_question`` (not
+    ``/btw``'s ``side_question``), naming the plugin that asked."""
     usage = SimpleNamespace(prompt_tokens=900, completion_tokens=7, total_tokens=907)
     rows = _observed_turn_with_side_question(monkeypatch, SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content="Ask why it is 42.", tool_calls=None),
                                  finish_reason="stop")], model="test/model", usage=usage))
     assert [r["event"] for r in rows] == [
         "pre_api_request", "post_api_request", "pre_auxiliary_call", "post_auxiliary_call"]
-    assert rows[2]["aux_task"] == rows[3]["aux_task"] == "side_question"
+    assert rows[2]["aux_task"] == rows[3]["aux_task"] == "plugin_side_question"
+    assert rows[2]["plugin_id"] == rows[3]["plugin_id"] == "observer"
+    assert rows[0]["plugin_id"] is None  # the turn's own request names no plugin
     assert rows[3]["usage"]["output_tokens"] == 7 and rows[3]["error_type"] is None
 
 

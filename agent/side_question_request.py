@@ -6,9 +6,10 @@ messages) verbatim plus one user prompt, so the request reads the parent's warm 
 It runs the turn loop's own request phases (assembly, the payload build with its LLM
 middleware, ``perform_api_call``) exactly once: no tool dispatch (tool calls in the response
 are dropped), no retries, no fallback model, no compression, no persistence. Like any other
-side call it reports through ``pre/post_auxiliary_call`` (``aux_task="side_question"``), never
-the turn-scoped ``pre/post_api_request``, and its usage is attributed to the parent session as
-``side_question``.
+side call it reports through ``pre/post_auxiliary_call`` (``aux_task="plugin_side_question"``
+plus the asking ``plugin_id``), never the turn-scoped ``pre/post_api_request``, and its usage is
+billed to the session the token was issued for as ``plugin_side_question:<plugin_id>`` (``/btw``
+keeps ``side_question``).
 """
 
 from __future__ import annotations
@@ -24,6 +25,8 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 SIDE_QUESTION_ORIGIN = "side_question"
+# Hook/usage task for plugin side questions, distinct from /btw's ``side_question``.
+PLUGIN_SIDE_QUESTION_TASK = "plugin_side_question"
 
 # Tool entries the client executes; any other ``type`` (Responses ``web_search``, Anthropic
 # ``web_search_20250305``, ...) runs server-side and could act without Hermes seeing it.
@@ -160,7 +163,8 @@ def _send(fork: Any, capture: SideQuestionCapture, prompt: str, audit: _Audit) -
         audit.outcome = "refused:server_side_tools"
         return None
     hooks = start_aux_call_hooks(
-        aux_task=SIDE_QUESTION_ORIGIN, metadata={"api_request_id": api_request_id}, client=fork.client,
+        aux_task=PLUGIN_SIDE_QUESTION_TASK, metadata={"api_request_id": api_request_id, "plugin_id": audit.plugin_id},
+        client=fork.client,
         kwargs=built.api_kwargs, provider=str(fork.provider or ""), model=str(fork.model or ""),
         api_mode=str(fork.api_mode or ""), streaming=False,
     )
@@ -237,23 +241,31 @@ def ask_text_only(
         _log_audit(audit)
         return None
     fork = None
+    built: list = []  # the fork once built, for the timer
     timed_out = threading.Event()
-    timer = None
+
+    def _on_timeout() -> None:
+        timed_out.set()
+        # Soft interrupt with a system reason: aborts the in-flight request without being
+        # recorded as a user Stop.
+        for target in built:
+            target.interrupt(None, tool_reason="side question timed out")
+
+    # The budget starts before the build: runtime resolution (credentials, client setup) is part
+    # of the caller's wait. A build cannot be interrupted, so one that outlasts the budget is
+    # caught right after it and sends nothing.
+    timer = threading.Timer(timeout, _on_timeout)
+    timer.daemon = True
+    timer.start()
     try:
         fork = _build_fork(parent, capture)
+        built.append(fork)
+        if timed_out.is_set():
+            audit.outcome = "timeout"
+            return None
         if runtime_key(parent) != capture.runtime:
             audit.outcome = "refused:runtime_changed"
             return None
-
-        def _on_timeout() -> None:
-            timed_out.set()
-            # Soft interrupt with a system reason: aborts the in-flight request without being
-            # recorded as a user Stop.
-            fork.interrupt(None, tool_reason="side question timed out")
-
-        timer = threading.Timer(timeout, _on_timeout)
-        timer.daemon = True
-        timer.start()
         assistant_message = _send(fork, capture, prompt, audit)
         if assistant_message is None:
             return None
@@ -266,8 +278,11 @@ def ask_text_only(
         logger.warning("side question %s (plugin=%s)", audit.outcome, plugin_id or "?", exc_info=True)
         return None
     finally:
-        if timer is not None:
-            timer.cancel()
+        timer.cancel()
         if fork is not None:
-            audit.usage = release_cache_parity_fork(parent, fork, task=SIDE_QUESTION_ORIGIN)
+            # Billed to the session the token was issued for: the parent's id may have rotated
+            # (``/compress``, a session reset) since the turn ended.
+            audit.usage = release_cache_parity_fork(
+                parent, fork, task=f"{PLUGIN_SIDE_QUESTION_TASK}:{plugin_id or '?'}",
+                session_id=capture.session_id)
         _log_audit(audit)

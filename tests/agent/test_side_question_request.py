@@ -24,6 +24,8 @@ from hermes_state import SessionDB
 from run_agent import AIAgent
 
 SIDE_PROMPT = "Suggest the user's next prompt in one line."
+# Plugin side questions bill per plugin, apart from ``/btw``'s ``side_question``.
+PLUGIN_TASK = "plugin_side_question:next-prompt"
 
 
 def _tool_defs(*names: str) -> list:
@@ -263,7 +265,7 @@ def test_side_call_writes_only_one_usage_row(provider, issued, tmp_path):
     parent = _make_parent(session_db=db, session_id="sess-side")
     _run_parent_turn(parent, provider)
     rows_before = _message_rows(db, "sess-side")
-    usage_before = [r for r in _usage_rows(db, "sess-side") if r["task"] == "side_question"]
+    usage_before = [r for r in _usage_rows(db, "sess-side") if r["task"] == PLUGIN_TASK]
     assert rows_before and usage_before == []
     memory_before = {p.name: p.read_bytes() for p in memories.iterdir()}
 
@@ -271,9 +273,24 @@ def test_side_call_writes_only_one_usage_row(provider, issued, tmp_path):
     assert redeem_side_question(issued[-1], SIDE_PROMPT, plugin_id="next-prompt") == "Ask: why 42?"
 
     assert _message_rows(db, "sess-side") == rows_before
-    side_rows = [r for r in _usage_rows(db, "sess-side") if r["task"] == "side_question"]
+    side_rows = [r for r in _usage_rows(db, "sess-side") if r["task"] == PLUGIN_TASK]
     assert len(side_rows) == 1 and side_rows[0]["api_call_count"] == 1
     assert {p.name: p.read_bytes() for p in memories.iterdir()} == memory_before
+
+
+def test_side_call_bills_the_session_the_token_was_issued_for(provider, issued, tmp_path):
+    """The parent's session id can rotate between issue and redeem (``/compress``, a session
+    reset): the side call's spend belongs to the session whose turn it replays."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent = _make_parent(session_db=db, session_id="sess-issued")
+    _run_parent_turn(parent, provider, tool_round=False)
+    parent.session_id = "sess-rotated"
+
+    provider.replies.append(_response("Ask: why 42?", usage=_usage()))
+    assert redeem_side_question(issued[-1], SIDE_PROMPT, plugin_id="next-prompt") == "Ask: why 42?"
+
+    assert [r["api_call_count"] for r in _usage_rows(db, "sess-issued") if r["task"] == PLUGIN_TASK] == [1]
+    assert _usage_rows(db, "sess-rotated") == []
 
 
 def test_side_call_leaves_the_parent_sessions_terminal_environment_alive(provider, issued):
@@ -301,8 +318,8 @@ def test_side_call_leaves_the_parent_sessions_terminal_environment_alive(provide
 
 
 def test_side_call_runs_under_the_turns_profile_and_secret_scope(provider, issued, tmp_path):
-    """The plugin redeems from its own thread, where no profile is bound; the request still
-    resolves the parent turn's HERMES_HOME and secret scope."""
+    """The plugin (of the turn's profile) redeems from its own thread, where no profile is bound;
+    the request still resolves the parent turn's HERMES_HOME and secret scope."""
     from agent.secret_scope import current_secret_scope_home, reset_secret_scope, set_secret_scope
     from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
@@ -326,7 +343,8 @@ def test_side_call_runs_under_the_turns_profile_and_secret_scope(provider, issue
     provider.replies.append(_reply)
     answers: list = []
     worker = threading.Thread(
-        target=lambda: answers.append(redeem_side_question(issued[-1], SIDE_PROMPT, plugin_id="next-prompt")))
+        target=lambda: answers.append(
+            redeem_side_question(issued[-1], SIDE_PROMPT, plugin_id="next-prompt", home=profile_home)))
     worker.start()
     worker.join(10)
     assert answers == ["Ask: why 42?"]
@@ -444,6 +462,30 @@ def test_timeout_interrupts_the_inflight_request(provider, issued):
     with patch.object(AIAgent, "interrupt", _spy_interrupt):
         assert redeem_side_question(issued[-1], SIDE_PROMPT, plugin_id="next-prompt", timeout=0.5) is None
     assert interrupted == ["side question timed out"]
+
+
+def test_timeout_counts_the_fork_build(provider, issued, monkeypatch):
+    """Runtime resolution in the fork build is part of the caller's budget: a build that
+    outlasts the timeout sends nothing."""
+    from agent import side_question_request
+
+    parent = _make_parent()
+    _run_parent_turn(parent, provider, tool_round=False)
+    real_build = side_question_request._build_fork
+
+    def _slow_build(*args, **kwargs):
+        # Outlast the budget: hold the build until the side question's timer has fired (a Timer
+        # thread that is already gone has fired too).
+        for timer in [t for t in threading.enumerate() if isinstance(t, threading.Timer)
+                      and getattr(t.function, "__name__", "") == "_on_timeout"]:
+            assert timer.finished.wait(10)
+        return real_build(*args, **kwargs)
+
+    monkeypatch.setattr(side_question_request, "_build_fork", _slow_build)
+    provider.replies.append(_response("too late", usage=_usage()))
+    sent = len(provider.requests)
+    assert redeem_side_question(issued[-1], SIDE_PROMPT, plugin_id="next-prompt", timeout=0.1) is None
+    assert len(provider.requests) == sent
 
 
 def test_provider_error_returns_none_without_fallback(provider, issued):

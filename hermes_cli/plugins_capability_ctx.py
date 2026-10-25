@@ -28,7 +28,8 @@ class PluginCapabilityCtxMixin:
         """Ask the session's own agent ``prompt`` about the turn that just ended; text or None.
 
         ``token`` is ``post_llm_call``'s ``side_question_token``: one attempt per turn, shared by
-        every plugin, valid for 60 s and only until the next turn starts. Same model, the whole
+        every plugin of the session's profile, valid for 60 s and only until the next turn starts
+        (cron runs and subagent turns get no token). Same model, the whole
         session (memory included) and its warm prompt cache; tools never run and nothing is
         written to the transcript. Needs the ``llm.side_question`` capability; without it this
         returns None and leaves the attempt to a consented plugin."""
@@ -40,7 +41,8 @@ class PluginCapabilityCtxMixin:
                 logger.info("Plugin %s called ctx.side_question without the %s capability; returning None",
                             self.plugin_id, SIDE_QUESTION_CAPABILITY)
             return None
-        return redeem_side_question(token, prompt, plugin_id=self.plugin_id, timeout=timeout)
+        return redeem_side_question(
+            token, prompt, plugin_id=self.plugin_id, home=self._manager.home_path, timeout=timeout)
 
     def _side_question_granted(self, capability: str) -> bool:
         """Consent read from THIS manager's profile home: plugins call from their own threads,

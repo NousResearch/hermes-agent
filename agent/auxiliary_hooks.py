@@ -113,6 +113,8 @@ class _AuxCallHooks:
             started_at=self.started_at,
             message_count=len(kwargs.get("messages") or kwargs.get("input") or []),
         )
+        if metadata.get("plugin_id"):  # a call a plugin asked for (ctx.side_question)
+            self.base["plugin_id"] = str(metadata["plugin_id"])
 
     def pre(self) -> None:
         if not _has_hook(PRE_AUXILIARY_CALL):

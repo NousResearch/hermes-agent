@@ -568,15 +568,20 @@ capabilities:
 ### Lease rules
 
 * `post_llm_call` receives `side_question_token` (a string) when at
-  least one loaded plugin holds the capability, else `None`.
+  least one loaded plugin holds the capability, else `None`. Cron runs
+  and delegated subagent turns always get `None`: nobody is waiting on
+  them, so a side question would only spend tokens.
 * **One attempt per turn, shared by every plugin.** Every plugin's
   hook gets the same token; the first `ctx.side_question` call spends
   it, whether it succeeds or not. A plugin without the capability gets
   `None` back and does not spend it.
 * The token expires after **60 seconds**, and as soon as the session
   starts its next turn.
+* The token belongs to the profile whose turn issued it; a plugin
+  context of another profile gets `None` and does not spend it.
 * `prompt` is a non-empty string of at most **4096 characters**.
-* `timeout` defaults to **15 seconds** and is capped at 60.
+* `timeout` defaults to **15 seconds** and is capped at 60. It covers
+  the whole call, including setting up the request.
 
 ### What you get back
 
@@ -591,13 +596,16 @@ and no fallback model.
 
 The call never runs a tool (tool calls in the reply are dropped) and
 never writes to the transcript. Its tokens are billed to the session
-and recorded in its usage as `side_question`. You can't pick the
+whose turn issued the token (even if the session id has since rotated)
+and recorded in its usage as `plugin_side_question:<plugin id>`, apart
+from `/btw`'s `side_question`. You can't pick the
 model, tools, system prompt or output length: changing any of them
 would miss the warm cache. Ask for brevity in the prompt.
 
 Observability plugins see the call as an auxiliary call:
 `pre_auxiliary_call` / `post_auxiliary_call` fire with
-`aux_task="side_question"`, and the turn-scoped `pre_api_request` /
+`aux_task="plugin_side_question"` and `plugin_id` set to the asking
+plugin, and the turn-scoped `pre_api_request` /
 `post_api_request` do not fire for it.
 
 ## Where this fits in the plugin surface

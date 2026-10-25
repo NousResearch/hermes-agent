@@ -25,6 +25,27 @@ _ROOM_PROMPT = (
 _HUMAN = "My release notes should include migration steps."
 
 
+@pytest.fixture(params=["desktop", "hosted"])
+def room_prompt(request, tmp_path):
+    if request.param == "desktop":
+        return _ROOM_PROMPT
+    from gateway import hosted_room_discussion as discussion, hosted_rooms
+
+    db = tmp_path / "state.db"
+    room = hosted_rooms.create_room(
+        db, room_id="release-room", name="Launch", authority_gateway_id="gateway-test", now=1,
+        members=[{"member_id": name, "profile": name, "handle": name} for name in ("builder", "reviewer")])
+    hosted_rooms.append_event(
+        db, room_id=room["room_id"], event_id="user-1", kind="message.user",
+        actor={"kind": "user", "id": "local-user"}, authority_gateway_id=room["authority_gateway_id"],
+        authority_epoch=room["authority_epoch"],
+        payload={"text": "Is the release ready?", "thread_id": "release"}, now=2)
+    events = hosted_rooms.read_events(db, room_id=room["room_id"], since_seq=0)["events"]
+    decision = discussion.plan_next_task(room, events, local_profiles=("builder", "reviewer"))
+    assert decision.task is not None
+    return decision.task.payload["prompt"]
+
+
 class _Recorder(MemoryProvider):
     name = "recording"
 
@@ -61,10 +82,10 @@ _TEXT_FANOUTS = {
 
 @pytest.mark.parametrize("fanout", sorted(_TEXT_FANOUTS))
 @pytest.mark.parametrize("restated", [False, True])
-def test_room_harness_is_not_user_input_but_direct_input_still_reaches_providers(manager, fanout, restated):
+def test_room_harness_is_not_user_input_but_direct_input_still_reaches_providers(manager, fanout, restated, room_prompt):
     manager, provider = manager
     send = _TEXT_FANOUTS[fanout]
-    room_prompt = f"{_INFLIGHT_TASK_REPLAY_HEADER}\n{_ROOM_PROMPT}" if restated else _ROOM_PROMPT
+    room_prompt = f"{_INFLIGHT_TASK_REPLAY_HEADER}\n{room_prompt}" if restated else room_prompt
     send(manager, room_prompt)
     assert manager.flush_pending(timeout=5)
     assert provider.seen == []
@@ -90,19 +111,21 @@ _TRANSCRIPT_FANOUTS = {
 
 @pytest.mark.parametrize("room_shape", ["text", "multimodal", "compacted", "restated", "compacted_restated"])
 @pytest.mark.parametrize("fanout", sorted(_TRANSCRIPT_FANOUTS))
-def test_transcript_ingestion_omits_room_exchange_and_keeps_human_turns_without_mutating_history(manager, fanout, room_shape):
+def test_transcript_ingestion_omits_room_exchange_and_keeps_human_turns_without_mutating_history(
+    manager, fanout, room_shape, room_prompt
+):
     manager, provider = manager
     provider.pre_compress_checkpoint_api_version = 2 if fanout == "pre_compress_v2" else 1
     before = [{"role": "user", "content": "Use the release branch."},
               {"role": "assistant", "content": "I have checked it out."}]
     after = [{"role": "user", "content": _HUMAN},
              {"role": "assistant", "content": "I will include them."}]
-    room_turn = {"role": "user", "content": _ROOM_PROMPT}
+    room_turn = {"role": "user", "content": room_prompt}
     if "restated" in room_shape:
-        room_turn["content"] = f"{_INFLIGHT_TASK_REPLAY_HEADER}\n{_ROOM_PROMPT}"
+        room_turn["content"] = f"{_INFLIGHT_TASK_REPLAY_HEADER}\n{room_prompt}"
         after[0]["content"] = f"{_INFLIGHT_TASK_REPLAY_HEADER}\n{_HUMAN}"
     if room_shape == "multimodal":
-        room_turn["content"] = [{"type": "text", "text": _ROOM_PROMPT}]
+        room_turn["content"] = [{"type": "text", "text": room_prompt}]
     elif "compacted" in room_shape:
         room_turn = {"role": "user", "content": f"{SUMMARY_PREFIX}\nEarlier room activity\n{_SUMMARY_END_MARKER}\n\n{room_turn['content']}",
                      COMPRESSED_SUMMARY_METADATA_KEY: True, "display_kind": "hidden"}
@@ -124,12 +147,12 @@ def test_transcript_ingestion_omits_room_exchange_and_keeps_human_turns_without_
 
 
 @pytest.mark.parametrize("fanout", sorted(_TRANSCRIPT_FANOUTS))
-def test_human_steer_resumes_memory_ingestion_after_room_orchestration(manager, fanout):
+def test_human_steer_resumes_memory_ingestion_after_room_orchestration(manager, fanout, room_prompt):
     manager, provider = manager
     provider.pre_compress_checkpoint_api_version = 2 if fanout == "pre_compress_v2" else 1
     human_exchange = [steer_user_row(_HUMAN), {"role": "assistant", "content": "I will include them."}]
     rows = [
-        {"role": "user", "content": _ROOM_PROMPT},
+        {"role": "user", "content": room_prompt},
         {"role": "assistant", "content": "room-only reply"},
         {"role": "user", "content": "[System: A legacy untyped continuation.]"},
         {"role": "user", "content": "[System: Continue the room turn.]", "display_kind": "hidden"},

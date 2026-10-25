@@ -562,8 +562,10 @@ class InProcessCronScheduler(CronScheduler):
             if profile_name is None or profile_name == default_profile:
                 return adapters
             tick_adapters = (profile_adapters or {}).get(profile_name) or {}
-            if not tick_adapters and adapters:
-                return SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
+            if adapters:
+                routes = _primary_profile_routes_for_current_home()
+                if routes:
+                    return SharedRouteAdapters(adapters, routes, local_adapters=tick_adapters)
             return tick_adapters
 
         # Recovery + heartbeat per profile; one broken store must not abort startup for the others.

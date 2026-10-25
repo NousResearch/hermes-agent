@@ -20,6 +20,23 @@ from tools.skills_sync import (
 from tools.skills_sync_bundled_ops import reset_bundled_skill
 
 
+@pytest.mark.parametrize("cache_name", [".venv", ".uv-cache"])
+def test_sync_skips_skill_local_environment_caches(tmp_path, cache_name):
+    from tools.skills_sync_optional import _ignore_runtime_cache
+
+    source = tmp_path / "skill"
+    cache_file = source / cache_name / "lib" / "generated.py"
+    cache_file.parent.mkdir(parents=True)
+    cache_file.write_text("generated = True", encoding="utf-8")
+    (source / "SKILL.md").write_text("# Skill", encoding="utf-8")
+    destination = tmp_path / "synced-skill"
+
+    shutil.copytree(source, destination, ignore=_ignore_runtime_cache)
+
+    assert not (destination / cache_name).exists()
+    assert (destination / "SKILL.md").read_text(encoding="utf-8") == "# Skill"
+
+
 class TestReadWriteManifest:
     def test_write_and_read_roundtrip_v2(self, tmp_path):
         manifest_file = tmp_path / ".bundled_manifest"

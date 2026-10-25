@@ -698,8 +698,9 @@ def _persist_projected_messages(agent, turn, messages: list[dict[str, Any]]) -> 
 
 
 def _finish_codex_turn(agent, turn, messages: list[dict[str, Any]], *, original_user_message: Any,
-                       should_review_memory: bool) -> dict[str, Any]:
-    """Post-turn bookkeeping mirroring the chat_completions loop; returns usage fields."""
+                       should_review_memory: bool, final_response: Any) -> dict[str, Any]:
+    """Post-turn bookkeeping mirroring the chat_completions loop; returns usage fields.
+    ``final_response`` is the reply after ``transform_llm_output``: memory keeps what the user got."""
     # run_conversation() already bumped _turns_since_memory / _user_turn_count; only _iters_since_skill is ours.
     agent._iters_since_skill = getattr(agent, "_iters_since_skill", 0) + turn.tool_iterations
     _record_codex_app_server_compaction(agent, turn)
@@ -712,7 +713,7 @@ def _finish_codex_turn(agent, turn, messages: list[dict[str, Any]], *, original_
     # External memory sync skipped on interrupt/error (no partial transcripts).
     if not turn.interrupted and turn.error is None:
         _call_guarded(getattr(agent, "_sync_external_memory_for_turn", None), "external memory sync raised", kwargs=dict(
-            original_user_message=original_user_message, final_response=turn.final_text, interrupted=False, messages=messages,
+            original_user_message=original_user_message, final_response=final_response, interrupted=False, messages=messages,
         ))
     # Background review fork: only when a trigger tripped AND a real final response exists.
     if turn.final_text and not turn.interrupted and (should_review_memory or should_review_skills):
@@ -776,6 +777,7 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         _store_codex_thread_id(agent, turn.thread_id)
     usage_result = _finish_codex_turn(
         agent, turn, messages, original_user_message=original_user_message, should_review_memory=should_review_memory,
+        final_response=reply["final_response"],
     )
     return _turn_result(
         interrupt, messages, api_calls=1, completed=not turn.interrupted and turn.error is None, error=turn.error,

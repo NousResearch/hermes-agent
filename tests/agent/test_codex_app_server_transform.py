@@ -38,8 +38,9 @@ def test_codex_reply_is_rewritten_before_it_is_returned_or_stored():
     redactor_home(Path(os.environ["HERMES_HOME"]), "http://127.0.0.1:9/v1", hold=True)
     plugins._reset_plugin_managers_for_tests()
     try:
+        agent = _codex_agent(RAW)
         result = run_codex_app_server_turn(
-            _codex_agent(RAW), user_message="config?", original_user_message="config?",
+            agent, user_message="config?", original_user_message="config?",
             messages=[{"role": "user", "content": "config?"}], effective_task_id="task-1", turn_id="t1")
     finally:
         plugins._reset_plugin_managers_for_tests()
@@ -47,3 +48,5 @@ def test_codex_reply_is_rewritten_before_it_is_returned_or_stored():
     assert result["final_response"] == REWRITE
     assert result["response_transformed"] is True and result["pre_transform_response"] == RAW
     assert [m["content"] for m in result["messages"] if m["role"] == "assistant"] == [REWRITE]
+    # External memory keeps the reply the user got, not the text the plugin removed.
+    assert agent._sync_external_memory_for_turn.call_args.kwargs["final_response"] == REWRITE

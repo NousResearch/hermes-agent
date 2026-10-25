@@ -106,6 +106,70 @@ async def test_subagent_notice_is_dropped_after_its_resumed_child_was_switched_a
     assert len(list_session_admissions(authority.db, session_id=root, pending_only=False)) == 1
 
 
+async def _resumed_delegate_route(tmp_path, monkeypatch):
+    runner, _, authority, source = await _discord_owner(tmp_path, monkeypatch)
+    root = (await _admit_human(runner, authority, MessageEvent(text='human', source=source, message_id='h1'))).ref.session_id
+    key = runner.session_store._generate_session_key(source)
+    child = root + '-worker'
+    # A delegate run (shaped like reserve_child_execution's row) resumed on the chat with /resume <id> --all.
+    authority.db.create_session(child, source='subagent', parent_session_id=root, model_config={'_delegate_from': root})
+    assert runner.session_store.switch_session(key, child) is not None
+    await _admit_human(runner, authority, MessageEvent(text='on child', source=source, message_id='h2'))
+    return runner, authority, source, key, child
+
+
+def _compress(runner, authority, key, child):
+    tip = child + '-tip'
+    authority.db.append_message(child, 'user', 'on child')
+    authority.db.publish_compression_child(parent_session_id=child, child_session_id=tip, source='discord',
+                                           messages=[{'role': 'user', 'content': 'summary'}],
+                                           require_compression_lease=False)
+    assert runner.session_store.advance_compression_session(key, child, tip) is not None
+    return tip
+
+
+@pytest.mark.asyncio
+async def test_wake_on_a_resumed_delegate_passes_preflight_after_compression(tmp_path, monkeypatch):
+    from gateway.session_contract import SessionRef
+    from gateway.session_envelope import check_native_route
+    runner, authority, source, key, child = await _resumed_delegate_route(tmp_path, monkeypatch)
+    tip = _compress(runner, authority, key, child)
+    event = {'type': 'completion', 'session_id': 'proc', 'started_at': 1, 'session_key': key, 'parent_session_id': tip}
+    assert await runner._inject_watch_notification('done', event) is True
+    wake = list_session_admissions(authority.db, session_id=child)[-1]
+    # The drain's pre-claim check (and startup recovery's): a refusal pauses the chat behind the wake.
+    await check_native_route(runner, wake['payload'], authority.physical_target(SessionRef(authority.profile_id, child)),
+                             source, runner._adapter_for_source(source))
+    authority.db.close()
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_notice_pinned_before_compression_reaches_the_resumed_delegate_chat(tmp_path, monkeypatch):
+    runner, authority, _, key, child = await _resumed_delegate_route(tmp_path, monkeypatch)
+    tip = _compress(runner, authority, key, child)
+    # A process the resumed run started before compressing: the pre-flight and admission agree on the tip.
+    assert (await runner._classify_completion_owner(child, key))[::2] == ('deliver', tip)
+    event = {'type': 'completion', 'session_id': 'proc-before', 'started_at': 1, 'session_key': key,
+             'parent_session_id': child}
+    assert await runner._inject_watch_notification('before', event) is True
+    authority.db.close()
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_process_notice_from_a_subagent_of_a_resumed_delegate_reaches_the_chat(tmp_path, monkeypatch):
+    runner, authority, _, key, child = await _resumed_delegate_route(tmp_path, monkeypatch)
+    nested = child + '-nested'  # delegate_task inside the resumed conversation
+    authority.db.create_session(nested, source='subagent', parent_session_id=child, model_config={'_delegate_from': child})
+    event = {'type': 'completion', 'session_id': 'proc-nested', 'started_at': 1, 'session_key': key,
+             'parent_session_id': nested}
+    assert await runner._inject_watch_notification('nested done', event) is True
+    assert 'nested done' in list_session_admissions(authority.db, session_id=child)[-1]['payload']['text']
+    authority.db.close()
+    await asyncio.sleep(0)
+
+
 def _relay_adapter():
     from gateway.relay.adapter import RelayAdapter
     from gateway.relay.descriptor import CapabilityDescriptor

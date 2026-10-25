@@ -258,18 +258,22 @@ def _route_owner(authority, entry):
             else authority.logical_owner(entry.session_id))
 
 
-def _delegating_session(db, session_id):
-    """The conversation a (nested) delegate_task child runs under, else ``session_id``. As in the
+def _owned_by(db, session_id, current):
+    """Whether ``session_id``, or a (nested) delegate_task conversation it runs under, is the route's
+    live ``current`` session or compressed into it. The walk stops at the first such hop: a resumed
+    delegate run is the chat's own conversation, never the parent it was spawned from. As in the
     completion pre-flight (``_lookup_completion_owner``), only ``model_config._delegate_from`` leads
     out of an execution transcript: ``parent_session_id`` also records compression and branches.
     Likewise a session closed at a user boundary (/new, a resume away) leads nowhere."""
     from gateway.run import _USER_BOUNDARY_END_REASONS
     lineage = [session_id]
-    while (not ((row := db.get_session(lineage[-1]) or {}).get('ended_at')
-                and row.get('end_reason') in _USER_BOUNDARY_END_REASONS)
-           and (parent := db.get_session_model_config_value(lineage[-1], '_delegate_from')) not in (None, *lineage)):
+    while lineage[-1] != current and db.get_compression_tip(lineage[-1]) != current:
+        row = db.get_session(lineage[-1]) or {}
+        parent = db.get_session_model_config_value(lineage[-1], '_delegate_from')
+        if (row.get('ended_at') and row.get('end_reason') in _USER_BOUNDARY_END_REASONS) or parent in (None, *lineage):
+            return False
         lineage.append(parent)
-    return lineage[-1]
+    return True
 
 
 def _owner(runner, event, authority):
@@ -280,14 +284,10 @@ def _owner(runner, event, authority):
     if runner.session_store._generate_session_key(event.source) != route:
         raise RuntimeStoreError('admission_conflict')
     expected = event.metadata.get('gateway_session_id')
-    if not expected:
+    # A completed child may follow compression, and a process a subagent started its parent
+    # conversation, but never /new or an unrelated resume.
+    if not expected or not _owned_by(authority.db, expected, entry.session_id):
         raise RuntimeStoreError('admission_conflict')
-    if expected != entry.session_id:
-        # A completed child may follow compression, and a process a subagent started its parent
-        # conversation, but never /new or an unrelated resume.
-        expected = _delegating_session(authority.db, expected)
-        if expected != entry.session_id and authority.db.get_compression_tip(expected) != entry.session_id:
-            raise RuntimeStoreError('admission_conflict')
     return entry
 
 

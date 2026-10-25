@@ -878,6 +878,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         err = ("Refusing to write internal read_file display text as file content. "
                "Strip read_file line-number prefixes or reconstruct the intended "
                "file contents before writing.")
+        logger.warning("write_file refused: read_file display text path=%s", path)
     if err:
         return tool_error(err)
     try:

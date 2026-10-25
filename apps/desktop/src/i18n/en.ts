@@ -678,7 +678,10 @@ export const en: Translations = {
     saveError: 'Language update failed',
     switchTo: 'Switch language',
     searchPlaceholder: 'Search languages…',
-    noResults: 'No languages found'
+    noResults: 'No languages found',
+    // The desktop bundles nine languages; every other one arrives as a language pack. "Not in this
+    // list" must not read as "does not exist", so the picker says where the rest come from.
+    packHint: 'More languages ship as packs — search the catalog: hermes plugins search language'
   },
 
   settings: {

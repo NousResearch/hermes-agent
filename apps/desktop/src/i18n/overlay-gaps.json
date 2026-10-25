@@ -908,6 +908,7 @@
   "keybinds.set": ["ja","zh-hant"],
   "keybinds.subtitle": ["ja","zh-hant"],
   "keybinds.title": ["ja","zh-hant"],
+  "language.packHint": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
   "messaging.approve": ["ar","ja","zh-hant"],
   "messaging.approvedHint": ["ar","ja","zh-hant"],
   "messaging.approvedUser": ["ar","ja","zh-hant"],

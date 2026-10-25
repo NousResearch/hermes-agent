@@ -365,6 +365,8 @@ Counters increment when:
 - `use_count`: the skill is loaded into a conversation's prompt.
 - `patch_count`: `skill_manage patch/edit/write_file/remove_file` runs on the skill.
 
+Background-review inspections do not count as views or uses and do not refresh the inactivity clock.
+
 Bundled and hub-installed skills are explicitly excluded from telemetry writes.
 
 ## Per-run reports

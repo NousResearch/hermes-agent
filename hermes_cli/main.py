@@ -1681,6 +1681,27 @@ _CHAT_PASSTHROUGH = (
 
 def cmd_chat(args):
     """Run interactive chat CLI."""
+    from utils import env_var_enabled
+
+    # In-process one-shot: a non-empty -q under HERMES_INPROCESS_CHAT runs the turn here
+    # (same path as ``_run_and_exit_oneshot``) and never continues into the shared gateway.
+    # Interactive chat, TUI, and chat without -q stay on the gateway.
+    query = getattr(args, "query", None)
+    if env_var_enabled("HERMES_INPROCESS_CHAT") and query:
+        provider = getattr(args, "provider", None)
+        if not provider or str(provider).strip().lower() == "auto":
+            provider = None
+        _run_and_exit_oneshot(
+            query,
+            model=getattr(args, "model", None),
+            provider=provider,
+            toolsets=getattr(args, "toolsets", None),
+            skills=getattr(args, "skills", None),
+            resume=getattr(args, "resume", None),
+            reasoning=getattr(args, "reasoning", None),
+        )
+        return
+
     from hermes_cli.stream_json import stream_json_requested
     # stream-json and the --safe-mode / --ignore-user-config bypass keep the transport client; the
     # classic CLI (interactive, -q/-Q) is main's HermesCLI with a gateway-backed agent (gateway_agent.py).

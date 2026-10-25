@@ -273,6 +273,24 @@ def test_portable_only_mcp_configuration_opens_startup_gate(monkeypatch):
     assert mcp_startup._has_configured_mcp_servers() is True
 
 
+def test_mcp_overlay_env_opens_startup_gate_without_config(monkeypatch, tmp_path):
+    overlay = tmp_path / "overlay.json"
+    overlay.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("HERMES_MCP_OVERLAY", str(overlay))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(read_raw_config=dict),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.agent_plugins",
+        types.SimpleNamespace(has_enabled_agent_plugin_mcp=lambda _config: False),
+    )
+
+    assert mcp_startup._has_configured_mcp_servers() is True
+
+
 
 
 

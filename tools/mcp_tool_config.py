@@ -687,8 +687,58 @@ def _portable_mcp_servers(safe_servers: dict[str, dict], rejected: frozenset[str
         logger.debug("Failed to load portable MCP servers", exc_info=True)
 
 
+def _load_mcp_overlay() -> dict[str, dict]:
+    """Optional per-run MCP servers from ``HERMES_MCP_OVERLAY`` (a JSON file path).
+
+    Shape: ``{ "<server name>": { "url": "https://…", "headers": {…} } }``. Not config.yaml —
+    never written into the user's Hermes config. Only ``http``/``https`` URLs; string header
+    values only. On any read/parse error, warn without file contents or header values and
+    return ``{}``. Result is run through the suspicious-server filter.
+    """
+    path = (os.getenv("HERMES_MCP_OVERLAY") or "").strip()
+    if not path:
+        return {}
+    try:
+        from urllib.parse import urlparse
+
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("Failed to load MCP overlay from %s", path)
+        return {}
+    if not isinstance(data, dict):
+        logger.warning("MCP overlay at %s is not a JSON object", path)
+        return {}
+
+    servers: dict[str, dict] = {}
+    for name, cfg in data.items():
+        if not isinstance(cfg, dict):
+            continue
+        url = cfg.get("url")
+        if not isinstance(url, str):
+            continue
+        stripped = url.strip()
+        try:
+            scheme = urlparse(stripped).scheme.lower()
+        except Exception:
+            continue
+        if scheme not in ("http", "https"):
+            logger.warning("Skipping MCP overlay server '%s': URL must be http or https", name)
+            continue
+        entry: dict[str, Any] = {"url": stripped}
+        headers = cfg.get("headers")
+        if isinstance(headers, dict):
+            string_headers = {str(key): value for key, value in headers.items() if isinstance(value, str)}
+            if string_headers:
+                entry["headers"] = string_headers
+        servers[str(name)] = entry
+    return _filter_suspicious_mcp_servers(servers)
+
+
 def _load_mcp_config() -> dict[str, dict]:
-    """``mcp_servers`` from config.yaml as ``{name: config}`` (empty on error / safe mode), ``${VAR}`` interpolated."""
+    """``mcp_servers`` from config.yaml as ``{name: config}`` (empty on error / safe mode), ``${VAR}`` interpolated.
+
+    After portable servers, merge ``HERMES_MCP_OVERLAY`` (when set); overlay wins on a name clash.
+    """
     from agent.safe_worker_policy import safe_worker_enabled
     if safe_worker_enabled():
         return {}
@@ -715,6 +765,8 @@ def _load_mcp_config() -> dict[str, dict]:
         # tighter limit would fall back to the package's looser one while the server keeps spending).
         rejected = frozenset(n for n in servers if n not in kept and _malformed_cost_table(n, servers[n]) is not None)
         _portable_mcp_servers(safe_servers, rejected)
+        # Per-run overlay (filesystem JSON via HERMES_MCP_OVERLAY): after portable so it wins on clash.
+        safe_servers.update(_load_mcp_overlay())
         return safe_servers
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)

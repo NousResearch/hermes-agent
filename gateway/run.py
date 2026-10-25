@@ -953,6 +953,108 @@ def _startup_warmup_timeout_secs() -> float:
     return _float_env("HERMES_STARTUP_WARMUP_TIMEOUT", _STARTUP_WARMUP_TIMEOUT_SECS_DEFAULT)
 
 
+_LOOP_STALL_STATE_PATH = Path.home() / ".hermes" / "state" / "gateway" / "loop_stall.json"
+_LOOP_STALL_REPORT_COOLDOWN_S = 30.0
+_LOOP_STALL_MAX_THREADS = 24
+
+
+def _thread_frame_dump(loop_ident: int) -> List[str]:
+    """Innermost-frame snapshot of every live Python thread (the loop thread walks up to 6 frames).
+
+    Called from the watchdog thread while the loop is late, so the frames show *what holds the
+    GIL* rather than the threshold that got crossed. Pure-Python hot loops keep switching the GIL
+    every 5 ms, so this snapshot does land mid-work.
+    """
+    names = {t.ident: t.name for t in threading.enumerate()}
+    lines: List[str] = []
+    for ident, frame in list(sys._current_frames().items())[:_LOOP_STALL_MAX_THREADS]:
+        chain = []
+        depth = 0
+        while frame is not None:
+            chain.append(frame)
+            frame = frame.f_back
+            depth += 1
+            if depth >= (6 if ident == loop_ident else 1):
+                break
+        innermost = chain[0]
+        loc = f"{os.path.basename(innermost.f_code.co_filename)}:{innermost.f_lineno} in {innermost.f_code.co_name}"
+        if ident == loop_ident and len(chain) > 1:
+            callers = " <- ".join(
+                f"{os.path.basename(f.f_code.co_filename)}:{f.f_lineno} in {f.f_code.co_name}" for f in chain[1:]
+            )
+            lines.append(f"[loop] {loc} (callers: {callers})")
+        else:
+            lines.append(f"[{names.get(ident, 'ident-' + str(ident))}] {loc}")
+    return lines
+
+
+def _write_loop_stall_state(lag: float, lines: List[str]) -> None:
+    """Persist the latest stall snapshot for triage (never raises: diagnostics must not break the loop)."""
+    try:
+        _LOOP_STALL_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"at": datetime.now().isoformat(timespec="seconds"), "lag_s": round(lag, 2), "threads": lines}
+        tmp = _LOOP_STALL_STATE_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(_LOOP_STALL_STATE_PATH)
+    except Exception:
+        pass
+
+
+def _install_loop_heartbeat(loop, interval: float = 2.0, stall_threshold: float = 5.0) -> None:
+    """Install the gateway's own event-loop heartbeat (mirrors ``hermes_cli.web_server``'s CF-1 tick).
+
+    A 2 s ``call_later`` tick: the drift between expected and actual wake-up *is* the GIL/loop stall.
+    The gateway previously surfaced stalls only through ``ws write slow (loop stalled >10.0s)``,
+    which reports the threshold rather than the duration and fires after frames already missed
+    their budget. This line is the direct triage signal (``gateway event loop stalled Ns``).
+    ``call_later`` (not a task) dies with the loop, so there is nothing to cancel.
+
+    A daemon watchdog thread rides alongside: when no tick has landed for longer than
+    ``stall_threshold``, it snapshots every thread's innermost frame (loop thread: 6 frames) into
+    the log and ``~/.hermes/state/gateway/loop_stall.json``. That turns the next hang from
+    "the loop stalled" into "this function held the loop", which is the part that was guesswork.
+    """
+
+    tick_at = time.monotonic()
+    loop_ident = threading.get_ident()
+
+    def _tick(expected: float) -> None:
+        nonlocal tick_at
+        now = loop.time()
+        drift = now - expected
+        tick_at = time.monotonic()
+        if drift > stall_threshold:
+            logger.warning("gateway event loop stalled %.1fs (GIL pressure suspected)", drift)
+        loop.call_later(interval, _tick, now + interval)
+
+    loop.call_later(interval, _tick, loop.time() + interval)
+
+    def _watch() -> None:
+        last_report = 0.0
+        while True:
+            woke = time.monotonic()
+            time.sleep(max(0.5, interval / 2.0))
+            slept = time.monotonic() - woke
+            lag = time.monotonic() - tick_at
+            if lag <= stall_threshold:
+                continue
+            now = time.monotonic()
+            if now - last_report < _LOOP_STALL_REPORT_COOLDOWN_S:
+                continue
+            last_report = now
+            try:
+                lines = _thread_frame_dump(loop_ident)
+            except Exception:
+                lines = []
+            starved = " (process-wide GIL starvation: watchdog itself woke %.1fs late)" % slept if slept > interval / 2.0 + 2.0 else ""
+            logger.warning(
+                "loop watchdog: no tick for %.1fs%s; innermost frames: %s", lag, starved, " | ".join(lines)
+            )
+            _write_loop_stall_state(lag, lines)
+
+    threading.Thread(target=_watch, name="hermes-loop-watchdog", daemon=True).start()
+
+
 def _warm_turn_machinery_sync() -> int:
     """Synchronously initialize first-turn prerequisites (executor thread); returns the schema count.
 
@@ -991,6 +1093,15 @@ def _warm_turn_machinery_sync() -> int:
         logger.info("Model context warmed: %s -> %d tokens (%s)", ctx.model, ctx.context_length, ctx.context_source)
     except Exception:
         logger.debug("model-context warm-up failed (non-fatal)", exc_info=True)
+    try:
+        # Skills 目录预扫：本机 4151 个 SKILL.md 的冷扫约 3.5 s，全是纯 Python YAML 解析
+        # （持 GIL）。放在启动 warm-up 里预扫，首个 session.info/resume 直接命中目录缓存，
+        # 不再由某一个客户端请求独自承担这段延迟，也不与其他会话的 inventory 争 GIL。
+        from tools.skills_tool import _find_all_skills
+
+        _find_all_skills()
+    except Exception:  # health: allow BLE001 -- warm-up is best effort, the catalog lazily loads
+        logger.debug("skills catalog warm-up failed (first listing will scan)", exc_info=True)
     return len(tool_defs)
 
 

@@ -17,7 +17,10 @@ if TYPE_CHECKING:
 # runtime, seeds the skill library and warms the turn machinery: ~10-20 s on a loaded
 # 32-core CI runner with dozens of sibling boots, where 30 s tipped every attaching client
 # of a parallel e2e shard into `starting: deadline`. A minute is still a verdict, not a hang.
-DEFAULT_ENSURE_TIMEOUT = 60.0
+# Local patch (taihang): a cold boot on this host measured ~124 s (31 served profiles
+# plus the MCP fan-out), well past the upstream 60 s client deadline, so attaching
+# clients died with "Gateway starting: deadline". Raised to 180 s.
+DEFAULT_ENSURE_TIMEOUT = 180.0
 
 
 @dataclass(frozen=True)

@@ -183,3 +183,23 @@ def test_a_stale_idle_check_never_writes_into_the_replacement_screens_log(tmp_pa
         _spawn(monkeypatch, tmp_path)
         stale.write(b"idle-watch changed while the idle stop waited; kept\n")
     assert log.read_bytes() == b""
+
+
+@pytest.mark.platforms("posix")
+def test_stop_leaves_no_idle_check_output_behind(tmp_path, monkeypatch):
+    """``idle-watch.out`` is the launcher's idle check output: it belongs to the stopped screen like its pid."""
+    sd = tmp_path / "bd"
+    sd.mkdir()
+    monkeypatch.setattr(runtime, "state_dir", lambda: sd)
+    proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    try:
+        (sd / "launcher.pid").write_text(f"{proc.pid} {runtime._create_time(proc.pid)}", encoding="utf-8")
+        for name in ("env", "activity", "idle-watch.out"):
+            (sd / name).write_text("300\n", encoding="utf-8")
+        assert runtime._stop_locked(sd) is True
+        proc.wait(5)
+        assert sorted(p.name for p in sd.iterdir()) == []
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()

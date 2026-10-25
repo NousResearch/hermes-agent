@@ -88,8 +88,9 @@ def abandoned_screen(tmp_path):
 
 def test_an_abandoned_screen_stops_itself_after_the_idle_window(abandoned_screen):
     sd, launcher = abandoned_screen(idle_stop_minutes=0.02)  # 1.2 s
-    # stop() deletes launcher.pid/env after the group is gone, so both are part of "stopped".
-    wait_until(lambda: not _alive(launcher) and not (sd / "launcher.pid").exists() and not (sd / "env").exists(),
+    # stop() deletes its runtime files after the group is gone, so they are part of "stopped".
+    files = ("launcher.pid", "env", "activity", "idle-watch.out")
+    wait_until(lambda: not _alive(launcher) and not any((sd / name).exists() for name in files),
                timeout=30, what="the abandoned screen to be stopped the way stop() does")
 
 

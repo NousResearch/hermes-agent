@@ -889,6 +889,6 @@ def _stop_locked(sd: Path) -> bool:
         return reaped
     # The launcher runs in its own session; killing the group takes Xvnc, dbus and Xfce with it.
     _kill_group_then_wait(pid, pid, grace=5.0)
-    for name in ("launcher.pid", "env", "activity"):
+    for name in ("launcher.pid", "env", "activity", "idle-watch.out"):
         (sd / name).unlink(missing_ok=True)
     return True

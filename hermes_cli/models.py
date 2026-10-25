@@ -2653,19 +2653,83 @@ def _probe_result(
         "used_fallback": used_fallback}
 
 
+def _is_native_gemini_base_url(base_url: Optional[str]) -> bool:
+    """True only for Google's native Generative Language API base URLs.
+
+    AI Studio authenticates catalog probes with ``?key=`` and returns ``models[].name``
+    shaped as ``models/<id>``. The OpenAI-compat surface (``.../v1beta/openai``) stays on
+    the generic Bearer + ``data[].id`` path. Other hosts, including Vertex, are not this
+    surface — do not route them here.
+    """
+    normalized = (base_url or "").strip().rstrip("/").lower()
+    if not normalized:
+        return False
+    parsed = urllib.parse.urlparse(normalized)
+    if parsed.hostname != "generativelanguage.googleapis.com":
+        return False
+    return "/openai" not in parsed.path
+
+
+def _native_gemini_model_ids(payload: Any) -> list[str]:
+    """Strip ``models/`` off native ``models[].name`` rows. Non-lists yield ``[]``."""
+    rows = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return []
+    ids: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("name")
+        if isinstance(name, str) and name.strip():
+            ids.append(name.strip().rsplit("/", 1)[-1])
+    return ids
+
+
+def _fetch_native_gemini_models(
+    api_key: Optional[str] = None, base_url: Optional[str] = None, timeout: float = 5.0,
+) -> Optional[list[str]]:
+    """List model ids from Google's native Generative Language API.
+
+    Uses ``?key=`` (not ``Authorization: Bearer``) through ``_get_json`` so the shared
+    catalog opener's redirect credential-hardening still applies. The key is percent-encoded
+    and never logged; failures return None without including the request URL.
+    """
+    key = api_key.strip() if isinstance(api_key, str) else ""
+    if not key:
+        return None
+    normalized = (base_url or "").strip().rstrip("/") or "https://generativelanguage.googleapis.com/v1beta"
+    url = f"{normalized}/models?key={urllib.parse.quote(key, safe='')}"
+    headers = {
+        "User-Agent": _HERMES_USER_AGENT,
+        "X-Goog-Api-Client": f"hermes-agent/{get_version_info().base_version}",
+    }
+    try:
+        data = _get_json(url, timeout=timeout, headers=headers)
+    except Exception as exc:
+        logger.debug("native gemini model probe failed: %s", type(exc).__name__)
+        return None
+    return _native_gemini_model_ids(data)
+
+
 def probe_api_models(
     api_key: Optional[str], base_url: Optional[str], timeout: float = 5.0,
     api_mode: Optional[str] = None, request_headers: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """Probe a ``/models`` endpoint with light URL heuristics (``base`` then ``base±/v1``).
     ``anthropic_messages`` mode sends ``x-api-key`` + ``anthropic-version`` instead of a bearer; the
-    ``data[].id`` response shape is identical. ``models`` is None when no candidate answered."""
+    ``data[].id`` response shape is identical. Native AI Studio uses ``?key=`` and ``models[].name``.
+    ``models`` is None when no candidate answered."""
     normalized = (base_url or "").strip().rstrip("/")
     if not normalized:
         return _probe_result(None, None, "")
     if _is_github_models_base_url(normalized):
         models = _fetch_github_models(api_key=api_key, timeout=timeout)
         return _probe_result(models, COPILOT_MODELS_URL, COPILOT_BASE_URL)
+    # Exact native Gemini host only. OpenAI-compat (.../v1beta/openai) keeps Bearer below.
+    # probed_url omits the key so callers can display it.
+    if _is_native_gemini_base_url(normalized):
+        models = _fetch_native_gemini_models(api_key=api_key, base_url=normalized, timeout=timeout)
+        return _probe_result(models, f"{normalized}/models", normalized)
 
     alternate_base = normalized[:-3].rstrip("/") if normalized.endswith("/v1") else normalized + "/v1"
     candidates: list[tuple[str, bool]] = [(normalized, False)]

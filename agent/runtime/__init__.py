@@ -1,8 +1,7 @@
 """Hardened typed runtime for hermes-agent.
 
 Lives under ``agent/runtime/``. See ``agent/runtime/README.md`` for the
-integration guide and ``docs/plans/2026-05-15-smolagents-runtime-upgrade.md``
-for the design rationale.
+module layout and integration plan.
 
 Goal alignment (governance-ready execution kernel):
 
@@ -22,17 +21,6 @@ Public surface kept narrow on purpose — callers should import from
 ``agent.runtime`` rather than reaching into submodules.
 """
 
-from .acgs_governance import (
-    ACGSClient,
-    ACGSDecisionReceipt,
-    ACGSGovernance,
-    ACGSRule,
-    ACGSVerdict,
-    Constitution,
-    LocalACGSClient,
-    Severity,
-    build_acgs_governance_from_config,
-)
 from .callbacks import CallbackRegistry, StepCallback
 from .governance import AllowAllGovernance, AllowListGovernance, DenyAllGovernance, GovernanceGate
 from .interfaces import (
@@ -79,72 +67,52 @@ from .steps import (
 from .transitions import LEGAL_TRANSITIONS, TransitionGuard
 
 __all__ = [
-    # steps
-    "ActionStep",
-    "FailureKind",
-    "FinalAnswerStep",
-    "MemoryStep",
-    "PlanningStep",
-    "StepFailure",
-    "TaskStep",
-    "ToolCall",
-    "ToolOutput",
-    # memory
-    "AgentMemory",
-    # result
-    "RunResult",
-    "Timing",
-    "TokenUsage",
-    # state
-    "RunState",
-    "StateFrozenError",
-    "StateMutation",
-    # callbacks
-    "CallbackRegistry",
-    "StepCallback",
-    # interfaces
-    "Clock",
-    "FrozenClock",
     "FINAL_ANSWER_TOOL",
+    "LEGAL_TRANSITIONS",
+    "ActionStep",
+    "AgentMemory",
+    "AllowAllGovernance",
+    "AllowListGovernance",
+    "CallbackRegistry",
+    "Clock",
+    "DenyAllGovernance",
+    "FailureKind",
+    "FinalAnswerCheck",
+    "FinalAnswerStep",
+    "FrozenClock",
     "GovernanceContext",
     "GovernanceDecision",
+    "GovernanceGate",
     "GovernanceProtocol",
     "GovernanceVerdict",
     "IdSource",
+    "MemoryStep",
     "ModelOutput",
     "ModelProtocol",
-    "SequentialIdSource",
-    "SystemClock",
-    "ToolHandlerProtocol",
-    "UuidIdSource",
-    "failure_from_exception",
-    # governance
-    "AllowAllGovernance",
-    "AllowListGovernance",
-    "DenyAllGovernance",
-    "GovernanceGate",
-    # acgs-lite constitutional governance
-    "ACGSClient",
-    "ACGSDecisionReceipt",
-    "ACGSGovernance",
-    "ACGSRule",
-    "ACGSVerdict",
-    "Constitution",
-    "LocalACGSClient",
-    "Severity",
-    "build_acgs_governance_from_config",
-    # transitions
-    "LEGAL_TRANSITIONS",
-    "TransitionGuard",
-    # loop
-    "FinalAnswerCheck",
     "MultiStepLoop",
-    # replay
+    "PlanningStep",
     "RecordedModel",
     "RecordedToolHandler",
     "ReplayExhausted",
     "ReplayMissingToolOutput",
+    "RunResult",
+    "RunState",
     "ScriptedGovernance",
+    "SequentialIdSource",
+    "StateFrozenError",
+    "StateMutation",
+    "StepCallback",
+    "StepFailure",
+    "SystemClock",
+    "TaskStep",
+    "Timing",
+    "TokenUsage",
+    "ToolCall",
+    "ToolHandlerProtocol",
+    "ToolOutput",
+    "TransitionGuard",
+    "UuidIdSource",
     "build_replay_loop",
+    "failure_from_exception",
     "run_from_trace",
 ]

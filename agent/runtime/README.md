@@ -1,94 +1,86 @@
-# Tier-1 scaffold: `agent/runtime/`
+# `agent/runtime/` — typed, fail-closed agent loop kernel
 
-This is a self-contained, provider-agnostic step machine intended to drop into
-[`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent) as a
-new package `agent/runtime/`. See the design rationale in
-`../2026-05-15-smolagents-runtime-upgrade.md`.
+A self-contained, provider-agnostic step machine. Standard library only; no
+existing Hermes module imports it yet, so landing it changes no runtime
+behavior.
 
-**What this is:** a typed loop + memory + callback system modeled on
-smolagents' `MultiStepAgent`, but with **no smolagents dependency**.
+**What this is:** a typed loop + memory + governance gate + replay system,
+modeled on smolagents' `MultiStepAgent` but with **no smolagents dependency**.
 
 **What this is not:** a replacement for `AIAgent`. It is the substrate
-`AIAgent.run()` should *delegate to* once integrated.
+`AIAgent.run()` can *delegate to* once a provider is wired in (see
+[Integration plan](#integration-plan)).
 
 ## Layout
 
 ```
 agent/runtime/
-├── __init__.py        # public surface
-├── steps.py           # MemoryStep, ActionStep, PlanningStep, FinalAnswerStep, ToolCall, ToolOutput
-├── result.py          # RunResult, TokenUsage
-├── memory.py          # AgentMemory — append-only typed history; replay(); to/from JSONL
-├── callbacks.py       # StepCallback Protocol + CallbackRegistry (per-step-type dispatch)
-├── interfaces.py      # ModelProtocol, ToolHandlerProtocol, ModelOutput
-└── loop.py            # MultiStepLoop — provider-agnostic orchestration
-tests/runtime/
-├── test_steps.py
-├── test_memory.py
-├── test_callbacks.py
-└── test_loop.py
+├── __init__.py      # public surface — import from agent.runtime, not submodules
+├── steps.py         # TaskStep, ActionStep, PlanningStep, FinalAnswerStep, ToolCall, ToolOutput, StepFailure
+├── result.py        # RunResult, TokenUsage
+├── interfaces.py    # ModelProtocol, ToolHandlerProtocol, GovernanceProtocol, Clock, IdSource
+├── transitions.py   # TransitionGuard — rejects illegal step orderings
+├── governance.py    # DenyAllGovernance (default), AllowAllGovernance, AllowListGovernance, GovernanceGate
+├── state.py         # RunState — every mutation requires a reason; frozen after the run
+├── callbacks.py     # CallbackRegistry — per-step-type dispatch
+├── memory.py        # AgentMemory — append-only typed history; to/from JSONL
+├── loop.py          # MultiStepLoop — model → governance → tools → termination
+└── replay.py        # RecordedModel, RecordedToolHandler, ScriptedGovernance, run_from_trace
 ```
 
-## How to drop into hermes-agent
+## Guarantees (each pinned by `tests/runtime/`)
 
-1. **Copy `agent/runtime/` into the hermes-agent repo root** (under the existing
-   `agent/` package).
-2. **Copy `tests/runtime/` into the hermes-agent `tests/` tree.**
-3. **Make hermes adapters satisfy `interfaces.ModelProtocol`** by adding a
-   thin shim in each adapter (`anthropic_adapter`, `gemini_native_adapter`, …)
-   that exposes:
+- Every step is a frozen dataclass; failures carry a typed `FailureKind`.
+- Every step is transition-validated before it lands in memory.
+- Every tool call gets exactly one governance decision on record. With no
+  policy supplied the loop uses `DenyAllGovernance`.
+- `continue_on_error=False` by default: model errors, tool errors, rejected
+  transitions and limit breaches terminate with `completed=False`.
+- Every `RunState` mutation carries a non-empty reason.
+- `run_from_trace(memory.to_jsonl())` reproduces the trace byte-for-byte
+  (inject `FrozenClock` + `SequentialIdSource` for determinism).
+- `MultiStepLoop` instances are single-use; a second `run()` raises
+  `RuntimeError`.
 
-   ```python
-   def generate(self, messages, tools=None, **kwargs) -> ModelOutput: ...
-   ```
-
-   Internally it can call the existing provider-specific code paths.
-4. **Make `model_tools.handle_function_call` satisfy `ToolHandlerProtocol`** by
-   adding a wrapper that takes `list[ToolCall]` and returns `list[ToolOutput]`.
-   The existing parallel-execution helpers in `run_agent.py`
-   (`_should_parallelize_tool_batch`, `_extract_parallel_scope_path`,
-   `_paths_overlap`) move into this wrapper.
-5. **In `run_agent.AIAgent`, replace the inner `while` loop** with a
-   `MultiStepLoop` instance. The big extracted helpers (`IterationBudget`,
-   `_should_parallelize_tool_batch`, `_repair_tool_call_arguments`, surrogate
-   sanitizers) become `step_callbacks` rather than inline branches.
-6. **Run the existing test suite.** Behavior must not change. Add new tests
-   under `tests/runtime/` for any extracted callback.
-
-## Running the tests locally (in this workspace)
-
-The scaffold uses only the Python standard library. From this directory:
+## Tests
 
 ```bash
-cd docs/proposals/scaffold
-python3 -m pytest tests/runtime -v
+scripts/run_tests.sh tests/runtime/
+# or, with the project venv active:
+pytest tests/runtime/ -q
 ```
 
-(or `python3 -m unittest discover -s tests/runtime -v` if pytest isn't available)
+## Integration plan
+
+Each step is a separate PR; the default path stays on the legacy loop until
+step 5.
+
+1. Land `agent/runtime/` + `tests/runtime/` (this package).
+2. Add a `generate(messages, tools=None, **kwargs) -> ModelOutput` shim to one
+   provider adapter so it satisfies `ModelProtocol`.
+3. Wrap `model_tools.handle_function_call` as a `ToolHandlerProtocol`
+   (`list[ToolCall] -> list[ToolOutput]`).
+4. Delegate `AIAgent.run()` to `MultiStepLoop` behind an
+   `agent.runtime: kernel | legacy` config flag (default `legacy`); diff
+   trajectories of both paths on a reference task.
+5. Move `IterationBudget`, tool-batch parallelization, compression and
+   redaction into step callbacks one at a time, each with a regression test;
+   flip the default once one provider reaches parity.
 
 ## Design constraints
 
-- **No external runtime deps.** Standard library only.
-- **Python 3.11+.** Matches hermes-agent's installer requirement.
+- **No external runtime deps.** Standard library only. Python 3.11+.
 - **Append-only memory.** `AgentMemory` never mutates past steps — this is
   what makes replay deterministic.
-- **Step types are frozen dataclasses.** Step records are immutable once
-  appended.
-- **No I/O in the loop.** All side effects go through the `ModelProtocol` and
-  `ToolHandlerProtocol` injected at construction. The loop never reads
-  config, never opens files, never logs to disk. Logging/telemetry is a
-  callback concern.
+- **No I/O in the loop.** All side effects go through the injected
+  `ModelProtocol`, `ToolHandlerProtocol` and `GovernanceProtocol`. The loop
+  never reads config, opens files, or logs to disk; telemetry is a callback
+  concern.
 - **Interruption is cooperative.** `loop.interrupt()` flips a flag checked
-  between steps. It does not raise from inside the model call — the
-  injected model owns that.
+  between steps; it does not raise from inside the model call.
 
-## What this scaffold deliberately leaves out
+## Out of scope
 
-- Provider adapters (Anthropic / Gemini / Bedrock / …) — they stay in the
-  existing `agent/*_adapter.py` files.
-- Compression, credential pooling, rate guarding — these become
-  `step_callbacks`, but the implementations stay where they are.
-- Streaming — Tier 1 surfaces the same final result the existing loop does.
-  Streaming is a Tier-1.5 follow-up: the loop accepts an `event_sink`
-  callable that downstream code (`cli.py`'s SSE handler) can subscribe to.
-- CodeAgent / `PythonExecutor` — that's Tier 2 in the parent design doc.
+- Provider adapters, compression, credential pooling, rate guarding — they
+  stay where they are and become callbacks during integration.
+- Streaming — a follow-up via an `event_sink` callback.

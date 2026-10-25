@@ -127,3 +127,57 @@ def test_stream_refuses_a_clip_outside_the_sessions_workspace(client, sandboxes,
 
     assert response.status_code in (400, 403, 404), response.status_code
     assert b"outside-clip" not in response.content
+
+
+# Part 2: file: paths and text previews
+
+
+@pytest.mark.parametrize("path", ["/workspace/note.txt", "file:///workspace/note.txt"])
+def test_read_text_previews_the_sessions_own_workspace_file(client, sandboxes, path):
+    def read(**params):
+        return client.get("/api/fs/read-text", params={"path": path, **params})
+
+    own = read(session_id="sess-ws")
+    other = read(session_id="sess-other")
+    bare = read()
+
+    assert own.status_code == 200, own.text
+    assert own.json()["text"] == "session note"
+    assert own.json()["path"] == str(sandboxes["own"] / "note.txt")
+    assert other.json()["text"] == "foreign note"
+    # No session keeps the shared profile sandbox, the same answer for both spellings.
+    assert (bare.status_code, bare.json()["text"]) == (200, "shared note")
+
+
+def test_a_file_url_clip_streams_from_the_sessions_sandbox(client, sandboxes, monkeypatch):
+    query = {"path": "file:///workspace/clip.mp4", "session_id": "sess-ws"}
+
+    direct = client.get("/api/files/stream", params=query)
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+    minted = client.post("/api/files/ticket", json={"route": "stream", **query})
+    assert minted.status_code == 200, minted.text
+    del client.headers[web_server._SESSION_HEADER_NAME]
+    ticketed = client.get("/api/files/stream", params={**query, "ticket": minted.json()["ticket"]})
+
+    assert (direct.status_code, direct.content) == (200, b"session-clip")
+    assert (ticketed.status_code, ticketed.content) == (200, b"session-clip")
+
+
+@pytest.mark.parametrize("session_id", ["sess-work", "missing-session", " "])
+def test_read_text_refuses_a_session_this_profile_does_not_own(client, sandboxes, session_id):
+    for path in ("/workspace/note.txt", "file:///workspace/note.txt"):
+        response = client.get("/api/fs/read-text", params={"path": path, "session_id": session_id})
+        assert response.status_code == 404, (path, response.text)
+
+
+@pytest.mark.parametrize("path", [
+    "/workspace/escape.txt",
+    "file:///workspace/escape.txt",
+    "/workspace/../outside/secret.txt",
+    "file:///workspace/sub/../escape.txt",
+])
+def test_read_text_refuses_a_file_outside_the_sessions_workspace(client, sandboxes, path):
+    response = client.get("/api/fs/read-text", params={"path": path, "session_id": "sess-ws"})
+
+    assert response.status_code in (400, 403, 404), response.text
+    assert "outside note" not in response.text

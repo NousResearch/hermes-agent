@@ -154,6 +154,8 @@ interface PreviewPaneProps {
   onClose?: () => void
   onRestartServer?: (url: string, context?: string) => Promise<string>
   reloadRequest?: number
+  /** The session that owns the tab; a file it names resolves in that session's workspace. */
+  sessionId?: string
   /** The preview tab this pane renders. Keys the per-tab console store the
    *  browser bar's console toggle and the console panel both read. */
   tabId?: string
@@ -273,6 +275,7 @@ export function PreviewPane({
   onClose,
   onRestartServer,
   reloadRequest = 0,
+  sessionId,
   tabId,
   target
 }: PreviewPaneProps) {
@@ -1546,6 +1549,7 @@ export function PreviewPane({
                 onClose={onClose}
                 onSelectRendered={canRenderHtmlFile ? () => selectRenderMode('preview') : undefined}
                 reloadKey={localReloadKey}
+                sessionId={sessionId}
                 target={target}
               />
             ))}

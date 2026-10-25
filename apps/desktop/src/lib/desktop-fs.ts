@@ -54,8 +54,16 @@ export function desktopFsProfile(): string | undefined {
   return $connection.get()?.profile || undefined
 }
 
-function fsPath(endpoint: string, filePath: string) {
-  return `/api/fs/${endpoint}?path=${encodeURIComponent(filePath)}`
+/** The chat a gateway file belongs to. A Docker agent's `/workspace` is that session's own
+ *  sandbox, so a gateway read names it; a local (native) read has no use for it. */
+export interface DesktopFsSessionScope {
+  sessionId?: null | string
+}
+
+function fsPath(endpoint: string, filePath: string, scope?: DesktopFsSessionScope) {
+  const session = scope?.sessionId ? `&session_id=${encodeURIComponent(scope.sessionId)}` : ''
+
+  return `/api/fs/${endpoint}?path=${encodeURIComponent(filePath)}${session}`
 }
 
 function bridge() {
@@ -110,7 +118,10 @@ export async function readDesktopDir(path: string): Promise<HermesReadDirResult>
   return remoteFsApi<HermesReadDirResult>(fsPath('list', path))
 }
 
-export async function readDesktopFileText(path: string): Promise<HermesReadFileTextResult> {
+export async function readDesktopFileText(
+  path: string,
+  scope?: DesktopFsSessionScope
+): Promise<HermesReadFileTextResult> {
   if (!isDesktopFsRemoteMode()) {
     const result = await bridge().readFileText(path)
 
@@ -121,7 +132,7 @@ export async function readDesktopFileText(path: string): Promise<HermesReadFileT
     return result
   }
 
-  return remoteFsApi<HermesReadFileTextResult>(fsPath('read-text', path))
+  return remoteFsApi<HermesReadFileTextResult>(fsPath('read-text', path, scope))
 }
 
 // Save UTF-8 text back to a file. Local writes go through the hardened Electron
@@ -152,7 +163,7 @@ export async function createRemoteDir(path: string): Promise<string> {
   return result.path || path
 }
 
-export async function readDesktopFileDataUrl(path: string): Promise<string> {
+export async function readDesktopFileDataUrl(path: string, scope?: DesktopFsSessionScope): Promise<string> {
   if (!isDesktopFsRemoteMode()) {
     const result = await bridge().readFileDataUrl(path)
 
@@ -163,7 +174,7 @@ export async function readDesktopFileDataUrl(path: string): Promise<string> {
     return result
   }
 
-  const result = await remoteFsApi<string | { dataUrl?: string }>(fsPath('read-data-url', path))
+  const result = await remoteFsApi<string | { dataUrl?: string }>(fsPath('read-data-url', path, scope))
 
   return typeof result === 'string' ? result : result.dataUrl || ''
 }

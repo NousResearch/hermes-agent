@@ -993,7 +993,9 @@ async def fs_list(path: str, request: Request, profile: Optional[str] = None):
 
 
 @router.get("/api/fs/read-text")
-async def fs_read_text(path: str, request: Request = None, profile: Optional[str] = None):
+async def fs_read_text(
+    path: str, request: Request = None, profile: Optional[str] = None, session_id: Optional[str] = None,
+):
     # A staged paste or pick previews from this host, as read-data-url reads it back to send.
     backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
     if backend is not None:
@@ -1017,7 +1019,8 @@ async def fs_read_text(path: str, request: Request = None, profile: Optional[str
             "truncated": size > _FS_TEXT_PREVIEW_MAX_BYTES,
         }
     profile_home = _fs_profile_home(profile)
-    target = _agent_fs_path(path, profile_home=profile_home)
+    # A session's /workspace is its own sandbox, resolved as download resolves it.
+    target = await _fs_download_path(path, profile, session_id)
     # The same staged-file exception read-data-url makes under a locked files root.
     if not await asyncio.to_thread(_is_host_file, str(target), profile):
         _hosted_fs_read_guard(target, request)

@@ -244,7 +244,9 @@ def _agent_fs_path(
         host = _fs_path(raw_path, cwd=cwd)
         if os.access(host, os.R_OK):
             return host
-        translated = _agent_container_path(raw, profile_home=profile_home, workspace_key=workspace_key)
+        translated = _agent_container_path(
+            _file_url_container_text(raw), profile_home=profile_home, workspace_key=workspace_key,
+        )
         return translated if translated is not None else host
     translated = _agent_container_path(raw, profile_home=profile_home, workspace_key=workspace_key)
     if translated is not None:
@@ -252,6 +254,18 @@ def _agent_fs_path(
     if _is_unmapped_container_path(raw, profile_home=profile_home):
         raise HTTPException(status_code=404, detail=SANDBOX_NOT_FOUND)
     return _fs_path(raw_path, cwd=cwd)
+
+
+def _file_url_container_text(raw: str) -> str:
+    """The path a POSIX gateway's ``file:`` URL names (``file:///workspace/x`` -> ``/workspace/x``),
+    so a container path spelled as a URL translates like the bare path. Any other text, and every
+    URL on a Windows gateway, is returned unchanged; ``_fs_path`` already refused a bad URL."""
+    if os.name == "nt" or not raw.lower().startswith("file:"):
+        return raw
+    try:
+        return _file_url_path(raw)
+    except ValueError:
+        return raw
 
 
 def _is_unmapped_container_path(raw: str, *, profile_home: Path | None = None) -> bool:

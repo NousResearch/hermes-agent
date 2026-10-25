@@ -929,10 +929,59 @@ class TestBlockedVerdict:
         assert decision["verdict"] == "blocked"
         assert decision["status"] == "paused"
         assert decision["should_continue"] is False
-        assert "unachievable" in decision["message"].lower()
+        assert "blocked" in decision["message"].lower()
         assert mgr.state is not None
         assert mgr.state.status == "paused"
-        assert "unachievable" in (mgr.state.paused_reason or "").lower()
+        assert "blocked" in (mgr.state.paused_reason or "").lower()
+
+    def test_judge_prompt_has_a_halted_awaiting_user_branch(self):
+        """#126342: a plain-language stop mid-loop must park the goal, not re-poke it.
+
+        The judge only sees the goal text and the agent's final response — the user's stop
+        message never reaches it. After the agent obeys ("Stopped. Awaiting instructions.")
+        a weak judge model needs an explicit BLOCKED branch for that halted state, else it
+        defaults to CONTINUE and the injected continuation overrides the user's stop.
+        """
+        from types import SimpleNamespace
+        from hermes_cli import goals
+
+        seen = {}
+
+        def _fake_call_llm(**kw):
+            seen["messages"] = kw["messages"]
+            content = '{"verdict": "blocked", "reason": "the agent stopped at the user\'s request"}'
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+
+        with patch("agent.auxiliary_client.call_llm", side_effect=_fake_call_llm):
+            verdict, _reason, _pf, _wd, _tf = goals.judge_goal(
+                "refactor the module", "Stopped. Awaiting further instructions.")
+
+        assert verdict == "blocked"
+        system_prompt = str(seen["messages"][0]["content"])
+        assert "waiting for the user" in system_prompt
+        assert "asked it to stop" in system_prompt
+
+    def test_blocked_after_a_user_stop_pauses_without_continuation(self, hermes_home):
+        """#126342: once the judge rules the agent halted at the user's request, the loop must
+        park the goal (no continuation prompt injected) so it cannot resume on its own."""
+        from unittest.mock import patch
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="user-stop-sid")
+        mgr.set("a long-running refactoring goal")
+        with patch(
+            "hermes_cli.goals.judge_goal",
+            return_value=(
+                "blocked", "the agent stopped at the user's request and is awaiting instructions",
+                False, None, False,
+            ),
+        ):
+            decision = mgr.evaluate_after_turn("Stopped. Awaiting further instructions.")
+
+        assert decision["status"] == "paused"
+        assert decision["should_continue"] is False
+        assert decision["continuation_prompt"] is None
+        assert mgr.state is not None and mgr.state.status == "paused"
 
 
 def test_goal_session_db_is_the_registry_shared_handle(hermes_home):

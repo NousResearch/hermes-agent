@@ -140,6 +140,82 @@ import {
   console.log('  ✓ inbound quoted metadata includes quoted text');
 }
 
+// -- read receipt key shape (group vs DM) ---------------------------------
+{
+  const event = await extractBridgeEvent({
+    msg: {
+      key: {
+        id: 'group-rr-1',
+        remoteJid: '120363000000000000@g.us',
+        participant: '15550001111@s.whatsapp.net',
+        fromMe: false,
+      },
+      pushName: 'Tester',
+      messageTimestamp: 123,
+      message: { conversation: 'hi' },
+    },
+    chatId: '120363000000000000@g.us',
+    senderId: '15550001111@s.whatsapp.net',
+    senderNumber: '15550001111',
+    botIds: ['15559998888@s.whatsapp.net'],
+    isGroup: true,
+    downloadMedia: async () => Buffer.from(''),
+  });
+
+  assert.deepEqual(event.readReceiptKey, {
+    remoteJid: '120363000000000000@g.us',
+    id: 'group-rr-1',
+    participant: '15550001111@s.whatsapp.net',
+    fromMe: false,
+  });
+  console.log('  ✓ group read receipt keys include the message participant');
+}
+
+{
+  const senderId = '15550002222@s.whatsapp.net';
+  const event = await extractBridgeEvent({
+    msg: {
+      key: { id: 'group-rr-2', remoteJid: '120363000000000000@g.us', fromMe: false },
+      pushName: 'Tester',
+      messageTimestamp: 123,
+      message: { conversation: 'hi' },
+    },
+    chatId: '120363000000000000@g.us',
+    senderId,
+    senderNumber: '15550002222',
+    botIds: ['15559998888@s.whatsapp.net'],
+    isGroup: true,
+    downloadMedia: async () => Buffer.from(''),
+  });
+
+  assert.equal(event.readReceiptKey.participant, senderId);
+  console.log('  ✓ group read receipt keys fall back to senderId for participant');
+}
+
+{
+  const event = await extractBridgeEvent({
+    msg: {
+      key: { id: 'lid-dm-rr-1', remoteJid: '123456789012345@lid', fromMe: false },
+      pushName: 'Tester',
+      messageTimestamp: 123,
+      message: { conversation: 'hi' },
+    },
+    chatId: '123456789012345@lid',
+    senderId: '123456789012345@lid',
+    senderNumber: '123456789012345',
+    botIds: ['15559998888@s.whatsapp.net'],
+    downloadMedia: async () => Buffer.from(''),
+  });
+
+  assert.equal(Object.hasOwn(event.readReceiptKey, 'participant'), false);
+  console.log('  ✓ LID DM read receipt keys omit participant');
+
+  const receiptKeys = inboundReadReceiptKeys({ key: event.readReceiptKey, enabled: true });
+  assert.equal(receiptKeys.length, 1);
+  assert.equal(Object.hasOwn(receiptKeys[0], 'participant'), false);
+  console.log('  ✓ LID DM read receipt keys stay participant-free through inboundReadReceiptKeys');
+}
+
 // -- reply to uncaptioned quoted media resolves the cached original file --
 {
   // contextInfo.quotedMessage only ever carries a thumbnail-sized stub for

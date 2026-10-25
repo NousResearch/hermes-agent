@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 
-import { restoreListedSession } from '@/app/session/hooks/use-session-actions/utils'
+import { dropListedSession, restoreListedSession, sessionMatchesStoredId } from '@/app/session/hooks/use-session-actions/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Tip } from '@/components/ui/tooltip'
@@ -21,9 +21,9 @@ import { purgeInFlightTurnJournals } from '@/lib/inflight-turn-journal'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd } from '@/store/session'
-import { untombstoneSessions } from '@/store/session-removal'
+import { tombstoneSessions, untombstoneSessions } from '@/store/session-removal'
 import { forgetSessionUnread } from '@/store/session-unread'
-import { listEveryArchivedSession } from '@/store/sidebar-archive'
+import { $archivedSessions, listEveryArchivedSession } from '@/store/sidebar-archive'
 import type { HermesConfigRecord, SessionInfo } from '@/types/hermes'
 
 import { EmptyState, ListRow, SectionHeading, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
@@ -110,8 +110,16 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
 
       setBusyId(session.id)
 
+      let deleted = false
+
       try {
         await deleteSession(session.id, session.profile)
+        deleted = true
+        // Publish the committed deletion before fallible local cleanup.
+        tombstoneSessions([session.id, session._lineage_root_id])
+        dropListedSession(session.id)
+        $archivedSessions.set($archivedSessions.get().filter(row => !sessionMatchesStoredId(row, session.id)))
+        setLocalSessions(prev => prev.filter(row => !sessionMatchesStoredId(row, session.id)))
         // Permanent delete bypasses removeSession, so retire the persisted
         // unread state here too rather than leaving it to rot.
         forgetSessionUnread([session.id, session._lineage_root_id], session.profile)
@@ -121,9 +129,14 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
         // stored tip and the durable lineage root — the journal keys on the
         // stored id and the row may carry either.
         purgeInFlightTurnJournals([session.id, session._lineage_root_id])
-        setLocalSessions(prev => prev.filter(s => s.id !== session.id))
         triggerHaptic('warning')
       } catch (err) {
+        if (deleted) {
+          console.warn('[session-delete] Post-delete cleanup failed', err)
+
+          return
+        }
+
         notifyError(err, s.deleteFailed)
       } finally {
         setBusyId(null)

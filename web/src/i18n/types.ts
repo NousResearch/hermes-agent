@@ -220,6 +220,7 @@ export interface Translations {
     failedToDeleteSelected: string;
     resumeInChat: string;
     newChat: string;
+    showAutomationSessions: string;
     workspace: string;
     workspaceDefault: string;
     workspaceRescan: string;

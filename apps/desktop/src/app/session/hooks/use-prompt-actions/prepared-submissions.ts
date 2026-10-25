@@ -1,4 +1,3 @@
-import { tryPlainHttpTabLease } from '@/lib/plain-http-tab-lease'
 import type { ComposerAttachment } from '@/store/composer'
 import type { SessionOwnerScope } from '@/store/session-request-router'
 
@@ -156,26 +155,29 @@ export async function readPreparedSubmission(key: string): Promise<PreparedSubmi
   return (await readJournal())[key]
 }
 
-// Uncertain sends this window journaled or adopted: journal key -> release of its claim.
-// The journal is shared by every window of the origin; a held claim marks an entry whose
-// window is alive, and only that window may retry it. A closed window's claim is freed, so its
-// entry stays adoptable after a reload. Plain HTTP has no Web Locks, but two tabs still share
-// this origin: the claim is a localStorage lease there. Electron and HTTPS keep Web Locks.
+// Uncertain sends this window journaled or adopted: journal key -> release of its Web Lock.
+// The journal is shared by every window of the origin; a held lock marks an entry whose
+// window is alive, and only that window may retry it. A closed window's lock is freed, so its
+// entry stays adoptable after a reload.
+// Web Locks exist only in secure contexts, so the Webapp served over plain HTTP to a
+// non-loopback address has none, while its tabs still share this journal. The browser gives
+// such a page no other atomic cross-tab primitive, so nothing is excluded there; each step is
+// safe to run in two tabs instead. A new send gets a key no other send uses
+// (preparedSubmissionSlot). Adoption matches an exact submission id, so two tabs that adopt one
+// entry both send its retained request id and payload, which the gateway admits once.
 const owned = new Map<string, () => void>()
 
+const webLocks = () => (typeof navigator === 'undefined' ? undefined : navigator.locks)
+
 function holdPreparedSubmission(key: string): Promise<boolean> {
-  const locks = typeof navigator === 'undefined' ? undefined : navigator.locks
+  const locks = webLocks()
 
   if (owned.has(key)) { return Promise.resolve(true) }
 
   if (!locks) {
-    return tryPlainHttpTabLease(`${STORAGE_KEY}.${key}`).then(release => {
-      if (!release) { return false }
+    owned.set(key, () => undefined)
 
-      owned.set(key, release)
-
-      return true
-    })
+    return Promise.resolve(true)
   }
 
   return new Promise<boolean>(acquired => {
@@ -204,7 +206,7 @@ const sameDestination = (intent: string, key: string) => {
 /** The retained entry an explicit retry may reuse: the one carrying exactly `submissionId` on the
  *  same destination (scope + session) as `intent`, held by this window or left by a closed one.
  *  Equal text never selects an entry: a new message is a new intent even when it repeats an
- *  uncertain one, and a live other window's uncertain send is never adopted. */
+ *  uncertain one. With Web Locks, a live other window's uncertain send is never adopted. */
 export async function adoptPreparedSubmission(
   intent: string,
   submissionId: string
@@ -222,9 +224,16 @@ export async function adoptPreparedSubmission(
   return undefined
 }
 
+// `crypto.randomUUID` exists only in secure contexts; `getRandomValues` exists in every context.
+const sendNonce = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
+
 /** A journal key for a NEW send of `intent`, held by this window. Never another live window's
- *  entry, so a separate send from another window cannot overwrite or share its identity. */
+ *  entry, so a separate send from another window cannot overwrite or share its identity. Without
+ *  Web Locks no window can tell which keys a live one holds, so every send gets a fresh key: a
+ *  slash command's intent carries no submission id, and two tabs would otherwise share it. */
 export async function preparedSubmissionSlot(intent: string): Promise<string> {
+  if (!webLocks()) { return JSON.stringify([...JSON.parse(intent), sendNonce()]) }
+
   if (!(await readJournal())[intent] && (await holdPreparedSubmission(intent))) { return intent }
   const key = JSON.stringify([...JSON.parse(intent), crypto.randomUUID()])
   await holdPreparedSubmission(key)

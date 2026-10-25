@@ -294,8 +294,14 @@ def _fs_git_branch(cwd: str) -> str:
 
 
 def _fs_backend(profile: Optional[str] = None):
-    """Return the profile's SSH workspace adapter, or None for host-local FS."""
-    from hermes_cli.ssh_workspace_fs import get_ssh_workspace_fs
+    """Return the profile's SSH workspace adapter, or None for host-local FS.
+
+    A refused connection fails while the adapter is opened, before any path is
+    read. That is the same 503 the image route returns (``SSH workspace is
+    unavailable``), not an escaped 500. A missing file or a permission error
+    comes from an adapter that already connected, and keeps its own status.
+    """
+    from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError, get_ssh_workspace_fs
 
     with _profile_scope(profile):
         terminal = dict(load_config().get("terminal") or {})
@@ -309,7 +315,10 @@ def _fs_backend(profile: Optional[str] = None):
         if not terminal.get(key) and profile_env.get(env_name):
             terminal[key] = profile_env[env_name]
     profile_key = (profile or "current").strip().lower() or "current"
-    return get_ssh_workspace_fs(profile_key, terminal)
+    try:
+        return get_ssh_workspace_fs(profile_key, terminal)
+    except SshWorkspaceFsError as exc:
+        _raise_fs_backend_error(exc)
 
 
 def _chat_image_dir(home: Path) -> Path:

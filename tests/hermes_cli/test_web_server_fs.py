@@ -685,6 +685,58 @@ def test_a_browser_paste_reads_back_while_the_ssh_machine_is_unreachable(client,
         assert (response.status_code, response.json()) == (503, {"detail": "SSH workspace is unavailable"})
 
 
+def test_a_down_ssh_host_is_unavailable_on_workspace_file_routes(client, monkeypatch, tmp_path):
+    """List, read, git-root and the default folder answer 503 when the SSH host is down, the same
+    error the image route already returns. A file that is missing or unreadable on a host that did
+    connect is not that error, and a workspace that is not SSH still reads this machine."""
+    note = tmp_path / "note.txt"
+    note.write_text("on this machine")
+    local = client.get("/api/fs/read-text", params={"path": str(note)})
+    assert (local.status_code, local.json()["text"]) == (200, "on this machine")
+
+    class UnreachableSsh:
+        def __init__(self, **_options):
+            raise ConnectionRefusedError("ssh: connect to host 127.0.0.1 port 1: Connection refused")
+
+    monkeypatch.setattr(ssh_workspace_fs, "SSHEnvironment", UnreachableSsh)
+    monkeypatch.setattr(ssh_workspace_fs, "_BACKENDS", {})
+    monkeypatch.setattr(
+        file_routes, "load_config",
+        lambda: {"terminal": {"backend": "ssh", "ssh_host": "127.0.0.1", "ssh_user": "dev", "ssh_port": 1}},
+    )
+    monkeypatch.setattr(file_routes, "load_env", dict)
+
+    unavailable = (503, {"detail": "SSH workspace is unavailable"})
+    for path, params in (
+        ("/api/fs/list", {"path": "/srv/repos"}),
+        ("/api/fs/read-text", {"path": "/srv/repos/README.md"}),
+        ("/api/fs/git-root", {"path": "/srv/repos"}),
+        ("/api/fs/default-cwd", {}),
+    ):
+        response = client.get(path, params=params)
+        assert (response.status_code, response.json()) == unavailable, path
+        assert "Traceback" not in response.text
+
+    class Reachable:
+        def list_dir(self, path, _hidden):
+            code = "EACCES" if path.endswith("secret") else "ENOENT"
+            return {"entries": [], "error": code}
+
+        def read_bytes(self, path, *, max_bytes, read_limit=None):
+            code = "EACCES" if path.endswith("secret") else "ENOENT"
+            raise ssh_workspace_fs.SshWorkspaceFsError(code)
+
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: Reachable())
+    missing = client.get("/api/fs/list", params={"path": "/srv/missing"})
+    denied = client.get("/api/fs/list", params={"path": "/srv/secret"})
+    assert (missing.status_code, missing.json()) == (200, {"entries": [], "error": "ENOENT"})
+    assert (denied.status_code, denied.json()) == (200, {"entries": [], "error": "EACCES"})
+    missing_text = client.get("/api/fs/read-text", params={"path": "/srv/missing.txt"})
+    denied_text = client.get("/api/fs/read-text", params={"path": "/srv/secret"})
+    assert (missing_text.status_code, missing_text.json()) == (404, {"detail": "File not found"})
+    assert (denied_text.status_code, denied_text.json()) == (403, {"detail": "File is not readable"})
+
+
 class _NotOnTheSshMachine:
     """An SSH workspace that has none of the files a test asks it for; it records each ask."""
 

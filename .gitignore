@@ -47,6 +47,9 @@ tmp/
 temp_vision_images/
 hermes-*/*
 examples/
+# Skills ship worked examples as support files; the bare pattern above is for dataset dumps.
+!optional-skills/**/examples/
+!skills/**/examples/
 tests/quick_test_dataset.jsonl
 tests/sample_dataset.jsonl
 run_datagen_kimik2-thinking.sh
@@ -91,6 +94,8 @@ hermes_cli/web_dist/
 .web_ui_build.lock
 apps/desktop/build/
 apps/desktop/dist/
+apps/desktop/dist-webapp/
+.dist-webapp-build-*
 
 # tsc-emitted artifacts (a stray `tsc -b` compiles into src/, and vite then
 # resolves the stale .js OVER the .tsx — never track these)
@@ -245,6 +250,7 @@ docs/superpowers/*
 /profiles/
 /credentials/
 /mcp-tokens/
+/webapp/
 /pairing/
 /platforms/
 /backups/
@@ -262,6 +268,9 @@ docs/superpowers/*
 # — ignore so `git status` stays clean and update's autostash skips them.
 .update-incomplete
 .update-incomplete.lock
+# Kernel lock `hermes update` holds on the checkout (hermes_cli/update_lock.py).
+.hermes-update.lock
+.hermes-update-zip-swap.lock
 
 # Checkout fingerprint the __pycache__ tree was last validated against
 # (launch-time stale-bytecode sweep). Runtime state, never a code change.

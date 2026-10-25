@@ -23,6 +23,7 @@ import {
   type DisplayStatus,
   isDisplayUnavailable,
   isEventForBotScreen,
+  isManagedBackend,
   leaseHeldBy,
   type ScreenViewer
 } from './screen-connection'
@@ -174,7 +175,7 @@ export function ScreenPortal({ bot }: { bot: RosterRow }) {
     off: t.screen.portalStopped,
     missing: t.screen.portalNotInstalled,
     unsupported: t.screen.portalUnsupported,
-    unavailable: t.screen.portalUnavailable,
+    unavailable: isManagedBackend(bot) ? t.screen.portalUnavailableManaged : t.screen.portalUnavailable,
     unknown: status?.display ?? ''
   }[tone]
 

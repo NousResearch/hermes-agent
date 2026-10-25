@@ -1,13 +1,19 @@
 name: jev-judge
 repo: https://github.com/DoGMaTiiC/hermes-jev
-sha: dfa109f268358b36068c7e436b819858f8913d7a
+sha: 5dddbeaac5be08281e6c3b372eeaba3639971f0a
 subdir: plugins/jev-judge
 description: TypeSafe Jev as a judgment layer — a pre-tool gate (shadow by default, enforce
-  escalates) on terminal, write_file and patch asking destructive / exfiltration / impact, plus
-  a jev_ask tool for typed judgments. Thresholds in code, one JSONL line per decision, fail-open
-  on every error path. Stdlib only, no Node; works with TYPESAFE_API_KEY or AI_GATEWAY_API_KEY.
-  Disclosure — each judged call sends the tool name and its redacted arguments (≤600 chars each,
-  ≤12 args) to TypeSafe or your configured gateway, using your key; shadow mode only logs.
+  escalates) on terminal, write_file and patch asking destructive / exfiltration / impact
+  (a v2 signal set — reads_secrets × sends_outbound, blast_radius, self_advocating — is one
+  setting away), plus a jev_ask tool for typed judgments. Thresholds in code, one JSONL line
+  per decision with the fail-open reason, fail-open on every error path. Stdlib only, no Node;
+  no redirects, proxy env ignored, payload capped; works with TYPESAFE_API_KEY,
+  OPENROUTER_API_KEY, or AI_GATEWAY_API_KEY. Disclosure — each judged call sends the tool name
+  and its redacted arguments (≤600 chars each, ≤12 args) to TypeSafe, OpenRouter, or your
+  configured gateway, using your key; shadow mode only logs. With the default backend auto,
+  OPENROUTER_API_KEY is used automatically whenever it is present and TYPESAFE_API_KEY is not,
+  so tool names and redacted arguments go to openrouter.ai on your main-model OpenRouter key
+  unless backend is set to typesafe or gateway.
 maintainer: DoGMaTiiC
 tier: community
 category: tools

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { ArrowUpRight } from '@/lib/icons'
 import { IS_MAC } from '@/lib/keybinds/combo'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { $alwaysExternalLinks } from '@/store/external-links'
 
 import { resolveBrandIcon } from './brand-icon'
@@ -104,10 +105,19 @@ export function urlSlugTitleLabel(value: string): string {
       continue
     }
 
-    const titled = cleaned.replace(/\b[a-z]/g, c => c.toUpperCase())
+    // Title-case word slugs (`some-guide` → `Some Guide`), but keep the
+    // exact casing of a separator-less token that looks like a
+    // case-sensitive identifier — it carries a digit, a dot, or mixed case,
+    // as in a release tag (`v1.0.1`) or a filename (`README.md`) — so the
+    // link never invents a different identifier. A plain lowercase word
+    // (`quantumcomputing` → `Quantumcomputing`) still title-cases. (#121321)
+    const looksLikeIdentifier = /\d/.test(cleaned) || /[A-Z]/.test(cleaned) || cleaned.includes('.')
 
-    if (titled.length >= 4) {
-      return titled
+    const label =
+      looksLikeIdentifier && !cleaned.includes(' ') ? cleaned : cleaned.replace(/\b[a-z]/g, c => c.toUpperCase())
+
+    if (label.length >= 4) {
+      return label
     }
   }
 
@@ -238,10 +248,12 @@ export function hudForcesNativeLinks(search = typeof window === 'undefined' ? ''
 /**
  * Where a link the user clicked should open.
  *
- * A web page opens in the in-app browser — that pane exists so reading a doc
+ * In Electron, a web page opens in the in-app browser — that pane exists so reading a doc
  * doesn't cost a context switch out of Hermes, and it is the surface the agent
  * can see. ⌘/Ctrl-click (or middle-click) escapes to the real browser, which is
  * where you go for anything needing your logged-in session or a password.
+ * Webapp links open in a browser tab by default because sites often reject
+ * embedded pages. Keep that handoff synchronous so it retains the click gesture.
  *
  * Everything that ISN'T a web page — `mailto:`, `file:`, a custom scheme — has
  * no business in the webview and always hands off to the OS. The HUD has no
@@ -257,6 +269,7 @@ export function openLink(href: string, options: { native?: boolean } = {}): void
 
   if (
     options.native ||
+    isBrowserHostedDesktop() ||
     $alwaysExternalLinks.get() ||
     isConnectorAuthorizationLink(target) ||
     hudForcesNativeLinks() ||

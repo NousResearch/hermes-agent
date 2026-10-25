@@ -1,3 +1,4 @@
+import { fileUrlToNativePath } from '@hermes/shared'
 import DOMPurify from 'dompurify'
 
 import { isDesktopFsRemoteMode, readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
@@ -85,7 +86,11 @@ function joinPath(base: string, rel: string) {
   return `${root}${parts.join('/')}`
 }
 
-function pathToFileUrl(path: string) {
+export function pathToFileUrl(path: string) {
+  if (/^(?:blob:|data:|https?:)/i.test(path)) {
+    return path
+  }
+
   const isWindowsUnc = path.startsWith('\\\\')
   const normalized = isWindowsUnc || /^[a-z]:[\\/]/i.test(path) ? path.replace(/\\/g, '/') : path
 
@@ -237,11 +242,8 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
   let path = raw
 
   if (/^file:\/\//i.test(raw)) {
-    try {
-      path = decodeURIComponent(new URL(raw).pathname)
-    } catch {
-      path = raw.replace(/^file:\/\//i, '')
-    }
+    // A URL that does not parse, or encodes a separator, keeps its text undecoded.
+    path = fileUrlToNativePath(raw) ?? raw.replace(/^file:\/\//i, '')
   } else if (!raw.startsWith('/') && !isWindowsAbsolutePath(raw) && cwd) {
     path = joinPath(cwd, raw)
   }
@@ -310,7 +312,27 @@ export async function normalizeOrLocalPreviewTarget(
     const normalized = await window.hermesDesktop?.normalizePreviewTarget?.(rawTarget, cwd || undefined)
 
     if (normalized) {
+      // Directories and dead links arrive as typed non-previewable results
+      // (#101683). Locally they must not fall through to the renderer's blind
+      // classification below, which would fabricate a text tab for a path
+      // that cannot be previewed. A remote backend's paths are not on this
+      // machine, so remote mode keeps the fabricated fallback the gateway
+      // read resolves later.
+      if (normalized.previewKind === 'directory' || normalized.previewKind === 'missing') {
+        return isDesktopFsRemoteMode() ? enrichPreviewTarget(localPreviewTarget(rawTarget, cwd)) : null
+      }
+
       return enrichPreviewTarget(normalized)
+    }
+
+    // The main process resolved the target against the real filesystem and
+    // found nothing openable (`null`); an absent bridge yields `undefined` from
+    // the optional call above instead. In local mode the main process's answer
+    // is authoritative — the fallback below can only fabricate a broken
+    // preview tab (#101683). Remote-backend paths, and a dev server without
+    // the bridge, keep it.
+    if (!isDesktopFsRemoteMode() && normalized === null) {
+      return null
     }
   } catch {
     // Running Electron may still have the old HTML-only preview IPC. Fall

@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import tui_gateway.server as server
+from tui_gateway import server
 from tui_gateway import launch_profile_policy as lpp
 
 A_VAL = "a-only-secret-0001"
@@ -78,7 +78,7 @@ def _probe(profile: str | None) -> dict:
 def test_config_get_for_secondary_resolves_only_its_own_secrets_and_flips_fail_closed(two_homes):
     from agent.secret_scope import UnscopedSecretError, get_secret, is_multiplex_active
 
-    root, _b = two_homes
+    _root, _b = two_homes
     assert not is_multiplex_active()  # single-profile so far
 
     probe_b = _probe("b")
@@ -113,7 +113,7 @@ def test_rpc_scope_reaches_llm_oneshot_and_model_options(two_homes, monkeypatch)
     """The scope must wrap the body of every credential-reading RPC, not only config.get."""
     from agent.secret_scope import get_secret
 
-    root, b = two_homes
+    _root, b = two_homes
     seen = {}
 
     def fake_oneshot(**kwargs):
@@ -265,6 +265,62 @@ def test_live_review_binds_runtime_scope_under_multiplex(two_homes, monkeypatch)
     assert os.environ["HERMES_CODEX_BASE_URL"] == A_CODEX_URL
 
 
+def test_model_switch_mirror_binds_runtime_scope_under_multiplex(two_homes, monkeypatch):
+    """Desktop ``/model`` live sync is off-turn; the slash side-effect mirror must still resolve
+    the switch's credentials from the session's own profile (#122655). Unbound, ``switch_model``
+    reads ``get_secret`` with no scope active and the mirror reports "live session sync failed:
+    ... UnscopedSecretError" while the session stays on its previous route."""
+    from agent.secret_scope import UnscopedSecretError, get_secret
+    from hermes_constants import get_hermes_home
+
+    root, b = two_homes
+    seen = []
+
+    def fake_apply_model_switch(sid, session, arg, **kwargs):
+        # What switch_model → resolve_runtime does with get_secret for the target provider.
+        seen.append((
+            Path(get_hermes_home()),
+            get_secret("A_ONLY_TOKEN"),
+            get_secret("B_ONLY_TOKEN"),
+            get_secret("HERMES_API_KEY"),
+        ))
+        return {"warning": ""}
+
+    monkeypatch.setattr(server, "_apply_model_switch", fake_apply_model_switch)
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda value: False)
+
+    def invoke(profile_home):
+        sid = f"model-mirror-{len(seen)}"
+        session = {
+            "agent": object(),
+            "profile_home": str(profile_home) if profile_home else None,
+            "history": [],
+            "history_lock": threading.Lock(),
+            "running": False,
+            "session_key": sid,
+        }
+        server._sessions[sid] = session
+        try:
+            return server._mirror_slash_side_effects(sid, session, "/model stealth/model --provider openrouter")
+        finally:
+            server._sessions.pop(sid, None)
+
+    assert invoke(None) == ""  # no warning — the switch resolved its credential
+    _probe("b")  # activate multiplexing and freeze the launch profile's own secret scope
+    with pytest.raises(UnscopedSecretError):
+        get_secret("HERMES_API_KEY")
+    assert invoke(b) == ""
+    assert invoke(None) == ""
+
+    assert seen == [
+        (root, A_VAL, None, A_API_KEY),
+        (b, None, B_VAL, B_API_KEY),
+        (root, A_VAL, None, A_API_KEY),
+    ]
+    assert os.environ["HERMES_API_KEY"] == A_API_KEY
+    assert "B_ONLY_TOKEN" not in os.environ
+
+
 def test_config_show_keeps_each_profiles_values_after_multiplex_activation(two_homes):
     """A→B→A config.show calls resolve the requested profile instead of running unscoped."""
     root, b = two_homes
@@ -333,7 +389,7 @@ def test_off_turn_prompt_rebuilds_run_under_the_sessions_profile_scope(two_homes
     model-switch prompt re-persist rebuilt the system prompt with no secret scope, so the external memory
     provider's ``system_prompt_block()`` hit ``UnscopedSecretError`` on the LAUNCH profile once the process
     hosted a second home — and for a secondary they resolved the launch profile's credential/home."""
-    import agent.system_prompt as system_prompt
+    from agent import system_prompt
 
     root, b = two_homes
     (root / ".env").write_text((root / ".env").read_text() + "MEM_PROVIDER_KEY=launch-mem-key\n")

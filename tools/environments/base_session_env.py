@@ -28,7 +28,8 @@ from typing import Iterable
 # name/prefix instead of grepping declare lines (see below / issue #71296).
 _SNAPSHOT_EXCLUDED_ENV_REGEX = (
     "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|"
-    "HERMES_CRON_SESSION|HERMES_BROWSER_CONTROL_|HERMES_DELEGATED_CHILD_CONTEXT)")
+    "HERMES_CRON_SESSION|HERMES_DELEGATED_CHILD_CONTEXT|"
+    "HERMES_RPC_|HERMES_KERNEL_DIR)")
 _SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # mktemp template suffix + the shell variable holding the allocated temp path.
@@ -38,6 +39,38 @@ _SNAP_TMP = '"$__hermes_snap_tmp"'
 
 def _cwd_marker(session_id: str) -> str:
     return f"__HERMES_CWD_{session_id}__"
+
+
+def _pipe_marker(session_id: str) -> str:
+    return f"__HERMES_PIPE_{session_id}__"
+
+
+def _pipe_marker_printf(marker: str) -> str:
+    """Emit the pipeline's per-segment exit statuses (``PIPESTATUS``) on their own line.
+
+    ``cmd | tail`` exits with tail's status, so the shell's code cannot prove ``cmd``
+    passed. The array holds each segment's own status and is captured before anything
+    else runs.
+    """
+    return f"printf '\\n{marker}%s{marker}\\n' \"${{__hermes_ps[*]-}}\""
+
+
+def _eval_capturing_pipestatus(escaped: str) -> str:
+    """``eval`` the command and keep its last pipeline's ``PIPESTATUS`` as side data.
+
+    The array must be read inside the same ``eval`` (afterwards it holds only ``eval``'s
+    status), while ``$?`` stays the exit code: the two differ for ``!``, ``if``/``while``,
+    ``pipefail`` and parse errors. The blank line stops the capture joining a command
+    continued by a trailing backslash. The restore sits on the left of ``&&`` so its
+    non-zero status fires neither a user's ``ERR`` trap a second time nor ``set -e``.
+    """
+    return f"eval '{escaped}\n\n__hermes_rc=$? __hermes_ps=(\"${{PIPESTATUS[@]}}\"); (exit $__hermes_rc) && :'"
+
+
+def _can_capture_pipestatus(command: str) -> bool:
+    """An unterminated heredoc would read the capture line as its body (into the user's
+    file), and a trailing ``\\`` would join onto it: such commands run unchanged."""
+    return "<<" not in command and not command.endswith("\\")
 
 
 def _cwd_marker_printf(marker: str) -> str:
@@ -67,7 +100,6 @@ def _export_dump_excluding_session_vars(tmp_path: str, excluded_names: Iterable[
     extra_unset = "".join(f" {shlex.quote(name)}" for name in sorted(safe_names))
     return (
         "{ ( unset ${!HERMES_SESSION_*} ${!HERMES_CRON_AUTO_DELIVER_*} "
-        "${!HERMES_BROWSER_CONTROL_*} "
         # AI_AGENT / HERMES_AGENT are per-command attribution markers re-exported
         # by every wrapper with ${VAR:-default} semantics; persisting them would
         # let the FIRST command's value override a later outer-harness value.
@@ -76,6 +108,10 @@ def _export_dump_excluding_session_vars(tmp_path: str, excluded_names: Iterable[
         # env; a snapshot taken inside that window would re-assert them on every
         # later ``source`` and fence the PARENT session's kanban CLI (#90782).
         "HERMES_DELEGATED_CHILD_CONTEXT HERMES_CRON_SESSION "
+        # Remote code-execution channel vars (RPC token, kernel/rpc dirs): a
+        # leaked token in the snapshot would re-export into every later command
+        # on the backend and outlive the private dir it protects.
+        "${!HERMES_RPC_*} HERMES_KERNEL_DIR "
         f"HERMES_UI_SESSION_ID{extra_unset} 2>/dev/null; "
         "export -p; ) || true; } "
         f"> {tmp_path}")
@@ -126,8 +162,11 @@ def _passthrough_save_restore(names: Iterable[str]) -> tuple[list[str], list[str
 
 def _wrap_command_script(
     command: str, *, quoted_cwd: str, quoted_snap: str, snap_tmp_template: str,
-    passthrough_names: Iterable[str], snapshot_ready: bool, cwd_marker: str) -> str:
+    passthrough_names: Iterable[str], snapshot_ready: bool, cwd_marker: str,
+    pipe_marker: str = "", persist_env: bool = True) -> str:
     """Per-command bash script: source snapshot, cd, run, re-dump env, emit CWD marker.
+    ``persist_env=False`` skips the re-dump, so every command starts from the login-time
+    snapshot and exports from one command never reach the next (the CWD marker still runs).
     ``source`` stdout goes to /dev/null because macOS bash 3.2 / some Homebrew builds echo
     ``declare -x`` lines when sourcing. AI_AGENT/HERMES_AGENT advertise the harness to remote
     backends (whose env is not inherited); ``${VAR:-default}`` never clobbers an outer harness.
@@ -138,6 +177,7 @@ def _wrap_command_script(
     changing the command's umask.
     """
     escaped = command.replace("'", "'\\''")
+    capture = bool(pipe_marker) and _can_capture_pipestatus(command)
     save, restore = _passthrough_save_restore(passthrough_names)
     parts = list(save)
     if snapshot_ready:
@@ -148,15 +188,17 @@ def _wrap_command_script(
         'export GIT_PAGER="${GIT_PAGER:-cat}" PAGER="${PAGER:-cat}"',
         # ``--`` keeps hyphen-prefixed directory names from being parsed as options.
         f"builtin cd -- {quoted_cwd} || exit 126",
-        f"eval '{escaped}'",
+        _eval_capturing_pipestatus(escaped) if capture else f"eval '{escaped}'",
         "__hermes_ec=$?",
         "umask 077"]
-    if snapshot_ready:
+    if snapshot_ready and persist_env:
         parts.append(
             f"__hermes_snap_tmp=$(mktemp {snap_tmp_template}) && "
             f"{{ {_export_dump_excluding_session_vars(_SNAP_TMP, passthrough_names)} "
             f"&& mv -f {_SNAP_TMP} {quoted_snap}; }} "
             f"2>/dev/null || rm -f {_SNAP_TMP} 2>/dev/null || true")
+    if capture:
+        parts.append(_pipe_marker_printf(pipe_marker))
     parts += [_cwd_marker_printf(cwd_marker), "exit $__hermes_ec"]
     return "\n".join(parts)
 

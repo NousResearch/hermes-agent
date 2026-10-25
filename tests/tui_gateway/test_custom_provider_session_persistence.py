@@ -81,7 +81,7 @@ class TestRuntimeModelConfigPersistsEntryIdentity:
 
 
     def test_keeps_bare_custom_when_no_entry_matches(self, monkeypatch):
-        monkeypatch.setattr(rp, "load_config", lambda: {})
+        monkeypatch.setattr(rp, "load_config", dict)
 
         from tui_gateway.server import _runtime_model_config
 
@@ -170,6 +170,29 @@ class TestResumeRoundTrip:
 
         assert kwargs["base_url"] == MIMO_URL
         assert kwargs["api_key"] == MIMO_KEY
+
+
+class TestMakeAgentForwardsProviderRequestBody:
+    """#103738 hole 1: the resolver lifts a custom entry's ``extra_body`` onto ``request_overrides``; the
+    TUI/Desktop build must hand it to AIAgent like the CLI and cron do, or a proxy that requires a body field
+    (``user``) 400s in the app while ``hermes chat`` works."""
+
+    def test_entry_extra_body_reaches_agent(self, monkeypatch):
+        entry = {**LEGACY_LIST_CONFIG["custom_providers"][0], "extra_body": {"user": "proxy-user"}}
+        config = {"custom_providers": [entry]}
+        override = {"model": "mimo-v2.5-pro", "provider": "custom:mimo-v2.5-pro"}
+
+        kwargs = _make_agent_with_override(override, monkeypatch, config)
+
+        assert kwargs["base_url"] == MIMO_URL
+        assert kwargs["request_overrides"] == {"extra_body": {"user": "proxy-user"}}
+
+    def test_entry_without_extra_body_sends_none(self, monkeypatch):
+        override = {"model": "mimo-v2.5-pro", "provider": "custom:mimo-v2.5-pro"}
+
+        kwargs = _make_agent_with_override(override, monkeypatch, LEGACY_LIST_CONFIG)
+
+        assert not kwargs["request_overrides"]
 
 
 # --- Regression: bare "custom" WITHOUT a base_url (GH #44022 / #47714) ------
@@ -401,7 +424,7 @@ class TestStaleProviderNameFallsBack:
         configured default instead of failing the build."""
         config = {"custom_providers": NAMED_CONFIG["custom_providers"]}
         monkeypatch.setattr(rp, "load_config", lambda: config)
-        monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+        monkeypatch.setattr(rp, "_get_model_config", dict)
 
         from tui_gateway.server import _stored_session_runtime_overrides
 
@@ -573,13 +596,13 @@ class TestFollowProfileConfigRuntimeOverrides:
         ``session.resume`` on the deferred (cold, agent-less) path restores the pin while B's config.yaml
         model is unchanged, and drops it once B's profile model moves. Launch home A has a different
         model the whole time, so the compare must run under B's scope, not the launch profile's."""
-        import tui_gateway.server as server
+        from tui_gateway import server
 
         launch, secondary = tmp_path / "a", tmp_path / "b"
         for home, model in ((launch, "launch/model"), (secondary, "profile/default")):
             home.mkdir()
-            (home / "config.yaml").write_text(f"model:\n  default: {model}\n  provider: nous\n")
-            (home / ".env").write_text("")
+            (home / "config.yaml").write_text(f"model:\n  default: {model}\n  provider: nous\n", encoding="utf-8")
+            (home / ".env").write_text("", encoding="utf-8")
         stored = "20260919-000000-botc"
         db = SessionDB(db_path=secondary / "state.db")
         db.create_session(stored, "desktop", model="profile/default",
@@ -612,7 +635,6 @@ class TestFollowProfileConfigRuntimeOverrides:
         known = set(server._sessions)
         try:
             with (
-                patch("hermes_cli.model_switch.parse_model_flags", return_value=("glm-5.1", None, False, False, None)),
                 patch("hermes_cli.model_switch.resolve_persist_behavior", return_value=False),
                 patch("hermes_cli.model_switch.switch_model", return_value=result),
                 server._profile_build_scope(secondary),
@@ -636,7 +658,7 @@ class TestFollowProfileConfigRuntimeOverrides:
             assert record["model_override"]["model"] == "zai/glm-5.1"
             assert record["composer_override_profile"] == {"model": "profile/default", "provider": "nous"}
 
-            (secondary / "config.yaml").write_text("model:\n  default: profile/new-default\n  provider: nous\n")
+            (secondary / "config.yaml").write_text("model:\n  default: profile/new-default\n  provider: nous\n", encoding="utf-8")
             assert resume().get("model_override") is None
         finally:
             db.close()
@@ -644,9 +666,50 @@ class TestFollowProfileConfigRuntimeOverrides:
                 for sid in [s for s in server._sessions if s not in known]:
                     server._sessions.pop(sid, None)
 
+    def test_create_time_composer_pick_on_bot_chat_records_owning_profile_marker(self, monkeypatch, tmp_path):
+        """A composer pick handed to ``session.create`` on a follow_profile_config chat is the same
+        chat-scoped pick a mid-chat switch records: the record carries the OWNING profile's model as the
+        divergence marker (not the launch profile's), the first row write persists it, and the resume read
+        under that profile restores model AND provider instead of the ambient fallback (#123805)."""
+        from tui_gateway import server
+
+        launch, secondary = tmp_path / "a", tmp_path / "b"
+        for home, model in ((launch, "launch/model"), (secondary, "profile/default")):
+            home.mkdir()
+            (home / "config.yaml").write_text(f"model:\n  default: {model}\n  provider: nous\n")
+            (home / ".env").write_text("")
+        monkeypatch.setenv("HERMES_HOME", str(launch))
+        monkeypatch.setattr(server, "_hermes_home", str(launch))
+        monkeypatch.setattr(server, "_profile_home", lambda p: secondary if p == "b" else None)
+        monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+        monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
+        monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **k: None)
+        monkeypatch.setattr(server, "_default_session_cwd", lambda *a, **k: str(tmp_path))
+        known = set(server._sessions)
+        try:
+            resp = server.handle_request({"id": "1", "method": "session.create", "params": {
+                "cols": 80, "source": "desktop", "profile": "b", "model": "zai/glm-5.1", "provider": "zai",
+                "follow_profile_config": True}})
+            assert "error" not in resp, resp
+            session = server._sessions[resp["result"]["session_id"]]
+            assert session["composer_override_profile"] == {"model": "profile/default", "provider": "nous"}
+            assert server._ensure_session_db_row(session)
+            db = SessionDB(db_path=secondary / "state.db")
+            try:
+                row = db.get_session(session["session_key"])
+            finally:
+                db.close()
+            with server._profile_build_scope(secondary):
+                restored = server._stored_session_runtime_overrides(row)["model_override"]
+            assert (restored["model"], restored["provider"]) == ("zai/glm-5.1", "zai")
+        finally:
+            with server._sessions_lock:
+                for sid in [s for s in server._sessions if s not in known]:
+                    server._sessions.pop(sid, None)
+
     def test_profile_model_change_supersedes_composer_override_on_resume_and_live(self, monkeypatch):
         """Changing the Bot profile invalidates both stored and live chat pins."""
-        import tui_gateway.server as server
+        from tui_gateway import server
 
         monkeypatch.setattr(server, "_config_model_target", lambda: ("profile/new-default", "nous"))
         row = {
@@ -679,6 +742,7 @@ class TestFollowProfileConfigRuntimeOverrides:
         apply_switch.assert_called_once_with(
             "sid", session, "profile/new-default --provider nous",
             confirm_expensive_model=True, pin_session_override=False, persist_override=False,
+            count_switch=False,
         )
 
     def test_marked_row_returns_no_overrides(self):
@@ -742,14 +806,13 @@ class TestFollowProfileConfigRuntimeOverrides:
     def test_ensure_db_row_persists_contract_marker(self, monkeypatch):
         """_ensure_session_db_row stamps follow_profile_config into the row's
         model_config when the session carries the contract."""
-        import tui_gateway.server as server
+        from tui_gateway import server
 
         captured = {}
 
         class FakeDB:
             def create_session(self, *args, **kwargs):
                 captured["model_config"] = kwargs.get("model_config")
-                return None
 
         monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
         monkeypatch.setattr(server, "_resolve_model", lambda: "glm-5.1")
@@ -768,14 +831,13 @@ class TestFollowProfileConfigRuntimeOverrides:
     def test_ensure_db_row_omits_marker_without_contract(self, monkeypatch):
         """Sessions without the contract do NOT get the marker — normal chats
         keep the stored-runtime restore."""
-        import tui_gateway.server as server
+        from tui_gateway import server
 
         captured = {}
 
         class FakeDB:
             def create_session(self, *args, **kwargs):
                 captured["model_config"] = kwargs.get("model_config")
-                return None
 
         monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
         monkeypatch.setattr(server, "_resolve_model", lambda: "glm-5.1")

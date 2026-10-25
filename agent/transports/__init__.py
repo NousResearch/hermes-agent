@@ -5,7 +5,7 @@
 import contextlib
 import importlib
 
-from agent.transports.types import (  # noqa: F401
+from agent.transports.types import (
     NormalizedResponse,
     ToolCall,
     Usage,

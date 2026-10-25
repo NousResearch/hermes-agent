@@ -1,9 +1,9 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { useState } from 'react'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, beforeEach, expect, it } from 'vitest'
 
 import { PaneGroupContext, PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
-import { $composerPopout, setComposerPoppedOut } from '@/store/composer-popout'
+import { $composerPopout, $composerPopoutGesturesEnabled, setComposerPoppedOut } from '@/store/composer-popout'
 
 import { FloatingComposerSurface } from './floating-surface'
 import { claimFloatingComposer, pinFloatingComposerCapture } from './floating-target'
@@ -33,6 +33,9 @@ function Surface({ id, visible = true, groupId = id }: { id: string; visible?: b
     </PaneGroupContext>
   )
 }
+
+// Floating is opt-in (the dock lock is the default); these exercise the float.
+beforeEach(() => $composerPopoutGesturesEnabled.set(true))
 
 afterEach(async () => {
   cleanup()

@@ -8,7 +8,7 @@ import { atom, computed, type ReadableAtom } from 'nanostores'
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { setPluginEnabled } from '@/contrib/plugins-store'
-import { $registryVersion, registry } from '@/contrib/registry'
+import { registry } from '@/contrib/registry'
 import { translateNow } from '@/i18n'
 import { LAYOUT_KEYS } from '@/lib/layout-persistence'
 import { Codecs } from '@/lib/persisted'
@@ -20,6 +20,7 @@ import { isBrowserWindow, isSecondaryWindow } from '@/store/windows'
 
 import {
   allPaneIds,
+  anchorsFirst,
   type DropPosition,
   findGroup,
   findGroupOfPane,
@@ -44,6 +45,7 @@ import {
   type SplitNode,
   type TabStripMode
 } from './model'
+import { isTreePaneParked } from './parked-panes'
 import { FLOATING_PLACEMENT } from './renderer/floating-rect'
 import { tabStripVisibleForZone } from './renderer/strip-visibility'
 
@@ -251,9 +253,7 @@ const $paneSharePartners = modeLayout.atom<Record<string, string>>(
   () => ({}),
   Codecs.json(value =>
     value && typeof value === 'object'
-      ? Object.fromEntries(
-          Object.entries(value).filter(([, partner]) => typeof partner === 'string' && partner)
-        )
+      ? Object.fromEntries(Object.entries(value).filter(([, partner]) => typeof partner === 'string' && partner))
       : {}
   )
 )
@@ -321,8 +321,8 @@ function rememberPaneShare(tree: LayoutNode, paneId: string) {
     // partner-validated, so it records without a partner and falls back to
     // even on any mismatched recall.
     const partnerGroup = parent.children[partner] as LayoutNode
-    const partnerPane =
-      partnerGroup.type === 'group' && partnerGroup.panes.length === 1 ? partnerGroup.panes[0] : null
+
+    const partnerPane = partnerGroup.type === 'group' && partnerGroup.panes.length === 1 ? partnerGroup.panes[0] : null
 
     $paneShares.set({ ...$paneShares.get(), [paneId]: share })
 
@@ -847,21 +847,6 @@ export function shownPanesInGroup(group: { panes: readonly string[] }): string[]
   })
 }
 
-/** How many zones currently show a MAIN tile (a chat, a page, a preview). A
- *  count, not a list, so it notifies only when a main zone appears or goes —
- *  every TreeGroup reads it, and a sash drag rewrites the tree once per frame.
- *  Registry-versioned because a freshly adopted session tile is in the tree
- *  before its contribution registers `placement: 'main'`. */
-export const $mainTileZoneCount = computed(
-  [$layoutTree, $hiddenTreePanes, $registryVersion],
-  (tree: LayoutNode | null) =>
-    tree
-      ? groupLeafIds(tree).filter(id =>
-          shownPanesInGroup({ panes: findGroup(tree, id)?.panes ?? [] }).some(isMainStripPane)
-        ).length
-      : 0
-)
-
 /** Is this zone showing a tab strip right now? The store's adapter over the
  *  shared resolver — TreeGroup answers the same question from its own render
  *  inputs, so the toggle command and the strip on screen cannot disagree about
@@ -875,8 +860,7 @@ export function tabStripVisibleForGroup(group: GroupNode): boolean {
     isCollapsePane,
     mode: group.tabStrip,
     paneFor: (id: string) => registered.find(c => c.id === id),
-    shown,
-    siblingMainZone: $mainTileZoneCount.get() > (shown.some(isMainStripPane) ? 1 : 0)
+    shown
   })
 }
 
@@ -955,7 +939,7 @@ export function removeTreePane(paneId: string) {
  *  Usually the root itself (Default, Focus); in a column-root layout (Terminal
  *  deck, Quad) it's the row child that holds sessions/workspace/files. Returns
  *  null when the tree has no row split with side-eligible panes. */
-function rootRow(): SplitNode | null {
+export function rootRow(): SplitNode | null {
   const tree = $layoutTree.get()
 
   if (!tree || tree.type !== 'split') {
@@ -1092,11 +1076,9 @@ export const $collapsedTreeSides = modeLayout.atom<ReadonlySet<TreeSide>>(LAYOUT
 })
 const hasPersistedSides = modeLayout.has(LAYOUT_KEYS.collapsed)
 
-// Side visibility is DERIVED from an app store (the binding owns persistence
-// + button state). Reveals un-collapse the column directly instead of writing
-// back through the setter — the right side's store IS the file tree's toggle,
-// so a neighbour's reveal must not press it. Layout reset still reopens every
-// side through its setter, because there the toggles SHOULD move.
+// Side visibility persists separately from the bound pane's toggle: revealing
+// a neighbour opens the column without opening Files. Chrome changes still
+// drive the side; layout reset reopens through the setter too.
 const sideOpeners: Partial<Record<TreeSide, (open: boolean) => void>> = {}
 const sideVisibility: Partial<Record<TreeSide, () => boolean>> = {}
 
@@ -1215,7 +1197,7 @@ function restoreDismissedSidePanes(side: TreeSide) {
   }
 }
 
-/** Bind a side's visibility to an app store (mirror of bindPaneVisibility). */
+/** Restore the side quietly; only later chrome changes are reveal/hide intent. */
 export function bindTreeSideVisibility(
   side: TreeSide,
   $open: { get(): boolean; listen(fn: (open: boolean) => void): void },
@@ -1559,7 +1541,6 @@ export function adoptContributedPanes(): void {
   const placementOf = (paneId: string) => dataOf(paneId)?.placement
   const mainId = panes.find(c => placementOf(c.id) === 'main')?.id
   const inTree = new Set(allPaneIds(tree))
-
   const dismissed = $dismissedPanes.get()
 
   // Enforced dock invariants run FIRST: they re-home panes that are ALREADY
@@ -1571,7 +1552,8 @@ export function adoptContributedPanes(): void {
   // turn it into a track that steals width from a zone, which is the whole
   // thing floating exists to avoid.
   const missing = panes.filter(
-    c => !inTree.has(c.id) && !dismissed.has(c.id) && placementOf(c.id) !== FLOATING_PLACEMENT
+    c =>
+      !inTree.has(c.id) && !dismissed.has(c.id) && !isTreePaneParked(c.id) && placementOf(c.id) !== FLOATING_PLACEMENT
   )
 
   if (missing.length === 0) {
@@ -1584,7 +1566,7 @@ export function adoptContributedPanes(): void {
 
   let next = healed
 
-  for (const pane of missing) {
+  for (const pane of anchorsFirst(missing, id => dataOf(id)?.dock?.pane)) {
     const dock = dataOf(pane.id)?.dock
     const placement = placementOf(pane.id) ?? 'right'
 
@@ -1734,15 +1716,7 @@ export function dockPaneBeside(paneId: string, anchorPaneId: string) {
 
   const next = findGroupOfPane(tree, paneId)
     ? movePaneOp(tree, paneId, { groupId: anchor.id, pos })
-    : insertAtGroup(
-        tree,
-        anchor.id,
-        paneId,
-        pos,
-        undefined,
-        true,
-        recalledEdgeWeights(paneId, anchorPaneId)
-      )
+    : insertAtGroup(tree, anchor.id, paneId, pos, undefined, true, recalledEdgeWeights(paneId, anchorPaneId))
 
   if (next && next !== tree) {
     commit(next)
@@ -1996,7 +1970,7 @@ export function restoreTreePane(paneId: string) {
   revealTreePane(paneId)
 }
 
-/** Is a pane actually ON SCREEN? In the tree, not dismissed, not chrome
+/** Is a pane actually ON SCREEN? In the tree, not dismissed, not chrome/side
  *  hidden, its zone un-minimized, and holding its stack's active slot.
  *  True for every pane class — tool panels and hide-style panes alike. */
 export function isPaneVisible(paneId: string): boolean {
@@ -2005,11 +1979,13 @@ export function isPaneVisible(paneId: string): boolean {
   }
 
   const group = paneGroup(paneId)
+  const side = treeSideOfPane(paneId)
 
-  return Boolean(group && !group.minimized && group.active === paneId)
+  return Boolean(group && !group.minimized && group.active === paneId && !(side && $collapsedTreeSides.get().has(side)))
 }
 
 const paneVisibleCache = new Map<string, ReadableAtom<boolean>>()
+const paneVisibleStores = [$layoutTree, $dismissedPanes, $hiddenTreePanes, $collapsedTreeSides]
 
 /** Reactive `isPaneVisible` for chrome that renders an on/off affordance
  *  (the statusbar's terminal button). Memoized per pane id so `useStore`
@@ -2018,7 +1994,7 @@ export function $paneVisible(paneId: string): ReadableAtom<boolean> {
   let cached = paneVisibleCache.get(paneId)
 
   if (!cached) {
-    cached = computed([$layoutTree, $dismissedPanes, $hiddenTreePanes], () => isPaneVisible(paneId))
+    cached = computed(paneVisibleStores, () => isPaneVisible(paneId))
     paneVisibleCache.set(paneId, cached)
   }
 

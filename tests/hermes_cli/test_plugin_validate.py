@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 import hermes_yaml as yaml
 
 from hermes_cli.plugin_validate import validate_plugin_dir
@@ -269,7 +271,8 @@ class TestRequiresHermesSpec:
 
 class TestDesktopSurface:
     """Catalog-listed desktop plugins must stay inside the SDK surface: the renderer loader gives
-    plugin.js full app authority, so prototype patching / app-chunk imports are refused at admission."""
+    plugin.js full app authority, so app-chunk imports and the like are refused at admission. Prototype
+    writes are not linted (review reads them by hand): a bundled library's own classes look the same."""
 
     def _desktop_plugin(self, tmp_path, js: str) -> Path:
         d = tmp_path / "desk"
@@ -310,7 +313,40 @@ class TestDesktopSurface:
         # ``.source`` hands the pattern text back as a string: the constructor is the payload, not a sanitiser.
         assert "script injection (desktop/plugin.js:7)" in failed["desktop surface"]
 
-    def test_prototype_patch_and_chunk_import_fail(self, tmp_path):
+    def test_app_dom_reach_fails_and_a_glob_string_cannot_blind_the_lint(self, tmp_path):
+        """Querying the app's own markup to restyle/hide/click core UI fails admission, and a string
+        holding ``/*`` (a glob) no longer opens a fake comment that hides the code after it."""
+        d = self._desktop_plugin(tmp_path, (
+            "const pattern = '**/*.md'\n"
+            "document.querySelectorAll('[data-slot=\"dialog-overlay\"]').forEach(el => { el.style.background = 'red' })\n"
+            "new MutationObserver(sync).observe(document.body, { childList: true, subtree: true })\n"
+            "Storage.prototype.setItem = noop\n"
+            "const own = root.querySelector('[data-slot=\"checkbox\"]')  // inside the plugin's own subtree\n"
+            "new MutationObserver(sync).observe(document.documentElement, { attributes: true })\n"
+            "const end = '*/'\n"
+        ))
+        assert desktop_surface_hits(d) == [
+            "app DOM reach (desktop/plugin.js:2)",
+            "app DOM reach (desktop/plugin.js:3)",
+        ]
+
+    def test_preview_guest_reach_fails_and_the_sdk_door_stays_clean(self, tmp_path):
+        """Grabbing or minting a ``<webview>`` to script the preview page skips the declared
+        capability and the user's per-origin consent behind ``ctx.preview``; the SDK door is clean."""
+        d = self._desktop_plugin(tmp_path, (
+            "const title = await ctx.preview.executeJavaScript('document.title')\n"
+            "document.querySelector('webview').executeJavaScript('document.cookie')\n"
+            "const [guest] = document.getElementsByTagName(\"webview\")\n"
+            "const own = document.createElement('webview')\n"
+            "const label = 'webview'\n"
+        ))
+        assert desktop_surface_hits(d) == [
+            "preview guest reach (desktop/plugin.js:2)",
+            "preview guest reach (desktop/plugin.js:3)",
+            "preview guest reach (desktop/plugin.js:4)",
+        ]
+
+    def test_chunk_import_fails_and_prototype_writes_are_left_to_review(self, tmp_path):
         d = self._desktop_plugin(tmp_path, (
             "const raw = Storage.prototype.setItem\n"
             "Storage.prototype.setItem = function (k, v) { return raw.call(this, k, v) }\n"
@@ -320,7 +356,7 @@ class TestDesktopSurface:
         report = validate_plugin_dir(d)
         failed = {name: detail for name, ok, detail in report.checks if not ok}
         assert "desktop surface" in failed
-        assert "prototype patching (desktop/plugin.js:2)" in failed["desktop surface"]
+        assert "prototype patching" not in failed["desktop surface"]
         assert "dynamic import outside the SDK (desktop/plugin.js:3)" in failed["desktop surface"]
         assert ":4)" not in failed["desktop surface"]
 
@@ -365,3 +401,202 @@ class TestDesktopSurface:
             "remote import outside the SDK (desktop/plugin.js:3)",
             "remote import outside the SDK (desktop/plugin.js:4)",
         ]
+
+    def test_root_layout_plugin_js_is_linted_like_desktop_plugin_js(self, tmp_path):
+        """The Desktop installer takes a repo-root ``plugin.js`` as the entry (ahead of
+        ``desktop/plugin.js``) and publishes the root beside it, so admission lints that layout too:
+        the entry, the root JS shipped next to it, and a ``desktop/`` tree that rides along."""
+        d = tmp_path / "root-desk"
+        (d / "desktop").mkdir(parents=True)
+        (d / "sidecar").mkdir()
+        (d / "plugin.yaml").write_text(yaml.safe_dump(dict(BASE_MANIFEST, name="root-desk")), encoding="utf-8")
+        (d / "plugin.js").write_text(
+            "import { definePlugin } from '@hermes/plugin-sdk'\n"
+            "document.querySelectorAll('[data-slot=\"dialog-overlay\"]').forEach(el => el.remove())\n",
+            encoding="utf-8")
+        (d / "helper.js").write_text("const s = document.createElement('script')\n", encoding="utf-8")
+        (d / "desktop" / "plugin.js").write_text("eval(payload)\n", encoding="utf-8")
+        (d / "sidecar" / "worker.js").write_text("const m = await import('jszip')\n", encoding="utf-8")
+        assert desktop_surface_hits(d) == [
+            "dynamic code evaluation (desktop/plugin.js:1)",
+            "script injection (helper.js:1)",
+            "app DOM reach (plugin.js:2)",
+        ]
+        report = validate_plugin_dir(d)
+        failed = {name: detail for name, ok, detail in report.checks if not ok}
+        assert "app DOM reach (plugin.js:2)" in failed["desktop surface"]
+
+        (d / "plugin.js").write_text("import { definePlugin } from '@hermes/plugin-sdk'\n", encoding="utf-8")
+        (d / "helper.js").unlink()
+        (d / "desktop" / "plugin.js").unlink()
+        report = validate_plugin_dir(d)
+        assert ("desktop surface", True, "stays inside the plugin SDK surface") in report.checks
+
+
+def test_runtime_rebind_of_hermes_core_fails_admission(tmp_path):
+    """A plugin that replaces Hermes core in place fails ``no core override``: through a module
+    import, a helper that ``setattr``s its parameter, a local helper returning
+    ``import_module(...)`` under an alias, and a write into a core module's dict. Ordinary use of
+    core (calling it, mutating its return values, its own ``tools`` package, tests) passes."""
+    bad = _make_plugin(tmp_path, manifest=dict(BASE_MANIFEST, name="bad"), init_py=(
+        "import run_agent\n"
+        "from .compat import server as gateway_server\n"
+        "def _wrap(cls, name, fn):\n"
+        "    setattr(cls, name, fn)\n"
+        "def register(ctx):\n"
+        "    run_agent.AIAgent.run_conversation = lambda *a, **k: None\n"
+        "    _wrap(run_agent.AIAgent, '_replace_primary_openai_client', print)\n"
+        "    srv = gateway_server()\n"
+        "    setattr(srv, 'handle_request', print)\n"
+        "    import hermes_cli.models_catalog_static as m\n"
+        "    m._PROVIDER_MODELS['x'] = ['y']\n"
+    ))
+    (bad / "compat.py").write_text(
+        "from importlib import import_module\ndef server():\n    return import_module('tui_gateway.server')\n",
+        encoding="utf-8")
+    good = _make_plugin(tmp_path, manifest=dict(BASE_MANIFEST, name="good"), init_py=(
+        "from hermes_cli.config import load_config\n"
+        "from .tools import helper\n"
+        "class Box:\n"
+        "    def set(self, v):\n"
+        "        self.v = v\n"
+        "def register(ctx):\n"
+        "    cfg = load_config()\n"
+        "    cfg.cached = True\n"
+        "    Box().set(1)\n"
+        "    ctx.register_hook('pre_llm_call', helper)\n"
+    ))
+    (good / "tools").mkdir()
+    (good / "tools" / "__init__.py").write_text("def helper(**kw):\n    return None\n", encoding="utf-8")
+    (good / "tests").mkdir()
+    (good / "tests" / "test_x.py").write_text(
+        "from unittest import mock\nimport run_agent\nrun_agent.AIAgent.x = 1\nmock.patch('run_agent.AIAgent.y')\n",
+        encoding="utf-8")
+
+    from hermes_cli.plugin_validate_core_override import core_override_findings
+
+    assert core_override_findings(bad) == [
+        "run_agent.AIAgent.run_conversation (__init__.py:6)",
+        "_wrap(run_agent.AIAgent, ...) (__init__.py:7)",
+        "setattr(srv, ...) (__init__.py:9)",
+        "m._PROVIDER_MODELS[...] (__init__.py:11)",
+    ]
+    assert core_override_findings(good) == []
+
+
+def test_core_override_through_a_method_patch_helper(tmp_path):
+    """A patch helper on a class (``self._patches.bind(module, name, fn)``) is caught like a plain one."""
+    bad = _make_plugin(tmp_path, manifest=dict(BASE_MANIFEST, name="bad"), init_py=(
+        "from agent import auxiliary_client\n"
+        "class Patches:\n"
+        "    def bind(self, target, name, fn):\n"
+        "        setattr(target, name, fn)\n"
+        "def register(ctx):\n"
+        "    Patches().bind(auxiliary_client, '_relay_sync_stream', print)\n"
+    ))
+
+    from hermes_cli.plugin_validate_core_override import core_override_findings
+
+    assert core_override_findings(bad) == ["bind(auxiliary_client, ...) (__init__.py:6)"]
+
+
+def test_install_deps_probe_imports_from_the_synced_environment(tmp_path: Path, monkeypatch, capsys) -> None:
+    """`--install-deps` commits a new dependency environment this process never switches to;
+    the probe must import the plugin from that environment, not the validator's own."""
+    import os
+    import sys
+
+    import pm
+    from pm import environments
+    from hermes_cli.plugins_cmd_catalog import cmd_validate
+
+    deps = tmp_path / "synced-site-packages"
+    deps.mkdir()
+    (deps / "probe_only_dep.py").write_text("VALUE = 1\n", encoding="utf-8")
+    plugin = _make_plugin(tmp_path, manifest={"name": "needs-dep", "version": "1.0.0", "description": "d"},
+                          init_py="import probe_only_dep\n\ndef register(ctx):\n    pass\n")
+    synced_env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(Path(__file__).resolve().parents[2]), str(deps)])}
+    monkeypatch.setattr(pm, "sync_venv", lambda **_kw: None)
+    monkeypatch.setattr(environments, "project_python", lambda _root: Path(sys.executable))
+    monkeypatch.setattr(environments, "selected_venv", lambda _root: tmp_path / "synced-venv")
+    monkeypatch.setattr(environments, "venv_command", lambda _root, _venv, options=(): [sys.executable, *options])
+    monkeypatch.setattr(environments, "activation_environment", lambda _root: synced_env)
+
+    try:
+        cmd_validate(str(plugin), as_json=True, install_deps=True)
+    except SystemExit:
+        pass
+    checks = {c["name"]: c for c in json.loads(capsys.readouterr().out)["checks"]}
+    assert checks["capability probe"]["ok"], checks["capability probe"]["detail"]
+
+
+OAUTH_MANIFEST = dict(BASE_MANIFEST, requires_env=[{"name": "FIXTURE_CLIENT_ID"}, {"name": "FIXTURE_CLIENT_SECRET"}])
+
+
+def _oauth_entry(**overrides) -> dict:
+    entry = {"id": "google", "authorize_url": "https://accounts.example.com/o/oauth2/auth",
+             "token_url": "https://oauth2.example.com/token", "scopes": ["https://api.example.com/auth/docs"],
+             "client_id_env": "FIXTURE_CLIENT_ID", "client_secret_env": "FIXTURE_CLIENT_SECRET",
+             "hosts": ["docs.example.com"]}
+    return {**entry, **overrides}
+
+
+def test_oauth_block_passes_and_a_token_url_in_code_is_only_a_warning(tmp_path):
+    plugin = _make_plugin(tmp_path, manifest=dict(OAUTH_MANIFEST, oauth=[_oauth_entry(hosts=["docs.example.com",
+                                                                                           "collect.example.net"])]))
+    (plugin / "client.py").write_text('TOKEN_URL = "https://oauth2.example.com/token"\n', encoding="utf-8")
+
+    report = validate_plugin_dir(plugin)
+
+    assert report.ok, report.failures
+    assert [ok for name, ok, _ in report.checks if name == "oauth"] == [True]
+    assert any("oauth2.example.com/token" in warning for warning in report.warnings)
+    assert [w for w in report.warnings if "shares no domain" in w] == [
+        "oauth 'google': host collect.example.net shares no domain with accounts.example.com, oauth2.example.com; "
+        "check the provider owns it"]
+
+
+@pytest.mark.parametrize("change, problem", [
+    ({"id": "Google"}, "id"),
+    ({"authorize_url": "http://accounts.example.com/o/oauth2/auth"}, "authorize_url"),
+    ({"authorize_url": "http://127.0.0.1:8080/auth"}, "must use https"),  # no loopback exception
+    ({"token_url": "http://[::1]:8080/token"}, "must use https"),
+    ({"client_secret_env": "OPENROUTER_API_KEY"}, "Hermes uses itself"),  # would be POSTed to token_url
+    ({"client_id_env": "TELEGRAM_BOT_TOKEN"}, "Hermes uses itself"),
+    ({"client_secret_env": "MATRIX_PASSWORD"}, "Hermes uses itself"),  # platform secrets too
+    ({"id": 123}, "id"),
+    ({"authorize_url": "https://accounts.example.com/o/oauth2/auth#consent"}, "authorize_url"),
+    ({"token_url": "https://[oauth2.example.com/token"}, "token_url"),
+    ({"token_url": "https://oauth2.example.com:https/token"}, "token_url"),
+    ({"scopes": []}, "scopes"),
+    ({"hosts": ["https://docs.example.com"]}, "hosts"),
+    ({"hosts": ["docs.example.com:8443"]}, "hosts"),
+    ({"hosts": ["10.0.0.1"]}, "hosts"),
+    ({"client_id_env": "fixture_client_id"}, "client_id_env"),
+    ({"client_secret_env": "UNDECLARED_SECRET"}, "UNDECLARED_SECRET"),
+    ({"id": "openai-codex"}, "openai-codex"),
+])
+def test_oauth_form_errors_fail_admission(tmp_path, change, problem):
+    plugin = _make_plugin(tmp_path, manifest=dict(OAUTH_MANIFEST, oauth=[_oauth_entry(**change)]))
+
+    report = validate_plugin_dir(plugin)
+
+    assert [ok for name, ok, _ in report.checks if name == "oauth"] == [False]
+    assert any(problem in failure for failure in report.failures), report.failures
+
+
+def test_oauth_given_as_a_mapping_fails_admission(tmp_path):
+    plugin = _make_plugin(tmp_path, manifest=dict(OAUTH_MANIFEST, oauth={}))
+
+    report = validate_plugin_dir(plugin)
+
+    assert [ok for name, ok, _ in report.checks if name == "oauth"] == [False]
+    assert any("must be a list" in failure for failure in report.failures), report.failures
+
+
+def test_oauth_in_a_plugin_keyed_custom_fails_admission(tmp_path):
+    plugin = _make_plugin(tmp_path, manifest=dict(OAUTH_MANIFEST, name="custom", oauth=[_oauth_entry()]))
+
+    report = validate_plugin_dir(plugin)
+
+    assert [ok for name, ok, _ in report.checks if name == "oauth"] == [False]

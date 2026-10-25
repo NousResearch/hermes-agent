@@ -108,7 +108,7 @@ async def run(repo: str, out: str):
         "violations": [{"method": v["method"], "body_keys": sorted(v["body"].keys())} for v in violations],
         "results": results,
     }
-    with open(out, "w", encoding="utf-8") as f:
+    with open(out, "w", encoding="utf-8") as f:  # noqa: ASYNC230 -- small local write; a local open() is non-blocking in practice
         json.dump(summary, f, indent=2)
     seq = [(e["method"], sorted(e["body"].keys()), e["response"].get("error")) for e in log]
     for s in seq:

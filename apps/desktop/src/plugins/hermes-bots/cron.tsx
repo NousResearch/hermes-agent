@@ -554,7 +554,6 @@ export function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
         <RowButton
           className="flex min-w-0 flex-1 items-center gap-2 text-left transition-colors hover:text-foreground"
           onClick={() => onOpen?.(job)}
-          title={c.manage}
         >
           {/* `--ui-success` rather than a literal emerald: the token is rotated
               toward the accent, so a column of active dots can't fight the

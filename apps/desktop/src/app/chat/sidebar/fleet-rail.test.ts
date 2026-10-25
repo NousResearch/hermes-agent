@@ -95,6 +95,22 @@ describe('buildRestGroups', () => {
     expect(vps?.named).toEqual([])
   })
 
+  it('keeps an expired Cloud source visible but not reachable even with cached profiles', () => {
+    const expired: DesktopAgentRoster = {
+      ...roster,
+      sources: roster.sources.map(source =>
+        source.connectionId === 'pandora'
+          ? { ...source, reachable: false, error: 'OAuth expired', needsSignIn: true }
+          : source
+      )
+    }
+
+    const groups = buildRestGroups({ activeConnectionId: 'local', connections, roster: expired })
+    const cloud = groups.find(group => group.connectionId === 'pandora')
+    expect(cloud).toMatchObject({ reachable: false, error: 'OAuth expired', needsSignIn: true })
+    expect(cloud?.named.map(agent => agent.profile)).toEqual(['omer', 'scout'])
+  })
+
   it('shows every gateway with just its default before the roster has loaded', () => {
     const groups = buildRestGroups({ activeConnectionId: 'pandora', connections, roster: null })
 

@@ -7,6 +7,7 @@ import {
   createRemoteDir,
   desktopDefaultCwd,
   desktopFileDiff,
+  DesktopFileMissingError,
   desktopFsCacheKey,
   desktopGitRoot,
   readDesktopDir,
@@ -16,10 +17,11 @@ import {
   selectDesktopPaths,
   setDesktopFsRemotePicker
 } from './desktop-fs'
+import { isBrowserHostedDesktop } from './platform'
 
 const readDir = vi.fn(async () => ({ entries: [{ name: 'local', path: '/local', isDirectory: true }] }))
-const readFileText = vi.fn(async () => ({ path: '/local/file.txt', text: 'local', byteSize: 5 }))
-const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,bG9jYWw=')
+const readFileText = vi.fn(async (): Promise<unknown> => ({ path: '/local/file.txt', text: 'local', byteSize: 5 }))
+const readFileDataUrl = vi.fn(async (): Promise<unknown> => 'data:text/plain;base64,bG9jYWw=')
 const gitRoot = vi.fn(async () => '/local')
 const selectPaths = vi.fn(async () => ['/local'])
 
@@ -73,6 +75,7 @@ describe('desktop filesystem facade', () => {
     stubBridge()
     $connection.set(null)
     setApiRequestConnection(null)
+    delete document.documentElement.dataset.hermesDesktopHost
   })
 
   afterEach(() => {
@@ -80,6 +83,7 @@ describe('desktop filesystem facade', () => {
     vi.clearAllMocks()
     $connection.set(null)
     setApiRequestConnection(null)
+    delete document.documentElement.dataset.hermesDesktopHost
     setDesktopFsRemotePicker(null)
   })
 
@@ -100,6 +104,26 @@ describe('desktop filesystem facade', () => {
     expect(gitRoot).toHaveBeenCalledWith('/work')
     expect(selectPaths).toHaveBeenCalledWith({ directories: true, profile: 'team-local' })
     expect(api).not.toHaveBeenCalled()
+  })
+
+  it('treats browser-hosted local Desktop as backend filesystem mode', async () => {
+    $connection.set({ mode: 'local', profile: 'phone' } as never)
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+    const remoteSelect = vi.fn(async () => ['/backend/project'])
+    setDesktopFsRemotePicker({ selectPaths: remoteSelect })
+
+    expect(isBrowserHostedDesktop()).toBe(true)
+    await expect(readDesktopDir('/backend')).resolves.toMatchObject({ entries: [{ name: 'remote' }] })
+    await expect(desktopDefaultCwd()).resolves.toEqual({ cwd: '/backend/project', branch: 'main' })
+    await expect(selectDesktopPaths({ defaultPath: '/backend', directories: true })).resolves.toEqual([
+      '/backend/project'
+    ])
+
+    expect(api).toHaveBeenCalledWith({ path: '/api/fs/list?path=%2Fbackend', profile: 'phone' })
+    expect(api).toHaveBeenCalledWith({ path: '/api/fs/default-cwd', profile: 'phone' })
+    expect(remoteSelect).toHaveBeenCalledWith({ defaultPath: '/backend', directories: true, multiple: false })
+    expect(readDir).not.toHaveBeenCalled()
+    expect(selectPaths).not.toHaveBeenCalled()
   })
 
   it('routes filesystem reads through authenticated backend REST in remote mode', async () => {
@@ -335,5 +359,41 @@ describe('desktop filesystem facade', () => {
 
     expect(remoteSelect).toHaveBeenCalledWith({ directories: true, multiple: false })
     expect(selectPaths).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a missing-file bridge result as a thrown error (not an object)', async () => {
+    $connection.set({ mode: 'local' } as never)
+
+    // The main process answers "file not on disk" with a structured result
+    // instead of rejecting the IPC call (so a restored preview tab pointing at
+    // a deleted file doesn't spam Electron's console). The facade converts it
+    // back into a rejection so every existing try/catch caller keeps working.
+    readFileText.mockResolvedValueOnce({
+      ok: false,
+      error: 'ENOENT',
+      message: 'Text preview failed: file does not exist.',
+      path: '/gone.txt'
+    })
+
+    await expect(readDesktopFileText('/gone.txt')).rejects.toThrow('Text preview failed: file does not exist.')
+
+    readFileDataUrl.mockResolvedValueOnce({
+      ok: false,
+      error: 'ENOENT',
+      message: 'Text preview failed: file does not exist.'
+    })
+
+    await expect(readDesktopFileDataUrl('/gone.png')).rejects.toThrow('Text preview failed: file does not exist.')
+
+    // The rejection is the typed missing-file error, so callers can tell
+    // expected absence apart from real failures without string matching.
+    readFileText.mockResolvedValueOnce({
+      ok: false,
+      error: 'ENOENT',
+      message: 'gone',
+      path: '/gone.txt'
+    })
+
+    await expect(readDesktopFileText('/gone.txt')).rejects.toBeInstanceOf(DesktopFileMissingError)
   })
 })

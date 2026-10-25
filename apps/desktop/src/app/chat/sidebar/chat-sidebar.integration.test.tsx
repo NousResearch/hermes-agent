@@ -278,6 +278,128 @@ describe('ChatSidebar project entry', () => {
 // Messaging platforms group rows by owner the same way recents does once every
 // profile is on screen, so a Telegram thread is attributable to its profile
 // (#87715). The platform's row cap and load-more stay the section's.
+describe('ChatSidebar section labels', () => {
+  const realProject = {
+    id: '/repos/new-project',
+    label: 'new-project',
+    path: '/repos/new-project',
+    repos: [],
+    sessionCount: 0
+  }
+
+  // The synthetic Home bucket the backend emits when no project claimed a
+  // session (no cwd / deleted workspace): one lane, no repo structure.
+  const homeOnly = [
+    {
+      ...realProject,
+      id: '__no_project__',
+      label: 'Home',
+      path: null,
+      isNoProject: true,
+      sessionCount: 2
+    }
+  ]
+
+  afterEach(() => {
+    cleanup()
+    $projectScope.set(ALL_PROJECTS)
+    $projectTree.set([])
+    setSidebarAgentsGrouped(false)
+    $sessions.set([])
+  })
+
+  it('labels the section "Projects" when the grouped tree has a real project', () => {
+    setSidebarAgentsGrouped(true)
+    $projectTree.set([realProject])
+
+    renderSidebar('/', 'chat')
+
+    expect(screen.getByText('Projects')).toBeTruthy()
+    expect(screen.queryByText('Sessions')).toBeNull()
+  })
+
+  it('keeps the "Sessions" label when grouping is on but no projects exist', () => {
+    // The source-filter toggle with an empty tree: the section lists plain
+    // chat sessions, so heading it "Projects" mislabeled them (#62537).
+    setSidebarAgentsGrouped(true)
+    $projectTree.set([])
+    $sessions.set(sessionRows)
+
+    renderSidebar('/', 'chat')
+
+    expect(screen.getByText('Sessions')).toBeTruthy()
+    expect(screen.queryByText('Projects')).toBeNull()
+  })
+
+  it('keeps the "Sessions" label when the grouped tree is only the synthetic Home bucket', () => {
+    // No real projects — every session fell into Home. A lone Home bucket is
+    // the flat session list wearing a project costume, not a switcher.
+    setSidebarAgentsGrouped(true)
+    $projectTree.set(homeOnly)
+    $sessions.set(sessionRows)
+
+    renderSidebar('/', 'chat')
+
+    expect(screen.getByText('Sessions')).toBeTruthy()
+    expect(screen.queryByText('Projects')).toBeNull()
+  })
+})
+
+describe('ChatSidebar empty-profile sections', () => {
+  // A profile with no normal sessions but messaging threads / cron jobs must
+  // still show them: the session area (and the sections inside it) is gated by
+  // showSessionSections, which used to key only on normal-session visibility
+  // and collapsed these profiles to the blank state (#63593).
+  const telegramThread = (id: string, last_active: number) =>
+    makeSessionInfo({ connection_id: 'local', id, last_active, profile: 'default', source: 'telegram', title: id })
+
+  beforeEach(() => {
+    $connectionsRegistry.set({
+      version: 2,
+      primary: 'local',
+      secureTokenStorage: true,
+      connections: [{ id: 'local', label: 'This computer', kind: 'local', tokenSet: false, tokenPreview: null }]
+    } as NonNullable<typeof $connectionsRegistry.value>)
+    $profiles.set([{ name: 'default', is_default: true }] as typeof $profiles.value)
+    $sessions.set([])
+    $messagingSessions.set([telegramThread('tg-one', 60), telegramThread('tg-two', 30)])
+    $messagingTruncated.set(false)
+    $sidebarMessagingOpenIds.set(['telegram'])
+    $sessionsLoading.set(false)
+  })
+
+  afterEach(() => {
+    cleanup()
+    $messagingSessions.set([])
+    $sidebarMessagingOpenIds.set([])
+    $sessions.set([])
+  })
+
+  it('shows the messaging section for a profile with no normal sessions', () => {
+    const { container } = renderSidebar('/', 'chat')
+
+    // The Telegram platform section renders with its threads…
+    expect(screen.getAllByText('Telegram').length).toBeGreaterThan(0)
+    expect(screen.getByText('tg-one')).toBeTruthy()
+    // …and the sidebar did not collapse to the blank state: the search field
+    // only renders inside the session area, so its presence proves the area
+    // (and the messaging sections inside it) rendered.
+    expect(screen.getByPlaceholderText('Search sessions…')).toBeTruthy()
+  })
+
+  it('still shows the blank state when a profile has nothing at all', () => {
+    $messagingSessions.set([])
+    $sidebarMessagingOpenIds.set([])
+
+    // SidebarBlankState: a centered "No sessions yet" plus a "New project"
+    // button, rendered INSTEAD of the whole session area (search included).
+    const { container } = renderSidebar('/', 'chat')
+
+    expect(container.textContent).toContain('No sessions yet')
+    expect(screen.queryByPlaceholderText('Search sessions…')).toBeNull()
+  })
+})
+
 describe('ChatSidebar messaging owners', () => {
   const telegram = (id: string, profile: string, last_active: number) =>
     makeSessionInfo({ connection_id: 'local', id, last_active, profile, source: 'telegram', title: id })

@@ -318,7 +318,7 @@ async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_p
     monkeypatch.setattr(
         subprocess_compat,
         "windows_detach_popen_kwargs",
-        lambda: {},
+        dict,
     )
 
     def fake_popen(cmd, **kwargs):
@@ -561,7 +561,7 @@ async def test_request_restart_skips_wait_for_cron_run_past_inflight_allowance(m
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("HERMES_AGENT_TIMEOUT", raising=False)
-    monkeypatch.setattr("cron.jobs.load_jobs", lambda: [])
+    monkeypatch.setattr("cron.jobs.load_jobs", list)
     runner, _adapter = make_restart_runner()
     runner.stop = AsyncMock()
     runner._restart_after_turn_timeout = 300.0  # would hang the test without the wedge bypass
@@ -623,3 +623,129 @@ def test_wedged_cron_check_parses_jobs_once_per_run(monkeypatch, tmp_path):
         for jid in ("job-a", "job-b", "job-c"):
             sched.release_running_job(jid)
     assert not sched._running_allowance_s
+
+
+@pytest.mark.asyncio
+async def test_request_restart_skips_wait_for_scope_isolated_cron_worker(monkeypatch, tmp_path):
+    """A cron run in its own restart-safe systemd scope outlives the restart: the wait must skip it.
+
+    Its worker lives outside the gateway cgroup, so the shutdown drain deliberately leaves it
+    unmarked (``mark_running_jobs_interrupted``) and its final send rides the durable delivery queue
+    for the next gateway. Holding the after-turn wait for it therefore only kept the gateway in
+    "draining" — refusing new turns for up to the whole ``agent.restart_after_turn_timeout`` — while
+    the worker kept running (observed live: a 100-minute job held the gateway ~30 minutes).
+    """
+    import cron.scheduler as sched
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("cron.jobs.load_jobs", list)
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+    runner._restart_after_turn_timeout = 300.0  # would hang the test without the scope bypass
+    assert sched.try_register_running_job("scoped-screening-job")
+    try:
+        sched._record_external_cron_worker("scoped-screening-job", 4321, scope_isolated=True)
+        # Counted as work (the drain still sees it), but not awaited.
+        assert runner._active_work_count() == 1
+        assert runner._restart_safe_cron_count() == 1
+        assert runner._awaitable_work_count() == 0
+        cron_units = [u for u in runner._describe_active_work() if u["kind"] == "cron"]
+        assert cron_units[0]["job_id"] == "scoped-screening-job"
+        assert cron_units[0]["external"] is True and cron_units[0]["restart_safe"] is True
+
+        assert runner.request_restart(detached=False, via_service=True) is True
+        await asyncio.wait_for(runner._restart_task, timeout=5.0)
+        runner.stop.assert_awaited_once()
+    finally:
+        sched.release_running_job("scoped-screening-job")
+        assert sched.get_restart_wait_cron_counts()["restart_safe"] == 0
+
+
+@pytest.mark.asyncio
+async def test_request_restart_still_waits_for_worker_without_its_own_scope(monkeypatch, tmp_path):
+    """Control: an external worker WITHOUT its own scope dies with the gateway, so the wait holds.
+
+    A ``degraded`` dispatch (no reachable user D-Bus) is still an external subprocess but stays in
+    the gateway cgroup — a systemd stop kills it mid-run. The fix must not degrade into "never wait
+    for a cron worker".
+    """
+    import cron.scheduler as sched
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("cron.jobs.load_jobs", list)
+    runner, _adapter = make_restart_runner()
+    runner._restart_after_turn_timeout = 300.0
+    runner._scale_to_zero_status = MagicMock()
+    assert sched.try_register_running_job("degraded-job")
+    try:
+        sched._record_external_cron_worker("degraded-job", 4322, scope_isolated=False)
+        assert runner._restart_safe_cron_count() == 0
+        assert runner._awaitable_work_count() == 1
+        cron_units = [u for u in runner._describe_active_work() if u["kind"] == "cron"]
+        assert cron_units[0]["external"] is True and cron_units[0]["restart_safe"] is False
+        # Still awaited: the wait does not return while this run is in flight.
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(runner._await_active_work_before_restart(), timeout=0.5)
+    finally:
+        sched.release_running_job("degraded-job")
+
+
+def _register_in_profile(monkeypatch, sched, home, job_id):
+    """Claim ``job_id`` in-flight under profile ``home`` (the multiplexed ticker binds it per tick)."""
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    assert sched.try_register_running_job(job_id)
+
+
+def test_same_job_id_scoped_in_one_profile_does_not_hide_degraded_in_another(monkeypatch, tmp_path):
+    """One gateway ticks every profile, so two profiles can run ``daily-brief`` at once.
+
+    Profile A's run is in its own scope (outlives the restart); profile B's is degraded (shares the
+    gateway cgroup, dies with a systemd stop). The wait must still hold for B: counting by bare job
+    ID let A's exclusion cancel the single collapsed ``daily-brief`` and restart killed B mid-run.
+    """
+    import cron.scheduler as sched
+
+    monkeypatch.setattr("cron.jobs.load_jobs", list)
+    runner, _adapter = make_restart_runner()
+    home_a, home_b = tmp_path / "profile-a", tmp_path / "profile-b"
+    try:
+        _register_in_profile(monkeypatch, sched, home_a, "daily-brief")
+        sched._record_external_cron_worker("daily-brief", 4321, scope_isolated=True)
+        _register_in_profile(monkeypatch, sched, home_b, "daily-brief")
+        sched._record_external_cron_worker("daily-brief", 4322, scope_isolated=False)
+
+        assert runner._restart_safe_cron_count() == 1
+        assert runner._awaitable_work_count() == 1
+        flags = sorted(u["restart_safe"] for u in runner._describe_active_work() if u["kind"] == "cron")
+        assert flags == [False, True]
+
+        # B finishes: only the scoped run is left, and it no longer holds the wait.
+        sched.release_running_job("daily-brief", home_b)
+        assert runner._awaitable_work_count() == 0
+    finally:
+        sched.release_running_job("daily-brief", home_a)
+        sched.release_running_job("daily-brief", home_b)
+
+
+def test_same_job_id_wedged_in_one_profile_does_not_hide_live_run_in_another(monkeypatch, tmp_path):
+    """Sibling of the scoped case for the wedged exclusion: profile A's ``daily-brief`` is past its
+    in-flight allowance, profile B's is a young live run. Only A may be skipped.
+    """
+    import cron.scheduler as sched
+
+    monkeypatch.delenv("HERMES_AGENT_TIMEOUT", raising=False)
+    monkeypatch.setattr("cron.jobs.load_jobs", list)
+    runner, _adapter = make_restart_runner()
+    home_a, home_b = tmp_path / "profile-a", tmp_path / "profile-b"
+    try:
+        _register_in_profile(monkeypatch, sched, home_a, "daily-brief")
+        with sched._running_lock:
+            sched._running_since[sched._inflight_key("daily-brief")] = time.time() - 702 * 60
+        _register_in_profile(monkeypatch, sched, home_b, "daily-brief")
+
+        assert runner._wedged_agent_count() == 1
+        assert runner._awaitable_work_count() == 1
+    finally:
+        sched.release_running_job("daily-brief", home_a)
+        sched.release_running_job("daily-brief", home_b)

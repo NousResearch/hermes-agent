@@ -136,6 +136,31 @@ def test_other_public_api_paths_are_public_under_gate(gated_app, path):
         )
 
 
+def test_plugin_assets_pass_gate_while_api_stays_gated(gated_app):
+    """Plugin JS/CSS bundles are mounted at ``/dashboard-plugins/*`` and loaded
+    by the SPA via ``<script src>`` / ``<link href>`` tags, which cannot carry
+    session cookies — so every plugin asset request must bypass the OAuth gate
+    and reach ``serve_plugin_asset`` (which enforces its own suffix allowlist
+    and traversal guard). Meanwhile a non-public ``/api/*`` request must still
+    401, proving the gate itself is intact.
+    """
+    r = gated_app.get("/dashboard-plugins/some-plugin/index.js", follow_redirects=False)
+    assert r.status_code != 401, (
+        "/dashboard-plugins/ returned 401 under the OAuth gate — plugin "
+        "assets are loaded by script/link tags and must be public"
+    )
+    if r.status_code == 302:
+        location = r.headers.get("location", "")
+        assert "/login" not in location, (
+            f"/dashboard-plugins/ redirected to {location} — plugin assets "
+            "must reach serve_plugin_asset, not the login page"
+        )
+    r2 = gated_app.get("/api/auth/me", follow_redirects=False)
+    assert r2.status_code == 401, (
+        "/api/auth/me should still be gated"
+    )
+
+
 # ---------------------------------------------------------------------------
 # OAuth round trip
 # ---------------------------------------------------------------------------
@@ -181,6 +206,7 @@ def test_gated_require_token_endpoint_accepts_cookie_session(gated_app):
     _complete_stub_login(gated_app)
     r = gated_app.post(
         "/api/dashboard/agent-plugins/install",
+        headers={"Origin": "https://fly-app.fly.dev"},
         json={"identifier": "definitely not a valid identifier",
               "force": False, "enable": False},
     )
@@ -193,6 +219,86 @@ def test_gated_require_token_endpoint_accepts_cookie_session(gated_app):
         f"Expected the install handler's 400 (bad identifier), got "
         f"{r.status_code}: {r.text}"
     )
+
+
+def _proxied_gate(monkeypatch, surface: str | None) -> TestClient:
+    """Gated all-interfaces bind reached through a proxy that is not in ``trusted_proxies``, with
+    no ``public_url``: the server sees ``http://127.0.0.1:9119`` whatever URL the browser addressed.
+    *surface* is the app's ``ui_surface`` (``None``: the standalone dashboard, as on main)."""
+    monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+    clear_providers()
+    register_provider(StubAuthProvider())
+    for key, value in (("bound_host", "0.0.0.0"), ("bound_port", 9119), ("auth_required", True),
+                       ("trusted_public_hosts", frozenset())):
+        monkeypatch.setattr(web_server.app.state, key, value, raising=False)
+    for key in ("ui_surface", "listener_public_url", "webapp_home"):
+        if hasattr(web_server.app.state, key):
+            monkeypatch.delattr(web_server.app.state, key)
+    if surface is not None:
+        monkeypatch.setattr(web_server.app.state, "ui_surface", surface, raising=False)
+        monkeypatch.setattr(web_server.app.state, "listener_public_url", "", raising=False)
+    return TestClient(web_server.app, base_url="http://127.0.0.1:9119")
+
+
+@pytest.fixture
+def proxied_gated_webapp(monkeypatch):
+    """The gateway's Webapp behind the sign-in gate, reached through such a proxy."""
+    yield _proxied_gate(monkeypatch, "webapp")
+    clear_providers()
+
+
+@pytest.fixture
+def proxied_gated_dashboard(monkeypatch):
+    """The standalone ``hermes dashboard`` behind the sign-in gate, reached through such a proxy."""
+    yield _proxied_gate(monkeypatch, None)
+    clear_providers()
+
+
+def test_webapp_cookie_write_trusts_the_browsers_same_origin_verdict_behind_a_proxy(
+        proxied_gated_webapp):
+    """The server's own URL cannot name the browser-facing origin behind such a proxy, so
+    the browser's unforgeable ``Sec-Fetch-Site`` decides: the Webapp's own page may write
+    with its cookie session, a sibling or foreign page may not."""
+    _complete_stub_login(proxied_gated_webapp)
+
+    own_page = proxied_gated_webapp.post("/api/auth/ws-ticket", headers={
+        "Origin": "https://dash.example.com", "Sec-Fetch-Site": "same-origin"})
+    assert own_page.status_code == 200, own_page.text
+
+    for origin, fetch_site in (("https://evil.example", "cross-site"),
+                               ("https://blog.example.com", "same-site")):
+        forged = proxied_gated_webapp.post("/api/auth/ws-ticket", headers={
+            "Origin": origin, "Sec-Fetch-Site": fetch_site})
+        assert forged.status_code == 403, (fetch_site, forged.text)
+        # Behind a reverse proxy the fix is the public URL the Webapp's listener reads.
+        assert "webapp.public_url" in forged.text and "dashboard.public_url" not in forged.text
+
+
+def test_webapp_sign_out_from_another_origin_is_refused(proxied_gated_webapp):
+    """On the Webapp a cookie sign-out is a cookie write like any other: a sibling page cannot
+    sign the browser out."""
+    _complete_stub_login(proxied_gated_webapp)
+
+    out = proxied_gated_webapp.post("/auth/logout", headers={
+        "Origin": "https://blog.example.com", "Sec-Fetch-Site": "same-site"}, follow_redirects=False)
+
+    assert out.status_code == 403, out.text
+
+
+def test_dashboard_page_writes_behind_a_host_rewriting_http_proxy_are_admitted_as_on_main(
+        proxied_gated_dashboard):
+    """With the Webapp off, the gated ``hermes dashboard`` keeps main's rule for cookie writes: the
+    origin check belongs to the Webapp's listener. Behind a plain-HTTP proxy that forwards with the
+    upstream's Host and no ``dashboard.public_url``, the browser sends no Fetch Metadata and only
+    ``Origin: http://dash.lan``; the dashboard's own page still writes and signs out."""
+    _complete_stub_login(proxied_gated_dashboard)
+
+    write = proxied_gated_dashboard.post("/api/auth/ws-ticket", headers={"Origin": "http://dash.lan"})
+    assert write.status_code == 200, write.text
+
+    out = proxied_gated_dashboard.post("/auth/logout", headers={"Origin": "http://dash.lan"},
+                                       follow_redirects=False)
+    assert out.status_code == 302, out.text
 
 
 # A representative spread of the OTHER ``_require_token`` endpoints (there are
@@ -319,6 +425,63 @@ def test_api_auth_me_returns_session_after_login(gated_app):
 def test_api_auth_me_requires_auth(gated_app):
     # No cookies.
     r = gated_app.get("/api/auth/me")
+    assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Loopback-mode identity probe (GH #66223)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def loopback_app():
+    """Configure web_server.app for loopback mode (auth_required=False).
+
+    Mirrors ``gated_app`` but flips the gate off and clears ``bound_host``
+    so the host-header check doesn't reject the TestClient's requests.
+    """
+    clear_providers()
+    prev_host = getattr(web_server.app.state, "bound_host", None)
+    prev_required = getattr(web_server.app.state, "auth_required", None)
+    web_server.app.state.bound_host = None
+    web_server.app.state.auth_required = False
+    client = TestClient(web_server.app, base_url="http://127.0.0.1")
+    yield client
+    clear_providers()
+    web_server.app.state.bound_host = prev_host
+    web_server.app.state.auth_required = prev_required
+
+
+def test_api_auth_me_returns_loopback_identity_with_valid_token(loopback_app):
+    """Regression for GH #66223.
+
+    In loopback mode there is no OAuth ``Session``, but the legacy
+    ``auth_middleware`` has already validated the ephemeral
+    ``_SESSION_TOKEN``.  The handler must return a minimal identity so
+    the SPA can resolve its boot state instead of spinning on a 401.
+    """
+    token = web_server._SESSION_TOKEN
+    r = loopback_app.get(
+        "/api/auth/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, (
+        f"Expected 200 with a valid token in loopback mode, "
+        f"got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["provider"] == "loopback"
+    assert body["user_id"] == "local"
+    assert "display_name" in body
+    assert "email" in body
+    assert "org_id" in body
+    assert "expires_at" in body
+
+
+def test_api_auth_me_still_rejects_missing_token_in_loopback(loopback_app):
+    """Security boundary (GH #66223): without a valid token the endpoint
+    must still 401 even in loopback mode."""
+    r = loopback_app.get("/api/auth/me")
     assert r.status_code == 401
 
 

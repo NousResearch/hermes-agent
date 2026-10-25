@@ -7,6 +7,7 @@ helpers used by ``hermes import`` and ``/snapshot restore``.  Backup
 which composes these helpers.
 """
 
+import json
 import logging
 import os
 import shutil
@@ -15,16 +16,20 @@ import stat
 import sys
 import tempfile
 import zipfile
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from hermes_state_holders import read_only_db_uri
+from hermes_cli.backup_sqlite import _safe_copy_db
 from utils import (
     _preserve_file_mode, _preserve_file_owner, _restore_file_mode, _restore_file_owner, atomic_replace,
+    mkstemp_beside,
 )
 
 logger = logging.getLogger(__name__)
 
-def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
+def _foreign_db_holder_pids(db_path: Path) -> Optional[list[int]]:
     """PIDs of OTHER processes holding *db_path* or its WAL/SHM open.
 
     Linux-only ``/proc/<pid>/fd`` scan (no psutil dependency), preserving the
@@ -43,7 +48,7 @@ def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
 
     canonical_db = _canonical(os.fspath(db_path))
     watched = {canonical_db, canonical_db + "-wal", canonical_db + "-shm"}
-    pids: List[int] = []
+    pids: list[int] = []
     try:
         own_pid = os.getpid()
         for pid_str in os.listdir("/proc"):
@@ -70,7 +75,170 @@ def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
     return pids
 
 
+def _auth_restore_target(dst: Path) -> Optional[Path]:
+    """Writable auth-store path whose lock and publish name the same underlying file.
+
+    A file symlink is resolved so refresh writers and restore take the same auth.lock. A hard-linked
+    auth.json cannot be atomically replaced without splitting a deliberately shared store into two
+    inodes, so that topology fails closed instead of silently breaking credential sharing.
+    """
+    try:
+        if dst.exists():
+            links = dst.stat().st_nlink
+            if links > 1:
+                logger.error(
+                    "Refusing auth.json restore to %s: it has %d hard links; atomic replacement "
+                    "would split a shared auth store",
+                    dst,
+                    links,
+                )
+                return None
+        return dst.resolve(strict=False) if dst.is_symlink() else dst
+    except (OSError, RuntimeError) as exc:
+        logger.error("Refusing auth.json restore to %s: cannot resolve store identity: %s", dst, exc)
+        return None
+
+
+def _restore_auth_json(src: Path, dst: Path) -> bool:
+    """Restore auth.json without rolling back a live single-use OAuth generation.
+
+    The live read and final write share the canonical auth-store lock, so a concurrent refresh
+    cannot land between preservation and publish.
+    """
+    try:
+        snapshot_store = json.loads(src.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError, UnicodeError) as exc:
+        logger.error("Refusing auth.json restore from %s: %s", src, exc)
+        return False
+    if not isinstance(snapshot_store, dict):
+        logger.error("Refusing auth.json restore from %s: top level is not an object", src)
+        return False
+    if not (
+        isinstance(snapshot_store.get("providers"), dict)
+        or isinstance(snapshot_store.get("credential_pool"), dict)
+        or isinstance(snapshot_store.get("systems"), dict)
+    ):
+        logger.error("Refusing auth.json restore from %s: unrecognized auth-store shape", src)
+        return False
+    # Legacy "systems" stores are still valid snapshot input. Mirror auth._load_auth_store's
+    # migration without asking that loader to create a .corrupt sidecar inside the snapshot.
+    if (
+        not isinstance(snapshot_store.get("providers"), dict)
+        and not isinstance(snapshot_store.get("credential_pool"), dict)
+        and isinstance(snapshot_store.get("systems"), dict)
+    ):
+        systems = snapshot_store["systems"]
+        providers = {"nous": systems["nous_portal"]} if "nous_portal" in systems else {}
+        # Match auth._load_auth_store's migration shape exactly: the legacy
+        # "systems" container itself is obsolete and must not be written back.
+        snapshot_store = {
+            "providers": providers,
+            "active_provider": "nous" if providers else None,
+        }
+
+    try:
+        from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+        from hermes_cli.auth_oauth_grants import (
+            merge_snapshot_auth_preserving_live_single_use_grants,
+        )
+
+        target = _auth_restore_target(dst)
+        if target is None:
+            return False
+        with _auth_store_lock(target_path=target):
+            live_store = _load_auth_store(target)
+            restored = merge_snapshot_auth_preserving_live_single_use_grants(
+                snapshot_store, live_store
+            )
+            _save_auth_store(restored, target_path=target)
+        return True
+    except Exception as exc:
+        logger.error("Failed to restore %s safely: %s", dst, exc)
+        return False
+
+
 def _safe_restore_db(src: Path, dst: Path) -> bool:
+    """Restore only while holding the destination authority's maintenance reservation.
+
+    Returns ``False``, without touching *dst*, when *src* fails the SQLite
+    integrity check, when the runtime owns the profile, or when a canonical
+    ``state.db`` epoch floor cannot be proven.
+    """
+    from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
+    from hermes_cli.backup import verify_sqlite_integrity
+
+    # backup() copies pages without validating their contents; its fallback
+    # copies bytes even when SQLite rejected the source. Neither may touch the
+    # destination until the snapshot passes the existing bounded integrity policy.
+    source_check = verify_sqlite_integrity(src)
+    if not source_check["valid"]:
+        logger.error("Refusing SQLite restore from %s: %s", src, source_check["message"])
+        return False
+    try:
+        with exclusive_maintenance([dst.absolute().parent, dst.resolve().parent]):
+            with _restore_epoch_source(src, dst) as prepared:
+                return _restore_db_pages(prepared, dst)
+    except (OwnershipConflict, OSError, sqlite3.Error) as exc:
+        logger.error("%s", exc)
+        return False
+
+
+def _restore_epoch(path: Path) -> int:
+    if not path.exists():
+        return 0
+    with closing(sqlite3.connect(read_only_db_uri(path), uri=True)) as conn:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_epoch'").fetchone():
+            return 0
+        row = conn.execute("SELECT epoch FROM runtime_epoch WHERE singleton=1").fetchone()
+        return int(row[0]) if row else 0
+
+
+def _restore_destination_epoch(dst: Path) -> int:
+    try:
+        return _restore_epoch(dst)
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        raise OSError(
+            f"Cannot read the canonical runtime epoch at {dst}; refusing in-place restore. "
+            "Use `hermes sessions recover --source <snapshot> --output <separate-path>` "
+            "to salvage transcripts into a separate output."
+        ) from exc
+
+
+@contextmanager
+def _restore_epoch_source(src: Path, dst: Path):
+    """Stage an epoch floor into the image BEFORE publishing it atomically.
+
+    Updating the destination after backup() would leave a crash window that
+    reuses an older worker epoch. Never modify the user's source snapshot.
+    Full restores retain all admissions/worker receipts; normal startup advances
+    this floor and reconciles started work to unknown, not replayable queued work.
+    An unreadable destination cannot prove its epoch floor: use transcript salvage
+    into a separate output rather than silently restoring with a recycled epoch.
+    """
+    if dst.name != 'state.db' and dst.resolve().name != 'state.db':
+        yield src
+        return
+    floor = _restore_destination_epoch(dst)
+    if floor <= _restore_epoch(src):
+        yield src
+        return
+    with tempfile.TemporaryDirectory(prefix='.restore-epoch-', dir=dst.parent) as work:
+        prepared = Path(work) / 'state.db'
+        if not _safe_copy_db(src, prepared):
+            raise OSError('Unable to stage a restore with a safe runtime epoch')
+        with closing(sqlite3.connect(prepared)) as conn:
+            conn.execute("""CREATE TABLE IF NOT EXISTS runtime_epoch (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                epoch INTEGER NOT NULL CHECK (epoch > 0), instance_id TEXT NOT NULL)""")
+            conn.execute("""INSERT INTO runtime_epoch VALUES(1,?, 'offline-restore')
+                ON CONFLICT(singleton) DO UPDATE SET epoch=excluded.epoch,
+                instance_id=excluded.instance_id""", (floor,))
+            conn.commit()
+        prepared.chmod(src.stat().st_mode)
+        yield prepared
+
+
+def _restore_db_pages(src: Path, dst: Path) -> bool:
     """Restore a SQLite database from snapshot *src* into live *dst*.
 
     Uses SQLite's backup() API to write snapshot pages into the live
@@ -96,6 +264,8 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
     process or in-process connection holds the file: replacing the inode
     under a live holder is the #90950 split-brain, so that branch fails
     closed (returns ``False``) and the caller reports the file as skipped.
+    Callers go through ``_safe_restore_db``, which validates *src* and holds
+    the maintenance reservation and epoch floor around this publication.
     """
     dst_conn: Optional[sqlite3.Connection] = None
     try:
@@ -104,9 +274,10 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
             # Force a WAL checkpoint so the backup starts from a clean
             # state rather than writing on top of a deep WAL.
             dst_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        except Exception:
-            pass
-        src_conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+        except sqlite3.Error as exc:
+            # Optional: backup() still publishes over a deep WAL, just less tidily.
+            logger.debug("Pre-restore WAL checkpoint of %s skipped: %s", dst, exc)
+        src_conn = sqlite3.connect(read_only_db_uri(src), uri=True)
         try:
             src_conn.backup(dst_conn)
         finally:
@@ -116,10 +287,11 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
         try:
             mode = src.stat().st_mode
             dst.chmod(mode)
-        except Exception:
-            pass
+        except OSError as exc:
+            # The data is restored; only the snapshot's file mode could not be carried over.
+            logger.warning("Restored %s but could not apply the snapshot's file mode: %s", dst, exc)
         return True
-    except Exception as exc:
+    except (sqlite3.Error, OSError, ValueError) as exc:  # ValueError: an unrepresentable path
         logger.warning("SQLite safe restore failed for %s -> %s: %s", src, dst, exc)
         # Release our own handle on *dst* before the fallback: on Windows an
         # open connection blocks unlink() with WinError 32, which would make
@@ -127,8 +299,8 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
         if dst_conn is not None:
             try:
                 dst_conn.close()
-            except Exception:
-                pass
+            except sqlite3.Error as close_exc:
+                logger.debug("Closing %s before the fallback restore failed: %s", dst, close_exc)
         # Fallback: unlink+move (the old approach).  This still works for
         # the common case where no other process holds the DB open.
         from hermes_cli.sqlite_safe_read import (
@@ -188,7 +360,7 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
                 dst, exc2,
             )
             return False
-        except Exception as exc2:
+        except (OSError, ValueError) as exc2:  # ValueError: a path the OS cannot represent
             logger.error("Fallback restore also failed for %s -> %s: %s", src, dst, exc2)
             return False
 
@@ -332,9 +504,7 @@ def _extract_member_atomically(
 
     # Truncate the stem: mkstemp adds ~16 characters, and a member already near
     # NAME_MAX would otherwise fail here on a write that used to succeed.
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(target.parent), prefix=f".{target.name[:80]}.", suffix=".partial"
-    )
+    fd, tmp_name = mkstemp_beside(target, prefix=f".{target.name[:80]}.", suffix=".partial")
     try:
         with os.fdopen(fd, "wb") as dst:
             if mode is not None:
@@ -368,7 +538,7 @@ def _extract_member_atomically(
         raise
 
 
-def _count_session_rows(path: Path) -> Optional[Tuple[int, int]]:
+def _count_session_rows(path: Path) -> Optional[tuple[int, int]]:
     """Return ``(sessions, messages)`` stored in the session database *path*.
 
     Read-only and best effort.  ``None`` means "unknown" — a missing file, a
@@ -380,7 +550,7 @@ def _count_session_rows(path: Path) -> Optional[Tuple[int, int]]:
     if not path.is_file():
         return None
     try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        conn = sqlite3.connect(read_only_db_uri(path), uri=True)
     except sqlite3.Error:
         return None
     try:
@@ -394,6 +564,20 @@ def _count_session_rows(path: Path) -> Optional[Tuple[int, int]]:
 
 
 def _import_db_member(
+    zf: zipfile.ZipFile,
+    member: str,
+    target: Path,
+    new_file_mode: Optional[int] = None,
+) -> None:
+    from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
+    try:
+        with exclusive_maintenance([target.absolute().parent, target.resolve().parent]):
+            _import_db_member_exclusive(zf, member, target, new_file_mode)
+    except OwnershipConflict as exc:
+        raise OSError(str(exc)) from exc
+
+
+def _import_db_member_exclusive(
     zf: zipfile.ZipFile,
     member: str,
     target: Path,
@@ -451,6 +635,15 @@ def _import_db_member(
             dst.flush()
             os.fsync(dst.fileno())
         if not _safe_restore_db(Path(tmp_name), target):
+            from hermes_cli.backup import verify_sqlite_integrity
+
+            # Re-check only on failure so the user gets the real cause; the
+            # detailed integrity message was already logged by _safe_restore_db.
+            if not verify_sqlite_integrity(Path(tmp_name))["valid"]:
+                raise OSError(
+                    "the archived database failed its integrity check; the existing "
+                    "database was left untouched."
+                )
             raise OSError(
                 "live-safe restore refused or failed; the existing database was "
                 "left untouched. Stop the gateway/dashboard processes holding it "

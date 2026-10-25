@@ -28,7 +28,7 @@ fallback**. Scope is **US-first**, with EU/UK (GDPR) and global coverage on the 
 
 The design is **Hermes-native**: a small deterministic Python CLI (`scripts/pdd.py`) owns the state
 (config, dossiers, broker DB, tier planning, ledger, drafts, reports), while the agent does the
-scanning and submitting with native tools (`web_extract`, `browser_*`, email, `cronjob`,
+scanning and submitting with native tools (`web_extract`, `browser_exec`, email, `cronjob`,
 `delegate_task`). [`SKILL.md`](SKILL.md) is the authoritative reference.
 
 ## Install

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-import hermes_cli.auth as auth
-import hermes_cli.auth_nous as auth_nous
+from hermes_cli import auth
+from hermes_cli import auth_nous
 from hermes_cli.auth import (
     NOUS_BILLING_MANAGE_SCOPE,
     nous_token_has_billing_scope,
@@ -51,7 +51,7 @@ class TestNousTokenHasBillingScope:
 def _stub_persist(monkeypatch):
     """Neutralize the persistence side-effects so step-up tests are pure."""
     monkeypatch.setattr(auth, "_auth_store_lock", lambda: _NullCtx())
-    monkeypatch.setattr(auth, "_load_auth_store", lambda: {})
+    monkeypatch.setattr(auth, "_load_auth_store", dict)
     monkeypatch.setattr(auth, "_save_provider_state", lambda *a, **kw: None)
     monkeypatch.setattr(auth, "_save_auth_store", lambda *a, **kw: "auth.json")
     monkeypatch.setattr(auth, "_write_shared_nous_state", lambda *a, **kw: None)
@@ -96,6 +96,20 @@ def test_step_up_requests_billing_scope_and_reuses_prior_urls(monkeypatch, _stub
     # Reuses the prior credential's deployment URLs (so a preview stays a preview).
     assert captured["portal_base_url"] == "https://preview.example.com"
     assert captured["client_id"] == "hermes-cli"
+
+
+def test_step_up_drops_the_billing_token_cache(monkeypatch, _stub_persist):
+    """The refused action is replayed right after the grant; a still-cached pre-grant token would 403 again
+    (desktop showed "Remote Spending needs approval" straight after approving)."""
+    from hermes_cli import nous_billing
+    monkeypatch.setattr(auth, "get_provider_auth_state", lambda p: {"scope": "inference:invoke"})
+    fake_login = lambda **kw: {"scope": "inference:invoke billing:manage", "access_token": "new"}
+    monkeypatch.setattr(auth, "_nous_device_code_login", fake_login)
+    monkeypatch.setattr(auth_nous, "_nous_device_code_login", fake_login)
+    nous_billing._token_cache["home"] = (0.0, "old-unscoped", "https://portal")
+
+    assert step_up_nous_billing_scope() is True
+    assert nous_billing._token_cache == {}
 
 
 # ---------------------------------------------------------------------------

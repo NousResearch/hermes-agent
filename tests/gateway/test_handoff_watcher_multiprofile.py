@@ -249,6 +249,39 @@ async def test_watcher_enters_profile_scope_for_each_home(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_watcher_resolves_scopes_off_the_event_loop(monkeypatch):
+    """Scope resolution walks the filesystem (profiles_to_serve); it must never run on the loop
+    thread, or a stalled walk trips the loop-liveness watchdog — startup reclaim and tick alike."""
+    on_loop = []
+
+    def _scopes(_runner):
+        on_loop.append(threading.current_thread() is threading.main_thread())
+        return [(None, None)]
+
+    monkeypatch.setattr(run, "_handoff_watch_scopes", _scopes)
+
+    async def _no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(run.asyncio, "sleep", _no_sleep)
+    states = iter([True, False])
+
+    class _Running:
+        def __bool__(_self):
+            return next(states, False)
+
+    async def _process_handoff(row, profile_name=None):
+        return None
+
+    fake = types.SimpleNamespace(_session_db=_RecordingDB(), _running=_Running(),
+                                 _process_handoff=_process_handoff,
+                                 _run_in_executor_with_context=asyncio.to_thread)
+    await asyncio.wait_for(run.GatewayRunner._handoff_watcher(fake, interval=0.0), timeout=5)
+
+    assert on_loop == [False, False], f"reclaim + tick must resolve scopes off-loop; got {on_loop}"
+
+
+@pytest.mark.asyncio
 async def test_slow_profile_secret_load_does_not_block_event_loop(monkeypatch, tmp_path):
     """A slow profile ``.env`` read must not stall unrelated loop work."""
     profile_home = tmp_path / "profiles" / "slow"

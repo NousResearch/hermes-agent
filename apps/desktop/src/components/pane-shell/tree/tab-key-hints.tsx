@@ -27,7 +27,7 @@ function HeldTabKeyHint({ groupId, slot }: { groupId: string; slot: number }) {
   useStore($registryVersion)
   const bindings = useStore($comboIndex)
 
-  if (slot > 9 || bindings.get(`mod+${slot}`) !== `profile.switch.${slot}` || treeTabSlotTarget()?.id !== groupId) {
+  if (slot > 9 || bindings.get(`mod+${slot}`)?.[0] !== `view.tabSlot.${slot}` || treeTabSlotTarget()?.id !== groupId) {
     return null
   }
 

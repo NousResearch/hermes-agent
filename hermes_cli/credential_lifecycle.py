@@ -12,18 +12,19 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 __all__ = [
-    "save_provider_env_credential",
+    "purge_env_credential_references",
     "remove_provider_env_credential",
-    "purge_env_credential_references"]
+    "save_provider_env_credential",
+]
 
 
-def _providers_for_env_var(env_var: str) -> List[str]:
+def _providers_for_env_var(env_var: str) -> list[str]:
     """Provider ids whose registered api_key_env_vars include ``env_var``."""
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY
     except Exception:
         return []
-    hits: List[str] = []
+    hits: list[str] = []
     for pid, cfg in PROVIDER_REGISTRY.items():
         try:
             if env_var in (cfg.api_key_env_vars or ()):
@@ -33,7 +34,7 @@ def _providers_for_env_var(env_var: str) -> List[str]:
     return hits
 
 
-def _for_each_provider(providers: List[str], import_path: str, *args: Any) -> None:
+def _for_each_provider(providers: list[str], import_path: str, *args: Any) -> None:
     """Best-effort ``module.fn(provider, *args)`` for every provider; failures never propagate."""
     try:
         import importlib
@@ -46,7 +47,7 @@ def _for_each_provider(providers: List[str], import_path: str, *args: Any) -> No
         pass
 
 
-def _prune_env_pool_entries(env_var: str) -> List[str]:
+def _prune_env_pool_entries(env_var: str) -> list[str]:
     """Drop ``credential_pool`` entries seeded from ``env:<env_var>``; return providers pruned.
 
     Spans ALL providers (shared vars like GITHUB_TOKEN seed several). Entries with any other
@@ -55,7 +56,7 @@ def _prune_env_pool_entries(env_var: str) -> List[str]:
     from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
 
     source = f"env:{env_var}"
-    pruned: List[str] = []
+    pruned: list[str] = []
     with _auth_store_lock():
         auth_store = _load_auth_store()
         pool = auth_store.get("credential_pool")
@@ -78,7 +79,7 @@ def _prune_env_pool_entries(env_var: str) -> List[str]:
     return pruned
 
 
-def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[str]:
+def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> list[str]:
     """Reconcile config.yaml api_key mirrors holding ``old_value``; return dotted paths touched.
 
     Value-matched on purpose: only an entry holding the SAME credential that just changed in
@@ -87,7 +88,7 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[st
     """
     if not old_value:
         return []
-    from hermes_cli.config import atomic_config_write, get_config_path, read_user_config_raw
+    from hermes_cli.config import atomic_config_replace, get_config_path, read_user_config_raw
 
     config_path = get_config_path()
     if not config_path.exists():
@@ -99,7 +100,7 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[st
     if not user_config:
         return []
 
-    touched: List[str] = []
+    touched: list[str] = []
 
     def _fix(section: Any, key_path: str, fields: tuple[str, ...] = ("api_key", "api")) -> None:
         # "api" is the legacy alias for model.api_key in older configs. In the keyed ``providers``
@@ -135,12 +136,12 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[st
         _fix(entry, f"providers.{provider_id}", fields=("api_key",))
 
     if touched:
-        atomic_config_write(config_path, user_config)
+        atomic_config_replace(config_path, user_config)
     return touched
 
 
 def purge_env_credential_references(
-    env_var: str, *, clear_models_cache: bool = True) -> Dict[str, Any]:
+    env_var: str, *, clear_models_cache: bool = True) -> dict[str, Any]:
     """Remove non-.env references to an env-var credential.
 
     Prunes env-seeded pool entries and (optionally) the affected ``provider_models_cache.json`` rows
@@ -160,7 +161,7 @@ def purge_env_credential_references(
     return {"pool_pruned": pruned, "providers": providers}
 
 
-def save_provider_env_credential(env_var: str, value: str) -> Dict[str, Any]:
+def save_provider_env_credential(env_var: str, value: str) -> dict[str, Any]:
     """Save/update a credential in ``.env`` and reconcile every mirror.
 
     config.yaml mirrors of the PREVIOUS value are updated so a stale higher-precedence copy cannot
@@ -176,12 +177,15 @@ def save_provider_env_credential(env_var: str, value: str) -> Dict[str, Any]:
     kept 401'ing until the user ran ``hermes auth add <provider> --type api-key`` separately. This makes the
     Desktop save's effect on disk match what ``hermes auth add`` does.
     """
-    from hermes_cli.config import load_env, save_env_value
+    from hermes_cli.config import load_env, require_env_writable, save_env_value
 
+    # A locked key must fail here: save_env_value's refusal returns like a success, and the mirror
+    # scrub below would still move the new value into config.yaml.
+    require_env_writable(env_var, "set")
     old_value = load_env().get(env_var)
     save_env_value(env_var, value)
 
-    config_updates: List[str] = []
+    config_updates: list[str] = []
     if value and old_value and old_value != value:
         config_updates = _scrub_config_yaml_mirrors(old_value, value)
 
@@ -196,11 +200,13 @@ def save_provider_env_credential(env_var: str, value: str) -> Dict[str, Any]:
     return {"ok": True, "key": env_var, "config_updates": config_updates}
 
 
-def remove_provider_env_credential(env_var: str) -> Dict[str, Any]:
+def remove_provider_env_credential(env_var: str) -> dict[str, Any]:
     """Remove a credential from EVERY store: ``.env`` (and process env), env-seeded
     ``credential_pool`` entries, model-cache rows, config.yaml mirrors of the same value."""
-    from hermes_cli.config import load_env, remove_env_value
+    from hermes_cli.config import load_env, remove_env_value, require_env_writable
 
+    # Before the pool prune and mirror scrub: a refused remove must not strip the other stores.
+    require_env_writable(env_var, "remove")
     old_value = load_env().get(env_var)
     removed_from_env = remove_env_value(env_var)
     refs = purge_env_credential_references(env_var)

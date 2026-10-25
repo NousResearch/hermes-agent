@@ -30,6 +30,7 @@ from gateway.config import (
 from gateway.response_filters import (
     is_intentional_silence_response as _is_intentional_silence_response,
     is_partial_silence_marker as _is_partial_silence_marker)
+from gateway.stream_consumer_directives import has_pending_media_directive, strip_image_tags_for_display
 from gateway.stream_consumer_fences import ensure_closed_code_fences
 from gateway.stream_consumer_transport import StreamTransportMixin
 from gateway.stream_consumer_fallback import StreamFallbackMixin
@@ -150,7 +151,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Wall-clock timestamp (time.monotonic) when ``_message_id`` was first assigned from a successful
         # first-send. Used by the fresh-final logic to detect long-lived previews whose edit timestamps
         # would be stale by completion time. Ported from openclaw/openclaw#72038.
-        self._preview_message_ids: "set[str]" = set()
+        self._preview_message_ids: set[str] = set()
         self._already_sent = False
         self._edit_supported = True  # False once progressive edits stop working
         self._last_edit_time = 0.0
@@ -200,7 +201,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._fallback_prefix = ""
         # Fallback sends only the missing tail after a partial overflow delivery.
         self._fallback_preserve_partial_messages = False
-        self._segment_preview_message_ids: "set[str]" = set()
+        self._segment_preview_message_ids: set[str] = set()
         # Tool-progress overlay (native only): shown in the bubble until text arrives.
         self._tool_progress_lines: list[str] = []
         self._tool_progress_active: bool = False
@@ -586,8 +587,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                             return
                         if self._first_send_overflows():
                             # A head send failed: keep the full text for the fallback final, and
-                            # skip the boundary reset below that would clear it.
+                            # skip the boundary reset below that would clear it. Still yield: the
+                            # buffer stays over the debounce threshold, so `continue` alone re-enters
+                            # the split on every pass and spins the loop without ever sleeping.
                             self._signal_flush(tick.flush_event)
+                            await asyncio.sleep(0.05)
                             continue
                     # The split tail goes out now, so a commentary or tool boundary drained in
                     # this tick still lands after it instead of being dropped.
@@ -618,7 +622,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     # ── run() collaborators ─────────────────────────────────────────────
 
-    def _resolve_length_budget(self) -> "tuple[Callable[[str], int], int]":
+    def _resolve_length_budget(self) -> tuple[Callable[[str], int], int]:
         """Per-chat length function (relay adapters differ per chat, e.g. utf16) + budget.
         isinstance gate: MagicMock auto-attributes aren't callables; test doubles use len."""
         # Shares the guarded ladder with the fallback path: a git pull while the gateway
@@ -650,7 +654,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             logger.debug("Stream consumer using native-draft transport (chat=%s draft_id=%s)",
                          self.chat_id, self._draft_id)
 
-    def _drain_queue(self) -> "_Tick":
+    def _drain_queue(self) -> _Tick:
         """Drain everything queued so far into one tick.  Control sentinels stop the drain
         (they take effect this tick); _FINAL_TEXT / _TOOL_PROGRESS / text deltas fold into
         state so simultaneous items batch."""
@@ -726,7 +730,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             # Degrade to a single buffered send(), like the approval path.
             self._degrade_native_to_buffered_send()
 
-    def _should_edit(self, tick: "_Tick") -> bool:
+    def _should_edit(self, tick: _Tick) -> bool:
         """Decide whether this tick flushes an edit/frame."""
         if not tick.is_interim:
             return True
@@ -746,10 +750,14 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                                    and not self._flood_strikes))
         # Defer mid-stream edits while the buffer could still resolve to a silence
         # marker ("NO"→"NO_REPLY"); got_done always resolves the buffer.
-        return should_edit and not _is_partial_silence_marker(
-            self._clean_for_display(self._accumulated))
+        # Likewise defer while a MEDIA:/[[…]] directive is still being typed: the cleaner
+        # only strips complete deliverable tags, so a half-streamed one would be shown, and
+        # a media-only reply cleans to "" at finish, which never edits the bubble away.
+        cleaned = self._clean_for_display(self._accumulated)
+        return (should_edit and not _is_partial_silence_marker(cleaned)
+                and not has_pending_media_directive(cleaned))
 
-    async def _split_first_send(self, tick: "_Tick") -> bool:
+    async def _split_first_send(self, tick: _Tick) -> bool:
         """No message to edit yet and the buffer overflows: seal only the head chunks; the
         tail stays in _accumulated as the active preview later deltas edit in place.
         True when the turn finished here (the run loop returns)."""
@@ -771,7 +779,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             # preview later deltas extend, so a kept indicator ends up embedded mid-reply.
             tail = chunks[-1]
             indicator = f" ({len(chunks)}/{len(chunks)})"
-            self._accumulated = tail[: -len(indicator)] if tail.endswith(indicator) else tail
+            self._accumulated = tail.removesuffix(indicator)
             # Flag BEFORE the tail send: fresh-final replaces every tracked preview
             # with one message, which is only valid while the active message holds
             # the whole answer — deleting sealed heads drops delivered text.
@@ -821,7 +829,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             self._last_sent_text = ""
             self._turn_split_delivery = True
 
-    async def _push_update(self, tick: "_Tick") -> None:
+    async def _push_update(self, tick: _Tick) -> None:
         """Send/edit this tick's visible text (cursor-suffixed unless finalizing)."""
         display_text = self._accumulated
         if tick.is_interim:
@@ -846,7 +854,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Lines stay in _tool_progress_lines for the next compose.
         self._tool_progress_active = False
 
-    async def _finalize_turn(self, tick: "_Tick") -> None:
+    async def _finalize_turn(self, tick: _Tick) -> None:
         """got_done: final edit without cursor, or one continuation send if edits failed."""
         if self._accumulated or self._message_id is not None or self._already_sent:
             await self._notify_before_finalize()
@@ -872,7 +880,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         elif self._accumulated:
             await self._finalize_edit_path(tick)
 
-    async def _finalize_edit_path(self, tick: "_Tick") -> None:
+    async def _finalize_edit_path(self, tick: _Tick) -> None:
         """Edit-transport finalize (the non-native got_done branches, in priority order)."""
         if self._fallback_final_send:
             await self._send_fallback_final(self._accumulated)
@@ -919,7 +927,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if not cumulative:
             self._reset_segment_state()
 
-    async def _end_segment(self, tick: "_Tick") -> None:
+    async def _end_segment(self, tick: _Tick) -> None:
         """Tool boundary: edit-based transports reset so the next chunk is a fresh message.
         Cumulative transports must NOT reset — clearing _accumulated makes the next frame a
         non-prefix snapshot and the connector re-appends the whole answer.  preserve_no_edit:
@@ -969,28 +977,12 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     # non-streaming paths share the same regex, so a tag is treated identically whichever path delivered the
     # text.
     def _clean_for_display(text: str) -> str:
-        """Hide MEDIA:<path> / [[audio_as_voice]] directives; media is delivered post-stream."""
-        return _BasePlatformAdapter.strip_media_directives_for_display(text)
+        """Hide MEDIA:<path> / [[audio_as_voice]] directives and markdown/HTML image tags; both are
+        delivered post-stream as native attachments.
 
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'MEDIA_TAG_CLEANUP_RE': ('gateway.platforms.base', 'MEDIA_TAG_CLEANUP_RE'),
-    'escape_code_fences_for_display': ('gateway.stream_consumer_fences', 'escape_code_fences_for_display'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----
+        Image tags are the ones the non-streaming path's ``extract_images`` split attaches: once a
+        tag becomes an attachment it must not also render as text — on Discord ``![alt](url)``
+        shows as ``!alt`` plus an unfurl (#141806). The tag is removed without trimming the text
+        around it, so interim frames stay prefix-stable.
+        """
+        return strip_image_tags_for_display(_BasePlatformAdapter.strip_media_directives_for_display(text))

@@ -20,7 +20,7 @@ from gateway.run import GatewayRunner
 
 def _bare_runner(multiplex: bool = True):
     runner = object.__new__(GatewayRunner)
-    runner.config = MagicMock(multiplex_profiles=multiplex)
+    runner.config = MagicMock(multiplex_profiles=multiplex, _runtime_profile_homes=None)
     runner.adapters = {}
     runner._profile_adapters = {}
     runner.pairing_store = MagicMock()

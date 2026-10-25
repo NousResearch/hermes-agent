@@ -34,6 +34,7 @@ def _clear_provider_env(monkeypatch):
 def _clear_vercel_env(monkeypatch):
     for key in (
         "TERMINAL_VERCEL_RUNTIME",
+        "TERMINAL_VERCEL_IMAGE",
         "VERCEL_OIDC_TOKEN",
         "VERCEL_TOKEN",
         "VERCEL_PROJECT_ID",
@@ -188,7 +189,7 @@ def test_vercel_setup_configures_access_token_auth(tmp_path, monkeypatch):
             return 5
         raise AssertionError(f"Unexpected prompt_choice call: {question}")
 
-    prompt_values = iter(["python3.13", "yes", "2", "4096", "token", "project", "team"])
+    prompt_values = iter(["vercel/sandbox/python:3.14", "yes", "2", "4096", "token", "project", "team"])
 
     monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
     monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(prompt_values))
@@ -198,9 +199,9 @@ def test_vercel_setup_configures_access_token_auth(tmp_path, monkeypatch):
     setup_terminal_backend(config)
 
     assert config["terminal"]["backend"] == "vercel_sandbox"
-    assert config["terminal"]["vercel_runtime"] == "python3.13"
+    assert config["terminal"]["vercel_image"] == "vercel/sandbox/python:3.14"
     assert config["terminal"]["container_disk"] == 51200
-    assert os.environ["TERMINAL_VERCEL_RUNTIME"] == "python3.13"
+    assert os.environ["TERMINAL_VERCEL_IMAGE"] == "vercel/sandbox/python:3.14"
     assert "VERCEL_OIDC_TOKEN" not in os.environ
     assert os.environ["VERCEL_TOKEN"] == "token"
     assert os.environ["VERCEL_PROJECT_ID"] == "project"
@@ -229,7 +230,7 @@ def test_vercel_setup_prefills_project_and_team_from_link_file(tmp_path, monkeyp
             return 5
         raise AssertionError(f"Unexpected prompt_choice call: {question}")
 
-    prompt_values = iter(["node24", "no", "1", "5120", "token", "", ""])
+    prompt_values = iter(["", "no", "1", "5120", "token", "", ""])
     defaults = {}
 
     def fake_prompt(message, default="", **kwargs):

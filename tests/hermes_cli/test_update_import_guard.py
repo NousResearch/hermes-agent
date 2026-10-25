@@ -196,7 +196,7 @@ def test_import_guard_rejects_malformed_health_payload(monkeypatch, tmp_path):
     monkeypatch.setattr(secrets, "token_hex", lambda _length: "fixed")
     monkeypatch.setattr(update_cmd_validation.subprocess, "run", malformed)
 
-    ok, module, error = update_cmd._validate_critical_modules_import(tmp_path)
+    ok, module, _error = update_cmd._validate_critical_modules_import(tmp_path)
 
     assert ok is False
     assert module == "critical-module probe"
@@ -208,7 +208,7 @@ def test_import_guard_reports_probe_timeout(monkeypatch, tmp_path):
 
     monkeypatch.setattr(update_cmd_validation.subprocess, "run", timeout)
 
-    ok, module, error = update_cmd._validate_critical_modules_import(tmp_path)
+    ok, module, _error = update_cmd._validate_critical_modules_import(tmp_path)
 
     assert ok is False
     assert module == "critical-module probe"

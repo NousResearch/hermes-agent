@@ -20,20 +20,25 @@ export function sortCatalogPlugins<T extends { name: string; addedAt?: string | 
   // its order, including ties, rather than reinterpreting missing star counts.
   if (sort === 'stars') { return entries }
   const field = sort === 'newest' ? 'addedAt' : 'updatedAt'
+
   const date = (value?: string | null) => {
     const ms = value ? Date.parse(value) : NaN
+
     return Number.isFinite(ms) ? ms : -Infinity
   }
+
   return [...entries].sort((a, b) => date(b[field]) - date(a[field]) || a.name.localeCompare(b.name))
 }
 
 export function groupCatalogPlugins<T extends { category: string }>(entries: T[]): [string, T[]][] {
   const buckets = new Map<string, T[]>()
+
   for (const entry of entries) {
     const key = Object.hasOwn(PLUGIN_CATEGORIES, entry.category) ? entry.category : 'general'
     const bucket = buckets.get(key) ?? []
     bucket.push(entry)
     buckets.set(key, bucket)
   }
+
   return PLUGIN_CATEGORY_ORDER.filter(key => buckets.has(key)).map(key => [key, buckets.get(key)!])
 }

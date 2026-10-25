@@ -248,6 +248,53 @@ class TestCollisionsAndClobbering:
         assert (dest / "bin" / "gh").is_file()
 
 
+class TestTransientHolds:
+    """A Windows scanner holds a just-extracted tree, so the hoist's rename fails ``[WinError 5]``
+    (EACCES) for a moment; ffmpeg and agent-browser installs died on ``package/bin`` (#131884)."""
+
+    @pytest.fixture(autouse=True)
+    def instant_backoff(self, monkeypatch):
+        from pm import filesystem
+
+        monkeypatch.setattr(filesystem, "_HELD_RETRY_DELAYS", (0,) * len(filesystem._HELD_RETRY_DELAYS))
+
+    def _held_rename(self, monkeypatch, error: OSError, failures: float):
+        calls = []
+        real = Path.rename
+
+        def rename(self, target):
+            if self.name == "bin":
+                calls.append(self.name)
+                if len(calls) <= failures:
+                    raise error
+            return real(self, target)
+
+        monkeypatch.setattr(Path, "rename", rename)
+        return calls
+
+    def test_the_hoist_waits_out_a_scanner_hold(self, tmp_path, monkeypatch):
+        dest = tmp_path / "dest"
+        extract(_tar(tmp_path / "wrapped.tar.gz", {"pkg/bin/tool": b"x", "pkg/README.md": b"docs"}), dest)
+        calls = self._held_rename(monkeypatch, PermissionError(13, "Access is denied"), failures=2)
+
+        flatten_single_dir(dest)
+
+        assert len(calls) == 3
+        assert (dest / "bin" / "tool").is_file() and (dest / "README.md").is_file()
+
+    @pytest.mark.parametrize("error", [PermissionError(13, "Access is denied"), OSError(18, "cross-device")])
+    def test_a_refusal_waiting_cannot_fix_still_raises(self, tmp_path, monkeypatch, error):
+        dest = tmp_path / "dest"
+        extract(_tar(tmp_path / "wrapped.tar.gz", {"pkg/bin/tool": b"x"}), dest)
+        calls = self._held_rename(monkeypatch, error, failures=float("inf"))
+
+        with pytest.raises(type(error)):
+            flatten_single_dir(dest)
+        from pm import filesystem
+
+        assert len(calls) == (1 if error.errno == 18 else len(filesystem._HELD_RETRY_DELAYS) + 1)
+
+
 class TestStoreIsolation:
     def test_extract_replaces_only_its_own_entry_directory(self, tmp_path):
         """Each staged entry owns exactly its dest dir. Neighbouring

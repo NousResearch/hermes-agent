@@ -31,7 +31,10 @@ test('a plain url remote never triggers the cascade, even with the same error', 
 })
 
 test('a token-auth cloud connection has no cookie to mint, so no cascade', () => {
-  assert.equal(shouldAttemptCloudBootCascade({ remoteKind: 'cloud', authMode: 'token' }, makeUnsignedOauthError()), false)
+  assert.equal(
+    shouldAttemptCloudBootCascade({ remoteKind: 'cloud', authMode: 'token' }, makeUnsignedOauthError()),
+    false
+  )
 })
 
 test('transport and server errors keep their existing handling', () => {

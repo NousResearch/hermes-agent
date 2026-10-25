@@ -89,18 +89,20 @@ test('Store calendar ordering survives minute, hour, day and year boundaries and
 test('stable candidate identity uses the admitted claim epoch before the final tag exists', () => {
   const { root, app } = fixture()
   execFileSync('git', ['tag', '-d', 'v0.27.1'], { cwd: root, stdio: 'pipe' })
-  execFileSync('git', ['tag', '-a', 'v0.27.1-rc', '-m', 'claim'], {
+  execFileSync('git', ['tag', '-a', 'rc.3-v0.27.1', '-m', 'claim'], {
     cwd: root,
     env: { ...process.env, ...gitIdentityEnv, GIT_COMMITTER_DATE: '2026-09-07T00:18:00Z' },
     stdio: 'pipe'
   })
   const epoch = Date.parse('2026-09-07T00:18:00Z') / 1000
-  vi.stubEnv('RELEASE_CLAIM_TAG', 'v0.27.1-rc')
-  vi.stubEnv('RELEASE_CLAIM_OBJECT', execFileSync('git', ['rev-parse', 'v0.27.1-rc'], {
+  vi.stubEnv('RELEASE_CLAIM_TAG', 'rc.3-v0.27.1')
+  vi.stubEnv('RELEASE_CLAIM_OBJECT', execFileSync('git', ['rev-parse', 'rc.3-v0.27.1'], {
     cwd: root, encoding: 'utf8'
   }).trim())
   try {
     expect(appIdentity(app, 'v0.27.1').version).toBe(storePackageVersionAt(epoch))
+    vi.stubEnv('RELEASE_CLAIM_TAG', 'rc.3-v0.27.10')
+    expect(() => appIdentity(app, 'v0.27.1')).toThrow('Stable claim tag differs from its payload tag')
   } finally {
     vi.unstubAllEnvs()
   }

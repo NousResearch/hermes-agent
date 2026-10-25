@@ -37,7 +37,7 @@ def test_release_channel_never_compares_main_or_reuses_main_cache(tmp_path, monk
     monkeypatch.setattr(source_check, "_branch_tip", main)
     status = source_check.check_for_updates(passive=True)
     assert status["behind"] == source_check.UPDATE_AVAILABLE_NO_COUNT
-    resolve.assert_called_once_with(channel, ["git"], root, repository="example/fork")
+    resolve.assert_called_once_with(channel, ["git"], root, repository="example/fork", forward_only=False)
     main.assert_not_called()
     assert status["channel"] == channel
     assert status["targetSha"] == target

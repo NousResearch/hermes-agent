@@ -12,7 +12,8 @@ allowlists the public ones.
   POST /auth/native/token      loopback code -> bearer tokens
   POST /auth/native/refresh    desktop-held refresh token rotation
   GET  /api/auth/providers     list registered providers (login bootstrap)
-  GET  /api/auth/me            current Session as JSON (auth-required)
+  GET  /api/auth/me            Session as JSON (gated: verified session; loopback:
+                                token-validated synthetic loopback identity)
   POST /api/auth/ws-ticket     single-use WS upgrade ticket (auth-required)
 """
 from __future__ import annotations
@@ -20,15 +21,16 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections import defaultdict, deque
+from collections import OrderedDict, deque
 from typing import Any, Deque, Dict
 from urllib.parse import quote, unquote, urlencode, urlparse, urlunparse
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from hermes_cli import webapp_sign_in
 from hermes_cli.dashboard_auth import (
     get_provider, list_providers, list_session_providers, native_flow)
 from hermes_cli.dashboard_auth import prefix as _prefix_mod
@@ -71,7 +73,7 @@ def _redirect_uri(request: Request) -> str:
     complete authority (``X-Forwarded-Prefix`` ignored so a baked-in prefix is not doubled);
     otherwise ``url_for`` (honours ``X-Forwarded-Host/Proto`` under uvicorn ``proxy_headers``)
     with the prefix prepended, which Starlette does not do."""
-    public_url = _prefix_mod.resolve_public_url()
+    public_url = _prefix_mod.resolve_public_url(request.app.state)
     if public_url:
         return f"{public_url}/auth/callback"
     base = str(request.url_for("auth_callback"))
@@ -97,14 +99,21 @@ def _validate_post_login_target(raw: str) -> str:
 
 
 def _set_pkce(resp, request: Request, payload: dict[str, str]) -> None:
-    set_pkce_cookie(resp, payload=payload, use_https=detect_https(request), prefix=_prefix(request))
+    set_pkce_cookie(resp, payload=payload, use_https=detect_https(request), prefix=_prefix(request),
+                    gateway=webapp_sign_in.cookie_gateway(request))
+
+
+def _clear_pkce(resp, request: Request) -> None:
+    clear_pkce_cookie(resp, use_https=detect_https(request), prefix=_prefix(request),
+                      gateway=webapp_sign_in.cookie_gateway(request))
 
 
 def _set_session(resp, request: Request, session: Session) -> None:
     set_session_cookies(
         resp, access_token=session.access_token, refresh_token=session.refresh_token,
         access_token_expires_in=access_token_max_age(session), use_https=detect_https(request),
-        prefix=_prefix(request), provider=session.provider)
+        prefix=_prefix(request), provider=session.provider, gateway=webapp_sign_in.cookie_gateway(request))
+    webapp_sign_in.bind(resp, request)
 
 
 def _bearer_payload(session: Session) -> dict[str, Any]:
@@ -141,6 +150,23 @@ def _login_success(request: Request, session: Session, provider: str) -> None:
            email=session.email, org_id=session.org_id)
 
 
+def _externalize_post_login_target(target: str, prefix: str) -> str:
+    """Prepend *prefix* to *target* when behind a reverse proxy.
+
+    When the dashboard is mounted at a sub-path (e.g. ``/hermes``) via
+    ``X-Forwarded-Prefix``, a bare ``/`` landing must become ``/hermes/``
+    so the browser stays inside the mount. Paths that already carry the
+    prefix are returned unchanged; the native loopback redirect (an
+    absolute ``http://127.0.0.1...`` URL) never matches and is untouched.
+    """
+    prefix = prefix.rstrip("/")
+    if not target or not prefix:
+        return target
+    if target == prefix or target.startswith(f"{prefix}/"):
+        return target
+    return f"{prefix}{target}"
+
+
 def _complete_login(request: Request, provider: str, session: Session, *, broker_state: str,
                     next_raw: str) -> tuple:
     """Shared tail of the callback + password routes after credentials verified: audit success,
@@ -150,7 +176,8 @@ def _complete_login(request: Request, provider: str, session: Session, *, broker
     if broker_state:
         return _finish_native_login(
             request, broker_state=broker_state, session=session, provider=provider), True
-    return _validate_post_login_target(next_raw) or "/", False
+    landing = _validate_post_login_target(next_raw) or "/"
+    return _externalize_post_login_target(landing, _prefix(request)), False
 
 
 def _start_upstream_login(request: Request, p, *, audit_failure: bool, extra_pkce: dict[str, str]):
@@ -177,7 +204,8 @@ def _start_upstream_login(request: Request, p, *, audit_failure: bool, extra_pkc
 async def login_page(request: Request) -> HTMLResponse:
     # ``next=`` is set by the gate's redirect but /login is reachable directly.
     next_path = _validate_post_login_target(request.query_params.get("next", ""))
-    return HTMLResponse(render_login_html(next_path=next_path), headers=_NO_STORE)
+    return HTMLResponse(
+        render_login_html(next_path=next_path, prefix=_prefix(request)), headers=_NO_STORE)
 
 
 @router.get("/api/auth/providers", name="auth_providers")
@@ -215,18 +243,45 @@ async def auth_login(request: Request, provider: str, next: str = ""):
 
 # --- Public: RFC 8252 native-app authorization (system browser + loopback + PKCE)
 
+# RFC 8252 loopback IP literals -> their canonical URL authority spelling.
+_LOOPBACK_NETLOC_HOSTS = {"127.0.0.1": "127.0.0.1", "::1": "[::1]"}
+
+
 def _validate_loopback_redirect_uri(raw: str) -> str:
-    """Accept only ``http://127.0.0.1[:port]/…`` / ``http://[::1][:port]/…``. Security boundary:
-    the route is public, so a non-loopback host would make the callback an open redirect leaking
-    a live code. ``localhost`` is rejected (RFC 8252 §8.3)."""
+    """Return a canonical RFC 8252 loopback URI or reject it.
+
+    Both the server parser and the system browser must see the same authority: URL userinfo,
+    backslashes, fragments, controls, and non-canonical host/port spellings are rejected before
+    the URI is persisted. ``localhost`` is rejected in favour of IP literals (RFC 8252 §8.3).
+    """
     if not raw:
         raise _http(400, "redirect_uri required")
-    parsed = urlparse(raw)
+    if (
+        not raw.isascii()
+        or "\\" in raw
+        or any(ord(ch) <= 0x20 or ord(ch) == 0x7F for ch in raw)
+    ):
+        raise _http(400, "native redirect_uri must use a canonical loopback URL")
+    try:
+        parsed = urlparse(raw)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        raise _http(400, "native redirect_uri must use a canonical loopback URL")
     if parsed.scheme != "http":
         raise _http(400, "native redirect_uri must be http:// on the loopback interface")
-    if (parsed.hostname or "").lower() not in ("127.0.0.1", "::1"):
+    if "#" in raw:
+        raise _http(400, "native redirect_uri must not contain a fragment")
+    if parsed.username is not None or parsed.password is not None:
+        raise _http(400, "native redirect_uri must not contain userinfo")
+    canonical_host = _LOOPBACK_NETLOC_HOSTS.get(hostname)
+    if canonical_host is None:
         raise _http(400, "native redirect_uri host must be a loopback IP literal (127.0.0.1 / ::1)")
-    return raw
+    canonical_netloc = canonical_host + (f":{port}" if port is not None else "")
+    if parsed.netloc != canonical_netloc:
+        raise _http(400, "native redirect_uri must use a canonical loopback authority")
+    # scheme/netloc are already canonical and fragments rejected; only an empty path needs "/".
+    return urlunparse(parsed._replace(path=parsed.path or "/"))
 
 
 def _select_native_provider(provider: str):
@@ -251,7 +306,7 @@ async def auth_native_authorize(
         raise _http(400, "code_challenge_method must be S256")
     if not code_challenge:
         raise _http(400, "code_challenge required")
-    _validate_loopback_redirect_uri(redirect_uri)
+    redirect_uri = _validate_loopback_redirect_uri(redirect_uri)
     p = _select_native_provider(provider)
     if p is None and not provider:
         candidates = list_session_providers()
@@ -264,7 +319,8 @@ async def auth_native_authorize(
                     authorize_path=f"{_prefix(request)}/auth/native/authorize",
                     code_challenge=code_challenge,
                     code_challenge_method=code_challenge_method,
-                    redirect_uri=redirect_uri, state=state),
+                    redirect_uri=redirect_uri, state=state,
+                    prefix=_prefix(request)),
                 headers=_NO_STORE)
     if p is None:
         raise _http(404, f"Unknown provider: {provider!r}")
@@ -291,7 +347,7 @@ async def auth_native_authorize(
 async def auth_callback(
     request: Request, code: str = "", state: str = "", error: str = "",
     error_description: str = ""):
-    pkce_raw = read_pkce_cookie(request)
+    pkce_raw = read_pkce_cookie(request, webapp_sign_in.cookie_gateway(request))
     if not pkce_raw:
         _audit(request, AuditEvent.LOGIN_FAILURE, reason="missing_pkce_cookie")
         raise _http(400, "Missing PKCE state cookie")
@@ -324,21 +380,34 @@ async def auth_callback(
     resp = RedirectResponse(url=target, status_code=302)
     if not native:
         _set_session(resp, request, session)
-    prefix = _prefix(request)
-    clear_pkce_cookie(resp, use_https=detect_https(request), prefix=prefix)
+    _clear_pkce(resp, request)
     # Clear the one-shot auto-SSO loop-guard so it never suppresses a future silent attempt.
-    clear_sso_attempt_cookie(resp, prefix=prefix)
+    clear_sso_attempt_cookie(resp, prefix=_prefix(request), gateway=webapp_sign_in.cookie_gateway(request))
     return resp
 
 
 # --- Public: password (non-redirect) login ---------------------------------
 # Brute-force throttle: a process-local sliding window per client IP. Best-effort
-# defence-in-depth on top of the provider's constant-time verify (resets on restart; behind a
-# proxy the IP is the proxy's unless X-Forwarded-For).
+# defence-in-depth on top of the provider's constant-time verify (resets on restart).
+# Uses the ASGI peer; trusted proxy normalization must happen upstream.
 _PW_RATE_MAX_ATTEMPTS = 10
 _PW_RATE_WINDOW_SEC = 60.0
-_pw_attempts: Dict[str, Deque[float]] = defaultdict(deque)
+_PW_RATE_MAX_BUCKETS = 4096
+_pw_attempts: OrderedDict[str, deque[float]] = OrderedDict()
 _pw_attempts_lock = threading.Lock()
+
+
+def _prune_password_rate_buckets_locked(cutoff: float) -> None:
+    """Drop expired/empty password-login limiter buckets.
+
+    Must be called with ``_pw_attempts_lock`` held.
+    """
+    for bucket_key in list(_pw_attempts.keys()):
+        bucket = _pw_attempts[bucket_key]
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if not bucket:
+            _pw_attempts.pop(bucket_key, None)
 
 
 def _password_rate_limited(ip: str) -> bool:
@@ -347,7 +416,19 @@ def _password_rate_limited(ip: str) -> bool:
     now = time.monotonic()
     cutoff = now - _PW_RATE_WINDOW_SEC
     with _pw_attempts_lock:
-        bucket = _pw_attempts[ip or "_unknown_"]
+        key = ip or "_unknown_"
+        max_buckets = max(1, int(_PW_RATE_MAX_BUCKETS))
+        if key not in _pw_attempts and len(_pw_attempts) >= max_buckets:
+            _prune_password_rate_buckets_locked(cutoff)
+        while key not in _pw_attempts and len(_pw_attempts) >= max_buckets:
+            _pw_attempts.popitem(last=False)
+
+        bucket = _pw_attempts.get(key)
+        if bucket is None:
+            bucket = deque()
+            _pw_attempts[key] = bucket
+        else:
+            _pw_attempts.move_to_end(key)
         while bucket and bucket[0] < cutoff:
             bucket.popleft()
         if len(bucket) >= _PW_RATE_MAX_ATTEMPTS:
@@ -363,7 +444,8 @@ def _reset_password_rate_limit() -> None:
 
 
 class _PasswordLoginBody(BaseModel):
-    provider: str
+    # Providers use short stable IDs, not display names or URLs.
+    provider: str = Field(max_length=128)
     username: str
     password: str
     next: str = ""
@@ -389,7 +471,7 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
     # The native broker handle also records WHICH provider the flow was started for. Enforce
     # equality BEFORE verifying credentials so a flow started for provider A cannot be completed
     # with provider B's credentials.
-    pkce_raw = read_pkce_cookie(request)
+    pkce_raw = read_pkce_cookie(request, webapp_sign_in.cookie_gateway(request))
     pkce_parts = parse_pkce_payload(pkce_raw) if pkce_raw else {}
     broker_state = pkce_parts.get("broker", "")
     if broker_state and pkce_parts.get("provider", "") != body.provider:
@@ -412,7 +494,7 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
         request, body.provider, session, broker_state=broker_state, next_raw=body.next)
     resp = JSONResponse({"ok": True, "next": target})
     if native:
-        clear_pkce_cookie(resp, use_https=detect_https(request), prefix=_prefix(request))
+        _clear_pkce(resp, request)
     else:
         _set_session(resp, request, session)
     return resp
@@ -420,20 +502,20 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
 
 @router.post("/auth/logout", name="auth_logout")
 async def auth_logout(request: Request):
-    _at, rt = read_session_cookies(request)
+    _at, rt = read_session_cookies(request, webapp_sign_in.cookie_gateway(request))
     # Best-effort revoke on every provider; failures logged, never raised.
     for provider in list_providers() if rt else ():
         try:
             provider.revoke_session(refresh_token=rt)
-        except Exception as e:  # noqa: BLE001 — best-effort
+        except Exception as e:
             _log.warning("dashboard-auth: revoke on %r failed: %s", provider.name, e)
     sess = getattr(request.state, "session", None)
     _audit(request, AuditEvent.LOGOUT, provider=(sess.provider if sess else "unknown"),
            user_id=(sess.user_id if sess else ""))
     prefix = _prefix(request)
     resp = RedirectResponse(url=f"{prefix}/login", status_code=302)
-    clear_session_cookies(resp, prefix=prefix)
-    clear_pkce_cookie(resp, use_https=detect_https(request), prefix=prefix)
+    clear_session_cookies(resp, prefix=prefix, gateway=webapp_sign_in.cookie_gateway(request))
+    _clear_pkce(resp, request)
     return resp
 
 
@@ -448,8 +530,31 @@ def _require_session(request: Request):
 
 @router.get("/api/auth/me", name="auth_me")
 async def api_auth_me(request: Request):
-    """Return the verified session as JSON. Auth-required (gate enforces)."""
-    sess = _require_session(request)
+    """Return the verified session as JSON.
+
+    Gated mode: the auth middleware attached a verified Session — return it.
+    Loopback mode (``auth_required`` False): there is no OAuth Session, but the
+    legacy ``_SESSION_TOKEN`` middleware has already validated the bearer
+    token for non-public ``/api/`` routes. Report the loopback identity
+    honestly instead of 401-ing (GH #66223). Belt-and-braces: re-verify the
+    token so the handler stays safe even if this route were ever allowlisted.
+    """
+    sess = getattr(request.state, "session", None)
+    if sess is None:
+        if getattr(request.app.state, "auth_required", False):
+            raise _http(401, "Unauthorized")
+        from hermes_cli.web_server import _has_valid_session_token
+
+        if not _has_valid_session_token(request):
+            raise _http(401, "Unauthorized")
+        return {
+            "user_id": "local",
+            "email": "",
+            "display_name": "Local",
+            "org_id": "",
+            "provider": "loopback",
+            "expires_at": 0,
+        }
     return {
         "user_id": sess.user_id, "email": sess.email, "display_name": sess.display_name,
         "org_id": sess.org_id, "provider": sess.provider, "expires_at": sess.expires_at}
@@ -461,7 +566,11 @@ async def api_auth_ws_ticket(request: Request):
     ``Authorization`` on the upgrade); one ticket per WS."""
     sess = _require_session(request)
     from hermes_cli.dashboard_auth.ws_tickets import TTL_SECONDS, mint_ticket
-    ticket = mint_ticket(user_id=sess.user_id, provider=sess.provider)
+    # On the gateway's Webapp the ticket carries the login's sign-in binding, so the socket it opens
+    # closes at sign-out (``hermes_cli.webapp_sign_in``).
+    signed_in = webapp_sign_in.sign_in_of(request)
+    ticket = mint_ticket(user_id=sess.user_id, provider=sess.provider, issuer=sess.issuer,
+                         extra={"sign_in": signed_in} if signed_in else None)
     _audit(request, AuditEvent.WS_TICKET_MINTED, provider=sess.provider, user_id=sess.user_id)
     return {"ticket": ticket, "ttl_seconds": TTL_SECONDS}
 
@@ -483,6 +592,7 @@ async def auth_native_token(request: Request, body: _NativeTokenBody):
     except native_flow.CodeInvalid:
         _audit(request, AuditEvent.NATIVE_TOKEN_FAILURE, reason="invalid_code_or_pkce")
         raise _http(400, "Invalid or expired authorization code.")
+    webapp_sign_in.gave_native_app(request, session)
     _audit(request, AuditEvent.NATIVE_TOKEN_SUCCESS, provider=session.provider,
            user_id=session.user_id)
     return _bearer_payload(session)
@@ -497,9 +607,15 @@ class _NativeRefreshBody(BaseModel):
 async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
     """Rotate a desktop-held refresh token (mirrors the gate's ``_attempt_refresh``): every
     provider rejecting the RT -> 401 ``session_expired`` (desktop re-logs); none rotated and one
-    unreachable -> 503."""
+    unreachable -> 503. On the gateway's Webapp behind the gate it renews only refresh tokens
+    this listener gave a native app's sign-in (``webapp_sign_in.token_works_alone``)."""
     if not body.refresh_token:
         raise _http(400, "refresh_token required")
+    if not webapp_sign_in.token_works_alone(request, body.refresh_token):
+        _audit(request, AuditEvent.REFRESH_FAILURE, reason="not_a_native_sign_in")
+        return JSONResponse(
+            {"error": "session_expired",
+             "detail": "Refresh token expired or invalid; start a new sign-in."}, status_code=401)
     try:
         # Off the event loop: the provider call is synchronous network I/O and a slow IdP
         # otherwise wedges every public endpoint (/api/status) behind it.
@@ -510,6 +626,7 @@ async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
         raise _http(503, f"Auth provider {str(e)!r} unreachable")
     if refreshed is not None:
         session = refreshed[0]
+        webapp_sign_in.gave_native_app(request, session)
         _audit(request, AuditEvent.REFRESH_SUCCESS, provider=session.provider,
                user_id=session.user_id)
         return _bearer_payload(session)

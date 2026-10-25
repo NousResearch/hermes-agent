@@ -23,4 +23,12 @@ describe('Webhook REST parity helpers', () => {
 
     expect(api).toHaveBeenCalledWith(expect.objectContaining({ method: 'DELETE', path: '/api/webhooks/my%20hook' }))
   })
+
+  it('routes an explicitly owned delete to that profile, not the ambient scope', async () => {
+    await deleteWebhook('my hook', 'coder')
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({ method: 'DELETE', path: '/api/webhooks/my%20hook', profile: 'coder' })
+    )
+  })
 })

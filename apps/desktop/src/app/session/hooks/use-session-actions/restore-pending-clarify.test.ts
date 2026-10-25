@@ -33,9 +33,7 @@ describe('restorePendingClarifyFromSnapshot', () => {
   it('hands back the card the request handler already parked for a replayed open clarify request', () => {
     $clarifyRequests.set({
       'sess-1': {
-        choices: null,
-        multiSelect: false,
-        question: 'Proceed?',
+        questions: [{ choices: null, multiSelect: false, qid: 'q0', question: 'Proceed?' }],
         receivedAt: resumeStartedAt + 5,
         requestId: 'rid1',
         sessionId: 'sess-1'
@@ -43,7 +41,9 @@ describe('restorePendingClarifyFromSnapshot', () => {
     })
 
     const state = restorePendingClarifyFromSnapshot(
-      { open_requests: [{ id: 'rid1', method: 'clarify', params: { question: 'Proceed?' } }] },
+      {
+        open_requests: [{ id: 'rid1', method: 'clarify', params: { questions: [{ qid: 'q0', question: 'Proceed?' }] } }]
+      },
       'sess-1',
       resumeStartedAt
     )
@@ -68,9 +68,7 @@ describe('restorePendingClarifyFromSnapshot', () => {
   it('clears a stale local request when the snapshot has none, and leaves a newer in-flight one', () => {
     $clarifyRequests.set({
       'sess-6': {
-        choices: null,
-        multiSelect: false,
-        question: 'Old',
+        questions: [{ choices: null, multiSelect: false, qid: 'q0', question: 'Old' }],
         receivedAt: resumeStartedAt - 10,
         requestId: 'old-rid',
         sessionId: 'sess-6'
@@ -85,9 +83,7 @@ describe('restorePendingClarifyFromSnapshot', () => {
 
     $clarifyRequests.set({
       'sess-6': {
-        choices: null,
-        multiSelect: false,
-        question: 'Newer',
+        questions: [{ choices: null, multiSelect: false, qid: 'q0', question: 'Newer' }],
         receivedAt: resumeStartedAt + 1,
         requestId: 'new-rid',
         sessionId: 'sess-6'
@@ -106,9 +102,6 @@ describe('pendingClarifyToolPayload', () => {
   it('mirrors the batch wire shape for in-place re-arm', () => {
     expect(
       pendingClarifyToolPayload({
-        choices: null,
-        multiSelect: false,
-        question: '',
         questions: [{ choices: ['Yes', 'No'], multiSelect: false, qid: 'q0', question: 'Proceed?' }],
         requestId: 'rid',
         sessionId: 'sess'

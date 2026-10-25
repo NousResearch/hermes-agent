@@ -1,27 +1,54 @@
-// Routes `navigator.clipboard.writeText` through Electron IPC, since the
-// renderer's clipboard API throws "Write permission denied" whenever the
-// document loses focus (e.g. clicking a portaled Radix dropdown). The IPC
-// path runs in the main process and is unconditional.
+import { isBrowserHostedDesktop } from '@/lib/platform'
 
-export function installClipboardShim() {
-  const ipc = window.hermesDesktop?.writeClipboard
+// Primitives and CopyButton enter one policy, never nested fallback retries.
+const nativeWrites = new WeakMap<Clipboard, Clipboard['writeText'] | undefined>()
 
-  if (!ipc || !navigator.clipboard) {
+// Electron writes through IPC first: the main process writes the clipboard even after the document
+// loses focus (a portaled Radix menu), where the renderer's clipboard API refuses with "Write
+// permission denied". The native API is the fallback. The browser-hosted Desktop has only the native
+// API; its bridge's writeClipboard calls that same API.
+export async function writeClipboardText(text: string) {
+  if (!text) {
     return
   }
 
-  const native = navigator.clipboard.writeText?.bind(navigator.clipboard)
+  const clipboard = navigator.clipboard
 
-  const writeText = async (text: string) => {
+  const native =
+    clipboard && (nativeWrites.has(clipboard) ? nativeWrites.get(clipboard) : clipboard.writeText?.bind(clipboard))
+
+  const ipc = isBrowserHostedDesktop() ? undefined : window.hermesDesktop?.writeClipboard
+
+  if (ipc) {
     try {
-      await ipc(text)
-    } catch {
-      await native?.(text)
+      if (await ipc(text)) {
+        return
+      }
+    } catch (error) {
+      if (!native) {
+        throw error
+      }
     }
   }
 
+  if (!native) {
+    throw new Error(ipc ? 'Clipboard write is unavailable' : 'Clipboard API is unavailable')
+  }
+
+  await native(text)
+}
+
+export function installClipboardShim() {
+  const clipboard = navigator.clipboard
+
+  if (!window.hermesDesktop?.writeClipboard || !clipboard || nativeWrites.has(clipboard)) {
+    return
+  }
+
+  nativeWrites.set(clipboard, clipboard.writeText?.bind(clipboard))
+
   try {
-    Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: writeText, writable: true })
+    Object.defineProperty(clipboard, 'writeText', { configurable: true, value: writeClipboardText, writable: true })
   } catch {
     // Browser refused override; primitives keep using the native API.
   }

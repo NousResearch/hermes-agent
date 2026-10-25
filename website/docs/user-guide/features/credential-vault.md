@@ -115,9 +115,13 @@ vault:
 With `keychain` and no reachable keychain (a headless Linux server, an SSH
 session without a desktop keyring), a new vault's key goes to `vault.key` as
 before, with a warning in the log. Each profile gets its own keychain entry,
-named in `~/.hermes/vault/vault.keyref` (which holds no secret). A cloned or
+named in `~/.hermes/vault/vault.keyref` (which holds no secret). A profile
+made with `hermes profile create --clone-all` gets an entry of its own while it
+is being created, so the original moving its key back to a file later cannot
+leave the copy without a key; if the keychain cannot be reached at that moment,
+the clone is refused with a message instead of sharing the original's entry. A
 renamed profile switches to an entry of its own the first time it opens its
-vault, and never deletes the entry it was copied from.
+vault, and never deletes the entry it came from.
 
 What changes in keychain mode:
 
@@ -174,7 +178,7 @@ against a compromised right one.
 |---|---|---|
 | Other users on this computer (not administrators) | Blocked: both files are `0600` | Blocked |
 | Someone with a backup, sync copy or image of `~/.hermes` | Can decrypt: key and vault travel together | Gets ciphertext only |
-| Someone with the powered-off disk and no full-disk encryption | Can decrypt | Needs your login keychain password |
+| Someone with the powered-off disk and no full-disk encryption | Can decrypt | Needs whatever protects that keychain (on macOS and Windows, your login password; a Linux keyring left unencrypted protects nothing) |
 | A program running as you, or a plugin running inside Hermes | Can decrypt | Can still ask the keychain, or call the vault code directly |
 | An administrator / root, or malware with your privileges | Can decrypt | Can decrypt |
 

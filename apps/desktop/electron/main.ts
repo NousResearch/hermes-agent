@@ -411,6 +411,7 @@ import {
 } from './oauth-rest-request'
 import { wireOauthSessionResponse } from './oauth-session-response'
 import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
+import { resolvePickerStartPath } from './path-picker'
 import {
   bundledPayload,
   installIdForRoot,
@@ -16486,18 +16487,17 @@ ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
 
   let resolvedDefaultPath
 
-  if (options?.defaultPath) {
-    try {
-      // On a Windows host with a WSL backend the cwd may be a POSIX/WSL path;
-      // bridge it to a UNC/drive form the native dialog can actually open.
-      const bridged = IS_WINDOWS
-        ? resolvePickerDefaultPath(String(options.defaultPath), undefined, options?.profile)
-        : String(options.defaultPath)
+  try {
+    const defaultPath = resolvePickerStartPath(options, () => app.getPath('downloads'))
 
-      resolvedDefaultPath = bridged ? path.resolve(bridged) : undefined
-    } catch {
-      resolvedDefaultPath = undefined
-    }
+    // Bridge a WSL cwd to a UNC/drive path the native Windows dialog can open.
+    const bridged = IS_WINDOWS
+      ? resolvePickerDefaultPath(defaultPath, undefined, options?.profile)
+      : defaultPath
+
+    resolvedDefaultPath = bridged ? path.resolve(bridged) : undefined
+  } catch {
+    resolvedDefaultPath = undefined
   }
 
   const result = await dialog.showOpenDialog(mainWindow, {

@@ -1393,6 +1393,22 @@ def test_opencode_go_model_derivation_beats_stale_persisted_api_mode(monkeypatch
     assert resolved["api_mode"] == "anthropic_messages"
 
 
+def test_opencode_go_new_key_uses_current_inference_default(monkeypatch):
+    """Regression for #140751: the API-key resolver must not retain the legacy Go relay."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "opencode-go", "default": "deepseek-v4.1-flash"},
+    )
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
+    monkeypatch.delenv("OPENCODE_GO_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-go")
+
+    assert resolved["base_url"] == "https://opencode.ai/inference/go/openai/v1"
+
+
 def test_opencode_go_resolution_heals_a_stale_zen_config_base_url(monkeypatch):
     """End-to-end for #112600: a ``model.base_url`` pinned to the Zen relay must follow the
     resolved provider family. The CLI inherits that pinned override across a switch, and the Zen

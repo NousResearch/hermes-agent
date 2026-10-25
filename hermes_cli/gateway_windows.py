@@ -654,8 +654,11 @@ def reconcile_autostart_launchers() -> tuple[list[str], list[str]]:
     The Scheduled Task and the Startup-folder entry are alternatives, but a successful task install
     never removed an earlier fallback and pre-#45610 installs left a ``cmd.exe`` launcher behind, so
     logon could fire the launcher twice (#80569). Task registered: remove the Startup entries. No
-    task but a legacy ``.cmd``: rewrite it as the console-less ``.vbs`` fallback. File operations
-    only (no schtasks mutation, no elevation), so install, update and doctor can all run it.
+    task but a legacy ``.cmd``: rewrite it as the console-less ``.vbs`` fallback. No task and only
+    the ``.vbs`` entry: rewrite it in place so an older UTF-8 chainer becomes UTF-16 (W13); in
+    practice only update reaches this, because doctor reconciles only when an entry is redundant.
+    File operations only (no schtasks mutation, no elevation), so install, update and doctor can
+    all run it.
     """
     if is_task_registered():
         return _remove_startup_entries()

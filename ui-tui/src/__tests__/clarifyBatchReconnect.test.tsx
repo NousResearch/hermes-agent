@@ -18,30 +18,56 @@ const { FakeWebSocket } = vi.hoisted(() => {
     sent: string[] = []
     private listeners = new Map<string, Array<(event: any) => void>>()
 
-    constructor(readonly url: string) { FakeWebSocket.instances.push(this) }
+    constructor(readonly url: string) {
+      FakeWebSocket.instances.push(this)
+    }
 
-    addEventListener(type: string, callback: (event: any) => void) { this.listeners.set(type, [...(this.listeners.get(type) ?? []), callback]) }
+    addEventListener(type: string, callback: (event: any) => void) {
+      this.listeners.set(type, [...(this.listeners.get(type) ?? []), callback])
+    }
 
     removeEventListener() {}
 
     send(payload: string) {
-      if (this.readyState !== FakeWebSocket.OPEN) { throw new Error('socket not open') }
+      if (this.readyState !== FakeWebSocket.OPEN) {
+        throw new Error('socket not open')
+      }
       this.sent.push(payload)
       const frame = JSON.parse(payload)
 
       if (frame.method && frame.id !== undefined && FakeWebSocket.serve) {
         const result = FakeWebSocket.serve(frame)
-        setTimeout(() => this.readyState === FakeWebSocket.OPEN && this.message(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result })), 0)
+        setTimeout(
+          () =>
+            this.readyState === FakeWebSocket.OPEN &&
+            this.message(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result })),
+          0
+        )
       }
     }
 
-    close(code = 1000) { if (this.readyState === FakeWebSocket.CLOSED) { return } this.readyState = FakeWebSocket.CLOSED; this.emit('close', { code }) }
+    close(code = 1000) {
+      if (this.readyState === FakeWebSocket.CLOSED) {
+        return
+      }
+      this.readyState = FakeWebSocket.CLOSED
+      this.emit('close', { code })
+    }
 
-    open() { this.readyState = FakeWebSocket.OPEN; this.emit('open', {}) }
+    open() {
+      this.readyState = FakeWebSocket.OPEN
+      this.emit('open', {})
+    }
 
-    message(data: string) { this.emit('message', { data }) }
+    message(data: string) {
+      this.emit('message', { data })
+    }
 
-    private emit(type: string, event: any) { for (const callback of this.listeners.get(type) ?? []) { callback(event) } }
+    private emit(type: string, event: any) {
+      for (const callback of this.listeners.get(type) ?? []) {
+        callback(event)
+      }
+    }
   }
 
   return { FakeWebSocket }
@@ -59,14 +85,31 @@ import { useSessionLifecycle } from '../app/useSessionLifecycle.js'
 import { GatewayClient, RECONNECT_BASE_MS } from '../gatewayClient.js'
 
 const noop = () => {}
-const QUESTIONS = [{ qid: 'q0', question: 'Colour?', choices: ['red', 'blue'] }, { qid: 'q1', question: 'Size?', choices: ['S', 'L'] }]
+const QUESTIONS = [
+  { qid: 'q0', question: 'Colour?', choices: ['red', 'blue'] },
+  { qid: 'q1', question: 'Size?', choices: ['S', 'L'] }
+]
 const BATCH = { id: 'srq-batch1', method: 'clarify', params: { session_id: 'a', questions: QUESTIONS } }
 let subscriptions = 0
 
 const snapshot = (extra: Record<string, unknown> = {}) => ({
-  session_id: 'a', stored_session_id: 'a', subscription_id: `sub-${++subscriptions}`, running: true, authority_epoch: 1,
-  execution_generation: 4, replay_epoch: 'r1', last_sequence: 10, revision: 1, messages: [], message_count: 0, pending: [],
-  prompts: [], info: { model: 'test', tools: {}, skills: {} }, pending_connection: null, todo_state: null, ...extra
+  session_id: 'a',
+  stored_session_id: 'a',
+  subscription_id: `sub-${++subscriptions}`,
+  running: true,
+  authority_epoch: 1,
+  execution_generation: 4,
+  replay_epoch: 'r1',
+  last_sequence: 10,
+  revision: 1,
+  messages: [],
+  message_count: 0,
+  pending: [],
+  prompts: [],
+  info: { model: 'test', tools: {}, skills: {} },
+  pending_connection: null,
+  todo_state: null,
+  ...extra
 })
 
 let resumeReply: Record<string, unknown> = snapshot()
@@ -81,8 +124,13 @@ beforeEach(() => {
   ;(globalThis as { WebSocket?: unknown }).WebSocket = FakeWebSocket as unknown as typeof WebSocket
   FakeWebSocket.serve = frame =>
     frame.method === 'runtime.describe'
-      ? { session_create: { sources: ['tui'], parameters: ['source', 'request_id'] }, capabilities: ['clarify-batch-v1'] }
-      : frame.method === 'session.resume' ? resumeReply : {}
+      ? {
+          session_create: { sources: ['tui'], parameters: ['source', 'request_id'] },
+          capabilities: ['clarify-batch-v1']
+        }
+      : frame.method === 'session.resume'
+        ? resumeReply
+        : {}
 })
 
 afterEach(() => {
@@ -98,26 +146,53 @@ afterEach(() => {
   ;(globalThis as { WebSocket?: unknown }).WebSocket = originalWebSocket
 })
 
-const ticks = async () => { for (let i = 0; i < 40; i++) { await vi.advanceTimersByTimeAsync(1) } }
+const ticks = async () => {
+  for (let i = 0; i < 40; i++) {
+    await vi.advanceTimersByTimeAsync(1)
+  }
+}
 
 it('a reconnect keeps an open clarify batch on screen with its locked answer; a cancel held behind the snapshot still closes it', async () => {
   vi.useFakeTimers()
-  const gw = new GatewayClient(async () => ({ url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }))
+  const gw = new GatewayClient(async () => ({
+    url: 'ws://gateway.test/api/ws',
+    protocols: [],
+    instance_id: 'owner',
+    profile_id: 'fixture'
+  }))
   const recoverSidRef = { current: 'a' as null | string }
   let lifecycle!: ReturnType<typeof useSessionLifecycle>
 
-  gw.on('event', createGatewayEventHandler({
-    composer: { dequeue: () => undefined, queueEditRef: { current: null }, sendQueued: noop, setInput: noop },
-    gateway: { gw, rpc: async () => null },
-    session: { STARTUP_RESUME_ID: '', colsRef: { current: 80 }, newSession: noop, recoverSidRef, resetSession: noop,
-      resumeById: (id: string) => lifecycle.resumeById(id), setCatalog: noop },
-    submission: { submitRef: { current: noop } }, system: { bellOnComplete: false, sys: noop },
-    transcript: { appendMessage: noop, panel: noop, setHistoryItems: noop },
-    voice: { setProcessing: noop, setRecording: noop, setVoiceEnabled: noop }
-  } as any))
+  gw.on(
+    'event',
+    createGatewayEventHandler({
+      composer: { dequeue: () => undefined, queueEditRef: { current: null }, sendQueued: noop, setInput: noop },
+      gateway: { gw, rpc: async () => null },
+      session: {
+        STARTUP_RESUME_ID: '',
+        colsRef: { current: 80 },
+        newSession: noop,
+        recoverSidRef,
+        resetSession: noop,
+        resumeById: (id: string) => lifecycle.resumeById(id),
+        setCatalog: noop
+      },
+      submission: { submitRef: { current: noop } },
+      system: { bellOnComplete: false, sys: noop },
+      transcript: { appendMessage: noop, panel: noop, setHistoryItems: noop },
+      voice: { setProcessing: noop, setRecording: noop, setVoiceEnabled: noop }
+    } as any)
+  )
   // As useMainApp wires them: the request handler, and the exit handler of an attached socket.
-  const onServerRequest = createServerRequestHandler({ ringPromptBell: noop, setStatus: status => patchUiState({ status }) })
-  gw.on('request', request => { if (!onServerRequest(request)) { request.fail(-32601, 'unhandled') } })
+  const onServerRequest = createServerRequestHandler({
+    ringPromptBell: noop,
+    setStatus: status => patchUiState({ status })
+  })
+  gw.on('request', request => {
+    if (!onServerRequest(request)) {
+      request.fail(-32601, 'unhandled')
+    }
+  })
   gw.on('exit', () => {
     turnController.reset()
     recoverSidRef.current = getUiState().storedSid ?? getUiState().sid ?? recoverSidRef.current
@@ -125,18 +200,35 @@ it('a reconnect keeps an open clarify batch on screen with its locked answer; a 
   })
 
   function Harness() {
-    lifecycle = useSessionLifecycle({ colsRef: { current: 80 }, composerActions: { setComposerTokens: noop }, gw, rpc: async () => null,
-      scrollRef: { current: null }, panel: noop, sys: noop, setHistoryItems: noop, setLastUserMsg: noop, setSessionStartedAt: noop,
-      setStickyPrompt: noop, setVoiceProcessing: noop, setVoiceRecording: noop } as any)
+    lifecycle = useSessionLifecycle({
+      colsRef: { current: 80 },
+      composerActions: { setComposerTokens: noop },
+      gw,
+      rpc: async () => null,
+      scrollRef: { current: null },
+      panel: noop,
+      sys: noop,
+      setHistoryItems: noop,
+      setLastUserMsg: noop,
+      setSessionStartedAt: noop,
+      setStickyPrompt: noop,
+      setVoiceProcessing: noop,
+      setVoiceRecording: noop
+    } as any)
 
     return <Text>session</Text>
   }
 
-  const instance = renderSync(<Harness />, { stdin: new PassThrough() as any,
-    stdout: Object.assign(new PassThrough(), { columns: 80, rows: 20, isTTY: false }) as any, stderr: new PassThrough() as any, patchConsole: false })
+  const instance = renderSync(<Harness />, {
+    stdin: new PassThrough() as any,
+    stdout: Object.assign(new PassThrough(), { columns: 80, rows: 20, isTTY: false }) as any,
+    stderr: new PassThrough() as any,
+    patchConsole: false
+  })
 
   try {
-    gw.start(); gw.drain()
+    gw.start()
+    gw.drain()
     await vi.advanceTimersByTimeAsync(0)
     FakeWebSocket.instances.at(-1)!.open()
     await ticks()
@@ -161,11 +253,28 @@ it('a reconnect keeps an open clarify batch on screen with its locked answer; a 
     // snapshot's fence) beats the resume reply, is held, and must still close the restored form.
     lifecycle.resumeById('a')
     await vi.advanceTimersByTimeAsync(0)
-    FakeWebSocket.instances.at(-1)!.message(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'request.cancel',
-      session_id: 'a', replay_epoch: 'r1', seq: 11, authority_epoch: 1, execution_generation: 4,
-      payload: { id: 'srq-batch1', method: 'clarify', reason: 'resolved' } } }))
+    FakeWebSocket.instances
+      .at(-1)!
+      .message(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'event',
+          params: {
+            type: 'request.cancel',
+            session_id: 'a',
+            replay_epoch: 'r1',
+            seq: 11,
+            authority_epoch: 1,
+            execution_generation: 4,
+            payload: { id: 'srq-batch1', method: 'clarify', reason: 'resolved' }
+          }
+        })
+      )
     await ticks()
     expect($overlayState.get().clarify).toBeNull()
     expect(hasOpenServerRequest('srq-batch1')).toBe(false)
-  } finally { instance.unmount(); gw.kill() }
+  } finally {
+    instance.unmount()
+    gw.kill()
+  }
 })

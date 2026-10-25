@@ -116,12 +116,14 @@ describe('terminal drop in the browser-hosted Desktop', () => {
   })
 
   it("quotes staged paths for the terminal's own shell", async () => {
-    browserBridge(async () => 'C:\\Users\\me\\.hermes\\uploads\\it\'s.txt')
+    browserBridge(async () => "C:\\Users\\me\\.hermes\\uploads\\it's.txt")
     const { host, unbind, write } = bind('powershell.exe')
 
     drop(host, transfer([file("it's.txt")]))
 
-    await vi.waitFor(() => expect(write).toHaveBeenCalledWith('term-1', "'C:\\Users\\me\\.hermes\\uploads\\it''s.txt' "))
+    await vi.waitFor(() =>
+      expect(write).toHaveBeenCalledWith('term-1', "'C:\\Users\\me\\.hermes\\uploads\\it''s.txt' ")
+    )
     unbind()
   })
 
@@ -206,7 +208,10 @@ describe('terminal drop never types keystrokes', () => {
   it('skips an app file-tree path holding control characters and names it in a warning', () => {
     const { host, unbind, write } = bind('bash')
 
-    drop(host, transfer([], ['/work/drop/notes\x15touch PWNED\r.txt', '/work/drop/ok.txt', '/work/c1\x9b.md', '/work/del\x7f']))
+    drop(
+      host,
+      transfer([], ['/work/drop/notes\x15touch PWNED\r.txt', '/work/drop/ok.txt', '/work/c1\x9b.md', '/work/del\x7f'])
+    )
 
     expect(typedText(write)).not.toMatch(CONTROL_CHARACTER)
     expect(typedText(write)).toBe("'/work/drop/ok.txt' ")

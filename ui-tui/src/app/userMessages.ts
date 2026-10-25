@@ -139,7 +139,10 @@ const RPC_ERROR_ROWS: RpcErrorRow[] = [
   [(_code, text) => text === 'session_read_only', () => t('userMessages.rpc.sessionReadOnly')],
   [(_code, text) => text === 'session_has_children', () => t('userMessages.rpc.sessionHasChildren')],
   [(_code, text) => NOT_CONNECTED_RE.test(text), () => t('userMessages.rpc.notConnected')],
-  [(_code, text) => text.trim() === 'launch_credentials_unavailable', () => t('userMessages.rpc.launchCredentialsChanged')],
+  [
+    (_code, text) => text.trim() === 'launch_credentials_unavailable',
+    () => t('userMessages.rpc.launchCredentialsChanged')
+  ],
   [(_code, text) => TIMED_OUT_RE.exec(text), m => t('userMessages.rpc.timedOut', m?.[1] ?? '?')]
 ]
 
@@ -193,7 +196,9 @@ export const describeShellExecError = (err: unknown): string => {
     const backend = typeof data.detail === 'string' ? data.detail.trim() : ''
 
     // An older gateway names no backend: say so without a backend-shaped sentence.
-    return backend ? t('userMessages.rpc.shellBackendRefused', backend) : t('userMessages.rpc.shellBackendRefusedUnnamed')
+    return backend
+      ? t('userMessages.rpc.shellBackendRefused', backend)
+      : t('userMessages.rpc.shellBackendRefusedUnnamed')
   }
 
   return describeRpcError(err)

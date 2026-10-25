@@ -3,7 +3,12 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { installBrowserDesktopBridge } from '@/lib/browser-desktop-bridge'
 import { $desktopBoot } from '@/store/boot'
-import { closeSecondaryGateways, isActivePrimary, requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
+import {
+  closeSecondaryGateways,
+  isActivePrimary,
+  requestGatewayForAgent,
+  requestGatewayForProfile
+} from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $gatewayState } from '@/store/session'
 import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
@@ -174,7 +179,10 @@ it('a bare tab on a gateway launched as a named profile names default when it as
 })
 
 it('a bare tab opens on the saved default the same way, and records it in its address as a switch does', async () => {
-  window.localStorage.setItem('hermes:webapp:default-profile:/', JSON.stringify({ connectionId: 'local', profile: 'research' }))
+  window.localStorage.setItem(
+    'hermes:webapp:default-profile:/',
+    JSON.stringify({ connectionId: 'local', profile: 'research' })
+  )
   await bootWebappTab('/#/')
 
   expect($activeGatewayProfile.get()).toBe('research')

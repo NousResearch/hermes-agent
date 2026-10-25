@@ -3,11 +3,13 @@ import os
 import subprocess
 
 import hermes_yaml as yaml
+import pytest
 
 from hermes_cli import plugins_activation, plugins_cmd
-from tests.pm.test_plugin_survival_contract import admission_env
+from tests.pm.test_plugin_survival_contract import _uv_available, admission_env
 
 
+@pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
 def test_yes_at_the_enable_prompt_activates_the_plugin_in_running_processes(admission_env, monkeypatch):  # health: allow F811 -- pytest injects the imported admission_env fixture by parameter name
     """A "y" at "Enable now?" enables the plugin AND nudges the running gateway / Desktop backend
     (report_activation), exactly like ``--enable``. Without the nudge a gateway started before the

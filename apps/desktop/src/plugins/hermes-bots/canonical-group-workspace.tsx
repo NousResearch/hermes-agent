@@ -286,7 +286,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   }
 
   const send = () => {
-    if (!restored || busyRef.current || uploading || !state?.driver_status || (!pending && !draft.trim() && !attachments.length)) {return}
+    // A Stop still fencing behind the last Send would cancel this one too: it waits until Stop is done.
+    if (!restored || busyRef.current || stopPending.current || uploading || !state?.driver_status || (!pending && !draft.trim() && !attachments.length)) {return}
     setSendHint('')
     setNotice('')
     let settle!: (mayHavePosted: boolean) => void
@@ -400,7 +401,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
         onChange={setAttachments} onUploadingChange={setUploading} ref={uploader} uploads={offersGroupMethod(methods, 'groups.attachment.upload')} />
       <GroupMentionInput aria-label={labels.groupMessage} className="min-w-0 flex-1" disabled={composerLocked} handleFor={member => member.handle}
         members={mentionMembers} onChange={setDraft} onSubmitDraft={send} value={draft} />
-      <Button disabled={!restored || busy || uploading || (!pending && !draft.trim() && !attachments.length) || !state?.driver_status} type="submit">{pending ? labels.retry : labels.send}</Button>
+      <Button disabled={!restored || busy || stopping || uploading || (!pending && !draft.trim() && !attachments.length) || !state?.driver_status} type="submit">{pending ? labels.retry : labels.send}</Button>
     </form>
   </section>
 }

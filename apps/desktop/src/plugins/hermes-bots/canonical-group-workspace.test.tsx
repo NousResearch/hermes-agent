@@ -632,6 +632,52 @@ it('keeps one cancellation intent until Stop is confirmed, and fences again behi
   expect(new Set(cancelIds.slice(1)).size).toBe(3)
 })
 
+it('holds the next Send until a Stop still fencing behind the last one has finished', async () => {
+  let deliver!: (value: unknown) => void
+  let releaseFirstStop!: () => void
+  let stops = 0
+  request.mockImplementation(async (_route, method, params) => {
+    if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: { working: true } }}
+
+    if (method === 'groups.log') {return { events: [] }}
+
+    if (method === 'groups.send') {return params.payload.text === 'A' ? new Promise(resolve => { deliver = resolve }) : receipt(params)}
+
+    if (method === 'groups.stop') {
+      stops += 1
+
+      return stops === 1 ? new Promise(resolve => { releaseFirstStop = () => resolve({ cancelled: 1 }) }) : { cancelled: 0 }
+    }
+
+    return params
+  })
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'stop-then-send' }} />)
+  const box = screen.getByRole('textbox') as HTMLTextAreaElement
+  await waitFor(() => expect(box.disabled).toBe(false))
+  fireEvent.change(box, { target: { value: 'A' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.send')).toBe(true))
+  fireEvent.click(screen.getByRole('button', { name: 'Stop' }))
+  await waitFor(() => expect(stops).toBe(1))
+  await act(async () => deliver(receipt(request.mock.calls.find(call => call[1] === 'groups.send')![2])))
+  await waitFor(() => expect(box.value).toBe(''))
+  fireEvent.change(box, { target: { value: 'B' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)) })
+
+  const order = () => request.mock.calls.filter(call => call[1] === 'groups.send' || call[1] === 'groups.stop')
+    .map(call => call[1] === 'groups.send' ? `send:${call[2].payload.text}` : 'stop')
+
+  // While Stop still has to fence behind A, B does not leave: that fence would cancel it.
+  expect(order()).toEqual(['send:A', 'stop'])
+  await act(async () => releaseFirstStop())
+  await screen.findByText('Stop requested')
+  expect(order()).toEqual(['send:A', 'stop', 'stop'])
+  expect(box.value).toBe('B')
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(request.mock.calls.filter(call => call[1] === 'groups.send')).toHaveLength(2))
+})
+
 // Send outcomes. Seams: `host.requestProfile` is the gateway transport; `window.hermesDesktop.preparedSubmissions`
 // is the native journal's IPC (an in-memory compare-and-set owner here), or absent for the browser-storage
 // journal. A refusal carries `admitted: false` only when the gateway refused before the user event committed

@@ -44,6 +44,38 @@ describe('resolvePtyKeyboardShortcut', () => {
       resolvePtyKeyboardShortcut(key({ ctrlKey: true, key: 'Delete' }), false, false),
     ).toBe('delete-word-forward')
   })
+
+  describe('modified Return → insert-newline', () => {
+    it('maps Shift+Enter to an explicit newline', () => {
+      expect(
+        resolvePtyKeyboardShortcut(key({ shiftKey: true, key: 'Enter' }), false, false),
+      ).toBe('insert-newline')
+    })
+
+    it('maps Ctrl+Enter to an explicit newline', () => {
+      expect(
+        resolvePtyKeyboardShortcut(key({ ctrlKey: true, key: 'Enter' }), false, false),
+      ).toBe('insert-newline')
+    })
+
+    it('maps Ctrl+J (bare LF in the browser) to an explicit newline', () => {
+      expect(
+        resolvePtyKeyboardShortcut(key({ ctrlKey: true, key: 'j' }), false, false),
+      ).toBe('insert-newline')
+    })
+
+    it('leaves a bare Enter alone so it still submits', () => {
+      expect(
+        resolvePtyKeyboardShortcut(key({ key: 'Enter' }), false, false),
+      ).toBe('pass')
+    })
+
+    it('leaves Alt+Enter to xterm, which already sends ESC CR', () => {
+      expect(
+        resolvePtyKeyboardShortcut(key({ altKey: true, key: 'Enter' }), false, false),
+      ).toBe('pass')
+    })
+  })
 })
 
 describe('sendPtyShortcutSequence', () => {

@@ -34,7 +34,12 @@ def _dashboard_public_hosts() -> frozenset[str]:
     """
     from hermes_cli.dashboard_auth.prefix import resolve_public_url
 
-    public_url = resolve_public_url()
+    return public_url_hosts(resolve_public_url())
+
+
+def public_url_hosts(public_url: str) -> frozenset[str]:
+    """The exact hostname *public_url* declares, as the trusted public host set; empty when unset or
+    malformed."""
     try:
         hostname = urllib.parse.urlparse(public_url).hostname if public_url else None
     except ValueError:

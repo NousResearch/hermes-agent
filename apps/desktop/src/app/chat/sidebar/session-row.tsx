@@ -117,6 +117,7 @@ function disarmMarquee(event: React.PointerEvent<HTMLElement>) {
 // absolute over this space, so it has to stop taking clicks too, not just fade.
 const TAIL_HIDES = 'session-row-tail min-w-5 transition-opacity group-hover:opacity-0'
 const KEBAB_YIELDS = 'session-row-kebab'
+const sessionActionScope = (session: SessionInfo) => ({ profile: session.profile, session, sessionId: session.id })
 
 function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
   const { unit, value } = coarseElapsed(Date.now() - seconds * 1000)
@@ -334,9 +335,7 @@ function SidebarSessionRowImpl({
         onPin={onPin}
         onToggleUnread={onToggleUnread}
         pinned={isPinned}
-        profile={session.profile}
-        session={session}
-        sessionId={session.id}
+        {...sessionActionScope(session)}
         title={title}
         unread={unread}
       >
@@ -365,9 +364,7 @@ function SidebarSessionRowImpl({
       onPin={onPin}
       onToggleUnread={onToggleUnread}
       pinned={isPinned}
-      profile={session.profile}
-      session={session}
-      sessionId={session.id}
+      {...sessionActionScope(session)}
       title={title}
       unread={unread}
     >

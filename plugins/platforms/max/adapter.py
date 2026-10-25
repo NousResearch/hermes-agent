@@ -59,6 +59,17 @@ def _server_url(extra: dict[str, Any]) -> str:
     return _extra_or_secret(extra, "server", "MAX_SERVER_URL", DEFAULT_SERVER).rstrip("/")
 
 
+def _ssl_verify() -> Any:
+    """MAX's platform-api2.max.ru chains to the Russian Ministry of Digital Development's
+    (Минцифры) own root CA, which standard trust stores (incl. certifi) don't carry. A merged
+    bundle (certifi + Russian Trusted Root/Sub CA) at ``~/.hermes/certs/ru_trusted_ca_bundle.pem``
+    is used when present; falls back to httpx's default verification otherwise (connect will then
+    fail with CERTIFICATE_VERIFY_FAILED until that bundle is installed — see plugin.yaml note)."""
+    import os
+    bundle = os.path.expanduser("~/.hermes/certs/ru_trusted_ca_bundle.pem")
+    return bundle if os.path.isfile(bundle) else True
+
+
 def check_requirements() -> bool:
     """Installable and minimally configured (reads MAX_BOT_TOKEN directly — no full config load)."""
     return HTTPX_AVAILABLE and bool(_get_scoped_secret("MAX_BOT_TOKEN", "").strip())
@@ -101,7 +112,8 @@ class MaxAdapter(BasePlatformAdapter):
             return False
         try:
             self._http_client = httpx.AsyncClient(
-                base_url=self._server, headers={"Authorization": self._token}, timeout=None)
+                base_url=self._server, headers={"Authorization": self._token}, timeout=None,
+                verify=_ssl_verify())
             self._poll_task = asyncio.create_task(self._run_poll())
             self._mark_connected()
             logger.info("[%s] Connected — long-polling %s/updates", self.name, self._server)
@@ -293,7 +305,9 @@ async def _standalone_send(
         return send_error("MAX standalone send: no destination chat_id/user_id configured")
     text = message[:MAX_MESSAGE_LENGTH]
     try:
-        async with httpx.AsyncClient(base_url=server, headers={"Authorization": token}, timeout=15.0) as client:
+        async with httpx.AsyncClient(
+            base_url=server, headers={"Authorization": token}, timeout=15.0, verify=_ssl_verify(),
+        ) as client:
             resp = await client.post("/messages", params={"user_id": target}, json={"text": text, "notify": True})
         if resp.status_code >= 300:
             return send_error(f"MAX HTTP {resp.status_code}: {resp.text[:200]}")

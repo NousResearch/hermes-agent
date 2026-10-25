@@ -36,6 +36,7 @@ def db(tmp_path):
         ("assistant", False, "stop", SESSION_STATUS_COMPLETE),
         ("assistant", False, None, SESSION_STATUS_COMPLETE),
         ("assistant", False, "length", SESSION_STATUS_COMPLETE),
+        ("assistant", False, "interrupted", SESSION_STATUS_INTERRUPTED),
         ("assistant", True, "tool_calls", SESSION_STATUS_INTERRUPTED),
         ("user", False, None, SESSION_STATUS_INTERRUPTED),
         ("tool", False, None, SESSION_STATUS_INTERRUPTED),

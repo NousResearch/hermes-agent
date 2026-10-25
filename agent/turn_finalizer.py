@@ -227,14 +227,45 @@ def _recover_final_from_stream(agent, final_response, interrupted, failed) -> tu
     delivered text; recover before persist so a blank tail isn't frozen (#95514).
     Returns ``(final_response, recovered_from_stream)``. Called by the finalizer BEFORE
     the fallible tail-shaping/persist steps so the recovered text is already bound when
-    one of them raises — a persist failure must not lose text the user already saw."""
-    if interrupted or failed:
+    one of them raises — a persist failure must not lose text the user already saw.
+
+    Interrupted turns also own visible text already emitted to the client.  Recover that
+    text for the transcript, but never turn a failed run or a runaway repetition into a
+    resumable assistant reply."""
+    if failed:
+        return final_response, False
+    _final_text = flatten_message_text(final_response).strip() if final_response else ""
+    if interrupted and _final_text:
         return final_response, False
     _streamed = getattr(agent, "_current_streamed_assistant_text", "") or ""
+    if interrupted and isinstance(_streamed, str):
+        _strip_think_blocks = getattr(agent, "_strip_think_blocks", None)
+        if callable(_strip_think_blocks):
+            _streamed = _strip_think_blocks(_streamed)
     _streamed = _streamed.strip() if isinstance(_streamed, str) else ""
+    if interrupted:
+        if not _streamed:
+            return final_response, False
+        from agent.repetition_guard import is_runaway_repetition
+        if is_runaway_repetition(_streamed):
+            return final_response, False
+        return _streamed, True
     if not (flatten_message_text(final_response).strip() if final_response else "") and _streamed:
         return _streamed, True
     return final_response, False
+
+
+def _current_turn_already_has_assistant_text(messages, text: str) -> bool:
+    """Whether the newest assistant row after the newest user row already owns ``text``."""
+    for message in reversed(messages):
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role == "user":
+            return False
+        if role == "assistant":
+            return flatten_message_text(message.get("content")).strip() == text
+    return False
 
 
 def _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream) -> None:
@@ -244,7 +275,33 @@ def _close_transcript_tail(agent, messages, final_response, interrupted, _recove
     # providers don't see ``tool → user`` (placeholder: final_response is usually empty).
     if interrupted:
         from agent.message_sanitization import close_interrupted_tool_sequence
-        close_interrupted_tool_sequence(messages, final_response)
+        _already_materialized = _recovered_from_stream and _current_turn_already_has_assistant_text(
+            messages, final_response,
+        )
+        close_interrupted_tool_sequence(
+            messages, None if _already_materialized else final_response,
+        )
+
+        # A client disconnect can request the interrupt outside ``handle_api_interrupt``.
+        # In that path the emitted text exists only in the stream buffer, so materialize
+        # the same durable assistant row the in-call interrupt path writes.  This keeps
+        # state.db authoritative for refresh, resume, export, and cross-client reads.
+        if _recovered_from_stream and not _already_materialized:
+            _tail = messages[-1] if messages else None
+            if not isinstance(_tail, dict) or _tail.get("role") != "assistant":
+                _tail = append_message(messages, {
+                    "role": "assistant", "content": final_response,
+                })
+            elif _assistant_row_missing_visible_text(_tail) and not _tail.get("tool_calls"):
+                _tail["content"] = final_response
+                stamp_message_timestamp(_tail)
+            if flatten_message_text(_tail.get("content")).strip() == final_response:
+                _display_metadata = _tail.get("display_metadata")
+                _tail["finish_reason"] = "interrupted"
+                _tail["display_metadata"] = {
+                    **(_display_metadata if isinstance(_display_metadata, dict) else {}),
+                    "interrupted": True,
+                }
 
     # Recovery ``break`` sites can return a final_response with no closing assistant
     # row; enforce "delivered final_response ⇒ assistant row" here. Compare content,

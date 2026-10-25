@@ -24,6 +24,7 @@ from hermes_cli.stale_modules import drop_stale_root_modules
 drop_stale_root_modules()
 
 from utils import fast_safe_load, file_signature
+from hermes_cli.config_read_errors import _yaml_error_location
 
 logger = logging.getLogger(__name__)
 
@@ -89,11 +90,21 @@ def _cached_read(path: Path, cache: dict[str, tuple], parse):
         logger.warning(
             "managed scope: failed to parse %s: %s — IGNORING this managed file. "
             "Admin policy from this file is NOT being applied. Fix and restart.",
-            path, exc)
+            path, _describe_parse_error(exc))
         return None
     with _CACHE_LOCK:
         cache[path_key] = (*key, copy.deepcopy(parsed))
     return parsed
+
+
+def _describe_parse_error(exc: Exception) -> str:
+    """Error class and line, never the text: YAML errors quote the offending source line and
+    values (duplicate keys, ``!!int``/``!!timestamp`` scalars), and managed files hold org secrets.
+    ``OSError`` messages are kept as is: they name the path and errno, not file contents."""
+    if isinstance(exc, OSError):
+        return str(exc)
+    where = _yaml_error_location(exc)
+    return f"{type(exc).__name__} at {where}" if where else type(exc).__name__
 
 
 def _load_managed_file(name: str, cache: dict[str, tuple], parse) -> dict:

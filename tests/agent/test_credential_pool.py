@@ -2131,6 +2131,50 @@ def test_live_pool_flush_does_not_resurrect_a_cooldown_reset_by_another_process(
     assert _disk_entry(tmp_path)["last_status"] != "exhausted"
 
 
+def test_expired_cooldown_clear_reaches_an_already_running_pool(tmp_path, monkeypatch):
+    """An automatic expiry clear is authoritative across live processes (#119195).
+
+    Process A keeps a recent exhausted snapshot in memory. The persisted row is then
+    observed as expired by process B, which clears it through normal selection. That
+    automatic recovery must publish the same cross-process clear marker as an explicit
+    ``hermes auth reset``; otherwise A keeps refusing the credential until restart.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _exhausted_billing_store(tmp_path, age_seconds=5)
+    auth_path = tmp_path / "hermes" / "auth.json"
+    store = json.loads(auth_path.read_text())
+    disk_entry = store["credential_pool"]["deepseek"][0]
+    disk_entry["last_error_code"] = 429
+    disk_entry["failure_reason"] = "rate_limit"
+    disk_entry["last_error_message"] = "provider rate limit"
+    auth_path.write_text(json.dumps(store))
+
+    from agent.credential_pool import load_pool
+
+    live = load_pool("deepseek")
+    assert live.has_available() is False
+
+    # Simulate another process seeing an older persisted cooldown while this long-lived
+    # process still owns its original, more recent in-memory snapshot.
+    store = json.loads(auth_path.read_text())
+    disk_entry = store["credential_pool"]["deepseek"][0]
+    disk_entry["last_status_at"] = time.time() - 120
+    disk_entry["last_error_reset_at"] = None
+    auth_path.write_text(json.dumps(store))
+
+    fresh = load_pool("deepseek")
+    assert fresh.select() is not None
+
+    recovered = _disk_entry(tmp_path)
+    assert recovered["last_status"] == "ok"
+    assert recovered["last_status_at"] is None
+    assert recovered.get("failure_reason") is None
+    assert recovered.get("status_cleared_at")
+
+    # The already-running pool must observe that authoritative clear without a restart.
+    assert live.select() is not None
+
+
 def test_an_exhaustion_newer_than_the_reset_still_binds(tmp_path, monkeypatch):
     """The reset marker is sticky, so it must only outrank OLDER statuses.
 

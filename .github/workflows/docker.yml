@@ -229,8 +229,12 @@ jobs:
           load: true
           platforms: ${{ matrix.platform }}
           tags: ${{ env.IMAGE_NAME }}:test
+          # Candidate dispatches, PR merge refs and tags have no known source branch.
           build-args: |
             HERMES_BOT_DESKTOP=${{ matrix.variant == 'desktop' && '1' || '0' }}
+            HERMES_GIT_SHA=${{ env.CANDIDATE_COMMIT }}
+            BUILD_SOURCE_BRANCH=${{ !inputs.commit && github.event_name != 'pull_request' && github.ref_type == 'branch' && github.ref_name || '' }}
+            BUILD_SOURCE_DIRTY=false
           # Slim owns the scope; desktop adds the gated apt layer, so it reads
           # and writes nothing — a mode=max scope could exceed the cache cap.
           cache-from: type=gha,scope=docker-${{ matrix.arch }}
@@ -411,6 +415,9 @@ jobs:
           platforms: ${{ matrix.platform }}
           build-args: |
             HERMES_BOT_DESKTOP=${{ matrix.variant == 'desktop' && '1' || '0' }}
+            HERMES_GIT_SHA=${{ env.CANDIDATE_COMMIT }}
+            BUILD_SOURCE_BRANCH=${{ !inputs.commit && github.ref_type == 'branch' && github.ref_name || '' }}
+            BUILD_SOURCE_DIRTY=false
           labels: |
             org.opencontainers.image.revision=${{ env.CANDIDATE_COMMIT }}
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true

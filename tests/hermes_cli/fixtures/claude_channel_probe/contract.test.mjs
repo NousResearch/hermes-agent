@@ -7,6 +7,7 @@ import test from "node:test";
 import { spawnSync } from "node:child_process";
 
 import {
+  assertDisposableDirectory,
   assertLockedDependencies,
   assertSubscriptionAuth,
   closeChannelResources,
@@ -86,6 +87,19 @@ test("lockfile pins SDK integrity and every transitive", () => {
   assert.throws(() => assertLockedDependencies(tampered), /integrity mismatch/);
 });
 
+test("dependency preparation accepts only an owned private temporary non-repository", () => {
+  const privateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "esn0407-location-test-"));
+  fs.chmodSync(privateDirectory, 0o700);
+  assert.equal(assertDisposableDirectory(privateDirectory), fs.realpathSync(privateDirectory));
+  fs.chmodSync(privateDirectory, 0o755);
+  assert.throws(() => assertDisposableDirectory(privateDirectory), /private mode 0700/);
+  fs.chmodSync(privateDirectory, 0o700);
+  fs.mkdirSync(path.join(privateDirectory, ".git"));
+  assert.throws(() => assertDisposableDirectory(privateDirectory), /Git repository/);
+  assert.throws(() => assertDisposableDirectory(new URL(".", import.meta.url).pathname), /temporary directory/);
+  fs.rmSync(privateDirectory, { recursive: true });
+});
+
 test("teardown destroys active clients, clears timers and removes the socket", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "esn0407-channel-test-"));
   fs.chmodSync(directory, 0o700);
@@ -146,6 +160,9 @@ node -e 'require("fs").writeFileSync(process.env.TEST_RECORD, JSON.stringify({ar
   assert.equal(observed.cwd, fs.realpathSync(work));
   assert.ok(observed.args.includes("--dangerously-load-development-channels"));
   assert.ok(observed.args.includes("--strict-mcp-config"));
+  const allowedIndex = observed.args.indexOf("--allowedTools");
+  assert.notEqual(allowedIndex, -1);
+  assert.equal(observed.args[allowedIndex + 1], "mcp__esn0407_channel__reply");
   assert.ok(observed.args.includes("--setting-sources"));
   assert.ok(observed.args.includes(""));
   fs.rmSync(directory, { recursive: true });

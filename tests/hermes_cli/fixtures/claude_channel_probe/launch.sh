@@ -31,6 +31,7 @@ exec claude --bg --restricted --permission-mode dontAsk \
   --mcp-config "$ESN0407_MCP_CONFIG" \
   --settings '{"crossSessionInbound":"refuse"}' \
   --tools mcp__esn0407_channel__reply \
+  --allowedTools mcp__esn0407_channel__reply \
   --disable-slash-commands --no-chrome \
   --dangerously-load-development-channels server:esn0407_channel \
   --name esn-0407-disposable-channel

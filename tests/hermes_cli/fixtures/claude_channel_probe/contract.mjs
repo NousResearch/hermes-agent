@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 export const MAX_ENVELOPE_BYTES = 4096;
 export const MAX_QUESTION_CHARS = 1024;
@@ -148,6 +150,29 @@ export function assertLockedDependencies(lock) {
       throw new Error(`unlocked transitive dependency: ${name}`);
     }
   }
+}
+
+export function assertDisposableDirectory(directory) {
+  const resolved = fs.realpathSync(directory);
+  const temporaryRoot = fs.realpathSync(os.tmpdir());
+  if (resolved === temporaryRoot || !resolved.startsWith(`${temporaryRoot}${path.sep}`)) {
+    throw new Error("fixture must run in a child of the OS temporary directory");
+  }
+  const stat = fs.statSync(resolved);
+  if (!stat.isDirectory() || (stat.mode & 0o077) !== 0) {
+    throw new Error("fixture directory must be private mode 0700");
+  }
+  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+    throw new Error("fixture directory must be owned by the current OS user");
+  }
+  for (let cursor = resolved; ; cursor = path.dirname(cursor)) {
+    if (fs.existsSync(path.join(cursor, ".git"))) {
+      throw new Error("fixture must not run inside a Git repository");
+    }
+    const parent = path.dirname(cursor);
+    if (parent === cursor) break;
+  }
+  return resolved;
 }
 
 export function unlinkOwnedSocket(socketPath) {

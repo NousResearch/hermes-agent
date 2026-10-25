@@ -40,7 +40,10 @@ Official references:
 
 After independent review passes:
 
-1. Copy this directory into a private temporary directory with mode `0700`.
+1. Copy this directory into a fresh child of the OS temporary directory, owned
+   by the current user and mode `0700`. Preparation refuses a directory outside
+   the OS temporary root, a directory inside a Git repository, or any directory
+   accessible by group or other users.
 2. Run `./prepare.sh`. It installs exactly the lockfile into that private copy
    with lifecycle scripts disabled. Do not run `npm install` or update the lock.
 3. Replace every placeholder in `mcp.json.template` from one authenticated
@@ -50,9 +53,11 @@ After independent review passes:
 4. Launch one background subscription-authenticated Claude session from an
    empty temporary working directory. `launch.sh` repeats the credential scrub
    and subscription-auth check immediately before `exec` so the Claude child
-   cannot fall back to an API or cloud-provider credential. Use only the reply
-   tool, refuse inbound cross-session messages, and load only the temporary MCP
-   config:
+   cannot fall back to an API or cloud-provider credential. It makes only
+   `mcp__esn0407_channel__reply` visible with `--tools` and explicitly permits
+   that exact tool with `--allowedTools`, so `dontAsk` cannot deny the required
+   first reply. It refuses inbound cross-session messages and loads only the
+   temporary MCP config:
 
 ```text
 ESN0407_MCP_CONFIG=/PRIVATE_TMP/mcp.json \

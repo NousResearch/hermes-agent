@@ -653,6 +653,22 @@ _SECURITY_HEADERS = {
 _FRAMEABLE_KEY = "frameable"
 _PAIRING_FORM_PATH_RE = re.compile(r"/api/browser-extension/pair/(?:grant|deny)/[^/]+$")
 _LOOPBACK_HOSTNAMES = frozenset({"127.0.0.1", "localhost", "::1"})
+_PAIRING_EMBED_CSS = (
+    ".embed .frame{grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr}"
+    ".embed .rail-statue,.embed .rail-bottom,.embed .rail-sub,.embed .pane-art,.embed .pane-foot,"
+    ".embed .rail-row:not(.rail-row-status){display:none}"
+    ".embed .rail-inner{min-height:0;flex-direction:row;flex-wrap:nowrap;justify-content:space-between;"
+    "align-items:center;gap:12px;padding:14px 18px}"
+    ".embed .rail-mid{margin:0;text-align:right}.embed .rail-row .rail-value{margin:0}"
+    ".embed .brand-chip{width:34px;height:42px}.embed .brand-text{font-size:24px}"
+    ".embed .pane{align-items:center;justify-content:center}"
+    ".embed .pane-inner{padding:22px 18px;max-width:none;text-align:center}"
+    ".embed .display{font-size:46px;margin-bottom:12px}"
+    ".embed .prompt,.embed .lede{font-size:14px;margin:0 auto 12px}"
+    ".embed .code{margin-bottom:18px;font-size:10px}"
+    ".embed .actions{justify-content:center;gap:12px}"
+    ".embed button{font-size:19px;padding:10px 24px 9px}"
+)
 _PAIRING_FORM_ORIGIN_REFUSAL = "Approve and Deny only work from the gateway's own approval page."
 
 if AIOHTTP_AVAILABLE:
@@ -2444,6 +2460,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             hostname = netloc.rsplit(":", 1)[0] if netloc.count(":") == 1 else netloc
         return hostname in _LOOPBACK_HOSTNAMES
 
+    @staticmethod
+    def _pairing_wants_embed(request: "web.Request", frame_origin: str) -> bool:
+        """The compact layout, for a page the asking extension frames (``?embed=1``)."""
+        return bool(frame_origin) and request.query.get("embed") == "1"
+
     def _is_pairing_form_post(self, request: "web.Request") -> bool:
         """True for a grant/deny POST that the gateway's own approval page submitted.
 
@@ -2491,7 +2512,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         }.get(path.suffix.lower(), "application/octet-stream")
         return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
 
-    def _pairing_page(self, title: str, message: str, body_extra: str = "", rail_rows=None) -> str:
+    def _pairing_page(
+        self, title: str, message: str, body_extra: str = "", rail_rows=None, embed: bool = False
+    ) -> str:
         """Nous Portal-branded pairing page (approve + status pages).
 
         Split layout in the portal's design language: cobalt rail with a white
@@ -2509,6 +2532,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         Gothic, Rules Variable) are licensed and not redistributed, so the
         page embeds the Rules Compressed file the web dashboard already ships
         in ``web/public/fonts/``.
+
+        ``embed`` is the compact layout for a page shown inside the extension's
+        own panel (a few hundred pixels wide and tall): a slim header band, no
+        figure, the prompt and buttons centred, nothing that needs scrolling.
         """
         import html
 
@@ -2661,8 +2688,17 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ".rail-row:not(.rail-row-status){display:none}.rail-inner{gap:12px 16px;padding:16px 20px}"
             ".pane-inner{padding-top:20px}}"
             "@media(prefers-reduced-motion:reduce){.dot{animation:none}}"
-            "</style></head>"
-            "<body><div class=\"frame\">"
+            # A scrollbar in the portal's colours, square like the extension's own;
+            # Firefox has no pseudo-elements, so it gets the thin standard one.
+            "::-webkit-scrollbar{width:8px;height:8px}"
+            "::-webkit-scrollbar-track{background:transparent}"
+            "::-webkit-scrollbar-thumb{background:rgba(5,5,232,.55);border:1px solid #0505e8}"
+            "@supports not selector(::-webkit-scrollbar){html{scrollbar-width:thin;"
+            "scrollbar-color:rgba(5,5,232,.55) transparent}}"
+            + (_PAIRING_EMBED_CSS if embed else "")
+            + "</style></head>"
+            + ("<body class=\"embed\">" if embed else "<body>")
+            + "<div class=\"frame\">"
             "<aside class=\"rail\">"
             + rail_statue_html
             + "<div class=\"rail-inner\">"
@@ -2779,12 +2815,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 text="Pairing request not found or expired. Close this tab and click Connect again.",
             )
         frame_origin = record.get("extension_origin", "")
+        embed = self._pairing_wants_embed(request, frame_origin)
         if record["status"] == "approved":
             return self._pairing_page_response(
                 self._pairing_page(
                     "Already approved",
                     "This browser is already paired. Close this tab and return to Hermes Browser.",
                     rail_rows=[("STATUS", "APPROVED")],
+                    embed=embed,
                 ),
                 frame_origin=frame_origin,
             )
@@ -2794,22 +2832,25 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     "Pairing closed",
                     "This pairing request is no longer active. Close this tab and click Connect again.",
                     rail_rows=[("STATUS", "CLOSED")],
+                    embed=embed,
                 ),
                 frame_origin=frame_origin,
             )
+        suffix = "?embed=1" if embed else ""
         name = html.escape(record["name"])
         ext = html.escape(record["extension_id"] or "Hermes Browser Extension")
         page = self._pairing_page(
             "Approve connection",
             "",
             rail_rows=[("SESSION", name), ("EXTENSION", ext), ("STATUS", "PENDING APPROVAL")],
+            embed=embed,
             body_extra=(
                 f"<p class=\"prompt\">Allow <strong>{name}</strong> to connect to your local Hermes gateway?</p>"
                 f"<code class=\"code\">{ext}</code>"
                 "<div class=\"actions\">"
-                f"<form method=\"post\" action=\"/api/browser-extension/pair/grant/{pairing_id}\">"
+                f"<form method=\"post\" action=\"/api/browser-extension/pair/grant/{pairing_id}{suffix}\">"
                 "<button id=\"approveButton\" class=\"approve\" type=\"submit\">Approve</button></form>"
-                f"<form method=\"post\" action=\"/api/browser-extension/pair/deny/{pairing_id}\">"
+                f"<form method=\"post\" action=\"/api/browser-extension/pair/deny/{pairing_id}{suffix}\">"
                 "<button id=\"denyButton\" class=\"deny\" type=\"submit\">Deny</button></form>"
                 "</div>"
             ),
@@ -2834,6 +2875,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "Approved",
                 "Hermes Browser is connected. You can close this tab.",
                 rail_rows=[("STATUS", "APPROVED")],
+                embed=self._pairing_wants_embed(request, granted.get("extension_origin", "")),
             ),
             frame_origin=granted.get("extension_origin", ""),
         )
@@ -2853,6 +2895,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "Denied",
                 "You denied this pairing. You can close this tab.",
                 rail_rows=[("STATUS", "DENIED")],
+                embed=self._pairing_wants_embed(request, denied.get("extension_origin", "")),
             ),
             frame_origin=denied.get("extension_origin", ""),
         )

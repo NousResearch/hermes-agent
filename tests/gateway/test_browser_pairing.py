@@ -701,3 +701,61 @@ class TestFramingHeaders:
             ):
                 assert resp.headers["X-Frame-Options"] == "DENY"
                 assert "frame-ancestors 'none'" in resp.headers["Content-Security-Policy"]
+
+
+class TestEmbeddedLayout:
+    """The compact page the extension frames in its panel (``?embed=1``)."""
+
+    @staticmethod
+    async def _approve_html(client, pairing_id, query=""):
+        resp = await client.get(f"/api/browser-extension/pair/approve/{pairing_id}{query}")
+        assert resp.status == 200
+        return await resp.text()
+
+    @pytest.mark.asyncio
+    async def test_a_framed_approval_page_asks_for_the_compact_layout(self, framing_client):
+        async with framing_client:
+            pairing_id = (await _start(framing_client, extensionOrigin=EXT_CHROME))["pairing_id"]
+            html = await self._approve_html(framing_client, pairing_id, "?embed=1")
+            assert '<body class="embed">' in html
+            assert f'action="/api/browser-extension/pair/grant/{pairing_id}?embed=1"' in html
+            assert f'action="/api/browser-extension/pair/deny/{pairing_id}?embed=1"' in html
+            assert 'id="approveButton"' in html and 'id="denyButton"' in html
+
+    @pytest.mark.asyncio
+    async def test_the_full_page_stays_the_default(self, framing_client):
+        async with framing_client:
+            pairing_id = (await _start(framing_client, extensionOrigin=EXT_CHROME))["pairing_id"]
+            html = await self._approve_html(framing_client, pairing_id)
+            assert "<body>" in html and 'class="embed"' not in html
+            assert "?embed=1" not in html
+
+    @pytest.mark.asyncio
+    async def test_a_page_nobody_may_frame_ignores_the_flag(self, framing_client):
+        async with framing_client:
+            pairing_id = (await _start(framing_client))["pairing_id"]
+            html = await self._approve_html(framing_client, pairing_id, "?embed=1")
+            assert 'class="embed"' not in html
+            assert "?embed=1" not in html
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("action", ["grant", "deny"])
+    async def test_the_result_pages_keep_the_compact_layout(self, framing_client, action):
+        async with framing_client:
+            pairing_id = (await _start(framing_client, extensionOrigin=EXT_CHROME))["pairing_id"]
+            resp = await framing_client.post(
+                f"/api/browser-extension/pair/{action}/{pairing_id}?embed=1",
+                headers=_from_page(framing_client),
+            )
+            assert resp.status == 200
+            assert '<body class="embed">' in await resp.text()
+
+    @pytest.mark.asyncio
+    async def test_every_page_scrolls_with_the_portals_own_scrollbar(self, framing_client):
+        async with framing_client:
+            for body in ({}, {"extensionOrigin": EXT_CHROME}):
+                pairing_id = (await _start(framing_client, **body))["pairing_id"]
+                for query in ("", "?embed=1"):
+                    html = await self._approve_html(framing_client, pairing_id, query)
+                    assert "::-webkit-scrollbar-thumb{background:rgba(5,5,232,.55)" in html
+                    assert "scrollbar-width:thin" in html

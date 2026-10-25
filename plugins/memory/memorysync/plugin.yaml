@@ -1,0 +1,4 @@
+name: memorysync
+version: 1.0.0
+description: "MemorySync — persistent profiles, background turn synchronization with cross-adapter idempotency, and zero-latency prefetched recall. Pure standard library: zero pip dependencies."
+pip_dependencies: []

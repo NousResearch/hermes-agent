@@ -793,7 +793,7 @@ async function openSecondary(entry: Secondary): Promise<void> {
     )
 
     try {
-      await entry.gateway.connect(wsUrl)
+      await entry.gateway.connect(wsUrl, { profile: entry.profile, remoteProfile: conn.remoteProfile })
     } catch (error) {
       // Log the dial target for support, but RETHROW THE ORIGINAL ERROR —
       // reconnectSecondary classifies failures by message ("No connection

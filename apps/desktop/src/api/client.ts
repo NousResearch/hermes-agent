@@ -107,6 +107,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
   private readonly profileAliases = new Map<string, string>()
   private readonly replayProfiles = new Map<string, { sessionId: string; profile: string }>()
   private readonly displayProfiles = new Map<string, string>()
+  private transportProfileAlias?: { display: string; backend: string }
   private readonly eventRoutes = new WeakMap<GatewayEvent, string>()
   private readonly reconciledEpochs = new Set<string>()
   // Frames of an ambiguous (session, epoch) parked until its owner probes settle.
@@ -167,7 +168,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
       }
     }
 
-    recordCanonicalOwner(request, this.displayProfiles.get(canonicalSessionKey(sid, profile)) ?? profile)
+    recordCanonicalOwner(request, this.displayProfiles.get(canonicalSessionKey(sid, profile)) ?? this.displayProfile(profile))
 
     for (const handler of this.promptHandlers) {
       if (handler(request) !== false) { return }
@@ -291,7 +292,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
     profile = this.resolveSessionProfile(event.session_id, profile)
     // The renderer already understands an owner profile tag on shared-socket events.
     this.eventRoutes.set(event, profile)
-    event.profile = this.displayProfiles.get(canonicalSessionKey(event.session_id, profile)) ?? profile
+    event.profile = this.displayProfiles.get(canonicalSessionKey(event.session_id, profile)) ?? this.displayProfile(profile)
     recordCanonicalOwner(event, event.profile)
     this.protocol.event({ ...event, profile })
 
@@ -331,9 +332,26 @@ export class HermesGateway extends JsonRpcGatewayClient {
     return this.canonical
   }
 
-  override async connect(wsUrl: string): Promise<void> {
+  private displayProfile(profile: string): string {
+    return this.transportProfileAlias?.backend === profile ? this.transportProfileAlias.display : profile
+  }
+
+  private displaySnapshot<T>(value: T): T {
+    const info = (value as { info?: { profile_name?: string } })?.info
+    const name = info?.profile_name
+
+    if (typeof name !== 'string' || this.displayProfile(name) === name) { return value }
+
+    // Keep the protocol's cached backend identity intact; only the returned view has the alias.
+    return { ...(value as object), info: { ...info, profile_name: this.displayProfile(name) } } as T
+  }
+
+  override async connect(wsUrl: string, route?: { profile?: string; remoteProfile?: string }): Promise<void> {
     this.connectionGeneration++
     this.canonical = new URL(wsUrl).searchParams.has('native_dial')
+    this.transportProfileAlias = route?.remoteProfile
+      ? { display: canonicalProfile(route.profile), backend: route.remoteProfile }
+      : undefined
     this.attached.clear()
     this.deliveredPrompts.clear()
     this.sessionProfiles.clear()
@@ -361,6 +379,8 @@ export class HermesGateway extends JsonRpcGatewayClient {
       params = { ...params, profile: owner.profile }
     }
 
+    params = this.routeTransportProfile(method, params)
+
     // Prompt callbacks carry session identity, while sibling sessions share the
     // primary socket. Keep the route learned from their successful attachment.
     const sid = params.session_id ?? params.parent_session_id
@@ -385,6 +405,14 @@ export class HermesGateway extends JsonRpcGatewayClient {
     }
 
     return params
+  }
+
+  private routeTransportProfile(method: string, params: Record<string, unknown>): Record<string, unknown> {
+    const alias = this.transportProfileAlias
+
+    return alias && !method.startsWith('client.') && method !== 'gateway.ping'
+      && (params.profile === undefined || canonicalProfile(params.profile) === alias.display)
+      ? { ...params, profile: alias.backend } : params
   }
 
   override async request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal): Promise<T> {
@@ -461,7 +489,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
         this.adoptAttachedSnapshot(settled as { session_id?: string; prompts?: Array<Record<string, unknown>> }, prepared.profile)
       }
 
-      return settled
+      return this.displaySnapshot(settled)
     } catch (error) {
       this.protocol.failure(prepared, error)
       throw error
@@ -502,7 +530,8 @@ export class HermesGateway extends JsonRpcGatewayClient {
       this.rememberSessionProfile(sid, profile)
 
       if (settled.info?.profile_name) {
-        this.displayProfiles.set(canonicalSessionKey(sid, profile), settled.info.profile_name)
+        const display = this.displayProfile(settled.info.profile_name)
+        this.displayProfiles.set(canonicalSessionKey(sid, profile), display)
       }
 
       if (typeof settled.replay_epoch === 'string') {

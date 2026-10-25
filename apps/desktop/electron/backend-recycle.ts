@@ -40,16 +40,16 @@ export async function recycleOwnedBackend(deps: RecycleOwnedBackendDeps): Promis
   const profile = String(deps.profile ?? '').trim()
 
   if (target === 'primary') {
-    await deps.teardownSsh('')
     await deps.restartLocalGateway(deps.primaryProfile)
+    await deps.teardownSsh('')
     await deps.teardownPrimary()
     deps.notifyApplied()
 
     return target
   }
 
-  await deps.teardownSsh(profile)
   await deps.restartLocalGateway(profile)
+  await deps.teardownSsh(profile)
   await deps.teardownPool(profile)
 
   return target

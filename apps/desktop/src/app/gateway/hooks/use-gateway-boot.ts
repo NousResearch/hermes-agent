@@ -521,7 +521,7 @@ export function useGatewayBoot({
           return
         }
 
-        await gateway.connect(wsUrl)
+        await gateway.connect(wsUrl, conn)
 
         if (cancelled) {
           return
@@ -865,7 +865,7 @@ export function useGatewayBoot({
           return
         }
 
-        await gateway.connect(wsUrl)
+        await gateway.connect(wsUrl, conn)
 
         if (!ownsSwitch()) {
           return
@@ -1535,7 +1535,7 @@ export function useGatewayBoot({
           // retryable boot failure (stage 'dialing') so the bounded boot-retry
           // loop below re-runs the whole handshake — including a fresh
           // getConnection() against a possibly-rebuilt tunnel.
-          await gateway.connect(wsUrl)
+          await gateway.connect(wsUrl, conn)
         } else {
           // LOCAL retries the dial across backend cold-start (#49645): main's
           // readiness probe already passed, but a freshly spawned backend can

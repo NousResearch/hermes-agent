@@ -3,9 +3,11 @@ import crypto from 'node:crypto'
 import {
   assertLocalGatewayEndpoint,
   bindGatewayTicketClient,
+  createStaleGatewayRestarter,
+  ensureLocalGateway,
   type GatewayEndpoint,
+  gatewayOwnerProfile,
   type GatewayTicketMinter,
-  parseGatewayEnsureOutput,
   routedGatewayEndpoint
 } from './local-gateway'
 import { closeGatewayTicketBridge, mintGatewayTicketWithChild, TICKET_SCRIPT } from './local-gateway-python'
@@ -102,13 +104,24 @@ export async function connectNativeSshGateway(opts: {
     throw error
   }
 
-  const payload = parseGatewayEnsureOutput({ code: 0, stdout: output })
-
-  if (payload.state !== 'ready' && !(payload.state === 'draining' && payload.reason_code === 'restart_wait')) {
-    throw new Error(`Remote Hermes gateway ${payload.state}: ${payload.reason_code || 'not_ready'}`)
+  const restartOwner = async (ownerProfile: string) => {
+    await ssh.exec(`${launcher} --profile ${shq(ownerProfile)} gateway restart --detach`, { timeoutMs: 120_000 })
   }
 
-  const endpoint = payload.endpoint as GatewayEndpoint
+  let first: string | undefined = output
+
+  const native = await ensureLocalGateway(async () => {
+    opts.signal?.throwIfAborted()
+    const stdout = first ?? await ssh.exec(`${launcher} --profile ${shq(profile)} gateway ensure --json`, { timeoutMs: 75_000 })
+    first = undefined
+
+    return { code: 0, stdout }
+  }, undefined, createStaleGatewayRestarter(async ownerProfile => {
+    opts.signal?.throwIfAborted()
+    await restartOwner(ownerProfile)
+  }, message => console.warn(`[ssh] ${message}`)))
+
+  const endpoint = native.gatewayEndpoint
   assertLocalGatewayEndpoint(endpoint)
   const command = remoteTicketCommand(await ssh.exec(`${launcher} --print-runtime-command --module hermes_constants`))
   opts.signal?.throwIfAborted()
@@ -134,12 +147,17 @@ export async function connectNativeSshGateway(opts: {
       return Promise.reject(new Error('Gateway ticket SSH connection closed'))
     }
 
-    const routed = routedGatewayEndpoint(endpoint, route, endpoint.profile_id, method)
+    // A WS descriptor already resolved remoteProfile; its caller still names a desktop alias.
+    // REST routes have already been translated by the registry request mapper.
+    const routed = method ? routedGatewayEndpoint(endpoint, route, endpoint.profile_id, method) : endpoint
 
     return mintGatewayTicketWithChild(key, () => ssh.openPipe(command), routed, purpose, true)
   }
 
-  bindGatewayTicketClient(forwardedEndpoint, mintGatewayTicket)
+  bindGatewayTicketClient(forwardedEndpoint, mintGatewayTicket, async () => {
+    if (closed) { throw new Error('Gateway ticket SSH connection closed') }
+    await restartOwner(gatewayOwnerProfile(endpoint))
+  })
 
   try {
     opts.signal?.throwIfAborted()

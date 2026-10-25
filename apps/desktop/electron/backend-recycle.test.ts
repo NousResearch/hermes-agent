@@ -39,8 +39,8 @@ describe('recycleOwnedBackend', () => {
     expect(target).toBe('primary')
     // The attached gateway owns its own lifetime: dropping descriptors alone re-attached the
     // same stale process (503 "Restart required" after `hermes update`), so it is restarted
-    // between the SSH teardown and the descriptor drop that forces the re-ensure.
-    expect(events).toEqual(['ssh:', 'restart:default', 'primary', 'applied'])
+    // before SSH teardown while its authenticated restart channel is still alive.
+    expect(events).toEqual(['restart:default', 'ssh:', 'primary', 'applied'])
   })
 
   it('recycles a pooled profile without tearing down the primary', async () => {
@@ -65,7 +65,7 @@ describe('recycleOwnedBackend', () => {
     })
 
     expect(target).toBe('pool')
-    expect(events).toEqual(['ssh:paid-ads', 'restart:paid-ads', 'pool:paid-ads'])
+    expect(events).toEqual(['restart:paid-ads', 'ssh:paid-ads', 'pool:paid-ads'])
   })
 
   it('awaits SSH teardown before the local child even when SSH is slow', async () => {

@@ -3,7 +3,7 @@ import { PassThrough } from 'node:stream'
 
 import { afterEach, expect, test } from 'vitest'
 
-import { localGatewayDial, nativeGatewayHttpHeaders } from './local-gateway'
+import { localGatewayDial, nativeGatewayHttpHeaders, restartBoundGateway } from './local-gateway'
 import { closeGatewayTicketBridges } from './local-gateway-python'
 import { backendOwnedByApp } from './quit-guard'
 import type { SshConnection } from './ssh-connection'
@@ -147,6 +147,23 @@ test('non-ready and non-loopback owners cannot open a forward or mint', async ()
     expect(f.forwards).toHaveLength(0)
     expect(f.helper.requests).toHaveLength(0)
   }
+})
+
+test('WS tickets keep the resolved remote profile while explicit restart remains available', async () => {
+  const f = fixture({ endpoint: { ...endpoint, profile_id: '/remote/hermes/profiles/writer', control_home: '/remote/hermes' } })
+  const connection = await f.connect()
+
+  if (!connection) { throw new Error('Expected native connection') }
+
+  try {
+    await localGatewayDial({
+      ensure: async () => connection, forget: () => undefined, launchHome: '/local', profile: 'default',
+      prepare: (_base, ticket) => ticket
+    })
+    expect(f.helper.requests[0].endpoint.profile_id).toBe('/remote/hermes/profiles/writer')
+    await restartBoundGateway(connection.gatewayEndpoint)
+    expect(f.commands.some(command => command.includes("--profile 'default' gateway restart --detach"))).toBe(true)
+  } finally { connection.dispose() }
 })
 
 test('runtime bootstrap is shell quoted and rejects an unsupported launcher shape', () => {

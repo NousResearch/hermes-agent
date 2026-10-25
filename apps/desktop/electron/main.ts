@@ -1,7 +1,7 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 
 import type { GatewayEndpoint } from './local-gateway'
-import { configurePythonGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, localGatewayDial, nativeGatewayHttpHeaders, redialLocalGateway, runGatewayEnsure, runGatewayOwnerRestart } from './local-gateway'
+import { configurePythonGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, localGatewayDial, nativeGatewayHttpHeaders, redialLocalGateway, restartBoundGateway, runGatewayEnsure, runGatewayOwnerRestart } from './local-gateway'
 import { closeGatewayTicketBridges, createGatewayTicketResolver } from './local-gateway-python'
 import { createPluginWsUrlHandler } from './plugin-ws-url'
 import { connectSshGateway, retireNativeSshConnection } from './ssh-native-gateway'
@@ -9932,6 +9932,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
   return {
     ...connection,
     remoteHermesVersion: result.hermesVersion || '',
+    remoteProfile: sshConfig.remoteProfile || '',
     ssh: {
       effectiveConfigFingerprint: sshConfig.effectiveConfigFingerprint,
       host: sshConfig.host,
@@ -11580,6 +11581,8 @@ async function restartAttachedLocalGateway(profile: string): Promise<void> {
   const endpoint = connection?.gatewayEndpoint
 
   if (endpoint) {
+    if (await restartBoundGateway(endpoint)) { return }
+
     if (!connection?.remoteKind) {
       await restartLocalGatewayOwner(gatewayOwnerProfile(endpoint))
     }

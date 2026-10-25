@@ -1029,6 +1029,7 @@ export interface HermesConnection {
   remoteIdentity?: string
   remoteKind?: 'cloud' | 'ssh' | 'url'
   remoteHermesVersion?: string
+  remoteProfile?: string
   nativeOverlayWidth: number
   source?: 'env' | 'local' | 'settings'
   token: string

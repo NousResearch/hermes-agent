@@ -294,10 +294,20 @@ export interface NativeGatewayConnection {
 }
 
 // Endpoint object identity is main-process authority; no function/credential crosses IPC.
-const gatewayTicketClients = new WeakMap<GatewayEndpoint, GatewayTicketMinter>()
+const gatewayTicketClients = new WeakMap<GatewayEndpoint, { mint: GatewayTicketMinter; restart?: () => Promise<void> }>()
 
-export function bindGatewayTicketClient(endpoint: GatewayEndpoint, client: GatewayTicketMinter): void {
-  gatewayTicketClients.set(endpoint, client)
+export function bindGatewayTicketClient(endpoint: GatewayEndpoint, mint: GatewayTicketMinter, restart?: () => Promise<void>): void {
+  gatewayTicketClients.set(endpoint, { mint, restart })
+}
+
+/** Explicit restart uses the same authenticated transport; ordinary detach never calls it. */
+export async function restartBoundGateway(endpoint: GatewayEndpoint): Promise<boolean> {
+  const client = gatewayTicketClients.get(endpoint)
+
+  if (!client?.restart) { return false }
+  await client.restart()
+
+  return true
 }
 
 export function localGatewayDial<T extends NativeGatewayConnection>(opts: {
@@ -320,7 +330,7 @@ export function localGatewayDial<T extends NativeGatewayConnection>(opts: {
       // Callers check the first descriptor; a re-ensure may still answer without one.
       if (!current.gatewayEndpoint) {throw new Error('Local gateway connection has no gateway endpoint')}
 
-      const remoteMint = gatewayTicketClients.get(current.gatewayEndpoint)
+      const remoteMint = gatewayTicketClients.get(current.gatewayEndpoint)?.mint
 
       const ticket = remoteMint
         ? await remoteMint(opts.profile, purpose)
@@ -533,7 +543,7 @@ export async function nativeGatewayHttpHeaders(descriptor: NativeGatewayConnecti
   const purpose = nativeGrantPurpose(url, method)
 
   const route = nativeGrantRoute(url, body, method)
-  const remoteMint = gatewayTicketClients.get(descriptor.gatewayEndpoint)
+  const remoteMint = gatewayTicketClients.get(descriptor.gatewayEndpoint)?.mint
 
   const ticket = remoteMint
     ? await remoteMint(route, purpose, method)

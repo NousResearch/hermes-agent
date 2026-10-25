@@ -22,6 +22,12 @@ _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar("_HERMES_HOME_OVERR
 INDICATOR_STYLES: tuple[str, ...] = ("ascii", "emoji", "kaomoji", "unicode")
 DEFAULT_INDICATOR_STYLE: str = "kaomoji"
 
+# Browser-hosted attachments are staged on the Hermes host and then read back
+# as a base64 data URL for the normal remote attachment RPC. Keep the upload
+# and read-back boundaries identical so a successful picker/drop can always be
+# attached afterward.
+WEBAPP_ATTACHMENT_MAX_BYTES: int = 16 * 1024 * 1024
+
 
 def set_hermes_home_override(path: str | Path | None) -> Token:
     """Set a context-local Hermes home override and return its reset token.

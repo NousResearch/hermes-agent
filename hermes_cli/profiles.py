@@ -85,7 +85,7 @@ _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] =  frozenset({
 # duplicate deliveries) the moment its gateway starts. The empty dir is recreated below.
 _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "state.db", "state.db-wal", "state.db-shm", "sessions", "backups", "state-snapshots", "checkpoints",
-    "cron",
+    "cron", "webapp",  # webapp/: the source gateway's sign-in state (credential, native grants, Portal callback)
 })
 
 # Marker written by `hermes profile create --no-skills`. When present at a profile root,
@@ -166,7 +166,7 @@ PROFILE_CREDENTIAL_PATHS = frozenset({
     "teams_pipeline_store.json",    # Graph subscription client_state (webhook shared secret)
     "mcp-tokens",                   # MCP OAuth tokens
     "vault",                        # vault.key + vault.json.enc
-    "browser-profile", "browser_auth", "bot-desktop",  # browser cookies / logins
+    "browser-profile", "browser_auth", "bot-desktop", "webapp",  # browser cookies / logins, Webapp sign-in
     "browser-profiles", "browser_profiles",  # live CDP profiles, Browser Use CLI dir (Cookies, Login Data)
     "pairing", "platforms/pairing", "feishu_comment_pairing.json",
     "whatsapp/session", "platforms/whatsapp/session", "matrix/store", "platforms/matrix/store",

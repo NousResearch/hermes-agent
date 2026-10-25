@@ -76,6 +76,7 @@ class WhatsAppOnboardingStart(BaseModel):
     mode: Optional[str] = "bot"
     allowed_users: Optional[str] = ""
     profile: Optional[str] = None
+    reset_session: bool = False
 
 class WhatsAppOnboardingApply(BaseModel):
     mode: Optional[str] = None
@@ -101,6 +102,13 @@ class ManagedDirectoryCreate(BaseModel):
 class ManagedFileDelete(BaseModel):
     path: str
     recursive: bool = False
+
+class FileTicketRequest(BaseModel):
+    """POST /api/files/ticket — the exact query the ticketed download/stream URL carries."""
+    route: Literal["download", "stream"]
+    path: str
+    profile: Optional[str] = None
+    session_id: Optional[str] = None
 
 class ModelAssignment(BaseModel):
     """POST /api/model/set — assign a provider/model to a slot.
@@ -524,6 +532,20 @@ class ToolsetPostSetup(BaseModel):
 
 class TerminalBackendSelect(BaseModel):
     backend: str
+    profile: Optional[str] = None
+
+class DelegationBackendSelect(BaseModel):
+    backend: str
+    profile: Optional[str] = None
+
+class DelegationModelMapUpdate(BaseModel):
+    options: list[dict[str, Any]]
+    default: Optional[str] = None
+    profile: Optional[str] = None
+
+class DelegationProfileRoutesUpdate(BaseModel):
+    profiles: list[dict[str, Any]]
+    default: Optional[str] = None
     profile: Optional[str] = None
 
 class RawConfigUpdate(BaseModel):

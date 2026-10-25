@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import List, Dict, Any
 from utils import fast_safe_load
@@ -80,12 +81,12 @@ def _parse_service_tier_config(raw: str) -> str | None:
 
 
 # terminal.<key> -> TERMINAL_<KEY> env var. Container-resource keys apply to docker,
-# singularity, modal, daytona and vercel_sandbox only (ignored for local/ssh).
+# modal, daytona, vercel_sandbox and container plugin backends (ignored for local/ssh).
 _TERMINAL_ENV_MAPPINGS = {
     key: f"TERMINAL_{key.upper()}"
     for key in (
         "degraded_mode", "cwd", "timeout", "home_mode", "lifetime_seconds", "docker_image",
-        "docker_forward_env", "singularity_image", "modal_image", "daytona_image", "vercel_runtime", "vercel_image",
+        "docker_forward_env", "modal_image", "daytona_image", "vercel_runtime", "vercel_image",
         "ssh_host", "ssh_user", "ssh_port", "ssh_key", "container_cpu", "container_memory",
         "container_disk", "container_persistent", "docker_volumes", "docker_env", "docker_extra_args",
         "docker_shm_size", "docker_mount_cwd_to_workspace", "docker_network", "docker_run_as_host_user",
@@ -138,8 +139,10 @@ def _mirror_config_to_env(defaults, _file_has_terminal_config):
         terminal_config.pop("cwd", None)
 
     # TERMINAL_CWD is force-exported (beats stale .env) except inside a gateway process,
-    # whose config bridge already set it.
-    _is_gateway = os.environ.get("_HERMES_GATEWAY") == "1"
+    # whose config bridge already set it. Ask whether THIS process imported gateway.run:
+    # its _HERMES_GATEWAY env marker is inherited by every shell the gateway's terminal
+    # tool spawns, so a `hermes chat` launched there would keep the gateway's directory.
+    _is_gateway = "gateway.run" in sys.modules
     for config_key, env_var in _TERMINAL_ENV_MAPPINGS.items():
         if config_key not in terminal_config:
             continue
@@ -187,15 +190,11 @@ def _cli_config_defaults():
         "model": {"default": "", "base_url": "", "provider": "auto"},
         "terminal": {
             "env_type": "local", "cwd": ".", "home_mode": "auto", "lifetime_seconds": 300,  # cwd "." -> os.getcwd()
-            "docker_image": img, "docker_forward_env": [], "singularity_image": f"docker://{img}",
-            "modal_image": img, "daytona_image": img, "docker_volumes": [],
+            "docker_image": img, "docker_forward_env": [], "modal_image": img, "daytona_image": img, "docker_volumes": [],
             "docker_mount_cwd_to_workspace": False,  # opt-in only: sandbox isolation
             "docker_shared_container_key": "",
         },
-        "browser": {
-            "inactivity_timeout": 120, "record_sessions": False, "engine": "auto",  # auto (Chrome) | lightpanda | chrome
-            "camofox": {"rewrite_loopback_urls": False, "loopback_host_alias": "host.docker.internal"},
-        },
+        "browser": {"inactivity_timeout": 120, "engine": "auto"},  # engine: auto (Chromium) | lightpanda
         # threshold: fraction of the model's context limit; min_tail: real user messages kept in the tail
         "compression": {"enabled": True, "threshold": 0.50, "min_tail_user_messages": 1},
         "agent": {

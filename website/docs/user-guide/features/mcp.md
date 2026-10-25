@@ -312,7 +312,13 @@ more capable integration. On Desktop, GitHub mentions instead offer the
 
 ### Stdio servers
 
-Stdio servers run as local subprocesses and talk over stdin/stdout.
+Stdio servers run as local subprocesses and talk over stdin/stdout. Hermes manages
+the local process tree it starts, including cleanup during normal shutdown and
+best-effort recovery after a failed local connection. That guarantee ends at the
+host boundary: if the command launches work on another machine (for example,
+`ssh host mcp-server`), Hermes can stop the local `ssh` client but cannot reap
+the process running on the remote host. Configure that host's own supervision
+or cleanup policy for remote stdio servers.
 
 ```yaml
 mcp_servers:

@@ -1364,8 +1364,8 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
         # Exact session ID first, then title (with auto-latest for lineage).
         session = db.get_session(name_or_id)
         resolved_id = session["id"] if session else db.resolve_session_by_title(name_or_id)
-        if not resolved_id and name_or_id.startswith("local-"):
-            # The TUI epilogue prints a canonical session's unique 22-char prefix.
+        if not resolved_id:
+            # Unambiguous ID prefix (the TUI epilogue's short id), as sessions export/delete accept.
             resolved_id = db.resolve_session_id(name_or_id)
         if resolved_id:
             # Project forward through compression chain so resumes land on

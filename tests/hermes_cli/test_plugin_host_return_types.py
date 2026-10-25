@@ -136,7 +136,8 @@ class Ledger(ContextEngine):
     def should_compress(self, prompt_tokens=None):
         return False
     def compress(self, messages, current_tokens=None, **kw):
-        return messages
+        self.compress_options = {"current_tokens": current_tokens, **kw}
+        return messages[-1:]
 
 def register(ctx):
     ctx.register_context_engine(Ledger())
@@ -145,7 +146,9 @@ def register(ctx):
 
 @pytest.mark.platforms("any")
 def test_hosted_context_engine_clone_is_an_independent_engine(tmp_path, monkeypatch):
+    from types import SimpleNamespace
     from agent.context_engine import ContextEngine
+    from agent.conversation_compression import _resolve_compress_call
 
     _home_with_plugin(tmp_path, monkeypatch, "hostledger", CONTEXT_ENGINE_PLUGIN)
     manager = _load("hostledger")
@@ -156,5 +159,13 @@ def test_hosted_context_engine_clone_is_an_independent_engine(tmp_path, monkeypa
         clone.update_from_response({"prompt_tokens": 1234})
         assert clone.last_prompt_tokens == 1234
         assert shared.last_prompt_tokens == 0  # the agent's budget state is its own
+
+        # Core passes the options by keyword; an override taking **kw must receive them as keywords.
+        compress, options = _resolve_compress_call(
+            SimpleNamespace(context_compressor=clone), approx_tokens=900, focus_topic="auth", force=True,
+            memory_context="", bypass_cooldown=False)
+        messages = [{"role": "user", "content": "one"}, {"role": "user", "content": "two"}]
+        assert compress(messages, **options) == messages[-1:]
+        assert clone.compress_options == {"current_tokens": 900, "focus_topic": "auth", "force": True}
     finally:
         _shutdown(manager)

@@ -218,20 +218,22 @@ def declared_return(cls: type, name: str) -> Any:
 
 def restore_arguments(fn: Optional[Callable[..., Any]], args: list, kwargs: dict) -> tuple[list, dict]:
     """``args``/``kwargs`` for a call to the unbound method ``fn``, each rebuilt as its declared
-    parameter type; unchanged when the call does not bind to ``fn``'s signature."""
+    parameter type. Positional stays positional and keyword stays keyword: the plugin's override may
+    take ``**kwargs`` where the ABC names the parameter."""
     if fn is None:
         return args, kwargs
     try:
         hints = typing.get_type_hints(fn)
-        signature = inspect.signature(fn)
-        bound = signature.bind(None, *args, **kwargs)  # None stands in for ``self``
+        params = list(inspect.signature(fn).parameters.values())[1:]  # drop ``self``
     except (NameError, TypeError, ValueError, AttributeError):
         return args, kwargs
-    variadic = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
-    for name, value in bound.arguments.items():
-        if signature.parameters[name].kind not in variadic:
-            bound.arguments[name] = restore(value, hints.get(name))
-    return list(bound.args[1:]), dict(bound.kwargs)
+    by_position = [p.name for p in params
+                   if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+    restored = [restore(value, hints.get(name)) for value, name in zip(args, by_position)]
+    restored += list(args[len(restored):])
+    by_name = {p.name for p in params
+               if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)}
+    return restored, {k: restore(v, hints.get(k)) if k in by_name else v for k, v in kwargs.items()}
 
 
 def is_async_callable(fn: Any) -> bool:

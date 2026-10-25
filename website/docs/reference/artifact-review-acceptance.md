@@ -58,15 +58,24 @@ python evals/artifact_review_install_rehearsal.py \
   --expected-commit <reviewed-commit> \
   --component hermes_cli/kanban_artifact_acceptance.py \
   --component hermes_cli/kanban_acceptance_evidence.py \
-  --output /tmp/hermes-install-rehearsal.json
+  --safe-root /path/to/operator-owned-rehearsal-root \
+  --output-name hermes-install-rehearsal.json
 ```
 
-The command refuses a dirty or different checkout and unsafe, untracked, or
-non-regular component paths. Its Git subprocesses ignore caller Git variables,
-system/global configuration, replacement objects, hooks, filesystem monitors,
-and optional index locks. Repository-local configuration is still read, with
-those security-sensitive settings overridden. It compares selected files with
-a Git archive of the exact commit, performs an isolated swap, restores the prior
-sentinel bytes, and creates a new digest-bearing JSON receipt without replacing
-an existing output. It does not touch a Hermes home, restart a service, read
-credentials, launch a model worker, or activate the candidate.
+The command requires a pre-existing operator-owned safe root that is not
+group/world writable and is disjoint from both the checkout and every known
+Hermes home. Temporary files and the new, exclusive output receipt stay under
+that root; process `TMPDIR` and `TEMP` cannot redirect them. It refuses a dirty
+or different checkout and unsafe, untracked, or non-regular component paths.
+Every object query is pinned to the initially captured commit, followed by a
+final HEAD and clean-state recheck.
+
+Git subprocesses inherit no caller credential or object-store environment and
+disable system/global configuration, replacement objects, hooks, filesystem
+monitors, untracked cache, and optional index locks. Repository-local config is
+still read under those overrides. The local-only object commands do not invoke
+a credential helper; the receipt does not claim that local config contains no
+credential settings. The rehearsal compares selected files with a Git archive
+of the captured commit, performs an isolated swap, and restores the prior
+sentinel bytes. It does not touch a live checkout or Hermes home, restart a
+service, launch a model worker, or activate the candidate.

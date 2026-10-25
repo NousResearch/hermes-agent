@@ -7,6 +7,7 @@ import subprocess
 
 import pytest
 
+from evals import artifact_review_install_rehearsal as rehearsal
 from evals.artifact_review_install_rehearsal import _write_receipt_exclusive, rehearse
 
 
@@ -25,10 +26,18 @@ def repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def _safe_root(repo: Path) -> Path:
+    root = repo.parent / f"{repo.name}-rehearsal-safe"
+    root.mkdir(mode=0o700, exist_ok=True)
+    root.chmod(0o700)
+    return root
+
+
 def test_rehearsal_is_deterministic_and_reports_non_activation(repo: Path):
     commit = _git(repo, "rev-parse", "HEAD")
-    first = rehearse(repo, commit, ["component.py"])
-    second = rehearse(repo, commit, ["component.py"])
+    safe_root = _safe_root(repo)
+    first = rehearse(repo, commit, ["component.py"], safe_root=safe_root)
+    second = rehearse(repo, commit, ["component.py"], safe_root=safe_root)
 
     assert first == second
     assert first["checks"]["rollback_restored_prior_bytes"] is True
@@ -42,17 +51,20 @@ def test_rehearsal_is_deterministic_and_reports_non_activation(repo: Path):
 def test_rehearsal_refuses_wrong_revision_and_dirty_checkout(repo: Path):
     commit = _git(repo, "rev-parse", "HEAD")
     with pytest.raises(ValueError, match="expected"):
-        rehearse(repo, "0" * 40, ["component.py"])
+        rehearse(repo, "0" * 40, ["component.py"], safe_root=_safe_root(repo))
 
     (repo / "component.py").write_text("VALUE = 2\n", encoding="utf-8")
     with pytest.raises(ValueError, match="dirty"):
-        rehearse(repo, commit, ["component.py"])
+        rehearse(repo, commit, ["component.py"], safe_root=_safe_root(repo))
 
 
 @pytest.mark.parametrize("component", ["../outside", "/etc/passwd", "a/../../outside", r"a\outside"])
 def test_rehearsal_refuses_component_path_escape(repo: Path, component: str):
     with pytest.raises(ValueError, match="unsafe|escapes"):
-        rehearse(repo, _git(repo, "rev-parse", "HEAD"), [component])
+        rehearse(
+            repo, _git(repo, "rev-parse", "HEAD"), [component],
+            safe_root=_safe_root(repo),
+        )
 
 
 def test_rehearsal_requires_exact_tracked_regular_blob(repo: Path):
@@ -60,7 +72,10 @@ def test_rehearsal_requires_exact_tracked_regular_blob(repo: Path):
     subprocess.run(["git", "-C", str(repo), "add", "link.py"], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "add symlink"], check=True)
     with pytest.raises(ValueError, match="tracked regular Git file"):
-        rehearse(repo, _git(repo, "rev-parse", "HEAD"), ["link.py"])
+        rehearse(
+            repo, _git(repo, "rev-parse", "HEAD"), ["link.py"],
+            safe_root=_safe_root(repo),
+        )
 
 
 def test_rehearsal_scrubs_caller_git_environment_and_disables_fsmonitor(
@@ -78,7 +93,7 @@ def test_rehearsal_scrubs_caller_git_environment_and_disables_fsmonitor(
     monkeypatch.setenv("GIT_INDEX_FILE", str(outside / "caller-index"))
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(outside / "caller-config"))
 
-    receipt = rehearse(repo, commit, ["component.py"])
+    receipt = rehearse(repo, commit, ["component.py"], safe_root=outside)
 
     assert receipt["checks"]["caller_git_environment_scrubbed"] is True
     assert not marker.exists()
@@ -89,7 +104,7 @@ def test_receipt_writer_never_replaces_file_or_follows_final_symlink(tmp_path: P
     output = tmp_path / "receipt.json"
     output.write_text("keep", encoding="utf-8")
     with pytest.raises(FileExistsError):
-        _write_receipt_exclusive(output, {"ok": True})
+        _write_receipt_exclusive(tmp_path, output.name, {"ok": True})
     assert output.read_text(encoding="utf-8") == "keep"
 
     target = tmp_path / "target.json"
@@ -97,6 +112,53 @@ def test_receipt_writer_never_replaces_file_or_follows_final_symlink(tmp_path: P
     link = tmp_path / "link.json"
     link.symlink_to(target)
     with pytest.raises(FileExistsError):
-        _write_receipt_exclusive(link, {"ok": True})
+        _write_receipt_exclusive(tmp_path, link.name, {"ok": True})
     assert target.read_text(encoding="utf-8") == "target"
+
+
+def test_rehearsal_refuses_live_or_overlapping_safe_roots(
+    repo: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    inside_repo = repo / "receipts"
+    inside_repo.mkdir(mode=0o700)
+    with pytest.raises(ValueError, match="disjoint"):
+        rehearse(repo, _git(repo, "rev-parse", "HEAD"), ["component.py"], safe_root=inside_repo)
+
+    hermes_home = repo.parent / f"{repo.name}-hermes-home"
+    hermes_home.mkdir(mode=0o700)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    with pytest.raises(ValueError, match="disjoint"):
+        rehearse(repo, _git(repo, "rev-parse", "HEAD"), ["component.py"], safe_root=hermes_home)
+
+
+def test_rehearsal_ignores_hostile_tmpdir(repo: Path, monkeypatch: pytest.MonkeyPatch):
+    commit = _git(repo, "rev-parse", "HEAD")
+    safe_root = _safe_root(repo)
+    monkeypatch.setenv("TMPDIR", str(repo))
+
+    receipt = rehearse(repo, commit, ["component.py"], safe_root=safe_root)
+
+    assert receipt["checks"]["live_install_touched"] is False
+    assert _git(repo, "status", "--porcelain=v1", "--untracked-files=all") == ""
+
+
+def test_rehearsal_revalidates_head_after_snapshot(
+    repo: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    commit = _git(repo, "rev-parse", "HEAD")
+    real_run = rehearsal._run
+    head_reads = 0
+
+    def moving_head(candidate: Path, *args: str) -> str:
+        nonlocal head_reads
+        value = real_run(candidate, *args)
+        if args == ("rev-parse", "HEAD"):
+            head_reads += 1
+            if head_reads == 2:
+                return "0" * 40
+        return value
+
+    monkeypatch.setattr(rehearsal, "_run", moving_head)
+    with pytest.raises(ValueError, match="HEAD changed"):
+        rehearse(repo, commit, ["component.py"], safe_root=_safe_root(repo))
 

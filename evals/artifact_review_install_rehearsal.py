@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 from pathlib import PurePosixPath
+import pwd
 import shutil
 import subprocess
 import tarfile
@@ -20,7 +21,7 @@ import tempfile
 from typing import Sequence
 
 
-SCHEMA = "hermes.isolated-install-rollback-rehearsal/v1"
+SCHEMA = "hermes.isolated-install-rollback-rehearsal/v2"
 _GIT = shutil.which("git", path=os.defpath)
 
 
@@ -70,9 +71,9 @@ def _component_path(repo: Path, raw: str) -> tuple[str, Path]:
     return relative, candidate
 
 
-def _tracked_regular_blob(repo: Path, relative: str) -> None:
+def _tracked_regular_blob(repo: Path, commit: str, relative: str) -> None:
     raw = subprocess.check_output(
-        _git_command(repo, "ls-tree", "-z", "HEAD", "--", relative),
+        _git_command(repo, "ls-tree", "-z", commit, "--", relative),
         stdin=subprocess.DEVNULL, env=_git_env(),
     )
     records = [item for item in raw.split(b"\0") if item]
@@ -92,22 +93,45 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def rehearse(repo: Path, expected_commit: str, components: Sequence[str]) -> dict:
+def _validated_safe_root(repo: Path, safe_root: Path) -> Path:
+    if safe_root.is_symlink():
+        raise ValueError("safe root must be a real existing directory")
+    safe_root = safe_root.resolve(strict=True)
+    if not safe_root.is_dir():
+        raise ValueError("safe root must be a real existing directory")
+    stat = safe_root.stat()
+    if stat.st_uid != os.getuid() or stat.st_mode & 0o022:
+        raise ValueError("safe root must be owned by this operator and not group/world writable")
+    account_home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve(strict=True)
+    hermes_roots = [account_home / ".hermes"]
+    if configured := os.environ.get("HERMES_HOME"):
+        hermes_roots.append(Path(configured).expanduser().resolve(strict=False))
+    forbidden = [repo, *(root.resolve(strict=False) for root in hermes_roots)]
+    for live_root in forbidden:
+        if safe_root == live_root or safe_root.is_relative_to(live_root) or live_root.is_relative_to(safe_root):
+            raise ValueError("safe root must be disjoint from the checkout and every live Hermes home")
+    return safe_root
+
+
+def rehearse(
+    repo: Path, expected_commit: str, components: Sequence[str], *, safe_root: Path,
+) -> dict:
     repo = repo.resolve(strict=True)
+    safe_root = _validated_safe_root(repo, safe_root)
     commit = _run(repo, "rev-parse", "HEAD")
     if commit != expected_commit:
         raise ValueError(f"checkout is {commit}, expected {expected_commit}")
     if _run(repo, "status", "--porcelain=v1", "--untracked-files=all"):
         raise ValueError("checkout is dirty; rehearse an immutable reviewed revision")
-    tree = _run(repo, "rev-parse", "HEAD^{tree}")
+    tree = _run(repo, "rev-parse", f"{commit}^{{tree}}")
     if not components:
         raise ValueError("at least one reviewed component path is required")
     component_paths = dict(_component_path(repo, item) for item in components)
     normalized = sorted(component_paths)
     for relative in normalized:
-        _tracked_regular_blob(repo, relative)
+        _tracked_regular_blob(repo, commit, relative)
 
-    with tempfile.TemporaryDirectory(prefix="hermes-install-rehearsal-") as raw:
+    with tempfile.TemporaryDirectory(prefix="hermes-install-rehearsal-", dir=safe_root) as raw:
         root = Path(raw)
         archive = root / "candidate.tar"
         subprocess.run(
@@ -150,6 +174,10 @@ def rehearse(repo: Path, expected_commit: str, components: Sequence[str]) -> dic
         rollback.rename(active)
         if _file_sha256(active / "prior-install.json") != prior_sha:
             raise ValueError("rollback did not restore the prior install bytes")
+    if _run(repo, "rev-parse", "HEAD") != commit:
+        raise ValueError("checkout HEAD changed during rehearsal")
+    if _run(repo, "status", "--porcelain=v1", "--untracked-files=all"):
+        raise ValueError("checkout became dirty during rehearsal")
 
     receipt = {
         "schema": SCHEMA,
@@ -161,12 +189,14 @@ def rehearse(repo: Path, expected_commit: str, components: Sequence[str]) -> dic
             "clean_checkout": True,
             "caller_git_environment_scrubbed": True,
             "system_and_global_git_config_disabled": True,
+            "repository_local_git_config_read_under_safety_overrides": True,
             "hooks_fsmonitor_replace_objects_and_optional_locks_disabled": True,
             "git_archive_bytes_match": True,
             "isolated_swap_succeeded": True,
             "rollback_restored_prior_bytes": True,
             "live_install_touched": False,
-            "credentials_used": False,
+            "credential_environment_inherited": False,
+            "credential_helper_invoked": False,
             "worker_or_model_launched": False,
         },
     }
@@ -176,12 +206,12 @@ def rehearse(repo: Path, expected_commit: str, components: Sequence[str]) -> dic
     return receipt
 
 
-def _write_receipt_exclusive(output: Path, receipt: dict) -> None:
+def _write_receipt_exclusive(safe_root: Path, output_name: str, receipt: dict) -> Path:
     """Create one new receipt without following or replacing an existing path."""
-    parent = output.parent.resolve(strict=True)
-    if not parent.is_dir():
-        raise ValueError("receipt output parent is not a directory")
-    target = parent / output.name
+    name = str(output_name).strip()
+    if not name or Path(name).name != name or name in {".", ".."}:
+        raise ValueError("receipt output must be one filename beneath the validated safe root")
+    target = safe_root / name
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -194,6 +224,7 @@ def _write_receipt_exclusive(output: Path, receipt: dict) -> None:
             os.fsync(handle.fileno())
     finally:
         os.close(fd)
+    return target
 
 
 def main() -> int:
@@ -201,11 +232,14 @@ def main() -> int:
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--expected-commit", required=True)
     parser.add_argument("--component", action="append", default=[])
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--safe-root", type=Path, required=True)
+    parser.add_argument("--output-name", required=True)
     args = parser.parse_args()
-    receipt = rehearse(args.repo, args.expected_commit, args.component)
-    _write_receipt_exclusive(args.output, receipt)
-    print(json.dumps({"receipt": str(args.output), "receipt_sha256": receipt["receipt_sha256"]}))
+    repo = args.repo.resolve(strict=True)
+    safe_root = _validated_safe_root(repo, args.safe_root)
+    receipt = rehearse(repo, args.expected_commit, args.component, safe_root=safe_root)
+    output = _write_receipt_exclusive(safe_root, args.output_name, receipt)
+    print(json.dumps({"receipt": str(output), "receipt_sha256": receipt["receipt_sha256"]}))
     return 0
 
 

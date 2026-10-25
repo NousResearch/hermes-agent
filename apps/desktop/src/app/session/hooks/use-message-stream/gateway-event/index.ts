@@ -2,6 +2,7 @@ import { type GatewayEvent, registryBackendScopeKey } from '@hermes/shared'
 import { useCallback, useEffect, useRef } from 'react'
 
 import type { GatewayEventPayload } from '@/lib/chat-messages'
+import { acceptExecutionEvent } from '@/lib/execution-authority'
 import {
   approvalReplaySessionId,
   resolveGatewayEventSessionId,
@@ -16,6 +17,7 @@ import { isSessionGone } from '@/store/session-gone-latch'
 import { noteSessionEvent } from '@/store/session-states'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 
+import { handleDeferredPickEvent } from './deferred-pick'
 import { handleDesktopBridgeEvent } from './desktop-bridge'
 import { handleFreeTierEvent } from './free-tier'
 import { handleInputRequestEvent } from './input-requests'
@@ -25,7 +27,7 @@ import { handleOnboardingEvent } from './onboarding'
 import { handleControlEvent } from './session-control'
 import { handleSessionInfoEvent } from './session-info'
 import { handleStatusEvent } from './status'
-import { handleToolEvent } from './tools'
+import { handleToolEvent, handleToolProgressEvent, retireTurnToolProgress } from './tools'
 import type { GatewayEventContext, GatewayEventDeps, GatewayEventHandler } from './types'
 
 export type { GatewayEventDeps } from './types'
@@ -86,16 +88,62 @@ const HANDLERS: GatewayEventHandler[] = [
   handleFreeTierEvent,
   handleOnboardingEvent,
   handleSessionInfoEvent,
+  handleDeferredPickEvent,
   handleControlEvent,
   handleMessageStreamEvent,
+  handleToolProgressEvent,
   handleToolEvent,
   handleInputRequestEvent,
   handleDesktopBridgeEvent,
   handleStatusEvent
 ]
 
+type ExecutionAuthorities = Parameters<typeof acceptExecutionEvent>[0]
+
+/** The event's own timestamp (epoch seconds) when finite, else now. */
+function gatewayEventOccurredAt(payload: GatewayEventPayload | undefined): number {
+  return typeof payload?.timestamp === 'number' && Number.isFinite(payload.timestamp)
+    ? payload.timestamp
+    : Date.now() / 1000
+}
+
+/** Fence the event against the session's claimed execution. Returns false
+ *  when a stamped late frame must be dropped; an accepted newer owner
+ *  start/snapshot retires the previous execution's interrupted latch. */
+function admitExecutionEvent(
+  authorities: ExecutionAuthorities,
+  event: GatewayEvent,
+  sessionId: null | string,
+  deps: GatewayEventDeps
+): boolean {
+  const authorityKey = `${registryBackendScopeKey(event.connectionId ?? null, event.profile ?? null)}\u0000${sessionId}`
+
+  const previousAuthority = authorities.get(authorityKey)
+
+  if (sessionId && !acceptExecutionEvent(authorities, authorityKey, event.type, event)) {
+    return false
+  }
+
+  const authority = authorities.get(authorityKey)
+
+  if (
+    sessionId &&
+    previousAuthority &&
+    authority &&
+    !authority.terminal &&
+    (authority.epoch !== previousAuthority.epoch || authority.generation > previousAuthority.generation)
+  ) {
+    // Stop belongs to the cancelled execution, not the shared session.
+    // Only an accepted newer owner start/snapshot may retire its latch.
+    deps.updateSessionState(sessionId, state => (state.interrupted ? { ...state, interrupted: false } : state))
+  }
+
+  return true
+}
+
 /** The gateway-event dispatcher, extracted from useMessageStream. */
 export function useGatewayEventHandler(deps: GatewayEventDeps) {
+  const executionAuthorities = useRef(new Map())
   const { activeSessionIdRef, compactedTurnRef, refreshHermesConfig, sessionStateByRuntimeIdRef } = deps
 
   // One pin per concurrent unscoped stream, not a single shared slot: two chats
@@ -152,10 +200,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         registryBackendScopeKey(event.connectionId ?? null, event.profile ?? null) ===
           registryBackendScopeKey(activeGatewayConnectionId(), event.profile ?? null)
 
-      const occurredAt =
-        typeof payload?.timestamp === 'number' && Number.isFinite(payload.timestamp)
-          ? payload.timestamp
-          : Date.now() / 1000
+      const occurredAt = gatewayEventOccurredAt(payload)
 
       const explicitSid = event.session_id || ''
 
@@ -173,6 +218,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       }
 
       const sessionId = route.sessionId
+
+      if (!admitExecutionEvent(executionAuthorities.current, event, sessionId, deps)) {
+        return
+      }
 
       // Late stragglers: an unscoped stream event attributed via the
       // active-session fallback (no pin) to a session that has no live turn
@@ -250,6 +299,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // last one force-settles a dead turn, partial payload included.
         if (sessionId) {
           noteSessionEvent(sessionId)
+          retireTurnToolProgress(event.type, sessionId)
         }
       }
     },

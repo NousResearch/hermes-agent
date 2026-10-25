@@ -68,3 +68,61 @@ def test_documented_public_stdlib_and_own_package_imports_are_not_flagged(tmp_pa
 
     sites = warning.split("release): ", 1)[1].split(". Use ctx.*")[0].split("; ")
     assert sites == ["__init__.py:12 hermes_cli.plugins.get_plugin_manager"], sites
+
+
+_PLATFORM_PLUGIN_SEAMS = (
+    ("gateway.platforms.access_policy_mixin", "OwnAccessPolicyMixin"),
+    ("tools.approval", "resolve_gateway_approval"),
+    ("tools.clarify_gateway", "get_pending"),
+    ("tools.clarify_gateway", "resolve_gateway_clarify"),
+    ("tools.clarify_gateway", "mark_awaiting_text"),
+    ("gateway.platforms.helpers", "platform_http_client"),
+    ("gateway.platforms.base", "ssrf_redirect_guard"),
+    ("tools.url_safety", "create_ssrf_safe_async_client"),
+    ("tools.url_safety", "is_safe_url"),
+    ("gateway.platforms._http_client_limits", "platform_httpx_limits"),
+    ("hermes_cli.gateway_setup_wizard", "print_setup_header"),
+    ("hermes_cli.gateway_setup_wizard", "confirm_reconfigure"),
+    ("hermes_cli.gateway_setup_wizard", "offer_home_channel"),
+    ("hermes_cli.gateway_setup_wizard", "save_env_values"),
+    ("hermes_cli.gateway_setup_wizard", "prompt_csv"),
+)
+
+
+def test_platform_plugin_seams_are_public_and_exist(tmp_path):
+    """The documented platform-plugin helpers import cleanly AND raise no private-import finding."""
+    import importlib
+
+    for module, name in _PLATFORM_PLUGIN_SEAMS:
+        assert hasattr(importlib.import_module(module), name), f"{module}.{name}"
+    imports = "".join(f"from {module} import {name}\n" for module, name in _PLATFORM_PLUGIN_SEAMS)
+    plugin = _plugin(tmp_path / "chatplat", {"adapter.py": imports})
+
+    assert _private_warnings(validate_plugin_dir(plugin)) == []
+
+
+_SKILL_CATALOG_SEAMS = (
+    ("tools.skills_tool", "find_all_skills"), ("tools.skills_tool", "sort_skills"),
+    ("tools.skills_tool", "skill_search_dirs"), ("tools.skills_tool", "locate_skill"),
+    ("tools.skills_tool", "skill_lookup_path_error"), ("tools.skills_sync", "dir_hash"),
+    ("tools.skill_usage", "read_skill_name"),
+)
+
+
+def test_skill_catalog_seams_are_public_and_drive_the_skills_tools(tmp_path, monkeypatch):
+    """The documented skill-catalog helpers import cleanly, raise no private-import finding, and are
+    the names ``skills_list`` reads, so a plugin sees exactly what the agent sees."""
+    import importlib
+    import json
+
+    from tools import skills_tool
+
+    for module, name in _SKILL_CATALOG_SEAMS:
+        assert hasattr(importlib.import_module(module), name), f"{module}.{name}"
+    imports = "".join(f"from {module} import {name}\n" for module, name in _SKILL_CATALOG_SEAMS)
+    assert _private_warnings(validate_plugin_dir(_plugin(tmp_path / "catalog", {"view.py": imports}))) == []
+
+    marker = {"name": "seam-probe-skill", "description": "d", "category": None}
+    monkeypatch.setattr(skills_tool, "find_all_skills", lambda **_kw: [dict(marker)])
+    listed = json.loads(skills_tool.skills_list())
+    assert [s["name"] for s in listed["skills"] if s["name"] == "seam-probe-skill"] == ["seam-probe-skill"]

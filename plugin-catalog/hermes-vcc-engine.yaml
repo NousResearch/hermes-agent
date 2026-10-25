@@ -1,0 +1,22 @@
+name: hermes-vcc-engine
+repo: https://github.com/danbiocchi/hermes-vcc-engine
+sha: 31ee4fe7ef3e3f6c67dadfd45ebc1a3cb9773f95
+description: "Instant context compaction for Hermes Agent: builds the compaction summary in milliseconds with no LLM call, keeping the exact commands, exit codes, errors and files, each linked back to its original message for recall via session_search. Disclosure — no network calls, shell commands or credentials; reads Hermes's config.yaml through Hermes's own loader; subclasses ContextCompressor and relies on its private methods, falling back to the stock compressor if they are missing."
+maintainer: danbiocchi
+tier: community
+category: general
+requires_hermes: ">=0.21.7"
+version: "0.4.1"
+docs_url: https://github.com/danbiocchi/hermes-vcc-engine#readme
+readme: true
+title: "Instant Context Compactor"
+image: https://raw.githubusercontent.com/danbiocchi/hermes-vcc-engine/31ee4fe7ef3e3f6c67dadfd45ebc1a3cb9773f95/docs/img/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/danbiocchi/hermes-vcc-engine/31ee4fe7ef3e3f6c67dadfd45ebc1a3cb9773f95/docs/img/results.svg
+  - https://raw.githubusercontent.com/danbiocchi/hermes-vcc-engine/31ee4fe7ef3e3f6c67dadfd45ebc1a3cb9773f95/docs/img/recall.svg
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

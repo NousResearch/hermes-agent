@@ -219,9 +219,8 @@ def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
     fingerprint-mismatched, or hard-expired entries. TTL-expired non-empty rows are served
     inside the stale-serve window while revalidating off-thread, and an empty local-ollama
     catalog is authoritative inside its own short native TTL, so prefetching either trades a
-    non-blocking serial read for a parallel fetch the picker waits on. Each worker re-persists
-    through the thread-safe ``update_provider_cache_entry`` so concurrent writes cannot
-    clobber each other."""
+    non-blocking serial read for a parallel fetch the picker waits on. Persistence is
+    ``cached_provider_model_ids``'s own locked write; workers add none of their own."""
     from hermes_cli.models import (
         _credential_fingerprint, _disk_serve_tier, _load_provider_models_cache,
         _normalized_cache_slug, cached_provider_model_ids)
@@ -246,12 +245,7 @@ def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
     import concurrent.futures
     def _fetch_one(slug: str) -> None:
         try:
-            models = cached_provider_model_ids(slug, force_refresh=True)
-            # cached_provider_model_ids persists via a non-locked read-modify-write; re-persist
-            # through the locked path so no write is lost under concurrency.
-            if models:
-                from hermes_cli.models import update_provider_cache_entry
-                update_provider_cache_entry(slug, models)
+            cached_provider_model_ids(slug, force_refresh=True)
         except Exception:
             pass  # best-effort; picker falls back to curated list
 
@@ -481,6 +475,16 @@ def _nous_picker_model_ids(curated: dict, force_fresh_nous_tier: bool) -> list:
     try:
         from hermes_cli.models_pricing import nous_policy_allowed_ids, restrict_to_nous_policy
         model_ids = restrict_to_nous_policy(model_ids, nous_policy_allowed_ids(), rescue_empty=True)
+    except Exception:
+        logger.debug("Nous model policy filter failed", exc_info=True)
+    try:
+        # Window plans: the plan's featured picks lead the list. Plan shape only (it rarely changes), so
+        # the last snapshot at any age answers — a long-running gateway's 60s cache has usually lapsed
+        # by the time someone opens /model.
+        from hermes_cli.model_picker_usage import featured_first, nous_picker_usage
+        usage = nous_picker_usage(any_age=True)
+        if usage is not None:
+            model_ids = featured_first(model_ids, usage.featured_model_ids)
     except Exception:
         pass
     return model_ids
@@ -1404,4 +1408,35 @@ def list_picker_providers(
     from hermes_cli.models_validate import drop_unofferable_model_ids
 
     drop_unofferable_model_ids(filtered)
+    _attach_window_model_notes(filtered)
     return filtered
+
+
+def _attach_window_model_notes(providers: list[dict]) -> None:
+    """Nous on a usage-window plan, for the messaging pickers (same words as the CLI/TUI/desktop pickers):
+    ``model_labels`` {id: "Large" | "Free"} (plan shape, any-age snapshot; other levels carry no tag), and
+    from a fresh snapshot only (a stale percent would mislabel it) ``plan_line`` (the limit line: "Weekly
+    limit reached · resets in 21h · paid models now use your credits (pay as you go)").
+    Every field is omitted when empty and for any account not on a window plan. Never raises."""
+    try:
+        nous = next((p for p in providers if str(p.get("slug", "")).lower() == "nous"), None)
+        if nous is None:
+            return
+        from hermes_cli.model_picker_usage import nous_picker_usage, usage_level_label, usage_levels
+        fresh = nous_picker_usage()
+        usage = fresh or nous_picker_usage(any_age=True)
+        if usage is None:
+            return
+        from agent.plan_limits import cached_pricing
+        pricing = cached_pricing()  # this profile's catalog only (cache-only, no credential refresh)
+        models = [str(m) for m in nous.get("models", [])]
+        labels = {m: label for m, lv in usage_levels(models, pricing).items() if (label := usage_level_label(lv))}
+        if labels:
+            nous["model_labels"] = labels
+        if fresh is None:
+            return
+        line = usage.limit_line()
+        if line:
+            nous["plan_line"] = line
+    except Exception:
+        logger.debug("window model notes failed", exc_info=True)

@@ -197,8 +197,11 @@ def write_tenant_home(t: Tenant, extra_config: dict[str, Any] | None = None,
     for k, v in (extra_config or {}).items():
         cfg[k] = {**cfg.get(k, {}), **v} if isinstance(v, dict) and isinstance(cfg.get(k), dict) else v
     (t.home / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+    # Never the well-known 8642 (a developer's live gateway holds it and the sandbox gateway exits),
+    # unless the caller configures platforms itself: API_SERVER_PORT would override its port.
+    port = {} if "platforms" in (extra_config or {}) else {"API_SERVER_PORT": str(free_port())}
     env = {PROVIDER_KEY_ENV: t.provider_key, "API_SERVER_KEY": t.api_server_key, "TENANT_MARKER": t.env_marker,
-           **(extra_env or {})}
+           **port, **(extra_env or {})}
     (t.home / ".env").write_text("".join(f"{k}={v}\n" for k, v in env.items()), encoding="utf-8")
     (t.home / "memories").mkdir(exist_ok=True)
     (t.home / "memories" / "MEMORY.md").write_text(f"{t.memory}\n", encoding="utf-8")

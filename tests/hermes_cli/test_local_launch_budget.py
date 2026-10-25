@@ -263,6 +263,28 @@ def test_idle_router_gets_windows_for_the_current_desktop(hermes_home, monkeypat
     assert bootstrap.refit_idle_presets(router) is False and router.reloads == 1
 
 
+def test_a_replan_keeps_the_draft_the_serving_engine_loads(hermes_home, monkeypatch, capacity_probe):
+    """The idle re-plan decides for the engine the server runs, as boot did: a staged DFlash draft
+    stays in the preset, not the MTP fallback an unknown engine gets."""
+    from hermes_cli.local_runtime import bootstrap, catalog
+
+    mdir, _gguf = _stage_27b(hermes_home, monkeypatch)
+    draft = catalog.catalog_by_id()["qwen3.8-27b"].draft
+    (bootstrap.assets_dir() / draft.local_name).touch()
+    engine = SimpleNamespace(tag="b11671")
+    monkeypatch.setattr(bootstrap, "_SERVING_ENGINE", engine)
+    _card(monkeypatch, 2.0)
+    path = hermes_home / "presets.ini"
+    bootstrap._generate_presets(mdir, path, engine_tag=engine.tag)
+    assert "spec-type = draft-dflash" in path.read_text(encoding="utf-8")
+
+    _card(monkeypatch, 0.0)  # the user closed the heavy apps
+    bootstrap.refit_idle_presets(_Router(path, {MODEL_ID: "unloaded"}))
+
+    text = path.read_text(encoding="utf-8")
+    assert "spec-type = draft-dflash" in text and "parallel = 1" in text
+
+
 @pytest.mark.parametrize("status", ["loaded", "loading", "sleeping"])
 def test_never_rewrites_while_a_model_holds_memory(hermes_home, monkeypatch, capacity_probe, status):
     """The router unloads a loaded model whose launch flags change on reload."""

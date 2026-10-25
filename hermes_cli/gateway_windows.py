@@ -7,6 +7,7 @@ hidden-console launcher instead of ``schtasks /Run`` so start/restart behavior i
 
 from __future__ import annotations
 
+import codecs
 import ctypes
 import json
 import locale
@@ -96,6 +97,11 @@ def _decode_schtasks_output(data: bytes) -> str:
     Scheduled-Task drift check could never settle (#116193). Strict UTF-8 first (ASCII and genuine
     UTF-8 output pass; legacy multi-byte text fails loudly), then the native code pages, then a lossy
     fallback so a reader thread never raises."""
+    if data[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE):
+        try:
+            return data.decode("utf-16")  # a genuine UTF-16 write (BOM) decodes as such, never as a code page
+        except UnicodeDecodeError:
+            pass  # malformed UTF-16 falls through to the same fallbacks as any other bytes
     for encoding in ("utf-8", *_windows_console_encodings()):
         try:
             return data.decode(encoding)
@@ -217,12 +223,11 @@ def _is_access_denied(detail: str) -> bool:
 
 
 def _is_running_as_admin() -> bool:
-    """Return True when the current Windows process is elevated."""
+    """Return True when the current Windows process is elevated (the shared ``TokenElevation``
+    probe; ``IsUserAnAdmin`` is deprecated and answered the same question a second way)."""
     _assert_windows()
-    try:
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
-    except Exception:
-        return False
+    from hermes_dir_acl import process_is_elevated
+    return process_is_elevated()
 
 
 def _current_profile_cli_args() -> list[str]:
@@ -1857,6 +1862,21 @@ def _wait_for_gateway_absent(timeout_s: float = 30.0, interval_s: float = 0.5) -
     return _absent()
 
 
+def _mark_planned_restart() -> None:
+    """Stamp the planned-restart marker once the old gateway is gone, before ``start()``.
+
+    Windows has no SIGUSR1, so ``restart()`` is stop + start: the gateway never runs the in-band
+    restart path that stamps this marker itself, and the next boot would read a plain stop and skip
+    the "Gateway online" home-channel notice.
+
+    Not before ``stop()``: the old process stays alive until its planned-stop watcher notices, and
+    for that window a flapping platform can reconnect, replay the notice and unlink the marker the
+    new process then never finds.
+    """
+    from gateway.restart_notice import write_planned_restart_marker
+    write_planned_restart_marker()
+
+
 def restart() -> None:
     """Stop then start. Waits for the old gateway to be authoritatively gone first; otherwise
     ``start()``'s "already running" guard sees the draining process and no-ops, and nothing
@@ -1877,6 +1897,7 @@ def restart() -> None:
     from hermes_cli.gateway import _wait_for_api_server_port_free  # avoid circular init
 
     _wait_for_api_server_port_free()
+    _mark_planned_restart()
     start()
 
     if not _wait_for_gateway_ready(timeout_s=15.0):

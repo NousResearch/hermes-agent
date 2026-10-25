@@ -93,6 +93,7 @@ class Turn:
     input_tokens: int = 100
     output_tokens: int = 20
     cached_tokens: int = 0
+    cache_write_tokens: int = 0
     drop_after_events: int | None = None  # close the socket after N events (no terminal event)
 
 
@@ -260,7 +261,8 @@ def turn_events(turn: Turn) -> list[dict[str, Any]]:
     usage = ResponseUsage(
         input_tokens=turn.input_tokens, output_tokens=turn.output_tokens,
         total_tokens=turn.input_tokens + turn.output_tokens,
-        input_tokens_details=InputTokensDetails(cached_tokens=turn.cached_tokens),
+        input_tokens_details=InputTokensDetails(cached_tokens=turn.cached_tokens,
+                                                 cache_write_tokens=turn.cache_write_tokens),
         output_tokens_details=OutputTokensDetails(reasoning_tokens=0))
     events.append(ResponseCompletedEvent(response=_response(resp_id, "completed", built, usage),
                                          sequence_number=seq(), type="response.completed"))

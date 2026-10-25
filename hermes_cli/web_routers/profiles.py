@@ -232,6 +232,14 @@ def _profile_targets(log_label: str) -> list[tuple[str, Path]]:
     return targets
 
 
+def _scoped_profile_targets(log_label: str, profile: Optional[str]) -> list[tuple[str, Path]]:
+    """Every profile, or only ``profile``: a native grant may read just the profile it names,
+    so the Desktop assembles the all-profiles view from one scoped read per profile."""
+    scope = (profile or "all").strip() or "all"
+    targets = _profile_targets(log_label)
+    return targets if scope == "all" else [(name, home) for name, home in targets if name == scope]
+
+
 def _tag_rows(rows: list[dict[str, Any]], name: str, now: float) -> list[dict[str, Any]]:
     """Stamp session rows with their owning profile and the 300s active heuristic; SQLite
     stores flags as 0/1 and the sidebar needs booleans."""
@@ -266,9 +274,9 @@ def _read_profile_db(name: str, home, errors: Optional[list[dict[str, str]]],
     the open fails or ``fn`` raises (warned once, recorded in ``errors`` when given).
 
     Read-only on the healthy path: this runs on every sidebar refresh, so it must not
-    routinely DDL/write-lock another profile's live DB. The open helper's stale-schema probe
-    performs a ONE-TIME writable open when the store predates a schema addition — read-only
-    opens skip column reconciliation and would otherwise fail here on every refresh."""
+    routinely DDL/write-lock another profile's live DB. A store that predates a schema addition
+    gets the missing declared tables/columns ONCE from the open helper, and only while no gateway
+    owns it; an owned store is reported in ``errors`` with the restart remedy (#140315)."""
     db_path = Path(home) / "state.db"
     if not db_path.exists():
         return None
@@ -348,20 +356,8 @@ def _sidebar_profile_cache_clear():
         _SIDEBAR_PROFILE_CACHE.clear()
 
 
-def _sidebar_profile_cache_drop(key) -> None:
-    with _SIDEBAR_PROFILE_CACHE_LOCK:
-        _SIDEBAR_PROFILE_CACHE.pop(key, None)
-
-
 def _profile_state_db(home) -> Path:
     return Path(home) / "state.db"
-
-
-def _profile_heal_exhausted(home) -> bool:
-    """True when the one-shot writable heal already gave up on this store."""
-    from hermes_cli.web_server_sessions import _session_db_heal_exhausted
-
-    return str(_profile_state_db(home)) in _session_db_heal_exhausted
 
 
 def _slice_has_rows(slices: dict[str, Any]) -> bool:
@@ -507,7 +503,14 @@ def get_profiles_sessions(
 
     sort_key = "last_active" if order == "recent" else "started_at"
     merged.sort(key=lambda s: s.get(sort_key) or s.get("started_at") or 0, reverse=True)
-    window = _pinned_window(merged, offset, limit)
+    if archived == "only":
+        # Pinned live chats back-fill this view, but cannot consume positions
+        # in its archived-only cursor (whose total counts only archived rows).
+        window = _pinned_window([s for s in merged if s.get("archived")], offset, limit)
+        # Keep backfill after the window: clients retain only limit rows plus pins.
+        window.extend(s for s in merged if s.get("pinned") and not s.get("archived"))
+    else:
+        window = _pinned_window(merged, offset, limit)
     if not full:
         _strip_session_list_rows(window)
     return {"sessions": window, "total": sum(totals.values()), "profile_totals": totals,
@@ -587,17 +590,6 @@ def get_profiles_sessions_sidebar(
                 lambda db: _build_slices(db, profile_cache_key, recents_subagents))
             if slices is None:
                 continue
-        # Heal already gave up and this read found no rows. That is not "no
-        # sessions" — the probe-less open can miss the schema the list needs.
-        # Drop the cached empty page so the next poll does not reuse the lie.
-        if _profile_heal_exhausted(home) and not _slice_has_rows(slices):
-            _sidebar_profile_cache_drop(profile_cache_key)
-            if not any(err.get("profile") == name for err in errors):
-                errors.append({
-                    "profile": name,
-                    "error": "schema heal exhausted; session list unavailable",
-                })
-            continue
         if _slice_has_rows(slices):
             contributed.add(name)
         # A full window means more rows remain on disk — all "load more" needs, at no cost
@@ -697,6 +689,8 @@ def _merge_profile_tree(
         # so the cross-profile merge agrees by construction with the trees it merges.
         from tui_gateway.project_tree import _path_key
         key = _path_key(project.get("path") or project["id"])
+        # A per-profile read is merged again by its caller, which cannot compute this key.
+        project["mergeKey"] = key
         existing = merged.get(key)
         if existing is None:
             merged[key] = project
@@ -721,7 +715,7 @@ def _merge_profile_tree(
 
 @sessions_router.get("/api/profiles/projects/tree")
 @_sidebar_singleflight_cache
-def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000):
+def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000, profile: Optional[str] = None):
     """Project tree for every profile at once, for the all-profiles sidebar.
 
     ``projects.tree`` over JSON-RPC answers for the backend's own profile only; this runs the
@@ -730,13 +724,16 @@ def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000
     off: a repo with zero sessions is the same repo in every profile (the disk scan would
     multiply empty lanes by the profile count), and discovery is the one part of the builder
     that writes (policy reconciliation), which a read-only fan-out must not do.
+
+    ``profile`` limits the scan to that one profile: a native grant may read only its own, so
+    the Desktop merges one such read per profile by each project's ``mergeKey``.
     """
     from tui_gateway import server as gateway_server
     merged: dict[str, dict[str, Any]] = {}
     scoped_session_ids: list[str] = []
     errors: list[dict[str, str]] = []
 
-    for name, home in _profile_targets("GET /api/profiles/projects/tree"):
+    for name, home in _scoped_profile_targets("GET /api/profiles/projects/tree", profile):
         def _read(db, name=name, home=home):
             with _hermes_home_scope(home):
                 tree, _active_id = gateway_server._build_project_tree(
@@ -770,7 +767,7 @@ def _pr_url_from_tool_output(content: str) -> Optional[tuple[int, str]]:
 
 
 @sessions_router.post("/api/profiles/sessions/pull-requests")
-def post_profiles_sessions_pull_requests(body: SessionPrScanBody):
+def post_profiles_sessions_pull_requests(body: SessionPrScanBody, profile: Optional[str] = None):
     """The PR each of these sessions opened, recovered from its own transcript: a session
     that starts in the main checkout and works in a worktree has no branch of its own, so
     its PR is invisible to the branch join — but ``gh pr create`` ran in the conversation
@@ -788,7 +785,7 @@ def post_profiles_sessions_pull_requests(body: SessionPrScanBody):
                 # Oldest-first, so a later `gh pr create` (the replacement PR) wins.
                 found[pr["session_id"]] = {"number": parsed[0], "url": parsed[1]}
 
-    for name, home in _profile_targets("POST /api/profiles/sessions/pull-requests"):
+    for name, home in _scoped_profile_targets("POST /api/profiles/sessions/pull-requests", profile):
         _read_profile_db(name, home, None, _read)
 
     # ``scanned``: every id looked at, so the caller can remember "nothing there".
@@ -831,7 +828,7 @@ async def create_profile_endpoint(body: ProfileCreate):
         path = profiles_mod.create_profile(
             name=body.name, clone_from=clone_from, clone_all=body.clone_all,
             clone_config=clone_config, no_skills=body.no_skills, description=body.description,
-            clone_channels=body.clone_channels)
+            clone_channels=body.clone_channels, **({"soul": body.soul} if body.soul is not None else {}))
         # Match the CLI flow: fresh named profiles get the bundled skills (cloning already
         # copied the source's; no_skills wrote the opt-out marker so seeding no-ops) and a
         # ~/.local/bin wrapper when the alias is safe.
@@ -882,7 +879,7 @@ async def create_profile_endpoint(body: ProfileCreate):
 
     return {"ok": True, "name": body.name, "path": str(path), "model_set": model_set, "model_error": model_error,
             "mcp_written": mcp_written, "skills_disabled": skills_disabled,
-            "hub_installs": hub_installs}
+            "hub_installs": hub_installs, "soul_set": body.soul is not None}
 
 
 @router.get("/api/profiles/active")

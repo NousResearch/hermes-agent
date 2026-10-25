@@ -17,6 +17,12 @@ from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENA
 
 logger = logging.getLogger(__name__)
 
+# Browser and CDP results can be a page-controlled JSON tree. The walkers stop
+# at this depth and replace the remainder, so a nested payload cannot raise
+# RecursionError on the way to the model.
+REDACT_WALK_MAX_DEPTH = 320
+REDACT_WALK_DEPTH_MARKER = "[redacted: nesting limit]"
+
 # ---------------------------------------------------------------------------
 # Vault-value redaction registry (profile-scoped, bounded)
 # ---------------------------------------------------------------------------
@@ -147,6 +153,11 @@ _PREFIX_PATTERNS = [
     # ``***``. Kept free of nested unbounded repeats so the pattern passes the
     # same structural gate plugins must.
     r"sk-[A-Za-z0-9_-](?:\.?[A-Za-z0-9_-]){9,}",
+    # Context7 API keys: a fixed vendor prefix (``ctx7sk-``) plus an opaque body.
+    # The generic ``sk-`` family cannot catch it: the matcher's lookbehind
+    # rejects a prefix preceded by a word char, and here the ``sk-`` sits inside
+    # ``ctx7sk-`` - so a bare Context7 key passed through unmasked (#142576).
+    r"ctx7sk-[A-Za-z0-9_-]{10,}",
     r"ghp_[A-Za-z0-9]{10,}",            # GitHub PAT (classic)
     r"github_pat_[A-Za-z0-9_]{10,}",    # GitHub PAT (fine-grained)
     r"gho_[A-Za-z0-9]{10,}",            # GitHub OAuth access token

@@ -193,4 +193,33 @@ class TestForkPath:
         assert calls["history"] == history  # full snapshot replayed verbatim
         assert "which file?" in calls["user_message"]
         assert calls["write_origin"] == "side_question"
-        assert calls.get("shutdown") and calls.get("closed")
+
+    def test_fork_teardown_leaves_the_sessions_terminal_environment(self):
+        """The /btw fork shares the live session's id, which keys its terminal sandbox: a real
+        fork's teardown must release clients only, never ``close()`` the session's tool state."""
+        from agent.side_question import _answer_via_fork
+        from run_agent import AIAgent
+        from tools import terminal_tool
+
+        class _Env:
+            cleaned = False
+
+            def cleanup(self, **_kwargs):
+                _Env.cleaned = True
+
+        with patch("model_tools.get_tool_definitions", return_value=[]), \
+             patch("model_tools.check_toolset_requirements", return_value={}), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}):
+            parent = AIAgent(api_key="k", base_url="https://openrouter.ai/api/v1", model="test/model",
+                             quiet_mode=True, skip_context_files=True, skip_memory=True, session_id="sess-btw")
+            parent._cached_system_prompt = "You are helpful."
+            env = _Env()
+            terminal_tool._active_environments["sess-btw"] = env
+            try:
+                with patch.object(AIAgent, "run_conversation", return_value={"final_response": "foo.py"}):
+                    assert _answer_via_fork(parent, "which file?", []) == "foo.py"
+                assert terminal_tool._active_environments.get("sess-btw") is env
+                assert not _Env.cleaned
+            finally:
+                terminal_tool._active_environments.pop("sess-btw", None)
+

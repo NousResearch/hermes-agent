@@ -350,7 +350,9 @@ A smaller auxiliary compression model can lower the live compression trigger wit
 changing the selected tail policy. In `lean` mode the selection budget remains based
 on the **main model's context window**: 2.5%, clamped to 10K–25K tokens, and never more
 than 20% of that window (the 10K floor alone is 61% of a 16K local window, so without the cap a
-small model's "protected" tail was the whole request and compaction reclaimed nothing). For example,
+small model's "protected" tail was the whole request and compaction reclaimed nothing), nor more than
+half of a compression trigger above the 2K minimum summary budget (a `threshold_tokens` of 12K on a 1M window would otherwise keep a 25K tail, so
+every pass stayed over the trigger and refused as "would grow"). For example,
 a 1M main model with a 512K auxiliary model retains a 25K
 selection budget even when feasibility lowers its trigger from 850K to 512K. Explicit `legacy` mode instead
 recomputes `threshold_tokens × target_ratio` (102,400 tokens at 512K × 0.20).
@@ -570,7 +572,10 @@ summarized, and its older images are retired so compaction can still make room.
 A skill's instructions are not kept verbatim forever, but the model is always told when they are
 gone. Every `skill_view` result that a pass stubs or summarizes away (whatever its size) carries
 `[SKILL_PRUNED: content lost in compression; reload with skill_view(name='…')]`, and the summary
-lists each such skill under `## Pruned Skills`. Skills loaded inline by `/skill-name`, bundles,
+lists each such skill under `## Pruned Skills`. Whenever a marker survives anywhere in the compacted
+transcript, the handoff summary ends with a `## Skill Safety Rule` telling the model to reload the
+skill before relying on it; fresh sessions never carry that rule in their system prompt, since no
+marker can exist before the first compaction. Skills loaded inline by `/skill-name`, bundles,
 stacked invocations and gateway channel auto-load get the same marker when their turn is
 summarized, and the summary quotes that turn as typed (`/skill-name do X`) rather than the skill
 body. A reload after the boundary returns the full skill again. Skills preloaded with `-s` or

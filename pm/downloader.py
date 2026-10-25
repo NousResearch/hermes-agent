@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
-from pm.network import edge_block, is_transient, retry_network
+from pm.network import edge_block, is_transient, recovery_delay, retry_network
 
 # GitHub's release-asset CDN (release-assets.githubusercontent.com, which
 # TUR's pool 302s to) 403s unknown tool UAs from CI runner IP ranges --
@@ -127,10 +127,12 @@ class DownloadPaused(DownloadError):
 
 
 class DownloadTransportError(DownloadError):
-    """An exhausted network request, with its original status and URL."""
+    """A network request failure, with its original status and URL."""
 
-    def __init__(self, url: str, cause: Exception):
+    def __init__(self, url: str, cause: Exception, *, recoverable: bool = True):
         self.url = url
+        self.cause = cause
+        self.retryable = recoverable and is_transient(cause)
         self.status = cause.code if isinstance(cause, urllib.error.HTTPError) else None
         # A host that does not resolve is not worth a retry, but the pinned
         # mirror is a different host and the hash still guards the bytes.
@@ -152,6 +154,13 @@ class Source:
     dest: Path
     sha256: str = ""  # "" = no integrity check (model catalog policy)
     fallbacks: tuple[str, ...] = ()
+
+
+@dataclass
+class _Recovery:
+    due: float = 0.0
+    attempt: int = 0
+    saved: int = 0
 
 
 _Ranges = list[tuple[int, int]]
@@ -256,6 +265,8 @@ class Download:
     ``Source.dest`` is atomically replaced only after successful transfer.
     ``pause()`` stops between chunks or while waiting for a partial's owner;
     ``run()`` raises :class:`DownloadPaused` and preserves resumable bytes.
+    ``keep_retrying`` keeps active model jobs waiting through transient outages;
+    non-resumable transfers retain the bounded transport policy.
     """
 
     CONNECTIONS = 8
@@ -268,9 +279,11 @@ class Download:
         connections: int = CONNECTIONS,
         partials_dir: Optional[Path] = None,
         pause_event: Optional[threading.Event] = None,
+        keep_retrying: bool = False,
     ):
         self.sources = [Source(s.url, Path(s.dest), s.sha256, tuple(s.fallbacks)) for s in sources]
         self.resume = resume
+        self.keep_retrying = keep_retrying and resume
         self.connections = max(1, int(connections))
         if partials_dir:
             self.partials_dir = Path(partials_dir)
@@ -281,6 +294,7 @@ class Download:
         self._owns_pause_event = pause_event is None
         self._paused = pause_event if pause_event is not None else threading.Event()
         self._durable_done = 0
+        self._recovery: dict[str, _Recovery] = {}
 
     def pause(self) -> None:
         """Request a stop between chunks; run() raises DownloadPaused."""
@@ -352,18 +366,39 @@ class Download:
 
     def _try_sources(self, source: Source, operation, failures: list[DownloadTransportError]):
         urls = tuple(dict.fromkeys((source.url, *source.fallbacks)))
-        for index, url in enumerate(urls):
+        remaining = list(urls)
+        while remaining:
             self._check_pause()
-            candidate = Source(url, source.dest, source.sha256, urls[index + 1:])
+            url = remaining[0]
+            if self.keep_retrying:
+                url = min(remaining, key=lambda item: self._recovery.setdefault(item, _Recovery()).due)
+                delay = self._recovery[url].due - time.monotonic()
+                if delay > 0:
+                    self._wait_retry(min(delay, 30.0))
+                    continue
+            candidate = Source(url, source.dest, source.sha256, tuple(item for item in remaining if item != url))
             try:
                 return candidate, operation(candidate)
             except DownloadTransportError as exc:
+                if self.keep_retrying:
+                    failures[:] = [error for error in failures if error.url != url]
                 failures.append(exc)
-                if not exc.fallback_allowed or index == len(urls) - 1:
+                if self.keep_retrying and exc.retryable:
+                    recovery = self._recovery[url]
+                    if self._durable_done > recovery.saved:
+                        recovery.attempt = 0
+                        recovery.saved = self._durable_done
+                    delay = recovery_delay(exc.cause, recovery.attempt)
+                    recovery.due = time.monotonic() + delay
+                    recovery.attempt += 1
+                    logging.getLogger(__name__).warning("%s; retrying in %gs", exc, delay)
+                    continue
+                remaining.remove(url)
+                if not exc.fallback_allowed or not remaining:
                     if len(failures) == 1:
                         raise
                     raise DownloadError("\n".join(str(error) for error in failures)) from exc
-                logging.getLogger(__name__).debug("%s; trying pinned mirror %s", exc, urls[index + 1])
+                logging.getLogger(__name__).debug("%s; trying pinned mirror %s", exc, remaining[0])
 
     def _transfer(self, source: Source, tick) -> int:
         from pm.download_state import partial_lock
@@ -375,6 +410,7 @@ class Download:
             if _existing_dest_ok(source):
                 return source.dest.stat().st_size
             # Recheck identity after waiting for another process's partial.
+            self._durable_done = 0
             remote = self._probe(source.url)
             covered = self._partial_ranges(source, remote) if remote.ranged else []
             self._durable_done = sum(end - start for start, end in covered)
@@ -391,13 +427,17 @@ class Download:
                 return self._fetch_single(source, remote, report)
 
             configured_connections = self.connections
+            recoverable = self.keep_retrying and resumable
             try:
-                size = retry_network(fetch, wait=self._wait_retry,
-                                     progress=(lambda: self._durable_done) if self.resume and resumable else None,
-                                     fallback_available=bool(source.fallbacks))
+                if recoverable:
+                    size = fetch()
+                else:
+                    size = retry_network(fetch, wait=self._wait_retry,
+                                         progress=(lambda: self._durable_done) if self.resume and resumable else None,
+                                         fallback_available=bool(source.fallbacks))
             except (OSError, http.client.HTTPException) as exc:
                 if isinstance(exc, urllib.error.URLError) or is_transient(exc):
-                    raise DownloadTransportError(source.url, exc) from exc
+                    raise DownloadTransportError(source.url, exc, recoverable=recoverable) from exc
                 raise
             finally:
                 self.connections = configured_connections
@@ -434,7 +474,7 @@ class Download:
                     raise DownloadError(f"unexpected download probe status: {response.status}")
                 return _Remote(int(response.headers.get("Content-Length") or 0), False, etag)
         try:
-            return retry_network(request, wait=self._wait_retry)
+            return request() if self.keep_retrying else retry_network(request, wait=self._wait_retry)
         except (OSError, http.client.HTTPException) as exc:
             raise DownloadTransportError(url, exc) from exc
         except DownloadError:

@@ -5,8 +5,10 @@ from __future__ import annotations
 import errno
 import http.client
 import logging
+import random
 import socket
 import ssl
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -86,6 +88,12 @@ def _delay(exc: Exception, attempt: int) -> float:
                     retry_after = 0.0
             delay = max(delay, retry_after)
     return delay
+
+
+def recovery_delay(exc: Exception, attempt: int) -> float:
+    """Spread active-job retries without shortening the server's requested wait."""
+    ceiling = min(_MAX_DELAY, 2.0 ** min(attempt, 5))
+    return max(random.uniform(ceiling / 2, ceiling), min(_delay(exc, 0), sys.float_info.max))
 
 
 def retry_network(

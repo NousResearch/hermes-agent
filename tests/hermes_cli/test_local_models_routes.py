@@ -12,6 +12,7 @@ import json
 import os
 import time
 from pathlib import Path
+from threading import Event
 
 import pytest
 from fastapi.testclient import TestClient
@@ -19,6 +20,7 @@ from fastapi.testclient import TestClient
 # The real loopback range server (shared with tests/pm): importing the
 # fixture name at module scope registers it for these tests too.
 from tests.pm._range_server import dl_server, url as _srv_url
+from tests.waiting import wait_until
 
 
 @pytest.fixture
@@ -318,12 +320,12 @@ def test_download_unknown_model_404s(client):
     assert r.status_code == 404
 
 
-def test_download_short_of_server_length_errors_and_cleans_up(client, monkeypatch, tmp_path):
+def test_short_server_body_stays_unpublished_and_pause_interrupts_recovery(client, monkeypatch, tmp_path, caplog):
     """Catalog sizes are advisory (upstream re-uploads may make them
     stale — a mismatch against the CATALOG must not fail a download).
     The server's own declared length is the only completeness check:
-    fewer bytes than the server promised means a dropped connection, so
-    the job errors and nothing is staged."""
+    fewer bytes than the server promised means a dropped connection. Recovery
+    must remain interruptible and cannot publish an incomplete model."""
 
     from hermes_cli.web_routers import local_models as lm
     from hermes_cli.local_runtime.bootstrap import models_dir
@@ -332,8 +334,17 @@ def test_download_short_of_server_length_errors_and_cleans_up(client, monkeypatc
         def open(self, req, timeout=None):
             requests.append(req.headers.get('Range'))
             return super().open(req, timeout)
-    monkeypatch.setattr("pm.downloader._OPENER", Truncated(b"not the real body", content_length=32))
-    monkeypatch.setattr("pm.downloader.Download._wait_retry", lambda self, seconds: None)
+    from pm import downloader
+
+    waiting = Event()
+    original_wait = downloader.Download._wait_retry
+
+    def wait_retry(download, seconds):
+        waiting.set()
+        original_wait(download, seconds)
+
+    monkeypatch.setattr(downloader, "_OPENER", Truncated(b"not the real body", content_length=32))
+    monkeypatch.setattr(downloader.Download, "_wait_retry", wait_retry)
     destination = models_dir() / 'truncated.gguf'
     monkeypatch.setattr(lm, '_download_plan', lambda *_: [('https://fixture.invalid/model', destination, 32)])
     monkeypatch.setattr('pm.paths.partials_root', lambda: tmp_path / 'partials')
@@ -357,19 +368,29 @@ def test_download_short_of_server_length_errors_and_cleans_up(client, monkeypatc
     job_id = r.json()["job_id"]
     assert job_id
 
-    deadline = time.time() + 10
-    status = None
-    while time.time() < deadline:
-        status = client.get(f"/api/local-models/jobs/{job_id}").json()
-        if status["status"] in ("done", "error"):
-            break
-        time.sleep(0.05)
-    assert status is not None and status["status"] == "error"
-    assert 'bytes=0-0' in requests and any(value != 'bytes=0-0' for value in requests)
-    assert 'IncompleteRead' in status['error']
-    assert not destination.exists()
-    assert job_id not in lm._RUNNING
-    assert not list(models_dir().glob('*.part'))
+    try:
+        assert waiting.wait(5), "incomplete body did not enter network recovery"
+        assert client.get(f"/api/local-models/jobs/{job_id}").json()["status"] == "running"
+        assert 'bytes=0-0' in requests and any(value != 'bytes=0-0' for value in requests)
+        assert 'IncompleteRead' in caplog.text
+        assert not destination.exists()
+        assert client.post("/api/local-models/download/pause", json={"job_id": job_id}).json()["paused"]
+        status = _poll_job(client, job_id, deadline_s=5)
+        assert status["status"] == "paused", status
+        assert status["error"] is None and status["can_resume"]
+        assert not list(models_dir().glob('*.part'))
+        body = b"complete model bytes".ljust(32, b".")
+        monkeypatch.setattr(downloader, "_OPENER", _FakeRangeOpener(body))
+        assert client.post("/api/local-models/download/resume", json={"job_id": job_id}).json()["resumed"]
+        wait_until(lambda: lm._JOBS[job_id]["status"] in ("done", "error"), timeout=5)
+        assert lm._JOBS[job_id]["status"] == "done", lm._JOBS[job_id]["error"]
+        assert destination.read_bytes() == body
+        assert job_id not in lm._RUNNING
+    finally:
+        if job_id in lm._RUNNING:
+            lm._RUNNING[job_id]["pause"].set()
+            wait_until(lambda: lm._JOBS[job_id]["status"] != "running", timeout=5)
+            lm._RUNNING.pop(job_id, None)
 
 
 def test_download_already_downloaded_short_circuits(client, monkeypatch):

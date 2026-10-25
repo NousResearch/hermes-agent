@@ -4,6 +4,7 @@ import type { GatewayEndpoint } from './local-gateway'
 import { configurePythonGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, localGatewayDial, nativeGatewayHttpHeaders, redialLocalGateway, runGatewayEnsure, runGatewayOwnerRestart } from './local-gateway'
 import { closeGatewayTicketBridges, createGatewayTicketResolver } from './local-gateway-python'
 import { createPluginWsUrlHandler } from './plugin-ws-url'
+import { connectSshGateway, retireNativeSshConnection } from './ssh-native-gateway'
 const localGatewayDials = createLocalGatewayDials()
 configurePythonGatewayTicketClient(createGatewayTicketResolver(
   async () => ensureRuntime(await resolveHermesBackend([]), () => undefined), resolveHermesCwd))
@@ -135,7 +136,7 @@ import { createCloudSessionRecovery } from './cloud-session-recovery'
 import { installCommandScreenshot } from './command-screenshot'
 import { composerImageTimestamp } from './composer-image-name'
 import { writeComposerPaste } from './composer-paste'
-import { applyConnectionChange, teardownSshState } from './connection-apply'
+import { applyConnectionChange, rollbackSshBootstrap, stopOwnedSshDashboard, teardownSshState } from './connection-apply'
 import {
   connectionInstallIds,
   evictConnectionCaches,
@@ -6055,6 +6056,12 @@ async function buildReadinessHealthProbe(baseUrl, authMode, token) {
 // a manual "Use gateway" click. Run the cascade once and retry once; anything
 // that is not that exact case surfaces unchanged.
 async function waitForRemoteHermes(remote) {
+  if (remote.gatewayEndpoint) {
+    await fetchJsonForBackend(remote, '/api/status')
+
+    return
+  }
+
   try {
     await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers)
   } catch (error) {
@@ -9483,6 +9490,13 @@ async function teardownSshConnection(profile) {
 
   terminalIpc.disposeTerminalSessionsForSshScope(scope)
 
+  if (state.gatewayEndpoint) {
+    state.dispose?.()
+    await sshTeardowns.track(state.ssh, () => state.ssh.close())
+
+    return
+  }
+
   // Kill the owned remote serve --isolated *before* closing the SSH
   // transport. Spawn detaches with setsid/nohup, so closing the tunnel
   // alone leaves the backend at pid 1 holding state.db (#91668).
@@ -9726,64 +9740,18 @@ async function bootstrapSshConnection(
 // drop its forward and transport, and surface a fence error so the managed
 // updater refuses to mutate a remote install with an unfenced serve.
 async function rollbackSshBootstrapResult(ssh, result, profile, sshConfig, boundaryError) {
-  const cleanupErrors: string[] = []
   const scope = sshScopeKey(profile)
 
-  try {
-    const expected = {
-      ownershipId: result.ownershipId,
-      pid: result.pid,
-      spawnNonce: result.spawnNonce,
-      profile: resolveRemoteSshDashboardProfile(sshConfig.remoteProfile, profile),
-      hermesPath: result.hermesPath,
-      hermesHome: result.hermesHome,
-      startedAt: result.startedAt,
-      creationTimeNs: result.creationTimeNs,
-      creationTime: result.creationTime
+  return rollbackSshBootstrap(ssh, result, resolveRemoteSshDashboardProfile(sshConfig.remoteProfile, profile), boundaryError, {
+    stopWindows: terminateOwnedWindowsDashboardForUpdate,
+    stopPosix: remoteLifecycle.terminateOwnedDashboardForUpdate,
+    forget: () => {
+      if (sshConnections.get(scope)?.ssh === ssh) {
+        sshIsolatedKeepalives.stop(scope)
+        sshConnections.delete(scope)
+      }
     }
-
-    if (result.platform?.os === 'Windows') {
-      await terminateOwnedWindowsDashboardForUpdate(
-        ssh,
-        { hermesPath: result.hermesPath, hermesHome: result.hermesHome, python: result.pythonPath },
-        expected
-      )
-    } else if (result.platform?.os === 'Linux' || result.platform?.os === 'Darwin') {
-      await remoteLifecycle.terminateOwnedDashboardForUpdate(ssh, expected)
-    } else {
-      cleanupErrors.push(`unsupported remote platform ${result.platform?.os || 'unknown'}`)
-    }
-  } catch (error: any) {
-    cleanupErrors.push(String(error?.message || error))
-  }
-
-  try {
-    await ssh.cancelForward(result.localPort, result.remotePort)
-  } catch (error: any) {
-    cleanupErrors.push(String(error?.message || error))
-  }
-
-  try {
-    await ssh.close()
-  } catch (error: any) {
-    cleanupErrors.push(String(error?.message || error))
-  }
-
-  if (sshConnections.get(scope)?.ssh === ssh) {
-    sshIsolatedKeepalives.stop(scope)
-    sshConnections.delete(scope)
-  }
-
-  if (cleanupErrors.length > 0) {
-    const unsafe: any = new Error(
-      `An SSH bootstrap crossed the managed-update gate and its exact owned serve could not be fenced: ${cleanupErrors.join('; ')}`
-    )
-
-    unsafe.code = 'managed-update-bootstrap-fence-failed'
-    unsafe.unsafeManagedBootstrap = true
-    unsafe.cause = boundaryError
-    throw unsafe
-  }
+  })
 }
 
 async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, source, metadata, fingerprint, lease) {
@@ -9808,6 +9776,8 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
     sshIsolatedKeepalives.stop(scope)
     sshConnections.delete(scope)
   }
+
+  await retireNativeSshConnection(existing, ssh)
 
   const created = !ssh
 
@@ -9837,7 +9807,10 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
 
     const platform = await detectRemotePlatform(ssh, sshConfig.remoteHermesPath || '')
     const lifecycle = platform.os === 'Windows' ? connectWindowsRemote : remoteLifecycle.connect
-    result = await lifecycle({
+    result = await connectSshGateway({
+      ssh, platform, profile: resolveRemoteSshDashboardProfile(sshConfig.remoteProfile, profile),
+      remoteHermesPath: sshConfig.remoteHermesPath || '', pickLocalPort, signal: lease.signal
+    }, async () => lifecycle({
       ssh,
       platform,
       profile: resolveRemoteSshDashboardProfile(sshConfig.remoteProfile, profile),
@@ -9852,7 +9825,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       adoptServedToken: adoptServedDashboardToken,
       rememberLog: sshRememberLog,
       signal: lease.signal
-    })
+    }))
   } catch (error: any) {
     if (created) {
       try {
@@ -9900,6 +9873,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
     },
     publish: () => {
       persistSshConnectionToken(profile, source, result.token, metadata.registryConnectionId)
+
       removeForceCleanup()
       sshConnections.set(scope, {
         ssh,
@@ -9920,6 +9894,8 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
         hermesPath: result.hermesPath,
         hermesHome: result.hermesHome,
         pythonPath: result.pythonPath,
+        gatewayEndpoint: result.gatewayEndpoint,
+        dispose: result.dispose,
         remoteProfile: resolveRemoteSshDashboardProfile(sshConfig.remoteProfile, profile),
         registryConnectionId:
           metadata.registryConnectionId ||
@@ -9929,17 +9905,21 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
         // site may label a registry-qualified SSH scope as the primary backend.
         primaryRegistryScope: metadata.primaryRegistryScope === true
       })
+
       sshIsolatedKeepalives.start(scope, { baseUrl: result.baseUrl, token: result.token })
     },
     rollback: error => rollbackSshBootstrapResult(ssh, result, profile, sshConfig, error)
   })
 
   sshRememberLog(
-    `[ssh] connection ${result.reused ? 'REUSED' : 'spawned'} dashboard: ` +
+    `[ssh] connected backend (shared=${Boolean(result.gatewayEndpoint)}): ` +
       `${result.hermesVersion || 'hermes (version unknown)'} at ${result.hermesPath || '?'}`
   )
 
-  const connection = await buildRemoteConnection(
+  const connection = result.gatewayEndpoint ? {
+    baseUrl: result.baseUrl, wsUrl: result.wsUrl, authMode: 'native', token: '',
+    gatewayEndpoint: result.gatewayEndpoint, mode: 'remote', source, remoteKind: 'ssh', remoteHost: hostLabel
+  } : await buildRemoteConnection(
     result.baseUrl,
     'token',
     result.token,
@@ -9965,6 +9945,8 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
 }
 
 function persistSshConnectionToken(profile, source, token, registryConnectionId = '') {
+  if (!token) { return } // Native gateway grants are one-use and never persisted.
+
   try {
     const persistence = managedSshTokenPersistencePlan(source, registryConnectionId)
     const id = persistence.registryConnectionId
@@ -10582,6 +10564,13 @@ async function forgetLocalGatewayDescriptor(profile, request?: { method?: string
 // put it.
 async function forgetRegistryLocalGatewayDescriptor(connectionId, profile) {
   const profileKey = String(profile ?? '').trim() || 'default'
+  const source = readDesktopConnectionsRegistry().connections.find(entry => entry.id === connectionId)
+
+  if (source?.kind === 'ssh') {
+    backendPool.delete(backendScopeKey(source.id, profileKey))
+
+    return
+  }
 
   const localRoute = resolveRegistryLocalRoute(profileKey, {
     globalRemote: globalRemoteActive(),
@@ -11236,29 +11225,10 @@ async function drainManagedSshScope(scope) {
       forwardClosed = true
     }
 
-    const expected = {
-      ownershipId: state.ownershipId,
-      pid: state.pid,
-      spawnNonce: state.spawnNonce,
-      profile: state.remoteProfile || '',
-      hermesPath: state.hermesPath,
-      hermesHome: state.hermesHome,
-      startedAt: state.startedAt,
-      creationTimeNs: state.creationTimeNs,
-      creationTime: state.creationTime
-    }
-
-    if (state.remotePlatform === 'Windows') {
-      await terminateOwnedWindowsDashboardForUpdate(
-        state.ssh,
-        { hermesPath: state.hermesPath, hermesHome: state.hermesHome, python: state.pythonPath },
-        expected
-      )
-    } else if (state.remotePlatform === 'Linux' || state.remotePlatform === 'Darwin') {
-      await remoteLifecycle.terminateOwnedDashboardForUpdate(state.ssh, expected)
-    } else {
-      throw new Error(`Unsupported managed SSH update platform: ${state.remotePlatform || 'unknown'}.`)
-    }
+    await stopOwnedSshDashboard(state.ssh, state, state.remoteProfile || '', {
+      stopWindows: terminateOwnedWindowsDashboardForUpdate,
+      stopPosix: remoteLifecycle.terminateOwnedDashboardForUpdate
+    })
   } catch (error: any) {
     // Ownership refusal is a no-kill result. Keep the original pool/state and
     // restore its exact forward in place; routing it through generic stale
@@ -11610,7 +11580,9 @@ async function restartAttachedLocalGateway(profile: string): Promise<void> {
   const endpoint = connection?.gatewayEndpoint
 
   if (endpoint) {
-    await restartLocalGatewayOwner(gatewayOwnerProfile(endpoint))
+    if (!connection?.remoteKind) {
+      await restartLocalGatewayOwner(gatewayOwnerProfile(endpoint))
+    }
   }
 }
 
@@ -18060,9 +18032,11 @@ function quitStopsBackendWork(): boolean {
   const ownedBackendCount =
     (backendConnectionState.getProcess() ? 1 : 0) +
     [...backendPool.values()].filter(entry => entry?.process).length +
-    sshConnections.size
+    [...sshConnections.values()].filter(state => !state.gatewayEndpoint).length
 
-  return backendOwnedByApp({ ownedBackendCount, primaryRouteKind })
+  const primaryAttached = [...sshConnections.values()].some(state => state.primaryRegistryScope && state.gatewayEndpoint)
+
+  return backendOwnedByApp({ ownedBackendCount, primaryRouteKind, primaryAttached })
 }
 
 // Ask before a quit kills a turn in flight. True when the quit was intercepted

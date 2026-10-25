@@ -5,7 +5,7 @@ import path from 'node:path'
 import type { GatewayTicketPurpose } from './local-gateway'
 import { hiddenWindowsChildOptions, windowsShellCommand } from './windows-child-options'
 
-interface TicketEndpoint {
+export interface TicketEndpoint {
   profile_id: string
   instance_id: string
   runtime_protocol: number
@@ -15,7 +15,7 @@ interface TicketEndpoint {
 
 // Reuse the runtime's bounded control client: POSIX home/ACL/socket checks and
 // Windows pipe server PID/SID validation have one canonical implementation.
-const TICKET_SCRIPT = `
+export const TICKET_SCRIPT = `
 import json, os, sys
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -34,6 +34,9 @@ while True:
         with redirect_stdout(sys.stderr):
             endpoint = SimpleNamespace(**{'control_home': None, **request['endpoint']})
             home = Path(endpoint.profile_id)
+            if request.get('resolve_profile'):
+                home = home.resolve()
+                endpoint.profile_id = str(home)
             if str(home.resolve()) != endpoint.profile_id or endpoint.runtime_protocol != 1:
                 raise ValueError('invalid ticket endpoint')
             if os.name != 'nt':
@@ -66,10 +69,8 @@ class TicketBridge {
   private idleTimer?: ReturnType<typeof setTimeout>
   private closed = false
 
-  constructor(command: string, cwd: string, env: NodeJS.ProcessEnv, private key: string) {
-    this.child = spawn(command, ['-P', '-u', '-c', TICKET_SCRIPT], hiddenWindowsChildOptions({
-      cwd, env, shell: false, stdio: ['pipe', 'pipe', 'pipe']
-    }))
+  constructor(child: ChildProcessWithoutNullStreams, private key: string) {
+    this.child = child
     this.child.stderr.resume()
     this.child.stdout.setEncoding('utf8')
     this.child.stdout.on('data', data => this.receive(String(data)))
@@ -78,7 +79,7 @@ class TicketBridge {
     this.child.on('close', () => this.dispose())
   }
 
-  request(endpoint: TicketEndpoint, purpose: GatewayTicketPurpose): Promise<string> {
+  request(endpoint: TicketEndpoint, purpose: GatewayTicketPurpose, resolveProfile = false): Promise<string> {
     clearTimeout(this.idleTimer)
 
     return new Promise((resolve, reject) => {
@@ -87,7 +88,7 @@ class TicketBridge {
  return }
 
       const id = ++this.sequence
-      const request = JSON.stringify({ id, endpoint, purpose }) + '\n'
+      const request = JSON.stringify({ id, endpoint, purpose, resolve_profile: resolveProfile }) + '\n'
 
       if (Buffer.byteLength(request) > 65536) { reject(new Error('Gateway ticket request too large'));
 
@@ -156,6 +157,28 @@ export function closeGatewayTicketBridges(): void {
   bridgeGeneration++
 
   for (const bridge of bridges.values()) { bridge.dispose() }
+}
+
+export function closeGatewayTicketBridge(key: string): void {
+  bridges.get(key)?.dispose()
+}
+
+/** Local and SSH helpers use the same bounded, private stdin/stdout protocol. */
+export function mintGatewayTicketWithChild(
+  key: string,
+  createChild: () => ChildProcessWithoutNullStreams,
+  endpoint: TicketEndpoint,
+  purpose: GatewayTicketPurpose,
+  resolveProfile = false
+): Promise<string> {
+  let bridge = bridges.get(key)
+
+  if (!bridge) {
+    bridge = new TicketBridge(createChild(), key)
+    bridges.set(key, bridge)
+  }
+
+  return bridge.request(endpoint, purpose, resolveProfile)
 }
 
 interface ResolvedTicketBackend {
@@ -280,12 +303,9 @@ export function mintGatewayTicketWithPython(
     PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }
 
   const key = JSON.stringify([backend.command, cwd, Object.entries(env).sort(([a], [b]) => a.localeCompare(b))])
-  let bridge = bridges.get(key)
 
-  if (!bridge) {
-    bridge = new TicketBridge(backend.command, cwd, env, key)
-    bridges.set(key, bridge)
-  }
-
-  return bridge.request(endpoint, purpose)
+  return mintGatewayTicketWithChild(key, () => spawn(
+    backend.command, ['-P', '-u', '-c', TICKET_SCRIPT],
+    hiddenWindowsChildOptions({ cwd, env, shell: false, stdio: ['pipe', 'pipe', 'pipe'] })
+  ), endpoint, purpose)
 }

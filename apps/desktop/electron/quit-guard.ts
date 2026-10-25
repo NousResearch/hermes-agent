@@ -74,6 +74,8 @@ export interface BackendOwnershipInput {
   ownedBackendCount: number
   /** What the primary profile resolves to; null means the local profile gateway (attached, not owned). */
   primaryRouteKind: 'cloud' | 'remote' | 'ssh' | null
+  /** A native SSH connection attaches to the host's gateway instead of owning a dashboard. */
+  primaryAttached?: boolean
 }
 
 /**
@@ -82,8 +84,8 @@ export interface BackendOwnershipInput {
  * backend all outlive it; but any server the app itself manages (another
  * window's SSH connection) might be where the turn is running, so it counts.
  */
-export function backendOwnedByApp({ ownedBackendCount, primaryRouteKind }: BackendOwnershipInput): boolean {
-  return primaryRouteKind === 'ssh' || ownedBackendCount > 0
+export function backendOwnedByApp({ ownedBackendCount, primaryRouteKind, primaryAttached }: BackendOwnershipInput): boolean {
+  return (primaryRouteKind === 'ssh' && !primaryAttached) || ownedBackendCount > 0
 }
 
 /**

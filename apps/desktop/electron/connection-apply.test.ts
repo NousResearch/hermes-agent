@@ -4,9 +4,25 @@ import {
   applyConnectionChange,
   commitConnectionFailure,
   resolveTerminalConnection,
+  rollbackSshBootstrap,
   sshQuitShouldBlock,
   teardownSshState
 } from './connection-apply'
+
+it('bootstrap rollback closes only the viewer for a shared gateway', async () => {
+  const events: string[] = []
+  const stopPosix = vi.fn()
+  const stopWindows = vi.fn()
+  await rollbackSshBootstrap({
+    cancelForward: async () => { events.push('forward') },
+    close: async () => { events.push('ssh') }
+  }, { gatewayEndpoint: {}, dispose: () => events.push('helper'), platform: { os: 'Linux' } }, 'default', new Error('cancelled'), {
+    stopPosix, stopWindows, forget: () => events.push('forgotten')
+  })
+  expect(events).toEqual(['helper', 'forward', 'ssh', 'forgotten'])
+  expect(stopPosix).not.toHaveBeenCalled()
+  expect(stopWindows).not.toHaveBeenCalled()
+})
 
 function deferred() {
   let resolve!: () => void

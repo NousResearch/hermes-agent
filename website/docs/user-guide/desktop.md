@@ -441,6 +441,19 @@ By default the app starts and manages its own **local** backend. You can instead
 
 Everything connection-related lives on one settings page: **Settings → Gateways**. (Older builds split this across separate **Gateway** and **Connections** pages — those are now unified, and old `?tab=connections` deep links redirect to the unified page.)
 
+On Linux and macOS SSH hosts with the native gateway protocol, Desktop attaches
+to the host's persistent gateway through SSH forwarding. Its private ticket
+helper runs on that host, so profile permissions and one-use HTTP/WebSocket
+credentials are checked there. Quitting Desktop or losing the SSH connection
+closes the viewer and its helper; authorised agent work stays on the gateway.
+Reconnect to see the result or answer a pending approval. Operations requiring
+new human approval still wait for it.
+
+Older runtimes without `gateway ensure --json`, and Windows SSH hosts, keep the
+legacy desktop-owned dashboard path. That path can stop work when Desktop
+quits; update the remote runtime to use the persistent gateway on supported
+hosts.
+
 **Settings → Gateways → Connection mode** offers the alternatives to the local gateway:
 
 - **Remote gateway** — enter the URL of a `hermes serve` backend you run yourself and sign in. This is the mode the rest of this section walks through.

@@ -694,6 +694,7 @@ class SshConnection {
   _controlMasters: ControlMasterHolders
   _forwardedSpecs: Set<string>
   _controlKeepaliveTimer: ReturnType<typeof setInterval> | null
+  _pipes = new Set<ReturnType<typeof spawn>>()
 
   constructor(cfg, opts: any = {}) {
     if (!cfg || !cfg.host) {
@@ -1018,6 +1019,24 @@ class SshConnection {
   //
   // sshd hands the command to the user's LOGIN shell. Payloads are POSIX sh, so
   // fish rejects `help="$(…)"`. On Linux/Darwin wrap in `sh -c`; Windows stays raw.
+  /** Private long-lived helper channel; closing its stdin retires only the helper. */
+  openPipe(remoteCommand: string) {
+    if (!this._opened || this._posixRemote !== true) {
+      throw new Error('SSH helper requires an open POSIX connection')
+    }
+
+    const command = `sh -c ${loginShellQuote(remoteCommand)}`
+
+    const child = this._spawnFn(this.sshBinary, buildExecArgs(this, command, this._connectTimeoutMs), {
+      stdio: ['pipe', 'pipe', 'pipe']
+    })
+
+    this._pipes.add(child)
+    child.once('close', () => this._pipes.delete(child))
+
+    return child
+  }
+
   async exec(remoteCommand, { timeoutMs, stdinData }: any = {}) {
     if (this._posixRemote === null) {
       try {
@@ -1302,6 +1321,8 @@ class SshConnection {
   // this connection's claim (#97264). No-mux: kill the tunnel children.
   // Best-effort; never throws.
   async close() {
+    for (const pipe of this._pipes) { pipe.kill('SIGTERM') }
+    this._pipes.clear()
     this._stopControlKeepalive()
     this._forwardedSpecs.clear()
     const action = this._mux ? this._controlMasters.release(this.controlPath, this) : 'exit-master'
@@ -1375,7 +1396,7 @@ class SshConnection {
 // grabs it) is caught upstream and retried with a fresh port.
 
 function pickLocalPort() {
-  return new Promise((resolve, reject) => {
+  return new Promise<number>((resolve, reject) => {
     const server = net.createServer()
     server.unref()
     server.on('error', reject)

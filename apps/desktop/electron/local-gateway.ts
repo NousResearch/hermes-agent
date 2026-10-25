@@ -166,7 +166,7 @@ export function staleGatewayCode(payload: Record<string, any>): { gateway: strin
 }
 
 /** Loopback-only, bare-origin, session-authority endpoint or throw. */
-function assertLocalGatewayEndpoint(endpoint: GatewayEndpoint): void {
+export function assertLocalGatewayEndpoint(endpoint: GatewayEndpoint): void {
   const origin = new URL(endpoint.api_origin)
 
   if (!['http:', 'https:'].includes(origin.protocol) || !['127.0.0.1', '[::1]'].includes(origin.hostname)
@@ -286,7 +286,21 @@ export async function redialLocalGateway<TEndpoint, TResult>(deps: {
 
 /** A fresh one-use local dial: mint `purpose` for the routed profile's home and hand it to
  *  `prepare`, re-ensuring once when the cached owner is gone (`redialLocalGateway`). */
-export function localGatewayDial<T extends { baseUrl: string; gatewayEndpoint?: GatewayEndpoint }>(opts: {
+export type GatewayTicketMinter = (route: string, purpose: GatewayTicketPurpose, method?: string) => Promise<string>
+
+export interface NativeGatewayConnection {
+  baseUrl: string
+  gatewayEndpoint?: GatewayEndpoint
+}
+
+// Endpoint object identity is main-process authority; no function/credential crosses IPC.
+const gatewayTicketClients = new WeakMap<GatewayEndpoint, GatewayTicketMinter>()
+
+export function bindGatewayTicketClient(endpoint: GatewayEndpoint, client: GatewayTicketMinter): void {
+  gatewayTicketClients.set(endpoint, client)
+}
+
+export function localGatewayDial<T extends NativeGatewayConnection>(opts: {
   ensure: () => Promise<T>
   forget: () => Promise<void> | void
   launchHome: string
@@ -306,7 +320,13 @@ export function localGatewayDial<T extends { baseUrl: string; gatewayEndpoint?: 
       // Callers check the first descriptor; a re-ensure may still answer without one.
       if (!current.gatewayEndpoint) {throw new Error('Local gateway connection has no gateway endpoint')}
 
-      return opts.prepare(current.baseUrl, await mint(await routedTicketEndpoint(current.gatewayEndpoint, opts.profile, opts.launchHome), purpose))
+      const remoteMint = gatewayTicketClients.get(current.gatewayEndpoint)
+
+      const ticket = remoteMint
+        ? await remoteMint(opts.profile, purpose)
+        : await mint(await routedTicketEndpoint(current.gatewayEndpoint, opts.profile, opts.launchHome), purpose)
+
+      return opts.prepare(current.baseUrl, ticket)
     }
   })
 }
@@ -505,14 +525,21 @@ export function nativeGrantRoute(url: string, body?: unknown, method?: string): 
   return typeof profile === 'string' && profile.trim() ? profile : url
 }
 
-export async function nativeGatewayHttpHeaders(descriptor: { gatewayEndpoint: GatewayEndpoint; baseUrl: string }, url: string, launchHome = descriptor.gatewayEndpoint.profile_id, method = 'GET', body?: unknown) {
+export async function nativeGatewayHttpHeaders(descriptor: NativeGatewayConnection & { gatewayEndpoint: GatewayEndpoint }, url: string, launchHome = descriptor.gatewayEndpoint.profile_id, method = 'GET', body?: unknown) {
   if (new URL(url).origin !== descriptor.gatewayEndpoint.api_origin || descriptor.baseUrl !== descriptor.gatewayEndpoint.api_origin) {
     throw new Error('Native gateway HTTP origin mismatch')
   }
 
   const purpose = nativeGrantPurpose(url, method)
 
-  return { 'X-Hermes-Gateway-Ticket': await mintLocalGatewayTicket(await routedTicketEndpoint(descriptor.gatewayEndpoint, nativeGrantRoute(url, body, method), launchHome, method), purpose) }
+  const route = nativeGrantRoute(url, body, method)
+  const remoteMint = gatewayTicketClients.get(descriptor.gatewayEndpoint)
+
+  const ticket = remoteMint
+    ? await remoteMint(route, purpose, method)
+    : await mintLocalGatewayTicket(await routedTicketEndpoint(descriptor.gatewayEndpoint, route, launchHome, method), purpose)
+
+  return { 'X-Hermes-Gateway-Ticket': ticket }
 }
 
 // The installed runtime's own ticket client: every Windows mint (SID-validated pipe), and a POSIX

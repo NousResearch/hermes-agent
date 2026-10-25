@@ -119,3 +119,64 @@ export {
   sshQuitShouldBlock,
   teardownSshState
 }
+
+export async function rollbackSshBootstrap(ssh, result, profile, boundaryError, { stopWindows, stopPosix, forget }) {
+  const cleanupErrors: string[] = []
+
+  try {
+    await stopOwnedSshDashboard(ssh, result, profile, { stopWindows, stopPosix })
+  } catch (error: any) {
+    cleanupErrors.push(String(error?.message || error))
+  }
+
+  try {
+    await ssh.cancelForward(result.localPort, result.remotePort)
+  } catch (error: any) {
+    cleanupErrors.push(String(error?.message || error))
+  }
+
+  try {
+    await ssh.close()
+  } catch (error: any) {
+    cleanupErrors.push(String(error?.message || error))
+  }
+
+  forget()
+
+  if (cleanupErrors.length > 0) {
+    const unsafe: any = new Error(
+      `An SSH bootstrap crossed the managed-update gate and its exact owned serve could not be fenced: ${cleanupErrors.join('; ')}`
+    )
+
+    unsafe.code = 'managed-update-bootstrap-fence-failed'
+    unsafe.unsafeManagedBootstrap = true
+    unsafe.cause = boundaryError
+    throw unsafe
+  }
+}
+
+
+/** Shared owners are attached; only legacy desktop-owned dashboards may be killed. */
+export async function stopOwnedSshDashboard(ssh, state, profile, { stopWindows, stopPosix }) {
+  if (state.gatewayEndpoint) {
+    state.dispose?.()
+
+    return
+  }
+
+  const expected = {
+    ownershipId: state.ownershipId, pid: state.pid, spawnNonce: state.spawnNonce, profile,
+    hermesPath: state.hermesPath, hermesHome: state.hermesHome, startedAt: state.startedAt,
+    creationTimeNs: state.creationTimeNs, creationTime: state.creationTime
+  }
+
+  const platform = state.remotePlatform || state.platform?.os
+
+  if (platform === 'Windows') {
+    await stopWindows(ssh, { hermesPath: state.hermesPath, hermesHome: state.hermesHome, python: state.pythonPath }, expected)
+  } else if (platform === 'Linux' || platform === 'Darwin') {
+    await stopPosix(ssh, expected)
+  } else {
+    throw new Error(`Unsupported remote platform ${platform || 'unknown'}`)
+  }
+}

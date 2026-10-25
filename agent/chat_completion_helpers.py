@@ -33,6 +33,10 @@ from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_local import _streams_llamacpp, stale_giveup
 from agent.chat_completion_headers import _chat_completion_capturing_headers
+from agent.chat_completion_fallback import (
+    _FALLBACK_EXHAUSTED_COOLDOWN_S,
+    _fallback_chain_exhausted,
+)
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
@@ -62,12 +66,6 @@ _PROVIDER_STREAM_ERROR_FINISH_REASONS = {"error", "error_finish"}
 _PROVIDER_STREAM_SSE_FIELDS = {"event", "data", "id", "retry"}
 _PROVIDER_STREAM_ERROR_TEXT_LIMIT = 4096
 
-# Fallback chain exhausted on a non-rate-limit failure (#24996): arm a short
-# cooldown so the NEXT turn's restore_primary_runtime stays gated instead of
-# resetting _fallback_index=0 and re-marshaling the whole context across every
-# provider again (memory/swap exhaustion on constrained hosts). Rate-limit /
-# billing reasons keep their own longer cooldown.
-_FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
 
 # Streaming 5xx unmask probe: one non-streaming re-issue per this window. Covers the
 # outer retry loop (up to ~3 attempts x backoff, well under 60s) so an outage doesn't
@@ -1910,17 +1908,6 @@ def _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb
         "Top up credits, or run `%s` to pick a model this account can use.",
         profile, old_model, old_provider, fb_model, fb_provider, remedy,
     )
-
-
-def _fallback_chain_exhausted(agent, reason: FailoverReason | None) -> bool:
-    """Chain exhausted (always False). A non-empty chain walked on a non-rate-limit failure arms a
-    short cooldown so next turn's restore_primary_runtime stays gated instead of replaying the whole
-    context across every provider again."""
-    from agent.fallback_cooldown import _RATE_LIMIT_FAILOVER_REASONS
-    if agent._fallback_chain and reason not in _RATE_LIMIT_FAILOVER_REASONS:
-        agent._rate_limited_until = max(
-            getattr(agent, "_rate_limited_until", 0) or 0, time.monotonic() + _FALLBACK_EXHAUSTED_COOLDOWN_S)
-    return False
 
 
 def _candidate_pool_exhausted(agent, fb_provider: str, fb_model: str) -> bool:

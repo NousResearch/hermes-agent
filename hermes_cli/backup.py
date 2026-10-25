@@ -108,14 +108,14 @@ _KEPT_CACHE_SUBDIRS = {
 
 
 def _in_excluded_root_dir(rel_path: Path) -> bool:
-    """True when *rel_path* is inside a regenerable tree at a profile-home root."""
-    root_entry = profile_root_entry(rel_path.parts)
-    if root_entry in _EXCLUDED_ROOT_DIRS or root_entry in _EXCLUDED_BACKUP_ROOT_DIRS:
+    """True for regenerable trees or consumed control state at a profile-home root."""
+    if profile_root_entry(rel_path.parts) in _EXCLUDED_ROOT_DIRS | _EXCLUDED_BACKUP_ROOT_DIRS:
         return True
     parts = rel_path.parts
-    if len(parts) >= 3 and parts[0] == "profiles":
-        parts = parts[2:]
-    return len(parts) >= 2 and parts[0] == "cache" and parts[1] not in _KEPT_CACHE_SUBDIRS
+    parts = parts[2:] if len(parts) >= 3 and parts[0] == "profiles" else parts
+    return (parts[:2] == ("cron", "external-workers") or parts == (".restart_pending.json",)
+        or len(parts) >= 2 and parts[0] == "cache" and parts[1] not in _KEPT_CACHE_SUBDIRS
+    )
 
 
 # SQLite sidecars are excluded because ``*.db`` is snapshotted via ``sqlite3.backup()``:

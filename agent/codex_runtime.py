@@ -698,8 +698,9 @@ def _persist_projected_messages(agent, turn, messages: list[dict[str, Any]]) -> 
 
 
 def _finish_codex_turn(agent, turn, messages: list[dict[str, Any]], *, original_user_message: Any,
-                       should_review_memory: bool) -> dict[str, Any]:
-    """Post-turn bookkeeping mirroring the chat_completions loop; returns usage fields."""
+                       should_review_memory: bool, final_response: Any) -> dict[str, Any]:
+    """Post-turn bookkeeping mirroring the chat_completions loop; returns usage fields.
+    ``final_response`` is the reply after ``transform_llm_output``: memory keeps what the user got."""
     # run_conversation() already bumped _turns_since_memory / _user_turn_count; only _iters_since_skill is ours.
     agent._iters_since_skill = getattr(agent, "_iters_since_skill", 0) + turn.tool_iterations
     _record_codex_app_server_compaction(agent, turn)
@@ -712,7 +713,7 @@ def _finish_codex_turn(agent, turn, messages: list[dict[str, Any]], *, original_
     # External memory sync skipped on interrupt/error (no partial transcripts).
     if not turn.interrupted and turn.error is None:
         _call_guarded(getattr(agent, "_sync_external_memory_for_turn", None), "external memory sync raised", kwargs=dict(
-            original_user_message=original_user_message, final_response=turn.final_text, interrupted=False, messages=messages,
+            original_user_message=original_user_message, final_response=final_response, interrupted=False, messages=messages,
         ))
     # Background review fork: only when a trigger tripped AND a real final response exists.
     if turn.final_text and not turn.interrupted and (should_review_memory or should_review_skills):
@@ -722,8 +723,31 @@ def _finish_codex_turn(agent, turn, messages: list[dict[str, Any]], *, original_
     return usage_result
 
 
+def _transform_codex_reply(agent, turn, turn_id: Any) -> dict[str, Any]:
+    """Run ``transform_llm_output`` on a codex reply before its rows are persisted, as
+    ``finish_text_response`` does on the generic loop: the user and the stored row get the rewrite.
+    A turn that failed after an agentMessage completed still delivers that text, so it is rewritten
+    too; a held turn rewrites even an interrupted one, and its earlier agentMessages (commentary the
+    user never saw) are typed hidden for every history load."""
+    held = getattr(agent, "_hold_stream", False)
+    if not turn.final_text or (turn.interrupted and not held):
+        return {"final_response": turn.final_text}
+    from agent.turn_finalizer import apply_llm_output_transform, public_pre_transform
+    final, transformed, pre_transform = apply_llm_output_transform(agent, turn.final_text, turn_id=turn_id)
+    rows = [m for m in turn.projected_messages or [] if m.get("role") == "assistant" and m.get("content")]
+    final_row = next((m for m in reversed(rows) if m.get("content") == turn.final_text), None)
+    if transformed and final_row is not None:
+        final_row["content"] = final
+    for message in rows if held else ():
+        if message is not final_row and not message.get("display_kind"):
+            message["display_kind"] = "hidden"
+    return {"final_response": final, "response_transformed": transformed,
+            "pre_transform_response": public_pre_transform(agent, pre_transform)}
+
+
 def run_codex_app_server_turn(agent, *, user_message: str, original_user_message: Any, messages: list[dict[str, Any]],
-                              effective_task_id: str, should_review_memory: bool = False) -> dict[str, Any]:
+                              effective_task_id: str, should_review_memory: bool = False,
+                              turn_id: Any = None) -> dict[str, Any]:
     """Hand the turn to a ``codex app-server`` subprocess and project its events into ``messages``.
     Returns the chat_completions result shape. The user message is ALREADY in ``messages`` — never append it again."""
     # Defense in depth for compression.checkpoint_required: agent init refuses the combination, but
@@ -753,18 +777,19 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     if getattr(turn, "should_retire", False):
         logger.warning("codex app-server session retired (turn error: %s)", turn.error)
         _close_codex_session(agent)
+    reply = _transform_codex_reply(agent, turn, turn_id)
     # The binding is published only once the transcript it belongs to is durable, and never for a
     # retired thread (the next agent would only resume into the same wedge).
     if _persist_projected_messages(agent, turn, messages) and not getattr(turn, "should_retire", False):
         _store_codex_thread_id(agent, turn.thread_id)
     usage_result = _finish_codex_turn(
         agent, turn, messages, original_user_message=original_user_message, should_review_memory=should_review_memory,
+        final_response=reply["final_response"],
     )
     return _turn_result(
         interrupt, messages, api_calls=1, completed=not turn.interrupted and turn.error is None, error=turn.error,
         # We flushed the projected rows ourselves (agent_persisted); the gateway must skip its own DB write.
-        final_response=turn.final_text, agent_persisted=True, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id,
-        **usage_result,
+        agent_persisted=True, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id, **reply, **usage_result,
     )
 
 

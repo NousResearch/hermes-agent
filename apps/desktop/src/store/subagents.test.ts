@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setShowReasoningFromConfig } from './reasoning-disclosure'
 import {
   $subagentsBySession,
   activeSubagentCount,
@@ -445,5 +446,24 @@ describe('subagent store', () => {
     upsertSubagent('s1', { goal: 'task', status: 'running', subagent_id: 'late1', task_index: 0, text: 'late' })
 
     expect(listFor('s1')[0]?.status).toBe('failed')
+  })
+
+  describe('display.show_reasoning', () => {
+    afterEach(() => setShowReasoningFromConfig(undefined))
+
+    // The child's thinking is its chain of thought; the gateway strips it under
+    // the same flag that withholds reasoning.delta, but that flag can be stale.
+    it.each([true, false])('show_reasoning=%s decides whether a child thinking line is kept', enabled => {
+      setShowReasoningFromConfig(enabled)
+      upsertSubagent('owner', { goal: 'Research', status: 'running', subagent_id: 'child' }, true, 'subagent.start')
+      upsertSubagent(
+        'owner',
+        { status: 'running', subagent_id: 'child', text: 'weighing the options' },
+        false,
+        'subagent.thinking'
+      )
+
+      expect(listFor('owner')[0]?.stream.some(entry => entry.kind === 'thinking')).toBe(enabled)
+    })
   })
 })

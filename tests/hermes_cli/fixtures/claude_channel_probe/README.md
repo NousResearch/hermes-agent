@@ -118,6 +118,21 @@ task, ticket, revision, DoD and context, plus authenticated scoped Roots MCP
 tool authorization. A self-attested prompt or this transport receipt cannot
 prove those properties.
 
+The managed-worker authentication design is governed by **P-0593**, “Onboarding
+a principal: declare the grant, deploy, and issue a credential only agents
+need,” and owned by **ESN-0030**, “Retire OpenClaw completely; rebuild agents as
+principals.” **ESN-0169** preserves the boundary that Claude Code acts through
+operator delegation and no agent may hold `write_ticket`; **ESN-0171** requires
+an unattended credential to be bounded by both its delegator and the receiving
+agent's declared ceiling. The concrete proposal is recorded in ESN-0407 comment
+`80063559-7e14-4eab-90c6-c0169e02cd84`; its dependency on the owning parallel
+authentication work is recorded in ESN-0407 comment
+`83aa9075-e97f-4837-bcc9-a5da4f110413`.
+
+This fixture does **not** implement parallel authentication, mint a principal
+credential, load an operator credential, or prove the P-0593/ESN-0030 managed
+bootstrap. It only tests the separate reply-only Channel transport boundary.
+
 5. Send one envelope, at most 4 KiB, over the private Unix socket. It must bind
    the exact Roots ticket, assignment, attempt, owner, revision and authority
    event digest; its authority is `answer-only-no-changes`; TTL is at most 30

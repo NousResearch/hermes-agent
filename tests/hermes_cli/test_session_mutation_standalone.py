@@ -74,8 +74,9 @@ async def test_standalone_edit_refuses_while_a_gateway_owns_the_store(tmp_path, 
                 # The held lock without a control socket reads as a starting owner: retryable, never offline.
                 starting = await client.patch('/api/sessions/owned',
                                               json={'request_id': 'r1', 'expected_revision': 0, 'title': 'X'})
-                assert (starting.status_code, starting.json()['detail']) == (503, 'owner_unavailable: starting')
-                assert 'gateway owner not reachable' in caplog.text
+                assert starting.status_code == 503, starting.text
+                assert starting.json()['detail'].startswith('owner_unavailable: starting: Exclusive maintenance refused')
+                assert 'gateway owner not reachable (starting)' in caplog.text
                 # An owner that reserves after discovery read absent still wins the offline reservation.
                 monkeypatch.setattr('hermes_cli.gateway_runtime.discover_gateway_endpoint',
                                     lambda home, timeout=2.0: GatewayDiscovery('absent'))
@@ -93,3 +94,24 @@ async def test_standalone_edit_refuses_while_a_gateway_owns_the_store(tmp_path, 
             owner.close()
         assert db.get_session('owned')['title'] is None
         assert db.get_session('owned')['runtime_revision'] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_stale_socket_without_a_gateway_still_edits_offline(tmp_path, monkeypatch):
+    """A crashed gateway can leave a ``gateway.sock`` discovery refuses on its mode before it reads
+    ``gateway.lock``. No process owns the store, so the offline reservation wins and the edit lands."""
+    import socket
+    app = _standalone_app(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)  # a relative bind keeps the socket path under AF_UNIX's length limit
+    stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stale.bind('gateway.sock')
+    stale.close()
+    (tmp_path / 'gateway.sock').chmod(0o755)
+    with SessionDB(db_path=tmp_path / 'state.db') as db:
+        db.create_session('stale', source='cli')
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url='http://localhost', headers=AUTH) as client:
+            pinned = await client.patch('/api/sessions/stale',
+                                        json={'request_id': 'r1', 'expected_revision': 0, 'pinned': True})
+        assert pinned.status_code == 200, pinned.text
+        assert db.get_session('stale')['pinned'] == 1

@@ -107,24 +107,49 @@ async def test_standalone_mutation_falls_back_to_offline_without_an_owner(tmp_pa
                                                ('inaccessible', 'profile_mismatch'), ('starting', None)])
 async def test_an_owner_discovery_cannot_identify_is_not_owner_less(tmp_path, monkeypatch, state, reason_code):
     """#144141: over SSH ``serve --isolated`` discovery of a running gateway came back without an
-    endpoint, and every such verdict took the offline store, whose reservation the live owner
-    always wins (409): pins and renames looked applied, then vanished. Only an ``absent`` owner is
-    owner-less; anything else answers a retryable 503 that names discovery's reason."""
+    endpoint, and the offline reservation that owner wins answered a bare 409: pins and renames
+    looked applied, then vanished. A lost reservation behind any verdict but ``absent`` answers a
+    retryable 503 that names discovery's reason and keeps the reservation's remedy."""
+    from contextlib import contextmanager
+    from gateway.runtime_ownership import OwnershipConflict
     from hermes_cli import web_server_sessions
     from hermes_cli.gateway_runtime import GatewayDiscovery
 
     request = _standalone_request(monkeypatch, tmp_path)
     monkeypatch.setattr('hermes_cli.gateway_runtime.discover_gateway_endpoint',
                         lambda home, timeout=2.0: GatewayDiscovery(state, reason_code=reason_code))
-    offline = []
-    monkeypatch.setattr(web_server_sessions, '_mutate_offline_store',
-                        lambda profile, actor, params: offline.append(params))
+
+    @contextmanager
+    def owner_holds_the_lock(homes):
+        raise OwnershipConflict('Exclusive maintenance refused: held. Drain and stop the gateway, then retry.')
+        yield
+
+    monkeypatch.setattr('gateway.runtime_ownership.exclusive_maintenance', owner_holds_the_lock)
     with pytest.raises(HTTPException) as exc:
         await web_server_sessions._mutate_session_request(
             request, None, 'session-7', request_id='req-7', expected_revision=0,
-            operation='sidebar', payload={})
-    assert (exc.value.status_code, exc.value.detail) == (503, f'owner_unavailable: {reason_code or state}')
-    assert offline == []
+            operation='sidebar', payload={'pinned': True})
+    assert exc.value.status_code == 503
+    assert exc.value.detail.startswith(f'owner_unavailable: {reason_code or state}: ')
+    assert 'Drain and stop the gateway' in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_a_verdict_without_a_live_owner_still_edits_offline(tmp_path, monkeypatch):
+    """Path checks read ``inaccessible`` before ``gateway.lock`` (a stale bad-mode socket, a parked
+    secondary), so no endpoint does not prove an owner: the offline reservation decides, as on main."""
+    from hermes_cli import web_server_sessions
+    from hermes_cli.gateway_runtime import GatewayDiscovery
+
+    request = _standalone_request(monkeypatch, tmp_path)
+    monkeypatch.setattr('hermes_cli.gateway_runtime.discover_gateway_endpoint', lambda home, timeout=2.0:
+                        GatewayDiscovery('inaccessible', reason_code='unsafe_control_permissions'))
+    monkeypatch.setattr(web_server_sessions, '_mutate_offline_store', lambda profile, actor, params:
+                        {'session_id': params['session_id'], 'operation': 'sidebar', 'revision': 1})
+    result = await web_server_sessions._mutate_session_request(
+        request, None, 'session-8', request_id='req-8', expected_revision=0,
+        operation='sidebar', payload={'pinned': True})
+    assert result == {'ok': True, 'session_id': 'session-8', 'operation': 'sidebar', 'revision': 1}
 
 
 @pytest.mark.asyncio

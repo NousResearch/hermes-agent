@@ -184,11 +184,11 @@ async function openWebappTabProfile(desktop: Window['hermesDesktop'], primary: s
     return
   }
 
-  // A stale link or bookmark can name a profile this gateway no longer has: stay on the gateway's own.
+  // A stale link or bookmark can name a profile this gateway no longer has or does not serve: stay on its own.
   const routes = await desktop.getProfileRoutes?.([profile]).catch(() => null)
 
   if (routes && !routes.some(route => normalizeProfileKey(route.profile) === normalizeProfileKey(profile))) {
-    console.warn(`[gateway] this gateway has no profile "${profile}"; this tab stays on "${primary}"`)
+    console.warn(`[gateway] this gateway does not serve profile "${profile}"; this tab stays on "${primary}"`)
     await desktop.profile?.remember?.(primary)
 
     return

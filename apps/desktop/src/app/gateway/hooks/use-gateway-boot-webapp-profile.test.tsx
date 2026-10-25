@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { installBrowserDesktopBridge } from '@/lib/browser-desktop-bridge'
 import { $desktopBoot } from '@/store/boot'
 import { closeSecondaryGateways, isActivePrimary, requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
-import { $activeGatewayProfile } from '@/store/profile'
+import { $activeGatewayProfile, ensureGatewayProfile } from '@/store/profile'
 import { $connection, $gatewayState } from '@/store/session'
 import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
@@ -54,6 +54,10 @@ function closeSurvivor() {
 
 const originalWebSocket = globalThis.WebSocket
 const mints: URL[] = []
+// What the gateway reports: every installed profile on /api/profiles, the ones it serves on
+// /api/status (null: a backend that does not report the set).
+let installed: string[] = []
+let served: null | string[] = null
 const frames: { method?: string; params?: Record<string, unknown> }[] = []
 
 async function flush() {
@@ -93,6 +97,8 @@ beforeEach(() => {
   $connection.set(null)
   mints.length = 0
   frames.length = 0
+  installed = ['default', 'research']
+  served = null
   vi.useFakeTimers()
   FakeWebSocket.mode = 'open'
   FakeWebSocket.instances = []
@@ -110,7 +116,11 @@ beforeEach(() => {
         return new Response(JSON.stringify({ ticket: `ticket-${mints.length}` }), { status: 200 })
       }
 
-      return new Response(JSON.stringify({ profiles: [{ name: 'default' }, { name: 'research' }] }), { status: 200 })
+      if (url.pathname.endsWith('/api/status')) {
+        return new Response(JSON.stringify({ gateway_running: true, gateway_shared_with: served }), { status: 200 })
+      }
+
+      return new Response(JSON.stringify({ profiles: installed.map(name => ({ name })) }), { status: 200 })
     })
   )
   $gatewayState.set('idle')
@@ -192,4 +202,28 @@ it("a tab loaded on a profile the gateway no longer has stays on the gateway's o
   expect(await sentFor('default', 'session.active_list')).toEqual({})
   // A reload lands on the profile the tab is really on, not on the stale link's.
   expect(new URLSearchParams(window.location.search).get('profile')).toBe('default')
+})
+
+it("a tab loaded on a profile its gateway does not serve stays on the gateway's own", async () => {
+  installed = ['default', 'research', 'solo']
+  served = ['default', 'research']
+  await bootWebappTab('/?profile=solo#/')
+
+  expect($activeGatewayProfile.get()).toBe('default')
+  expect(new URLSearchParams(window.location.search).get('profile')).toBe('default')
+  expect(FakeWebSocket.instances).toHaveLength(1)
+})
+
+it('picking a profile the gateway does not serve is refused with the reason and dials nothing', async () => {
+  installed = ['default', 'research', 'solo']
+  served = ['default', 'research']
+  await bootWebappTab('/?profile=research#/')
+  expect($activeGatewayProfile.get()).toBe('research')
+
+  await expect(ensureGatewayProfile('solo')).rejects.toThrow(
+    'This gateway does not serve profile "solo", so this tab cannot open it.'
+  )
+  expect($activeGatewayProfile.get()).toBe('research')
+  expect(FakeWebSocket.instances).toHaveLength(1)
+  expect(mints.map(url => url.searchParams.get('profile'))).toEqual([null])
 })

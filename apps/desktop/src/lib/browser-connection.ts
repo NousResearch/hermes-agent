@@ -2,6 +2,7 @@ import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 
 import type { HermesApiRequest, HermesConnection } from '@/global'
 import { webappSignInRequired } from '@/lib/browser-launch-session'
+import { createServedProfiles } from '@/lib/browser-served-profiles'
 import {
   type AudioSocketPath,
   type BrowserBootstrap,
@@ -11,7 +12,7 @@ import {
   navigateToBrowserLogin,
   ticketedWebsocketUrl
 } from '@/lib/browser-transport'
-import { browserLaunchProfile, browserLaunchProfileOrDefault } from '@/lib/platform'
+import { browserLaunchProfileOrDefault } from '@/lib/platform'
 
 /** The serving origin is the only connection a browser-hosted Desktop has. */
 export function requireBrowserConnection(connectionId?: null | string): void {
@@ -23,27 +24,15 @@ export function requireBrowserConnection(connectionId?: null | string): void {
 }
 
 // The tab's one socket answers for the profile the serving gateway runs as when a request names
-// none, as its REST does. Any other name is only a candidate; callers still consult the served set.
+// none, as its REST does. Any other profile it serves rides that socket with `profile` on every
+// request.
 function ridesWithProfile(profile?: null | string): boolean {
   const name = profile?.trim()
 
   return Boolean(name) && name !== browserLaunchProfileOrDefault()
 }
 
-function profileKey(profile?: null | string): string {
-  return profile?.trim().toLowerCase() || 'default'
-}
-
-function launchProfileKey(): string {
-  return profileKey(browserLaunchProfile())
-}
-
-// `served === null` is an unreported set: an older backend, or a status read that failed.
-function servedHere(profile: string | null | undefined, served: Set<string> | null): boolean {
-  return served === null || served.has(profileKey(profile))
-}
-
-function connectionFor(bootstrap: BrowserBootstrap, profile?: null | string): HermesConnection {
+function connectionFor(bootstrap: BrowserBootstrap, profile: null | string | undefined, servedHere: boolean): HermesConnection {
   if (!bootstrap.authRequired && !bootstrap.token) {throw webappSignInRequired()}
 
   const baseUrl = `${window.location.origin}${bootstrap.basePath}`
@@ -58,7 +47,7 @@ function connectionFor(bootstrap: BrowserBootstrap, profile?: null | string): He
     profile: profile || undefined,
     remoteHost: window.location.host,
     remoteKind: 'url',
-    sharedPrimary: ridesWithProfile(profile),
+    sharedPrimary: ridesWithProfile(profile) && servedHere,
     source: 'settings',
     token: bootstrap.token,
     windowButtonPosition: null,
@@ -108,9 +97,20 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
   | 'getProfileRoutes'
   | 'oauthLoginConnectionConfig'
   | 'oauthLogoutConnectionConfig'
+  | 'revalidateConnection'
   | 'testConnectionConfig'
 > {
+  const served = createServedProfiles(api)
+
+  // The gateway's own profile, or another one it serves: the only profiles this tab's socket reaches.
+  const reachesSocket = (profile?: null | string) => !ridesWithProfile(profile) || served.serves(profile)
+
   const getGatewayWsUrl = async (profile?: null | string) => {
+    // Its ticket would mint, then the gateway would close the dial (4403) without a reason to show.
+    if (!reachesSocket(profile)) {
+      throw new Error(`This gateway does not serve profile "${profile?.trim()}", so this tab cannot open it.`)
+    }
+
     try {
       return {
         ok: true as const,
@@ -135,43 +135,17 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
     return [...new Set((result.profiles || []).map(profile => String(profile.name || '').trim()).filter(Boolean))]
   }
 
-  // Missing gateway_shared_with is an older backend that does not report its served set, so
-  // installed profiles stay reachable. An empty list is a gateway that serves only the profile
-  // it was launched as. A failed read is the same unknown case: a status blip must not empty
-  // the roster.
-  const servedProfileKeys = async (): Promise<Set<string> | null> => {
-    try {
-      const status = await api<{ gateway_shared_with?: string[] | null }>({ path: '/api/status' })
-      const shared = status?.gateway_shared_with
-
-      if (!Array.isArray(shared)) {
-        return null
-      }
-
-      const names = new Set(shared.map(name => profileKey(String(name))))
-      names.add(launchProfileKey())
-
-      return names
-    } catch {
-      return null
-    }
-  }
-
-  const profilesThisGatewayServes = async () => {
+  // Every installed profile, with the served set brought up to date for that list.
+  const installedProfiles = async () => {
     const profiles = await getProfiles()
-    const served = await servedProfileKeys()
+    await served.refresh(profiles)
 
-    if (!served) {
-      return profiles
-    }
-
-    return profiles.filter(name => served.has(profileKey(name)))
+    return profiles
   }
 
   return {
     getAgentRoster: async () => {
-      const profiles = await getProfiles()
-      const served = await servedProfileKeys()
+      const profiles = await installedProfiles()
       const connectionLabel = window.location.host
 
       return {
@@ -182,7 +156,8 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
           handle: profile === 'default' ? 'hermes' : profile,
           profile,
           targetProfile: profile,
-          ...(served && !served.has(profileKey(profile)) ? { reachable: false as const } : {})
+          // Installed here, so listed, but served elsewhere or nowhere.
+          ...(reachesSocket(profile) ? {} : { reachable: false as const })
         })),
         primaryConnectionId: LOCAL_CONNECTION_ID,
         sources: [{
@@ -203,39 +178,24 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
 
       return ticketedWebsocketUrl(bootstrap, payload.path, payload.profile)
     },
-    // Without a profile: the tab's own socket, the one boot and every reconnect dial. A named
-    // profile this gateway serves, other than its own, is a view of that same socket
-    // (sharedPrimary), so its requests carry `profile`.
-    getConnection: async (profile?: null | string) => {
-      const connection = {
-        ...connectionFor(bootstrap, profile),
-        connectionId: LOCAL_CONNECTION_ID
-      }
-
-      if (connection.sharedPrimary !== true) {
-        return connection
-      }
-
-      const served = await servedProfileKeys()
-
-      return {
-        ...connection,
-        sharedPrimary: servedHere(profile, served)
-      }
-    },
+    // Without a profile: the tab's own socket, the one boot and every reconnect dial, whatever
+    // profile the tab is on. A named profile the gateway serves, other than its own, is a view of
+    // that same socket (sharedPrimary), so its requests carry `profile`. Routing reads the cached
+    // served set and never fetches it.
+    getConnection: async (profile?: null | string) => ({
+      ...connectionFor(bootstrap, profile, served.serves(profile)),
+      connectionId: LOCAL_CONNECTION_ID
+    }),
     getConnectionConfig: async (profile?: null | string) => browserConnectionConfig(bootstrap, profile),
     getConnectionFor: async (payload: { connectionId?: null | string; profile?: null | string }) => {
       requireBrowserConnection(payload.connectionId)
 
-      const named = Boolean(payload.profile)
-      const served = named ? await servedProfileKeys() : null
-
       return {
-        ...connectionFor(bootstrap, payload.profile),
+        ...connectionFor(bootstrap, payload.profile, served.serves(payload.profile)),
         connectionId: LOCAL_CONNECTION_ID,
         registryScoped: true,
         sharedPrimary: false,
-        sharedRemote: named && servedHere(payload.profile, served)
+        sharedRemote: Boolean(payload.profile) && reachesSocket(payload.profile)
       }
     },
     getGatewayWsUrl,
@@ -245,7 +205,7 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
       return getGatewayWsUrl(payload.profile)
     },
     getProfileRoutes: async (profiles: string[]) => {
-      const available = new Set(await profilesThisGatewayServes())
+      const available = new Set((await installedProfiles()).filter(reachesSocket))
 
       return [...new Set(profiles.map(profile => profile.trim() || 'default'))]
         .filter(profile => available.has(profile))
@@ -277,6 +237,12 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
       navigateToBrowserLogin(new BrowserReauthRequiredError('Signed out', login.href))
 
       return { connected: false, ok: true }
+    },
+    // Runs before every redial of the tab's socket: a gateway that restarted may serve another set.
+    revalidateConnection: async () => {
+      served.invalidate()
+
+      return { ok: true, rebuilt: false }
     },
     testConnectionConfig: async () => ({
       baseUrl: `${window.location.origin}${bootstrap.basePath}`,

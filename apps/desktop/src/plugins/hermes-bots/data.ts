@@ -728,6 +728,12 @@ interface UnionAgentRow {
   targetProfile?: string
 }
 
+/** A source can be up and still not serve a profile it lists. Only an explicit
+ *  `reachable: false` says so: a native roster never sets the field. */
+function unservedFlag(agent: UnionAgentRow): Pick<RosterRow, 'unserved'> {
+  return agent.reachable === false ? { unserved: true } : {}
+}
+
 /** The union roster payload. `primaryConnectionId` is served by Electron but
  *  absent from the SDK's `DesktopAgentRoster`, so the merge reads it here. */
 interface UnionRoster {
@@ -832,12 +838,7 @@ async function fetchRosterSnapshot(activeConnectionId: null | string | undefined
       const merged = mergeMultiSourceRoster(local, union, activeConnectionId, previous)
       const sources = Array.isArray(union?.sources) ? union.sources : []
       traceRosterSnapshot(local, sources, activeConnectionId, merged?.profiles || [])
-
-      const profiles = applyUnservedAgents(
-        (merged?.profiles || []).map(row => annotateBotSource(row, sources)),
-        Array.isArray(union?.agents) ? union.agents : []
-      )
-
+      const profiles = (merged?.profiles || []).map(row => annotateBotSource(row, sources))
       await reconcileBotMeta(profiles, issuedAt)
 
       return {
@@ -1086,6 +1087,7 @@ export function mergeMultiSourceRoster(
         targetProfile: agent.targetProfile || profile
       }
       row.sourceScoped = true
+      Object.assign(row, unservedFlag(agent))
 
       continue
     }
@@ -1114,7 +1116,8 @@ export function mergeMultiSourceRoster(
         targetProfile: agent.targetProfile || profile
       },
       remoteSource: true,
-      sourceScoped: true
+      sourceScoped: true,
+      ...unservedFlag(agent)
     })
   }
 
@@ -1497,31 +1500,9 @@ export function sourceByConnection(sources: GatewaySource[] | null | undefined):
   )
 }
 
-/** A source can be up and still not serve a profile. Those rows stay listed.
- *  Absence is not that signal: a native roster omits the field, and one poll
- *  can list a profile on only one of the two inventories. */
-export function applyUnservedAgents(
-  rows: RosterRow[],
-  agents: { connectionId?: string; profile?: string; reachable?: boolean }[]
-): RosterRow[] {
-  const unserved = new Set(
-    agents
-      .filter(agent => agent.reachable === false)
-      .map(agent => `${String(agent.connectionId || '').trim()}::${String(agent.profile || '').trim()}`)
-  )
-
-  if (unserved.size === 0) {
-    return rows
-  }
-
-  return rows.map(row =>
-    unserved.has(`${String(row.connectionId || '').trim()}::${String(row.name || '').trim()}`)
-      ? { ...row, sourceReachable: false }
-      : row
-  )
-}
-
-/** Copy current source health onto a row without changing its owner. */
+/** Copy current source health onto a row without changing its owner. A row
+ *  its source lists but does not serve stays unreachable while the source is
+ *  up: the pane re-annotates rows before seating a first selection. */
 export function annotateBotSource(bot: RosterRow, sources: GatewaySource[] | null | undefined): RosterRow {
   const id = String(bot?.connectionId || '').trim()
 
@@ -1549,7 +1530,7 @@ export function annotateBotSource(bot: RosterRow, sources: GatewaySource[] | nul
     ...(source.installId ? { installId: source.installId } : {}),
     sourceError: source.error || null,
     sourceMissing: false,
-    sourceReachable: source.reachable
+    sourceReachable: source.reachable && !bot.unserved
   }
 }
 

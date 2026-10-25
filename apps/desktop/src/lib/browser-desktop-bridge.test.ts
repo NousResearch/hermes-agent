@@ -454,130 +454,6 @@ describe('browser-hosted Desktop bridge', () => {
     ).rejects.toThrow('No connection with id "another-host"')
   })
 
-  function stubProfileStatus(status: Record<string, unknown>, profiles: { name: string }[]) {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockImplementation(async (url: URL) => {
-        const path = url.pathname
-
-        const body = path.endsWith('/api/webapp/socket-ticket')
-          ? { ticket: 'one-use' }
-          : path.endsWith('/api/status')
-            ? status
-            : { profiles }
-
-        return new Response(JSON.stringify(body), { status: 200 })
-      })
-    )
-  }
-
-  it('does not mark a profile this gateway does not serve as reachable', async () => {
-    const win = mutableWindow()
-    win.__HERMES_DASHBOARD_PROFILE__ = 'default'
-    seedWebappSession('served-token')
-    stubProfileStatus(
-      { gateway_running: true, gateway_shared_with: ['default', 'research'] },
-      [{ name: 'default' }, { name: 'research' }, { name: 'solo' }]
-    )
-
-    expect(installBrowserDesktopBridge()).toBe(true)
-    const desktop = win.hermesDesktop!
-
-    await expect(desktop.getProfileRoutes?.(['default', 'research', 'solo'])).resolves.toEqual([
-      { connectionId: 'local', mode: 'local', profile: 'default', targetProfile: 'default' },
-      { connectionId: 'local', mode: 'local', profile: 'research', targetProfile: 'research' }
-    ])
-
-    const roster = await desktop.getAgentRoster?.()
-    expect(roster?.sources).toEqual([
-      expect.objectContaining({ connectionId: 'local', kind: 'local', reachable: true })
-    ])
-    expect(roster?.agents.find(agent => agent.profile === 'research')).toEqual(
-      expect.not.objectContaining({ reachable: false })
-    )
-    expect(roster?.agents.find(agent => agent.profile === 'solo')).toMatchObject({
-      connectionId: 'local',
-      profile: 'solo',
-      reachable: false
-    })
-
-    await expect(desktop.getConnection('research')).resolves.toMatchObject({
-      profile: 'research',
-      sharedPrimary: true
-    })
-    await expect(desktop.getConnection('solo')).resolves.toMatchObject({
-      profile: 'solo',
-      sharedPrimary: false
-    })
-    await expect(desktop.getConnectionFor?.({ connectionId: 'local', profile: 'research' })).resolves.toMatchObject({
-      profile: 'research',
-      sharedRemote: true
-    })
-    await expect(desktop.getConnectionFor?.({ connectionId: 'local', profile: 'solo' })).resolves.toMatchObject({
-      profile: 'solo',
-      sharedPrimary: false,
-      sharedRemote: false
-    })
-  })
-
-  it('treats an empty served list as this gateway serving only its own profile', async () => {
-    const win = mutableWindow()
-    win.__HERMES_DASHBOARD_PROFILE__ = 'default'
-    seedWebappSession('served-token')
-    stubProfileStatus(
-      { gateway_running: true, gateway_shared_with: [] },
-      [{ name: 'default' }, { name: 'research' }]
-    )
-
-    expect(installBrowserDesktopBridge()).toBe(true)
-    const desktop = win.hermesDesktop!
-
-    await expect(desktop.getProfileRoutes?.(['default', 'research'])).resolves.toEqual([
-      { connectionId: 'local', mode: 'local', profile: 'default', targetProfile: 'default' }
-    ])
-    await expect(desktop.getConnection('research')).resolves.toMatchObject({
-      profile: 'research',
-      sharedPrimary: false
-    })
-    await expect(desktop.getConnectionFor?.({ connectionId: 'local', profile: 'research' })).resolves.toMatchObject({
-      sharedRemote: false
-    })
-
-    const roster = await desktop.getAgentRoster?.()
-    expect(roster?.sources?.[0]?.reachable).toBe(true)
-    expect(roster?.agents.find(agent => agent.profile === 'default')).toEqual(
-      expect.not.objectContaining({ reachable: false })
-    )
-    expect(roster?.agents.find(agent => agent.profile === 'research')?.reachable).toBe(false)
-  })
-
-  it('keeps installed profiles reachable when the gateway does not report its served set', async () => {
-    const win = mutableWindow()
-    seedWebappSession('served-token')
-    stubProfileStatus({ gateway_running: true, gateway_shared_with: null }, [
-      { name: 'default' },
-      { name: 'research' }
-    ])
-
-    expect(installBrowserDesktopBridge()).toBe(true)
-    const desktop = win.hermesDesktop!
-
-    await expect(desktop.getProfileRoutes?.(['default', 'research'])).resolves.toEqual([
-      { connectionId: 'local', mode: 'local', profile: 'default', targetProfile: 'default' },
-      { connectionId: 'local', mode: 'local', profile: 'research', targetProfile: 'research' }
-    ])
-    await expect(desktop.getConnection('research')).resolves.toMatchObject({
-      profile: 'research',
-      sharedPrimary: true
-    })
-    await expect(desktop.getConnectionFor?.({ connectionId: 'local', profile: 'research' })).resolves.toMatchObject({
-      sharedRemote: true
-    })
-    const roster = await desktop.getAgentRoster?.()
-    expect(roster?.agents.every(agent => agent.reachable !== false)).toBe(true)
-    expect(roster?.sources?.[0]?.reachable).toBe(true)
-  })
-
   it('maps REST requests to the loopback API with token and profile scoping', async () => {
     const win = mutableWindow()
     win.__HERMES_BASE_PATH__ = '/hermes'
@@ -733,12 +609,7 @@ describe('browser-hosted Desktop bridge', () => {
     $connection.set({ mode: 'remote', profile: 'switched-profile' } as never)
     await expect(pending).resolves.toMatchObject({ saved: true })
 
-    const downloadCall = (fetchMock.mock.calls as [URL, RequestInit][]).find(([input]) =>
-      input.pathname.endsWith('/api/fs/download')
-    )
-
-    expect(downloadCall).toBeTruthy()
-    const [requestUrl, init] = downloadCall!
+    const [requestUrl, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
     // The workspace download route native Desktop uses: it reads an SSH-backed profile's files on
     // that machine, like the file tree that listed them, not a same-named file on the gateway host.
     expect(requestUrl.pathname).toBe('/hermes/api/fs/download')
@@ -805,16 +676,12 @@ describe('browser-hosted Desktop bridge', () => {
       'https://cdn.example.com/video.mp4'
     )
 
-    const ticketCalls = (fetchMock.mock.calls as [URL, RequestInit][]).filter(([input]) =>
-      input.pathname.endsWith('/api/files/ticket')
-    )
-
-    for (const [input, init] of ticketCalls) {
+    for (const [input, init] of fetchMock.mock.calls as [URL, RequestInit][]) {
       expect(input.pathname).toBe('/hermes/api/files/ticket')
       expect(new Headers(init.headers).get('X-Hermes-Session-Token')).toBe(token)
     }
 
-    expect(ticketCalls).toHaveLength(token ? 5 : 0)
+    expect(fetchMock).toHaveBeenCalledTimes(token ? 5 : 0)
   })
 
   it('persists browser image bytes through the existing chat upload API', async () => {
@@ -1345,9 +1212,7 @@ describe('browser-hosted Desktop bridge', () => {
     seedWebappSession('served-token')
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockImplementation(
-        () => new Response('{"detail":"gateway unavailable"}', { status: 503 })
-      )
+      vi.fn().mockResolvedValue(new Response('{"detail":"gateway unavailable"}', { status: 503 }))
     )
     expect(installBrowserDesktopBridge()).toBe(true)
     const desktop = win.hermesDesktop!

@@ -695,8 +695,8 @@ When no completed candidate fits but the pass still running would, compaction wa
 instead of writing the same summary again. Each streamed chunk of the pass touches the waiting
 compaction's progress hook, so the host's idle watchdog treats the wait like an inline summary
 stream, and time a llama.cpp server spends reading the pass's prompt pushes the host's deadline back
-as it would inline. The wait ends at the host's deadline (the compression aux timeout when there is none) or on
-cancellation, and compaction then summarizes inline.
+as it would inline. The wait ends at the host's deadline (the compression aux timeout when there is none), on
+cancellation, or when a session boundary discards the pass, and compaction then summarizes inline.
 
 Everything else runs inline exactly as without the flag: no candidate, a candidate or running pass
 that no longer fits, manual `/compress`, focus compaction, provider-overflow recovery, and

@@ -39,6 +39,7 @@ invalidate a summary written from a superset of the same information.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import hashlib
 import logging
 import threading
@@ -57,7 +58,8 @@ PREPARE_BAND_RATIO = 0.12
 MIN_EXTENSION_DELTA_TOKENS = 8_000
 # Minimum pause after a failed pass (the summariser's own cooldown applies when longer).
 _FAILED_PASS_BACKOFF_SECONDS = 60.0
-# Background summariser calls in flight across the process.
+# Background passes running across the process (a cancelled pass frees its slot as it unwinds; its
+# provider stream closes on the aux cancel path, normally within one chunk).
 _slots = threading.BoundedSemaphore(2)
 
 
@@ -76,7 +78,7 @@ class _Window:
 class PreparedSummary(_Window):
     summary: str  # prefixed handoff text, exactly as ``_generate_summary`` returns it
     body: str  # bare body the next compaction extends iteratively
-    prompt_tokens: int = 0  # provider-reported prompt size when the pass was planned
+    prompt_tokens: int  # provider-reported prompt size when this candidate was last planned or checked
 
 
 class _PendingPass:
@@ -214,6 +216,8 @@ class PreparedCompaction:
             with self._lock:
                 if self._pending is pending:
                     self._pending = None
+                # A pass that published after the snapshot above planned on the pre-compaction transcript.
+                self._entry = None
             if pending is not None:
                 pending.cancelled.set()  # done already, or superseded: stop paying for it
         if reason is not None or entry is None:
@@ -241,11 +245,10 @@ class PreparedCompaction:
 
     def _await(self, pending: _PendingPass) -> tuple[Optional[PreparedSummary], Optional[str]]:
         """Wait on the compacting thread for *pending*: what it published, or None and why (the host's
-        deadline, the compression aux timeout without one, a host cancel, a discard, a failed pass).
-        Meanwhile the pass's
-        streamed progress and local prompt reading feed this thread's hooks, so the host's idle watchdog
-        and deadline extension see a live summary exactly as they would inline; the deadline is re-read
-        on every poll because prompt reading pushes it back."""
+        deadline, or the compression aux timeout without one; a host cancel; a discard; a failed pass).
+        Meanwhile the pass's streamed progress and local prompt reading feed this thread's hooks, so the
+        host's idle watchdog and deadline extension see a live summary exactly as they would inline; the
+        deadline is re-read on every poll because prompt reading pushes it back."""
         from agent.auxiliary_client import (
             _aux_progress, _capture_aux_cancel_check, _captured_aux_cancel_requested, _current_aux_stream_deadline,
             _effective_aux_timeout,
@@ -328,6 +331,9 @@ class PreparedCompaction:
                 if delta < MIN_EXTENSION_DELTA_TOKENS:
                     logger.debug("prepared compaction: keeping window=%d-%d, delta ~%d tokens",
                                  completed.compress_start, completed.compress_end, delta)
+                    with self._lock:  # measure the next skip from this check, not from the plan
+                        if self._entry is completed:
+                            self._entry = dataclasses.replace(completed, prompt_tokens=tokens)
                     return None
                 extend = completed
             worker = _worker_copy(compressor)
@@ -374,7 +380,7 @@ class PreparedCompaction:
         self, worker: Any, turns: list[dict[str, Any]], focus: Optional[str], token: _PendingPass, origin: str,
         extend: Optional[PreparedSummary],
     ) -> None:
-        from agent.auxiliary_client import aux_interrupt_protection, aux_progress_hook
+        from agent.auxiliary_client import AuxiliaryExplicitCancellation, aux_interrupt_protection, aux_progress_hook
         from agent.local_prompt_progress import prompt_reading_hook
         from agent.thread_scoped_output import thread_scoped_silence
 
@@ -402,6 +408,9 @@ class PreparedCompaction:
             else:
                 logger.warning("prepared compaction: pass failed after %.1fs: %s", time.monotonic() - started,
                                worker._last_summary_error or "summariser returned nothing")
+        except AuxiliaryExplicitCancellation:
+            # The closed stream raises a BaseException; it must not reach the thread's excepthook (stderr).
+            logger.info("prepared compaction: pass cancelled after %.1fs (superseded)", time.monotonic() - started)
         except Exception:
             logger.warning("prepared compaction: pass crashed", exc_info=True)
         finally:

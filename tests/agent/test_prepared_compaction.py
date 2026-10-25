@@ -41,11 +41,15 @@ class _StubCompressor(ContextCompressor):
             from agent.local_prompt_progress import current_prompt_reading_hook
 
             pending = self.prepared_compaction._pending
-            assert _wait_until(lambda: pending.on_reading is not None), "compaction never started waiting"
+            wait_until(lambda: pending.on_reading is not None, what="compaction waiting on the pass")
             current_prompt_reading_hook()(self.read_seconds)  # a local server reading the prompt
             self.after_read()
         if worker and self.gate is not None:
-            assert self.gate.wait(5.0), "pass never released"
+            from agent.auxiliary_client import AuxiliaryExplicitCancellation, _aux_interrupt_cancel_requested
+
+            wait_until(lambda: self.gate.is_set() or _aux_interrupt_cancel_requested(), what="pass released or cancelled")
+            if not self.gate.is_set():
+                raise AuxiliaryExplicitCancellation()  # how the aux client ends a cancelled summary stream
         if worker and self.stream_progress:
             from agent.auxiliary_client import _aux_progress
 
@@ -109,15 +113,6 @@ def _summary_row(compressed: list) -> dict:
     rows = [m for m in compressed if m.get(COMPRESSED_SUMMARY_METADATA_KEY)]
     assert len(rows) == 1
     return rows[0]
-
-
-def _wait_until(predicate, timeout: float = 5.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        time.sleep(0.01)
-    return predicate()
 
 
 # --------------------------------------------------------------------------- default off
@@ -245,10 +240,10 @@ def test_growth_past_the_candidate_beyond_the_tail_budget_summarises_inline(pass
     compressed = cc.compress(later, current_tokens=cc.threshold_tokens + 1)
 
     if pass_state == "running":
-        assert running.is_alive(), "not waited on"
-        cc.gate.set()
         running.join(5.0)
-    assert sorted(c["worker"] for c in cc.calls) == [False, True], "one pass, one inline summary"
+        assert [c["worker"] for c in cc.calls] == [False], "not waited on: cancelled, one inline summary"
+    else:
+        assert sorted(c["worker"] for c in cc.calls) == [False, True], "one pass, one inline summary"
     assert "Summary v" in _summary_row(compressed)["content"] and cc.prepared_compaction._entry is None
 
 
@@ -327,7 +322,7 @@ def test_fingerprint_survives_a_session_db_round_trip(tmp_path):
 # --------------------------------------------------------------------------- running passes
 
 
-def test_completed_candidate_splices_while_an_extension_pass_runs():
+def test_completed_candidate_splices_while_an_extension_pass_runs(monkeypatch):
     cc = _compressor()
     cc.tail_token_budget = 12_000  # room for a gap that starts an extension yet still splices
     msgs = _messages(80)
@@ -339,16 +334,19 @@ def test_completed_candidate_splices_while_an_extension_pass_runs():
     cc.gate = threading.Event()
     running = pc.maybe_prepare(_agent(cc, _GROWN_TOKENS), grown, origin="test")
     assert running is not None
+    misfit = pc.PreparedCompaction._misfit
 
-    started = time.monotonic()
+    def publish_mid_take(*args):  # the extension finishes while compaction checks the candidate
+        if not cc.gate.is_set():
+            cc.gate.set()
+            running.join(5.0)
+        return misfit(*args)
+
+    monkeypatch.setattr(pc.PreparedCompaction, "_misfit", staticmethod(publish_mid_take))
     compressed = cc.compress(grown, current_tokens=cc.threshold_tokens + 1)
-    assert time.monotonic() - started < 2.0, "must not wait for the running pass"
     assert first.summary in _summary_row(compressed)["content"]
-
-    cc.gate.set()
-    running.join(5.0)
     assert len(cc.calls) == 2 and cc.calls[1]["previous"] == first.body, "the pass was an extension"
-    assert cc.prepared_compaction._entry is None, "an overtaken pass cannot publish"
+    assert cc.prepared_compaction._entry is None, "a pass planned before this compaction cannot outlive it"
 
 
 def test_compaction_waits_for_a_running_pass_and_forwards_its_progress():
@@ -364,7 +362,7 @@ def test_compaction_waits_for_a_running_pass_and_forwards_its_progress():
     host_progress = []
     pending = cc.prepared_compaction._pending
     # Release the pass only once the compaction is waiting on it.
-    threading.Thread(target=lambda: _wait_until(lambda: pending.on_progress is not None) and cc.gate.set()).start()
+    threading.Thread(target=lambda: wait_until(lambda: pending.on_progress is not None) and cc.gate.set()).start()
     with aux_progress_hook(lambda: host_progress.append(threading.current_thread().name)):
         compressed = cc.compress(msgs, current_tokens=cc.threshold_tokens + 1)
     running.join(5.0)
@@ -386,7 +384,6 @@ def test_wait_ends_at_the_host_deadline_then_summarises_inline_and_the_pass_cann
 
     with aux_stream_deadline(time.monotonic() + 0.2):
         cc.compress(msgs, current_tokens=cc.threshold_tokens + 1)
-    assert running.is_alive(), "the wait ended at the host deadline, not with the pass"
     assert [c["worker"] for c in cc.calls] == [False], "inline summary after the deadline"
 
     cc.gate.set()
@@ -416,9 +413,11 @@ def test_prompt_reading_in_the_pass_extends_the_deadline_the_wait_honours():
     assert "Summary v1" in _summary_row(compressed)["content"]
 
 
-def test_host_cancel_ends_the_wait_and_cancels_the_superseded_pass():
+def test_host_cancel_ends_the_wait_and_cancels_the_superseded_pass(monkeypatch):
     from agent.auxiliary_client import aux_interrupt_protection, aux_progress_hook
 
+    escaped = []
+    monkeypatch.setattr(threading, "excepthook", escaped.append)
     cc = _compressor()
     cc.gate = threading.Event()
     msgs = _messages(30)
@@ -429,11 +428,10 @@ def test_host_cancel_ends_the_wait_and_cancels_the_superseded_pass():
                      and host_cancel.set()).start()
     with aux_interrupt_protection(cancel_event=host_cancel), aux_progress_hook(lambda: None):
         cc.compress(msgs, current_tokens=cc.threshold_tokens + 1)
-    assert running.is_alive(), "the wait ended on the host cancel, not with the pass"
     assert [c["worker"] for c in cc.calls] == [False], "inline summary after the host cancelled the wait"
     assert pending.cancelled.is_set(), "the pass nobody can use is told to stop streaming"
-    cc.gate.set()
     running.join(5.0)
+    assert not running.is_alive() and escaped == [], "the cancelled stream ends the pass quietly"
 
 
 def test_session_reset_during_the_wait_wakes_it_without_waiting_for_the_pass():
@@ -449,7 +447,6 @@ def test_session_reset_during_the_wait_wakes_it_without_waiting_for_the_pass():
                      and cc.prepared_compaction.discard("session reset")).start()
     with aux_progress_hook(lambda: None):  # a host hook marks the moment the wait starts
         cc.compress(msgs, current_tokens=cc.threshold_tokens + 1)
-    assert running.is_alive(), "the wait ended on the discard, not with the pass"
     assert [c["worker"] for c in cc.calls] == [False]
     cc.gate.set()
     running.join(5.0)
@@ -506,6 +503,22 @@ def test_small_delta_keeps_the_candidate_without_copying_or_taking_a_slot(monkey
                 pc._slots.release()
     assert copies == [] and cc.prepared_compaction._entry is first and len(cc.calls) == 1
     assert plans == [], "an unchanged prompt size skips re-planning the window on the turn thread"
+
+
+def test_grown_prompt_with_a_small_window_delta_keeps_the_candidate_and_rearms_the_skip(monkeypatch):
+    """Prompt growth that landed in the protected tail: the full check keeps the candidate, and the next
+    tool batch measures growth from that check instead of re-planning again."""
+    cc = _compressor()
+    msgs = _messages(30)
+    first = _prepare(cc, msgs)
+    plans, plan = [], cc._plan_compaction_window
+    monkeypatch.setattr(cc, "_plan_compaction_window", lambda m: plans.append(1) or plan(m))
+    grown = _grow(msgs, 4)
+    for _ in range(2):
+        assert pc.maybe_prepare(_agent(cc, _GROWN_TOKENS), grown, origin="test") is None
+    kept = cc.prepared_compaction._entry
+    assert plans == [1] and len(cc.calls) == 1
+    assert (kept.compress_end, kept.summary, kept.prompt_tokens) == (first.compress_end, first.summary, _GROWN_TOKENS)
 
 
 def test_extension_pass_summarises_only_the_delta_on_top_of_the_previous_body():
@@ -616,7 +629,7 @@ def test_turn_that_crosses_the_trigger_splices_the_summary_prepared_during_its_t
         pass_during_tool.append(state is not None and state._pending is not None)
         tool_started.set()
         if state is not None:
-            assert _wait_until(lambda: state._pending is None)
+            wait_until(lambda: state._pending is None, what="the pass to finish")
         return '{"ok": true}'
 
     agent.client.chat.completions.create.side_effect = [

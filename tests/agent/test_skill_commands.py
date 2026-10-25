@@ -10,6 +10,7 @@ from agent.skill_commands import (
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
     find_triggered_skill_command,
+    get_plugin_skill_commands,
     resolve_skill_command_key,
     scan_skill_commands,
 )
@@ -132,6 +133,36 @@ class TestScanSkillCommands:
                 matched = find_triggered_skill_command("What is the market doing today?")
                 assert matched is not None
                 assert matched[0] == "/market-watch"
+
+    def test_trigger_fast_path_is_scoped_to_the_current_identity(self, tmp_path, monkeypatch):
+        """Regression: the "no skill declares triggers" fast path answered from every cached identity
+        and from any home's plugin projection. A profile/project switch then skipped this identity's
+        scan and silently disabled its triggers until an unrelated palette refresh."""
+        import agent.skill_commands as sc_mod
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        plain, triggered = tmp_path / "plain", tmp_path / "triggered"
+        _make_skill(plain, "plain", body="Plain body.")
+        _make_skill(triggered, "market-watch", body="Triggered body.",
+                    frontmatter_extra="metadata:\n  hermes:\n    triggers: [market outlook]\n")
+        # This test owns the whole process-wide cache: no earlier test's map may answer for it.
+        monkeypatch.setattr(sc_mod, "_skill_commands_by_key", {})
+        monkeypatch.setattr(sc_mod, "_skill_commands_sig_by_key", {})
+        monkeypatch.setattr(sc_mod, "_plugin_skill_commands", {})
+        monkeypatch.setattr(sc_mod, "_plugin_skill_commands_tag", None)
+        with patch("tools.skills_tool.SKILLS_DIR", plain):
+            scan_skill_commands()
+            get_plugin_skill_commands()  # this identity: scanned, and nothing declares triggers
+            token = set_hermes_home_override(str(triggered))
+            try:
+                with patch("tools.skills_tool.SKILLS_DIR", triggered):
+                    matched = find_triggered_skill_command("What is the market outlook today?")
+            finally:
+                reset_hermes_home_override(token)
+
+        assert matched is not None
+        assert matched[0] == "/market-watch"
+        assert matched[2] == "market outlook"
 
     def test_loads_skill_invocation_from_symlinked_skill_dir(self, tmp_path):
         """Slash commands should load skills symlinked under the local skills dir."""

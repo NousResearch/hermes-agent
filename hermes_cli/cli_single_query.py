@@ -110,6 +110,16 @@ def _run_kanban_goal_loop_q(cli: HermesCLI, first_response: str, run_turn=None, 
     )
 
 
+def _synthetic_turn(cli, prompt: str):
+    """One system-authored follow-up turn (kanban recovery nudge, goal-judge prompt).
+
+    Flagged explicitly: its text is written by Hermes, not the person, so it must never load a
+    skill by trigger — a broad trigger phrase ("continue", "task") would otherwise turn every
+    recovery or judge turn into a skill invocation.
+    """
+    return cli.chat(prompt, system_authored=True)
+
+
 def _run_kanban_goal_loop_chat(cli: HermesCLI, first_response: str) -> None:
     """``-q`` worker variant: follow-up turns go through ``cli.chat`` (tool feed stays on stdout,
     which is the Kanban worker log) and judge verdicts are printed there too, so a goal_mode card's
@@ -120,7 +130,8 @@ def _run_kanban_goal_loop_chat(cli: HermesCLI, first_response: str) -> None:
         logger.info("%s", msg)
         print(msg, flush=True)
 
-    _run_kanban_goal_loop_q(cli, first_response, run_turn=lambda p: cli.chat(p) or "", log=_log)
+    _run_kanban_goal_loop_q(cli, first_response, run_turn=lambda p: _synthetic_turn(cli, p) or "",
+                            log=_log)
 
 
 def _sync_cli_session_id_from_agent(cli) -> None:
@@ -554,7 +565,7 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
 
         def _nonquiet_recover_turn(nudge):
             nonlocal response
-            response = cli.chat(nudge)
+            response = _synthetic_turn(cli, nudge)
             return response
 
         recover_failed_kanban_turns(

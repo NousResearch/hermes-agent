@@ -331,16 +331,78 @@ def test_non_trigger_turns_pass_through(trigger_turn, message):
     assert kwargs["persist_user_message"] is None
 
 
-# (g) which turns may match ----------------------------------------------------------------------
+# (g) which turns may match: explicit provenance, never the message text -------------------------
 
-@pytest.mark.parametrize("message,images,allowed", [
-    ("market update please", None, True),
-    ("market update please", ["/tmp/chart.png"], False),  # text routing turns an image turn into a string
+@pytest.mark.parametrize("message,images,system_authored,allowed", [
+    ("market update please", None, False, True),                 # typed or spoken by the person
+    ("market update please", None, True, False),                 # notification / nudge / goal judge
+    ("market update please", ["/tmp/chart.png"], False, False),  # text routing turns an image turn into a string
 ])
-def test_only_typed_text_turns_are_matched(message, images, allowed):
+def test_only_user_authored_turns_are_matched(message, images, system_authored, allowed):
     from hermes_cli.cli_chat_turn_mixin import _turn_allows_skill_triggers
 
-    assert _turn_allows_skill_triggers(message, images) is allowed
+    assert _turn_allows_skill_triggers(message, images, system_authored=system_authored) is allowed
+
+
+def test_a_watch_match_notification_is_queued_with_system_provenance(monkeypatch):
+    """Regression: a watch match arrives as a plain string carrying the process's own output, and the
+    old ``isinstance(TimelineNotification)`` guard let it load a skill from that output. The queued
+    item itself must mark the turn system-authored while its text and display stay unchanged."""
+    from hermes_cli import gateway_tools_notify
+    from hermes_cli.cli_chat_turn_mixin import _turn_allows_skill_triggers
+    from hermes_cli.cli_process_notifications import CLIProcessNotificationsMixin, input_is_system_authored
+    from tools import async_delegation
+    from tools.process_registry import process_registry
+    from tools.process_registry_notifications import SystemNotification, TimelineNotification
+
+    event = {"type": "watch_match", "event_id": "e1", "session_key": "s", "session_id": "p1",
+             "pattern": "outlook", "output": "12:00 market outlook is flat"}
+    text = "Watch match on process p1 (pattern 'outlook'):\n12:00 market outlook is flat"
+    monkeypatch.setattr(process_registry, "drain_notifications", lambda **kw: [(event, text)])
+    monkeypatch.setattr(async_delegation, "claim_event_delivery", lambda ev, consumer: "claim")
+    monkeypatch.setattr(async_delegation, "complete_event_delivery", lambda ev, claim: None)
+    monkeypatch.setattr(gateway_tools_notify, "gateway_store", lambda cli: None)
+
+    class _Shell(CLIProcessNotificationsMixin):
+        session_id = "s"
+        _session_db = None
+        _pending_input = queue.Queue()
+
+        def _background_notifications_suppressed(self):
+            return False
+
+    shell = _Shell()
+    shell._drain_process_notifications("cli")
+    pending = shell._pending_input.get_nowait()
+
+    assert isinstance(pending, SystemNotification), type(pending)
+    assert not isinstance(pending, TimelineNotification)  # still painted as a plain row, as before
+    assert str(pending) == text
+    assert input_is_system_authored(pending) is True
+    assert _turn_allows_skill_triggers(str(pending), None, system_authored=True) is False
+
+
+def test_recovery_and_goal_judge_turns_are_system_authored():
+    """Regression: the kanban recovery nudge and the ``-q`` goal-judge prompt both go through
+    ``cli.chat`` and are written by Hermes, so a broad trigger ("continue the task") loaded a skill
+    on them. They now carry the explicit provenance flag."""
+    from agent.kanban_turn_recovery import build_recovery_nudge
+    from hermes_cli.cli_chat_turn_mixin import _turn_allows_skill_triggers
+    from hermes_cli.cli_single_query import _synthetic_turn
+
+    seen = {}
+
+    class _Chat:
+        def chat(self, prompt, **kwargs):
+            seen["prompt"], seen["kwargs"] = prompt, kwargs
+            return "ok"
+
+    nudge = build_recovery_nudge({"error": "provider stream failure"}, attempt=1, max_attempts=2,
+                                 task_id="t-1")
+    assert nudge.startswith("[System:")  # system-authored text, matched on content it would fire
+    assert _synthetic_turn(_Chat(), nudge) == "ok"
+    assert seen["kwargs"] == {"system_authored": True}
+    assert _turn_allows_skill_triggers(seen["prompt"], None, system_authored=True) is False
 
 
 def test_a_background_notification_never_loads_a_skill(trigger_turn):

@@ -433,6 +433,15 @@ class TimelineNotification(str):
                    "diagnostic" if diagnostic_process_event(event) else "result")
 
 
+class SystemNotification(str):
+    """A notification body queued as plain text, carrying explicit system provenance.
+
+    Watch-match and watch-disabled summaries have no richer display row, so they travel as a string
+    exactly like before; the type is what tells the turn router the text is system-authored (and so
+    can never load a skill by trigger). Never judge provenance from the message text itself.
+    """
+
+
 def _delegation_attribution_line(evt: dict) -> str | None:
     """One-line provenance for a subagent-owned process event, else None. Such a process
     outlives the child and lands in the PARENT conversation, which would otherwise see an

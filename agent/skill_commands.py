@@ -291,20 +291,25 @@ def _compile_skill_trigger_pattern(trigger: str) -> re.Pattern[str]:
 
 
 def _no_scanned_skill_declares_triggers() -> bool:
-    """True when the skill and plugin maps were already scanned and none declares triggers.
+    """True when THIS identity's skill and plugin maps were already scanned and none declares triggers.
 
+    Scoped to the current ``(platform, home, project)`` identity, and to a plugin projection taken for
+    the same home: another profile's or project's cache saying "no triggers" says nothing about this
+    one, and letting it answer would skip this identity's scan and silently disable every trigger here.
     Reads only the in-memory caches (no config read, no dir-signature walk), so a plain turn on an
-    install without triggered skills pays nothing. Before the first scan it answers False and the
-    full path runs once. A skill given triggers later is picked up by the next rescan
+    install without triggered skills pays nothing. Before the first scan of this identity it answers
+    False and the full path runs once. A skill given triggers later is picked up by the next rescan
     (``/reload-skills``, a new session, or any palette/completion refresh), as documented.
     """
+    key = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(),
+           _resolve_skill_commands_project())
     with _publish_lock:
-        skill_maps = list(_skill_commands_by_key.values())
-        plugin_map, plugin_scanned = _plugin_skill_commands, _plugin_skill_commands_tag is not None
-    if not skill_maps or not plugin_scanned:
+        commands = _skill_commands_by_key.get(key)
+        plugin_map, plugin_tag = _plugin_skill_commands, _plugin_skill_commands_tag
+    if commands is None or plugin_tag is None or plugin_tag[0] != key[1]:
         return False
-    for commands in (*skill_maps, plugin_map):
-        if any(info.get("triggers") for info in commands.values()):
+    for info in (*commands.values(), *plugin_map.values()):
+        if info.get("triggers"):
             return False
     return True
 

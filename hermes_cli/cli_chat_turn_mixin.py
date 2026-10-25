@@ -23,12 +23,17 @@ from agent.i18n import t
 from hermes_cli.cli_agent_setup_mixin import _retire_agent
 
 
-def _turn_allows_skill_triggers(message, images) -> bool:
-    """Only text the person typed may load a skill by trigger: never a background notification
-    (its body is system-authored) and never an image turn (text routing turns it into a string)."""
+def _turn_allows_skill_triggers(message, images, *, system_authored: bool = False) -> bool:
+    """Only user-authored text may load a skill by trigger.
+
+    ``system_authored`` is the explicit provenance every synthetic turn carries: background
+    notifications, the kanban recovery nudge and goal-judge prompts. Their bodies are not the
+    person's words, so they never match a trigger, whatever the text says. An image turn is
+    excluded too (text routing turns it into a string).
+    """
     from tools.process_registry_notifications import TimelineNotification
 
-    return not images and not isinstance(message, TimelineNotification)
+    return not images and not system_authored and not isinstance(message, TimelineNotification)
 
 
 def _resolve_skill_trigger_message(message, session_id):
@@ -73,7 +78,8 @@ class CLIChatTurnMixin:
             return
         GatewayRunner._apply_fallback_chain_to_agent(agent, self._fallback_model)
 
-    def chat(self, message, images: list | None = None, voice_input: bool = False) -> Optional[str]:
+    def chat(self, message, images: list | None = None, voice_input: bool = False,
+             *, system_authored: bool = False) -> Optional[str]:
         """Run one user turn; returns the agent's response, or None on error.
 
         Input typed while the agent runs goes to ``_interrupt_queue`` (separate from
@@ -83,7 +89,9 @@ class CLIChatTurnMixin:
 
         Args: message: The user's message (str or multimodal content list) images: Optional list of Path
         objects for attached images voice_input: True when the message came from voice transcription (gates
-        the concise voice-response prefix, #65827)
+        the concise voice-response prefix, #65827) system_authored: True when the turn was not written by the
+        person (background notification, recovery nudge, goal-judge prompt); such a turn never loads a skill
+        by trigger.
         """
         from cli import ChatConsole, _ChatTurn, _DIM, _RST, _accent_hex, _cprint, set_secret_capture_callback
         from tools.process_registry_notifications import TimelineNotification
@@ -124,7 +132,7 @@ class CLIChatTurnMixin:
             message = _sanitize_surrogates(message)
 
         self._chat_stage_user_message(agent, message)
-        allow_skill_triggers = _turn_allows_skill_triggers(message, images)
+        allow_skill_triggers = _turn_allows_skill_triggers(message, images, system_authored=system_authored)
         if isinstance(message, TimelineNotification):
             message = str(message)  # UI metadata is on the staged row, never in model content.
 

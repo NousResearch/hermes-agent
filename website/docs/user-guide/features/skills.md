@@ -253,8 +253,10 @@ the messaging gateway, and ACP do not trigger-match.
   to the longer skill name, then the slash command key. Only skills the current
   scan offers (enabled, platform/environment filters, no collision) are eligible.
 - **Skipped turns:** messages starting with `/`, empty input, turns with an
-  image attached, and background notification turns (a finished process or
-  subagent): only text you typed can load a skill.
+  image attached, and turns Hermes writes for you — background notifications
+  (a finished process, a watch match, a subagent) and the synthetic follow-ups
+  of a Kanban worker (recovery nudge, goal-judge prompt). Only text you authored
+  matches, typed or spoken: a voice message counts as yours.
 - **Only `metadata.hermes.triggers` counts.** A top-level `triggers:` list (used by
   some bundled skills as prose) is ignored, so skills without the key behave as before.
 - **Refresh:** after editing a skill's triggers, run `/reload-skills` or start a new session.

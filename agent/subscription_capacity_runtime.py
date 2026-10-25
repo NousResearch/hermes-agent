@@ -196,7 +196,7 @@ def prepare_kanban_worker_capacity(
 
 
 def release_prepared_capacity(payload: Optional[str]) -> bool:
-    """Release a dispatcher-acquired lease when the child could not be launched."""
+    """Release this dispatcher's lease only while no worker PID has been bound."""
     if not payload:
         return False
     state = json.loads(payload)
@@ -205,7 +205,7 @@ def release_prepared_capacity(payload: Optional[str]) -> bool:
         Path(state["db_path"]), (_policy_from_dict(state["policy"]),),
         coordination_scope=str(state["coordination_scope"]),
     )
-    return router.release(lease.lease_id, owner=lease.owner)
+    return router.release_unbound_dispatcher_lease(lease)
 
 
 def bind_prepared_capacity(payload: Optional[str], worker_pid: int) -> bool:

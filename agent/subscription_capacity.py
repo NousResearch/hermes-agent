@@ -481,6 +481,32 @@ class SubscriptionCapacityRouter:
             conn.commit()
             return int(authority["dispatcher_pid"]) == dispatcher_pid
 
+    def release_unbound_dispatcher_lease(self, lease: CapacityLease) -> bool:
+        """Release only this dispatcher's reservation before any worker PID was bound."""
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM subscription_capacity_leases WHERE lease_id = ?", (lease.lease_id,),
+            ).fetchone()
+            authority = conn.execute(
+                "SELECT dispatcher_pid FROM subscription_capacity_authorities WHERE lease_id = ?",
+                (lease.lease_id,),
+            ).fetchone()
+            binding = conn.execute(
+                "SELECT worker_pid FROM subscription_capacity_bindings WHERE lease_id = ?",
+                (lease.lease_id,),
+            ).fetchone()
+            if (row is None or self._row_to_lease(row) != lease or authority is None
+                    or int(authority["dispatcher_pid"]) != os.getpid() or binding is not None):
+                conn.rollback()
+                return False
+            cursor = conn.execute(
+                "DELETE FROM subscription_capacity_leases WHERE lease_id = ?", (lease.lease_id,),
+            )
+            conn.execute("DELETE FROM subscription_capacity_authorities WHERE lease_id = ?", (lease.lease_id,))
+            conn.commit()
+            return cursor.rowcount == 1
+
     def register_worker_process(self, lease: CapacityLease, worker_pid: int) -> bool:
         """Dispatcher-only atomic binding of an admitted lease to its exact child PID."""
         if worker_pid <= 0:

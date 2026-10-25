@@ -236,4 +236,63 @@ describe('AttachmentList', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
     expect($previewTabs.get().map(tab => tab.target.path)).toEqual(['/tmp/notes.md'])
   })
+
+  describe('paste into prompt', () => {
+    const pastedPath = '/home/alice/.hermes/composer-pastes/pasted_content_20260101_ab12.txt'
+
+    function pastedChip(overrides: Partial<ComposerAttachment> = {}): ComposerAttachment {
+      return {
+        id: 'file:pasted',
+        kind: 'file',
+        label: 'Pasted content (4.1 KB)',
+        path: pastedPath,
+        refText: `@file:${pastedPath}`,
+        ...overrides
+      }
+    }
+
+    it('right-click offers "Paste into prompt" on a large-paste chip and hands over the full text', async () => {
+      const readFileText = vi.fn(async (path: string) => ({ path, text: 'the whole paste' }))
+
+      Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { readFileText } })
+
+      const onPasteIntoPrompt = vi.fn()
+      const chip = pastedChip()
+
+      await renderWithI18n(<AttachmentList attachments={[chip]} onPasteIntoPrompt={onPasteIntoPrompt} />)
+
+      fireEvent.contextMenu(screen.getByRole('button', { name: /Pasted content/ }), { clientX: 20, clientY: 20 })
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Paste into prompt' }))
+
+      await waitFor(() => expect(onPasteIntoPrompt).toHaveBeenCalledWith(chip, 'the whole paste'))
+      expect(readFileText).toHaveBeenCalledWith(pastedPath)
+    })
+
+    it('refuses a truncated read rather than pasting a cut-off text', async () => {
+      const readFileText = vi.fn(async (path: string) => ({ path, text: 'partial', truncated: true }))
+
+      Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { readFileText } })
+
+      const onPasteIntoPrompt = vi.fn()
+
+      await renderWithI18n(<AttachmentList attachments={[pastedChip()]} onPasteIntoPrompt={onPasteIntoPrompt} />)
+
+      fireEvent.contextMenu(screen.getByRole('button', { name: /Pasted content/ }), { clientX: 20, clientY: 20 })
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Paste into prompt' }))
+
+      await waitFor(() => expect(readFileText).toHaveBeenCalledOnce())
+      expect(onPasteIntoPrompt).not.toHaveBeenCalled()
+    })
+
+    it('does not offer the menu on a real file chip', async () => {
+      const onPasteIntoPrompt = vi.fn()
+      const file = pastedChip({ id: 'file:notes', label: 'notes.md', path: '/tmp/notes.md' })
+
+      await renderWithI18n(<AttachmentList attachments={[file]} onPasteIntoPrompt={onPasteIntoPrompt} />)
+
+      fireEvent.contextMenu(screen.getByRole('button', { name: /notes\.md/ }), { clientX: 20, clientY: 20 })
+
+      expect(screen.queryByRole('menu')).toBeNull()
+    })
+  })
 })

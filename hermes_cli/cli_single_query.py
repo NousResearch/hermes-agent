@@ -498,7 +498,10 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
             # No exit trailer: the task log now belongs to the run that replaced this one.
             print(t("cli.single_query.kanban_run_reclaimed"), file=sys.stderr)
             sys.exit(0)
-    if not cli._claim_active_session("cli", stderr=bool(quiet)):
+    from agent.turn_author import turn_author_from_env
+    author = turn_author_from_env()
+    surface = "bot_delivery" if quiet and author and author.get("is_bot") else "cli"
+    if not cli._claim_active_session(surface, stderr=bool(quiet)):
         exit_single_query(1)
     try:
         query, single_query_images = _collect_query_images(query, image)

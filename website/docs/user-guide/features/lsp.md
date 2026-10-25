@@ -26,6 +26,17 @@ runs against that workspace. When neither is in a git repo, LSP
 stays dormant — useful for messaging gateways where the cwd is the
 user's home directory and there's no project to diagnose.
 
+The file's nearest checkout wins over an enclosing checkout containing
+the session's cwd. For Kanban scratch workers stored inside a larger
+repository, the assigned task directory bounds the LSP project root;
+editing a helper script must not index every sibling task and runtime
+copy. Python imports from the enclosing repository remain available
+without enumerating it. Trusted multi-root Pyright clients keep these
+settings per workspace in either opening order, without giving another
+repository the scratch root's import paths. This narrower scope grants
+no workspace trust, and files edited outside the task keep their own
+repository roots.
+
 The check is layered: in-process syntax check first (microseconds),
 then LSP diagnostics second when syntax is clean. A flaky or missing
 language server can never break a write — every LSP failure path

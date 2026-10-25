@@ -386,6 +386,33 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
             hermes_state_mod, "DEFAULT_DB_PATH", fake_hermes_home / "state.db"
         )
 
+    # 3d. gateway.platforms.base freezes the launch home and root at import. When a custom
+    #     HERMES_HOME is preset (a CI or packaging sandbox, Docker /opt/data) that is a root
+    #     this suite guards as real, and the media-delivery profile scan reads
+    #     ``_HERMES_ROOT/profiles`` at check time, tripping the home-I/O guard. Re-pin both to
+    #     this test's home; tests that need a specific root patch them afterwards.
+    platform_base_mod = sys.modules.get("gateway.platforms.base")
+    if platform_base_mod is not None and hasattr(platform_base_mod, "_HERMES_ROOT"):
+        monkeypatch.setattr(platform_base_mod, "_HERMES_HOME", fake_hermes_home)
+        monkeypatch.setattr(
+            platform_base_mod, "_HERMES_ROOT", hermes_constants.get_default_hermes_root()
+        )
+
+    # 3e. gateway.run freezes the launch home at import (``_hermes_home``, and
+    #     ``GatewayRunner._VOICE_MODE_PATH`` built from it). Collected under a preset HERMES_HOME
+    #     (a CI or packaging sandbox) that is a guarded root, a runner built in a test reads
+    #     ``<sandbox>/gateway_voice_mode.json`` and ``<sandbox>/.env`` and trips the home-I/O guard
+    #     (seen in tests/gateway/test_delete_secondary_profile_multiplex.py).
+    #     Re-pin both to this test's home; tests that need a specific home patch them afterwards.
+    gateway_run_mod = sys.modules.get("gateway.run")
+    if gateway_run_mod is not None and hasattr(gateway_run_mod, "_hermes_home"):
+        monkeypatch.setattr(gateway_run_mod, "_hermes_home", fake_hermes_home)
+        runner_cls = getattr(gateway_run_mod, "GatewayRunner", None)
+        if runner_cls is not None and hasattr(runner_cls, "_VOICE_MODE_PATH"):
+            monkeypatch.setattr(
+                runner_cls, "_VOICE_MODE_PATH", fake_hermes_home / "gateway_voice_mode.json"
+            )
+
     # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with
     #    C.UTF-8 locale; local dev often doesn't. Pin everything.
     monkeypatch.setenv("TZ", "UTC")
@@ -438,6 +465,21 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
 def _isolate_hermes_home(_hermetic_environment):
     """Alias preserved for any test that yields this name explicitly."""
     return
+
+
+@pytest.fixture(autouse=True)
+def _drop_leaked_live_worker_procs():
+    """On Windows ``_default_spawn`` parks every Popen in ``kanban_db_dispatch._live_worker_procs`` and the
+    next ``reap_worker_zombies`` polls it. A test that fakes ``subprocess.Popen`` (no ``poll``) leaves its
+    handle behind and fails an unrelated later dispatcher tick; empty the table around every test."""
+    def _clear():
+        mod = sys.modules.get("hermes_cli.kanban_db_dispatch")
+        live = getattr(mod, "_live_worker_procs", None)
+        if isinstance(live, dict):
+            live.clear()
+    _clear()
+    yield
+    _clear()
 
 
 @pytest.fixture(autouse=True)

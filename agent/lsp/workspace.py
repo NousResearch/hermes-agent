@@ -135,23 +135,27 @@ def nearest_root(
 
 
 def resolve_workspace_for_file(file_path: str, *, cwd: Optional[str] = None) -> tuple[Optional[str], bool]:
-    """Return ``(workspace_root, gated_in)`` for a file.  The cwd's worktree wins when the file is
-    inside it; otherwise the file's own worktree is the fallback anchor (monorepos / unrelated
-    checkouts).  ``(None, False)`` when neither is in a git worktree."""
+    """Return the file's nearest git root, bounded by a Kanban worker's assigned workspace.
+
+    Scratch tasks can live below a runtime checkout without being worktrees themselves. They still
+    pass the git gate, but must not make a language server enumerate the entire enclosing runtime.
+    Nested checkouts keep their own roots; this scope boundary does not confer workspace trust.
+    """
     try:
         cwd_anchor = cwd or os.getcwd()
     except OSError:
-        # The process cwd was removed underneath us (a scratch workspace cleaned up at
-        # card completion); getcwd keeps raising even after the path is recreated, so
-        # there is simply no cwd anchor — fall through to the file's own worktree.
         cwd_anchor = None
     cwd_root = find_git_worktree(cwd_anchor) if cwd_anchor else None
-    if cwd_root is not None and is_inside_workspace(file_path, cwd_root):
-        return cwd_root, True
-    file_root = find_git_worktree(file_path)
-    if file_root is not None:
-        return file_root, True
-    return None, False
+    root = find_git_worktree(file_path)
+    if root is None and cwd_root is not None and is_inside_workspace(file_path, cwd_root):
+        root = cwd_root
+    if root is None:
+        return None, False
+    task_workspace = os.environ.get("HERMES_KANBAN_WORKSPACE") if os.environ.get("HERMES_KANBAN_TASK") else None
+    if (task_workspace and is_inside_workspace(task_workspace, root)
+            and is_inside_workspace(file_path, task_workspace)):
+        root = normalize_path(task_workspace)
+    return root, True
 
 
 def operator_workspace_roots() -> set[str]:

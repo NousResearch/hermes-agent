@@ -852,10 +852,23 @@ def _(rid, params: dict) -> dict:
         if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
     if err is not None:
         return err
+    # Bot delivery wait: a desktop send queues behind a
+    # Telegram delivery that owns the chat instead of being refused; see session_delivery_wait.py.
+    can_wait_for_delivery = (
+        _session_source(session) == "desktop" and not internal_hosted_submit and turn_author is None
+        and not any(params.get(k) is not None for k in _TRUNCATION_PARAMS))
+    if session.get("_bot_delivery_wait") and can_wait_for_delivery:
+        if (queued_response := _queue_behind_bot_delivery(rid, sid, session, text, display_kind)) is not None:
+            return queued_response
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
+        if can_wait_for_delivery and getattr(limit_message, "owner_surface", None) == "bot_delivery":
+            if (queued_response := _queue_behind_bot_delivery(rid, sid, session, text, display_kind)) is not None:
+                return queued_response
+            limit_message = _ensure_active_session_slot(sid, session)
         # Refused HERE — before the busy queue, db row and agent build — so a refusal
         # leaves the session untouched.  The reason travels as machine-readable data.
-        return _slot_refusal(rid, sid, session, text, params, limit_message, internal_hosted_submit)
+        if limit_message is not None:
+            return _slot_refusal(rid, sid, session, text, params, limit_message, internal_hosted_submit)
     # Rewritten every submit: a session alternates app window / HUD / live voice; a stale value misinforms.
     session["client_surface"] = params.get("surface") if params.get("surface") in _CLIENT_SURFACES else ""
     # Live-voice delegations carry the recent spoken transcript for the MODEL INPUT only (the persisted

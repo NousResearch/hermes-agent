@@ -25,6 +25,7 @@ from agent.lsp.client import DIAGNOSTICS_DOCUMENT_WAIT, LSPClient, _diagnostic_k
 from agent.lsp.edit_check import EditChecks
 from agent.lsp.servers import (
     SERVERS, UNTRUSTED_SAFE_SERVERS, ServerContext, ServerDef, custom_servers, find_server_for_file, language_id_for,
+    pyright_settings,
 )
 from agent.lsp.workspace import clear_cache, is_trusted_workspace, operator_workspace_roots, resolve_workspace_for_file
 
@@ -632,11 +633,15 @@ class LSPService:
             if not spawning.done():
                 spawning.cancel()  # owner cancelled/failed mid-spawn: release the waiters
 
-    @staticmethod
-    async def _attach_root(srv: ServerDef, client: LSPClient, root: str) -> LSPClient:
+    async def _attach_root(self, srv: ServerDef, client: LSPClient, root: str) -> LSPClient:
         """Multi-root servers: announce ``root`` to the shared process instead of spawning another."""
         if srv.multi_root:
-            await client.add_workspace_folder(root)
+            if srv.server_id == "pyright" and root not in client.workspace_folders:
+                settings = {**pyright_settings(root, trusted=self._trusted(root)),
+                            **self._init_overrides.get(srv.server_id, {})}
+                await client.add_workspace_folder(root, initialization_options=settings)
+            else:
+                await client.add_workspace_folder(root)
         return client
 
     async def _spawn_client(self, srv: ServerDef, root: str, trusted: bool) -> Optional[LSPClient]:

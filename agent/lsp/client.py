@@ -25,6 +25,7 @@ from agent.lsp.protocol import (
     ERROR_CONTENT_MODIFIED, ERROR_METHOD_NOT_FOUND, LSPProtocolError, LSPRequestError, classify_message,
     encode_message, make_error_response, make_notification, make_request, make_response, read_message,
 )
+from agent.lsp.workspace import is_inside_workspace
 
 logger = logging.getLogger("agent.lsp.client")
 
@@ -93,10 +94,10 @@ def uri_to_path(uri: str) -> str:
     """Inverse of :func:`file_uri`."""
     if not uri.startswith("file://"):
         return uri
-    raw = uri[len("file://"):]
+    raw = unquote(uri[len("file://"):])
     if os.name == "nt" and raw.startswith("/") and len(raw) > 2 and raw[2] == ":":
         raw = raw[1:]  # strip leading slash before drive letter
-    return os.path.normpath(unquote(raw))
+    return os.path.normpath(raw)
 
 
 def _end_position(text: str) -> dict[str, int]:
@@ -161,6 +162,7 @@ class LSPClient:
         self._env = env
         self._cwd = cwd or workspace_root
         self._init_options = initialization_options or {}
+        self._folder_options: dict[str, dict[str, Any]] = {workspace_root: self._init_options}
         self._seed_first_push = seed_diagnostics_on_first_push
 
         self._proc: Optional[asyncio.subprocess.Process] = None
@@ -367,11 +369,12 @@ class LSPClient:
     def _workspace_folders(self) -> list[dict[str, str]]:
         return [_folder(r) for r in self.workspace_folders]
 
-    async def add_workspace_folder(self, root: str) -> None:
+    async def add_workspace_folder(self, root: str, *, initialization_options: Optional[dict[str, Any]] = None) -> None:
         """Attach another root to a running multi-root server.  Idempotent; the folder is recorded
         before the notification is sent so concurrent callers for the same root only announce once."""
         if root in self.workspace_folders:
             return
+        self._folder_options[root] = self._init_options if initialization_options is None else initialization_options
         self.workspace_folders.append(root)
         await self._send_notification(
             "workspace/didChangeWorkspaceFolders", {"event": {"added": [_folder(root)], "removed": []}},
@@ -383,6 +386,7 @@ class LSPClient:
         if root not in self.workspace_folders:
             return
         self.workspace_folders.remove(root)
+        self._folder_options.pop(root, None)
         await self._send_notification(
             "workspace/didChangeWorkspaceFolders", {"event": {"added": [], "removed": [_folder(root)]}},
         )
@@ -551,7 +555,7 @@ class LSPClient:
         return self._workspace_folders()
 
     async def _handle_workspace_configuration(self, params: Any) -> Any:
-        """Walk dotted ``section`` paths through initializationOptions; null when missing."""
+        """Walk dotted sections through the options for each requested workspace scope."""
         if not isinstance(params, dict):
             return [None]
         return [self._config_section(item) for item in params.get("items") or []]
@@ -559,10 +563,17 @@ class LSPClient:
     def _config_section(self, item: Any) -> Any:
         if not isinstance(item, dict):
             return None
+        options = self._init_options
+        scope = item.get("scopeUri")
+        if isinstance(scope, str) and scope.startswith("file://"):
+            path = os.path.normcase(uri_to_path(scope))
+            roots = [root for root in self._folder_options if is_inside_workspace(path, os.path.normcase(root))]
+            if roots:
+                options = self._folder_options[max(roots, key=len)]
         section = item.get("section")
-        if not section or not self._init_options:
-            return self._init_options or None
-        cur: Any = self._init_options
+        if not section or not options:
+            return options or None
+        cur: Any = options
         for part in str(section).split("."):
             if not (isinstance(cur, dict) and part in cur):
                 return None

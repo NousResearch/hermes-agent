@@ -795,6 +795,8 @@ def _interrupt_session_turn(
         session["queued_prompt"] = None
         session.pop("queued_prompts", None)
         session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
+    if session.get("_bot_delivery_wait") and session.get("active_session_lease") is None:
+        return use_compute_host  # cancel only our queue, not the foreign delivery's work/approvals
     if should_interrupt:
         # Sibling of gateway/run_agent_cache.py::_interrupt_and_clear_session: a user-initiated stop of a
         # live TUI/desktop turn is the same "loop is gone" event for plugins holding per-turn external
@@ -1026,6 +1028,8 @@ def _schedule_ws_orphan_reap(
                 # Live background work, or a wake-up only this process's poller can deliver: an active /loop or
                 # /heartbeat, or a running process that will notify this session. A settled client-gone interrupt
                 # wins over both: its latches block every tick and reattach.
+                reschedule_delay = _WS_ORPHAN_REAP_GRACE_S
+            elif current.get("_bot_delivery_wait"):
                 reschedule_delay = _WS_ORPHAN_REAP_GRACE_S
             elif not current.get("running"):
                 session = _pop_session_by_id(sid)

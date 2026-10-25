@@ -121,10 +121,12 @@ class ActiveSessionRefusal(str):
     """Refusal message (a ``str``, so callers are untouched) with a machine-readable ``reason``."""
 
     reason: str
+    owner_surface: str | None
 
-    def __new__(cls, message: str, reason: str) -> ActiveSessionRefusal:
+    def __new__(cls, message: str, reason: str, owner_surface: str | None = None) -> ActiveSessionRefusal:
         obj = super().__new__(cls, message)
         obj.reason = reason
+        obj.owner_surface = owner_surface
         return obj
 
     def __getnewargs_ex__(self) -> tuple[tuple[str, str], dict[str, Any]]:
@@ -539,10 +541,11 @@ def try_acquire_active_session(
         if pruned:
             logger.info("Pruned %d stale active session lease(s)", pruned)
 
-        def refuse(message: str, reason: str, log: str, *args) -> tuple[None, ActiveSessionRefusal]:
+        def refuse(message: str, reason: str, log: str, *args,
+                   owner_surface: str | None = None) -> tuple[None, ActiveSessionRefusal]:
             _write_entries(state_path, entries)  # persist the prune even when refusing
             logger.info(log, *args)
-            return None, ActiveSessionRefusal(message, reason)
+            return None, ActiveSessionRefusal(message, reason, owner_surface)
 
         # Correctness first, under the same lock that just pruned dead owners.
         # An empty key is exempt: treating "" as an identity would make every
@@ -563,6 +566,7 @@ def try_acquire_active_session(
                     session_already_owned_message(key, existing), SESSION_NOT_OWNED,
                     "Refused active session %s: already held by pid=%s surface=%s",
                     key, existing.get("pid"), existing.get("surface"),
+                    owner_surface=str(existing.get("surface") or ""),
                 )
 
         # Capacity second, and only when an operator asked for one.

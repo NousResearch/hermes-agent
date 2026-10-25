@@ -1086,6 +1086,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self.home_path = Path(self.scope_key)
         self._discovery_lock = threading.RLock()
         self._discovered: bool = False
+        # Identity of the inputs the last sweep saw (see ``discovery_inputs_changed``).
+        self._inputs_signature: Optional[tuple] = None
         # True once a discovery re-applied plugin secret sources for this home: the per-home snapshot and
         # the installed scope may then hold plugin-supplied names, and a later discovery that finds NO
         # enabled plugin source (plugin removed / disabled) must still reconcile once to drop them.
@@ -1254,6 +1256,22 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # Outside the lock: a listener (the gateway's re-wire) may read the registry from another thread.
         self._notify_plugin_loaded(loaded_before)
 
+    def discovery_inputs_changed(self) -> bool:
+        """Whether the discovery inputs differ from what the last sweep saw.
+
+        A plugin added, removed, re-shadowed or version-bumped under any scanned directory, or an
+        ``plugins.enabled``/``plugins.disabled`` edit, changes the signature. False for a manager that
+        has not discovered yet (its pending sweep reads the current inputs anyway) and for one skipped by
+        ``HERMES_SAFE_MODE`` (no sweep to revalidate), so a caller can use this as a "re-scan only if it
+        would find something new" probe. Entry-point plugins are out of scope: their install/update path
+        reloads explicitly.
+        """
+        if not self._discovered or self._inputs_signature is None:
+            return False
+        with _plugin_home_scope(self.home_path):
+            current = _discovery_inputs_signature(self._collect_directory_manifests())
+        return current != self._inputs_signature
+
     def _re_register_config_hooks_after_force(self) -> None:
         """Restore config-owned shell hooks/outbound webhooks after a force clear; each guarded
         independently so one failing does not skip the other."""
@@ -1325,6 +1343,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     def _discover_and_load_inner(self) -> None:
         """The actual discovery sweep — see :meth:`discover_and_load`."""
         manifests: list[PluginManifest] = self._collect_directory_manifests()
+        # Recorded before the entry-point manifests join: only directory sources are re-checked for
+        # staleness (an entry-point plugin is installed through the reload path that already forces).
+        self._inputs_signature = _discovery_inputs_signature(manifests)
         # Entry points are separate from the directory scan: the startup MCP probe must not import
         # or register them.
         # An installed directory plugin keeps its identity when its own pip dependency also ships an
@@ -1682,6 +1703,18 @@ def has_enabled_agent_plugin_mcp(raw_config: Mapping[str, Any]) -> bool:
     return PluginManager().has_enabled_portable_mcp(raw_config)
 
 
+def _discovery_inputs_signature(manifests: list[PluginManifest]) -> tuple:
+    """Identity of one sweep's inputs: the directory manifests plus the enabled/disabled gate. Any
+    difference means a plugin was added, removed, re-shadowed, bumped, enabled or disabled."""
+    sources = tuple(sorted(
+        (manifest_key(m), m.source, str(m.path or ""), str(m.version or "")) for m in manifests
+    ))
+    enabled = _get_enabled_plugins()
+    return (sources,
+            None if enabled is None else tuple(sorted(enabled)),
+            tuple(sorted(_get_disabled_plugins())))
+
+
 def discover_plugins(force: bool = False) -> None:
     """Discover and load all plugins (idempotent; ``force=True`` rescans). Joins an in-flight
     background discovery instead of racing a second scan."""
@@ -1691,6 +1724,25 @@ def discover_plugins(force: bool = False) -> None:
         return
     _join_background_discovery()
     get_plugin_manager().discover_and_load(force=force)
+
+
+def rediscover_plugins_if_changed() -> bool:
+    """Discovery that re-runs only when the discovery inputs changed since the last sweep (see
+    :meth:`PluginManager.discovery_inputs_changed`); returns True when it forced a rescan.
+
+    The profile hot-serve and reconnect paths use this before rebuilding a profile's adapters: a user
+    platform-plugin override placed (or removed) after the profile's first sweep has to be applied by
+    ``hermes -p <profile> gateway restart``, while a plain config/.env re-scan keeps the live plugin
+    registrations instead of tearing every one of them down (#144336).
+    """
+    manager = get_plugin_manager()
+    if not manager.discovery_inputs_changed():
+        # Exactly what the serve path called before: when this manager has swept already the call is a
+        # no-op, so an unchanged input set keeps every live registration (and re-imports nothing).
+        discover_plugins()
+        return False
+    discover_plugins(force=True)
+    return True
 
 
 _background_discovery_thread: Optional[threading.Thread] = None

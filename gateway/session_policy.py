@@ -1044,15 +1044,51 @@ def policy_for_source(runner, source):
     return None
 
 
+def workspace_ready(policy) -> bool:
+    """Readiness, not structure: a removed workspace keeps the chat readable and movable, but no
+    turn runs in a missing directory."""
+    return Path(policy.cwd).is_dir()
+
+
+def workspace_unavailable_result(policy) -> dict:
+    """A failed, never-run turn for a session whose frozen working directory is gone. Nothing ran
+    and an unchanged resend fails the same way, so the reply names the folder and the way out
+    instead of the generic "something went wrong" apology."""
+    from agent.i18n import t
+    from agent.turn_failure_copy import stamp_failure
+    text = t("gateway.errors.workspace_unavailable", path=policy.cwd)
+    return stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
+                          "failed": True, "completed": False, "error": text},
+                         "workspace_unavailable", False)
+
+
+def refused_turn_result(policy, exc) -> dict | None:
+    """A failed, never-run turn for an owner refusal at scope entry that an unchanged resend repeats
+    (gone working folder, changed launch key); None for any other refusal."""
+    from agent.error_surface import build_error_surface_from_result
+    from agent.turn_failure_copy import launch_credentials_copy, stamp_failure
+    if exc.reason == 'workspace_unavailable':
+        result = workspace_unavailable_result(policy)
+    elif exc.reason == 'launch_credentials_unavailable':
+        text = launch_credentials_copy(exc)
+        result = stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
+                                "failed": True, "completed": False, "error": text},
+                               "launch_credentials_unavailable", False)
+    else:
+        return None
+    # The descriptor makes settlement commit the explanation and its card as the transcript's
+    # failed-turn boundary (gateway_refusal_boundary), so a reopened chat still shows the way out.
+    result["error_surface"] = build_error_surface_from_result(result)
+    return result
+
+
 @contextmanager
 def policy_scope(policy, *, authority=None):
     if policy is None:
         yield
         return
-    # Readiness, not structure: a removed workspace keeps the chat readable and movable, but no
-    # turn runs in a missing directory.
-    if not Path(policy.cwd).is_dir():
-        raise RuntimeStoreError('workspace_unavailable')
+    if not workspace_ready(policy):
+        raise RuntimeStoreError('workspace_unavailable', field='cwd', detail=policy.cwd)
     from agent.runtime_cwd import set_session_cwd
     from tools.terminal_scope import set_terminal_scope, reset_terminal_scope
     terminal = json.loads(policy.terminal_json)

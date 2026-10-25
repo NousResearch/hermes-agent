@@ -33,6 +33,8 @@ def test_missing_value_fails_before_any_install_work(option: str, suffix: list[s
 
 @pytest.mark.parametrize("flags, expected", [
     ([], ["-m", "pm.cli", "install"]),
+    # The legacy name: the stable PM this script installs by default accepts
+    # only `agent-browser`, and newer PMs read it as `chromium`.
     (["--skip-browser"], ["-m", "pm.cli", "install", "--without", "agent-browser"]),
     (["--no-playwright"], ["-m", "pm.cli", "install", "--without", "agent-browser"]),
 ])

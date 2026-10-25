@@ -305,6 +305,22 @@ model:
 #     models:
 #       gpt-5.4:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
+#
+# `follow_redirects: true` allows Hermes-created primary LLM clients to follow
+# redirects within the initial origin (same scheme, hostname, and effective port).
+# Cross-origin redirects and HTTPS downgrades are rejected before the next request.
+# OpenAI-compatible, native Gemini, and native Anthropic clients are supported;
+# caller/provider-owned clients, Bedrock, and unrelated auxiliary clients are not changed.
+# Unset preserves defaults: OpenAI/Gemini redirects off; native Anthropic SDK
+# redirects normally on (callable bearer credential clients remain off).
+# Explicit false disables following. A model value overrides its provider value.
+#
+# providers:
+#   my-provider:
+#     follow_redirects: true
+#     models:
+#       my-model:
+#         follow_redirects: false    # Disable despite provider-level opt-in
 
 # =============================================================================
 # Unified Timeouts (operation deadlines)

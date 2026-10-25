@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 
+import type { BrowserWindow } from 'electron'
 import { test } from 'vitest'
 
 import {
+  applyTitleBarOverlay,
   MACOS_TAHOE_DARWIN_MAJOR,
   macTitleBarOverlayHeight,
   nativeOverlayWidth,
@@ -148,4 +150,33 @@ test('default zoom leaves the overlay byte-identical to today', () => {
     height: 34,
     symbolColor: '#ffffff'
   })
+})
+
+
+test('refreshing macOS chrome centers native traffic lights at the current page scale', () => {
+  let position: { x: number; y: number } | undefined
+  let applied: unknown
+
+  const win = {
+    webContents: { getZoomFactor: () => 0.5 },
+    setWindowButtonPosition: (value: { x: number; y: number }) => { position = value },
+    setTitleBarOverlay: (value: unknown) => { applied = value }
+  } as unknown as BrowserWindow
+
+  applyTitleBarOverlay(win, { height: 0 }, true)
+  assert.deepEqual(position, { x: 6, y: 4 })
+  assert.deepEqual(applied, { height: 0 })
+})
+
+test('refreshing other window chrome never moves macOS traffic lights', () => {
+  let moved = false
+
+  const win = {
+    setWindowButtonPosition: () => { moved = true },
+    setTitleBarOverlay: () => undefined
+  } as unknown as BrowserWindow
+
+  applyTitleBarOverlay(win, { height: 34 })
+  applyTitleBarOverlay(win, false)
+  assert.equal(moved, false)
 })

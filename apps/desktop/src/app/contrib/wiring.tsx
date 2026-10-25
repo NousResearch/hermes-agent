@@ -94,6 +94,7 @@ import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow, isMainWindow } from '@/store/windows'
+import { $zoomPercent } from '@/store/zoom'
 import { useSkinCommand } from '@/themes/use-skin-command'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -149,7 +150,6 @@ import { useWindowControlsOverlayWidth } from '../shell/hooks/use-window-control
 import {
   TITLEBAR_CHROME_CHANGED_EVENT,
   titlebarControlsPosition,
-  titlebarControlsYNudge,
   titlebarToolsRightCss,
   titlebarToolsWidthCss,
   TOUCH_TITLEBAR_HEIGHT
@@ -305,6 +305,12 @@ function useRecoveryRequestToasts(): void {
 
 // Where the fixed titlebar clusters sit (the same vars AppShell sets). Browser
 // touch chrome pins them flush in its 44px band, at touch-target size.
+function useTitlebarControlsPosition(position: Parameters<typeof titlebarControlsPosition>[0], isFullscreen: boolean) {
+  const zoomFactor = useStore($zoomPercent) / 100
+
+  return titlebarControlsPosition(position, isFullscreen, zoomFactor)
+}
+
 function useTitlebarControlsVars(controlsPos: { left: number; top: number }): CSSProperties {
   const touchTitlebar = useTouchTitlebar()
 
@@ -1209,7 +1215,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const leftTitlebarTools = useTitlebarToolContributions('left')
   const rightTitlebarTools = useTitlebarToolContributions('right')
   const connection = useStore($connection)
-  const controlsPos = titlebarControlsPosition(connection?.windowButtonPosition, Boolean(connection?.isFullscreen))
+  const controlsPos = useTitlebarControlsPosition(connection?.windowButtonPosition, Boolean(connection?.isFullscreen))
   const controlsVars = useTitlebarControlsVars(controlsPos)
   // Windows/WSLg reserve native min/max/close on the right (AppShell parity:
   // prefer the live WCO measurement, fall back to the static reservation).
@@ -1252,7 +1258,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           {
             ...controlsVars,
             '--titlebar-controls-width': leftToolsWidth,
-            '--titlebar-controls-y-nudge': titlebarControlsYNudge(titlebarChrome),
+            '--titlebar-controls-y-nudge': '0px',
             '--titlebar-tools-right': titlebarToolsRight,
             '--titlebar-tools-width': titlebarToolsWidth,
             '--shell-preview-toolbar-gap': systemToolsWidth

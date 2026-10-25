@@ -234,16 +234,37 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Cloud API has no self-chat concept (a Baileys-only setting) — no default prefix."""
         return self._reply_prefix.replace("\\n", "\n") if self._reply_prefix is not None else ""
 
+    _BSUID_RE = re.compile(r"^[A-Z]{2}\.[A-Za-z0-9]{1,128}$")
+    _PHONE_RE = re.compile(r"^[1-9][0-9]{5,14}$")
+
     @staticmethod
-    def _normalize_allow_ids(ids: set[str]) -> set[str]:
-        """Normalize allowlist entries to bare wa_id (digits): strip ``@...`` JID suffixes and non-digits."""
-        return {re.sub(r"\D", "", entry.split("@", 1)[0]) or entry for entry in ids}
+    def _normalize_one_allow_id(entry) -> str:
+        """Normalize a single allowlist/target id.
+
+        Business-scoped user ids (BSUIDs, ``CC.<alphanumeric>``) are compared
+        byte-for-byte and never collapsed with phone numbers. Phone ids are
+        reduced to their digits (``+``, spaces and ``@...`` JID suffixes
+        stripped) only when they look like a valid E.164 number. Anything
+        else is kept verbatim so two different id shapes never cross-match.
+        """
+        raw = str(entry or "").strip()
+        head = raw.split("@", 1)[0].strip()
+        if WhatsAppCloudAdapter._BSUID_RE.match(head):
+            return head
+        digits = re.sub(r"\D", "", head)
+        if WhatsAppCloudAdapter._PHONE_RE.match(digits):
+            return digits
+        return raw
+
+    @staticmethod
+    def _normalize_allow_ids(ids) -> set[str]:
+        """Normalize allowlist entries (see ``_normalize_one_allow_id``)."""
+        return {WhatsAppCloudAdapter._normalize_one_allow_id(entry) for entry in (ids or ())}
 
     def _entry_matches(self, entries, target: str) -> bool:
-        """Bare-wa_id membership first (Cloud senders are digits), then the shared WhatsApp matcher
-        so ``*`` and phone/LID aliases keep working for DM intake and groups as they always did."""
+        """Normalize target and entries, then check membership (plus shared matcher)."""
         entries = set(entries or ())
-        bare = re.sub(r"\D", "", str(target).split("@", 1)[0]) or target
+        bare = self._normalize_one_allow_id(target)
         return bare in self._normalize_allow_ids(entries) or super()._entry_matches(entries, target)
 
     def _allow_all_env_names(self) -> tuple[str, ...]:

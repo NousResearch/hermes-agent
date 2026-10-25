@@ -201,7 +201,7 @@ WORKER_LIFECYCLE_HANDLERS = {
 
 def insert_session_row_in_transaction(
         self, conn, session_id, source, model=None, model_config=None,
-        system_prompt=None, user_id=None, session_key=None, chat_id=None,
+        system_prompt=None, user_id=None, kanban_task_id=None, session_key=None, chat_id=None,
         chat_type=None, thread_id=None, parent_session_id=None, cwd=None,
         profile_name=None, git_repo_root=None, origin_json=None, display_name=None,
         transport_profile=None):
@@ -223,12 +223,12 @@ def insert_session_row_in_transaction(
     system_prompt_hash = self._store_system_prompt(conn, system_prompt)
     conn.execute(
         """INSERT INTO sessions (
-           id, source, created_source, user_id, session_key, chat_id, chat_type, thread_id,
+           id, source, created_source, kanban_task_id, user_id, session_key, chat_id, chat_type, thread_id,
            model, model_config, system_prompt, system_prompt_hash,
            parent_session_id, cwd, profile_name, transport_profile, git_repo_root,
            origin_json, display_name, started_at
         )
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
                source = CASE
                    WHEN sessions.source = 'unknown'
@@ -267,7 +267,7 @@ def insert_session_row_in_transaction(
                END,
 """ + _UPSERT_KEEP_EXISTING_SQL,
         (
-            session_id, source, source, user_id, session_key, chat_id, chat_type, thread_id, model,
+            session_id, source, source, kanban_task_id, user_id, session_key, chat_id, chat_type, thread_id, model,
             json.dumps(model_config) if model_config else None, system_prompt_hash,
             parent_session_id, cwd, profile_name, transport_profile, git_repo_root, origin_json,
             display_name, time.time(),

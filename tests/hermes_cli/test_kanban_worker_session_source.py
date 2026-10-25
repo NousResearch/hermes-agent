@@ -75,6 +75,22 @@ def test_kanban_rows_stay_out_of_the_session_list(db):
     assert [row["id"] for row in listed] == ["chat"]
 
 
+def test_worker_session_records_its_kanban_task_id(db, monkeypatch):
+    """A worker session remains attributable after its process exits (#137598)."""
+    from run_agent import AIAgent
+
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "kanban")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_b21733fb")
+    agent = AIAgent(
+        api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model",
+        quiet_mode=True, session_db=db,
+        session_id="worker", skip_context_files=True, skip_memory=True,
+    )
+    agent._ensure_db_session()
+
+    assert db.get_session("worker")["kanban_task_id"] == "t_b21733fb"
+
+
 def test_retag_reclaims_legacy_worker_rows(db, tmp_path):
     """Rows written before the tag existed are identified by workspace cwd.
 

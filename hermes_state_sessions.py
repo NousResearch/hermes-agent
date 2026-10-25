@@ -275,7 +275,7 @@ _SAME_KEY_NAMESPACE_SQL = (
 # earlier writer set (whitespace is part of the SQL text).
 _UPSERT_KEEP_EXISTING_SQL = ",\n".join(
     f"                       {col} = COALESCE(sessions.{col}, excluded.{col})" for col in (
-        "session_key", "chat_id", "chat_type", "thread_id", "parent_session_id", "cwd", "profile_name",
+        "kanban_task_id", "session_key", "chat_id", "chat_type", "thread_id", "parent_session_id", "cwd", "profile_name",
         "transport_profile", "git_repo_root", "origin_json", "display_name",
     )
 ) + ",\n" + (
@@ -366,7 +366,8 @@ class SessionSessionsMixin:
 
     def _insert_session_row(
         self, session_id: str, source: str, model: str | None = None, model_config: dict[str, Any] | None = None,
-        system_prompt: str | None = None, user_id: str | None = None, session_key: Optional[str] = None,
+        system_prompt: str | None = None, user_id: str | None = None, kanban_task_id: Optional[str] = None,
+        session_key: Optional[str] = None,
         chat_id: str | None = None, chat_type: str | None = None, thread_id: str | None = None,
         parent_session_id: str | None = None, cwd: str | None = None, profile_name: Optional[str] = None,
         git_repo_root: str | None = None, origin_json: str | None = None, display_name: str | None = None,
@@ -407,7 +408,7 @@ class SessionSessionsMixin:
                       chat_id=chat_id, chat_type=chat_type, thread_id=thread_id,
                       parent_session_id=parent_session_id, cwd=cwd, profile_name=profile_name,
                       git_repo_root=git_repo_root, origin_json=origin_json, display_name=display_name,
-                      transport_profile=transport_profile)
+                      transport_profile=transport_profile, kanban_task_id=kanban_task_id)
         self._execute_write(lambda conn: insert_session_row_in_transaction(self, conn, **params),
                             patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 

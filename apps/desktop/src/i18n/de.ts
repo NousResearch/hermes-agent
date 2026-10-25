@@ -5420,6 +5420,7 @@ export const deOverrides = {
     noClipboardImage: 'Kein Bild in der Zwischenablage',
     clipboardPasteFailed: 'Zwischenablage-Einfügen fehlgeschlagen',
     dropFiles: 'Dateien ablegen',
+    dropFilesMore: (count: number) => `und ${count} weitere`,
     handoff: {
       pickPlatform: 'Ziel wählen',
       success: platform => `Übergeben an ${platform}. Jederzeit hier fortsetzen.`,

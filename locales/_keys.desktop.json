@@ -1519,6 +1519,7 @@
     "desktop.downloadImage",
     "desktop.downloadStarted",
     "desktop.dropFiles",
+    "desktop.dropFilesMore",
     "desktop.editFailed",
     "desktop.editTurnUnavailable",
     "desktop.emptySlashCommand",

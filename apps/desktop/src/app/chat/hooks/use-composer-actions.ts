@@ -47,6 +47,9 @@ export function isImagePath(filePath: string): boolean {
   return IMAGE_EXTENSION_PATTERN.test(filePath)
 }
 
+/** How many failed drop items the warning names before it counts the rest. */
+const DROP_FAILURES_SHOWN = 3
+
 /** A dropped File the composer sends as an image; never a folder, which has no bytes. */
 function isDroppedImage(file: File, filePath: string, isDirectory?: boolean): boolean {
   return !isDirectory && (file.type.startsWith('image/') || isImagePath(file.name) || isImagePath(filePath))
@@ -890,12 +893,23 @@ export function useComposerActions({
       }
 
       if (failures.length) {
-        notify({ kind: 'warning', title: copy.dropFiles, message: failures.join('; ') })
+        // Name the first few and count the rest so a large drop can't grow the toast
+        // off screen; the full list rides in the collapsible detail.
+        const hidden = failures.length - DROP_FAILURES_SHOWN
+        const shown = failures.slice(0, DROP_FAILURES_SHOWN).join('; ')
+        const more = copy.dropFilesMore
+
+        notify({
+          kind: 'warning',
+          title: copy.dropFiles,
+          message: hidden > 0 ? `${shown}; ${more(hidden)}` : shown,
+          ...(hidden > 0 ? { detail: failures.join('\n') } : {})
+        })
       }
 
       return attached
     },
-    [attachContextFilePath, attachContextFolderPath, attachImageBlob, attachImagePath, copy.dropFiles]
+    [attachContextFilePath, attachContextFolderPath, attachImageBlob, attachImagePath, copy.dropFiles, copy.dropFilesMore]
   )
 
   const removeAttachment = useCallback(

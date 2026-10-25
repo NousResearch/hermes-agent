@@ -4617,6 +4617,7 @@ export const zhOverrides = {
     noClipboardImage: '剪贴板中没有图片',
     clipboardPasteFailed: '粘贴剪贴板失败',
     dropFiles: '拖放文件',
+    dropFilesMore: (count: number) => `以及另外 ${count} 项`,
     handoff: {
       pickPlatform: '选择目标平台',
       success: platform => `已移交到 ${platform}。随时可在此处恢复。`,

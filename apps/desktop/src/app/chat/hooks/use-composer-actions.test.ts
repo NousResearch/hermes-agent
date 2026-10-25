@@ -471,6 +471,49 @@ describe('useComposerActions native image drops', () => {
     expect(warning?.message).toContain("Could not attach my-repo: Folders can't be attached")
   })
 
+  // 50 oversized files must not grow one toast off screen: name a few, count the rest.
+  it('bounds the warning for a large mixed drop and keeps the full list in its detail', async () => {
+    const stageFileForAttach = vi.fn(async (file: File) => {
+      if (file.name.startsWith('huge-')) {
+        throw new Error('Upload request is too large')
+      }
+
+      return `/srv/uploads/web-${file.name}`
+    })
+
+    const value = { getPathForFile: () => '', stageFileForAttach }
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value })
+
+    const add = vi.fn()
+
+    const { result } = renderHook(() =>
+      useComposerActions({
+        activeSessionId: null,
+        currentCwd: '/w',
+        requestGateway: vi.fn(),
+        scope: { add, remove: vi.fn(() => null), target: 'main', update: vi.fn(() => true), updateIfCurrent: vi.fn(() => true) }
+      })
+    )
+
+    const huge = Array.from({ length: 50 }, (_, index) => ({ file: new File(['x'], `huge-${index}.zip`), path: '' }))
+
+    await act(async () => {
+      await result.current.attachDroppedItems([{ file: new File(['x'], 'notes.txt'), path: '' }, ...huge])
+    })
+
+    expect(add).toHaveBeenCalledOnce()
+
+    const warning = $notifications.get().find(notice => notice.message.includes('huge-0.zip'))
+
+    expect(warning).toMatchObject({ kind: 'warning' })
+    expect(warning?.message).toContain('huge-2.zip')
+    expect(warning?.message).not.toContain('huge-3.zip')
+    expect(warning?.message).toMatch(/and 47 more$/)
+    expect(warning?.message.length).toBeLessThan(300)
+    expect(warning?.detail?.split('\n')).toHaveLength(50)
+    expect(warning?.detail).toContain('huge-49.zip')
+  })
+
   it('copies dropped screenshot bytes before trusting a transient macOS path', async () => {
     const transientPath =
       '/var/folders/x7/example/T/TemporaryItems/NSIRD_screencaptureui_4roSuW/Screen Shot 2026-08-11.png'

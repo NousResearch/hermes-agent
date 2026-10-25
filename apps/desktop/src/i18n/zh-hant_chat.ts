@@ -494,6 +494,7 @@ export const zhHantChat = {
     noClipboardImage: '剪貼簿中沒有圖片',
     clipboardPasteFailed: '剪貼簿貼上失敗',
     dropFiles: '拖曳檔案',
+    dropFilesMore: (count: number) => `以及另外 ${count} 項`,
     handoff: {
       pickPlatform: '選擇目標平台',
       success: platform => `已移交到 ${platform}。隨時可在此處恢復。`,

@@ -5427,6 +5427,7 @@ export const frOverrides = {
     noClipboardImage: 'Aucune image trouvée dans le presse-papiers',
     clipboardPasteFailed: 'Échec du collage depuis le presse-papiers',
     dropFiles: 'Déposer des fichiers',
+    dropFilesMore: (count: number) => `et ${count} de plus`,
     handoff: {
       pickPlatform: 'Choisissez une destination',
       success: platform => `Transféré vers ${platform}. Reprenez ici à tout moment.`,

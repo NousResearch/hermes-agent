@@ -5404,6 +5404,7 @@ export const esOverrides = {
     noClipboardImage: 'No se encontró ninguna imagen en el portapapeles',
     clipboardPasteFailed: 'No se pudo pegar desde el portapapeles',
     dropFiles: 'Soltar archivos',
+    dropFilesMore: (count: number) => `y ${count} más`,
     handoff: {
       pickPlatform: 'Elige un destino',
       success: platform => `Transferido a ${platform}. Puedes reanudar aquí cuando quieras.`,

@@ -3790,6 +3790,7 @@ export const ruOverrides = {
     noClipboardImage: 'Изображение в буфере обмена не найдено',
     clipboardPasteFailed: 'Вставка из буфера обмена не удалась',
     dropFiles: 'Перетащите файлы',
+    dropFilesMore: (count: number) => `и ещё ${count}`,
     handoff: {
       pickPlatform: 'Выберите назначение',
       success: platform => `Передаём в ${platform}. Возобновите здесь в любой момент.`,

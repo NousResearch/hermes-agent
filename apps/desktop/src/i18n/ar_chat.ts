@@ -472,6 +472,7 @@ export const arChat = {
     noClipboardImage: 'لا توجد صورة في الحافظة',
     clipboardPasteFailed: 'فشل اللصق من الحافظة',
     dropFiles: 'أفلت الملفات هنا',
+    dropFilesMore: (count: number) => `و${count} أخرى`,
     handoff: {
       pickPlatform: 'اختر وجهة',
       success: platform => `تم التسليم إلى ${platform}. استأنف هنا في أي وقت.`,

@@ -159,6 +159,29 @@ class TestPartitionNousModelsByTier:
         del pricing["free/model"]
         assert m.recommended_nous_default_model()["model"] == "openai/gpt-5.4"
 
+    def test_window_plan_default_is_the_plans_first_listed_recommendation(self, monkeypatch):
+        import hermes_cli.models as m
+        from hermes_cli import model_picker_usage as mpu
+        from hermes_cli import models_pricing as mp
+        ids = ["example/model-c", "example/model-b", "example/model-a"]
+        monkeypatch.setattr(m, "get_curated_nous_model_ids", lambda: list(ids))
+        monkeypatch.setattr(m, "check_nous_free_tier", lambda **kw: False)
+        monkeypatch.setattr(m, "union_with_portal_paid_recommendations", lambda i, pr, url="", **kw: (i, pr))
+        monkeypatch.setattr(m, "get_preferred_silent_default_model", lambda provider="": "example/model-b")
+        monkeypatch.setattr(mp, "get_pricing_for_provider", lambda slug, **kw: {})
+        monkeypatch.setattr(mp, "nous_policy_allowed_ids", lambda **kw: None)
+        usage = mpu.PickerUsage(plan="Window Plan", gauges=(), featured_model_ids=("not/listed", "example/model-a"))
+        monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: usage)
+        assert m.recommended_nous_default_model()["model"] == "example/model-a"
+        # A Large featured pick is never the default: the next listed recommendation is.
+        usage_c = mpu.PickerUsage(plan="Window Plan", gauges=(), featured_model_ids=("example/model-c", "example/model-a"))
+        monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: usage_c)
+        monkeypatch.setattr(mp, "get_pricing_for_provider", lambda slug, **kw: {"example/model-c": {"usage_level": "top_tier"}})
+        assert m.recommended_nous_default_model()["model"] == "example/model-a"
+        # Every other account (no window plan) keeps the silent default.
+        monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: None)
+        assert m.recommended_nous_default_model()["model"] == "example/model-b"
+
     def test_all_paid_models(self):
         """When all models are paid, free-tier users have none selectable."""
         models = ["anthropic/claude-opus-4.6", "openai/gpt-5.4"]

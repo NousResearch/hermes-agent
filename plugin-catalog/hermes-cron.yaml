@@ -1,17 +1,17 @@
 name: hermes-cron
 repo: https://github.com/itpartypattaya/hermes-cron
-sha: bcd9e9a8d3e376f910236aa2fecd80b309df5eae
+sha: 2426b4b26a95e98112ac73415dedc8e0dd25c602
 description: "Operating skill for Hermes cron: lifecycle rules (pause vs disable vs remove, `in 30m` vs `30m`), four ways to avoid needless LLM runs (no_agent, wakeAgent pre-check, monitor, [SILENT]), verify-after-change, a layered runbook and a read-only doctor that complements `hermes cron doctor` and reports one error across several jobs as one scheduler fault and a cron store that cannot be written. Portable Agent Plugins v1 package (plugin.json + skills/); no tools, hooks, middleware or env vars. Disclosure — skill only, no network; the bundled doctor reads ~/.hermes/cron/jobs.json, ticker stamps and executions.db (or a named profile's store with --profile) read-only, checks the cron directory's permissions and free space without writing, and runs the local hermes cron doctor (argument list, no shell), whose job loader may repair malformed jobs.json entries (--no-builtin skips it)."
 maintainer: itpartypattaya
 tier: community
 category: automation
 requires_hermes: ">=0.21.0"
-docs_url: https://github.com/itpartypattaya/hermes-cron/blob/bcd9e9a8d3e376f910236aa2fecd80b309df5eae/README.md
-version: "1.4.2"
-image: "https://raw.githubusercontent.com/itpartypattaya/hermes-cron/bcd9e9a8d3e376f910236aa2fecd80b309df5eae/docs/banner.png"
+docs_url: https://github.com/itpartypattaya/hermes-cron/blob/2426b4b26a95e98112ac73415dedc8e0dd25c602/README.md
+version: "1.5.2"
+image: "https://raw.githubusercontent.com/itpartypattaya/hermes-cron/2426b4b26a95e98112ac73415dedc8e0dd25c602/docs/banner.png"
 screenshots:
-- "https://raw.githubusercontent.com/itpartypattaya/hermes-cron/bcd9e9a8d3e376f910236aa2fecd80b309df5eae/docs/modes.png"
-- "https://raw.githubusercontent.com/itpartypattaya/hermes-cron/bcd9e9a8d3e376f910236aa2fecd80b309df5eae/docs/doctor.png"
+- "https://raw.githubusercontent.com/itpartypattaya/hermes-cron/2426b4b26a95e98112ac73415dedc8e0dd25c602/docs/modes.png"
+- "https://raw.githubusercontent.com/itpartypattaya/hermes-cron/2426b4b26a95e98112ac73415dedc8e0dd25c602/docs/doctor.png"
 platforms: []
 capabilities:
   provides_tools: []

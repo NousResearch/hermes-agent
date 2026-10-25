@@ -333,6 +333,7 @@ _UPDATE_DEPENDENCIES = (
     "hermes_cli/desktop_build_lock.py",
     "hermes_cli/memory_provider_migration.py",
     "hermes_cli/left_core_migration.py",  # source_build migrates plugins that left core
+    "hermes_cli/config_version_stamp.py",  # post_update converts legacy AGENT_BROWSER_* before stamping
     "hermes_cli/web_build_limits.py",  # source_build caps the dashboard Node build
     "hermes_cli/desktop_console.py",
     "hermes_cli/bundled_app.py",
@@ -373,6 +374,9 @@ _UPDATE_DEPENDENCIES = (
     # The compilers source_build / the Desktop build run (freshness, node-deps,
     # tui, web, desktop and their shared frontend-common).
     "scripts/build/",
+    "apps/desktop/scripts/build-webapp.mjs",  # source_build's Webapp renderer build
+    "hermes_cli/webapp.py",  # source_build rebuilds the Webapp bundle a home serves
+    "gateway/webapp_listener.py",  # source_build reads which homes serve the Webapp
 )
 # General-purpose modules an entry point imports but that half the product
 # imports too (>= HUB_MIN_IMPORTERS product modules, checked by the test). The

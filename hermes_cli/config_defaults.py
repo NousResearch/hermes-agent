@@ -836,7 +836,7 @@ DEFAULT_CONFIG = {
         "cli_multiline_shortcuts": True,
         # `hermes`/`hermes chat` launches "cli" (prompt_toolkit REPL) | "tui" (Ink); --cli, --tui, HERMES_TUI=1 win.
         # cli_layout = the REPL's look: "modern" (glyph rows, status under the composer) | "classic" (boxed panels).
-        "interface": "cli", "cli_layout": "modern",
+        "interface": "cli", "cli_layout": "modern", "composer_placeholders": True,  # random idle example; read at startup
         # Native TUI uses the terminal's primary buffer and scrollback instead of the custom
         # alternate-screen viewport. Flags win: `--native` / `--tui-native` and `--cli`.
         "tui_native": False,

@@ -524,10 +524,13 @@ class CLIInitMixin:
         self._slash_confirm_state = self._model_picker_state = None
         self._clarify_deadline = self._sudo_deadline = self._approval_deadline = self._slash_confirm_deadline = 0
         self._approval_lock = threading.Lock()
-        try:  # composer placeholder chosen once so it stays stable on screen
-            from hermes_cli.tips import get_random_composer_placeholder
-            self._composer_placeholder = get_random_composer_placeholder()
-        except Exception:
+        if is_truthy_value((CLI_CONFIG.get("display") or {}).get("composer_placeholders", True), default=True):
+            try:  # chosen once so it stays stable on screen
+                from hermes_cli.tips import get_random_composer_placeholder
+                self._composer_placeholder = get_random_composer_placeholder()
+            except Exception:
+                self._composer_placeholder = ""
+        else:
             self._composer_placeholder = ""
         self._command_palette_state = self._secret_state = None
         self._pending_resume_sessions = None  # armed by a bare `/resume`; the next bare number selects

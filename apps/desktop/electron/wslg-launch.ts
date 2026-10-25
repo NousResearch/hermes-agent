@@ -6,7 +6,8 @@ export function wslgLaunchArgs(
   argv: readonly string[],
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,
-  electronFlags: readonly string[] = []
+  electronFlags: readonly string[] = [],
+  nvidiaProprietaryDriver = false
 ): string[] | null {
   const displayEnv = { ...env, HERMES_DESKTOP_DISABLE_GPU: undefined }
 
@@ -35,9 +36,20 @@ export function wslgLaunchArgs(
 
   const hintArg = findOzoneHint(argv) ?? findOzoneHint(electronFlags)
   const hint = hintArg ?? env.ELECTRON_OZONE_PLATFORM_HINT
-  const backend = hint === 'x11' ? 'x11' : 'wayland'
 
-  return [...argv, `--ozone-platform=${backend}`]
+  return [...argv, `--ozone-platform=${defaultBackend(hint, nvidiaProprietaryDriver)}`]
+}
+
+// An explicit x11/wayland hint always wins. Without one, the NVIDIA proprietary
+// driver stays on XWayland: its GPU process dies on Wayland ozone under the
+// bundled Chromium (615.x, #126013) while x11 launches. Everyone else gets
+// native Wayland (#83578).
+function defaultBackend(hint: string | undefined, nvidiaProprietaryDriver: boolean): 'wayland' | 'x11' {
+  if (hint === 'x11' || hint === 'wayland') {
+    return hint
+  }
+
+  return nvidiaProprietaryDriver ? 'x11' : 'wayland'
 }
 
 function hasOzonePlatform(args: readonly string[]): boolean {

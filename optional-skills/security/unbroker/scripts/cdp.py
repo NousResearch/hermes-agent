@@ -112,7 +112,7 @@ def launch_command(browser: str, port: int = DEFAULT_PORT, profile: Path | None 
 
 def _http_get(url: str, timeout: float) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": "unbroker-cdp/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (localhost only)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read()
 
 

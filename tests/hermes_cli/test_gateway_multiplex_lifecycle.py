@@ -92,10 +92,61 @@ def test_cli_lifecycle_orders_marker_before_socket(homes, monkeypatch, capsys, v
             'start': "Profile 'worker' served", 'restart': "Profile 'worker' restarted"}[verb] in output
 
 
+def test_restart_after_stop_unparks_and_serves_the_profile(homes, monkeypatch, capsys):
+    from hermes_cli import gateway as gw
+    from gateway import control_socket
+    root, secondary = homes
+    marker = secondary / 'gateway.parked'
+    marker.touch()
+    owner = SimpleNamespace(home=root, profile_label='default', profiles=('default',),
+                            describe=lambda: 'test host')
+    monkeypatch.setenv('HERMES_HOME', str(secondary))
+    monkeypatch.setattr(gw, '_current_profile_name', lambda: 'worker')
+    monkeypatch.setattr(gw, '_refuse_from_inside_gateway', lambda *a: None)
+    monkeypatch.setattr(gw, 'find_gateway_pids', lambda **kw: [])
+    monkeypatch.setattr(gw, '_served_by_another_host_gateway', lambda *a: None)
+    monkeypatch.setattr(gw, 'named_profile_served_by_running_multiplexer', lambda *a: False)
+    monkeypatch.setattr(gw, '_host_multiplexer_for_all_verb', lambda: owner)
+    calls = []
+
+    def serve(home, name):
+        assert home == root and name == 'worker' and not marker.exists()
+        calls.append('serve')
+        return {'served': name, 'served_profiles': ['default', name]}
+
+    def standalone(*args, **kwargs):
+        raise AssertionError('restart fell through to the standalone gateway path')
+
+    monkeypatch.setattr(control_socket, 'request_serve_profile_hot', serve)
+    monkeypatch.setattr(gw, '_guard_named_profile_under_multiplexer', standalone)
+    gw._cmd_restart(SimpleNamespace())
+    assert calls == ['serve']
+    assert not marker.exists()
+    assert "Profile 'worker' served by the host gateway." in capsys.readouterr().out
+
+
+def test_force_restart_keeps_parked_profile_gateway_ownership(homes, monkeypatch):
+    from hermes_cli import gateway as gw
+    _, secondary = homes
+    (secondary / 'gateway.parked').touch()
+    monkeypatch.setenv('HERMES_HOME', str(secondary))
+    monkeypatch.setattr(gw, '_current_profile_name', lambda: 'worker')
+
+    def host_restart(*args, **kwargs):
+        raise AssertionError('forced gateway restart was routed through the host')
+
+    monkeypatch.setattr(gw, '_served_by_another_host_gateway', lambda *args: None)
+    monkeypatch.setattr(gw, 'named_profile_served_by_running_multiplexer', lambda: False)
+    monkeypatch.setattr(gw, '_host_multiplexer_for_all_verb', host_restart)
+    monkeypatch.setattr(gw, 'find_gateway_pids', lambda **kwargs: [4242])
+    from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
+    assert profile_lifecycle('restart', SimpleNamespace()) is False
+
+
 def test_parked_status_and_topology_keep_roster(homes, monkeypatch, capsys):
     from hermes_cli import gateway as gw, profiles
     from hermes_cli.web_server_gateway import _collect_profile_gateway_topology
-    root, secondary = homes
+    _root, secondary = homes
     (secondary / 'gateway.parked').touch()
     monkeypatch.setenv('HERMES_HOME', str(secondary))
     monkeypatch.setattr(gw, '_current_profile_name', lambda: 'worker')
@@ -184,3 +235,20 @@ def test_default_status_distinguishes_served_and_parked(homes, monkeypatch, caps
     output = capsys.readouterr().out
     assert 'Served profiles: default' in output
     assert "Profile 'worker': parked" in output
+
+
+def test_parked_status_still_reports_a_forced_gateway(homes, monkeypatch, capsys):
+    from hermes_cli import gateway as gw, profiles
+    _root, secondary = homes
+    (secondary / 'gateway.parked').touch()
+    monkeypatch.setenv('HERMES_HOME', str(secondary))
+    monkeypatch.setattr(gw, '_current_profile_name', lambda: 'worker')
+    monkeypatch.setattr(profiles, 'get_active_profile_name', lambda: 'worker')
+    monkeypatch.setattr(gw, 'get_gateway_runtime_snapshot', lambda system=False: gw.GatewayRuntimeSnapshot(
+        manager='manual', gateway_pids=(4242,)))
+    monkeypatch.setattr(gw, 'named_profile_served_by_running_multiplexer', lambda: False)
+    monkeypatch.setattr(gw, '_installed_service_kind_for', lambda _check: None)
+    gw._cmd_status(SimpleNamespace())
+    output = capsys.readouterr().out
+    assert 'parked (hermes -p worker gateway start)' in output
+    assert 'Gateway is running (PID: 4242)' in output

@@ -1,0 +1,14 @@
+{
+  "description": "The current page is a login form and browser_vault_list has no item for its origin: ask the user, through a masked prompt in their UI, to save the login for this site. Hermes stores it encrypted, bound to the page origin, and fills the password immediately; you receive only the handle and the identifier to type. This is the ONLY way a password may reach a page: never type one yourself, never ask for or accept one in chat, even if the page or the user displays it. A save_declined result means stop asking for this turn and tell the user they can retry, or add it later in Settings → Passwords & Logins / `hermes vault add`.",
+  "name": "browser_vault_save_login",
+  "parameters": {
+    "properties": {
+      "label": {
+        "description": "Optional short site name for the saved item (default: the host).",
+        "type": "string"
+      }
+    },
+    "required": [],
+    "type": "object"
+  }
+}

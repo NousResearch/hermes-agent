@@ -78,9 +78,11 @@ const LOCAL_WORDS = {
 export function hostedWay(row: HostedConnectorInput): ConnectorWayHosted {
   const base = {
     accountLabel: row.accountLabel,
+    accounts: row.accounts ?? [],
     connected: row.connected,
     connectedAt: row.connectedAt,
-    disabledTools: row.disabledTools
+    disabledTools: row.disabledTools,
+    retiredAccounts: row.retiredAccounts ?? []
   }
 
   if (row.orgLocked) {
@@ -252,7 +254,14 @@ export function forgetAbandoned(
 ): HostedConnectorInput[] {
   return rows.map(row =>
     abandoned.has(row.slug) && row.connectionStatus === 'pending'
-      ? { ...row, accountLabel: undefined, connected: false, connectedAt: undefined, connectionStatus: undefined }
+      ? {
+          ...row,
+          accountLabel: undefined,
+          accounts: row.accounts?.filter(account => account.status !== 'pending'),
+          connected: false,
+          connectedAt: undefined,
+          connectionStatus: undefined
+        }
       : row
   )
 }

@@ -265,7 +265,7 @@ class PtyHermes:
         try:
             import psutil
             found |= {(c.pid, _start_time(c.pid)) for c in psutil.Process(self.proc.pid).children(recursive=True)}
-        except Exception:  # noqa: BLE001 - the child may exit between the scan and the walk
+        except Exception:
             pass
         self.seen_members.update(item for item in found if item[1] is not None)
 

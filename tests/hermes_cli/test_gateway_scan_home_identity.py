@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.gateway as gateway
+from hermes_cli import gateway
 from hermes_cli import dashboard_procs
 
 # Named ``hermes`` so ``python <dir>/hermes gateway run`` satisfies the canonical gateway matcher.

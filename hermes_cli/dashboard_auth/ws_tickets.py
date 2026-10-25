@@ -21,7 +21,7 @@ from typing import Any, Dict, Optional, Tuple
 TTL_SECONDS = 30
 
 _lock = threading.Lock()
-_tickets: Dict[str, Tuple[int, Dict[str, Any]]] = {}  # ticket -> (expires_at, info)
+_tickets: dict[str, tuple[int, dict[str, Any]]] = {}  # ticket -> (expires_at, info)
 _internal_credential: Optional[str] = None  # lazily minted; guarded by ``_lock``
 
 #: Identity recorded for internal-credential connections (audit logs distinguish them from tickets).
@@ -33,7 +33,7 @@ class TicketInvalid(Exception):
     """Ticket missing, expired, or already consumed."""
 
 
-def mint_ticket(*, user_id: str, provider: str, extra: Optional[Dict[str, Any]] = None) -> str:
+def mint_ticket(*, user_id: str, provider: str, extra: Optional[dict[str, Any]] = None) -> str:
     """One-shot base64url ticket (32 random bytes) bound to this identity; ``consume_ticket``
     hands the ``info`` dict back to the WS handler. ``extra`` rides along for routes that need
     server-chosen context (the Bot Desktop bridge pins the RFB socket's profile home here so a
@@ -46,7 +46,7 @@ def mint_ticket(*, user_id: str, provider: str, extra: Optional[Dict[str, Any]] 
     return ticket
 
 
-def consume_ticket(ticket: str) -> Dict[str, Any]:
+def consume_ticket(ticket: str) -> dict[str, Any]:
     """Validate and consume (single-use). Raises :class:`TicketInvalid` on missing/expired/used."""
     now = int(time.time())
     with _lock:
@@ -78,7 +78,7 @@ def internal_ws_credential() -> str:
         return _internal_credential
 
 
-def consume_internal_credential(value: str) -> Dict[str, Any]:
+def consume_internal_credential(value: str) -> dict[str, Any]:
     """Validate an internal credential (NOT single-use); returns the fixed server-internal
     ``{user_id, provider}`` info dict, mirroring ``consume_ticket``. Constant-time compare; any
     value is rejected until a credential has been minted."""

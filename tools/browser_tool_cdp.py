@@ -70,7 +70,7 @@ def _get_cdp_override() -> str:
     return _resolve_cdp_override(raw) if (raw := _get_cdp_override_raw()) else ""
 
 
-def _get_dialog_policy_config() -> Tuple[str, float]:
+def _get_dialog_policy_config() -> tuple[str, float]:
     """Read ``browser.dialog_policy`` + ``browser.dialog_timeout_s``; supervisor defaults when absent/invalid."""
     _bt = _origin()
     # Deferred so browser_tool imports in minimal environments.

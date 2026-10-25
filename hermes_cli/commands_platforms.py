@@ -8,6 +8,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+from agent.i18n import t
 from hermes_cli.commands import (
     COMMAND_REGISTRY, _is_gateway_available, _iter_plugin_command_entries, _resolve_config_gates)
 
@@ -90,7 +91,7 @@ def telegram_bot_commands(*, include_plugins: bool = True) -> list[tuple[str, st
     """(command_name, description) pairs for Telegram setMyCommands: sanitized canonical names
     only (no aliases). Built-ins needing arguments are included (their handlers show usage when
     selected bare); plugin commands needing arguments are excluded (may lack a no-arg fallback)."""
-    pairs = [(cmd.name, cmd.description) for cmd in _gateway_available_commands()]
+    pairs = [(cmd.name, cmd.describe()) for cmd in _gateway_available_commands()]
     if include_plugins:
         pairs += [(n, d) for n, d, hint in _iter_plugin_command_entries()
                   if not _requires_argument(hint)]
@@ -231,7 +232,7 @@ def _iter_gateway_skills(platform: str):
 
 def _collect_gateway_skill_entries(
     platform: str, max_slots: int | None, reserved_names: set[str], desc_limit: int = 100,
-    sanitize_name: "Callable[[str], str] | None" = None,
+    sanitize_name: Callable[[str], str] | None = None,
 ) -> tuple[list[tuple[str, str, str, str]], int]:
     """Collect plugin + skill entries for a gateway platform.
 
@@ -263,7 +264,7 @@ def _collect_gateway_skill_entries(
             meta = plugin_cmds[cmd_name]
             if platform == "telegram" and _requires_argument(str(meta.get("args_hint") or "")):
                 continue
-            yield cmd_name, meta.get("description", "Plugin command"), ""
+            yield cmd_name, meta.get("description") or t("slash.shared.plugin_command_desc"), ""
 
     plugin_entries = _entries(_plugin_rows())
     reserved_names.update(n for n, *_rest in plugin_entries)
@@ -382,7 +383,7 @@ _SLACK_RESERVED_COMMANDS = frozenset({
 # parity test reads this set. Aliases are never pinned ahead of canonicals.
 _SLACK_VIA_HERMES_ONLY = frozenset({
     "topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat",
-    "refine", "review", "pause", "whoami", "platform", "insights", "login"})
+    "refine", "review", "pause", "whoami", "platform", "insights", "login", "initiate-setup"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
@@ -396,13 +397,13 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     standalone slash, deduped and clamped to the 50-command cap; Slack built-ins and
     _SLACK_VIA_HERMES_ONLY are skipped. ``/hermes`` is always first for anything dropped."""
     available = _gateway_available_commands()
-    wanted = [(cmd.name, cmd.description, cmd.args_hint or "") for cmd in available]
-    wanted += [(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
-               for cmd in available for alias in cmd.aliases]
+    wanted = [(cmd.name, cmd.describe(), cmd.args_hint or "") for cmd in available]
+    wanted += [(alias, t("slash.shared.slack_alias_for", name=cmd.name, description=cmd.describe()),
+                cmd.args_hint or "") for cmd in available for alias in cmd.aliases]
     wanted += [(name, desc, hint or "") for name, desc, hint in _iter_plugin_command_entries()]
 
     entries: list[tuple[str, str, str]] = [
-        ("hermes", "Talk to Hermes or run a subcommand", "[subcommand] [args]")]
+        ("hermes", t("slash.hermes.description"), "[subcommand] [args]")]
     seen = {"hermes"}
     for name, desc, hint in wanted:
         slack_name = _sanitize_slack_name(name)
@@ -422,7 +423,7 @@ def slack_app_manifest(
     users configure in the Slack UI); ``request_url`` is schema-required, ignored in Socket Mode."""
     slashes = []
     for name, desc, usage in slack_native_slashes():
-        entry = {"command": f"/{name}", "description": desc or f"Run /{name}",
+        entry = {"command": f"/{name}", "description": desc or t("slash.shared.plugin_default_desc", name=name),
                  "should_escape": False, "url": request_url}
         if usage:
             entry["usage_hint"] = usage

@@ -1,0 +1,28 @@
+name: spotify
+repo: https://github.com/NousResearch/hermes-official-plugins
+sha: 682b22d019a1109421faa62efe43e16b23c2ebef
+subdir: spotify
+description: 'Spotify for Hermes: seven tools (playback, devices, queue, search, playlists, albums,
+  library) over the Spotify Web API, plus `hermes spotify login|status|logout` (loopback PKCE with your
+  own Spotify developer app; Premium needed for playback control). Formerly built into Hermes core;
+  existing users are migrated automatically.'
+maintainer: NousResearch
+tier: official
+category: tools
+requires_hermes: ">=0.21.6"
+version: "2.0.0"
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/682b22d019a1109421faa62efe43e16b23c2ebef/assets/spotify.jpg
+docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/spotify
+platforms: []
+capabilities:
+  provides_tools:
+    - spotify_playback
+    - spotify_devices
+    - spotify_queue
+    - spotify_search
+    - spotify_playlists
+    - spotify_albums
+    - spotify_library
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

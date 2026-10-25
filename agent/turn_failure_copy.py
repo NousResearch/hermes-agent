@@ -22,7 +22,7 @@ SITE_FAILURE_CODES = frozenset({
 })
 
 
-def stamp_failure(result: Dict[str, Any], reason: str, retryable: bool) -> Dict[str, Any]:
+def stamp_failure(result: dict[str, Any], reason: str, retryable: bool) -> dict[str, Any]:
     """Stamp the UI verdict fields on a terminal result (in place; returns it)."""
     result["failure_reason"] = reason
     result["failure_retryable"] = bool(retryable)
@@ -90,7 +90,7 @@ class ExitFailure(NamedTuple):
 
 # (exit-reason prefix, failure_reason, retryable, fails_turn). Prefix match: several reasons
 # carry a parenthesised detail (``local_processing_error(...)``).
-_EXIT_REASON_FAILURES: Tuple[Tuple[str, str, bool, bool], ...] = (
+_EXIT_REASON_FAILURES: tuple[tuple[str, str, bool, bool], ...] = (
     # Advisory: the reasoning-only text may literally be the answer, and cron stays silent.
     ("empty_response_exhausted", "empty_response", True, False),
     ("all_retries_exhausted_no_response", FailoverReason.server_error.value, True, True),
@@ -112,7 +112,7 @@ _EXIT_REASON_FAILURES: Tuple[Tuple[str, str, bool, bool], ...] = (
 
 
 # Provider error code carried inside an HTTP-200 body → classifier reason.
-_INVALID_RESPONSE_CODES: Dict[int, str] = {
+_INVALID_RESPONSE_CODES: dict[int, str] = {
     429: FailoverReason.rate_limit.value,
     500: FailoverReason.server_error.value, 502: FailoverReason.server_error.value,
     503: FailoverReason.overloaded.value, 529: FailoverReason.overloaded.value,
@@ -169,7 +169,7 @@ _NEXT_STEPS_LOOP = (
 )
 
 # Lead sentence per classifier reason once retries and fallback are exhausted.
-_EXHAUSTED_LEADS: Dict[str, str] = {
+_EXHAUSTED_LEADS: dict[str, str] = {
     FailoverReason.rate_limit.value: "{label} rate-limited every one of {attempts} attempts",
     FailoverReason.upstream_rate_limit.value: "{label} rate-limited every one of {attempts} attempts",
     FailoverReason.overloaded.value: "{label} reported it was overloaded on all {attempts} attempts",
@@ -177,9 +177,14 @@ _EXHAUSTED_LEADS: Dict[str, str] = {
     FailoverReason.timeout.value: "{label} didn't respond in time on any of {attempts} attempts",
 }
 _EXHAUSTED_DEFAULT_LEAD = "{label} didn't answer after {attempts} attempts"
+# One attempt: an attended free-tier session ended the cycle on a cooldown longer than it waits.
+_EXHAUSTED_FIRST_ATTEMPT_LEADS: dict[str, str] = {
+    FailoverReason.rate_limit.value: "{label} is rate-limiting requests right now",
+    FailoverReason.upstream_rate_limit.value: "{label} is rate-limiting requests right now",
+}
 
 # Terminal copy for a non-retryable provider rejection, keyed by classifier reason.
-_NONRETRYABLE_COPY: Dict[str, str] = {
+_NONRETRYABLE_COPY: dict[str, str] = {
     FailoverReason.model_not_found.value: (
         "Model '{model}' isn't available on {label}. Pick a different model with /model "
         "(or `hermes model` in a terminal).{prefix_hint}"
@@ -214,7 +219,7 @@ _NONRETRYABLE_DEFAULT_COPY = (
     "{label} rejected the request and retrying won't help. Pick another model with /model, "
     "or check the details in `{home}/logs/agent.log`."
 )
-_AUTH_COPY: Dict[str, str] = {
+_AUTH_COPY: dict[str, str] = {
     "oauth": "{label} rejected your sign-in, so the model can't be reached. Sign in again: `{relogin}`.",
     "api_key": (
         "{label} rejected your API key, so the model can't be reached. Update it in "
@@ -232,7 +237,7 @@ CONTENT_POLICY_NEXT_STEPS = (
 # FailoverReason / site code → one clause (no HTTP codes, no "provider" jargon). ``{subject}``
 # is who was asking ("the job", "it"), ``{possessive}`` its possessive ("the job's", "its").
 # Reasons absent here are NOT provider-shaped; callers fall back to the raw error text.
-FAILURE_CAUSE_GLOSS: Dict[str, str] = {
+FAILURE_CAUSE_GLOSS: dict[str, str] = {
     FailoverReason.timeout.value: "the AI model service did not respond in time",
     FailoverReason.rate_limit.value: "the AI model service was rate-limited (too many requests)",
     FailoverReason.upstream_rate_limit.value: "the AI model service was rate-limited (too many requests)",
@@ -264,7 +269,7 @@ def failure_cause_gloss(reason: Any, *, subject: str = "it", possessive: str = "
 
 # Chat copy for the codes in SITE_FAILURE_CODES that a loop site renders itself
 # (``empty_response`` is worded by agent/turn_explainers.py, ``session_busy`` by the lease).
-_FAILURE_CODE_COPY: Dict[str, str] = {
+_FAILURE_CODE_COPY: dict[str, str] = {
     "context_overflow": (
         "This conversation has grown too long for {model} to read, and Hermes couldn't shrink "
         "it enough automatically. Start a new session with /new (your history is kept), or try "
@@ -291,7 +296,7 @@ _FAILURE_CODE_COPY: Dict[str, str] = {
 
 # One-off outcome strings: deterministic loop exits that are NOT failure codes (the result
 # they ride carries a code from the table above, or none at all).
-_ONE_OFF_COPY: Dict[str, str] = {
+_ONE_OFF_COPY: dict[str, str] = {
     "payload_too_large": (
         "This conversation (including attachments) has grown too large to send to {model}, and "
         "Hermes couldn't shrink it enough automatically. Start a new session with /new (your "
@@ -337,11 +342,6 @@ _ONE_OFF_COPY: Dict[str, str] = {
         "Hermes hit an internal error while handling the model's reply and stopped this turn. "
         + _NEXT_STEPS_LOOP + "\n\nDetails: {detail}"
     ),
-    "reasoning_only": (
-        "⚠️ {model} spent all of its output budget thinking and never wrote an answer. Lower "
-        "its reasoning effort with `/reasoning low`, or switch to a different model with /model. "
-        "Its last thoughts, which may contain the answer:\n\n{preview}"
-    ),
     "max_iterations_no_summary": (
         "I ran out of steps for this turn ({limit} tool calls) before finishing, and couldn't "
         "produce a summary. Send `continue` to keep going, or raise `max_iterations` in your config."
@@ -351,7 +351,7 @@ _ONE_OFF_COPY: Dict[str, str] = {
         "a backup provider with `hermes fallback add`."
     ),
 }
-_SITE_COPY: Dict[str, str] = {**_FAILURE_CODE_COPY, **_ONE_OFF_COPY}
+_SITE_COPY: dict[str, str] = {**_FAILURE_CODE_COPY, **_ONE_OFF_COPY}
 
 
 def site_copy(code: str, **fields: Any) -> str:
@@ -363,8 +363,11 @@ def site_copy(code: str, **fields: Any) -> str:
 def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None) -> str:
     """Chat copy once retries + fallback are exhausted (``max_retries_exhausted_result``). A rate
     limit whose reset window is known names it: an 8.6h plan quota is not "wait a minute" (#89401)."""
-    lead = _EXHAUSTED_LEADS.get(reason, _EXHAUSTED_DEFAULT_LEAD).format(label=label, attempts=attempts)
-    if reset_seconds is not None and reset_seconds >= 120:
+    first_attempt = attempts == 1 and reason in _EXHAUSTED_FIRST_ATTEMPT_LEADS
+    lead = (_EXHAUSTED_FIRST_ATTEMPT_LEADS if first_attempt else _EXHAUSTED_LEADS).get(
+        reason, _EXHAUSTED_DEFAULT_LEAD).format(label=label, attempts=attempts)
+    # The free-tier cutoff (one attempt) fires on any cooldown over a minute, so it always names the reset.
+    if reset_seconds is not None and (reset_seconds >= 120 or first_attempt and reset_seconds > 0):
         from agent.retry_utils import format_reset_window
         situation = (f"its usage limit resets in {format_reset_window(reset_seconds)}. "
                      "Send /retry after that, or switch models with /model.")

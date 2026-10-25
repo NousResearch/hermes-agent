@@ -15,6 +15,7 @@ import { reconnectBackoffDelayMs } from '@hermes/shared/reconnect-backoff'
 import { WebSocket as UndiciWebSocket } from 'undici'
 
 import type { AnyGatewayEvent } from './gatewayTypes.js'
+import { t } from './i18n/runtime.js'
 import { CircularBuffer } from './lib/circularBuffer.js'
 import { recordParentLifecycle } from './lib/parentLog.js'
 
@@ -295,7 +296,7 @@ export class GatewayClient extends EventEmitter {
     // handlers (now identity-gated to ignore unrelated transports)
     // never fire `rejectPending`, leaving callers hanging on promises
     // attached to a discarded child / socket.
-    this.channel.detach(new Error('gateway restarting'))
+    this.channel.detach(new Error(t('libText.gateway.restarting')))
     this.ready = false
     // `subscribed` is NOT reset here: the renderer drain()s once on mount, so a
     // reset would strand every post-reconnect event (gateway.ready included) in
@@ -339,7 +340,9 @@ export class GatewayClient extends EventEmitter {
     this.ready = false
     this.closeSidecarSocket()
     this.lifecycle(`[lifecycle] transport exit code=${code ?? 'null'} reason=${reason ?? 'none'}`)
-    this.channel.detach(new Error(reason || `gateway exited${code === null ? '' : ` (${code})`}`))
+    this.channel.detach(
+      new Error(reason || (code === null ? t('libText.gateway.exited') : t('libText.gateway.exitedWithCode', code)))
+    )
 
     // Self-heal: a dropped transport (real close OR silent drop caught by the
     // heartbeat) should reconnect instead of stranding the UI on a dead socket
@@ -495,7 +498,7 @@ export class GatewayClient extends EventEmitter {
       // `gateway.start_timeout`, rejects pending RPCs, and emits or
       // queues a single `exit`.
       this.proc = null
-      this.handleTransportExit(1, `gateway error: ${err.message}`)
+      this.handleTransportExit(1, t('libText.gateway.error', err.message))
     })
     this.proc.on('exit', (code, signal) => {
       // start() can replace `this.proc` while an old child is still
@@ -527,7 +530,7 @@ export class GatewayClient extends EventEmitter {
 
       this.pushLog(line)
       this.publish({ type: 'gateway.stderr', payload: { line } })
-      this.handleTransportExit(1, 'gateway websocket unavailable')
+      this.handleTransportExit(1, t('libText.gateway.websocketUnavailable'))
 
       return
     }
@@ -567,7 +570,7 @@ export class GatewayClient extends EventEmitter {
             if (!settled) {
               this.pushLog('[startup] gateway websocket connect error')
               settled = true
-              reject(new Error('gateway websocket connection failed'))
+              reject(new Error(t('libText.gateway.websocketConnectionFailed')))
             }
           },
           { once: true }
@@ -577,7 +580,7 @@ export class GatewayClient extends EventEmitter {
           ev => {
             if (!settled) {
               settled = true
-              reject(new Error(`gateway websocket closed (${ev.code}) during connect`))
+              reject(new Error(t('libText.gateway.websocketClosedDuringConnect', ev.code)))
             }
           },
           { once: true }
@@ -613,7 +616,10 @@ export class GatewayClient extends EventEmitter {
         this.pushLog(`[lifecycle] websocket close code=${ev.code}`)
         this.ws = null
         this.wsConnectPromise = null
-        this.handleTransportExit(ev.code, `gateway websocket closed${ev.code ? ` (${ev.code})` : ''}`)
+        this.handleTransportExit(
+          ev.code,
+          ev.code ? t('libText.gateway.websocketClosedWithCode', ev.code) : t('libText.gateway.websocketClosed')
+        )
       })
       ws.addEventListener('error', () => {
         const line = '[gateway] websocket transport error'
@@ -623,7 +629,7 @@ export class GatewayClient extends EventEmitter {
       })
     } catch (err) {
       this.pushLog(`[startup] failed to connect websocket gateway ${safeAttachUrl} (constructor error)`)
-      this.handleTransportExit(1, 'gateway websocket startup failed')
+      this.handleTransportExit(1, t('libText.gateway.websocketStartupFailed'))
     }
   }
 
@@ -775,7 +781,7 @@ export class GatewayClient extends EventEmitter {
         // switching from spawned-gateway mode to attach mode also
         // tears down the old Python child. Merely closing `this.ws`
         // would leave a previously spawned gateway process alive.
-        this.channel.detach(new Error('gateway attach url changed'))
+        this.channel.detach(new Error(t('libText.gateway.attachUrlChanged')))
         this.start()
       }
 
@@ -820,6 +826,6 @@ export class GatewayClient extends EventEmitter {
     // and we just nulled `this.ws`, so it will short-circuit and
     // skip handleTransportExit. Reject pending RPCs explicitly so
     // attach-mode promises do not hang after an intentional kill.
-    this.channel.detach(new Error('gateway closed'))
+    this.channel.detach(new Error(t('libText.gateway.closed')))
   }
 }

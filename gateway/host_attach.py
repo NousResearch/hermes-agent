@@ -105,12 +105,29 @@ class HostGateway:
         return f"PID {self.pid} (launched by profile '{self.profile_label}'; serves: {served})"
 
 
-def _record_home(record) -> Path:
+def record_home(record) -> Path:
     """Home the owner was launched from. Records written before the field existed fall back to the
     default root — the home every pre-record multiplexer ran under."""
     from hermes_constants import get_default_hermes_root
 
     return Path(record.home) if getattr(record, "home", "") else Path(get_default_hermes_root())
+
+
+def launched_by_other_tenant(owner_home: Path | str, our_home: Path | str) -> bool:
+    """Was the owner launched from ANOTHER Hermes root (a second tenant on this host)?
+
+    The host record and lock are per OS user, and two tenants (separate ``HERMES_HOME`` roots)
+    each expose a profile named ``default``: tenant A's multiplexer "serving default" is a name
+    collision for tenant B, never coverage, so it is not this tenant's host gateway (#121352).
+    A legacy record with no ``home`` proves nothing and counts as ours.
+    """
+    if not str(owner_home or ""):
+        return False
+    from gateway.status import _same_hermes_home
+    from hermes_constants import get_default_hermes_root
+
+    return not _same_hermes_home(get_default_hermes_root(home=owner_home),
+                                 get_default_hermes_root(home=our_home))
 
 
 def _identify(home: Path) -> Optional[dict]:
@@ -174,7 +191,7 @@ def _probe_host_gateway(wait_for_channel: float) -> Optional[HostGateway]:
     # address it chose; proving the PID first is also what keeps a stale record from naming a peer.
     if not hr.liveness_is_proven(record):
         return None
-    home = _record_home(record)
+    home = record_home(record)
     deadline = time.monotonic() + max(0.0, wait_for_channel)
     while True:
         identity = _identify(home)
@@ -340,7 +357,7 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
     except Exception:
         logger.debug("host gateway probe failed; starting as before", exc_info=True)
         return HostAttachDecision(START, "")
-    if gateway is None or gateway.pid == os.getpid():
+    if gateway is None or gateway.pid == os.getpid() or launched_by_other_tenant(gateway.home, our_home):
         return standalone_attach_decision(our_home, None) or HostAttachDecision(START, "")
     if replace and (gateway.serves(profile) or not gateway.served_known):
         # An owner known not to serve us is another profile's gateway: replacing it is always refused

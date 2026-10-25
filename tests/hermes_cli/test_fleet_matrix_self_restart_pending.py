@@ -13,6 +13,7 @@ import os
 import pytest
 
 import hermes_cli.update_cmd_fleet as fleet_mod
+import hermes_cli.update_cmd_fleet_verify as fleet_verify
 import hermes_cli.update_receipt as ur
 
 OLD = "a" * 40
@@ -65,8 +66,8 @@ def test_restart_phase_records_accepted_self_restart_and_verify_exits_clean(monk
     """The ancestor branch of the drain triage feeds the pid set the matrix reads: end to end the
     verify phase exits 0 (not 1) and clears the pending marker for an update whose only old-code
     gateway is the one it runs inside."""
-    import hermes_cli.gateway as gateway
-    import hermes_cli.update_cmd as update_cmd
+    from hermes_cli import gateway
+    from hermes_cli import update_cmd
 
     ancestor = os.getpid()
     monkeypatch.setattr(gateway, "_is_pid_ancestor_of_current_process", lambda pid: pid == ancestor)
@@ -77,7 +78,7 @@ def test_restart_phase_records_accepted_self_restart_and_verify_exits_clean(monk
     assert pending == {ancestor}
 
     _fleet_homes(monkeypatch, tmp_path, {"default": {"pid": ancestor, "gateway_state": "running", "code_sha": OLD}})
-    monkeypatch.setattr(fleet_mod, "_print_legacy_units_warning", lambda: None)
+    monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
     monkeypatch.setattr("hermes_cli.update_cmd_maint._refresh_dashboard_after_update", lambda *a, **k: None)
     monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda plan: [])
     monkeypatch.setattr(fleet_mod._time, "sleep", lambda s: None)
@@ -90,15 +91,18 @@ def test_restart_phase_records_accepted_self_restart_and_verify_exits_clean(monk
         self_restart_pending_pids=pending,
     )
     with contextlib.redirect_stdout(io.StringIO()) as out:
-        fleet_mod._verify_fleet_after_update(
+        fleet_verify._verify_fleet_after_update(
             restart, _pre_update_plan=None, _windows_gateway_resume=None, update_complete=True,
         )  # a SystemExit(1) here is the #119597 symptom
     assert "restart pending" in out.getvalue()
     assert "Update not complete" not in out.getvalue()
     assert cleared == [True]
-    with contextlib.redirect_stdout(io.StringIO()), pytest.raises(SystemExit) as exc:
-        restart.self_restart_pending_pids = set()  # same fleet, identity not threaded → STALE, exit 1
-        fleet_mod._verify_fleet_after_update(
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+        restart.self_restart_pending_pids = set()  # same fleet, identity not threaded → STALE
+        fleet_verify._verify_fleet_after_update(
             restart, _pre_update_plan=None, _windows_gateway_resume=None, update_complete=True,
         )
-    assert exc.value.code == 1
+    # Contract C3: STALE is an owed restart (was SystemExit(1)): flagged, follow-up, marker kept.
+    assert restart.incomplete
+    assert "follow-up 'gateway_restart'" in out.getvalue()
+    assert cleared == [True]

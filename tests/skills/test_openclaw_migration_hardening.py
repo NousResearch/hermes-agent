@@ -216,6 +216,7 @@ def test_json_mode_emits_structured_report(tmp_path):
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
@@ -249,6 +250,7 @@ def test_json_mode_redacts_secrets_in_output(tmp_path):
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     # The raw key value must never appear in the JSON output.

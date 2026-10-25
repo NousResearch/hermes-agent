@@ -5,66 +5,60 @@ import { test } from 'vitest'
 import { createPoolRetirer, type PoolRetireEntry, selectRetirementCandidates } from './pool-retire'
 import { LocalBackendSpawnCoordinator } from './pool-spawn-coordinator'
 
-test('idle and LRU retirement require backend authority, unchanged identity and current eligibility', async () => {
-  for (const path of ['idle', 'lru'] as const) {
-    for (const outcome of ['busy', 'unknown', 'expired', 'replaced', 'fresh', 'idle'] as const) {
-      const entry: PoolRetireEntry = { process: {}, lastActiveAt: 1 }
-      const pool = new Map([['a', entry]])
-      const cancelled: string[] = []
-      const stopped: string[] = []
-      const events: string[] = []
+test('LRU retirement requires backend authority, unchanged identity and current eligibility', async () => {
+  for (const outcome of ['busy', 'unknown', 'expired', 'replaced', 'fresh', 'idle'] as const) {
+    const entry: PoolRetireEntry = { process: {}, lastActiveAt: 1 }
+    const pool = new Map([['a', entry]])
+    const cancelled: string[] = []
+    const stopped: string[] = []
+    const events: string[] = []
 
-      const retirer = createPoolRetirer({
-        pool,
-        coordinator: new LocalBackendSpawnCoordinator(3),
-        prepare: async () => {
-          if (outcome === 'replaced') {
-            pool.set('a', { process: {}, lastActiveAt: 1 })
-          }
-
-          if (outcome === 'fresh') {
-            entry.lastActiveAt = Date.now()
-          }
-
-          return outcome === 'busy' || outcome === 'unknown' ? null : 'permit'
-        },
-        commit: async () => {
-          events.push('commit')
-
-          return outcome !== 'expired'
-        },
-        cancel: async key => {
-          cancelled.push(key)
-        },
-        onRetiring: () => {
-          events.push('park')
-        },
-        stopBackend: async key => {
-          events.push('stop')
-          stopped.push(key)
-          pool.delete(key)
-        }
-      })
-
-      try {
-        if (path === 'idle') {
-          await retirer.retireIdle('a', 1000)
-        } else {
-          await retirer.evictTo(0, 1000)
+    const retirer = createPoolRetirer({
+      pool,
+      coordinator: new LocalBackendSpawnCoordinator(3),
+      prepare: async () => {
+        if (outcome === 'replaced') {
+          pool.set('a', { process: {}, lastActiveAt: 1 })
         }
 
-        assert.deepEqual(stopped, outcome === 'idle' ? ['a'] : [], `${path}: ${outcome}`)
-
-        if (outcome === 'idle') {
-          assert.deepEqual(events, ['commit', 'park', 'stop'])
+        if (outcome === 'fresh') {
+          entry.lastActiveAt = Date.now()
         }
 
-        if (['expired', 'replaced', 'fresh'].includes(outcome)) {
-          assert.deepEqual(cancelled, ['a'])
-        }
-      } finally {
-        retirer.dispose()
+        return outcome === 'busy' || outcome === 'unknown' ? null : 'permit'
+      },
+      commit: async () => {
+        events.push('commit')
+
+        return outcome !== 'expired'
+      },
+      cancel: async key => {
+        cancelled.push(key)
+      },
+      onRetiring: () => {
+        events.push('park')
+      },
+      stopBackend: async key => {
+        events.push('stop')
+        stopped.push(key)
+        pool.delete(key)
       }
+    })
+
+    try {
+      await retirer.evictTo(0, 1000)
+
+      assert.deepEqual(stopped, outcome === 'idle' ? ['a'] : [], outcome)
+
+      if (outcome === 'idle') {
+        assert.deepEqual(events, ['commit', 'park', 'stop'])
+      }
+
+      if (['expired', 'replaced', 'fresh'].includes(outcome)) {
+        assert.deepEqual(cancelled, ['a'])
+      }
+    } finally {
+      retirer.dispose()
     }
   }
 })

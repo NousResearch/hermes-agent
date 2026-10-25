@@ -15,6 +15,7 @@ record. ``default`` is just another served profile here, never a special owner.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 
@@ -38,6 +39,9 @@ class HostGatewayTopology:
     pid: int
     profiles: tuple[str, ...]
     source: str
+    #: Home the process was launched from (its ``gateway_state.json`` lives there); None when the
+    #: rung cannot tell, which readers resolve to the default root.
+    home: Optional[Path] = None
 
     def serves(self, profile_name: Optional[str]) -> bool:
         """True when this host process ticks/serves ``profile_name`` (``default`` included)."""
@@ -64,7 +68,14 @@ def _from_host_record() -> Optional[HostGatewayTopology]:
     # liveness_is_proven() would bless ANY process that happens to hold the recorded PID today.
     if record.create_time is None or not hr.liveness_is_proven(record):
         return None
-    return HostGatewayTopology(pid=int(record.pid), profiles=tuple(record.profiles), source="host_record")
+    from gateway.host_attach import launched_by_other_tenant, record_home
+    from hermes_constants import get_hermes_home
+
+    # Another tenant root's gateway is a name collision, not this tenant's host process (#121352).
+    if launched_by_other_tenant(record.home, get_hermes_home()):
+        return None
+    return HostGatewayTopology(pid=int(record.pid), profiles=tuple(record.profiles), source="host_record",
+                               home=record_home(record))
 
 
 def _from_served_record() -> Optional[HostGatewayTopology]:

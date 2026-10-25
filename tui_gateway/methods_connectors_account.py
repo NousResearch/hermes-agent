@@ -1,6 +1,7 @@
 from tui_gateway.contracts.connectors import (
     ConnectorAccountsParams,
     ConnectorAccountsRemoveParams,
+    ConnectorAccountsRenameParams,
     ConnectorErrorReason,
     ConnectorPolicySetParams,
     ConnectorToolsParams,
@@ -100,7 +101,14 @@ def _(rid, request):
 
     accounts = PortalConnectorClient().list_accounts()
     rows = [account for account in accounts if request.connector is None or account["connector"] == request.connector]
-    result = ConnectorAccountsResult(accounts=[ConnectorAccountRow(
+    result = ConnectorAccountsResult(accounts=[_account_row(account) for account in rows])
+    return _ok(rid, result.model_dump(mode="json"))
+
+
+def _account_row(account):
+    from tui_gateway.contracts.connectors import ConnectorAccountRow
+
+    return ConnectorAccountRow(
         connection_id=account["connectionId"],
         connector=account["connector"],
         status=account["status"],
@@ -108,10 +116,47 @@ def _(rid, request):
         label=account["label"],
         alias=account.get("alias"),
         active=account["active"],
+        disabled=bool(account.get("disabled")),
         created_at=account["createdAt"],
         updated_at=account["updatedAt"],
-    ) for account in rows])
-    return _ok(rid, result.model_dump(mode="json"))
+    )
+
+
+@method("connectors.accounts.rename")
+@_profile_scoped
+@_account_method(
+    ConnectorAccountsRenameParams,
+    invalid="connection_id and a valid alias are required.",
+    unavailable=ConnectorErrorReason.accounts_unavailable,
+    unavailable_message="Connector accounts are unavailable.",
+)
+def _(rid, request):
+    from tools.connectors.gateway.errors import (
+        GatewayAuthError,
+        GatewayUnavailable,
+        IdempotencyConflict,
+        ToolGatewayError,
+    )
+    from tools.connectors.portal.client import PortalConnectorClient
+    from tui_gateway.contracts.connectors import ConnectorErrorReason
+
+    try:
+        account = PortalConnectorClient().rename_account(request.connection_id, request.alias)
+    except IdempotencyConflict:
+        return _connector_rpc_error(rid, 4090, ConnectorErrorReason.alias_taken, "That name is already used.")
+    except GatewayUnavailable as exc:
+        if exc.code == "connection_not_found":
+            return _connector_rpc_error(rid, 4041, ConnectorErrorReason.connection_not_found, "Connector account not found.")
+        return _connector_rpc_error(rid, 5034, ConnectorErrorReason.accounts_unavailable, "Connector accounts are unavailable.")
+    except GatewayAuthError:
+        raise
+    except ToolGatewayError as exc:
+        if exc.code == "org_required":
+            raise
+        if exc.status == 400:
+            return _connector_rpc_error(rid, 4000, ConnectorErrorReason.invalid_params, "That name is invalid.")
+        return _connector_rpc_error(rid, 5034, ConnectorErrorReason.accounts_unavailable, "Connector accounts are unavailable.")
+    return _ok(rid, _account_row(account).model_dump(mode="json"))
 
 
 @method("connectors.accounts.remove")

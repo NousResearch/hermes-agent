@@ -3,7 +3,7 @@
 # callPackage auto-wires nixpkgs args; flake inputs are passed explicitly.
 # Users override via:
 #   pkgs.hermes-agent.override { extraPythonPackages = [...]; }
-#   pkgs.hermes-agent.override { extraDependencyGroups = [ "honcho" ]; }
+#   pkgs.hermes-agent.override { extraDependencyGroups = [ "voice" ]; }
 {
   lib,
   stdenv,
@@ -15,7 +15,6 @@
   git,
   openssh,
   ffmpeg,
-  tirith,
 
   # linux-only deps
   wl-clipboard,
@@ -149,7 +148,6 @@ let
     git
     openssh
     ffmpeg
-    tirith
   ]
   ++ lib.optionals stdenv.isLinux [
     wl-clipboard

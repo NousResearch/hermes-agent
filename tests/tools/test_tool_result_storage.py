@@ -55,7 +55,7 @@ class TestWriteToSandbox:
             # pattern-matched.
             def _bash(cmd, timeout=None, stdin_data=None, **_kw):
                 r = subprocess.run(["bash", "-c", cmd], input=stdin_data or "",
-                                   capture_output=True, text=True, timeout=timeout)
+                                   capture_output=True, text=True, timeout=timeout, check=False)
                 return {"output": r.stdout + r.stderr, "returncode": r.returncode}
             env.execute.side_effect = _bash
         result = _write_to_sandbox("hello world", remote, env)
@@ -341,6 +341,17 @@ class TestEnforceTurnBudget:
         result = enforce_turn_budget([], env=None, config=BudgetConfig(turn_budget=200_000))
         assert result == []
 
+    def test_multimodal_results_count_their_text_and_spill_it(self):
+        """Image-bearing results are part lists: the aggregate counts their text characters (not the number of
+        parts) and spills the big text part, keeping images and the short notes inline."""
+        img = {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAAA"}}
+        msgs = [{"role": "tool", "tool_call_id": f"mm{i}",
+                 "content": [{"type": "text", "text": "x" * 60_000}, {"type": "text", "text": "scale note"}, img]}
+                for i in range(6)]
+        enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))
+        assert sum(PERSISTED_OUTPUT_TAG in m["content"][0]["text"] for m in msgs) >= 2
+        assert all(m["content"][1]["text"] == "scale note" and m["content"][2] == img for m in msgs)
+
 # ── Per-tool threshold integration ────────────────────────────────────
 
 class TestPerToolThresholds:
@@ -350,7 +361,7 @@ class TestPerToolThresholds:
         """read_file must keep a finite registry cap (Layer 2 safety net)."""
         from tools.registry import registry
         try:
-            import tools.file_tools  # noqa: F401
+            import tools.file_tools
             val = registry.get_max_result_size("read_file")
             # float('inf') disables the Layer 2 result-size guard.
             assert 0 < val < float("inf"), val
@@ -360,7 +371,7 @@ class TestPerToolThresholds:
     def test_search_files_threshold(self):
         from tools.registry import registry
         try:
-            import tools.file_tools  # noqa: F401
+            import tools.file_tools
             val = registry.get_max_result_size("search_files")
             assert 0 < val < float("inf"), val
         except ImportError:

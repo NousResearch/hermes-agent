@@ -1,14 +1,13 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { Button } from '@/components/ui/button'
-import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import type { HermesGateway, ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { $freeTierStatus } from '@/store/free-tier'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
-import { notifyError, readableError } from '@/store/notifications'
+import { notifyError } from '@/store/notifications'
 
 import { installBundledEntry } from '../mcp/install-catalog-entry'
 import { useMcpServers } from '../mcp/use-mcp-servers'
@@ -16,11 +15,14 @@ import { useMcpServers } from '../mcp/use-mcp-servers'
 import { AddServerDialog } from './add-dialog'
 import { ConnectorsDirectory } from './connectors-directory'
 import { $abandonedConnects, $accountOperations, abandonConnect, accountOperationFor } from './data/account-operations'
-import { joinBundledEntries, joinLocalServers, pickAccount } from './data/join'
-import { useConnectConnector, useConnectorSwitch, useDisconnectAccount } from './data/mutations'
+import { claimRouteLink } from './data/deep-link'
+import { accountAddress, joinBundledEntries, joinLocalServers, pickAccount } from './data/join'
+import { invalidateConnectors } from './data/keys'
+import { useConnectConnector, useConnectorSwitch, useDisconnectAccount, useRenameAccount } from './data/mutations'
 import { seedLocalServers, startConnectorPersistence, storeLocalServers } from './data/persist'
 import { prefetchConnectorTools, usePrefetchConnectedTools } from './data/prefetch'
 import { useHostedConnectors, usePluginServers } from './data/queries'
+import type { ConnectAddress } from './data/rpc'
 import {
   cardKey,
   deriveCards,
@@ -29,11 +31,12 @@ import {
   hostedCardKey,
   localServerName
 } from './derive'
-import { HostedConnectorDialog } from './hosted-dialog'
+import { DisconnectConfirm, type Disconnecting } from './disconnect-confirm'
+import { HostedConnectorDialog, type PendingRename } from './hosted-dialog'
 import { LocalConnectorDialog } from './local-dialog'
 import { RemoveServerConfirm } from './local-slots'
 import { openToolsList, resetOpenedTools } from './tools-summary'
-import type { ConnectorCardModel, ConnectorsFilter, HostedPhase } from './types'
+import type { AccountRow, ConnectorCardModel, ConnectorsFilter, HostedPhase } from './types'
 
 const toolsListKey = (card: ConnectorCardModel) => (card.residency === 'local' ? localServerName(card) : card.slug)
 
@@ -55,12 +58,15 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
   const connector = useConnectConnector(profile)
   const switcher = useConnectorSwitch(profile)
   const remover = useDisconnectAccount(profile)
+  const renamer = useRenameAccount(profile)
 
   const [filter, setFilter] = useState<ConnectorsFilter>(EMPTY_CONNECTORS_FILTER)
   const [openKey, setOpenKey] = useState<null | string>(null)
   const [addOpen, setAddOpen] = useState(false)
   const [removeServer, setRemoveServer] = useState<null | ConnectorCardModel>(null)
-  const [disconnecting, setDisconnecting] = useState<null | ConnectorCardModel>(null)
+  const [disconnecting, setDisconnecting] = useState<Disconnecting | null>(null)
+  const [pendingRename, setPendingRename] = useState<null | PendingRename>(null)
+  const renameOpened = useCallback(() => setPendingRename(null), [])
   const [installing, setInstalling] = useState<null | string>(null)
 
   const local = useMemo(
@@ -113,7 +119,7 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
 
   const openCard = useMemo(() => cards.find(card => cardKey(card) === openKey) ?? null, [cards, openKey])
 
-  useOpenFromRoute(cards, setOpenKey)
+  useOpenFromRoute(cards, profile, setOpenKey, setPendingRename)
 
   const write = async (pending: Promise<{ error?: unknown; ok: boolean }>) => {
     const outcome = await pending
@@ -123,19 +129,31 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
     }
   }
 
-  const startConnect = async (card: ConnectorCardModel, reconnect: boolean) => {
-    const outcome = await connector.connect(card.slug, { reconnect })
+  const connectAccount = async (card: ConnectorCardModel, reconnect: boolean, address: ConnectAddress = {}) => {
+    const outcome = await connector.connect(card.slug, { ...address, reconnect })
+
+    if (outcome.ok) {
+      const url = outcome.operation.targets.find(target => target.connectUrl)?.connectUrl
+
+      if (url) {
+        void window.hermesDesktop?.openExternal?.(url)
+      }
+    }
+
+    return outcome
+  }
+
+  // A row passes its own account. An app-level reconnect or Try again (no account) names the account the
+  // summary speaks for, or nothing; either goes by id, so it still matches the sign-in that is already open.
+  const startConnect = async (card: ConnectorCardModel, reconnect: boolean, account?: AccountRow) => {
+    const target = account ?? (reconnect ? pickAccount(hosted.accounts, card.slug) : undefined)
+    const address = target ? accountAddress(target) : {}
+    const outcome = await connectAccount(card, reconnect, address)
 
     if (!outcome.ok) {
       notifyError(outcome.error, t.connectors.connectErrorFor(card.name))
 
       return
-    }
-
-    const url = outcome.operation.targets.find(target => target.connectUrl)?.connectUrl
-
-    if (url) {
-      void window.hermesDesktop?.openExternal?.(url)
     }
 
     setOpenKey(cardKey(card))
@@ -165,7 +183,7 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
   }
 
   const runVerb = (card: ConnectorCardModel) => {
-    const open = accountOperationFor(operations, card.slug)
+    const open = accountOperationFor(operations, card.slug, profile)
 
     switch (card.verb) {
       case 'authenticate':
@@ -274,14 +292,39 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
 
       {openCard?.ways.hosted ? (
         <HostedConnectorDialog
+          accountActions={{
+            add: async alias => {
+              const outcome = await connectAccount(openCard, false, { alias })
+
+              return outcome.ok ? { ok: true } : outcome
+            },
+            pendingRename,
+            reconnect: (account: AccountRow) => void startConnect(openCard, true, account),
+            reconnecting: connector.pending === openCard.slug,
+            retry: operation => {
+              const { reconnect, ...address } = operation.request
+
+              void connectAccount(openCard, reconnect, address).then(outcome => {
+                if (!outcome.ok) {
+                  notifyError(outcome.error, t.connectors.connectErrorFor(openCard.name))
+                }
+              })
+            },
+            remove: (account: AccountRow) => setDisconnecting({ account, card: openCard }),
+            rename: renamer.rename,
+            renameOpened
+          }}
           card={openCard}
           controller={mcp}
           hosted={hosted}
           installFields={bundledEntry(openCard)?.required_env}
           installing={installing === cardKey(openCard)}
-          onClose={() => setOpenKey(null)}
+          onClose={() => {
+            setOpenKey(null)
+            setPendingRename(null)
+          }}
           onConnect={() => void startConnect(openCard, false)}
-          onDisconnect={() => setDisconnecting(openCard)}
+          onDisconnect={() => setDisconnecting({ card: openCard })}
           onGiveUp={opId => void write(connector.giveUp(opId))}
           onInstall={env => void startInstall(openCard, env)}
           onReconnect={() => void startConnect(openCard, true)}
@@ -302,33 +345,12 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
         onRemoved={() => setOpenKey(null)}
       />
 
-      <ConfirmDialog
-        confirmLabel={copy.dialog.disconnect}
-        description={copy.dialog.disconnectBody}
-        destructive
+      <DisconnectConfirm
+        accounts={hosted.accounts}
+        disconnect={remover.disconnect}
         onClose={() => setDisconnecting(null)}
-        onConfirm={async () => {
-          const card = disconnecting
-          const account = card ? pickAccount(hosted.accounts, card.slug) : null
-
-          if (!account) {
-            throw new Error(copy.page.disconnectNoAccount)
-          }
-
-          const outcome = await remover.disconnect(account.connection_id)
-
-          if (!outcome.ok) {
-            throw new Error(
-              outcome.error.reason === 'ACCOUNTS_UNAVAILABLE'
-                ? copy.page.disconnectRefused
-                : readableError(outcome.error, copy.page.writeFailed).message
-            )
-          }
-
-          setOpenKey(null)
-        }}
-        open={disconnecting !== null}
-        title={copy.dialog.disconnectTitle(disconnecting?.name ?? '')}
+        onDisconnected={() => setOpenKey(null)}
+        target={disconnecting}
       />
     </div>
   )
@@ -356,8 +378,13 @@ function HostedNotice({ hasGuest, phase }: { hasGuest: boolean; phase: HostedPha
   return hasGuest ? <p className="shrink-0 text-[0.7rem] text-(--ui-text-tertiary)">{copy.freeTierNote}</p> : null
 }
 
-function useOpenFromRoute(cards: readonly ConnectorCardModel[], open: (key: string) => void): void {
-  const { hash, pathname, search } = useLocation()
+function useOpenFromRoute(
+  cards: readonly ConnectorCardModel[],
+  scope: ProfileScope,
+  open: (key: string) => void,
+  rename: (target: PendingRename) => void
+): void {
+  const { hash, key: locationKey, pathname, search } = useLocation()
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -373,7 +400,9 @@ function useOpenFromRoute(cards: readonly ConnectorCardModel[], open: (key: stri
       ? cards.find(card => card.residency === 'local' && card.slug === server)
       : cards.find(card => card.slug === slug)
 
-    if (!target) {
+    // A tab for another profile leaves the link to the page once it takes the link's scope, and of two
+    // mounted pages (one docked) only one acts on it.
+    if (!target || !claimRouteLink(locationKey, params, scope)) {
       return
     }
 
@@ -381,12 +410,23 @@ function useOpenFromRoute(cards: readonly ConnectorCardModel[], open: (key: stri
       openToolsList(toolsListKey(target))
     }
 
+    const connectionId = params.get('rename')
+
+    if (connectionId) {
+      // The cached list can predate an account connected since; the editor decides on a fresh read.
+      invalidateConnectors(scope, 'accounts')
+      rename({ connectionId, slug: target.slug })
+    }
+
     open(cardKey(target))
     params.delete('server')
     params.delete('connector')
     params.delete('tool')
+    params.delete('rename')
+    params.delete('profile')
+    params.delete('connection')
 
     const query = params.toString()
     navigate({ hash, pathname, search: query ? `?${query}` : '' }, { replace: true })
-  }, [cards, hash, navigate, open, pathname, search])
+  }, [cards, hash, locationKey, navigate, open, pathname, rename, scope, search])
 }

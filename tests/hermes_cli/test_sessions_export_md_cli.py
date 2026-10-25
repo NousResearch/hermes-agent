@@ -167,7 +167,7 @@ def test_delete_after_verified_exports_compacted_display_history(monkeypatch, tm
 
 def test_delete_after_verified_rejects_same_count_content_change(monkeypatch, tmp_path, capsys):
     """A content rewrite is a real concurrent write that a count-only guard cannot see."""
-    import hermes_cli.session_export_md as session_export_md
+    from hermes_cli import session_export_md
 
     open_db = _real_store(monkeypatch, tmp_path)
     _seed_six_turns(open_db, "s1", compact=False)

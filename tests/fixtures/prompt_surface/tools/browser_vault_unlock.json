@@ -1,0 +1,20 @@
+{
+  "description": "Ask the user to unlock a password manager (1Password or Bitwarden) for this session. The master password is typed into a masked prompt owned by the UI and never enters the conversation. Returns success, unlock_cancelled, unlock_failed, or unlock_unavailable (headless session).",
+  "name": "browser_vault_unlock",
+  "parameters": {
+    "properties": {
+      "backend": {
+        "description": "Backend name from browser_vault_list `locked`.",
+        "enum": [
+          "onepassword",
+          "bitwarden"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "backend"
+    ],
+    "type": "object"
+  }
+}

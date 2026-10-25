@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Live Windows probes for the fail-closed taskkill process-identity guard.
 
 Runs only on real Windows (the on-demand ``wine2e/**`` windows-latest lane).

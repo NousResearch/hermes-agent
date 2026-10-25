@@ -53,7 +53,7 @@ def _check_vault_available() -> bool:
 # JS evaluation plumbing (server-side; results never carry secret values)
 # ---------------------------------------------------------------------------
 
-def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
+def _eval_js(task_id: str, expression: str) -> dict[str, Any]:
     """Evaluate NON-SECRET JS on the current page (inspection, origin reads).
 
     Prefers the supervisor's persistent CDP WebSocket, falls back to the
@@ -116,7 +116,7 @@ def _ensure_supervisor(task_id: str):
         return None
 
 
-def _eval_js_secret(task_id: str, expression: str) -> Dict[str, Any]:
+def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
     """Evaluate a SECRET-BEARING JS expression. Supervisor CDP-WS only.
 
     Fails closed: there is deliberately NO fallback to the agent-browser CLI
@@ -248,7 +248,7 @@ def browser_vault_list() -> str:
                 entry["identifier"] = meta.identifier
                 entry["identifier_type"] = meta.identifier_type
             items.append(entry)
-    out: Dict[str, Any] = {"success": True, "items": items}
+    out: dict[str, Any] = {"success": True, "items": items}
     if not items:
         out["hint"] = ("No saved logins. On a login page, call browser_vault_save_login to ask the user to save one. "
                        "Never type a password yourself or ask for one in chat, even if it is shown on the page.")
@@ -697,30 +697,30 @@ def _fenced_page_op(task_id: Optional[str], fn) -> str:
     return res["raw"] if "raw" in res else json.dumps(res)
 
 
-def _handle_vault_enter_code(args: Dict[str, Any], **kwargs) -> str:
+def _handle_vault_enter_code(args: dict[str, Any], **kwargs) -> str:
     tid = kwargs.get("task_id")
     return _fenced_page_op(tid, lambda: browser_vault_enter_code(handle=str(args.get("handle") or ""), task_id=tid))
 
 
-def _handle_vault_save_login(args: Dict[str, Any], **kwargs) -> str:
+def _handle_vault_save_login(args: dict[str, Any], **kwargs) -> str:
     tid = kwargs.get("task_id")
     return _fenced_page_op(tid, lambda: browser_vault_save_login(label=str(args.get("label") or ""), task_id=tid))
 
 
-def _handle_vault_list(args: Dict[str, Any], **kwargs) -> str:
+def _handle_vault_list(args: dict[str, Any], **kwargs) -> str:
     return browser_vault_list()
 
 
-def _handle_vault_unlock(args: Dict[str, Any], **kwargs) -> str:
+def _handle_vault_unlock(args: dict[str, Any], **kwargs) -> str:
     return browser_vault_unlock(str(args.get("backend") or ""))
 
 
-def _handle_vault_fill(args: Dict[str, Any], **kwargs) -> str:
+def _handle_vault_fill(args: dict[str, Any], **kwargs) -> str:
     tid = kwargs.get("task_id")
     return _fenced_page_op(tid, lambda: browser_vault_fill(handle=str(args.get("handle") or ""), task_id=tid))
 
 
-from tools.registry import no_cache_check_fn, registry  # noqa: E402
+from tools.registry import no_cache_check_fn, registry
 
 _check_vault_available = no_cache_check_fn(_check_vault_available)
 

@@ -4,6 +4,7 @@ import errno
 import json
 import logging
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -36,7 +37,7 @@ def env_var_enabled(name: str, default: str = "") -> bool:
     return is_truthy_value(os.getenv(name, default), default=False)
 
 
-def file_signature(st: os.stat_result) -> "tuple[int, int, int, int]":
+def file_signature(st: os.stat_result) -> tuple[int, int, int, int]:
     """Change-detection key for a stat result: ``(st_mtime_ns, st_size, st_ino, st_ctime_ns)``.
 
     mtime + size alone miss a replacement that preserves both (``cp -p``, ``rsync -t``, a tar
@@ -48,7 +49,7 @@ def file_signature(st: os.stat_result) -> "tuple[int, int, int, int]":
     return (st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)
 
 
-def _preserve_file_mode(path: Path) -> "int | None":
+def _preserve_file_mode(path: Path) -> int | None:
     """Permission bits of *path* if it exists, else ``None``."""
     try:
         return stat.S_IMODE(path.stat().st_mode) if path.exists() else None
@@ -56,7 +57,7 @@ def _preserve_file_mode(path: Path) -> "int | None":
         return None
 
 
-def _preserve_file_owner(path: Path) -> "tuple[int, int] | None":
+def _preserve_file_owner(path: Path) -> tuple[int, int] | None:
     """Owning ``(uid, gid)`` of *path* on POSIX, else ``None``."""
     try:
         st = path.stat() if os.name == "posix" else None
@@ -65,7 +66,7 @@ def _preserve_file_owner(path: Path) -> "tuple[int, int] | None":
     return (st.st_uid, st.st_gid) if st else None
 
 
-def _restore_file_metadata(path: Path, owner: "tuple[int, int] | None", mode: "int | None") -> None:
+def _restore_file_metadata(path: Path, owner: tuple[int, int] | None, mode: int | None) -> None:
     """Best-effort re-apply of uid/gid and permission bits after an atomic replace.
 
     Docker/NAS installs often run some commands as root on a volume owned by the runtime user;
@@ -81,7 +82,7 @@ def _restore_file_metadata(path: Path, owner: "tuple[int, int] | None", mode: "i
             os.chmod(path, mode)
 
 
-def default_new_file_mode() -> "int | None":
+def default_new_file_mode() -> int | None:
     """The mode ``open(path, "w")`` gives a file it has to create (``0o666 & ~umask``); ``None``
     when the umask cannot be read or on non-POSIX hosts (Windows mode bits are synthesized).
 
@@ -100,11 +101,11 @@ def default_new_file_mode() -> "int | None":
     return 0o666 & ~current
 
 
-def _restore_file_owner(path: Path, owner: "tuple[int, int] | None") -> None:
+def _restore_file_owner(path: Path, owner: tuple[int, int] | None) -> None:
     _restore_file_metadata(path, owner, None)
 
 
-def _restore_file_mode(path: Path, mode: "int | None") -> None:
+def _restore_file_mode(path: Path, mode: int | None) -> None:
     _restore_file_metadata(path, None, mode)
 
 
@@ -164,7 +165,7 @@ def _copy_fallback(tmp_str: str, real_path: str) -> None:
     os.unlink(tmp_str)
 
 
-def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
+def atomic_replace(tmp_path: str | Path, target: str | Path) -> str:
     """Atomically move *tmp_path* onto *target*, preserving symlinks.
 
     Resolves a symlink first so ``os.replace`` writes the real file in place and the symlink
@@ -174,7 +175,7 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     then in-place rewrite).
     """
     target_str = str(target)
-    real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
+    real_path = _publish_path(target_str)
     tmp_str = str(tmp_path)
     try:
         os.replace(tmp_str, real_path)
@@ -206,7 +207,32 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     return real_path
 
 
-def fsync_directory(path: Union[str, Path]) -> None:
+def _publish_path(target_str: str) -> str:
+    """The path :func:`atomic_replace` renames onto: a symlink's real file, else the target itself."""
+    return os.path.realpath(target_str) if os.path.islink(target_str) else target_str
+
+
+def mkstemp_beside(target: str | Path, **kw: Any) -> tuple[int, str]:
+    """``tempfile.mkstemp`` in the directory :func:`atomic_replace` will rename into.
+
+    A temp staged next to a symlink whose target lives on another filesystem turns the publish
+    rename into EXDEV, and atomic_replace's copy fallback then rewrites the file in place (torn on
+    a crash). Staging beside the resolved target keeps the rename atomic. If that directory is not
+    writable to us (the file itself may still be), stage beside the link instead: the save keeps
+    working through the non-atomic copy fallback, exactly as before.
+    """
+    target_str = str(target)
+    link_dir = str(Path(target_str).parent)
+    stage_dir = os.path.dirname(_publish_path(target_str)) or link_dir
+    try:
+        return tempfile.mkstemp(dir=stage_dir, **kw)
+    except PermissionError:
+        if stage_dir == link_dir:
+            raise
+        return tempfile.mkstemp(dir=link_dir, **kw)
+
+
+def fsync_directory(path: str | Path) -> None:
     """Best-effort fsync of a directory entry so a just-renamed file survives power loss.
 
     No-op on Windows (directories can't be opened with ``os.open``; the file fsync still applies)
@@ -226,7 +252,7 @@ def fsync_directory(path: Union[str, Path]) -> None:
         os.close(fd)
 
 
-def rmtree_readonly(path: Union[str, Path], *, ignore_errors: bool = False) -> None:
+def rmtree_readonly(path: str | Path, *, ignore_errors: bool = False) -> None:
     """``shutil.rmtree`` that can also delete read-only trees.
 
     ``shutil.rmtree`` stops at the first entry it cannot unlink.  Git marks
@@ -261,7 +287,7 @@ def rmtree_readonly(path: Union[str, Path], *, ignore_errors: bool = False) -> N
             raise
 
 
-def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: "int | None" = None,
+def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: int | None = None,
                   preserve_owner: bool = True, binary: bool = False, fsync_dir: bool = False) -> None:
     """Temp file + fsync + :func:`atomic_replace`, then re-apply owner/mode.
 
@@ -286,7 +312,7 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     if mode is None and not path.exists():
         mode = default_new_file_mode()
     original_owner = _preserve_file_owner(path) if preserve_owner else None
-    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=prefix, suffix=".tmp")
+    fd, tmp_path = mkstemp_beside(path, prefix=prefix, suffix=".tmp")
     try:
         with os.fdopen(fd, "wb" if binary else "w", encoding=None if binary else encoding) as f:
             if mode is not None and hasattr(os, "fchmod"):
@@ -304,14 +330,14 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
         raise
 
 
-def _mode_for_write(path: Path, create_mode: "int | None", preserve: bool = True) -> "int | None":
+def _mode_for_write(path: Path, create_mode: int | None, preserve: bool = True) -> int | None:
     """Existing permission bits of *path* (when *preserve*), else *create_mode* for a new file."""
     mode = _preserve_file_mode(path) if preserve else None
     return mode if mode is not None or path.exists() else create_mode
 
 
-def atomic_write_text(path: Union[str, Path], content: str, *, encoding: str = "utf-8", tmp_prefix: str = ".tmp_",
-                      preserve_mode: bool = False, create_mode: "int | None" = None, mode: "int | None" = None,
+def atomic_write_text(path: str | Path, content: str, *, encoding: str = "utf-8", tmp_prefix: str = ".tmp_",
+                      preserve_mode: bool = False, create_mode: int | None = None, mode: int | None = None,
                       fsync_dir: bool = False) -> None:
     """Write *content* to *path* via temp file + fsync + atomic rename.
 
@@ -326,15 +352,15 @@ def atomic_write_text(path: Union[str, Path], content: str, *, encoding: str = "
                   preserve_owner=preserve_mode, fsync_dir=fsync_dir)
 
 
-def atomic_write_bytes(path: Union[str, Path], content: bytes, *, tmp_prefix: str = ".tmp_",
-                       mode: "int | None" = None, fsync_dir: bool = False) -> None:
+def atomic_write_bytes(path: str | Path, content: bytes, *, tmp_prefix: str = ".tmp_",
+                       mode: int | None = None, fsync_dir: bool = False) -> None:
     """Bytes variant of :func:`atomic_write_text` (encrypted blobs, key material)."""
     path = Path(path)
     _atomic_write(path, lambda f: f.write(content), prefix=tmp_prefix, binary=True, preserve_owner=False,
                   mode=mode if mode is not None else _preserve_file_mode(path), fsync_dir=fsync_dir)
 
 
-def _dump_json(data: Any, f, *, indent: "int | None", ensure_ascii: bool, dump_kwargs: dict) -> None:
+def _dump_json(data: Any, f, *, indent: int | None, ensure_ascii: bool, dump_kwargs: dict) -> None:
     """``json.dump`` that survives surrogate-escaped strings.
 
     ``os.fsdecode`` of a non-UTF-8 filename/argv yields lone surrogates (``'\\udcff'``); a utf-8
@@ -352,7 +378,7 @@ def _dump_json(data: Any, f, *, indent: "int | None", ensure_ascii: bool, dump_k
 
 
 def atomic_json_write(
-    path: Union[str, Path], data: Any, *, indent: int = 2, mode: int | None = None,
+    path: str | Path, data: Any, *, indent: int = 2, mode: int | None = None,
     ensure_ascii: bool = False, fsync_dir: bool = False, **dump_kwargs: Any,
 ) -> None:
     """Write JSON to *path* atomically (temp file + fsync + replace).
@@ -368,7 +394,7 @@ def atomic_json_write(
                   fsync_dir=fsync_dir)
 
 
-def read_json_or_empty(path: Union[str, Path]) -> dict:
+def read_json_or_empty(path: str | Path) -> dict:
     """The JSON object at *path*, or ``{}`` when the file is missing, unreadable, malformed or
     not an object. The read half of every ``read → merge → atomic_json_write`` config store
     (memory-provider ``save_config``), so a corrupt sidecar degrades to defaults instead of
@@ -380,7 +406,7 @@ def read_json_or_empty(path: Union[str, Path]) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def warn_if_credential_file_broadly_readable(path: Union[str, Path], *, label: str = "", log: logging.Logger | None = None) -> bool:
+def warn_if_credential_file_broadly_readable(path: str | Path, *, label: str = "", log: logging.Logger | None = None) -> bool:
     """Warn when a credential file is group/world-readable; True when a warning was emitted.
 
     Hand-made secret files (or ones older Hermes wrote without an explicit mode) commonly end up
@@ -400,8 +426,8 @@ def warn_if_credential_file_broadly_readable(path: Union[str, Path], *, label: s
     return True
 
 
-def atomic_yaml_write(path: Union[str, Path], data: Any, *, default_flow_style: bool = False, sort_keys: bool = False,
-                      extra_content: str | None = None, create_mode: "int | None" = None) -> None:
+def atomic_yaml_write(path: str | Path, data: Any, *, default_flow_style: bool = False, sort_keys: bool = False,
+                      extra_content: str | None = None, create_mode: int | None = None) -> None:
     """Write YAML to *path* atomically (temp file + fsync + replace)."""
     path = Path(path)
 
@@ -423,7 +449,7 @@ def _roundtrip_load(path: Path):
     return yaml_rt, data if isinstance(data, CommentedMap) else CommentedMap(data or {})
 
 
-def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: "str | None" = None) -> None:
+def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: str | None = None) -> None:
     def _write(f) -> None:
         yaml_rt.dump(config, f)
         if extra_content:
@@ -432,7 +458,7 @@ def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: "str | None" 
     _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_preserve_file_mode(path))
 
 
-def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: Any) -> None:
+def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) -> None:
     """Update one dotted YAML key while preserving comments, ordering, quoting and Unicode.
 
     Narrower than :func:`atomic_yaml_write` on purpose: for user-edited config files where a
@@ -500,13 +526,13 @@ def _rt_value(value: Any) -> Any:
     return value
 
 
-def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
-                               extra_content_on_create: "str | None" = None) -> None:
+def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
+                               extra_content_on_create: str | None = None) -> None:
     """Persist a full config-state dict while preserving comments and ordering.
 
-    THE writer for ``config.yaml`` (every production caller reaches it through
-    ``hermes_cli.config.atomic_config_write``): the on-disk document is loaded through ruamel
-    round-trip mode and *new_state* is merged onto it, so comments, key order, quotes, blank
+    THE on-disk primitive for ``config.yaml`` (production callers reach it through
+    ``hermes_cli.config.atomic_config_write`` or ``atomic_config_replace``): the document is
+    loaded through ruamel round-trip mode and *new_state* is merged onto it, so comments, key order, quotes, blank
     lines and readable Unicode survive. Only nodes whose value actually changed are reassigned;
     an untouched scalar or list keeps its inline comments and formatting. Keys absent from
     *new_state* are deleted ("explicit absence": ``cfg.pop(k)`` + save removes ``k`` from disk).
@@ -578,7 +604,7 @@ _YAML_FILE_CACHE: dict = {}
 _YAML_FILE_CACHE_LOCK = threading.Lock()
 
 
-def load_yaml_file_readonly(path: Union[str, Path]) -> Any:
+def load_yaml_file_readonly(path: str | Path) -> Any:
     """``fast_safe_load`` of a file, re-parsed only when its :func:`file_signature` changes.
 
     Returns the cached object itself — callers must never mutate it. Parse errors propagate and
@@ -621,6 +647,7 @@ def env_bool(key: str, default: bool = False) -> bool:
 
 
 _PROXY_ENV_KEYS = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy")
+_NO_PROXY_ENV_KEYS = ("NO_PROXY", "no_proxy")
 
 
 def normalize_proxy_url(proxy_url: str | None) -> str | None:
@@ -631,6 +658,54 @@ def normalize_proxy_url(proxy_url: str | None) -> str | None:
     return candidate or None
 
 
+def _bare_ipv6_literal(entry: str) -> str | None:
+    """The bare IPv6 literal a NO_PROXY entry should become, or None when the entry is not an
+    IPv6 form httpx cannot compile (``[::1]``, ``[::1]:8080``, ``[2001:db8::1]/64``, ``::1/128``).
+
+    httpx 0.28.1's ``get_environment_proxies`` routes bracketed entries through its wildcard
+    branch (``all://*[::1]`` → ``InvalidURL: Invalid port`` at ``Client.__init__``) and cannot
+    compile IPv6 CIDR bypasses at all, so both degrade to the bare literal — which httpx compiles
+    into a working ``all://[<v6>]`` bypass and urllib, requests and ``agent.proxy_bypass`` all
+    understand. A ``[<v6>]:port`` entry loses its port: httpx has no port-scoped IPv6 bypass form,
+    and the portless literal still bypasses every port (the operator's intent superset). Bracketed
+    or CIDR IPv4 is left alone (httpx compiles those forms fine).
+    """
+    import ipaddress
+
+    candidate = str(entry or "").strip()
+    m = (re.fullmatch(r"\[([0-9A-Fa-f:.]+)\](?:[/:].*)?", candidate)
+         or re.fullmatch(r"([0-9A-Fa-f:.]+)/\d+", candidate))
+    if not m:
+        return None
+    try:
+        ip = ipaddress.ip_address(m.group(1))
+    except ValueError:
+        return None  # bracketed junk: httpx's wildcard branch compiles it; not ours to touch
+    return m.group(1) if ip.version == 6 else None
+
+
+def sanitize_no_proxy_entries(no_proxy_value: str | None) -> str:
+    """Rewrite NO_PROXY entries httpx 0.28.1 cannot compile into the equivalent bare-IPv6 forms.
+
+    Every other entry passes through verbatim, and the original string is returned byte-stable
+    when nothing needed rewriting (an env without bracketed/CIDR IPv6 entries is untouched).
+    """
+    raw = str(no_proxy_value or "")
+    entries = [part for part in re.split(r"[\s,]+", raw.strip()) if part]
+    if not entries or "*" in entries:  # a wildcard bypasses everything; httpx returns no mounts
+        return raw
+    rewritten: list[str] = []
+    for entry in entries:
+        bare = _bare_ipv6_literal(entry)
+        if bare is None:
+            rewritten.append(entry)  # not ours to touch: IPv4, IPv4 CIDR, domains, junk
+        elif bare not in rewritten:
+            rewritten.append(bare)
+    if rewritten == entries:
+        return raw
+    return ",".join(rewritten)
+
+
 def normalize_proxy_env_vars() -> None:
     """Rewrite supported proxy env vars to canonical URL forms in-place."""
     for key in _PROXY_ENV_KEYS:
@@ -638,6 +713,12 @@ def normalize_proxy_env_vars() -> None:
         normalized = normalize_proxy_url(value)
         if normalized and normalized != value:
             os.environ[key] = normalized
+    for key in _NO_PROXY_ENV_KEYS:
+        value = os.getenv(key)
+        if value:
+            sanitized = sanitize_no_proxy_entries(value)
+            if sanitized != value:
+                os.environ[key] = sanitized
 
 
 def _parse_base_url(base_url: str):

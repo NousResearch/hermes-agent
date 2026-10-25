@@ -41,7 +41,7 @@ export function prefetchOnboardingPlugins(storedId: string): void {
   })
 }
 
-export function useOnboardingPlugins(storedId: null | string): OnboardingPlugin[] {
+export function useOnboardingPluginList(storedId: null | string): null | OnboardingPlugin[] {
   const query = useQuery({
     enabled: Boolean(storedId),
     queryFn: () => readOnboardingPlugins(storedId!),
@@ -49,5 +49,5 @@ export function useOnboardingPlugins(storedId: null | string): OnboardingPlugin[
     staleTime: Infinity
   })
 
-  return query.data ?? []
+  return query.data ?? null
 }

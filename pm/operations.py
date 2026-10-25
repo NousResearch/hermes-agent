@@ -254,7 +254,7 @@ def _ensure_generation(
     Build at the final path: Windows launchers and scripts embed that path.
     The prior generation survives both successful replacement and failed builds.
     """
-    from pm.filesystem import lock_fd
+    from pm.filesystem import lock_fd, native
     from pm._uv import _toolchain
     from pm.install import _refuse_lazy, lazy_installs_allowed
     from pm.lock import Lockfile, _write
@@ -273,7 +273,8 @@ def _ensure_generation(
     def identity(base_python: Path) -> str:
         # The same pinned artifact can live in different stores. A venv's
         # pyvenv.cfg keeps the original interpreter path, not just its version.
-        return hashlib.sha256(json.dumps({**inputs, "interpreter": str(base_python)},
+        # The store spells its root extended-length on Windows; the identity must not.
+        return hashlib.sha256(json.dumps({**inputs, "interpreter": native(base_python)},
                                          sort_keys=True).encode()).hexdigest()
 
     def current(base_python: Path | None) -> Path | None:

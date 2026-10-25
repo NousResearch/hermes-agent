@@ -71,7 +71,7 @@ exit $LASTEXITCODE
     run = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(wrapper),
                           "-Installer", str(INSTALLER), "-InstallDir", str(install), "-HomeDir", str(tmp_path / "home"), "-Log", str(log)],
                          cwd=tmp_path, env=env, stdin=subprocess.DEVNULL,
-                         capture_output=True, text=True, timeout=120)
+                         capture_output=True, text=True, timeout=120, check=False)
     assert (run.returncode == 0) == (exit_code == 0), run.stdout + run.stderr
     from hermes_platform.host.facts import native_arch
 

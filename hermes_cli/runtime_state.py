@@ -34,6 +34,8 @@ LOG = logging.getLogger(__name__)
 # same rule boot_bootstrap._RecordLock states for home maintenance.
 INSTALL_LOCK_TIMEOUT_SECONDS = 10.0
 
+# A lease file younger than this is never a prune candidate: its creator may still sit between
+# ``O_CREAT|O_EXCL`` and ``flock`` (two syscalls; the window is microseconds, the margin generous).
 @contextmanager
 def runtime_lock(project: Path, *, timeout: float | None = INSTALL_LOCK_TIMEOUT_SECONDS):
     """Hold the per-install dependency lock; yields True when held, False when the wait expired.
@@ -150,13 +152,22 @@ def lease_directory(generation: Path) -> Callable[[], None]:
         return lambda: None  # Generations produced before leases stay conservatively retained.
     leases = generation / ".leases"
     leases.mkdir(exist_ok=True)
-    lease = leases / uuid.uuid4().hex
-    fd = os.open(lease, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
-    try:
-        _lock(fd, wait=True)
-    except BaseException:
+    _prune_unlocked_leases(leases)
+    while True:
+        lease = leases / uuid.uuid4().hex
+        fd = os.open(lease, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+        try:
+            _lock(fd, wait=True)
+        except BaseException:
+            os.close(fd)
+            raise
+        # Create and flock are two syscalls; a peer's prune (pm workers and launch run outside
+        # ``runtime_lock``) can lock-and-unlink the file in between, and we would then hold an
+        # unlinked inode invisible to every collector. The pruner only unlinks while holding the
+        # lock, so once we hold it the path is either still ours or already gone for good.
+        if lease.exists():
+            break
         os.close(fd)
-        raise
 
     def release() -> None:
         atexit.unregister(release)
@@ -199,11 +210,34 @@ def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> lis
 
 def leases_held(generation: Path) -> bool:
     """True while any process still holds a lease taken by ``lease_directory``."""
-    for lease in (generation / ".leases").glob("*"):
-        fd = os.open(lease, os.O_RDWR)
+    return _prune_unlocked_leases(generation / ".leases")
+
+
+def _prune_unlocked_leases(leases: Path) -> bool:
+    """Remove abandoned lease files and report whether any live lock remains.
+
+    Kernel locks disappear even when ``execv``, ``os._exit`` or a crash bypasses
+    ``atexit``. Cleaning those unlocked files whenever a reader arrives bounds leaks in
+    the selected generation too, which generation GC intentionally never visits.
+
+    Fail closed: a lease this user cannot open (root-owned 0o600 from a ``sudo hermes`` on the
+    same checkout) is held, never a boot failure.
+    """
+    held = False
+    for lease in leases.glob("*"):
+        try:
+            fd = os.open(lease, os.O_RDWR)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            held = True
+            continue
         try:
             if not _lock(fd, wait=False):
-                return True
+                held = True
+            else:
+                with suppress(OSError):
+                    lease.unlink()
         finally:
             os.close(fd)
-    return False
+    return held

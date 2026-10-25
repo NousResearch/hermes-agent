@@ -7,6 +7,7 @@ import pytest
 
 from hermes_cli import process_identity
 from hermes_cli import update_cmd_fleet as fleet
+from hermes_cli import update_cmd_fleet_verify as fleet_verify
 from hermes_cli import update_receipt
 from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
 from hermes_cli.update_serve_obligations import defer_manual_serve, retain_receipt_manual_serves
@@ -20,7 +21,7 @@ def test_manual_deferral_survives_receipt_rotation(monkeypatch, capsys, kind, co
     plan = UpdatePlan(runtimes=[runtime])
     monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: True)
     monkeypatch.setattr(process_identity, "ledger_entries", lambda: [{"pid": 900, "purpose": kind, "create_time": 1000.0}])
-    monkeypatch.setattr(fleet, "_print_legacy_units_warning", lambda: None)
+    monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
     monkeypatch.setattr("hermes_cli.update_cmd._finish_dashboard_update_cleanup", lambda *a, **k: None)
     monkeypatch.setattr("hermes_cli.gateway_migrate.maybe_auto_migrate_after_update", lambda: None)
     monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda **k: [])
@@ -37,13 +38,17 @@ def test_manual_deferral_survives_receipt_rotation(monkeypatch, capsys, kind, co
         restart.failed_or_stale_units.append("hermes-serve-work.service")
         restart.incomplete = True
     if condition != "alive":
-        with pytest.raises(SystemExit) as exc:
-            fleet._verify_fleet_after_update(restart, _pre_update_plan=plan, _windows_gateway_resume=None, update_complete=True)
-        assert exc.value.code == 1
+        # Contract C3: a restart that is still owed no longer fails the committed update (was
+        # SystemExit(1) + "partial") ...
+        fleet_verify._verify_fleet_after_update(restart, _pre_update_plan=plan, _windows_gateway_resume=None, update_complete=True)
+        # ... the obligation stays armed (unchanged) ...
         assert fleet._fleet_restart_obligation_armed()
-        assert update_receipt.read_latest_receipt()["outcome"] == "partial"
+        receipt = update_receipt.read_latest_receipt()
+        # ... and the receipt is a success naming the owed restart.
+        assert receipt["outcome"] == "success"
+        assert [f["step"] for f in receipt["followups"]] == ["gateway_restart"]
         return
-    fleet._verify_fleet_after_update(restart, _pre_update_plan=plan, _windows_gateway_resume=None, update_complete=True)
+    fleet_verify._verify_fleet_after_update(restart, _pre_update_plan=plan, _windows_gateway_resume=None, update_complete=True)
     receipt = update_receipt.read_latest_receipt()
     assert receipt["runtime_outcomes"][0]["outcome"] == "deferred"
     assert not fleet._fleet_restart_obligation_armed()
@@ -202,6 +207,34 @@ def test_historical_retention_failure_warns_and_survives_rotation(monkeypatch, c
     monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: False)
     fleet._warn_pending_fleet_restart_on_startup()
     assert "900" not in capsys.readouterr().err
+
+
+def test_unsaved_manual_restart_warning_survives_a_running_and_a_killed_update(monkeypatch, capsys):
+    """The durable running latest.json holds the prior rows as ``carried_manual_serves`` (no plan
+    yet): the startup warning must read them while an update runs, after one is killed before its
+    ``plan`` stage, and the next run must carry them forward again."""
+    manual = asdict(RuntimeRecord(kind="serve", profile="work", pid=900, supervisor="manual-serve", restart_via="respawn-argv", detail={"create_time": 1000.0}))
+    root = get_hermes_home() / "logs" / "update_receipts"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "latest.json").write_text(json.dumps({"outcome": "partial", "plan": {"runtimes": [manual]}}))
+    (get_hermes_home() / "serve_restart_pending").write_text("not a directory")  # the reminder can't be filed
+    monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: True)
+
+    update_receipt.begin_update_receipt()  # running record replaces latest.json
+    running = json.loads((root / "latest.json").read_text())
+    assert running["outcome"] == "running" and "plan" not in running
+    fleet._warn_pending_fleet_restart_on_startup()
+    assert "serve [work] pid 900" in capsys.readouterr().err
+
+    # Killed before the plan stage: the in-memory receipt is gone, latest.json stays the running record.
+    update_receipt._current.set(None)
+    fleet._warn_pending_fleet_restart_on_startup()
+    assert "serve [work] pid 900" in capsys.readouterr().err
+
+    update_receipt.begin_update_receipt()  # the next run reconciles the killed one and carries again
+    update_receipt.finalize_update_receipt("success", fleet=[])
+    fleet._warn_pending_fleet_restart_on_startup()
+    assert "serve [work] pid 900" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("kind", ["serve", "dashboard"])

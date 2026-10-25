@@ -392,7 +392,7 @@ def _clear_ca_bundle_env(monkeypatch) -> None:
 
 
 def test_hermes_owned_opener_uses_resolved_https_context(monkeypatch):
-    import hermes_cli.urllib_security as urllib_security
+    from hermes_cli import urllib_security
 
     context = ssl.create_default_context()
     monkeypatch.setattr(urllib.request, "_opener", None)
@@ -419,7 +419,7 @@ def test_resolved_https_context_defers_to_the_platform_store(monkeypatch, tmp_pa
     here any more: a stale or bogus env var must not steer or break trust,
     which is precisely what the removed env/certifi ladder used to do.
     """
-    import hermes_cli.urllib_security as urllib_security
+    from hermes_cli import urllib_security
 
     assert urllib_security._resolved_https_context() is None
 
@@ -437,7 +437,7 @@ def test_resolved_https_context_installs_the_platform_verifier():
     """
     import ssl
 
-    import hermes_cli.urllib_security as urllib_security
+    from hermes_cli import urllib_security
 
     urllib_security._resolved_https_context()
 
@@ -445,7 +445,7 @@ def test_resolved_https_context_installs_the_platform_verifier():
 
 
 def test_installed_https_context_is_preserved(monkeypatch):
-    import hermes_cli.urllib_security as urllib_security
+    from hermes_cli import urllib_security
 
     context = ssl.create_default_context()
     installed = urllib.request.build_opener(

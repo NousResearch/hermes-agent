@@ -19,7 +19,7 @@ import pytest
 
 import pm.workspace as ws
 from pm.environment import managed_environment
-from tests.pm.test_environment_build import locked_project  # noqa: F401
+from tests.pm.test_environment_build import locked_project
 
 
 

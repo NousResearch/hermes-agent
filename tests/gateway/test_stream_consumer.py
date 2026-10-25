@@ -737,7 +737,7 @@ class TestInitialOverflowRollingEdit:
             return_value=SimpleNamespace(success=True, message_id="msg_3"),
         )
         raw_limit = 700
-        setattr(adapter, "MAX_MESSAGE_LENGTH", raw_limit)
+        adapter.MAX_MESSAGE_LENGTH = raw_limit
         splitter = MagicMock(side_effect=adapter.truncate_message)
         adapter.truncate_message = splitter
 

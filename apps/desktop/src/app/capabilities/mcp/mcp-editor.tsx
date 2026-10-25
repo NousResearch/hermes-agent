@@ -1,6 +1,8 @@
 import { useState } from 'react'
 
 import { JsonDocumentEditor } from '@/components/chat/json-document-editor'
+import { LogSearchField, useLogSearch } from '@/components/chat/log-search'
+import { LogTail } from '@/components/chat/log-tail'
 import { Button } from '@/components/ui/button'
 import { TextTab } from '@/components/ui/text-tab'
 import { useI18n } from '@/i18n'
@@ -8,7 +10,7 @@ import { notifyError } from '@/store/notifications'
 
 import { DetailPane } from '../../master-detail'
 
-import { McpLogs, type McpLogSource } from './mcp-logs'
+import { type McpLogSource, useMcpLogLines } from './mcp-logs'
 import type { McpServersController } from './use-mcp-servers'
 
 export interface McpJsonEditorProps {
@@ -60,11 +62,21 @@ export function McpLogPane({ server }: McpLogPaneProps) {
   const { t } = useI18n()
   const m = t.settings.mcp
   const [source, setSource] = useState<McpLogSource>('stdio')
+  const [query, setQuery] = useState('')
+  const lines = useMcpLogLines(server, source)
+  const search = useLogSearch(lines, query)
 
   return (
     <DetailPane
       actions={
         <span className="flex items-center gap-1.5">
+          <LogSearchField
+            containerClassName="mr-1 w-36"
+            onChange={setQuery}
+            placeholder={t.ui.logs.search}
+            search={search}
+            value={query}
+          />
           {(['stdio', 'agent'] as const).map(kind => (
             <TextTab
               active={source === kind}
@@ -81,7 +93,7 @@ export function McpLogPane({ server }: McpLogPaneProps) {
       id="mcp-logs"
       title={<span className="text-[0.68rem] font-normal text-muted-foreground/60">{server ?? m.allServers}</span>}
     >
-      <McpLogs emptyLabel={m.noOutput} server={server} source={source} />
+      <LogTail emptyLabel={m.noOutput} lines={lines} search={search} />
     </DetailPane>
   )
 }

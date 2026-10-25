@@ -1,0 +1,19 @@
+{
+  "description": "Get browser console output and JavaScript errors from the current page. Returns console.log/warn/error/info messages and uncaught JS exceptions. Use this to detect silent JavaScript errors, failed API calls, and application warnings. Requires browser_navigate to be called first. When 'expression' is provided, evaluates JavaScript in the page context and returns the result — use this for DOM inspection, reading page state, or extracting data programmatically.",
+  "name": "browser_console",
+  "parameters": {
+    "properties": {
+      "clear": {
+        "default": false,
+        "description": "If true, clear the message buffers after reading",
+        "type": "boolean"
+      },
+      "expression": {
+        "description": "JavaScript expression to evaluate in the page context. Runs in the browser like DevTools console — full access to DOM, window, document. Return values are serialized to JSON. Example: 'document.title' or 'document.querySelectorAll(\"a\").length'",
+        "type": "string"
+      }
+    },
+    "required": [],
+    "type": "object"
+  }
+}

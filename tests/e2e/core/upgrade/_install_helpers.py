@@ -38,7 +38,7 @@ def real_uv() -> str | None:
 
 def git(*args: str, cwd: Path, check: bool = True, env: dict | None = None) -> str:
     cp = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True,
-                        env=env or {**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+                        env=env or {**os.environ, "GIT_TERMINAL_PROMPT": "0"}, check=False)
     if check and cp.returncode != 0:
         raise AssertionError(f"git {args} failed in {cwd}: {cp.stderr}")
     return cp.stdout.strip()
@@ -163,6 +163,17 @@ def run_installer(sb: Sandbox, *, timeout: float = 1800) -> subprocess.Completed
     shutil.copy(H.WORKTREE / "scripts" / "install.sh", script)
     return sb.run(["bash", str(script), "--non-interactive"],
                   timeout=timeout, input="")
+
+
+def pin_main_channel(sb: Sandbox) -> None:
+    """Follow every commit on main, as `hermes update --set-channel main` records it.
+
+    An official-origin source checkout defaults to the stable channel (the latest published GitHub
+    release). These sandboxes publish commits on main and no releases, and their subject is moving
+    between commits; channel resolution has its own suites (test_release_channel_records,
+    tests/hermes_cli/test_source_release_channels.py)."""
+    cp = sb.cli("update", "--set-channel", "main", timeout=120)
+    assert cp.returncode == 0 and "Update channel for" in cp.stdout, "could not pin the main channel:\n" + describe(cp)
 
 
 def provider_config(base_url: str, version: int | None, extra: str = "") -> str:

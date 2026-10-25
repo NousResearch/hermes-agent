@@ -29,12 +29,12 @@ import { resolveTipAnchor } from '@/lib/tips/anchor'
 import { TIP_CATALOG } from '@/lib/tips/catalog'
 import { nextTip } from '@/lib/tips/rotation'
 import { $localModelsEnabled } from '@/store/local-models-flag'
+import { onboardingSurfaceActive } from '@/store/onboarding-presence'
 import { $awaitingResponse, $busy } from '@/store/session'
 import { $activeTip, $lastTipId, $nextTipAt, $retiredTips, $tipsEnabled, $tipShownAt, showTip } from '@/store/tips'
 import { checkTutorialLifetime } from '@/store/tutorial-lifetime'
 
 import { offerLocalRuntimeUpdateTip } from './local-runtime-update-offer'
-import { offerLocalSetupTip } from './local-setup-offer'
 
 const TICK_MS = 30_000
 const UPDATE_TICK_MS = 1_000
@@ -56,7 +56,8 @@ function appIsQuiet(lastTypedAt: number): boolean {
     return false
   }
 
-  if ($busy.get() || $awaitingResponse.get()) {
+  // The first-run intro is never a quiet moment.
+  if ($busy.get() || $awaitingResponse.get() || onboardingSurfaceActive()) {
     return false
   }
 
@@ -117,11 +118,10 @@ export function useTipRotation(copy: Translations['tips']) {
         return
       }
 
-      // Campaigns outrank the walk: a conditional, actionable tip that is
-      // live right now (the local-setup CTA) says something about THIS
-      // machine, which beats the catalog's standing introduction. It shares
-      // the cooldown, so taking the moment still costs it the usual hours.
-      if (offerUpdate() || offerLocalSetupTip(copy, openLocalModels)) {
+      // The engine-update campaign outranks the walk: it says something about
+      // THIS machine. It shares the cooldown, so taking the moment still costs
+      // it the usual hours.
+      if (offerUpdate()) {
         return
       }
 

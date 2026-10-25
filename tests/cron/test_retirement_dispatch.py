@@ -1,7 +1,7 @@
 """The tick-to-worker handoff must have no retirement-sized gap after can_dispatch."""
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 import threading
 
 
@@ -13,7 +13,7 @@ def test_passed_gate_tick_and_queued_job_remain_busy_until_real_worker_exit(tmp_
     monkeypatch.setattr(backend_retirement, "retirement", fence)
     script = tmp_path / "job.py"
     script.write_text("print('no model')\n")
-    job = jobs.create_job(prompt=None, schedule=datetime.now(timezone.utc).isoformat(), script=str(script), no_agent=True)
+    job = jobs.create_job(prompt=None, schedule=datetime.now(UTC).isoformat(), script=str(script), no_agent=True)
     for name in ("_maybe_run_worktree_maintenance", "_sweep_mcp_orphans", "_maybe_reap_dead_owners"):
         monkeypatch.setattr(scheduler, name, lambda: None)
     monkeypatch.setattr(scheduler, "_should_yield_tick_to_fresh_gateway", lambda: None)

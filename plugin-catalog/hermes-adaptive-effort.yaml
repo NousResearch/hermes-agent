@@ -1,0 +1,37 @@
+# Draft for NousResearch/hermes-agent/plugin-catalog/hermes-adaptive-effort.yaml
+# Pinned to master after the v0.3.1 pre-release (repository-root payload, so no subdir).
+# The plugin payload is identical to v0.3.1; the pin adds the README screenshots and release tooling.
+# Update sha and version together for later releases; a bump is a new catalog PR.
+name: hermes-adaptive-effort
+repo: https://github.com/atostivint/hermes-adaptive-effort
+sha: 0998a083d85ea52fbef38427b44a54d27332358a
+description: "Choose a separate scorer to set the reasoning effort of each Hermes request. Disclosure — off by default; when a mode is enabled (or on an explicit `/hae probe`), sends the latest user message (or the parent-written subagent goal), truncated to 4000 characters, plus any configured guidance to the scorer you select (TypeSafe Jev at api.typesafe.ai by default, or OpenAI Decisions, OpenRouter, Cloudflare Workers AI, or a custom URL) using that service's key; in Hermes Desktop it also sets the focused chat's session reasoning selector through the gateway `config.set` API after each applied change, and it keeps a prompt-free effort-change history (64 changes × 64 conversations) in its plugin data directory."
+maintainer: atostivint
+tier: community
+category: models
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/atostivint/hermes-adaptive-effort/blob/0998a083d85ea52fbef38427b44a54d27332358a/docs/README.md
+version: "0.3.1"
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/atostivint/hermes-adaptive-effort/0998a083d85ea52fbef38427b44a54d27332358a/docs/images/desktop-routing-mode.png
+  - https://raw.githubusercontent.com/atostivint/hermes-adaptive-effort/0998a083d85ea52fbef38427b44a54d27332358a/docs/images/desktop-route-and-scorer.png
+  - https://raw.githubusercontent.com/atostivint/hermes-adaptive-effort/0998a083d85ea52fbef38427b44a54d27332358a/docs/images/desktop-settings.png
+  - https://raw.githubusercontent.com/atostivint/hermes-adaptive-effort/0998a083d85ea52fbef38427b44a54d27332358a/docs/images/routing-mode-popover.png
+platforms: []
+title: Hermes Adaptive Effort
+known_issues:
+  - "Pre-release: live effort acceptance is only partially validated; see the v0.3.0 release notes for the per-route evidence."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_end
+    - on_session_finalize
+    - on_session_reset
+    - subagent_start
+    - subagent_stop
+  provides_middleware:
+    - llm_request
+  # Provider credentials are conditional on the selected scorer, so none is
+  # unconditionally required to load or use the plugin with a local endpoint.
+  requires_env: []

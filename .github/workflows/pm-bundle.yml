@@ -34,6 +34,7 @@ on:
   pull_request:
     paths:
       - 'pm/**'
+      - '!pm/**/*.md'
       - 'scripts/bundles/**'
       - 'scripts/ci/desktop_build_cache.py'
       - '.github/actions/desktop-build-cache/**'
@@ -80,7 +81,7 @@ jobs:
           - label: win32-arm64
             runner: windows-latest-32-arm-core
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           # Default to the exact candidate commit (github.sha); inputs.ref
           # remains an escape hatch for a focused manual reproduction.
@@ -91,7 +92,7 @@ jobs:
       # (ubuntu-latest-32-*) are provisioned with ubuntu-22.04 images whose
       # system python3 is 3.10, so pin the bootstrap interpreter instead of
       # trusting the image.
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
 

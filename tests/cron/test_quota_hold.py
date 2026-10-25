@@ -8,7 +8,7 @@ model clears the marker. The hint is read only from the AuthError in the cause c
 arbitrary failure text.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -57,8 +57,8 @@ def test_weekly_cron_retries_when_quota_recovers_before_next_occurrence(
 ):
     """A weekly fire blocked by a shorter quota window retries when the provider reopens;
     it is not silently deferred until the following week's natural occurrence."""
-    now = datetime(2026, 9, 18, 12, 1, tzinfo=timezone.utc)
-    natural_next = datetime(2026, 9, 25, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 9, 18, 12, 1, tzinfo=UTC)
+    natural_next = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
     monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
     monkeypatch.setattr(qh, "_hermes_now", lambda: now)
     job = create_job("weekly digest", "0 12 * * 5")
@@ -85,12 +85,12 @@ def test_recovery_fire_skips_dense_schedules_and_never_re_parks(monkeypatch):
     """Recovery is one attempt for sparse schedules only: an hourly job whose hold ends two
     minutes before :00 keeps its natural :00 (no off-lattice near-duplicate), and a job that is
     already the recovery fire (carries quota_hold_until) failing again is not re-parked."""
-    now = datetime(2026, 9, 18, 12, 1, tzinfo=timezone.utc)
+    now = datetime(2026, 9, 18, 12, 1, tzinfo=UTC)
     monkeypatch.setattr(qh, "_hermes_now", lambda: now)
 
     dense = {
         "schedule": {"kind": "cron", "expr": "0 * * * *"},
-        "next_run_at": datetime(2026, 9, 18, 13, 0, tzinfo=timezone.utc).isoformat(),
+        "next_run_at": datetime(2026, 9, 18, 13, 0, tzinfo=UTC).isoformat(),
     }
     natural = dense["next_run_at"]
     assert not qh.plan_hold(dense, hold_seconds=57 * 60 - qh.HOLD_SLACK_SECONDS,
@@ -138,7 +138,7 @@ def test_quota_hold_parks_past_window_survives_stale_rearm_and_clears_on_model_r
     cadence+grace). The marker clears once a run reaches the model."""
     job = create_job("portfolio triage", "every 30m", deliver="local")
     job_id = job["id"]
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     deliveries: list = []
 
     _tick(get_job(job_id), tmp_cron_home, deliveries, _raise_quota)

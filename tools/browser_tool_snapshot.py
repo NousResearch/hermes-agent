@@ -61,7 +61,7 @@ def _store_full_snapshot(snapshot_text: str) -> Optional[str]:
         # private: cache/web is bind-mounted into remote backends' container UID.
         write_text_exclusive(path, content, private=False, overwrite=True)
         return str(path)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _bt.logger.debug("Failed to store full browser snapshot: %s", exc)
         return None
 

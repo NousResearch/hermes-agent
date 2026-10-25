@@ -65,7 +65,7 @@ def test_routed_home_with_multiplex_flag_off_gets_no_launch_residue(homes, monke
     helper child sees B's env, and the browser passthrough resolves B's (absent) key as no key."""
     from tools.browser_tool import _build_browser_env
 
-    a, b = homes
+    _a, b = homes
     token = set_hermes_home_override(str(b))
     try:
         env = served_profile_child_env(inherit_credentials=True)
@@ -85,14 +85,14 @@ def test_real_child_observes_only_the_routed_profile(homes):
     import json
     import subprocess
 
-    a, b = homes
+    _a, b = homes
     token = set_hermes_home_override(str(b))
     try:
         env = served_profile_child_env(inherit_credentials=True)
     finally:
         reset_hermes_home_override(token)
     probe = "import json,os;print(json.dumps({k:os.environ.get(k) for k in ('HERMES_HOME','A_MARKER','B_MARKER','OPENAI_API_KEY')}))"
-    out = subprocess.run([sys.executable, "-c", probe], env=env, capture_output=True, text=True, encoding="utf-8", timeout=60)
+    out = subprocess.run([sys.executable, "-c", probe], env=env, capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
     seen = json.loads(out.stdout.strip().splitlines()[-1])
     assert seen == {"HERMES_HOME": str(b), "A_MARKER": None, "B_MARKER": "b", "OPENAI_API_KEY": None}
     assert Path(seen["HERMES_HOME"]) == b

@@ -94,7 +94,7 @@ def test_refresh_failure_keeps_current_catalog(monkeypatch):
 
 def test_refresh_rejects_wrong_schema(monkeypatch):
     doc = _doc_from(lambda m: m)
-    doc["schema_version"] = 2
+    doc["schema_version"] = cat._SCHEMA_VERSION + 1
     _fetch_returns(monkeypatch, doc)
     ids_before = [e.id for e in cat.CATALOG]
     assert cat.refresh_catalog(force=True) is False

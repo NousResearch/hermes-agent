@@ -25,7 +25,7 @@ def test_cli_manifest_and_verify(tmp_path):
 
     def cli(*args):
         return subprocess.run([sys.executable, '-m', 'scripts.releases.docker', *args],
-                              cwd=ROOT, capture_output=True, text=True, encoding='utf-8', timeout=30)
+                              cwd=ROOT, capture_output=True, text=True, encoding='utf-8', timeout=30, check=False)
 
     for extra in ([], archives):
         result = cli('manifest', *identity, *digests, *extra)
@@ -106,7 +106,7 @@ def test_promotion_preserves_independent_desktop_digest():
         raise AssertionError(argv)
 
     promote_stable('v1.2.3', slim, run=run)
-    assert f'nousresearch/hermes-agent:v1.2.3-desktop' in inspected
+    assert 'nousresearch/hermes-agent:v1.2.3-desktop' in inspected
     assert {tuple(cmd[4:]) for cmd in created} == {
         ('-t', 'nousresearch/hermes-agent:stable', '-t', 'nousresearch/hermes-agent:latest',
          f'nousresearch/hermes-agent@{slim}'),

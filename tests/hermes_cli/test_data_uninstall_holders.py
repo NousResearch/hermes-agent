@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli import uninstall
-from tests.hermes_cli.test_data_uninstall import layout  # noqa: F401 — isolated layout
+from tests.hermes_cli.test_data_uninstall import layout
 
 
 @pytest.mark.parametrize("mode", ["confirmed", "cancel", "dry-run"])

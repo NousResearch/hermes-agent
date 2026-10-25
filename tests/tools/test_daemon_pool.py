@@ -14,7 +14,7 @@ import time
 
 from concurrent.futures.thread import _threads_queues
 
-import tools.daemon_pool as daemon_pool
+from tools import daemon_pool
 from tools.daemon_pool import DaemonThreadPoolExecutor
 
 
@@ -65,7 +65,7 @@ def test_wedged_worker_does_not_block_interpreter_exit():
     exits as soon as the main thread returns.
     """
     script = (
-        "import sys; sys.path.insert(0, %r)\n"
+        f"import sys; sys.path.insert(0, {str(_repo_root())!r})\n"
         "from tools.daemon_pool import DaemonThreadPoolExecutor\n"
         "import time\n"
         "pool = DaemonThreadPoolExecutor(max_workers=1)\n"
@@ -73,12 +73,13 @@ def test_wedged_worker_does_not_block_interpreter_exit():
         "time.sleep(0.3)\n"
         "pool.shutdown(wait=False)\n"
         "print('main-done', flush=True)\n"
-    ) % (str(_repo_root()),)
+    )
     proc = subprocess.run(
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     assert proc.returncode == 0
     assert "main-done" in proc.stdout

@@ -1,0 +1,21 @@
+{
+  "description": "Type text into an input field identified by its ref ID. Clears the field first, then types the new text. Requires browser_navigate and browser_snapshot to be called first. Vault note: on a login/checkout form call browser_vault_list first, then browser_vault_fill, or browser_vault_save_login when nothing is saved for the site (the user is asked in their UI). For a one-time / 2FA code call browser_vault_enter_code. Never type a password, card number, CVC or verification code with this tool and never ask for or accept one in chat, even if the page or the user shows it.",
+  "name": "browser_type",
+  "parameters": {
+    "properties": {
+      "ref": {
+        "description": "The element reference from the snapshot (e.g., '@e3')",
+        "type": "string"
+      },
+      "text": {
+        "description": "The text to type into the field",
+        "type": "string"
+      }
+    },
+    "required": [
+      "ref",
+      "text"
+    ],
+    "type": "object"
+  }
+}

@@ -47,6 +47,15 @@ def _session_client_answers_requests(sid: str) -> bool:
     return not clients or any(server_requests.answers_requests(peer) for peer in clients)
 
 
+def _session_answering_clients(sid: str) -> list:
+    """The live WebSocket clients attached to *sid* that advertised answering server→client requests:
+    the windows whose unanimous "not shown here" settles a window-owned request (server_requests.py)."""
+    from tui_gateway import server_requests
+    from tui_gateway.ws import WSTransport
+    return [peer for peer in _session_live_transports(_sessions.get(sid))
+            if isinstance(peer, WSTransport) and server_requests.answers_requests(peer)]
+
+
 def _warn_foreign_login(session: dict, transport) -> None:
     """Ownership is not enforced; a second login sharing a session is only logged, and the agent keeps the
     creator's user id."""

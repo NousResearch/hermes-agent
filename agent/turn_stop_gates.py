@@ -103,7 +103,7 @@ def _append_interim_answer(agent, final_msg, messages, conversation_history, flu
 
 
 def apply_stop_gates(
-    agent: Any, final_msg: Dict[str, Any], *, final_response: Any, messages: List[Dict[str, Any]],
+    agent: Any, final_msg: dict[str, Any], *, final_response: Any, messages: list[dict[str, Any]],
     conversation_history: Any, pending_verification_response: Any,
     pending_verification_response_previewed: Any,
 ) -> StopGateVerdict:

@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 from tools.environments.singularity import _get_scratch_dir
 from tools.terminal_tool_backends import (
     _container_config_from_config,
+    _local_config_from_config,
     _ssh_config_from_config,
 )
 from tools.terminal_tool_config import _quiet
@@ -64,11 +65,11 @@ def _check_disk_usage_warning():
 
 
 def _create_configured_env(
-    config: Dict[str, Any], env_type: str, *, image: str, cwd: str, timeout: int,
-    task_id: str, host_cwd: Optional[str], local_config: Optional[dict] = None,
+    config: dict[str, Any], env_type: str, *, image: str, cwd: str, timeout: int,
+    task_id: str, host_cwd: Optional[str],
 ):
-    """``_create_environment`` with the ssh/container kwargs shaped from *config*
-    (shared by the terminal tool and the lazy :func:`ensure_task_env` bring-up)."""
+    """``_create_environment`` with the ssh/local/container kwargs shaped from *config*
+    (shared by the terminal tool, the file tools and the lazy :func:`ensure_task_env` bring-up)."""
     from tools.terminal_tool_backends import _create_environment
     from tools.terminal_tool_config import _is_container_backend
     return _create_environment(
@@ -77,7 +78,8 @@ def _create_configured_env(
         container_config=(
             _container_config_from_config(config) if _is_container_backend(env_type) else None
         ),
-        local_config=local_config, task_id=task_id, host_cwd=host_cwd,
+        local_config=_local_config_from_config(config) if env_type == "local" else None,
+        task_id=task_id, host_cwd=host_cwd,
     )
 
 
@@ -230,7 +232,7 @@ def ensure_task_env(task_id: Optional[str] = None):
                 timeout=config["timeout"], task_id=effective_task_id,
                 host_cwd=_resolve_task_host_cwd(config, task_id),
             )
-        except Exception as exc:  # noqa: BLE001 — best-effort bring-up
+        except Exception as exc:
             logger.warning(
                 "Lazy %s environment init failed for task %s: %s",
                 env_type, effective_task_id[:8], exc,

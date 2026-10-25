@@ -1,0 +1,36 @@
+name: model-router
+title: "Model Router"
+repo: https://github.com/metamindedu/hermes-model-router
+sha: 387b19c9efd242d9be20fad53c36fc1891edf663
+description: "Profile model settings, opt-in Heavy/Light task routing, fallback controls, runtime limits and Fast inheritance. Reads Hermes profile configuration; explicit saves update selected profiles via the native CLI. Routed jobs launch background Hermes children using the user's configured providers/MCP and store private prompts/results locally. No separate credential store, telemetry, self-updater or approval bypass. Disclosure — once you enable routing for a profile, the model-callable `coding_route` tool starts detached background Hermes agents. They get file, terminal and code-execution tools in any existing folder the model names, run under that profile's credentials and approval policy (single-query mode: dangerous commands are refused unless `approvals.single_query_mode: approve`), and their per-job time limit can be set to none. Prompts and results are stored in `plugin-data/model-router/jobs/`. Saving settings writes model, delegation, auxiliary, fallback and `skills.disabled` keys into the config.yaml of the profiles listed in the preview (backups are taken first) and copies a skill into those profiles' `skills/` folders. From install, native subagents inherit the parent session's Fast (priority/ultrafast) tier on first-party OpenAI/Codex routes, which can raise costs."
+maintainer: metamindedu
+tier: community
+category: models
+version: "0.4.1"
+docs_url: https://github.com/metamindedu/hermes-model-router#readme
+readme: true
+platforms:
+  - windows
+screenshots:
+  - https://raw.githubusercontent.com/metamindedu/hermes-model-router/387b19c9efd242d9be20fad53c36fc1891edf663/docs/fast-inheritance.png
+known_issues:
+  - "The Desktop UI is Korean-first. Windows runtime/SDK/Desktop behavior has been tested; full Linux/macOS runtime support is not claimed."
+  - "Requires a Hermes build with unified Python/Desktop packages and request/tool middleware; new Python tools may require a new session."
+  - "Fast and fallback can increase API charges or subscription-credit use. Transports bypassing the request middleware, including codex_app_server, are outside Fast inheritance coverage."
+  - "The native scanner can report CAUTION for the manual source-repair helper; routing-disabled capability probes can warn that coding_route was not registered."
+  - "Default-profile mid-run activation was not confirmed on the developer's shared backend; package installation is distinct from existing-session activation."
+capabilities:
+  provides_tools:
+    - coding_route
+  provides_hooks:
+    - pre_api_request
+    - post_api_request
+    - api_request_error
+    - pre_tool_call
+    - post_tool_call
+    - subagent_start
+    - subagent_stop
+  provides_middleware:
+    - tool_execution
+    - llm_request
+  requires_env: []

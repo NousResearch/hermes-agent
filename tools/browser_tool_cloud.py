@@ -183,6 +183,20 @@ def _is_local_backend() -> bool:
     return terminal_env("TERMINAL_ENV", "local").strip().lower() in ("local", "")
 
 
+def browser_backend_name() -> str:
+    """Shared-metrics label for the backend legacy browser calls use in the active profile, in session-creation
+    precedence (CDP override > Camofox > cloud provider > local engine). Config reads only, no network I/O."""
+    _bt = _origin()
+    if _cdp._get_cdp_override_raw():
+        return "cdp"
+    if _bt._is_camofox_mode():
+        return "camofox"
+    provider = _get_cloud_provider()
+    if provider is not None:
+        return str(getattr(provider, "name", "") or "other")
+    return "lightpanda" if _get_browser_engine() == "lightpanda" else "local"
+
+
 def _get_browser_engine() -> str:
     """Return the browser engine: ``auto`` (no ``--engine`` flag), ``lightpanda`` or ``chrome``.
 

@@ -54,7 +54,7 @@ _DISCOVERY_DOC = {
 
 
 @pytest.fixture(scope="module")
-def rsa_keypair() -> Dict[str, Any]:
+def rsa_keypair() -> dict[str, Any]:
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     private_pem = key.private_bytes(
         encoding=serialization.Encoding.PEM,
@@ -86,7 +86,7 @@ def rsa_keypair() -> Dict[str, Any]:
 
 
 def _mint_id_token(
-    rsa_keypair: Dict[str, Any],
+    rsa_keypair: dict[str, Any],
     *,
     iss: str = _ISSUER,
     aud: str = _CLIENT_ID,
@@ -96,10 +96,10 @@ def _mint_id_token(
     groups: Any = None,
     org_id: str | None = None,
     ttl_seconds: int = 900,
-    extra_claims: Dict[str, Any] | None = None,
+    extra_claims: dict[str, Any] | None = None,
 ) -> str:
     now = int(time.time())
-    claims: Dict[str, Any] = {
+    claims: dict[str, Any] = {
         "iss": iss,
         "aud": aud,
         "sub": sub,
@@ -138,7 +138,7 @@ def _make_provider(
     doc (pass a list, or ``None`` to omit the key entirely); left unset, the
     discovery doc carries no auth-methods key (the absent-key default).
     """
-    kwargs: Dict[str, Any] = {"issuer": _ISSUER, "client_id": _CLIENT_ID}
+    kwargs: dict[str, Any] = {"issuer": _ISSUER, "client_id": _CLIENT_ID}
     if scopes is not None:
         kwargs["scopes"] = scopes
     if client_secret is not None:
@@ -681,7 +681,9 @@ class TestVerifySession:
 
 
     def test_expired_returns_none(self, provider, rsa_keypair):
-        token = _mint_id_token(rsa_keypair, ttl_seconds=-1)
+        # Well past the 60s default leeway — a just-expired token is accepted
+        # within the clock-skew window (RFC 7519 §4.1.4), a long-dead one is not.
+        token = _mint_id_token(rsa_keypair, ttl_seconds=-600)
         assert provider.verify_session(access_token=token) is None
 
     def test_wrong_audience_raises(self, provider, rsa_keypair):

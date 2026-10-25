@@ -19,7 +19,7 @@ from agent.skill_utils import SKILL_PROMPT_DESC_LIMIT, parse_frontmatter
 
 # Shell utilities already wrapped as native tools; naming them in prose steers
 # the model to a raw shell call. banned token -> native tool to name instead.
-_SHELL_UTIL_TO_TOOL: Dict[str, str] = {
+_SHELL_UTIL_TO_TOOL: dict[str, str] = {
     "grep": "search_files", "rg": "search_files", "cat": "read_file", "head": "read_file",
     "tail": "read_file", "sed": "patch", "awk": "patch",
     "find": "search_files (target='files')", "ls": "search_files (target='files')"}
@@ -77,10 +77,10 @@ def _warn(rule: str, message: str) -> LintFinding:
 
 def _strip_code_blocks(body: str) -> str:
     """Remove fenced code blocks so prose-only checks don't fire on examples."""
-    return re.sub(r"```.*?```", "", body, flags=re.S)
+    return re.sub(r"```.*?```", "", body, flags=re.DOTALL)
 
 
-def _check_frontmatter(frontmatter: Dict[str, Any], skill_dir: Optional[Path]) -> Iterator[LintFinding]:
+def _check_frontmatter(frontmatter: dict[str, Any], skill_dir: Optional[Path]) -> Iterator[LintFinding]:
     name = str(frontmatter.get("name", "")).strip()
     if name and not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name):
         yield _err("name-format", f"name '{name}' must be lowercase letters, digits, hyphens, "
@@ -137,7 +137,7 @@ def _check_body(body: str, skill_dir: Optional[Path]) -> Iterator[LintFinding]:
         if re.search(rf"`{re.escape(util)}`", prose):
             yield _warn("shell-utility-reference",
                         f"prose references `{util}`; name the native tool `{tool}` instead.")
-    if not any(re.search(rf"^#+\s+{re.escape(s)}", body, re.M) for s in _EXPECTED_SECTIONS):
+    if not any(re.search(rf"^#+\s+{re.escape(s)}", body, re.MULTILINE) for s in _EXPECTED_SECTIONS):
         yield _warn("missing-section", "no '## When to Use' section found; skills need explicit "
                     "trigger conditions near the top.")
     # Incident-log shape: a skill body dense in PR/issue numbers is narrating history instead of
@@ -161,10 +161,10 @@ def _check_body(body: str, skill_dir: Optional[Path]) -> Iterator[LintFinding]:
                         f"does not exist in the skill directory.")
 
 
-def _check_files(frontmatter: Dict[str, Any], skill_dir: Path) -> Iterator[LintFinding]:
+def _check_files(frontmatter: dict[str, Any], skill_dir: Path) -> Iterator[LintFinding]:
     # Bundled scripts using POSIX-only primitives require a platforms: declaration.
     scripts_dir = skill_dir / "scripts"
-    offenders: Dict[str, List[str]] = {}
+    offenders: dict[str, list[str]] = {}
     if not frontmatter.get("platforms") and scripts_dir.is_dir():
         for script in scripts_dir.rglob("*"):
             if not script.is_file() or script.suffix not in (".py", ".sh", ".bash"):
@@ -194,7 +194,7 @@ def _check_files(frontmatter: Dict[str, Any], skill_dir: Path) -> Iterator[LintF
                         "Merge same-topic files into one rule set and drop incident narration.")
 
 
-def lint_content(content: str, *, skill_dir: Optional[Path] = None) -> List[LintFinding]:
+def lint_content(content: str, *, skill_dir: Optional[Path] = None) -> list[LintFinding]:
     """Lint raw SKILL.md *content*.
 
     ``skill_dir`` enables on-disk checks (name/dir match, dangling links, POSIX
@@ -208,22 +208,8 @@ def lint_content(content: str, *, skill_dir: Optional[Path] = None) -> List[Lint
     return findings
 
 
-def lint_skill(skill_md_path: Path) -> List[LintFinding]:
+def lint_skill(skill_md_path: Path) -> list[LintFinding]:
     """Lint a SKILL.md file on disk, with all on-disk checks enabled."""
     skill_md_path = Path(skill_md_path)
     content = skill_md_path.read_text(encoding="utf-8-sig", errors="ignore")
     return lint_content(content, skill_dir=skill_md_path.parent)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def format_findings(findings: List[LintFinding]) -> str:
-    """Render findings as a newline-joined human-readable block."""
-    return "\n".join(f.format() for f in findings)
-
-def has_errors(findings: List[LintFinding]) -> bool:
-    return any(f.severity == ERROR for f in findings)
-# ---- END PLUGIN-COMPAT ----

@@ -301,7 +301,7 @@ class _StubAdapter(BasePlatformAdapter):
 _StubAdapter.__abstractmethods__ = frozenset()  # type: ignore[attr-defined]
 
 
-def _stub_adapter(platform: Platform, runner) -> "_StubAdapter":
+def _stub_adapter(platform: Platform, runner) -> _StubAdapter:
     a = _StubAdapter.__new__(_StubAdapter)
     a.platform = platform
     a.gateway_runner = runner

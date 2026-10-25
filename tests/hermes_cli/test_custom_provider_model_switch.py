@@ -248,7 +248,7 @@ class TestCustomProviderModelSwitch:
 
         # The live probe must still use the resolved secret.
         mock_fetch.assert_called_once()
-        probe_args, probe_kwargs = mock_fetch.call_args
+        probe_args, _probe_kwargs = mock_fetch.call_args
         assert probe_args[0] == "sk-live-neuralwatt-secret"
 
         # But config.yaml must keep the env reference, not the plaintext secret.

@@ -103,12 +103,3 @@ def build_animated_sticker_injection(emoji: str = "") -> str:
         return (f"[The user sent an animated sticker {emoji}~ "
                 f"I can't see animated ones yet, but the emoji suggests: {emoji}]")
     return "[The user sent an animated sticker~ I can't see animated ones yet]"
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import os  # noqa: F401,E402
-import tempfile  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

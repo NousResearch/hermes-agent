@@ -186,7 +186,7 @@ def test_persist_model_switch_writes_model_and_both_route_shapes():
     stub = _make_stub(_session_db=_DB(), session_id="s1")
     stub._persist_model_switch_to_session(_Result())
     assert written["model"] == ("s1", "deepseek-v4-flash-free")
-    sid, patch = written["patch"]
+    _sid, patch = written["patch"]
     # Nested shape for the CLI reader...
     assert patch["gateway_runtime"]["provider"] == "custom:opencode-zen"
     # ...and top-level for the TUI gateway's _stored_session_runtime_overrides.

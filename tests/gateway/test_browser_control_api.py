@@ -199,7 +199,6 @@ def test_ws_sender_treats_wait_timeout_as_in_flight_and_real_error_as_failure(mo
         def result(self, timeout=None):
             if self.error is not None:
                 raise self.error
-            return None
 
         def add_done_callback(self, callback):
             self.callbacks.append(callback)

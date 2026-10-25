@@ -112,7 +112,7 @@ def test_notifier_pings_run_under_the_subscribers_profile(served, monkeypatch):
 
     async def fake_sleep(delay):
         if delay == 5:
-            return None
+            return
         runner._running = False
         await real_sleep(0)
 

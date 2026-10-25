@@ -205,7 +205,7 @@ class TestGenerate:
         assert result["reported_size"] == "1254x1254"
         assert result["imagegen_request_id"] == "req_abc"
         saved = Path(result["image"])
-        assert saved.exists() and saved.parent == tmp_path / "cache" / "images"
+        assert saved.exists() and saved.parent == tmp_path / "cache" / "generated" / "images"
         assert saved.name.startswith("openai_codex_")
 
         (request,) = codex_backend["requests"]

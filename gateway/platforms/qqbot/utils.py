@@ -25,13 +25,13 @@ def build_user_agent() -> str:
             f"{platform.system().lower()}; Hermes/{_get_hermes_version()})")
 
 
-def get_api_headers() -> Dict[str, str]:
+def get_api_headers() -> dict[str, str]:
     """Standard QQBot API headers. ``q.qq.com`` requires ``Accept: application/json``
     — without it the server returns a JavaScript anti-bot challenge page."""
     return {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": build_user_agent()}
 
 
-def coerce_list(value: Any) -> List[str]:
+def coerce_list(value: Any) -> list[str]:
     """Coerce a comma-separated string / list / tuple / set / scalar into a trimmed string list."""
     if value is None:
         return []

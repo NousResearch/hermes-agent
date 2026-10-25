@@ -204,6 +204,53 @@ export function resolveGroupResponders(log: GroupMessage[], members: GroupMember
   return members.filter(member => mentioned.has(groupMemberKey(member)))
 }
 
+/** #129443: member keys the thread's user sends EXPLICITLY addressed —
+ *  @everyone expands to every member, a bare @mention to just the mentioned
+ *  ones, and a send with no mention at all to nobody (that turn is
+ *  collaborative, so an ordinary "(pass)" stays legitimate silence). Only
+ *  user entries are scanned: a member's @handoff inside its own reply is the
+ *  #94478 continuation's business, not this addressing state. This is the
+ *  structured address the pass path consults, so a directly addressed
+ *  member can never settle the room silently. */
+export function explicitlyAddressedMemberKeys(log: GroupMessage[], members: GroupMember[]) {
+  let sinceLastUser: GroupMessage[] = []
+
+  for (let i = log.length - 1; i >= 0; i--) {
+    if (log[i].from.kind === 'user') {
+      sinceLastUser = log.slice(i)
+
+      break
+    }
+  }
+
+  const keys = new Set<string>()
+  let everyone = false
+
+  for (const entry of sinceLastUser) {
+    if (entry.from.kind !== 'user') {
+      continue
+    }
+
+    const parsed = parseGroupChatMentions(entry.text, members)
+
+    if (parsed.everyone) {
+      everyone = true
+    }
+
+    for (const key of parsed.mentioned) {
+      keys.add(key)
+    }
+  }
+
+  if (everyone) {
+    for (const member of members) {
+      keys.add(groupMemberKey(member))
+    }
+  }
+
+  return keys
+}
+
 /** Rotate the roster so a different member leads each round. */
 export function rotateGroupSpeakers(members: GroupMember[], round: number) {
   if (members.length < 2) {
@@ -584,6 +631,12 @@ export async function runGroupChatRounds(
   const startEpoch = ($groupChats.get()[group] || {}).epoch || 0
   const isCurrent = () => binding.isLive() && (($groupChats.get()[group] || {}).epoch || 0) === startEpoch
 
+  // #129443: the driving send's explicit addresses, frozen for the whole
+  // drive — mid-drive member handoffs stay the #94478 continuation's job.
+  const startLog = (($groupChats.get()[group] || {}).log || []).filter((e: GroupMessage) => groupThreadOf(e) === thread)
+
+  const addressedKeys = explicitlyAddressedMemberKeys(startLog, members)
+
   const context = {
     get group() {
       return group
@@ -592,6 +645,7 @@ export async function runGroupChatRounds(
     thread,
     startEpoch,
     failedMembers,
+    addressedKeys,
     binding,
     isCurrent
   }

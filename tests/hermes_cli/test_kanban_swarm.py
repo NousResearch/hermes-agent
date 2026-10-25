@@ -56,7 +56,6 @@ def test_create_swarm_graph_is_atomic_and_rolls_back_partial_build(
     writer = kbc.connect(db_path)
     reader = kbc.connect(db_path)
     original_create = kb.create_task
-    original_complete = kb.complete_task
     calls = 0
 
     def observed_create(*args, **kwargs):

@@ -5,7 +5,7 @@ import http.client
 import socket
 import ssl
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from email.message import Message
 from email.utils import format_datetime
 
@@ -70,11 +70,11 @@ def test_only_transient_failures_use_a_finite_retry_budget(error, retried):
     ("expired-date", 1),
 ])
 def test_retry_after_is_bounded_and_interruptible(monkeypatch, retry_after, minimum):
-    now = datetime(2020, 1, 1, tzinfo=timezone.utc).timestamp()
+    now = datetime(2020, 1, 1, tzinfo=UTC).timestamp()
     monkeypatch.setattr(network.time, "time", lambda: now)
     if retry_after in ("future-date", "expired-date"):
         offset = 12 if retry_after == "future-date" else -12
-        retry_after = format_datetime(datetime.fromtimestamp(now + offset, timezone.utc), usegmt=True)
+        retry_after = format_datetime(datetime.fromtimestamp(now + offset, UTC), usegmt=True)
     error = _http_error(503, retry_after)
     attempts = []
     waits = []

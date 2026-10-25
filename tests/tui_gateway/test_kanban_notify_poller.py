@@ -260,7 +260,7 @@ class TestNotificationPollerLoopKanbanWiring:
 
     def _start_poller(self, session: dict, monkeypatch):
         import threading
-        import tui_gateway.server as server
+        from tui_gateway import server
 
         emits: list = []
         submits: list = []

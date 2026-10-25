@@ -127,12 +127,34 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   `ctx.os.openExternal(url)`, `ctx.os.revealPath(path)`, and
   `ctx.os.writeClipboard(text)` resolve `false` (never throw) when the
   capability isn't available.
+- `ctx.pet.say(text, { id?, tone?: 'info'|'wait'|'error', ttlMs? })` — a short
+  plain-text line in the core pet's speech bubble (in-window and popped out),
+  labelled with your plugin name; returns a disposer. 120-char cap, TTL default
+  6 s (1–30 s), same `id` replaces, rate-limited, cleared on unload; core
+  error/waiting states win; nothing shows without a visible pet
+  (`ctx.pet.visible`). `ctx.pet.clear(id?)`. Never locate the pet canvas in
+  the DOM or overlay it yourself.
+- `ctx.runAction('view.showBrowser')` — run a built-in app action through the
+  same handler as its shortcut/palette entry, so a rebound shortcut can't break
+  it; returns `{ ok: true }` or `{ ok: false, reason: 'unknown'|'denied'|'unavailable', error }`
+  (never throws). View/navigation actions only; `ctx.listActions()` lists them
+  (`PluginAppActionId` / `PLUGIN_APP_ACTIONS`). Never dispatch a synthetic
+  `KeyboardEvent` to trigger an app shortcut.
 - `ctx.i18n.register({ en, ja, ... })` — ship your OWN locale bundles, scoped
   to your plugin (never edit core `en.ts`). Values are literal strings or
   interpolator functions; nested trees are addressed by dot-path. Read them
   reactively in components with `usePluginI18n(id)` returning `t('key', ...args)`
   (re-renders on a locale switch), or via `ctx.i18n.t` in handlers/stores.
   Resolution follows the app's active locale, then your `en`, then the raw key.
+- `ctx.i18n.registerAppLocale('pl', { endonym: 'Polski', rtl?, translations })`
+  — a LANGUAGE PACK: add or extend a language for the whole app. `translations`
+  is a partial of the app catalog (nested, or flat dotted keys as in a
+  `pl.desktop.yaml`); missing keys fall back to the bundled catalog then
+  English; a string where English has a function takes positional `{0}`/`{1}`
+  placeholders. Dropped on unload. Key set: `locales/_keys.desktop.json`
+  (`npm run i18n:keys`). Registering never changes `display.language`.
+  `host.i18n.registerAppLocale` is the ctx-less twin (returns the disposer);
+  `host.i18n.languageOptions()` lists bundled ∪ registered ∪ backend languages.
 - Data: `useQuery`/`useMutation`/`useQueryClient`/`queryClient` (the app's ONE
   React Query client — cache, dedupe, `refetchInterval`, invalidate like core;
   never hand-roll a poll loop), plus `atom`/`computed` for plugin-local state.

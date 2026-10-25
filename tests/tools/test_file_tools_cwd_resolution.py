@@ -23,7 +23,7 @@ import pytest
 
 import tools.file_tools as ft
 import tools.file_tools_paths as ftp
-import tools.terminal_tool as terminal_tool
+from tools import terminal_tool
 
 
 @pytest.fixture
@@ -50,7 +50,7 @@ def test_relative_terminal_cwd_anchors_to_absolute_not_process_cwd(_isolated_cwd
     make it absolute deterministically. We assert the resolved path is
     absolute and stable regardless of where os.getcwd() points.
     """
-    workspace, decoy = _isolated_cwd
+    _workspace, _decoy = _isolated_cwd
     # Poison config: literal relative '.'
     monkeypatch.setenv("TERMINAL_CWD", ".")
 
@@ -72,7 +72,7 @@ def test_live_tracking_cwd_wins_over_relative_terminal_cwd(_isolated_cwd, monkey
     worktree) must override a stale relative TERMINAL_CWD so edits land where
     the agent is actually working.
     """
-    workspace, decoy = _isolated_cwd
+    workspace, _decoy = _isolated_cwd
     monkeypatch.setenv("TERMINAL_CWD", ".")
     terminal_tool.record_session_cwd("default", str(workspace))
 
@@ -83,7 +83,7 @@ def test_live_tracking_cwd_wins_over_relative_terminal_cwd(_isolated_cwd, monkey
 
 def test_absolute_terminal_cwd_used_verbatim(_isolated_cwd, monkeypatch):
     """An absolute TERMINAL_CWD is the resolution base (no live tracking)."""
-    workspace, decoy = _isolated_cwd
+    workspace, _decoy = _isolated_cwd
     monkeypatch.setenv("TERMINAL_CWD", str(workspace))
 
     resolved = ftp._resolve_path_for_task("target.py", task_id="default")
@@ -138,7 +138,7 @@ def test_container_relative_path_keeps_container_cwd_symlink(tmp_path, monkeypat
 
 def test_resolution_base_always_absolute_no_terminal_cwd(_isolated_cwd, monkeypatch):
     """With TERMINAL_CWD unset, the base falls back to an ABSOLUTE process cwd."""
-    workspace, decoy = _isolated_cwd
+    _workspace, _decoy = _isolated_cwd
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
 
     resolved = ftp._resolve_path_for_task("target.py", task_id="default")

@@ -944,7 +944,7 @@ def test_flush_atomic_mixed_repair_and_append_rollback_on_failure(tmp_path, monk
     agent = _make_agent()
     db_path = tmp_path / "state.db"
     session_id = "sess-atomic-rollback"
-    db = _attach_real_session_db(agent, db_path, session_id)
+    _attach_real_session_db(agent, db_path, session_id)
 
     messages = [
         {"role": "user", "content": "summarize"},

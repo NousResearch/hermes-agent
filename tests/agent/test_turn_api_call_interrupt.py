@@ -6,7 +6,7 @@ from __future__ import annotations
 import threading
 import time
 
-from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED
 from agent.turn_api_call import handle_api_interrupt
 from agent.turn_retry_state import TurnRetryState
@@ -72,4 +72,5 @@ def test_ordinary_partial_is_kept_as_the_interrupted_row():
     messages, verdict = _interrupt("Visible draft.")
 
     assert (messages[-1]["role"], messages[-1]["content"]) == ("assistant", "Visible draft.")
+    assert messages[-1]["display_metadata"] == {"interrupted": True}
     assert verdict.final_response == "Visible draft."

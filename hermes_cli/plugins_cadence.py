@@ -37,7 +37,7 @@ def _markers_dir() -> Path:
     return d
 
 
-def check_interval_hours(config_get: Callable = None) -> float:
+def check_interval_hours(config_get: Callable | None = None) -> float:
     """plugins.auto_update_check_hours; 0 disables; default 24."""
     if config_get is None:
         config_get = _default_config_get
@@ -54,7 +54,7 @@ def check_interval_hours(config_get: Callable = None) -> float:
     return max(0.0, hours)
 
 
-def auto_apply_enabled(config_get: Callable = None) -> bool:
+def auto_apply_enabled(config_get: Callable | None = None) -> bool:
     if config_get is None:
         config_get = _default_config_get
     try:
@@ -73,7 +73,7 @@ def _default_config_get(section: str, key: str):
 
 
 def check_due(now: Optional[float] = None, interval_hours: Optional[float] = None,
-              config_get: Callable = None) -> bool:
+              config_get: Callable | None = None) -> bool:
     """The clock gate: last-run marker vs the interval."""
     if interval_hours is None:
         interval_hours = check_interval_hours(config_get)
@@ -100,7 +100,7 @@ def run_scheduled_check(
     plugins_dir: Path,
     apply_updates_fn: Optional[Callable[[str], None]] = None,
     log=None,
-    config_get: Callable = None,
+    config_get: Callable | None = None,
     now: Optional[float] = None,
 ) -> Optional[list]:
     """One cadence tick: gate → check → receipt → (opt-in) apply.
@@ -136,7 +136,7 @@ def _run_check_locked(
     plugins_dir: Path,
     apply_updates_fn: Optional[Callable[[str], None]],
     log,
-    config_get: Callable = None,
+    config_get: Callable | None = None,
 ) -> list:
     check_ok = True
     warning = ""

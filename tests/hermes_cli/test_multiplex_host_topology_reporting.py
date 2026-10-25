@@ -30,7 +30,7 @@ def served_host(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_PROFILE", "served")
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(locks))
     monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
-    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", list)
     monkeypatch.setattr("gateway.status.is_gateway_runtime_lock_active", lambda lock_path=None: False)
     hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "served"))
     return root

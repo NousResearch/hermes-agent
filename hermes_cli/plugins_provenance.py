@@ -71,6 +71,7 @@ def _git_origin_url(plugin_dir: Path) -> Optional[str]:
                 capture_output=True,
                 text=True, encoding="utf-8", errors="replace",
                 timeout=10,
+                check=False,
             )
             if proc.returncode == 0:
                 url = (proc.stdout or "").strip()

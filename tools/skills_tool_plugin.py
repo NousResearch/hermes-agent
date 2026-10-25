@@ -42,7 +42,7 @@ def _truncate_description(description: str) -> str:
     return description[: MAX_DESCRIPTION_LENGTH - 3] + "..."
 
 
-def _safe_frontmatter(path: Path | None = None, *, content: str | None = None) -> Dict[str, Any]:
+def _safe_frontmatter(path: Path | None = None, *, content: str | None = None) -> dict[str, Any]:
     """Frontmatter of *path* (or of *content*), ``{}`` on any read/parse failure.
     Parses via ``tools.skills_tool._parse_frontmatter`` so test patches are honored."""
     from tools import skills_tool as _st
@@ -51,10 +51,10 @@ def _safe_frontmatter(path: Path | None = None, *, content: str | None = None) -
     return {}
 
 
-def _available_skill_files(skill_dir: Path) -> Dict[str, List[str]]:
+def _available_skill_files(skill_dir: Path) -> dict[str, list[str]]:
     """Non-SKILL.md files grouped by support dir (+ "other" for known source extensions
     elsewhere); empty groups dropped."""
-    groups: Dict[str, List[str]] = {}
+    groups: dict[str, list[str]] = {}
     for f in skill_dir.rglob("*"):
         if not f.is_file() or f.name == "SKILL.md":
             continue
@@ -157,12 +157,13 @@ def _serve_plugin_skill(
         "success": True, "name": qualified_name, "content": banner + rendered_content,
         "description": _truncate_description(str(parsed_frontmatter.get("description", ""))),
         "linked_files": _plugin_skill_linked_files(skill_md.parent),
-        "readiness_status": SkillReadinessStatus.AVAILABLE.value})
+        "readiness_status": SkillReadinessStatus.AVAILABLE.value,
+        "skill_dir": str(skill_md.parent), "_source_path": str(skill_md)})
 
 
-def _plugin_skill_linked_files(skill_root: Path) -> Dict[str, List[str]] | None:
+def _plugin_skill_linked_files(skill_root: Path) -> dict[str, list[str]] | None:
     from tools.path_security import validate_within_dir
-    linked: Dict[str, List[str]] = {}
+    linked: dict[str, list[str]] = {}
     for category in _SUPPORT_DIRS:
         files = [
             str(path.relative_to(skill_root)) for path in sorted((skill_root / category).rglob("*"))

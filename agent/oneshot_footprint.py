@@ -31,7 +31,7 @@ def is_single_query_session() -> bool:
     return str(get_session_env("HERMES_SINGLE_QUERY_SESSION", "") or "") == "1"
 
 
-def prune_oneshot_tools(tools: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def prune_oneshot_tools(tools: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     """*tools* minus ``ONESHOT_HIDDEN_TOOLS``; identity when the session is not one-shot."""
     tools = list(tools)
     if not is_single_query_session():

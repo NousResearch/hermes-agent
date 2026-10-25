@@ -2,8 +2,8 @@
 import json
 from pm.packages import AgentBrowser, Npm
 from pm.update import npm_dist_tags, resolve_package
-from tests.pm.test_update_request_reuse import upstream  # noqa: F401
-from tests.pm._range_server import RangeHandler, dl_server  # noqa: F401
+from tests.pm.test_update_request_reuse import upstream
+from tests.pm._range_server import RangeHandler, dl_server
 
 
 def test_tag_endpoint_drives_package_updates_and_preserves_escaped_names(upstream, monkeypatch):

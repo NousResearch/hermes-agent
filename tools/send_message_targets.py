@@ -137,6 +137,11 @@ def _parse_target_ref(platform_name: str, target_ref: str):
     return None, None, False
 
 
+def unknown_platform_error(platform_name: str) -> str:
+    from hermes_cli.left_core_migration import platform_install_hint
+    return f"Unknown or unregistered plugin platform: {platform_name}{platform_install_hint(platform_name)}"
+
+
 def resolve_send_target(
     platform_name: str, target_ref: str, *, pass_unresolved_references: bool = False
 ) -> tuple[str | None, str | None, str | None]:
@@ -189,7 +194,7 @@ def resolve_send_target(
         return _validated(parsed_chat_id or resolved, parsed_thread_id)
     is_builtin = platform_name in {member.value for member in Platform}
     if entry is None and not is_builtin:
-        return None, None, f"Unknown or unregistered plugin platform: {platform_name}"
+        return None, None, unknown_platform_error(platform_name)
     is_plugin = entry is not None and entry.source == "plugin" and not is_builtin
     if pass_unresolved_references and (not is_plugin or entry.parse_target_ref_fn is None):
         # Hand the raw target to the adapter unchanged (it validates).

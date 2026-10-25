@@ -347,7 +347,7 @@ class PeerRunsHTTPClient:
             raise PeerRunsHTTPError("peer room source must be bot_room")
         self._require_room_grant(grant)
         logical_session = "roomlink_" + hashlib.sha256(
-            f"{room_id}\0{profile}".encode("utf-8")).hexdigest()[:32]
+            f"{room_id}\0{profile}".encode()).hexdigest()[:32]
         if expected_session_id and expected_session_id != logical_session:
             raise PeerRunsHTTPError("peer room session identity changed")
         return {"session_id": logical_session, "title": f"Group: {room_id}", "source": source}

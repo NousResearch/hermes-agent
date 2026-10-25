@@ -6,16 +6,32 @@ run at picker time on multi-GB files.
 
 from __future__ import annotations
 
+import logging
 import re
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 _GGUF_MAGIC = b"GGUF"
 
 # Split GGUF naming: "<stem>-00001-of-00003.gguf"; the part suffix is not part of the model id.
 SPLIT_PART_RE = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
 _PART_SUFFIX_RE = re.compile(r"-\d{5}-of-\d{5}$")
+# Same tensor selection as context_policy's per-block FFN -ot override.
+_FFN_WEIGHT = re.compile(r"blk\.(\d+)\.ffn_.*\.weight")
+
+# Tensors llama.cpp leaves in the file and reads row by row on demand instead of loading them
+# (create_tensor's TENSOR_READ_LAZY, marked per architecture in the engine's model code). Under the
+# engine's default --lazy-mode auto, only a marked tensor larger than 4 GiB is read this way;
+# a smaller one loads like any other weight.
+_LAZY_READ_TENSORS = {
+    "qwen4exp": frozenset({"per_layer_token_embd.weight"}),
+    "gemma4": frozenset({"per_layer_token_embd.weight"}),
+}
+_LAZY_READ_CANDIDATES = frozenset().union(*_LAZY_READ_TENSORS.values())
+_LAZY_READ_MIN_BYTES = 4 << 30
 
 
 def model_id_from_stem(stem: str) -> str:
@@ -58,6 +74,12 @@ class GGUFHeader:
     n_tensors: int = 0
     tensor_bytes: int = 0          # exact sum over the tensor table
     embd_table_bytes: int = 0      # token_embd.weight (duplicated host-side when fully offloaded)
+    # block index -> bytes of that block's FFN weights (the tensors a `blk\.N\.ffn_.*\.weight`
+    # -ot override moves), so spill placement can move only as many blocks as it needs.
+    ffn_block_bytes: dict[int, int] = field(default_factory=dict)
+    # Sizes of the tensors some architecture reads lazily, by name. ``lazy_bytes`` applies this
+    # model's architecture and the size threshold.
+    lazy_candidate_bytes: dict[str, int] = field(default_factory=dict)
 
     # ── typed accessors ──────────────────────────────────────
 
@@ -65,10 +87,17 @@ class GGUFHeader:
     def architecture(self) -> str:
         return str(self.metadata.get("general.architecture", ""))
 
+    @property
+    def lazy_bytes(self) -> int:
+        """Bytes of weights llama.cpp keeps on disk and reads row by row instead of loading."""
+        marked = _LAZY_READ_TENSORS.get(self.architecture, frozenset())
+        return sum(nbytes for name, nbytes in self.lazy_candidate_bytes.items()
+                   if name in marked and nbytes > _LAZY_READ_MIN_BYTES)
+
     def _arch_key(self, suffix: str):
         return self.metadata.get(f"{self.architecture}.{suffix}")
 
-    def _arch_int(suffix: str, doc: str = ""):  # noqa: N805 — property factory, deleted below
+    def _arch_int(suffix: str, doc: str = ""):
         return property(lambda self: int(self._arch_key(suffix) or 0), doc=doc)
 
     n_layer = _arch_int("block_count")
@@ -80,7 +109,33 @@ class GGUFHeader:
         "full_attention_interval",
         "GDN-hybrid discriminator (qwen35 family): every Nth layer is full attention, the rest "
         "are linear/recurrent. 0 = not present.")
+    key_length_swa = _arch_int(
+        "attention.key_length_swa",
+        "Per-token key size for sliding-window layers when it differs from the global "
+        "attention.key_length (e.g. gemma3/gemma4). 0 = not present.")
+    value_length_swa = _arch_int(
+        "attention.value_length_swa",
+        "Per-token value size for sliding-window layers when it differs from the global "
+        "attention.value_length. 0 = not present.")
     del _arch_int
+
+    @property
+    def sliding_window_pattern(self) -> list[int] | None:
+        """Per-layer SWA pattern declared by the file itself: a truthy entry marks a
+        sliding-window layer, falsy marks global. None when the file doesn't declare the per-layer
+        array form (older GGUFs, architectures without per-layer SWA metadata, or files that use
+        the scalar period form instead — see `sliding_window_pattern_period`)."""
+        v = self._arch_key("attention.sliding_window_pattern")
+        return [int(x) for x in v] if isinstance(v, list) else None
+
+    @property
+    def sliding_window_pattern_period(self) -> int:
+        """Scalar SWA period declared by the file: llama.cpp also permits
+        `attention.sliding_window_pattern` as a single integer N (every Nth layer is full
+        attention, e.g. Gemma-family writers) rather than a per-layer array. 0 when absent or when
+        the file uses the array form instead — callers should fall back to a coarser signal."""
+        v = self._arch_key("attention.sliding_window_pattern")
+        return int(v) if isinstance(v, int) and not isinstance(v, bool) else 0
 
     @property
     def n_vocab(self) -> int:
@@ -150,11 +205,32 @@ class GGUFHeader:
         return self.head_dim_k
 
 
-def read_gguf_header(path: str | Path) -> GGUFHeader:
-    path = Path(path)
+def split_parts(path: Path) -> list[Path] | None:
+    """Every on-disk part of the split ``path`` belongs to, first part first; None when ``path`` is
+    not a split member or no other part is present.
 
+    A split is priced as the set, never as one file: publishers lay shards out so the first part
+    can hold little more than metadata while the bulk sits in the later ones, so reading one part
+    prices the model at whatever fraction of its weights that part happens to hold."""
+    m = SPLIT_PART_RE.search(path.name)
+    if m is None:
+        return None
+    stem, total = path.name[: m.start()], int(m.group(2))
+    parts = [p for p in (path.with_name(f"{stem}-{i:05d}-of-{total:05d}.gguf")
+                         for i in range(1, total + 1)) if p.is_file()]
+    return parts if len(parts) > 1 else None
+
+
+def _read_part(path: Path) -> GGUFHeader:
+    """One file's own header: metadata and that file's tensor table."""
     def read(f, fmt: str):
-        return struct.unpack(fmt, f.read(struct.calcsize(fmt)))
+        # A header cut short raises ValueError, which every caller already treats as "skip this
+        # model"; struct.error would escape them and take the whole preset pass down.
+        size = struct.calcsize(fmt)
+        data = f.read(size)
+        if len(data) != size:
+            raise ValueError(f"truncated GGUF header: {path}")
+        return struct.unpack(fmt, data)
 
     def read_str(f) -> str:
         (n,) = read(f, "<Q")
@@ -181,6 +257,8 @@ def read_gguf_header(path: str | Path) -> GGUFHeader:
 
         tensor_bytes = 0
         embd_bytes = 0
+        ffn_block_bytes: dict[int, int] = {}
+        lazy_candidate_bytes: dict[str, int] = {}
         for _ in range(n_tensors):
             name = read_str(f)
             (n_dims,) = read(f, "<I")
@@ -198,7 +276,58 @@ def read_gguf_header(path: str | Path) -> GGUFHeader:
             tensor_bytes += nbytes
             if name == "token_embd.weight":
                 embd_bytes = nbytes
+            elif m := _FFN_WEIGHT.match(name):
+                block = int(m.group(1))
+                ffn_block_bytes[block] = ffn_block_bytes.get(block, 0) + nbytes
+            elif name in _LAZY_READ_CANDIDATES:
+                lazy_candidate_bytes[name] = nbytes
 
     return GGUFHeader(path=str(path), version=version, metadata=metadata,
                       n_tensors=n_tensors, tensor_bytes=tensor_bytes,
-                      embd_table_bytes=embd_bytes)
+                      embd_table_bytes=embd_bytes, ffn_block_bytes=ffn_block_bytes,
+                      lazy_candidate_bytes=lazy_candidate_bytes)
+
+
+def read_gguf_header(path: str | Path) -> GGUFHeader:
+    """Header for a MODEL, not for a file: a split GGUF is priced as the sum of its parts.
+
+    Weights, the host-side embedding-table duplicate and the per-block FFN map are all summed
+    across the shards on disk, because a split is a layout choice, not a smaller model — pricing
+    part 1 alone underprices every model whose first shard is a metadata stub (the Hugging Face
+    layout), which then makes the physics check and the residency cap admit giants the card cannot
+    hold. Architecture metadata (block count, train context, the per-layer SWA pattern, vocab) is
+    taken from the first part: gguf-split writes the model's metadata there only, and every later
+    part carries just its ``split.*`` keys.
+
+    A part that has gone missing or become unreadable is skipped rather than fatal: a half-arrived
+    split prices at what is actually on disk. Refusing it is ``staged_in(require_complete=True)``'s
+    job — an incomplete split is never servable, it is only underpriced here."""
+    path = Path(path)
+    parts = split_parts(path)
+    if parts is None:
+        return _read_part(path)
+
+    first = _read_part(parts[0])
+    readable = [first]
+    for part in parts[1:]:
+        try:
+            readable.append(_read_part(part))
+        except (ValueError, OSError) as exc:
+            logger.debug("split part unreadable %s: %s", part.name, exc)
+    if len(readable) == 1:
+        return first
+
+    ffn_block_bytes: dict[int, int] = {}
+    for header in readable:
+        for block, nbytes in header.ffn_block_bytes.items():
+            ffn_block_bytes[block] = ffn_block_bytes.get(block, 0) + nbytes
+    return GGUFHeader(
+        # The path stays the part the caller named: it is the model id source and the preset's
+        # ``model`` key, and llama.cpp resolves the split from any one of its members.
+        path=str(path), version=first.version, metadata=first.metadata,
+        n_tensors=sum(h.n_tensors for h in readable),
+        tensor_bytes=sum(h.tensor_bytes for h in readable),
+        embd_table_bytes=sum(h.embd_table_bytes for h in readable),
+        ffn_block_bytes=ffn_block_bytes,
+        lazy_candidate_bytes={name: nbytes for h in readable
+                              for name, nbytes in h.lazy_candidate_bytes.items()})

@@ -105,7 +105,7 @@ def get_sticker_by_name(name: str) -> Optional[dict]:
     return matches[0] if matches else None
 
 
-def get_random_sticker(category: str = None) -> dict:
+def get_random_sticker(category: str | None = None) -> dict:
     """随机贴纸；指定 category 时优先在 description/name 含该词的贴纸中选取。"""
     candidates = [s for s in STICKER_MAP.values() if category in s["description"] or category in s["name"]] if category else []
     return random.choice(candidates or list(STICKER_MAP.values()))

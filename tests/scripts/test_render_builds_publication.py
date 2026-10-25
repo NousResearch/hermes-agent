@@ -10,7 +10,7 @@ from urllib.request import urlopen
 
 import pytest
 
-from tests.scripts.test_release_r2 import r2_server  # noqa: F401
+from tests.scripts.test_release_r2 import r2_server
 
 _SPEC = importlib.util.spec_from_file_location(
     'render_builds_table', Path(__file__).resolve().parents[2] / 'scripts/render-builds-table.py')

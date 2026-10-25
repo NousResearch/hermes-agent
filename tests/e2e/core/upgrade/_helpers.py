@@ -43,6 +43,7 @@ def _bwrap_usable() -> bool:
         r = subprocess.run(
             [exe, "--dev-bind", "/", "/", "--unshare-pid", "--proc", "/proc", "--die-with-parent", "true"],
             capture_output=True, timeout=30,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -113,6 +114,7 @@ def isolated_env(
         PYTHONUNBUFFERED="1",
         PYTHONHASHSEED="0",
         HERMES_DISABLE_LAZY_INSTALLS="1",
+        # The pre-upgrade release under test still bundles tirith; keep its scanner off.
         TIRITH_ENABLED="false",
         GIT_TERMINAL_PROMPT="0",
         GIT_CONFIG_NOSYSTEM="1",

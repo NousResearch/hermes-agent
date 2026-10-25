@@ -29,7 +29,7 @@ def _assert_no_decoy(tmp_path, home_name):
 
 @pytest.fixture(params=HOME_NAMES)
 def home(tmp_path, monkeypatch, request):
-    import hermes_cli.gateway as gateway
+    from hermes_cli import gateway
 
     home = tmp_path / request.param
     home.mkdir()

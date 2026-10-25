@@ -1,0 +1,68 @@
+name: agora
+repo: https://github.com/yzy806806/agora
+sha: 4722935285a986a113fb2f2edfd84792912c604c
+description: >-
+  Self-driving multi-agent development team. Role-based workers (architect, developer,
+  reviewer, tester, researcher, writer, devops) are each a real Hermes profile with its
+  own SOUL.md and skills; they discuss and vote on decisions, and the adopted conclusion
+  is executed by the same team. A "leader" profile chairs the discussions and a heartbeat
+  cron wakes it to assess state, unblock workers and plan the next phase. Discussion and
+  execution share one board: a motion is a sub-task of a per-project team channel task,
+  speech and votes are `[agora:msg]` comments, the conclusion is written to task.result,
+  and an adopted conclusion becomes execution tasks parented to the motion so context
+  reaches workers through Hermes' own parent handoff. Ships 20 tools, 3 kanban lifecycle
+  hooks, a dashboard tab and an `hermes agora` CLI; installing writes nothing — the three
+  bundled skills are deployed by an explicit `hermes agora setup`. Disclosure — creates a
+  Hermes profile per worker, copying the global config.yaml and .env into it (a private
+  copy, mode 0600, never a symlink to the real credentials); spawns
+  `hermes -p <profile> chat -Q -q` subprocesses to speak in
+  discussions and to run dispatched tasks, which execute as full agents with that profile's
+  toolset, including terminal and file writes inside the project workdir. Those subprocesses
+  receive `--yolo --accept-hooks` ONLY when the project opted in via
+  `agora_start_project(allow_unattended=True)`; the default is off, so a freshly installed
+  team can read, discuss and plan but its flagged writes and shell commands fail closed.
+  Also reads and writes the kanban database (tasks, task_comments, task_events, task_runs,
+  task_links) restricted to its own project boards, including a persistent team-channel task
+  pinned in `scheduled` status, and deletes a project's own tasks when it stops or completes;
+  registers one recurring cron job and writes its runner script to
+  HERMES_HOME/scripts/leader_heartbeat.sh; writes AGENTS.md into the configured project
+  workdir; deploys three bundled skills into HERMES_HOME/skills/collaboration/; and serves a
+  dashboard tab plus REST routes through the Hermes dashboard. No network egress of its own —
+  model calls happen inside the spawned Hermes subprocesses under the operator's own provider
+  credentials.
+maintainer: yzy806806
+tier: community
+category: automation
+requires_hermes: '>=0.20'
+docs_url: https://github.com/yzy806806/agora#readme
+version: "2.0.11"
+platforms: []
+readme: true
+capabilities:
+  provides_tools:
+    - agora_start_project
+    - agora_stop_project
+    - agora_project_status
+    - agora_update_project
+    - agora_create_task
+    - agora_close_task
+    - agora_raise_motion
+    - agora_get_messages
+    - agora_get_result
+    - agora_list_motions
+    - agora_close_motion
+    - agora_message
+    - agora_read_chat
+    - agora_create_worker
+    - agora_list_workers
+    - agora_remove_worker
+    - agora_list_templates
+    - agora_create_team
+    - agora_list_teams
+    - agora_remove_team
+  provides_hooks:
+    - kanban_task_completed
+    - kanban_task_claimed
+    - kanban_task_blocked
+  provides_middleware: []
+  requires_env: []

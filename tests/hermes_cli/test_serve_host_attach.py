@@ -37,7 +37,7 @@ def owner(host_dir):
     serves_spa = {"value": True}
 
     class _Handler(BaseHTTPRequestHandler):
-        def do_GET(self):  # noqa: N802 — BaseHTTPRequestHandler API
+        def do_GET(self):
             if self.path != hr.HOST_IDENTITY_PATH:
                 self.send_error(404)
                 return
@@ -49,7 +49,7 @@ def owner(host_dir):
             self.end_headers()
             self.wfile.write(body)
 
-        def log_message(self, format, *args):  # noqa: A002 — BaseHTTPRequestHandler API
+        def log_message(self, format, *args):
             pass
 
     server = HTTPServer(("127.0.0.1", 0), _Handler)

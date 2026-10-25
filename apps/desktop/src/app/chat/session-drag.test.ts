@@ -4,11 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree, closeTreePane } from '@/components/pane-shell/tree/store'
 import { requestFreshSession } from '@/store/profile'
-import { $selectedStoredSessionId } from '@/store/session'
+import { moveSessionToProject, projectIdForCwd } from '@/store/projects'
+import { $selectedStoredSessionId, $sessions } from '@/store/session'
 import { $sessionTiles, nextSessionTileForWorkspace, openSessionTile } from '@/store/session-states'
 
 import { requestComposerInsertRefs } from './composer/focus'
 import { startSessionDrag } from './session-drag'
+import { NO_PROJECT_ID } from './sidebar/projects/workspace-groups'
 
 /**
  * A session drop resolves its target by rect-testing the chat surfaces in the
@@ -31,6 +33,11 @@ vi.mock('@/components/pane-shell/tree/store', async importOriginal => ({
   closeTreePane: vi.fn()
 }))
 vi.mock('./composer/focus', () => ({ requestComposerInsertRefs: vi.fn() }))
+vi.mock('@/store/projects', () => ({
+  moveSessionToProject: vi.fn().mockResolvedValue(undefined),
+  projectIdForCwd: vi.fn(() => null)
+}))
+vi.mock('@/store/notifications', () => ({ notifyError: vi.fn() }))
 
 const ZONE = { left: 0, top: 0, right: 1000, bottom: 800 }
 const COMPOSER = { left: 100, top: 700, right: 900, bottom: 780 }
@@ -97,6 +104,7 @@ afterEach(() => {
   $layoutTree.set(null)
   $selectedStoredSessionId.set(null)
   $sessionTiles.set([])
+  $sessions.set([])
 })
 
 describe('session drop targeting across stacked tabs', () => {
@@ -170,5 +178,56 @@ describe('session drop targeting across stacked tabs', () => {
 
     expect(requestFreshSession).toHaveBeenCalled()
     expect(closeTreePane).not.toHaveBeenCalled()
+  })
+})
+
+/** A sidebar project row, exactly as `ProjectOverviewRow` tags it. */
+function mountProjectRow(id: string, box = { left: 0, top: 0, right: 200, bottom: 40 }) {
+  const row = document.createElement('div')
+  row.dataset.sessionsProject = id
+  document.body.appendChild(row)
+  stubRect(row, box)
+
+  return row
+}
+
+describe('session drop targeting onto a sidebar project row', () => {
+  beforeEach(() => {
+    $sessions.set([{ id: 'dragged', cwd: '', _lineage_root_id: null } as never])
+  })
+
+  it('moves the dragged session to the project row it is dropped on', () => {
+    mountStackedTabs()
+    $layoutTree.set(group(['sessions'], { id: 'g1' }))
+    mountProjectRow('proj-a')
+
+    dragTo(document.getElementById('row')!, 100, 20)
+
+    expect(moveSessionToProject).toHaveBeenCalledWith('dragged', 'proj-a', 'default')
+    // A resolved project-row target takes priority: nothing else commits.
+    expect(openSessionTile).not.toHaveBeenCalled()
+    expect(requestComposerInsertRefs).not.toHaveBeenCalled()
+  })
+
+  it('is not a target for Home — there is no folder to move into', () => {
+    mountStackedTabs()
+    $layoutTree.set(group(['sessions'], { id: 'g1' }))
+    mountProjectRow(NO_PROJECT_ID)
+
+    dragTo(document.getElementById('row')!, 100, 20)
+
+    expect(moveSessionToProject).not.toHaveBeenCalled()
+  })
+
+  it('is not a target for the session’s own current project', () => {
+    mountStackedTabs()
+    $layoutTree.set(group(['sessions'], { id: 'g1' }))
+    mountProjectRow('proj-a')
+    vi.mocked(projectIdForCwd).mockReturnValue('proj-a')
+    $sessions.set([{ id: 'dragged', cwd: '/repos/proj-a', _lineage_root_id: null } as never])
+
+    dragTo(document.getElementById('row')!, 100, 20)
+
+    expect(moveSessionToProject).not.toHaveBeenCalled()
   })
 })

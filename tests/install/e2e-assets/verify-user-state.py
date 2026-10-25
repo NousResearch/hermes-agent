@@ -277,12 +277,24 @@ def _env_line_summary(path: str) -> dict:
 
 
 def _entry_record(abs_path: str) -> dict:
+    try:
+        return _read_entry_record(abs_path)
+    except OSError as exc:
+        raise ScanError(f"unreadable {abs_path}: {exc}") from exc
+
+
+def _read_entry_record(abs_path: str) -> dict:
     if _is_link(abs_path):
         record: dict = {"kind": "symlink", "target": os.readlink(abs_path)}
         record["target_resolves"] = os.path.exists(os.path.realpath(abs_path))
         return record
     if os.path.isdir(abs_path):
         return {"kind": "dir"}
+    if os.path.isfile(abs_path) and abs_path.endswith(".lock"):
+        # A lock file is a sentinel a live process holds, never user content. On
+        # Windows the holder's msvcrt byte-range lock makes every read of it
+        # raise EACCES, so reading it would fail the upgrade for the holder.
+        return {"kind": "lock"}
     if os.path.isfile(abs_path):
         st = os.lstat(abs_path)
         record = {"kind": "file", "size": st.st_size}

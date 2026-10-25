@@ -62,6 +62,28 @@ def test_routed_local_profile_cwd_matches_standalone_gateway(tmp_path, two_homes
     assert "TERMINAL_CWD" not in build_profile_terminal_scope(two_homes[1])
 
 
+def test_launch_artifact_context_cwd_follows_routed_profile(two_homes, tmp_path):
+    """Ignoring a Desktop launch cwd must still resolve terminal.cwd from the profile whose turn is active."""
+    from agent.runtime_cwd import resolve_context_cwd, reset_session_cwd, set_session_cwd
+    from tools.terminal_scope import install_and_reset_profile_terminal_scope
+
+    a, b = two_homes
+    workspaces = {"a": tmp_path / "workspace-a", "b": tmp_path / "workspace-b"}
+    for name, home in (("a", a), ("b", b)):
+        workspaces[name].mkdir()
+        cfg = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")) or {}
+        cfg["terminal"] = {"backend": "local", "cwd": str(workspaces[name])}
+        (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    token = set_session_cwd(str(tmp_path))
+    try:
+        for home, expected in ((a, workspaces["a"]), (b, workspaces["b"]), (a, workspaces["a"])):
+            with install_and_reset_profile_terminal_scope(home):
+                assert resolve_context_cwd(include_session_override=False) == expected
+    finally:
+        reset_session_cwd(token)
+
+
 def test_terminal_backend_consumers_read_the_routed_scope(two_homes):
     """Every ``TERMINAL_ENV`` reader that shapes a turn (image-source locality, credential-file path
     translation, image-gen cache base, skill readiness) resolves the ROUTED profile's backend."""

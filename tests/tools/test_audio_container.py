@@ -107,7 +107,7 @@ class TestInboundCacheUsesSniffer:
     @pytest.mark.asyncio
     async def test_cache_audio_from_url_sniffs_too(self, tmp_path, monkeypatch):
         """The URL download path routes through the same sniffer."""
-        import gateway.platforms.base as base
+        from gateway.platforms import base
 
         monkeypatch.setattr(base, "AUDIO_CACHE_DIR", tmp_path)
 

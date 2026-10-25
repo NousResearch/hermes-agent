@@ -46,14 +46,14 @@ def _describe_range(sidecar: str, start: int, end: int) -> str:
     return f"db bytes {start}-{end}"
 
 
-def parse_proc_locks(text: str, inodes: Dict[Tuple[int, int], str]) -> List[Tuple[int, str, str]]:
+def parse_proc_locks(text: str, inodes: dict[tuple[int, int], str]) -> list[tuple[int, str, str]]:
     """``(pid, lock kind, sidecar)`` for every WRITE lock on one of ``inodes``.
 
     ``inodes`` maps ``(st_dev, st_ino)`` to ``""`` (main file), ``"-wal"`` or ``"-shm"``. Read locks
     are dropped: they never block a writer in WAL mode. An OFD lock is reported with pid ``-1``
     (the kernel does not export its owner).
     """
-    found: List[Tuple[int, str, str]] = []
+    found: list[tuple[int, str, str]] = []
     for line in text.splitlines():
         fields = line.split()
         # "N: POSIX ADVISORY WRITE <pid> MAJ:MIN:INO <start> <end|EOF>"; a blocked waiter is "N: -> POSIX ...".
@@ -78,7 +78,7 @@ def parse_proc_locks(text: str, inodes: Dict[Tuple[int, int], str]) -> List[Tupl
     return found
 
 
-def state_db_write_lock_holders(db_path) -> List[str]:
+def state_db_write_lock_holders(db_path) -> list[str]:
     """Operator-facing lines naming the processes that hold a write-class lock on ``db_path``.
 
     Empty when nothing is held or the platform has no ``/proc/locks``.
@@ -86,7 +86,7 @@ def state_db_write_lock_holders(db_path) -> List[str]:
     if not sys.platform.startswith("linux"):
         return []
     base = os.path.realpath(os.fspath(db_path))
-    inodes: Dict[Tuple[int, int], str] = {}
+    inodes: dict[tuple[int, int], str] = {}
     for sidecar in ("", "-wal", "-shm"):
         try:
             st = os.stat(base + sidecar)
@@ -95,7 +95,7 @@ def state_db_write_lock_holders(db_path) -> List[str]:
         inodes[(st.st_dev, st.st_ino)] = sidecar
     # /proc/locks is host-wide and served over several read()s: lock churn in other processes
     # shifts it mid-read and can skip the holder. A skip rarely repeats, so union three passes.
-    held: List[Tuple[int, str, str]] = []
+    held: list[tuple[int, str, str]] = []
     for _ in range(3):
         try:
             with open("/proc/locks", encoding="ascii", errors="replace") as handle:

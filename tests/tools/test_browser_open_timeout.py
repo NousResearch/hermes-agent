@@ -112,7 +112,7 @@ class TestCommandTimeoutRecovery:
         monkeypatch.setattr("tools.browser_tool_cdp._stop_cdp_supervisor", lambda _: supervisor_events.append("stop"))
         monkeypatch.setattr(bt, "_socket_safe_tmpdir", lambda: str(tmp_path))
         monkeypatch.setattr("tools.browser_tool_lifecycle._write_owner_pid", lambda *_args: None)
-        monkeypatch.setattr(bt, "_build_browser_env", lambda: {})
+        monkeypatch.setattr(bt, "_build_browser_env", dict)
         monkeypatch.setattr("tools.browser_tool_install._merge_browser_path", lambda value: value)
         monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
         monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)

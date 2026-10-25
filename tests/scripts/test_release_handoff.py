@@ -6,7 +6,7 @@ from urllib.parse import unquote
 import pytest
 
 from scripts.releases import handoff, r2
-from tests.scripts.test_release_r2 import r2_server  # noqa: F401
+from tests.scripts.test_release_r2 import r2_server
 
 
 @pytest.mark.parametrize('tag', ['v1.2.3', 'v1.2.3+canary.20260908T232538Z', 'rc.1-v1.2.3', None])
@@ -188,7 +188,7 @@ def test_public_handoff_downloads_exact_staged_bytes_without_credentials(tmp_pat
     assert any(path.endswith('/app%20x64.msix') for _, path, _ in r2_server.requests)
     result = subprocess.run([sys.executable, '-m', 'scripts.releases.handoff', *args],
                             cwd=Path(__file__).resolve().parents[2], env=os.environ,
-                            capture_output=True, text=True, encoding='utf-8', timeout=30)
+                            capture_output=True, text=True, encoding='utf-8', timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     assert (download / 'app x64.msix').read_bytes() == payload
     # A bad CDN object cannot replace a previously verified local download.

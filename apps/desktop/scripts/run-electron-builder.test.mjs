@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
-import { runElectronBuilder } from './run-electron-builder.mjs'
+import { builderNodeOptions, runElectronBuilder } from './run-electron-builder.mjs'
 import fs from 'node:fs'
 import os from 'node:os'
 import { publishPackagingInputs } from './prepared-packaging.mjs'
@@ -65,4 +65,34 @@ test('strict builder refuses absent inputs before loading electron-builder', () 
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /run preparation again/)
   assert.doesNotMatch(result.stdout, /electron-builder\s+version/)
+})
+
+test('npm run builder forwards an apostrophe path to the wrapper verbatim', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'builder-'))
+  const manifest = path.join(root, "r'y'z", 'missing.json')
+  const windows = process.platform === 'win32'
+  try {
+    // Windows needs a shell for npm.cmd, which joins argv unquoted.
+    const result = spawnSync('npm', ['run', 'builder', '--silent', '--ignore-scripts', '--',
+      '--prepared', windows ? `"${manifest}"` : manifest, '--native-deps', 'missing', '--dir'],
+    { cwd: path.join(import.meta.dirname, '..'), encoding: 'utf8', shell: windows })
+    assert.notEqual(result.status, 0)
+    assert.ok(result.stderr.includes(manifest), result.stderr)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('source builds hand every child the builder heap without rewriting inherited NODE_OPTIONS', () => {
+  const calls = []
+  const spawn = (_node, args, options) => { calls.push({ args, options }); return { status: 0 } }
+  assert.equal(runElectronBuilder(['--dir'], { spawn }), 0)
+  assert.ok(calls.length >= 2)
+  const heap = /--max-old-space-size=16384$/
+  for (const { options } of calls) assert.match(options.env.NODE_OPTIONS, heap)
+  assert.match(builderNodeOptions(''), heap)
+  assert.match(builderNodeOptions('--max-old-space-size=4096'), heap)
+  const quoted = '--require "/tmp/sp  ace/p.cjs"'
+  assert.ok(builderNodeOptions(quoted).startsWith(quoted))
+  assert.match(builderNodeOptions('--max-old-space-size=16384 --max-old-space-size=4096'), heap)
 })

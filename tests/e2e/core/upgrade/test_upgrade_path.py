@@ -81,7 +81,7 @@ CLI_TIMEOUT = 600
 
 def _git(*args: str, cwd: Path, check: bool = True) -> str:
     cp = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True,
-                        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+                        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}, check=False)
     if check and cp.returncode != 0:
         raise AssertionError(f"git {args} failed in {cwd}: {cp.stderr}")
     return cp.stdout.strip()
@@ -281,7 +281,7 @@ class Leg:
                      writable=[self.root], timeout=timeout)
 
     def popen(self, *args: str) -> subprocess.Popen:
-        log = open(self.root / f"popen-{int(time.monotonic() * 1000)}.log", "w")  # noqa: SIM115
+        log = open(self.root / f"popen-{int(time.monotonic() * 1000)}.log", "w")
         return subprocess.Popen(
             H.sandbox_argv([*_KILLED_RUN_PREFIX, self.hermes, *args], writable=[self.root]),
             env=self.env, cwd=str(self.install), stdin=subprocess.DEVNULL,
@@ -375,7 +375,7 @@ def make_leg(root: Path, template_home: Path | None) -> Leg:
     uv_env.update(UV_PROJECT_ENVIRONMENT=str(install / "venv"), XDG_CONFIG_HOME=str(no_cfg), XDG_CONFIG_DIRS=str(no_cfg))
     cp = subprocess.run([uv, "sync", "-q", "--locked", "--extra", "all", "--managed-python",
                          "--python", base_python], cwd=str(install),
-                        env=uv_env, capture_output=True, text=True, timeout=1800)
+                        env=uv_env, capture_output=True, text=True, timeout=1800, check=False)
     assert cp.returncode == 0, f"N-1 venv install from its uv.lock failed:\n{cp.stderr[-4000:]}"
     env_probe = H.isolated_env(root)
     hermes_home = Path(env_probe["HERMES_HOME"])

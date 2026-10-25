@@ -1,0 +1,59 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: scopeblind-agent-vault
+description: Issue signed Agent Vault context capsules and owner-approved memory proposals for Hermes runs.
+source: https://github.com/ScopeBlind/agent-vault-mcp
+
+# ScopeBlind Agent Vault is a local stdio MCP. Hermes remains the runtime;
+# this server only controls which Vault pages become model-visible context and
+# emits signed receipts/capsules for audit.
+transport:
+  type: stdio
+  command: sh
+  args:
+    - "-lc"
+    - "cd '${INSTALL_DIR}' && node src/index.mjs"
+  version: "0.1.0"
+
+install:
+  type: git
+  url: https://github.com/ScopeBlind/agent-vault-mcp.git
+  # Pinned to v0.1.0 initial adapter commit.
+  ref: c9ae9662aec1abcc3e98fa45a3230b486c6f3261
+  bootstrap:
+    - "npm install --omit=dev"
+
+auth:
+  type: none
+
+# Keep owner-authority writes opt-in. Users can enable vault_page_sign manually
+# if they want Hermes to produce owner-approved signed pages with an explicit
+# SCOPEBLIND_AGENT_SECRET_HEX.
+tools:
+  default_enabled:
+    - vault_manifest_get
+    - vault_pages_list
+    - vault_disclosure_policy_check
+    - vault_context_request
+    - vault_capsule_export
+    - vault_capsule_verify
+    - vault_memory_propose
+
+post_install: |
+  ScopeBlind Agent Vault ships with a demo Vault so the MCP works immediately.
+
+  To point Hermes at your own Vault, set these in ~/.hermes/.env:
+    SCOPEBLIND_AGENT_MANIFEST=/path/to/agent/manifest.json
+    SCOPEBLIND_AGENT_PAGES=/path/to/agent/signed-pages.json
+
+  Recommended runtime flow:
+    1. Call vault_context_request before a run and use only included_pages.
+    2. Call vault_memory_propose after a run for candidate durable memory.
+    3. Treat proposals as pending until the Vault owner approves/signs them.
+    4. Call vault_capsule_verify to audit what context was disclosed.
+
+  vault_page_sign is intentionally not enabled by default. It requires an
+  explicit SCOPEBLIND_AGENT_SECRET_HEX and should only be used for owner-
+  approved canonical writes.

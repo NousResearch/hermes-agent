@@ -127,6 +127,10 @@ def decompose_triage_task(
             (task_id,),
         ).fetchone():
             return None
+        # Read before the children are linked under the root below.
+        root_parent_ids = [r["parent_id"] for r in conn.execute(
+            "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id", (task_id,),
+        )]
         child_ids = [
             _insert_decomposed_child(conn, task_id, root_row, child, author, now)
             for child in children
@@ -137,6 +141,15 @@ def decompose_triage_task(
                 parent_id, child_id = child_ids[p_idx], child_ids[idx]
                 _link(conn, parent_id, child_id)
                 _append_event(conn, child_id, "linked", {"parent": parent_id, "child": child_id})
+        # The children now do the root's work, so the graph's entry points wait
+        # on whatever the root waited on; otherwise they run before an
+        # unfinished upstream and never see its handoff in their context.
+        for idx, child in enumerate(children):
+            if child.get("parents"):
+                continue
+            for parent_id in root_parent_ids:
+                _link(conn, parent_id, child_ids[idx])
+                _append_event(conn, child_ids[idx], "linked", {"parent": parent_id, "child": child_ids[idx]})
         # Root waits for the whole graph: link it under EVERY child (simpler
         # than computing leaves; cycle-free since the root is only ever a child).
         for cid in child_ids:

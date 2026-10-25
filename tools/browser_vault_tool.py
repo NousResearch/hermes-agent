@@ -18,6 +18,9 @@ paid per request) and available wherever a browser is. Its actions:
   password never appears in tool results, logs, or the session DB, and its
   exact bytes are registered with the browser-result redaction boundary so
   no later browser tool call can echo them back to the model.
+- ``enter_code`` → a one-time code for the current page: minted from a saved
+  login's authenticator key (same origin binding as ``fill``, checked before
+  the code is generated) or typed by the user into their surface's prompt.
 
 Ported design from Merit-Systems/OpenInstinct (MIT): opaque-handle vault
 autofill (kernel-login-autofill.ts / fill_from_vault.ts).
@@ -182,6 +185,30 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
     return (origin or focused.get("url")) if focused.get("ok") else None
 
 
+def _bound_page_origin(task_id: str, meta: Any, probe_kind: str) -> str | dict[str, Any]:
+    """The origin guard every fill of a stored secret (password, one-time code, card, address) passes
+    BEFORE the backend resolves any value: the page origin when it is one of the item's saved origins,
+    else the refusal to return. Manager items may bind several websites; matching is exact and
+    nothing wildcard or parent-domain is inferred. The caller hands the returned origin to ``build_fill_js``,
+    which re-asserts it inside the page immediately before the write (navigation between check and fill)."""
+    allowed = list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])
+    if not allowed:
+        return {"success": False, "error_type": "no_origin",
+                "error": f"Vault item {meta.id!r} has no bound origin; {meta.kind} items are filled only on "
+                         "the site they were saved for."}
+    page_origin = next((o for o in (_focus_bound_origin(task_id, c, probe_kind) for c in allowed) if o), None)
+    page_origin = page_origin or _current_page_origin(task_id)
+    if not page_origin:
+        return {"success": False,
+                "error": "Could not determine the current page origin. Navigate to the login page first."}
+    if page_origin not in allowed:
+        return {"success": False, "error_type": "origin_mismatch",
+                "error": (f"Refused: current page origin ({page_origin}) does not match the vault item's bound "
+                          f"origin(s) ({', '.join(allowed)}). Vault fills only run on the exact origin(s) the "
+                          "credential was saved for.")}
+    return page_origin
+
+
 # ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
@@ -301,21 +328,44 @@ _TAB_PROBES["otp"] = ("!!document.querySelector('input[autocomplete=one-time-cod
                       "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i]')")
 
 
+def _saved_login(handle: str) -> tuple[Any, Any]:
+    """(backend, meta) for a vault handle, or (None, None) when nothing is saved under it (or its manager is
+    locked): enter_code then asks the user instead of minting a code."""
+    from agent.vault_backends import UnlockRequired, backend_for_handle
+
+    backend = backend_for_handle(handle) if handle else None
+    if backend is None:
+        return None, None
+    try:
+        return backend, backend.get_meta(handle)
+    except UnlockRequired:
+        return backend, None
+
+
 def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) -> str:
     """Second factor: fill the one-time code the CURRENT page asks for. If the saved login (``handle``) has an
     authenticator seed, the code is minted server-side and nobody is asked; otherwise the user is prompted on
     their surface for the code their phone/email/app shows. The code goes into the page over the supervisor
-    socket and never enters the conversation."""
+    socket and never enters the conversation. A saved login's code is only minted on its saved origin(s)."""
     from agent.redact import register_vault_redaction_value
-    from agent.vault_backends import backend_for_handle
     from agent.vault_backends.unlock import can_prompt_here, get_code_prompt_callback
     from agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
 
     effective_task_id = task_id or "default"
-    _focus_bound_origin(effective_task_id, "", "otp")
-    origin = _current_page_origin(effective_task_id)
-    if not origin:
-        return json.dumps({"success": False, "error": "No page with a code field is open."})
+    backend, meta = _saved_login(handle)
+    if meta is not None:
+        bound = _bound_page_origin(effective_task_id, meta, "otp")
+        if isinstance(bound, dict):
+            if bound.get("error_type") == "origin_mismatch":
+                bound["next"] = ("If this page asks for the code of a different account, call enter_code without a "
+                                 "handle so the user is asked.")
+            return json.dumps(bound)
+        origin = bound
+    else:
+        _focus_bound_origin(effective_task_id, "", "otp")
+        origin = _current_page_origin(effective_task_id)
+        if not origin:
+            return json.dumps({"success": False, "error": "No page with a code field is open."})
     site = origin.split("://", 1)[-1]
 
     nonce = secrets.token_hex(8)
@@ -331,8 +381,7 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 
     code: Optional[str] = None
     source = "user"
-    backend = backend_for_handle(handle) if handle else None
-    if backend is not None:
+    if meta is not None:
         try:
             code = backend.resolve_otp(handle)
         except Exception:
@@ -411,41 +460,14 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
                 ),
             }
         )
-    if meta.kind != "login" and not meta.origin:
-        return json.dumps({"success": False, "error_type": "no_origin",
-                           "error": f"Vault item {handle!r} has no bound origin; {meta.kind} items are filled only on the site they were saved for."})
-    if meta.kind == "payment" and not _confirm_payment_fill(meta.label, str(meta.origin)):
+    # Origin binding pre-check (the authoritative re-check runs inside the fill script), before the user is
+    # asked to confirm a card and before any value is resolved.
+    page_origin = _bound_page_origin(effective_task_id, meta, meta.kind)
+    if isinstance(page_origin, dict):
+        return json.dumps(page_origin)
+    if meta.kind == "payment" and not _confirm_payment_fill(meta.label, page_origin):
         return json.dumps({"success": False, "error_type": "payment_declined",
                            "error": "The user did not confirm filling this payment card. Do not retry; ask them instead."})
-
-    # ── Origin binding pre-check (cheap early exit; the authoritative check
-    # runs synchronously inside the fill script itself) ──────────────────────
-    # Manager items can bind several websites (e.g. amazon.co.uk + www.amazon.co.uk);
-    # every saved origin is a valid fill target. Matching stays exact-origin —
-    # nothing wildcard/parent-domain is ever inferred.
-    allowed = list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])
-    page_origin = None
-    for candidate in allowed:
-        page_origin = _focus_bound_origin(effective_task_id, candidate, meta.kind)
-        if page_origin:
-            break
-    page_origin = page_origin or _current_page_origin(effective_task_id)
-    if not page_origin:
-        return json.dumps(
-            {"success": False, "error": "Could not determine the current page origin. Navigate to the login page first."}
-        )
-    if page_origin not in allowed:
-        return json.dumps(
-            {
-                "success": False,
-                "error_type": "origin_mismatch",
-                "error": (
-                    f"Refused: current page origin ({page_origin}) does not match "
-                    f"the vault item's bound origin(s) ({', '.join(allowed)}). Vault fills "
-                    "only run on the exact origin(s) the credential was saved for."
-                ),
-            }
-        )
 
     # ── Inspect + classify page controls ────────────────────────────────────
     nonce = secrets.token_hex(8)  # binds this fill to THIS inspection's stamps

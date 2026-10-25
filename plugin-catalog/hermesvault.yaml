@@ -1,15 +1,15 @@
 name: hermesvault
 repo: https://github.com/Guerilla-ops/floorvault
-sha: 6fc8132ecfe0bd2131f5e7528100ef12d972d94e
+sha: 4cf8abebcc91259cf76afdf5415fdf297a3dfff3
 subdir: plugins/hermesvault
-description: "Keep secrets out of plaintext .env files: a local encrypted vault (FloorVault, AES-256-SIV) whose items Hermes loads as environment variables at startup (mapped source \"hermesvault\", hv: references), with a hermes hvault CLI to manage items. The vault key lives in your OS key store (Keychain, Secret Service, DPAPI) or HERMES_VAULT_KEY. Disclosure — reads and writes an encrypted store under <HERMES_HOME>/agent-vault (or secrets.hermesvault.dir); reads its own master key from the environment variable named by token_env (default HERMES_VAULT_KEY), else from FLOOR_VAULT_KEY or VAULT_MASTER_KEY, else from the OS key store (macOS Keychain, Linux Secret Service or Windows DPAPI; service floor-vault, shared with other FloorVault apps on the same account), where it creates a new key on first use; resolved values become environment variables of the Hermes process and its children, like .env entries; installs floorvault from PyPI (plus secretstorage on Linux, pyobjc-framework-Security on macOS); no network calls, no subprocesses, no self-update; protection is at rest, not against code already running as the same user."
+description: "Keep secrets out of plaintext .env files: a local encrypted vault (FloorVault, AES-256-SIV) whose items Hermes loads as environment variables at startup (mapped source \"hermesvault\", hv: references), with a hermes hvault CLI to manage items. The vault key lives in your OS key store (Keychain, Secret Service, DPAPI) or HERMES_VAULT_KEY. Disclosure — reads an encrypted store under <HERMES_HOME>/agent-vault (or secrets.hermesvault.dir) at startup; hermes hvault commands write to it and hermes hvault setup creates it; reads its own master key only from the variable named by token_env (default HERMES_VAULT_KEY) in the environment Hermes scopes to the profile being fetched, else from the OS key store (macOS Keychain, Linux Secret Service or Windows DPAPI; service floor-vault, shared with other FloorVault apps on the same account) — never from FLOOR_VAULT_KEY or VAULT_MASTER_KEY, which it also protects from being overwritten; startup never prompts and never creates a key or a store (a locked or missing key is reported and Hermes starts without those variables), and only hermes hvault setup may unlock the key store and create the key; resolved values become environment variables of the Hermes process and its children, like .env entries; installs floorvault>=0.2.2 from PyPI (plus secretstorage on Linux, pyobjc-framework-Security on macOS); no network calls, no subprocesses, no self-update; protection is at rest, not against code already running as the same user."
 maintainer: Guerilla-ops
 tier: community
 category: tools
 requires_hermes: ">=0.21.2"
-docs_url: https://github.com/Guerilla-ops/floorvault/blob/6fc8132ecfe0bd2131f5e7528100ef12d972d94e/plugins/hermesvault/README.md
-image: https://raw.githubusercontent.com/Guerilla-ops/floorvault/6fc8132ecfe0bd2131f5e7528100ef12d972d94e/docs/assets/hermesvault-banner.png
-version: "0.2.0"
+docs_url: https://github.com/Guerilla-ops/floorvault/blob/4cf8abebcc91259cf76afdf5415fdf297a3dfff3/plugins/hermesvault/README.md
+image: https://raw.githubusercontent.com/Guerilla-ops/floorvault/4cf8abebcc91259cf76afdf5415fdf297a3dfff3/docs/assets/hermesvault-banner.png
+version: "0.2.1"
 readme: true
 platforms: []
 capabilities:

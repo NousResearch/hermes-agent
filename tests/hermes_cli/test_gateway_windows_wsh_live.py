@@ -6,11 +6,11 @@ under a temp APPDATA and runs it with ``cscript.exe``. No task or real Startup e
 """
 
 import subprocess
-import time
 
 import pytest
 
 from hermes_cli import gateway_windows
+from tests.waiting import wait_until
 
 
 @pytest.mark.platforms("windows")
@@ -28,8 +28,5 @@ def test_startup_chainer_launches_a_target_under_a_non_ascii_directory(tmp_path,
     assert run.returncode == 0, run.stdout + run.stderr
 
     # The chainer quits silently when FileExists(target) is false, so only a correctly decoded path
-    # reaches the target; it is started asynchronously, hence the poll.
-    deadline = time.monotonic() + 30
-    while not marker.exists() and time.monotonic() < deadline:
-        time.sleep(0.2)
-    assert marker.exists(), "the Startup chainer did not reach the target under the non-ASCII directory"
+    # reaches the target; it is started asynchronously, hence the wait.
+    wait_until(marker.exists, timeout=30, what="the Startup chainer to launch the target under the non-ASCII directory")

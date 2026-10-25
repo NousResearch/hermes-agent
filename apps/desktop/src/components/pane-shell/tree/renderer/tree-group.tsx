@@ -103,6 +103,7 @@ import { usePanelTitlebar } from './panel-titlebar'
 import { tabStripVisibleForZone } from './strip-visibility'
 import { useActiveTabVisible } from './tab-strip-scroll'
 import { paneChrome } from './track-model'
+import { zoneHeaderChrome } from './zone-header-chrome'
 import { useZoneHeaderLayout } from './zone-header-layout'
 
 /** Right-click zone menu: the tab verbs (close this / others / to the right /
@@ -425,6 +426,7 @@ export function TreeGroup({
 
   const active = paneFor(activeId)
   const isEmpty = shown.length === 0
+  const { minimizable, showMinimize, stripVariant } = zoneHeaderChrome(shown.map(paneFor))
   const sidebarGroup = !node.panes.some(id => id === 'workspace' || paneChrome(paneFor(id)).placement === 'main')
 
   const { compactTabs, tabStripHeight, tabsBelowControls, tabsInTitlebar, titlebarHeight } = useZoneHeaderLayout({
@@ -563,10 +565,6 @@ export function TreeGroup({
 
     return chrome.uncloseable || chrome.hideOnly ? undefined : paneId
   }
-
-  // The zone hosting the uncloseable workspace never minimizes — collapsing
-  // MAIN strands the whole app behind a strip.
-  const minimizable = !shown.some(id => paneChrome(paneFor(id)).uncloseable)
 
   // Middle-click / ⌘-click on a tab: one routing for every tab kind, the same
   // one the zone menu's Close and ⌘W use.
@@ -739,7 +737,7 @@ export function TreeGroup({
                 titlebar={tabsInTitlebar}
                 trailing={
                   <>
-                    {minimizable && (
+                    {showMinimize && (
                       <button
                         aria-label={node.minimized ? t.zones.restore : minimizeLabel}
                         className="mx-1 grid size-5 shrink-0 place-items-center self-center [-webkit-app-region:no-drag] rounded-md text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:opacity-100 group-hover/pane-header:opacity-100"
@@ -753,6 +751,7 @@ export function TreeGroup({
                     <StripDropCaret groupId={node.id} stripRef={stripRef} />
                   </>
                 }
+                variant={stripVariant}
               >
                 {shown.map((paneId, index) => {
                   const isActive = paneId === activeId && !node.minimized

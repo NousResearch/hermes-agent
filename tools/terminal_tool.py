@@ -1454,7 +1454,12 @@ def terminal_tool(
         try:
             bounded_guard = run_bounded_sync(
                 lambda: _pre_exec_block(
-                    command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key,
+                    # The guards resolve cwd from this key, so anchor it on the
+                    # same record the command itself will run in; a delegate
+                    # child's session_key is the PARENT's, and resolving the
+                    # lifecycle/self-repo scan against the parent's record let a
+                    # child-run relative script slip past the scan (#140434).
+                    command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=cwd_session_key,
                 ),
                 guard_timeout,
                 label="terminal.pre-exec-guard",

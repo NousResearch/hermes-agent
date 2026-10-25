@@ -170,3 +170,41 @@ def test_child_background_command_resolves_own_cwd_record(monkeypatch):
     assert result["exit_code"] == 0
     assert len(registry.calls) == 1
     assert registry.calls[0]["cwd"] == "/child/dir"
+
+
+def test_child_relative_script_guard_scans_child_record_dir(monkeypatch, tmp_path):
+    """The pre-exec lifecycle guard must resolve a relative script reference
+    against the same cwd record the command will run in — the child's task_id
+    record — not the parent session-key record the approval contextvar still
+    carries (#140434). With the guard anchored on the parent's record, a child
+    running ``bash deploy.sh`` was scanned against the parent's ``deploy.sh``
+    and the child's gateway-restart script slipped through (fail-open)."""
+    import tools.process_registry as process_registry_mod
+
+    child_dir = tmp_path / "child"
+    parent_dir = tmp_path / "parent"
+    child_dir.mkdir()
+    parent_dir.mkdir()
+    (child_dir / "deploy.sh").write_text("hermes gateway restart\n")
+    (parent_dir / "deploy.sh").write_text("echo ok\n")
+
+    child, parent = "child-task-6", "parent-session-6"
+    _install(monkeypatch, _ObservingEnv())
+    record_session_cwd(child, str(child_dir))
+    record_session_cwd(parent, str(parent_dir))
+    terminal_tool.register_container_alias(child, parent)
+    monkeypatch.setattr(
+        process_registry_mod, "_is_supervised_gateway_process", lambda *a, **k: True
+    )
+
+    token = set_current_session_key(parent)
+    try:
+        result = json.loads(
+            terminal_tool.terminal_tool(command="bash deploy.sh", task_id=child)
+        )
+    finally:
+        reset_current_session_key(token)
+
+    assert result.get("exit_code") == 1
+    assert "Blocked" in (result.get("error") or "")
+    assert "gateway" in (result.get("error") or "")

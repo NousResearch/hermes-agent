@@ -635,19 +635,22 @@ def test_targeted_unload_does_not_resurrect_an_older_override():
 
 
 def test_manager_local_override_does_not_resurrect_after_targeted_unload():
+    # Slash-command mappings still allow overrides; native CLI names now reject
+    # foreign owners (covered in test_plugin_cli_namespace.py). Keep exercising
+    # out-of-order teardown of an accepted manager-local replacement here.
     from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
     manager = PluginManager()
     context_a = PluginContext(PluginManifest(name="local_a", key="local_a"), manager)
     context_b = PluginContext(PluginManifest(name="local_b", key="local_b"), manager)
 
-    context_a.register_cli_command("shared-local", "A", lambda parser: None)
-    context_b.register_cli_command("shared-local", "B", lambda parser: None)
+    context_a.register_command("shared-local", lambda args: "A")
+    context_b.register_command("shared-local", lambda args: "B")
 
     assert manager.unload("local_a") is True
-    assert manager._cli_commands["shared-local"]["plugin"] == "local_b"
+    assert manager._plugin_commands["shared-local"]["plugin"] == "local_b"
     assert manager.unload("local_b") is True
-    assert "shared-local" not in manager._cli_commands
+    assert "shared-local" not in manager._plugin_commands
 
 
 def test_provider_overlay_switches_profiles_and_reveals_fresh_global_fallback(

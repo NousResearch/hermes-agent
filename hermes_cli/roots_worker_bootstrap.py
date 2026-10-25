@@ -248,8 +248,9 @@ def validate_assignment(value: dict[str, Any], *, now: int | None = None) -> dic
     for name in required:
         if not isinstance(value.get(name), str) or not value[name]:
             raise BootstrapRefusal(f"{name} must be a non-empty string")
-    if value.get("authority_scope") != "assigned-ticket-only":
-        raise BootstrapRefusal("authority_scope must be assigned-ticket-only")
+    if value.get("authority_scope") != "assigned-ticket-with-shared-main-read":
+        raise BootstrapRefusal(
+            "authority_scope must be assigned-ticket-with-shared-main-read")
     capabilities = _string_list(value.get("capabilities"), "capabilities")
     partitions = _string_list(value.get("partitions"), "partitions")
     instructions = _string_list(value.get("instruction_files"), "instruction_files")
@@ -361,7 +362,7 @@ def _get_json(url: str, token: str) -> dict[str, Any]:
 def verify_proofs(assignment: dict[str, Any], whoami: dict[str, Any], ticket: dict[str, Any]) -> None:
     for key, expected in {
         "principal": assignment["principal"], "kind": "agent", "role": assignment["role"],
-        "acting_for": assignment["owner_identity"],
+        "owner_identity": assignment["owner_identity"], "acting_for": None,
     }.items():
         if whoami.get(key) != expected:
             raise BootstrapRefusal(f"Roots identity mismatch: {key}")
@@ -369,6 +370,17 @@ def verify_proofs(assignment: dict[str, Any], whoami: dict[str, Any], ticket: di
         raise BootstrapRefusal("Roots capability grant is missing or wider than requested")
     if set(whoami.get("partitions", [])) != set(assignment["partitions"]):
         raise BootstrapRefusal("Roots partition grant is missing or wider than requested")
+    for key, expected in {
+        "ticket_ref": assignment["ticket_ref"],
+        "ticket_updated_at": assignment["ticket_updated_at"],
+        "assignment_id": assignment["assignment_id"],
+        "assignment_expires_at": assignment["expires_at"],
+        "token_expires_at": assignment["expires_at"],
+    }.items():
+        if whoami.get(key) != expected:
+            raise BootstrapRefusal(f"Roots credential binding mismatch: {key}")
+    if not isinstance(whoami.get("token_jti"), str) or not whoami["token_jti"]:
+        raise BootstrapRefusal("Roots credential binding lacks token_jti")
     for key, expected in {
         "ref": assignment["ticket_ref"], "status": "IN PROGRESS",
         "updated_at": assignment["ticket_updated_at"], "owner_identity": assignment["owner_identity"],

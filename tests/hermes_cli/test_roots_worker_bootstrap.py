@@ -37,7 +37,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict, dict, dict]:
         "assignment_id": "33333333-3333-4333-8333-333333333333", "principal": "agent:runner",
         "role": "runner", "owner_identity": "operator@example.test",
         "capabilities": ["read_main"], "partitions": ["main"],
-        "authority_scope": "assigned-ticket-only", "ticket_ref": "ESN-0030",
+        "authority_scope": "assigned-ticket-with-shared-main-read", "ticket_ref": "ESN-0030",
         "ticket_updated_at": "2026-10-25T14:46:11+00:00", "issued_at": now - 1,
         "expires_at": now + 300, "roots_url": "https://roots.example.test",
         "workdir": str(work), "claim_dir": str(claim_dir), "instruction_files": [str(instruction)],
@@ -52,7 +52,13 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict, dict, dict]:
     request.chmod(0o600)
     whoami = {
         "principal": "agent:runner", "kind": "agent", "role": "runner",
-        "acting_for": "operator@example.test", "capabilities": ["read_main"], "partitions": ["main"],
+        "acting_for": None, "owner_identity": "operator@example.test",
+        "capabilities": ["read_main"], "partitions": ["main"],
+        "ticket_ref": assignment["ticket_ref"],
+        "ticket_updated_at": assignment["ticket_updated_at"],
+        "assignment_id": assignment["assignment_id"],
+        "assignment_expires_at": assignment["expires_at"],
+        "token_expires_at": assignment["expires_at"], "token_jti": "jti-001",
     }
     ticket = {
         "ref": "ESN-0030", "status": "IN PROGRESS",
@@ -70,7 +76,15 @@ def _token_fd() -> int:
     return read_fd
 
 
-def _fake_proofs(monkeypatch: pytest.MonkeyPatch, whoami: dict, ticket: dict) -> None:
+def _fake_proofs(monkeypatch: pytest.MonkeyPatch, whoami: dict, ticket: dict,
+                 assignment: dict) -> None:
+    whoami.update(
+        ticket_ref=assignment["ticket_ref"],
+        ticket_updated_at=assignment["ticket_updated_at"],
+        assignment_id=assignment["assignment_id"],
+        assignment_expires_at=assignment["expires_at"],
+        token_expires_at=assignment["expires_at"],
+    )
     monkeypatch.setattr(
         bootstrap, "_get_json", lambda url, token: whoami if url.endswith("/whoami") else ticket,
     )
@@ -153,6 +167,7 @@ def test_exact_grant_and_ticket_produce_credential_free_receipt(tmp_path: Path) 
 @pytest.mark.parametrize(("change", "message"), [
     (lambda who, ticket: who["capabilities"].append("write_ticket"), "wider"),
     (lambda who, ticket: who.update(principal="agent:other"), "principal"),
+    (lambda who, ticket: who.update(owner_identity="somebody-else"), "owner_identity"),
     (lambda who, ticket: who.update(acting_for="somebody-else"), "acting_for"),
     (lambda who, ticket: ticket.update(status="DONE"), "status"),
     (lambda who, ticket: ticket.update(updated_at="stale"), "updated_at"),
@@ -253,7 +268,7 @@ def test_headless_task_returns_exact_correlated_result_without_channel(
     _worker_script(executable, record)
     raw.update(claude_executable=str(executable), roots_mcp_executable=str(executable))
     request.write_text(json.dumps(raw))
-    _fake_proofs(monkeypatch, whoami, ticket)
+    _fake_proofs(monkeypatch, whoami, ticket, raw)
     receipt = tmp_path / "receipt.json"
     bootstrap.run(request, _token_fd(), receipt)
     child, persisted = json.loads(record.read_text()), json.loads(receipt.read_text())
@@ -284,7 +299,7 @@ def test_resume_uses_existing_session_and_new_correlation(
                previous_assignment_id=_seed_completed_predecessor(raw),
                resume=True, correlation_id="retry-002")
     request.write_text(json.dumps(raw))
-    _fake_proofs(monkeypatch, whoami, ticket)
+    _fake_proofs(monkeypatch, whoami, ticket, raw)
     receipt = tmp_path / "receipt.json"
     bootstrap.run(request, _token_fd(), receipt)
     child, persisted = json.loads(record.read_text()), json.loads(receipt.read_text())
@@ -300,7 +315,7 @@ def test_assignment_claim_prevents_sequential_replay_with_another_receipt(
     _worker_script(executable, record)
     raw.update(claude_executable=str(executable), roots_mcp_executable=str(executable))
     request.write_text(json.dumps(raw))
-    _fake_proofs(monkeypatch, whoami, ticket)
+    _fake_proofs(monkeypatch, whoami, ticket, raw)
     bootstrap.run(request, _token_fd(), tmp_path / "first-receipt.json")
     first_record = record.read_bytes()
     with pytest.raises(BootstrapRefusal, match="already been claimed"):
@@ -319,7 +334,7 @@ def test_assignment_claim_is_atomic_across_concurrent_launches(
     _worker_script(executable, tmp_path / "child.json")
     raw.update(claude_executable=str(executable), roots_mcp_executable=str(executable))
     request.write_text(json.dumps(raw))
-    _fake_proofs(monkeypatch, whoami, ticket)
+    _fake_proofs(monkeypatch, whoami, ticket, raw)
     outcomes: list[str] = []
 
     def launch(index: int) -> None:
@@ -347,7 +362,7 @@ def test_crash_before_spawn_leaves_uncertain_claim_that_cannot_resume(
     _worker_script(executable, tmp_path / "child.json")
     raw.update(claude_executable=str(executable), roots_mcp_executable=str(executable))
     request.write_text(json.dumps(raw))
-    _fake_proofs(monkeypatch, whoami, ticket)
+    _fake_proofs(monkeypatch, whoami, ticket, raw)
     original_popen = subprocess.Popen
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("crash")))
     with pytest.raises(OSError, match="crash"):
@@ -360,6 +375,7 @@ def test_crash_before_spawn_leaves_uncertain_claim_that_cannot_resume(
         previous_assignment_id=prior["assignment_id"], resume=True, correlation_id="recovery",
     )
     request.write_text(json.dumps(raw))
+    _fake_proofs(monkeypatch, whoami, ticket, raw)
     with pytest.raises(BootstrapRefusal, match="not a completed assignment"):
         bootstrap.run(request, _token_fd(), tmp_path / "recovery-receipt.json")
     assert not (Path(raw["claim_dir"]) / f"{raw['assignment_id']}.json").exists()
@@ -373,7 +389,7 @@ def test_completed_claim_recovers_result_when_receipt_publication_crashes_and_al
     _worker_script(executable, tmp_path / "child.json")
     raw.update(claude_executable=str(executable), roots_mcp_executable=str(executable))
     request.write_text(json.dumps(raw))
-    _fake_proofs(monkeypatch, whoami, ticket)
+    _fake_proofs(monkeypatch, whoami, ticket, raw)
     original_publish = bootstrap._ReceiptPublisher.publish
     monkeypatch.setattr(
         bootstrap._ReceiptPublisher, "publish",
@@ -392,6 +408,7 @@ def test_completed_claim_recovers_result_when_receipt_publication_crashes_and_al
         previous_assignment_id=prior["assignment_id"], resume=True, correlation_id="next-task",
     )
     request.write_text(json.dumps(raw))
+    _fake_proofs(monkeypatch, whoami, ticket, raw)
     bootstrap.run(request, _token_fd(), tmp_path / "next-receipt.json")
     assert json.loads((tmp_path / "next-receipt.json").read_text())["ready"] is True
 
@@ -414,7 +431,7 @@ def test_resume_rejects_completed_predecessor_from_another_authority(
     else:
         raw["principal"] = whoami["principal"] = ticket["assigned_principal"] = "agent:other"
     request.write_text(json.dumps(raw))
-    _fake_proofs(monkeypatch, whoami, ticket)
+    _fake_proofs(monkeypatch, whoami, ticket, raw)
     with pytest.raises(BootstrapRefusal, match="not a completed assignment"):
         bootstrap.run(request, _token_fd(), tmp_path / "receipt.json")
     assert not (Path(raw["claim_dir"]) / f"{raw['assignment_id']}.json").exists()
@@ -428,7 +445,7 @@ def test_expiry_after_result_never_commits_completed_claim(
     _worker_script(executable, tmp_path / "child.json")
     raw.update(claude_executable=str(executable), roots_mcp_executable=str(executable))
     request.write_text(json.dumps(raw))
-    _fake_proofs(monkeypatch, whoami, ticket)
+    _fake_proofs(monkeypatch, whoami, ticket, raw)
     original = bootstrap._validated_result
 
     def expire_after_validation(stdout: bytes, assignment: dict, token: str):
@@ -458,7 +475,7 @@ def test_wrong_or_malformed_claude_result_never_publishes_readiness(
     _worker_script(executable, tmp_path / "child.json", mutation=mutation)
     raw.update(claude_executable=str(executable), roots_mcp_executable=str(executable))
     request.write_text(json.dumps(raw))
-    _fake_proofs(monkeypatch, whoami, ticket)
+    _fake_proofs(monkeypatch, whoami, ticket, raw)
     receipt = tmp_path / "receipt.json"
     with pytest.raises(BootstrapRefusal, match=message) as failure:
         bootstrap.run(request, _token_fd(), receipt)
@@ -475,7 +492,7 @@ def test_timeout_kills_worker_and_never_publishes_readiness(
     raw.update(claude_executable=str(executable), roots_mcp_executable=str(executable),
                expires_at=int(time.time()) + 3)
     request.write_text(json.dumps(raw))
-    _fake_proofs(monkeypatch, whoami, ticket)
+    _fake_proofs(monkeypatch, whoami, ticket, raw)
     receipt = tmp_path / "receipt.json"
     with pytest.raises(BootstrapRefusal, match="exceeded the assignment lifetime"):
         bootstrap.run(request, _token_fd(), receipt)
@@ -493,7 +510,7 @@ def test_config_directory_replacement_is_detected_after_spawn(
     _worker_script(executable, tmp_path / "child.json")
     raw.update(claude_executable=str(executable), roots_mcp_executable=str(executable))
     request.write_text(json.dumps(raw))
-    _fake_proofs(monkeypatch, whoami, ticket)
+    _fake_proofs(monkeypatch, whoami, ticket, raw)
     original, checks = bootstrap._verify_pinned_directory_path, 0
 
     def replace_on_second_check(path: str, fd: int, name: str) -> None:

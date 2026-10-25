@@ -325,20 +325,27 @@ export function useStatusbarItems({
   // and the store merges rather than replaces, so the PREVIOUS session's gauge
   // numbers survive the switch. Mid-turn useContextBreakdown returns null (the
   // snapshot is pre-turn), so the streamed usage carries the gauge.
-  const gaugeUsage = useMemo<UsageStats>(
-    () =>
-      contextBreakdown
-        ? {
-            ...currentUsage,
-            context_estimated: contextBreakdown.context_estimated,
-            context_source: contextBreakdown.context_source,
-            context_max: contextBreakdown.context_max,
-            context_percent: contextBreakdown.context_percent,
-            context_used: contextBreakdown.context_used
-          }
-        : currentUsage,
-    [contextBreakdown, currentUsage]
-  )
+  //
+  // An agentless breakdown (no resident agent) knows no window: it carries
+  // categories for the popover but zeroed header figures. The header then
+  // stays this session's own streamed reading — never the merged global,
+  // which can still hold the previous session's numbers.
+  const gaugeUsage = useMemo<UsageStats>(() => {
+    if (!contextBreakdown) {
+      return currentUsage
+    }
+
+    const reading = contextBreakdown.context_max > 0 ? contextBreakdown : (focusedUsage ?? EMPTY_USAGE)
+
+    return {
+      ...currentUsage,
+      context_estimated: reading.context_estimated,
+      context_source: reading.context_source,
+      context_max: reading.context_max,
+      context_percent: reading.context_percent,
+      context_used: reading.context_used
+    }
+  }, [contextBreakdown, currentUsage, focusedUsage])
 
   const contextUsage = useMemo(() => usageContextLabel(gaugeUsage), [gaugeUsage])
   const contextBar = useMemo(() => contextBarLabel(gaugeUsage), [gaugeUsage])

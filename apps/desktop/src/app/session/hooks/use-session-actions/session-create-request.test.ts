@@ -7,7 +7,34 @@ vi.mock('@/store/gateway', () => ({
   requestGatewayForAgent: (...args: unknown[]) => requestGatewayForAgent(...args)
 }))
 
-import { createGatewaySession } from './session-create-request'
+const ensureGatewayProfile = vi.fn()
+const ensureGatewayAgent = vi.fn()
+
+vi.mock('@/store/profile', () => ({
+  $activeGatewayProfile: { get: () => 'default' },
+  $newChatProfile: { get: () => null },
+  ensureGatewayAgent: (...args: unknown[]) => ensureGatewayAgent(...args),
+  ensureGatewayProfile: (...args: unknown[]) => ensureGatewayProfile(...args),
+  normalizeProfileKey: (value: string) => value,
+  resolveNewChatOwnerRoute: () => null
+}))
+
+// The composer atoms as syncRuntimeMetadataToView leaves them after a session.info
+// heartbeat: $currentProvider holds the runtime's resolved provider class, not a pick.
+let composerModel = ''
+let composerProvider = ''
+
+vi.mock('@/store/session', () => ({
+  $currentCwdExplicit: { get: () => false },
+  $currentFastMode: { get: () => false },
+  $currentModel: { get: () => composerModel },
+  $currentProvider: { get: () => composerProvider },
+  $currentReasoningEffort: { get: () => 'low' },
+  $currentServiceTier: { get: () => 'normal' },
+  getCurrentModelSource: () => 'manual'
+}))
+
+import { createGatewaySession, desktopSessionCreateParams } from './session-create-request'
 
 // Verbatim admission rejections from older backends (tui_gateway/contracts/registry.py).
 const rejection = (field: string, suffix = '') =>
@@ -77,6 +104,37 @@ describe('createGatewaySession', () => {
 
       await expect(createGatewaySession(null, sentParams, requestGateway)).rejects.toBe(failure)
       expect(requestGateway).toHaveBeenCalledTimes(1)
+    }
+  })
+})
+
+describe('desktopSessionCreateParams', () => {
+  beforeEach(() => {
+    ensureGatewayProfile.mockReset().mockResolvedValue(undefined)
+    ensureGatewayAgent.mockReset().mockResolvedValue(undefined)
+    composerModel = ''
+    composerProvider = ''
+  })
+
+  it('drops the heartbeat-echoed generic `custom` class instead of shipping a credentialless bare-custom pick', async () => {
+    // What syncRuntimeMetadataToView leaves behind after a session.info heartbeat for a
+    // session on a named custom provider (custom:*): the resolved class, not a user pick.
+    composerModel = 'DeepSeek-V4.1-Flash'
+    composerProvider = 'custom'
+
+    const created = await desktopSessionCreateParams('/work/repo')
+
+    expect(created.model).toBe('DeepSeek-V4.1-Flash')
+    expect('provider' in created).toBe(false)
+  })
+
+  it('ships a real catalog slug and the named custom: form untouched', async () => {
+    composerModel = 'GLM-5.3'
+
+    for (const provider of ['myhosted', 'custom:myhosted']) {
+      composerProvider = provider
+
+      await expect(desktopSessionCreateParams('/work/repo')).resolves.toMatchObject({ model: 'GLM-5.3', provider })
     }
   })
 })

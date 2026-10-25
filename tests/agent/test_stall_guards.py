@@ -349,6 +349,34 @@ def test_detects_trailing_next_i():
     assert trailing_continue_intent("Step one complete. Next: I run the tests")
 
 
+def test_detects_trailing_german_intent():
+    # German sessions announce the next action the same way; the guard must fire
+    # on the German phrasings too, not only the English ones (issue #105163).
+    assert trailing_continue_intent("Die Config ist gefunden. Ich werde jetzt die Tests ausführen.")
+    assert trailing_continue_intent("Schritt eins ist fertig. Jetzt werde ich die Logs ansehen")
+    assert trailing_continue_intent("Fast fertig. Ich werde nun den Branch pushen.")
+    assert trailing_continue_intent("Das ist erledigt. Jetzt mache ich den Linter an")
+    assert trailing_continue_intent("Als nächstes werde ich die Datei lesen")
+
+
+def test_ignores_german_plain_finish_and_offers():
+    assert not trailing_continue_intent("Die Tests sind erfolgreich und der Branch ist gepusht.")
+    assert not trailing_continue_intent("Ich kann das morgen machen, wenn du möchtest.")
+    # "ich werde jetzt" mid-message with substantive content after it is not dangling.
+    assert not trailing_continue_intent(
+        "Ich werde jetzt die Tradeoffs erklären. Erstens bleibt der Prefix stabil."
+    )
+
+
+def test_detects_trailing_serbian_intent():
+    assert trailing_continue_intent("Konfiguracija je pronađena. Sada ću pokrenuti testove.")
+    assert trailing_continue_intent("Korak jedan je gotov. Idem sada da pogledam logove")
+
+
+def test_ignores_serbian_plain_finish():
+    assert not trailing_continue_intent("Testovi su prošli i branch je pushovan.")
+
+
 def test_ignores_intent_followed_by_more_content():
     # Intent phrase mid-message with substantive content after it — the model
     # already continued; nothing dangling.

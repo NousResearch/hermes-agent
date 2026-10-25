@@ -1755,7 +1755,9 @@ def activate_codex_app_server_fallback(agent: Any, result: dict[str, Any]) -> bo
     Classify that text; on a billing / rate-limit verdict activate the configured fallback and
     return True so the caller re-runs the same user turn on the generic loop."""
     error = result.get("error")
-    if not error or result.get("interrupted") or not agent._has_pending_fallback():
+    if not error or result.get("interrupted") or result.get("automatic_replay_prohibited") is True:
+        return False
+    if not agent._has_pending_fallback():
         return False
     classified = classify_api_error(
         RuntimeError(str(error)), provider=getattr(agent, "provider", "") or "", model=getattr(agent, "model", "") or "",

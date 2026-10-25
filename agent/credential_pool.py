@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from agent.credential_pool_admin import CredentialPoolAdminMixin
+from agent.credential_pool_host_auth_refresh import CredentialPoolHostAuthRefreshMixin
 from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
 from agent.credential_pool_timestamps import _parse_absolute_timestamp
 
@@ -963,7 +964,7 @@ class _RefreshDone(Exception):
         self.result = result
 
 
-class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin):
+class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin, CredentialPoolHostAuthRefreshMixin):
     def __init__(self, provider: str, entries: list[PooledCredential]):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
@@ -1675,7 +1676,10 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             last_refresh=refreshed.get("last_refresh"),
         )
 
-    def _refresh_entry_impl(self, entry: PooledCredential, *, force: bool) -> Optional[PooledCredential]:
+    def _refresh_entry_impl(
+        self, entry: PooledCredential, *, force: bool,
+        expected_principal: Optional[tuple[str, str]] = None,
+    ) -> Optional[PooledCredential]:
         # Single-use-token providers adopt fresher tokens from their store
         # BEFORE spending the refresh_token; ``entry`` is rebound to the synced
         # row so the failure path below recovers against the pair we POSTed.
@@ -1683,7 +1687,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             if self.provider == "anthropic":
                 updated = self._refresh_anthropic(entry)
             elif self.provider in _TOKENS_SINGLETON_PROVIDERS:
-                entry = self._sync_entry_from_auth_store(entry)
+                if expected_principal is None:
+                    entry = self._sync_entry_from_auth_store(entry)
                 updated = self._post_tokens_refresh(entry)
             elif (plugin_refresh := plugin_refresh_hook(self.provider)) is not None:
                 rotated = plugin_refresh(entry)
@@ -1710,8 +1715,16 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             return done.result
         except Exception as exc:
             logger.debug("Credential refresh failed for %s/%s: %s", self.provider, entry.id, exc)
+            if expected_principal is not None and self.provider == "openai-codex":
+                self._mark_exhausted(entry, None)
+                return None
             return self._recover_failed_refresh(entry, exc)
 
+        if (expected_principal is not None and self.provider == "openai-codex"
+                and _codex_principal_identity(updated.access_token) != expected_principal):
+            # The single-use grant may be spent, but a foreign principal must never become durable or usable.
+            self._mark_dead_refresh_grant(entry, RuntimeError("Codex refresh returned a different principal"))
+            return None
         updated = replace(updated, **_MARK_OK)
         self._replace_entry(entry, updated)
         # Declare the cleared id: a borrowed row carries no access_token on disk, so
@@ -2384,30 +2397,6 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 
     def try_refresh_current(self) -> Optional[PooledCredential]:
         with self._lock:
-            return self._try_refresh_current_unlocked()
-
-    def try_refresh_matching(
-        self,
-        api_key_hint: Optional[str] = None,
-        credential_id: Optional[str] = None,
-    ) -> Optional[PooledCredential]:
-        """Force-refresh the entry that supplied the failed request.
-
-        Direct integrations may reload the pool after a request failed, so
-        ``current_id`` cannot identify the issuing credential. With no hint,
-        select WITHOUT the normal proactive refresh: the forced refresh below
-        must consume a rotating refresh token exactly once.
-        """
-        with self._lock:
-            entry = self._find(lambda e: e.id == credential_id) if credential_id else None
-            if entry is None:
-                if api_key_hint:
-                    entry = self._find(lambda e: e.runtime_api_key == api_key_hint)
-                else:
-                    entry = self._current_unlocked() or self._select_unlocked(refresh=False, count=False)[0]
-            if entry is None:
-                return None
-            self._current_id = entry.id
             return self._try_refresh_current_unlocked()
 
     def _try_refresh_current_unlocked(self) -> Optional[PooledCredential]:

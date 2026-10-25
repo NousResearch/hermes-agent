@@ -22,6 +22,12 @@ Not using OpenAI Codex? `hermes setup --portal` configures a non-Codex backend w
 - **Memory and skill nudges keep working** — Codex's events are projected into Hermes' message shape so the self-improvement loop sees a normal-looking transcript.
 - **Your Hermes persona rides along** — the composed system prompt (SOUL.md, MEMORY.md/USER.md, per-channel `system_prompt` overrides) is sent to the codex thread once as developer instructions when the thread starts, and Codex's built-in personality is disabled so it cannot compete with yours.
 
+### Codex account binding and quota recovery
+
+When Hermes has selected an `openai-codex` OAuth pool entry, the app-server session authenticates with that exact entry through its native account RPCs. Host-auth sessions request Codex's ephemeral credential-storage mode; access and refresh tokens stay in Hermes' credential pool and are not placed in Codex command-line arguments or environment variables. A server refresh request refreshes only the bound pool entry and is accepted only when its account and subject still match. If no valid selected pool entry is available, host-auth startup fails closed rather than choosing a different account.
+
+A native usage-limit or rate-limit error may rotate one exhausted pool entry and retry once on the same Codex thread only when the current turn explicitly completes as failed, before output or work. Only an exact echo of the submitted input and thread/rate-limit/token-usage metadata are non-work events; output, reasoning, plans, tool items, approval/refresh requests, unknown events, interruptions, and unclassified errors block replay. Selected-pool host-auth failures never enter the generic fallback replay path, including when that one retry fails.
+
 ## What tools the model actually has
 
 This is the part most users want to know up front. When this runtime is on, the model running your turn has three independent sources of tools:
@@ -159,11 +165,10 @@ uses:
    npm i -g @openai/codex
    codex --version   # 0.130.0 or newer
    ```
-2. **Codex OAuth login.** The codex subprocess reads `~/.codex/auth.json`. Two ways to populate it:
+2. **OpenAI Codex authentication.** When `openai-codex` has a selected Hermes OAuth pool row, the app-server uses that row and refreshes that same account; **no separate `codex login` is needed**. If the runtime has no Hermes credential pool, the standalone Codex-auth path still uses Codex CLI's auth store:
    ```bash
    codex login                  # writes tokens to ~/.codex/auth.json
    ```
-   Hermes' own `hermes auth add openai-codex` writes to `~/.hermes/auth.json` — that's a separate session. **Run `codex login` separately** if you haven't.
 
    <a id="named-custom-providers"></a>**Or: a named custom provider.** A `providers.<name>` entry in Hermes config can use this runtime when the **same name** is defined as a Codex provider. Hermes config:
 

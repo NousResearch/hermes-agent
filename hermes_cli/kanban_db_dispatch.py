@@ -2039,15 +2039,14 @@ def dispatch_once(
 
 def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -> Optional[int]:
     """Back-compat: older spawn_fn signatures (and test stubs) accept only
-    ``(task, workspace)``; pass ``board`` only when the callable supports it."""
+    ``(task, workspace)``; pass ``board`` only when the callable supports it.
+    ``Signature.bind`` validates without running the callable (#144200)."""
     import inspect
     try:
-        sig = inspect.signature(spawn_fn)
-        if "board" in sig.parameters:
-            return spawn_fn(task, workspace, board=board)
-        return spawn_fn(task, workspace)
+        inspect.signature(spawn_fn).bind(task, workspace, board=board)
     except (TypeError, ValueError):
         return spawn_fn(task, workspace)
+    return spawn_fn(task, workspace, board=board)
 
 
 def _dispatch_lane_task(

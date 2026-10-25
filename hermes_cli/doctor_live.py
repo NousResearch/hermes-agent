@@ -12,7 +12,7 @@ from typing import Callable, List, Optional
 
 from hermes_cli.browser_runtime import chromium_executable
 from hermes_cli.doctor import _section, check_info
-from hermes_cli.doctor_report import check_fail, check_ok, check_warn
+from hermes_cli.doctor_report import check_fail, check_ok, check_warn, format_probe_error
 from utils import normalize_proxy_env_vars
 
 DEFAULT_PROBE_TIMEOUT = 10.0
@@ -141,9 +141,9 @@ def _run_one(name: str, fn: Callable[[], ProbeResult], issues: list[str]) -> Pro
     try:
         result = fn()
     except TimeoutError as exc:
-        result = ProbeResult(name, "fail", f"(timed out: {exc})")
+        result = ProbeResult(name, "fail", f"(timed out: {format_probe_error(exc)})")
     except Exception as exc:
-        msg = str(exc) or exc.__class__.__name__
+        msg = format_probe_error(exc)
         result = ProbeResult(name, "fail", f"(timed out: {msg})" if "time" in msg.lower() else f"({msg})")
     _report(result, issues)
     return result
@@ -189,5 +189,5 @@ def maybe_run_live_checks(args, issues: list[str]):
     try:
         return run_live_checks(issues)
     except Exception as exc:  # catch-all: doctor must survive
-        check_warn("Live backend probes crashed", f"({exc})")
+        check_warn("Live backend probes crashed", f"({format_probe_error(exc)})")
         return None

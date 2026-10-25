@@ -7,6 +7,19 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from hermes_cli.colors import Colors, color
+from hermes_cli.debug_redaction import redact_debug_support_text
+
+
+def format_probe_error(error: Exception) -> str:
+    """Keep probe failures useful without echoing rejected authentication headers."""
+    from httpx import LocalProtocolError
+
+    message = str(error)
+    # httpx includes the entire rejected header as a bytes repr, without its name.
+    # Opaque API keys therefore cannot reliably be recognized by a text redactor.
+    if isinstance(error, LocalProtocolError) and message.startswith("Illegal header value "):
+        return "Invalid HTTP header value; check configured credentials for line breaks or other invalid characters"
+    return redact_debug_support_text(message) or type(error).__name__
 
 
 def _mark(glyph: str, col: str):

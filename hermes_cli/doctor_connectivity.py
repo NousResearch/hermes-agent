@@ -16,6 +16,7 @@ from typing import NamedTuple
 from urllib.parse import urlsplit
 
 from hermes_cli.colors import Colors, color
+from hermes_cli.doctor_report import format_probe_error
 from hermes_cli.version_info import hermes_user_agent
 from hermes_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches, normalize_proxy_env_vars
@@ -142,7 +143,7 @@ def _probe_openrouter() -> ProbeResult:
         import httpx
         r = httpx.get(OPENROUTER_MODELS_URL, headers={"Authorization": f"Bearer {key}"}, timeout=10)
     except Exception as e:
-        return _row(name, "fail", f"({e})", ["Check network connectivity"])
+        return _row(name, "fail", f"({format_probe_error(e)})", ["Check network connectivity"])
     if r.status_code == 200:
         return _row(name, "ok")
     detail, issue = _OPENROUTER_STATUS.get(r.status_code, (f"(HTTP {r.status_code})", None))
@@ -170,7 +171,7 @@ def _probe_anthropic() -> ProbeResult:
             headers["anthropic-beta"] = ",".join([b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA] + list(_OAUTH_ONLY_BETAS))
             r = httpx.get(url, headers=headers, timeout=10)
     except Exception as e:
-        return _row(name, "warn", f"({e})")
+        return _row(name, "warn", f"({format_probe_error(e)})")
     return _row(name, *{200: ("ok",), 401: ("fail", "(invalid API key)")}.get(r.status_code, ("warn", "(couldn't verify)")))
 
 
@@ -196,7 +197,7 @@ def _probe_apikey_provider(pname, env_vars, default_url, base_env, supports_heal
         if pname == "Alibaba/DashScope" and not base and r.status_code == 401:
             r = httpx.get("https://dashscope.aliyuncs.com/compatible-mode/v1/models", headers=headers, timeout=10)
     except Exception as e:
-        return _row(pname, "warn", f"({e})", label=label)
+        return _row(pname, "warn", f"({format_probe_error(e)})", label=label)
     if r.status_code == 401:
         return _row(pname, "fail", "(invalid API key)", [f"Check {env_vars[0]} in .env"], label=label)
     return _row(pname, "ok", label=label) if r.status_code == 200 else _row(pname, "warn", f"(HTTP {r.status_code})", label=label)
@@ -285,7 +286,7 @@ def _probe_bedrock() -> ProbeResult:
         return _row(name, "warn", "(boto3 not installed)", [hint], label=label)
     except Exception as e:
         err_name = type(e).__name__
-        return _row(name, "warn", f"({err_name}: {e})", [f"AWS Bedrock: {err_name} — check IAM permissions for bedrock:ListFoundationModels"], label=label)
+        return _row(name, "warn", f"({err_name}: {format_probe_error(e)})", [f"AWS Bedrock: {err_name} — check IAM permissions for bedrock:ListFoundationModels"], label=label)
 
 
 def _probe_azure_entra() -> ProbeResult:
@@ -311,7 +312,8 @@ def _probe_azure_entra() -> ProbeResult:
             EntraIdentityConfig, SCOPE_AI_AZURE_DEFAULT, describe_active_credential, has_azure_identity_installed,
         )
     except Exception as exc:
-        return _row(name, "warn", f"(adapter import failed: {exc})", [f"Azure Foundry adapter import failed: {exc}"], label=label)
+        error = format_probe_error(exc)
+        return _row(name, "warn", f"(adapter import failed: {error})", [f"Azure Foundry adapter import failed: {error}"], label=label)
     if not has_azure_identity_installed():
         return _row(name, "warn", "(azure-identity not installed)", ["From the Hermes environment, run: "
                      f"{install_hint('azure-identity')}. "
@@ -398,7 +400,7 @@ def _probe_github_token() -> ProbeResult:
             "Authorization": f"Bearer {get_env_value(var)}", "User-Agent": hermes_user_agent(),
             "Accept": "application/vnd.github+json"})
     except Exception as e:
-        return _row(name, "fail", f"({e})", ["Check network connectivity"])
+        return _row(name, "fail", f"({format_probe_error(e)})", ["Check network connectivity"])
     if r.status_code == 200:
         return _row(name, "ok", f"({var} from {where} accepted by api.github.com)")
     if r.status_code == 401:

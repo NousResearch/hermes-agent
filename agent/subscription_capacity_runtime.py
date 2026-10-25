@@ -183,6 +183,10 @@ def prepare_kanban_worker_capacity(
         if result.lease is None:
             reasons = "; ".join(a.reason for a in result.assessments) or "capacity denied"
             raise SubscriptionCapacityUnavailable(reasons)
+        if not router.authorize_dispatcher_process(result.lease):
+            # An idempotent replay may refer to a lease held by a still-live earlier dispatcher.
+            # Never delete that durable reservation merely because this process lacks authority.
+            raise SubscriptionCapacityUnavailable("capacity lease belongs to another dispatcher process")
 
     payload = {
         "version": 1, "db_path": str(db_path), "coordination_scope": scope,
@@ -202,6 +206,24 @@ def release_prepared_capacity(payload: Optional[str]) -> bool:
         coordination_scope=str(state["coordination_scope"]),
     )
     return router.release(lease.lease_id, owner=lease.owner)
+
+
+def bind_prepared_capacity(payload: Optional[str], worker_pid: int) -> bool:
+    """Dispatcher-only handoff: bind an acquired lease to the exact PID returned by Popen."""
+    if not payload:
+        return False
+    try:
+        state = json.loads(payload)
+        if state.get("version") != 1:
+            return False
+        lease = _lease_from_dict(state["lease"])
+        router = SubscriptionCapacityRouter(
+            Path(state["db_path"]), (_policy_from_dict(state["policy"]),),
+            coordination_scope=str(state["coordination_scope"]),
+        )
+    except Exception:
+        return False
+    return router.register_worker_process(lease, worker_pid)
 
 
 def release_recovered_kanban_capacity(shared_root: Path, task_id: str, run_id: Any) -> int:
@@ -224,11 +246,19 @@ def release_recovered_kanban_capacity(shared_root: Path, task_id: str, run_id: A
                     "CREATE TABLE IF NOT EXISTS subscription_capacity_bindings "
                     "(lease_id TEXT PRIMARY KEY, worker_pid INTEGER NOT NULL)"
                 )
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS subscription_capacity_authorities "
+                    "(lease_id TEXT PRIMARY KEY, dispatcher_pid INTEGER NOT NULL)"
+                )
                 cursor = conn.execute(
                     "DELETE FROM subscription_capacity_leases WHERE owner = ?", (owner,),
                 )
                 conn.execute(
                     "DELETE FROM subscription_capacity_bindings WHERE lease_id NOT IN "
+                    "(SELECT lease_id FROM subscription_capacity_leases)"
+                )
+                conn.execute(
+                    "DELETE FROM subscription_capacity_authorities WHERE lease_id NOT IN "
                     "(SELECT lease_id FROM subscription_capacity_leases)"
                 )
                 conn.commit()
@@ -276,8 +306,8 @@ def _owns_worker_context(lease: CapacityLease) -> bool:
     )
 
 
-def _bind_owning_process(router: SubscriptionCapacityRouter, lease: CapacityLease) -> None:
-    if not _owns_worker_context(lease) or not router.bind_worker_process(lease, os.getpid()):
+def _verify_owning_process(router: SubscriptionCapacityRouter, lease: CapacityLease) -> None:
+    if not _owns_worker_context(lease) or not router.worker_process_matches(lease, os.getpid()):
         raise SubscriptionCapacityUnavailable(
             "subscription capacity lease is not owned by this Kanban worker process"
         )
@@ -289,7 +319,7 @@ def check_worker_capacity_phase(agent: Any) -> None:
     if runtime is None:
         return
     router, lease = runtime
-    _bind_owning_process(router, lease)
+    _verify_owning_process(router, lease)
     if str(getattr(agent, "provider", "") or "") != lease.provider or str(
         getattr(agent, "model", "") or ""
     ) != lease.model:
@@ -308,7 +338,7 @@ def release_worker_capacity() -> bool:
     if runtime is None:
         return False
     router, lease = runtime
-    if not _owns_worker_context(lease) or not router.bind_worker_process(lease, os.getpid()):
+    if not _owns_worker_context(lease) or not router.worker_process_matches(lease, os.getpid()):
         return False
     with _runtime_lock:
         if _runtime_released:

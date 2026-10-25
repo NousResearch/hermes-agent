@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 
 def _make_task(kb, *, assignee: str):
     return kb.Task(
@@ -88,6 +90,72 @@ agent:
     pinned = captured["cmd"][captured["cmd"].index("--toolsets") + 1].split(",")
     for required in ("terminal", "web", "file", "skills", "code_execution", "delegation"):
         assert required in pinned
+
+
+def test_default_spawn_binds_capacity_to_exact_popen_pid(monkeypatch, tmp_path):
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "elias").mkdir(parents=True)
+    root.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    from agent import subscription_capacity_runtime as capacity
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+    monkeypatch.setattr(capacity, "prepare_kanban_worker_capacity", lambda *args, **kwargs: "lease")
+    bound = []
+    monkeypatch.setattr(capacity, "bind_prepared_capacity", lambda payload, pid: bound.append((payload, pid)) or True)
+
+    class FakeProc:
+        pid = 7357
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProc())
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    assert kbd._default_spawn(_make_task(kb, assignee="elias"), str(workspace)) == 7357
+    assert bound == [("lease", 7357)]
+
+
+def test_default_spawn_binding_failure_terminates_then_releases(monkeypatch, tmp_path):
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "elias").mkdir(parents=True)
+    root.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    from agent import subscription_capacity_runtime as capacity
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+    monkeypatch.setattr(capacity, "prepare_kanban_worker_capacity", lambda *args, **kwargs: "lease")
+    monkeypatch.setattr(capacity, "bind_prepared_capacity", lambda payload, pid: False)
+    released = []
+    monkeypatch.setattr(capacity, "release_prepared_capacity", lambda payload: released.append(payload) or True)
+
+    class FakeProc:
+        pid = 7358
+        dead = False
+
+        def terminate(self):
+            self.dead = True
+
+        def wait(self, timeout=None):
+            return 1
+
+        def poll(self):
+            return 1 if self.dead else None
+
+    child = FakeProc()
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: child)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    with pytest.raises(capacity.SubscriptionCapacityUnavailable, match="PID binding failed"):
+        kbd._default_spawn(_make_task(kb, assignee="elias"), str(workspace))
+    assert child.dead is True
+    assert released == ["lease"]
 
 
 def test_default_spawn_model_override_survives_real_cli_parse(monkeypatch, tmp_path):

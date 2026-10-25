@@ -8,6 +8,7 @@ providers; paid gateways and aliases remain separate operator-selected routes.
 from __future__ import annotations
 
 import math
+import os
 import sqlite3
 import threading
 import uuid
@@ -179,6 +180,10 @@ class SubscriptionCapacityRouter:
                     "CREATE TABLE IF NOT EXISTS subscription_capacity_bindings "
                     "(lease_id TEXT PRIMARY KEY, worker_pid INTEGER NOT NULL)"
                 )
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS subscription_capacity_authorities "
+                    "(lease_id TEXT PRIMARY KEY, dispatcher_pid INTEGER NOT NULL)"
+                )
                 row = conn.execute("SELECT scope FROM subscription_capacity_meta WHERE singleton = 1").fetchone()
                 if row is None:
                     conn.execute(
@@ -280,6 +285,10 @@ class SubscriptionCapacityRouter:
             "DELETE FROM subscription_capacity_bindings WHERE lease_id NOT IN "
             "(SELECT lease_id FROM subscription_capacity_leases)"
         )
+        conn.execute(
+            "DELETE FROM subscription_capacity_authorities WHERE lease_id NOT IN "
+            "(SELECT lease_id FROM subscription_capacity_leases)"
+        )
         rows = conn.execute(
             "SELECT reserved_percent FROM subscription_capacity_leases WHERE provider = ?", (provider,),
         ).fetchall()
@@ -314,6 +323,10 @@ class SubscriptionCapacityRouter:
             conn.execute("DELETE FROM subscription_capacity_leases WHERE expires_at <= ?", (now.isoformat(),))
             conn.execute(
                 "DELETE FROM subscription_capacity_bindings WHERE lease_id NOT IN "
+                "(SELECT lease_id FROM subscription_capacity_leases)"
+            )
+            conn.execute(
+                "DELETE FROM subscription_capacity_authorities WHERE lease_id NOT IN "
                 "(SELECT lease_id FROM subscription_capacity_leases)"
             )
             existing = conn.execute(
@@ -438,20 +451,55 @@ class SubscriptionCapacityRouter:
             )
             if cursor.rowcount == 1:
                 conn.execute("DELETE FROM subscription_capacity_bindings WHERE lease_id = ?", (lease_id,))
+                conn.execute("DELETE FROM subscription_capacity_authorities WHERE lease_id = ?", (lease_id,))
             conn.commit()
             return cursor.rowcount == 1
 
-    def bind_worker_process(self, lease: CapacityLease, worker_pid: int) -> bool:
-        """Atomically bind an admitted lease to its one owning worker process."""
+    def authorize_dispatcher_process(self, lease: CapacityLease) -> bool:
+        """Persist the acquiring dispatcher's PID before the envelope leaves that process."""
+        dispatcher_pid = os.getpid()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM subscription_capacity_leases WHERE lease_id = ?", (lease.lease_id,),
+            ).fetchone()
+            if (row is None or self._row_to_lease(row) != lease
+                    or datetime.fromisoformat(row["expires_at"]) <= _aware(self.now())):
+                conn.rollback()
+                return False
+            authority = conn.execute(
+                "SELECT dispatcher_pid FROM subscription_capacity_authorities WHERE lease_id = ?",
+                (lease.lease_id,),
+            ).fetchone()
+            if authority is None:
+                conn.execute(
+                    "INSERT INTO subscription_capacity_authorities(lease_id, dispatcher_pid) VALUES (?, ?)",
+                    (lease.lease_id, dispatcher_pid),
+                )
+                conn.commit()
+                return True
+            conn.commit()
+            return int(authority["dispatcher_pid"]) == dispatcher_pid
+
+    def register_worker_process(self, lease: CapacityLease, worker_pid: int) -> bool:
+        """Dispatcher-only atomic binding of an admitted lease to its exact child PID."""
         if worker_pid <= 0:
             return False
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT owner, expires_at FROM subscription_capacity_leases WHERE lease_id = ?",
+                "SELECT * FROM subscription_capacity_leases WHERE lease_id = ?",
                 (lease.lease_id,),
             ).fetchone()
-            if row is None or row["owner"] != lease.owner or datetime.fromisoformat(row["expires_at"]) <= _aware(self.now()):
+            if (row is None or self._row_to_lease(row) != lease
+                    or datetime.fromisoformat(row["expires_at"]) <= _aware(self.now())):
+                conn.rollback()
+                return False
+            authority = conn.execute(
+                "SELECT dispatcher_pid FROM subscription_capacity_authorities WHERE lease_id = ?",
+                (lease.lease_id,),
+            ).fetchone()
+            if authority is None or int(authority["dispatcher_pid"]) != os.getpid():
                 conn.rollback()
                 return False
             bound = conn.execute(
@@ -466,3 +514,19 @@ class SubscriptionCapacityRouter:
                 return True
             conn.commit()
             return int(bound["worker_pid"]) == worker_pid
+
+    def worker_process_matches(self, lease: CapacityLease, worker_pid: int) -> bool:
+        """Read-only proof that the dispatcher already bound this lease to this process."""
+        if worker_pid <= 0:
+            return False
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM subscription_capacity_leases WHERE lease_id = ?", (lease.lease_id,),
+            ).fetchone()
+            if (row is None or self._row_to_lease(row) != lease
+                    or datetime.fromisoformat(row["expires_at"]) <= _aware(self.now())):
+                return False
+            bound = conn.execute(
+                "SELECT worker_pid FROM subscription_capacity_bindings WHERE lease_id = ?", (lease.lease_id,),
+            ).fetchone()
+            return bound is not None and int(bound["worker_pid"]) == worker_pid

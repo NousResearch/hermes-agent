@@ -71,6 +71,7 @@ def test_acquire_phase_check_and_normal_release_use_same_durable_lease(tmp_path,
         _task(), shared_root=tmp_path, profile_home=None, config={}, fetcher=lambda provider: snapshot,
     )
     monkeypatch.setenv(runtime.CAPACITY_LEASE_ENV, payload)
+    assert runtime.bind_prepared_capacity(payload, os.getpid()) is True
     router, lease = runtime._load_runtime()
     router.fetcher = lambda provider: snapshot
 
@@ -85,6 +86,7 @@ def test_route_change_cannot_escape_to_paid_fallback(tmp_path, monkeypatch):
         _task(), shared_root=tmp_path, profile_home=None, config={}, fetcher=lambda provider: _snapshot(),
     )
     monkeypatch.setenv(runtime.CAPACITY_LEASE_ENV, payload)
+    assert runtime.bind_prepared_capacity(payload, os.getpid()) is True
     with pytest.raises(runtime.SubscriptionCapacityUnavailable, match="route changed"):
         runtime.check_worker_capacity_phase(SimpleNamespace(provider="openrouter", model="gpt-6-sol"))
 
@@ -168,6 +170,7 @@ def test_in_process_delegate_cannot_check_or_release_parent_lease(tmp_path, monk
         _task(), shared_root=tmp_path, profile_home=None, config={}, fetcher=lambda provider: _snapshot(),
     )
     monkeypatch.setenv(runtime.CAPACITY_LEASE_ENV, payload)
+    assert runtime.bind_prepared_capacity(payload, os.getpid()) is True
     router, lease = runtime._load_runtime()
     router.fetcher = lambda provider: _snapshot()
     with delegated_child_context("child"):
@@ -184,6 +187,7 @@ def test_spawned_descendant_gets_no_lease_and_cannot_rebind_process(tmp_path, mo
         _task(), shared_root=tmp_path, profile_home=None, config={}, fetcher=lambda provider: _snapshot(),
     )
     monkeypatch.setenv(runtime.CAPACITY_LEASE_ENV, payload)
+    assert runtime.bind_prepared_capacity(payload, os.getpid()) is True
     router, lease = runtime._load_runtime()
     router.fetcher = lambda provider: _snapshot()
     runtime.check_worker_capacity_phase(SimpleNamespace(provider=lease.provider, model=lease.model))
@@ -194,3 +198,54 @@ def test_spawned_descendant_gets_no_lease_and_cannot_rebind_process(tmp_path, mo
     monkeypatch.setattr(runtime.os, "getpid", lambda: owner_pid + 1)
     with pytest.raises(runtime.SubscriptionCapacityUnavailable, match="not owned"):
         runtime.check_worker_capacity_phase(SimpleNamespace(provider=lease.provider, model=lease.model))
+
+
+def test_copied_envelope_cannot_self_register_or_release(tmp_path, monkeypatch):
+    payload = runtime.prepare_kanban_worker_capacity(
+        _task(), shared_root=tmp_path, profile_home=None, config={}, fetcher=lambda provider: _snapshot(),
+    )
+    monkeypatch.setenv(runtime.CAPACITY_LEASE_ENV, payload)
+    router, lease = runtime._load_runtime()
+    router.fetcher = lambda provider: _snapshot()
+
+    # A descendant can copy/import the public envelope parser, but its process identity is not the
+    # dispatcher authority persisted at admission and therefore cannot create a binding.
+    import agent.subscription_capacity as capacity_store
+    dispatcher_pid = os.getpid()
+    monkeypatch.setattr(capacity_store.os, "getpid", lambda: dispatcher_pid + 1000)
+    assert runtime.bind_prepared_capacity(payload, dispatcher_pid + 1000) is False
+
+    with pytest.raises(runtime.SubscriptionCapacityUnavailable, match="not owned"):
+        runtime.check_worker_capacity_phase(SimpleNamespace(provider=lease.provider, model=lease.model))
+    assert runtime.release_worker_capacity() is False
+    assert router.worker_process_matches(lease, os.getpid()) is False
+
+
+def test_dispatcher_binding_accepts_only_exact_spawned_pid(tmp_path, monkeypatch):
+    payload = runtime.prepare_kanban_worker_capacity(
+        _task(), shared_root=tmp_path, profile_home=None, config={}, fetcher=lambda provider: _snapshot(),
+    )
+    exact_pid = os.getpid()
+    assert runtime.bind_prepared_capacity(payload, exact_pid) is True
+    assert runtime.bind_prepared_capacity(payload, exact_pid + 1) is False
+    monkeypatch.setenv(runtime.CAPACITY_LEASE_ENV, payload)
+    router, lease = runtime._load_runtime()
+    router.fetcher = lambda provider: _snapshot()
+    runtime.check_worker_capacity_phase(SimpleNamespace(provider=lease.provider, model=lease.model))
+
+
+def test_replayed_lease_cannot_be_stolen_or_deleted_by_new_dispatcher(tmp_path, monkeypatch):
+    snapshot = _snapshot()
+    payload = runtime.prepare_kanban_worker_capacity(
+        _task(), shared_root=tmp_path, profile_home=None, config={}, fetcher=lambda provider: snapshot,
+    )
+    import agent.subscription_capacity as capacity_store
+    dispatcher_pid = os.getpid()
+    monkeypatch.setattr(capacity_store.os, "getpid", lambda: dispatcher_pid + 1000)
+
+    with pytest.raises(runtime.SubscriptionCapacityUnavailable, match="another dispatcher"):
+        runtime.prepare_kanban_worker_capacity(
+            _task(), shared_root=tmp_path, profile_home=None, config={}, fetcher=lambda provider: snapshot,
+        )
+    assert runtime.bind_prepared_capacity(payload, dispatcher_pid + 1000) is False
+    assert runtime.release_prepared_capacity(payload) is True

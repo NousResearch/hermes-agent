@@ -182,7 +182,7 @@ class VaultItemMeta:
     identifier_type: Optional[str] = None
     identifier: Optional[str] = None
     has_otp: bool = False  # a TOTP seed is stored: 2FA codes can be minted without asking the user
-    # Every origin the password manager bound to this item (manager backends only;
+    # Every explicitly trusted origin bound to this item (local or manager backend;
     # ``origin`` is the first/primary one). Fill matching stays exact-origin against
     # this list — no wildcard or subdomain inference is ever derived from it.
     allowed_origins: tuple = ()
@@ -617,6 +617,39 @@ class VaultStore:
         with self._locked():
             return [self._meta(rec) for rec in self._read_all()]
 
+    def add_origin(self, item_id: str, origin: str) -> VaultItemMeta:
+        """Trust one additional exact login origin without replacing its secrets.
+
+        This is an owner/admin operation, never inferred by the browser filler.
+        The primary origin, handle, password and optional OTP seed are unchanged.
+        """
+        value = (origin or "").strip()
+        try:
+            parts = urlsplit(value)
+            host = parts.hostname or ""
+            if (parts.scheme.lower() not in ("http", "https") or not host
+                    or parts.username is not None or parts.password is not None
+                    or "*" in value or "\\" in value
+                    or any(c.isspace() or ord(c) < 32 for c in value)):
+                raise ValueError("invalid exact web origin")
+            normalized = normalize_origin(value)
+        except (ValueError, VaultError) as exc:
+            raise VaultError("alias must be an exact HTTP(S) site URL without credentials or wildcards") from exc
+        with self._locked():
+            items = self._read_all()
+            for rec in items:
+                if rec.get("id") != item_id:
+                    continue
+                if rec.get("kind") != "login":
+                    raise VaultError("origin aliases are supported for login items only")
+                origins = list(dict.fromkeys([rec["origin"], *rec.get("allowed_origins", [])]))
+                if normalized not in origins:
+                    origins.append(normalized)
+                    rec["allowed_origins"] = origins
+                    self._write_all(items)
+                return self._meta(rec)
+        raise VaultError(f"no vault item with id {item_id!r}")
+
     def has_items(self) -> bool:
         try:
             with self._locked():
@@ -664,6 +697,10 @@ class VaultStore:
             identifier_type=rec.get("identifier_type") if identifier else None,
             identifier=identifier or None,
             has_otp=bool((rec.get("secret") or {}).get("otp_secret")),
+            allowed_origins=tuple(dict.fromkeys(
+                ([rec["origin"]] if rec.get("origin") else [])
+                + list(rec.get("allowed_origins") or [])
+            )) if rec.get("allowed_origins") else (),
         )
 
 

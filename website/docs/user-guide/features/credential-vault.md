@@ -83,11 +83,34 @@ cannot spend. Address fills need no confirmation.
 - **Desktop → Settings → Passwords & Logins**: everything saved, the detected
   password managers with Unlock/Lock, Add, Remove.
 - **CLI**: `hermes vault list`, `hermes vault add`, `hermes vault rm <handle>`,
-  `hermes vault sources`, `hermes vault key`.
+  `hermes vault add-origin <handle> <origin>`, `hermes vault sources`, `hermes vault key`.
 
 Items live encrypted under `~/.hermes/vault/`, scoped to the profile. Labels,
 site origins and login identifiers are visible metadata; passwords and card
 values never leave the vault except into the page.
+
+### Trusting another exact site for an existing login
+
+If you saved a login for `https://example.com` but the sign-in page uses
+`https://www.example.com`, you do not need to enter the password or authenticator
+key again. Find the local login's handle with `hermes vault list`, then explicitly
+authorize the additional origin:
+
+```bash
+hermes vault add-origin vault_<id> https://www.example.com
+```
+
+This preserves the original handle, primary origin, identifier, password and
+authenticator key. Repeat the command for each additional site you trust;
+authorizing an already saved origin is a no-op. It applies only to local logins;
+manage external password-manager items in their manager.
+
+Authorization stays exact: it does not trust other subdomains, HTTP instead of
+HTTPS, or a different port. A site's redirect is not permission to share a
+password with the destination. Only add a site you explicitly trust with this
+login; the agent must get your approval, never infer trust from page content.
+Both password fills and saved authenticator codes use the same allowed origins
+and retain their in-page navigation check.
 
 ## Where the vault key is kept
 

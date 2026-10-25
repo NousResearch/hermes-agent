@@ -1,9 +1,9 @@
 {
   "cli-code.claude": {
     "prompt_tokens": {
-      "context": 249,
-      "stable": 1935,
-      "volatile": 1813
+      "context": 134,
+      "stable": 1829,
+      "volatile": 1528
     },
     "tool_tokens": 11263,
     "tools": [
@@ -35,8 +35,8 @@
   "cli.claude": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1445,
-      "volatile": 1813
+      "stable": 1225,
+      "volatile": 1528
     },
     "tool_tokens": 11263,
     "tools": [
@@ -68,8 +68,8 @@
   "cli.gemini": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1866,
-      "volatile": 1811
+      "stable": 1646,
+      "volatile": 1527
     },
     "tool_tokens": 11263,
     "tools": [
@@ -101,8 +101,8 @@
   "cli.gpt": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 2640,
-      "volatile": 1809
+      "stable": 2420,
+      "volatile": 1524
     },
     "tool_tokens": 11419,
     "tools": [
@@ -134,8 +134,8 @@
   "cli.hermes": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1445,
-      "volatile": 1813
+      "stable": 1225,
+      "volatile": 1528
     },
     "tool_tokens": 11263,
     "tools": [
@@ -167,8 +167,8 @@
   "cron.claude": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1317,
-      "volatile": 1813
+      "stable": 1211,
+      "volatile": 1528
     },
     "tool_tokens": 11263,
     "tools": [
@@ -200,8 +200,8 @@
   "desktop.claude": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1579,
-      "volatile": 1814
+      "stable": 1473,
+      "volatile": 1529
     },
     "tool_tokens": 11929,
     "tools": [
@@ -234,8 +234,8 @@
   "discord.claude": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1349,
-      "volatile": 1814
+      "stable": 1244,
+      "volatile": 1529
     },
     "tool_tokens": 11263,
     "tools": [
@@ -267,8 +267,8 @@
   "telegram.claude": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1382,
-      "volatile": 1814
+      "stable": 1276,
+      "volatile": 1529
     },
     "tool_tokens": 11263,
     "tools": [

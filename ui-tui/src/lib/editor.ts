@@ -29,6 +29,14 @@ const isExecutable = (path: string): boolean => {
  *   2. on POSIX: first FALLBACKS entry resolvable on $PATH
  *   3. on Windows: `notepad.exe`
  *   4. literal `['vi']` as the last-resort POSIX floor
+ *
+ * `platform` selects the strategy branch only — it does not promise
+ * target-platform path syntax. PATH splitting, candidate joining and the
+ * executable probe deliberately stay host-bound: the returned argv is spawned
+ * against this machine's real filesystem, so PATH fixtures must use the
+ * host's dialect. Do not "fix" this by switching to the target's delimiter —
+ * simulating a foreign platform's PATH end to end means injecting the probe
+ * (a declarative exists table), which is a separate change.
  */
 export const resolveEditor = (
   env: NodeJS.ProcessEnv = process.env,

@@ -3188,6 +3188,8 @@ export const zhOverrides = {
     ],
     startVoice: '开始语音对话',
     openDirective: '打开',
+    previewMarkdown: '预览 Markdown',
+    editMarkdown: '编辑 Markdown',
     queueMessage: '排队消息',
     steer: '引导当前运行',
     redirect: '重新定向当前运行',

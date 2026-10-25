@@ -27,6 +27,8 @@ export const zhHantChat = {
     ],
     startVoice: '開始語音對話',
     openDirective: '開啟',
+    previewMarkdown: '預覽 Markdown',
+    editMarkdown: '編輯 Markdown',
     queueMessage: '排隊訊息',
     stop: '停止',
     send: '傳送',

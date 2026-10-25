@@ -3293,6 +3293,8 @@ export const en: Translations = {
     ],
     startVoice: 'Start voice conversation',
     openDirective: 'Open',
+    previewMarkdown: 'Preview Markdown',
+    editMarkdown: 'Edit Markdown',
     queueMessage: 'Queue message',
     steer: 'Steer the current run',
     redirect: 'Redirect the current run',

@@ -2271,6 +2271,8 @@ export const jaOverrides = {
     ],
     startVoice: '音声会話を開始',
     openDirective: '開く',
+    previewMarkdown: 'Markdown をプレビュー',
+    editMarkdown: 'Markdown を編集',
     queueMessage: 'メッセージをキューに入れる',
     redirect: '現在の実行をリダイレクト',
     stop: '停止',

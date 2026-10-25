@@ -84,6 +84,69 @@ def commit_local_session(db, *, epoch, receipt):
         raise
 
 
+def respell_local_route(db, *, epoch, expected, route, profile):
+    """Re-key *expected*'s creation copies from its stored route to *route* (origins carry *profile*).
+
+    The gateway mode spells a home's LOCAL routes: a named profile's own gateway (multiplexing off)
+    keys them ``agent:main:…``; the multiplex host serving that home keys them ``agent:<profile>:…``.
+    The receipt, its ``sessions`` rows (the whole lineage shares the key), its routing row and the
+    route's per-key counters (a reset's conversation generation, hygiene streaks) move together, and
+    only while the receipt is still *expected*, its target row carries the old key (or already the new
+    one: ``hermes sessions repair-profiles --legacy-main rekey`` moved the rows alone) and nothing but
+    this receipt's own lineage holds the new one; otherwise nothing changes and None is returned (the
+    restore then refuses the receipt and logs the check). Returns the rewritten receipt.
+    """
+    sid, old = expected['session_id'], expected['route']
+    key = POLICY_PREFIX + sid
+    keyed = ('sessions', 'conversation_generations', 'gateway_hygiene_state', 'delivery_obligations',
+             'gateway_queued_turns')
+
+    def respell(origin):
+        origin = dict(origin)
+        if profile is None:
+            origin.pop('profile', None)
+        else:
+            origin['profile'] = profile
+        return origin
+
+    def write(conn):
+        _epoch(conn, epoch)
+        # A profile store creates some gateway tables lazily (the launch store's are not its own).
+        present = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = [table for table in keyed if table in present]
+        saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
+        target = conn.execute('SELECT session_key FROM sessions WHERE id=?', (expected['entry']['session_id'],)).fetchone()
+        own = {*expected.get('lineage', [sid]), expected['entry']['session_id']}
+        if (saved is None or json.loads(saved[0]) != expected or target is None or target[0] not in (old, route)
+                or conn.execute("SELECT 1 FROM gateway_routing WHERE scope='' AND session_key=?", (route,)).fetchone()
+                or any(row[0] not in own for row in conn.execute('SELECT id FROM sessions WHERE session_key=?', (route,)))
+                or any(conn.execute(f'SELECT 1 FROM {table} WHERE session_key=?', (route,)).fetchone()
+                       for table in tables if table != 'sessions')):
+            return None
+        receipt = json.loads(saved[0])
+        receipt['route'] = route
+        receipt['entry'] = {**receipt['entry'], 'session_key': route, 'origin': respell(receipt['entry']['origin'])}
+        routed = conn.execute("SELECT entry_json FROM gateway_routing WHERE scope='' AND session_key=?", (old,)).fetchone()
+        if routed is not None:
+            entry = json.loads(routed[0])  # only the key and origin change: the route's /yolo toggle stays
+            entry['session_key'] = route
+            if isinstance(entry.get('origin'), dict):
+                entry['origin'] = respell(entry['origin'])
+            conn.execute("UPDATE gateway_routing SET session_key=?, entry_json=? WHERE scope='' AND session_key=?",
+                         (route, _json(entry), old))
+        for row_id, origin_json in conn.execute('SELECT id, origin_json FROM sessions WHERE session_key IN (?, ?)',
+                                                (old, route)).fetchall():
+            origin = json.loads(origin_json) if origin_json else None
+            conn.execute('UPDATE sessions SET session_key=?, origin_json=? WHERE id=?',
+                         (route, _json(respell(origin)) if isinstance(origin, dict) else origin_json, row_id))
+        for table in tables:
+            if table != 'sessions':
+                conn.execute(f'UPDATE {table} SET session_key=? WHERE session_key=?', (route, old))
+        conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json(receipt), key))
+        return receipt
+    return db._execute_write(write)
+
+
 def client_request(request_json, derived=None):
     """A frozen create request as the client sent it: an owner-resolved ``-m`` route (``model_requested``)
     compares by the name the client typed, not by the model and the *derived* fields (a receipt from

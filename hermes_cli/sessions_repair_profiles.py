@@ -206,6 +206,8 @@ class RepairPlan:
         for row in crossed["mislabelled"]:
             if row["id"] in moving:
                 continue  # the move stamps the right label
+            if row.get("receipt") and row["key_profile"] == "default" and store.profile != "default":
+                continue  # the store's label is right, the key is stale: reported as legacy_main below
             self._add(Finding(
                 "mislabelled", store.profile, row["id"],
                 f"profile_name={row['profile_name']!r} but key {row['session_key']!r} belongs to "
@@ -224,7 +226,7 @@ class RepairPlan:
     def _would_move(self, store: Store, row: dict[str, Any]) -> bool:
         """Mirror of :meth:`_plan_foreign_row`: does the plan copy this row to another store?"""
         if row["key_profile"] == "default" and store.profile != "default":
-            return self.legacy_main == "move" and self.routing_store is not None
+            return self.legacy_main == "move" and self.routing_store is not None and not row.get("receipt")
         return row["key_profile"] in self.claimed
 
     def _plan_foreign_row(self, store: Store, row: dict[str, Any], moving: set[str]) -> None:
@@ -248,6 +250,14 @@ class RepairPlan:
         sid = row["id"]
         detail = (f"legacy default-namespace key {row['session_key']!r} ({row['message_count']} messages) "
                   f"in the {store.profile} store")
+        if row.get("receipt"):
+            # The receipt binds this LOCAL session to this home; it is no leaked default chat. The rows
+            # alone must not move or re-key: the receipt would then refuse them on every resume.
+            self._add(Finding(
+                "legacy_main", store.profile, sid, detail,
+                reason="a LOCAL session receipt in this store owns it; the gateway re-keys the receipt, its "
+                       "rows and its route together when it next serves this profile"))
+            return
         if self.legacy_main == "rekey":
             self._add(Finding(
                 "legacy_main", store.profile, sid, detail, action=f"rekey to agent:{store.profile}:",

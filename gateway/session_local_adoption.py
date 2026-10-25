@@ -8,6 +8,7 @@ A restore reached synchronously on the loop hands it to a tracked worker (``sche
 """
 import asyncio
 import logging
+import sqlite3
 from functools import partial
 
 from hermes_state_runtime import RuntimeStoreError
@@ -56,6 +57,28 @@ async def adopt_before_restore(authority, sid, *, tracked=True):
             await asyncio.to_thread(write)
     except RuntimeStoreError as exc:  # the restore that follows refuses the receipt and logs it
         logger.warning('Local session %s compression catch-up failed: %s', sid, exc.reason)
+
+
+async def adopt_local_routes(authority):
+    """Boot and hot-profile recovery: re-key receipts the home's other gateway mode spelled (a named
+    profile's own gateway before the host multiplexed it), before the compression catch-up and
+    ``recover_local_sessions``, which both check the route. Off the loop, like the catch-up."""
+    from gateway.session_local_recovery import local_receipt_ids, respelled_route
+    from hermes_state_local import respell_local_route
+    for sid in local_receipt_ids(authority):
+        due = respelled_route(authority, sid)
+        if due is None:
+            continue
+        receipt, route, profile = due
+        try:
+            respelled = await asyncio.to_thread(partial(
+                respell_local_route, authority.db, epoch=authority.epoch, expected=receipt, route=route, profile=profile))
+        except (RuntimeStoreError, sqlite3.Error) as exc:  # the restore that follows refuses and logs it
+            logger.warning('Local session %s route re-key failed: %s', sid, getattr(exc, 'reason', exc))
+            continue
+        if respelled is not None:
+            logger.warning('Local session %s: re-keyed its route %s to %s (created under this home\'s other '
+                           'gateway mode)', sid, receipt['route'], route)
 
 
 async def adopt_local_compressions(authority):

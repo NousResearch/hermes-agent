@@ -146,7 +146,10 @@ together. It seeds resolution from the existing lock. Compatible transitive
 versions can change, but declared constraints and exact pins remain binding.
 Each candidate gets a fresh workspace with explicit source, lock seed, and
 prepared environment inputs. The generated workspace and extended lock remain
-outside shipped source. Repair copies the recorded workspace and lock, including
+outside shipped source. The workspace is solved only for the platform and
+architecture of the interpreter it installs into, so a plugin dependency with no
+wheels for another platform (onnxruntime or torch on Android) does not block it;
+the shipped lock keeps its full platform coverage. Repair copies the recorded workspace and lock, including
 plugin build inputs, rather than resolving against edited live manifests.
 
 Plugin enablement and staged code updates are submitted as data to the isolated
@@ -513,7 +516,11 @@ references. `--offline` and `--cache` control dependency acquisition.
 For application environment builds, PM must already be able to start in the
 invoking Python. These builds are not an interpreter bootstrap. They do not modify a running application's
 imports or replace its selected environment. Nix's declarative uv2nix builds
-remain Nix-owned. Package-manager commands for unrelated projects or agent
+remain Nix-owned: `nix develop` still builds its dependencies with uv2nix, then
+re-homes that venv onto the interpreter `pm/lock.json` pins (uv2nix cannot build
+against a tarball interpreter). The shell's uv, node, npm, ripgrep and ffmpeg are
+the lock's builds too.
+Package-manager commands for unrelated projects or agent
 sandboxes do not manage Hermes itself.
 
 ## Commands
@@ -528,8 +535,8 @@ hermes pm install chromium
 
 | Command | Effect |
 |---|---|
-| `pm install [names...]` | Install named packages. With no names, provision required tools plus Python, put those tools on PATH, and then sync the `all` extra. A bare install also installs the default optional tools (`agent-browser` and Chromium, `cua-driver`); a failed download of these prints a warning and does not fail the install. Naming a package you declined earlier undoes that choice. |
-| `pm install --without NAME` | Do a bare install without the default optional package `NAME` (`agent-browser` or `cua-driver`), and record that choice. Later bare installs and `hermes update` also leave it out. The installers' `--skip-browser` / `-SkipBrowser` and `--skip-computer-use` / `-SkipComputerUse` use this. |
+| `pm install [names...]` | Install named packages. With no names, provision required tools plus Python, put those tools on PATH, and then sync the `all` extra. A bare install also installs the default optional tools (`chromium`, the browser Hermes launches, and `cua-driver`); a failed download of these prints a warning and does not fail the install. Naming a package you declined earlier undoes that choice. |
+| `pm install --without NAME` | Do a bare install without the default optional package `NAME` (`chromium` or `cua-driver`), and record that choice. Later bare installs and `hermes update` also leave it out. The installers' `--skip-browser` / `-SkipBrowser` and `--skip-computer-use` / `-SkipComputerUse` (`--without cua-driver`) use this. The browser opt-out passes the legacy name `--without agent-browser`, which every PM release accepts and this one reads as `chromium`; a choice recorded under that name still skips `chromium`. |
 | `pm install --tools-only` | Install that tool closure and put it on PATH, then stop. The venv sync does not run. |
 | `pm env [names...]` | Print installed packages' PM-contributed environment values as JSON. It does not install missing packages, though a cold Hermes launch may prepare its own Python runtime first. |
 | `pm doctor` | Check installed tool identities, files, and digests against the lock. |
@@ -548,10 +555,11 @@ not substitutes for an installed application's update mechanism.
 | Command | Effect |
 |---|---|
 | `pm lock` | Relock `uv.lock` from `pyproject.toml`. Changes no environment; writes nothing when the lock is current. |
-| `pm lock --bump NAME VERSION` | Resolve and hash supported target artifacts, then write the tool pin to `pm/lock.json`. |
-| `pm update [names...]` | Query upstream versions, change tool pins, and install changed tools. |
+| `pm lock --bump NAME VERSION` | Resolve and hash supported target artifacts, write the tool pin to `pm/lock.json`, and regenerate the bootstrap pins in `scripts/install.sh` and `scripts/install.ps1`. |
+| `pm update [names...]` | Query upstream versions, change tool pins, regenerate the installers' bootstrap pins, and install changed tools. |
 | `pm update --check` | Query without writing. Exit 1 can mean updates exist; inspect output to distinguish an error. |
 | `pm update --target TARGET` | Resolve versions for the specified target. |
+| `pm update --skip-target TARGET` | Leave TARGET's pins unchanged (repeatable), for example `linux-arm64-bionic` while the termux pool lags upstream. Later runs still report the package as current. `pm lock --bump NAME VERSION` re-pins every target at a version, and `pm update --termux` repins a retired `linux-arm64-bionic` row. |
 | `pm update --uv` / `--npm` | Also refresh the Python or npm dependency resolution. |
 | `pm update --termux [--check]` | Repin the termux pool archives the rolling pool has retired (the runtime-lib pin table and the bionic lock rows). `--check` reports without writing and exits 1 when a pin is retired. |
 | `pm install --target TARGET NAME...` | Stage explicit cross-target packages without recording them as the host's installed runtime. The win32 `git` target pins a self-extracting PortableGit archive: staging it runs the vendor extractor and therefore requires a Windows host. |
@@ -564,14 +572,20 @@ launchers, and invokes native packaging. Maintainers can read
 ## Network retries
 
 PM retries transient HTTP failures during tool downloads, artifact hashing and
-version lookups. Each probe or transfer gets at most four attempts. Backoff
-waits are 1, 2 and 4 seconds. A `Retry-After` header can extend a wait, up to
-30 seconds. Each retry reports its cause, delay and next attempt in the log.
+version lookups. Probes and non-resumable transfers get at most four attempts.
+Their backoff waits are 1, 2 and 4 seconds. A `Retry-After` header can extend
+these waits up to 30 seconds. Resumable transfers renew their retry budget
+when they save new progress; four failures without new progress stop retries.
+With a pinned mirror available, waits above 30 seconds switch to that mirror.
+The last source honors `Retry-After` up to five minutes and stops for longer waits.
+Each retry logs its cause, delay and consecutive failures without progress.
 
 Retryable HTTP statuses are 408, 429, 500, 502, 503 and 504. Connection resets,
 timeouts, temporary DNS failures and interrupted response bodies also retry.
-Ranged downloads retain completed bytes. Servers without range support require
-a fresh stream. Pause interrupts backoff and preserves the partial download.
+Ranged downloads checkpoint every five seconds and after each attempt. A failed
+periodic checkpoint logs a warning and retries later; the final checkpoint is required.
+Servers without range support require a fresh stream. Pause interrupts backoff
+and preserves the partial download.
 
 PM does not retry bad hashes, certificate failures, local filesystem errors or
 other permanent failures. A successful probe followed by a range GET 403 or 404
@@ -585,7 +599,9 @@ Every Python package Hermes itself depends on must be at least three days old
 when Hermes locks it (uv's `exclude-newer`, enforced by CI's lock check), so a
 freshly published, possibly compromised release cannot reach `uv.lock`. Users
 install from that lock, and installing or enabling a plugin never re-checks
-dates, so package mirrors that publish no upload times work. Set a mirror with `index-url` in `pip.conf`,
+dates, so package mirrors that publish no upload times work. The one exemption
+is CA trust stores (`certifi`): a release that distrusts a compromised CA is
+locked the day it ships, since waiting keeps the bad root trusted. Set a mirror with `index-url` in `pip.conf`,
 which Hermes passes to uv, or with `UV_INDEX_URL`.
 
 `hermes pm lock` is the one step that applies the check. Run against a mirror

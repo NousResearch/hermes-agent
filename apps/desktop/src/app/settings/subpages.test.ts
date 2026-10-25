@@ -44,6 +44,24 @@ describe('settings subpage routing', () => {
     }
   })
 
+  // The Webapp's Gateways page is one view of its serving host: no native-only
+  // child page to land on and no search hit that would scroll to nothing.
+  it('gives the Webapp Gateways page no native-only children or search rows', () => {
+    const nativeChildren = settingsSubpages('gateway').length
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+
+    try {
+      expect(settingsSubpages('gateway')).toEqual([])
+      expect(resolveSettingsSubpage('gateway', new URLSearchParams({ page: 'devices' }))).toBeUndefined()
+      expect(settingSearchTargets(TRANSLATIONS.en).filter(target => target.view === 'gateway')).toEqual([])
+    } finally {
+      window.document.documentElement.removeAttribute('data-hermes-desktop-host')
+    }
+
+    expect(settingsSubpages('gateway')).toHaveLength(nativeChildren)
+    expect(nativeChildren).toBeGreaterThan(0)
+  })
+
   it('gives every settings group its own nav label in every locale', () => {
     for (const locale of Object.values(TRANSLATIONS)) {
       const nav: Record<string, string> = locale.settings.nav

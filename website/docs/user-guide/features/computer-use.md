@@ -44,7 +44,7 @@ no-foreground invariant, click-dispatch internals — see
 `computer_use` acts on the same machine the bot's screen lives on, never on
 the machine running Hermes Desktop. On a gateway with `terminal.backend:
 local` that is the gateway host. With a sandboxed terminal (`docker`, `ssh`,
-`singularity`, or a plugin backend that declares `supports_streams`) the
+or a plugin backend that declares `supports_streams`, such as `singularity`) the
 driver runs **inside the sandbox** on the sandbox's own
 display, so it can only ever touch what the terminal can; the sandbox image
 must carry `cua-driver` (`nousresearch/hermes-sandbox:desktop` does). Modal,

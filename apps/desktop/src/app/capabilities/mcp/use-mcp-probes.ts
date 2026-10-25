@@ -1,6 +1,6 @@
 import { type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 
-import { type ProfileScope, testMcpServer } from '@/hermes'
+import { type McpTestResult, type ProfileScope, testMcpServer } from '@/hermes'
 import { PROBE_TTL_MS, probeCache, probeKey, serverFingerprint } from '@/lib/mcp-probe-cache'
 import { type McpServerEntry, type McpServers, serverEnabled } from '@/lib/mcp-servers'
 import { countEnabledTools } from '@/lib/mcp-tool-filter'
@@ -10,6 +10,7 @@ import { loadMcpUsage, okProbe, type Probe, serverCost, type ServerCost } from '
 export interface McpProbes {
   costFor: (name: string, entry: McpServerEntry) => ServerCost
   probes: Record<string, Probe>
+  publishAuthorized: (name: string, tools: McpTestResult['tools'], server: McpServerEntry) => void
   resetForProfileSwitch: () => void
   retainProbes: (entries: McpServers, prevServers: McpServers) => void
   runProbe: (name: string) => Promise<void>
@@ -36,29 +37,39 @@ export function useMcpProbes({
   const [probes, setProbes] = useState<Record<string, Probe>>({})
   const probesRef = useRef(probes)
   probesRef.current = probes
+  const probeRevision = useRef<Record<string, number>>({})
 
   const [toolCalls30d, setToolCalls30d] = useState<null | Record<string, number>>(null)
 
   const setProbe = (serverName: string, value: Probe) => {
+    probeRevision.current[serverName] = (probeRevision.current[serverName] ?? 0) + 1
     setProbes(current => ({ ...current, [serverName]: value }))
+  }
+
+  const publishAuthorized = (serverName: string, tools: McpTestResult['tools'], server: McpServerEntry) => {
+    const result: McpTestResult = { ok: true, tools }
+    setProbe(serverName, result)
+    probeCache.set(probeKey(serverName, server, scopeProfileKey), { at: Date.now(), result })
   }
 
   const runProbe = async (serverName: string) => {
     const epoch = profileEpoch.current
+    const revision = (probeRevision.current[serverName] ?? 0) + 1
+    probeRevision.current[serverName] = revision
     const key = probeKey(serverName, servers[serverName], scopeProfileKey)
     setProbes(current => ({ ...current, [serverName]: 'probing' }))
 
     try {
       const result = await testMcpServer(serverName, profile ?? undefined)
 
-      if (profileEpoch.current !== epoch) {
+      if (profileEpoch.current !== epoch || probeRevision.current[serverName] !== revision) {
         return
       }
 
       probeCache.set(key, { at: Date.now(), result })
       setProbes(current => ({ ...current, [serverName]: result }))
     } catch (err) {
-      if (profileEpoch.current !== epoch) {
+      if (profileEpoch.current !== epoch || probeRevision.current[serverName] !== revision) {
         return
       }
 
@@ -143,6 +154,7 @@ export function useMcpProbes({
   }
 
   const resetForProfileSwitch = () => {
+    probeRevision.current = {}
     setProbes({})
     setToolCalls30d(null)
   }
@@ -150,6 +162,7 @@ export function useMcpProbes({
   return {
     costFor,
     probes,
+    publishAuthorized,
     resetForProfileSwitch,
     retainProbes,
     runProbe,

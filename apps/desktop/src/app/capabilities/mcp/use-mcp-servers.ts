@@ -48,7 +48,7 @@ export interface McpServersController extends McpDraft, PublishedProbes {
   configLoading: boolean
   descriptionFor: (name: string, entry: McpServerEntry) => null | string
   names: string[]
-  onCatalogInstalled: () => Promise<void>
+  onCatalogInstalled: (authorized?: { name: string; tools: McpTestResult['tools'] }) => Promise<void>
   profilePending: boolean
   refetchConfig: () => void
   removeServer: (name: string) => Promise<boolean>
@@ -247,12 +247,21 @@ export function useMcpServers({ gateway, profile }: UseMcpServersOptions): McpSe
     }
   }
 
-  const onCatalogInstalled = async () => {
+  const onCatalogInstalled = async (authorized?: { name: string; tools: McpTestResult['tools'] }) => {
+    const epoch = profileEpoch.current
     void catalogQuery.refetch()
     const { data } = await refetchConfigQuery()
-    const nextServers = getServers(data ?? null)
 
+    if (profileEpoch.current !== epoch) {
+      return
+    }
+
+    const nextServers = getServers(data ?? null)
     mirror(nextServers, doc => ({ ...nextServers, ...doc }))
+
+    if (authorized && nextServers[authorized.name]) {
+      fleet.publishAuthorized(authorized.name, authorized.tools, nextServers[authorized.name])
+    }
 
     void silentReload()
   }

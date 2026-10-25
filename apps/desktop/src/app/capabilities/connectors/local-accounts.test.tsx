@@ -97,6 +97,18 @@ describe('direct MCP additional accounts', () => {
     expect(oauth).toHaveBeenCalledTimes(2)
   })
 
+  it('passes successful retry tools to the probe controller instead of leaving the failed probe cached', async () => {
+    const tools = [{ name: 'list-pages', description: 'List pages' }]
+    rpc.mockResolvedValue({ ok: true })
+    oauth.mockRejectedValueOnce(new Error('Consent denied')).mockResolvedValueOnce({ tools })
+    const { refresh } = show()
+
+    await connect('home')
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Consent denied'))
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    await waitFor(() => expect(refresh).toHaveBeenCalledWith({ name: 'notion-home', tools }))
+  })
+
   it('publishes a new account only after OAuth succeeds, so its first probe sees authorized credentials', async () => {
     let approve!: (value: { tools: [] }) => void
     rpc.mockResolvedValue({ ok: true })

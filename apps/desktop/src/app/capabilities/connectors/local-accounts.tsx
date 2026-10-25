@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { capabilityScoped, type ProfileScope, profileScopeKey } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import type { McpCatalogEntry } from '@/hermes'
+import type { McpCatalogEntry, McpTestResult } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { completeMcpDesktopOAuth, McpOAuthCancelled } from '@/lib/mcp-dashboard-oauth'
 import type { McpServers } from '@/lib/mcp-servers'
@@ -16,7 +16,7 @@ export interface LocalAccountsProps {
   serverName: string
   profile: ProfileScope
   pending: boolean
-  onChanged: () => Promise<void>
+  onChanged: (authorized?: { name: string; tools: McpTestResult['tools'] }) => Promise<void>
   onOpenAccount: (name: string) => void
 }
 
@@ -96,7 +96,7 @@ function AccountEditor({ entry, servers, serverName, profile, pending, onChanged
         return
       }
 
-      await completeMcpDesktopOAuth({
+      const flow = await completeMcpDesktopOAuth({
         serverName: name,
         profile: scope,
         cancelled: isCancelled
@@ -106,7 +106,7 @@ function AccountEditor({ entry, servers, serverName, profile, pending, onChanged
         return
       }
 
-      await onChanged()
+      await onChanged({ name, tools: flow.tools ?? [] })
       created = false
 
       if (isCancelled()) {

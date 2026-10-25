@@ -263,3 +263,48 @@ def test_force_full_redraw_requeues_kitty_frame(boba_like, monkeypatch):
     cli_obj._force_full_redraw()
 
     assert cli_obj._pet_kitty_pending.startswith("\x1b_G")
+
+
+def test_terminal_gate_hides_pane_without_touching_enabled(boba_like):
+    """``display.pet.terminal_enabled`` hides the terminal pane (TUI + legacy CLI)
+    while ``display.pet.enabled`` — the desktop's source of truth — stays true."""
+    from hermes_cli.config import load_config, save_config
+
+    cli_obj = _make_cli()
+    cfg = load_config()
+    cfg.setdefault("display", {}).setdefault("pet", {}).update({"enabled": True, "slug": "boba"})
+    save_config(cfg)
+
+    cli_obj._pet_resolve_config()
+    assert cli_obj._pet_enabled is True
+
+    cfg["display"]["pet"]["terminal_enabled"] = False
+    save_config(cfg)
+    cli_obj._pet_resolve_config()
+    assert cli_obj._pet_enabled is False
+    assert cli_obj._pet_renderer is None
+    # The desktop path keeps seeing an enabled pet — the gate is terminal-only.
+    assert cfg["display"]["pet"]["enabled"] is True
+
+    # Quoted string values resolve through the same truthiness rules as `enabled`.
+    cfg["display"]["pet"]["terminal_enabled"] = "false"
+    save_config(cfg)
+    cli_obj._pet_resolve_config()
+    assert cli_obj._pet_enabled is False
+
+    cfg["display"]["pet"]["terminal_enabled"] = "true"
+    save_config(cfg)
+    cli_obj._pet_resolve_config()
+    assert cli_obj._pet_enabled is True
+
+
+def test_terminal_gate_off_by_config_default_is_on(boba_like):
+    """No ``terminal_enabled`` key at all → legacy behavior, pane stays lit."""
+    from hermes_cli.config import load_config, save_config
+
+    cli_obj = _make_cli()
+    cfg = load_config()
+    cfg.setdefault("display", {}).setdefault("pet", {}).update({"enabled": True, "slug": "boba"})
+    save_config(cfg)
+    cli_obj._pet_resolve_config()
+    assert cli_obj._pet_enabled is True

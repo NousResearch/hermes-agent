@@ -8,6 +8,7 @@ from gateway.platforms._shared import platform_gate_env as _scoped_gate_env
 
 def _component_check_auth(
     interaction, allowed_user_ids: Optional[set], allowed_role_ids: Optional[set],
+    *, group_allow_all: bool = False,
     live_auth: Optional[Callable[[Any], Optional[bool]]] = None,
 ) -> bool:
     """Shared user-or-role OR authorization for component button clicks.
@@ -20,6 +21,13 @@ def _component_check_auth(
     user = getattr(interaction, "user", None)
     if user is None or getattr(user, "id", None) is None:
         return False
+    # ``group_allow_from: ['*']`` opens components only in guild context. Honor a
+    # live explicit denial so a prompt created before a revoke cannot bypass it.
+    if group_allow_all and (
+        getattr(interaction, "guild_id", None) is not None
+        or getattr(interaction, "guild", None) is not None
+    ):
+        return live_auth is None or live_auth(interaction) is not False
     # Scope-aware reads: interaction tasks inherit the owning profile's secret-scope contextvar;
     # under multiplex a raw os.getenv could return ANOTHER profile's allow-all flag.
     # Scope-aware reads (issue #72348): component interactions are dispatched from discord.py tasks

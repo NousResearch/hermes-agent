@@ -90,6 +90,32 @@ def test_component_check_explicit_allow_all_passes(monkeypatch, env_name, env_va
     assert _component_check_auth(interaction, set(), set()) is True
 
 
+def test_component_check_group_open_allows_guild_click_but_not_dm():
+    """``group_allow_from: ['*']`` opens components only in guild context."""
+    adapter = object.__new__(DiscordAdapter)
+    adapter.config = SimpleNamespace(extra={"group_allow_from": ["*"]})
+    guild_interaction = _interaction(11111)
+    guild_interaction.guild_id = 12345
+    dm_interaction = _interaction(11111)
+
+    assert _component_check_auth(
+        guild_interaction, set(), set(), group_allow_all=adapter._discord_group_allow_all(),
+    ) is True
+    assert _component_check_auth(
+        dm_interaction, set(), set(), group_allow_all=adapter._discord_group_allow_all(),
+    ) is False
+
+
+def test_component_check_group_open_honors_live_revoke():
+    """A group-open prompt cannot bypass a later live authorization denial."""
+    interaction = _interaction(11111)
+    interaction.guild_id = 12345
+
+    assert _component_check_auth(
+        interaction, set(), set(), group_allow_all=True, live_auth=lambda _interaction: False,
+    ) is False
+
+
 # ── user allowlist ─────────────────────────────────────────────────────────
 
 
@@ -325,4 +351,3 @@ def test_other_views_not_admin_gated():
         session_key="s", confirm_id="c", allowed_user_ids={"11111"}
     )
     assert sc._check_auth(_interaction(11111)) is True
-

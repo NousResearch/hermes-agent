@@ -4,7 +4,7 @@ Login is a credential form (``supports_password`` + ``complete_password_login``)
 verify, refresh, ws-tickets and logout are the shared framework. Sessions are stateless
 HMAC-signed tokens (no IDP, no database); passwords use stdlib scrypt and login always hashes
 even for an unknown username (no username-enumeration timing oracle). Config: ``dashboard.
-basic_auth.{username,password_hash|password,secret,session_ttl_seconds}`` or the
+basic_auth.{username,password_hash|password,secret,session_ttl_seconds,refresh_ttl_seconds}`` or the
 ``HERMES_DASHBOARD_BASIC_AUTH_*`` env vars (env wins when non-empty; see ``_settings``).
 """
 
@@ -122,7 +122,9 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
         "BasicAuthProvider is password-only; there is no OAuth redirect flow. "
         "The login page POSTs to /auth/password-login instead.")
 
-    def __init__(self, *, username: str, password_hash: str, secret: bytes, ttl_seconds: int = _DEFAULT_TTL_SECONDS) -> None:
+    def __init__(self, *, username: str, password_hash: str, secret: bytes,
+                 ttl_seconds: int = _DEFAULT_TTL_SECONDS,
+                 refresh_ttl_seconds: int = _REFRESH_TTL_SECONDS) -> None:
         if not username:
             raise ValueError("username must be non-empty")
         if not password_hash:
@@ -133,6 +135,7 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
         self._password_hash = password_hash
         self._secret = secret
         self._ttl = max(60, int(ttl_seconds))
+        self._refresh_ttl = max(60, int(refresh_ttl_seconds))
 
     # ---- password login ----------------------------------------------------
 
@@ -174,7 +177,7 @@ class BasicAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
         return self._session(
             user_id, exp,
             _sign({"sub": user_id, "kind": "access", "exp": exp}, self._secret),
-            _sign({"sub": user_id, "kind": "refresh", "exp": now + _REFRESH_TTL_SECONDS}, self._secret))
+            _sign({"sub": user_id, "kind": "refresh", "exp": now + self._refresh_ttl}, self._secret))
 
     def _session(self, user_id: str, exp: int, access_token: str, refresh_token: str) -> Session:
         return Session(
@@ -221,6 +224,8 @@ def _settings() -> dict:
     password_hash = setting("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH", "password_hash")
     plaintext = setting("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "password")
     ttl_raw = setting("HERMES_DASHBOARD_BASIC_AUTH_TTL_SECONDS", "session_ttl_seconds")
+    refresh_ttl_raw = setting(
+        "HERMES_DASHBOARD_BASIC_AUTH_REFRESH_TTL_SECONDS", "refresh_ttl_seconds")
     if not username:
         raise SkipRegistration(
             "dashboard.basic_auth.username is not set (and HERMES_DASHBOARD_BASIC_AUTH_USERNAME "
@@ -250,7 +255,12 @@ def _settings() -> dict:
         ttl = int(ttl_raw) if ttl_raw else _DEFAULT_TTL_SECONDS
     except ValueError:
         ttl = _DEFAULT_TTL_SECONDS
-    return {"username": username, "password_hash": password_hash, "secret": _resolve_secret(section), "ttl_seconds": ttl}
+    try:
+        refresh_ttl = int(refresh_ttl_raw) if refresh_ttl_raw else _REFRESH_TTL_SECONDS
+    except ValueError:
+        refresh_ttl = _REFRESH_TTL_SECONDS
+    return {"username": username, "password_hash": password_hash, "secret": _resolve_secret(section),
+            "ttl_seconds": ttl, "refresh_ttl_seconds": refresh_ttl}
 
 
 def register(ctx) -> None:

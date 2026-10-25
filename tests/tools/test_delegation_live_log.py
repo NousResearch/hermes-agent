@@ -478,3 +478,63 @@ def test_benign_transcript_content_is_untouched():
     assert "src/parser.py" in body
     assert "def parse(x)" in body
     assert "refactor the parser" in body
+
+
+# ---------------------------------------------------------------------------
+# Full-result sidecar
+# ---------------------------------------------------------------------------
+# Transcript lines are elided, which used to lose a child's actual answer. The
+# sidecar keeps it whole next to the log. finalize writes it, because that is
+# the only hook that runs after the summary budget trim and can still reach the
+# untrimmed text.
+
+
+def test_finalize_writes_the_whole_result_beside_the_transcript(tmp_path):
+    w = LiveTranscriptWriter("deleg_sidecar", 0, "review it", root=tmp_path)
+    payload = json.dumps({"findings": ["x" * 5000]})
+    w.finalize({"status": "completed", "summary": payload})
+    sidecar = w.path.with_suffix(".result.md")
+    assert sidecar.exists()
+    assert sidecar.read_text(encoding="utf-8") == payload
+
+
+def test_the_transcript_still_elides_that_same_answer(tmp_path):
+    w = LiveTranscriptWriter("deleg_sidecar2", 0, "review it", root=tmp_path)
+    w.observe("subagent.complete", None, None, None,
+              status="completed", duration_seconds=1.0, summary="y" * 5000)
+    log = w.path.read_text(encoding="utf-8")
+    assert "chars)" in log
+
+
+def test_the_sidecar_holds_the_answer_the_budget_trimmed_away(tmp_path):
+    """_apply_summary_budget swaps entry["summary"] for a head/tail window and spills the whole
+    answer to summary_full_path. The sidecar must follow the spill, not the window."""
+    w = LiveTranscriptWriter("deleg_sidecar3", 0, "big answer", root=tmp_path)
+    whole = "line of the answer\n" * 3000
+    spill = tmp_path / "summary-spill.md"
+    spill.write_text(whole, encoding="utf-8")
+    window = whole[:18000] + "\n… (omitted) …\n" + whole[-6000:]
+    w.finalize({"status": "completed", "summary": window, "summary_truncated": True,
+                "summary_full_path": str(spill)})
+    assert w.path is not None
+    written = w.path.with_suffix(".result.md").read_text(encoding="utf-8")
+    assert written == whole
+    assert written != window
+
+
+def test_complete_alone_does_not_freeze_a_prefix_into_the_sidecar(tmp_path):
+    """emit_complete caps the event summary at 500 chars, so that copy is a prefix, not the
+    answer. Nothing may be written from it."""
+    w = LiveTranscriptWriter("deleg_sidecar4", 0, "long answer", root=tmp_path)
+    w.observe("subagent.complete", None, None, None,
+              status="completed", duration_seconds=1.0, summary="p" * 500)
+    assert w.path is not None
+    assert not w.path.with_suffix(".result.md").exists()
+
+
+def test_finalize_falls_back_when_the_spill_is_unreadable(tmp_path):
+    w = LiveTranscriptWriter("deleg_sidecar5", 0, "died early", root=tmp_path)
+    w.finalize({"status": "failed", "exit_reason": "error", "error": "boom",
+                "summary": "partial answer kept",
+                "summary_full_path": str(tmp_path / "gone.md")})
+    assert w.path.with_suffix(".result.md").read_text(encoding="utf-8") == "partial answer kept"

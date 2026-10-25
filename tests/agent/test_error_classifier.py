@@ -2110,11 +2110,11 @@ class TestNousWelcomeTier:
 
 
 class Test401FallbackLegRetry:
-    """Regression for #144343: a transient 401 on a fallback (non-primary) leg was
+    """Regression for #144343: a 401 on a fallback (non-primary) leg was
     globally classified non-retryable, so once the fallback chain was exhausted the
-    turn died and queued messages were lost — while direct calls to the same vendor
-    returned 200 the same minute (23 production hits, 18% fallback-trigger rate).
-    On a fallback leg a vendor-side auth flap deserves a bounded same-leg retry
+    turn died and queued messages were lost (4 turns lost in the reporter's day
+    log; two of the four were an empty-credential subcase tracked separately).
+    On a fallback leg, transient auth failures deserve a bounded same-leg retry
     (rotation/fallback hints kept); the primary leg keeps the fast abort into the
     fallback/rotate chain, so a genuinely dead key still surfaces immediately.
     """

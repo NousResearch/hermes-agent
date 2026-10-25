@@ -1302,11 +1302,14 @@ def _status_401(c: _Ctx) -> Verdict:
     """Leg-differentiated 401 verdict (#144343). Primary leg: not retryable on its
     own — rotation/refresh run before the retryability check, then the client-error
     abort path (fallback first) is correct, so a dead key fails fast into the chain.
-    Fallback (non-primary) leg: the same 401 is usually the vendor's auth edge
-    flapping (reporter's logs: 23 hits at an 18% fallback rate, direct calls 200 the
-    same minute), and with the chain exhausted the abort drops the whole turn and its
-    queued messages — so the verdict flips to a bounded same-leg retry inside the
-    existing backoff budget, rotation/fallback hints untouched."""
+    Fallback (non-primary) leg: defence in depth — by the time a 401 lands on the
+    last leg, the request is already deep in the provider fallback chain, and an
+    unqualified non-retryable verdict turns any transient auth failure there into
+    a lost turn with its queued messages (reporter measured 4 turns ended by 401s
+    in one day; two of the four were an empty-credential subcase tracked
+    separately). So the verdict flips to a bounded same-leg retry inside the
+    existing backoff budget; rotation/fallback hints untouched, primary-leg
+    behavior bit-identical."""
     if c.is_fallback_leg:
         return _v(_R.auth, retryable=True, **_ROTATE_FALLBACK)
     return _V_AUTH_ROTATE

@@ -255,6 +255,41 @@ describe('TreeGroup', () => {
     expect(strip.style).toHaveProperty('WebkitAppRegion', '')
   })
 
+  // RTL (#136275): the header row's spacers reserve PHYSICAL room — for the
+  // window controls (--panel-titlebar-left, rendered as the row's first child)
+  // and for the right-side titlebar tools (--panel-titlebar-right, the last
+  // one). A plain `flex` row mirrors under dir="rtl", so the left spacer and
+  // the drag region land on the tools and swallow their clicks. The row must
+  // carry the reversed direction for RTL; jsdom has no layout, so the class on
+  // the header is the contract the CSS consumes.
+  it('keeps the top-edge panel header row physical under RTL', () => {
+    disposePane = registry.register({
+      area: 'panes',
+      data: { placement: 'main' },
+      id: 'terminal',
+      title: 'Terminal',
+      render: () => <div>Terminal</div>
+    })
+    vi.stubGlobal('CSS', { escape: (value: string) => value })
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    )
+    render(<TreeGroup leftEdge node={terminalGroup(false)} rightEdge topEdge />)
+    const header = container!.querySelector<HTMLElement>('[data-panel-header]')!
+    expect(header.classList.contains('rtl:flex-row-reverse')).toBe(true)
+    // The mirroring pairs with the physical spacers: the left one is still the
+    // first child and the right one the last, which is what the reversed
+    // direction puts back on the left and right edges.
+    const spacers = [...header.children].filter(child => child.getAttribute('aria-hidden') === 'true')
+    expect(spacers[0]).toHaveProperty('style.width', 'var(--panel-titlebar-left, 100%)')
+    expect(spacers.at(-1)).toHaveProperty('style.width', 'var(--panel-titlebar-right, 0px)')
+  })
+
   // The invariant behind the shared eligibility predicate
   // (hostsSessionDropTarget): a session or new-session drag must paint the
   // SAME zones either drag resolver would accept, and stay dark everywhere

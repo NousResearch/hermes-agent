@@ -193,6 +193,32 @@ class TestPtyBridgeResize:
         finally:
             bridge.close()
 
+    def test_resize_idempotent_skips_redundant_ioctl(self, monkeypatch):
+        import fcntl
+
+        ioctls: list[tuple[int, int, bytes]] = []
+        monkeypatch.setattr(fcntl, "ioctl", lambda fd, op, arg: ioctls.append((fd, op, arg)))
+
+        bridge = PtyBridge.__new__(PtyBridge)
+        bridge._closed = False
+        bridge._fd = 10
+        bridge._cols = 80
+        bridge._rows = 24
+
+        # Same dimensions -> no ioctl
+        bridge.resize(cols=80, rows=24)
+        assert len(ioctls) == 0
+
+        # Changed dimensions -> ioctl called
+        bridge.resize(cols=100, rows=30)
+        assert len(ioctls) == 1
+        assert bridge._cols == 100
+        assert bridge._rows == 30
+
+        # Same dimensions again -> no extra ioctl
+        bridge.resize(cols=100, rows=30)
+        assert len(ioctls) == 1
+
 @skip_on_windows
 class TestClampDimension:
     def test_clamps_above_max(self):

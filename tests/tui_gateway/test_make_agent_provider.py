@@ -18,10 +18,12 @@ def test_probe_config_health_flags_null_sections():
 
     assert _probe_config_health({"agent": {"x": 1}}) == ""
     assert _probe_config_health({}) == ""
+    assert _probe_config_health({"max_concurrent_sessions": None}) == ""
 
     msg = _probe_config_health({"agent": None, "display": None, "model": {}})
     assert "agent" in msg and "display" in msg
     assert "model" not in msg
+    assert "max_concurrent_sessions" not in msg
 
 
 def test_apply_model_switch_does_not_leak_process_env():

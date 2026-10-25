@@ -109,10 +109,17 @@ class PtyBridge:
 
     _waiter = None  # FdWaiter for the master; None until __init__ registers it
 
-    def __init__(self, proc: ptyprocess.PtyProcess):  # type: ignore[name-defined]
+    def __init__(self, proc: ptyprocess.PtyProcess, *, cols: int = 80, rows: int = 24):  # type: ignore[name-defined]
         self._proc = proc
         self._fd: int = proc.fd
         self._closed = False
+        try:
+            r, c = proc.getwinsize()
+            self._rows = _clamp_dimension(r, _MAX_ROWS)
+            self._cols = _clamp_dimension(c, _MAX_COLS)
+        except Exception:
+            self._rows = _clamp_dimension(rows, _MAX_ROWS)
+            self._cols = _clamp_dimension(cols, _MAX_COLS)
         # Recorded at spawn: once the leader is reaped getpgid() can no longer find its group,
         # but the helpers it started still belong to it.
         try:
@@ -156,7 +163,7 @@ class PtyBridge:
         spawn_env[PTY_HOST_ENV] = PTY_HOST_DASHBOARD
         proc = ptyprocess.PtyProcess.spawn(list(argv), cwd=cwd, env=spawn_env, dimensions=(rows, cols))  # type: ignore[union-attr]
         try:
-            return cls(proc)
+            return cls(proc, cols=cols, rows=rows)
         except OSError:  # no safe readiness wait for the master (fd_wait): don't leak the child
             proc.close(force=True)
             raise
@@ -266,11 +273,20 @@ class PtyBridge:
         Clamped first: WSL2 via xterm.js reports garbage like ``columns=131072, rows=1`` and an
         unclamped unsigned-short pack raises ``struct.error`` (not ``OSError``), leaving the TUI
         laid out for a one-row screen — the blank/disappearing-text symptom.
+
+        No-op if dimensions have not changed: prevents periodic keepalive resize frames from
+        delivering redundant SIGWINCH signals to the child process and triggering forced repaints.
         """
         if self._closed:
             return
+        rows = _clamp_dimension(rows, _MAX_ROWS)
+        cols = _clamp_dimension(cols, _MAX_COLS)
+        if cols == self._cols and rows == self._rows:
+            return
+        self._cols = cols
+        self._rows = rows
         # struct winsize: rows, cols, xpixel, ypixel (all unsigned short)
-        winsize = struct.pack("HHHH", _clamp_dimension(rows, _MAX_ROWS), _clamp_dimension(cols, _MAX_COLS), 0, 0)
+        winsize = struct.pack("HHHH", rows, cols, 0, 0)
         try:
             fcntl.ioctl(self._fd, termios.TIOCSWINSZ, winsize)
         except OSError:

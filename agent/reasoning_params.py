@@ -4,6 +4,7 @@ When ``reasoning`` extra_body is safe to send, LM Studio / Ollama / GitHub Model
 ``reasoning_content`` echo families, and strict-API tool-call sanitising.
 Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
+import logging
 import time
 
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
@@ -152,7 +153,13 @@ class ReasoningParamsMixin:
             return None
         return {"effort": clamp_github_reasoning_effort(cfg.get("effort"), supported)}
 
-    _build_assistant_message = _forward("agent.chat_completion_helpers", "build_assistant_message")
+    def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
+        """``build_assistant_message``; a held turn's row with visible text comes back typed hidden
+        (``withhold_held_row``) until ``finish_text_response`` publishes it as the final."""
+        from agent.chat_completion_helpers import build_assistant_message
+        from agent.stream_delivery import withhold_held_row
+
+        return withhold_held_row(self, build_assistant_message(self, assistant_message, finish_reason))
 
     def _reasoning_replay_route(self):
         """Reasoning replay decision for the active route (``message_sanitization.reasoning_replay_route``).
@@ -192,7 +199,15 @@ class ReasoningParamsMixin:
         try:
             from hermes_cli.config import load_config_readonly
             return bool((load_config_readonly().get("model") or {}).get("reasoning_echo"))
-        except Exception:
+        except Exception as exc:  # health: allow BLE001 -- a config failure must fall back, not fail init
+            # Log the class, never the config value or exception traceback.
+            logging.getLogger("run_agent").warning(
+                "Agent configuration for model.reasoning_echo could not be loaded (%s); "
+                "using the default reasoning echo setting. Check the active Hermes Python "
+                "environment and dependencies; run 'hermes config check' after "
+                "configuration imports work again.",
+                type(exc).__name__,
+            )
             return False
 
     # Echo families are host/provider-driven, not model-name-driven: aggregators re-exporting Kimi reject the

@@ -640,15 +640,15 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
         "pre_tool_call",
         **cancelled,
         tool_call_id="sensitive-cancelled-tool-call",
-        tool_name="browser_navigate",
-        args={"url": prompt_canary},
+        tool_name="browser_exec",
+        args={"code": prompt_canary},
     )
     lifecycle.invoke_hook(
         "post_tool_call",
         **cancelled,
         tool_call_id="sensitive-cancelled-tool-call",
-        tool_name="browser_navigate",
-        args={"url": prompt_canary},
+        tool_name="browser_exec",
+        args={"code": prompt_canary},
         result={"error": tool_canary},
         status="cancelled",
         duration_ms=31_000,
@@ -709,7 +709,7 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
     } == {
         ("terminal", "success", "none"),
         ("read_file", "failed", "unknown"),
-        ("browser_navigate", "cancelled", "interrupted"),
+        ("browser_exec", "cancelled", "interrupted"),
     }
     assert {
         counter["dimensions"]["outcome"]

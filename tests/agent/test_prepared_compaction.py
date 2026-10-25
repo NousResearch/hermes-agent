@@ -87,6 +87,10 @@ def _grow(msgs: list, n: int, size: int = 1200, tag: str = "new") -> list:
     return msgs + _messages(n, size=size, tag=tag)[1:]
 
 
+# A later prompt that grew by more than the extension threshold since the first pass was planned.
+_GROWN_TOKENS = 19500 + pc.MIN_EXTENSION_DELTA_TOKENS
+
+
 def _agent(cc, tokens: int = 19500):
     cc.last_prompt_tokens = tokens
     return SimpleNamespace(context_compressor=cc, compression_enabled=True, api_mode="chat_completions")
@@ -172,8 +176,9 @@ def test_pass_leaves_live_transcript_and_compressor_untouched():
     lambda a, cc: setattr(a, "codex_responses_native_compaction", True),
     lambda a, cc: setattr(cc, "_micro_compact_enabled", True),
     lambda a, cc: setattr(cc, "_summary_failure_cooldown_until", time.monotonic() + 60),
+    lambda a, cc: setattr(cc, "_fallback_compression_streak", 2),  # summary model benched
 ], ids=["below-band", "small-trigger-large-window", "awaiting-usage", "disabled", "fork", "app-server", "native",
-        "micro", "cooldown"])
+        "micro", "cooldown", "benched"])
 def test_gates_start_no_pass(setup):
     cc = _compressor()
     agent = _agent(cc)
@@ -332,7 +337,7 @@ def test_completed_candidate_splices_while_an_extension_pass_runs():
     gap = estimate_messages_tokens_rough(grown[first.compress_end:end])
     assert pc.MIN_EXTENSION_DELTA_TOKENS <= gap <= cc.tail_token_budget
     cc.gate = threading.Event()
-    running = pc.maybe_prepare(_agent(cc), grown, origin="test")
+    running = pc.maybe_prepare(_agent(cc, _GROWN_TOKENS), grown, origin="test")
     assert running is not None
 
     started = time.monotonic()
@@ -457,7 +462,7 @@ def test_session_boundary_discards_candidate_and_running_pass(boundary):
     msgs = _messages(30)
     _prepare(cc, msgs)
     cc.gate = threading.Event()
-    running = pc.maybe_prepare(_agent(cc), _grow(msgs, 14, size=2600), origin="test")
+    running = pc.maybe_prepare(_agent(cc, _GROWN_TOKENS), _grow(msgs, 14, size=2600), origin="test")
     assert running is not None
     if boundary == "reset":
         cc.on_session_reset()
@@ -487,8 +492,9 @@ def test_small_delta_keeps_the_candidate_without_copying_or_taking_a_slot(monkey
     cc = _compressor()
     msgs = _messages(30)
     first = _prepare(cc, msgs)
-    copies = []
+    copies, plans, plan = [], [], cc._plan_compaction_window
     monkeypatch.setattr(pc.copy, "deepcopy", lambda value, *a: copies.append(value) or value)
+    monkeypatch.setattr(cc, "_plan_compaction_window", lambda m: plans.append(1) or plan(m))
     held = [pc._slots.acquire(blocking=False)]  # leave exactly one slot free
     try:
         assert pc.maybe_prepare(_agent(cc), _grow(msgs, 4), origin="test") is None
@@ -499,6 +505,7 @@ def test_small_delta_keeps_the_candidate_without_copying_or_taking_a_slot(monkey
             if ok:
                 pc._slots.release()
     assert copies == [] and cc.prepared_compaction._entry is first and len(cc.calls) == 1
+    assert plans == [], "an unchanged prompt size skips re-planning the window on the turn thread"
 
 
 def test_extension_pass_summarises_only_the_delta_on_top_of_the_previous_body():
@@ -506,7 +513,7 @@ def test_extension_pass_summarises_only_the_delta_on_top_of_the_previous_body():
     msgs = _messages(30)
     first = _prepare(cc, msgs)
     grown = _grow(msgs, 14, size=2600)
-    second = _prepare(cc, grown)
+    second = _prepare(cc, grown, _GROWN_TOKENS)
     call = cc.calls[1]
     assert call["previous"] == first.body
     assert call["n_turns"] == second.compress_end - first.compress_end
@@ -530,14 +537,14 @@ def test_failed_pass_backs_off_without_touching_live_failure_state(tmp_path, mon
     call = MagicMock(side_effect=RuntimeError("No LLM provider configured"))
     monkeypatch.setattr(module, "call_llm", call)
     grown = _grow(msgs, 14, size=2600)
-    thread = pc.maybe_prepare(_agent(cc), grown, origin="test")
+    thread = pc.maybe_prepare(_agent(cc, _GROWN_TOKENS), grown, origin="test")
     thread.join(5.0)
 
     assert call.call_count == 1
     assert cc.prepared_compaction._entry is first, "a failed extension keeps the previous candidate"
     assert cc._summary_failure_cooldown_until == 0.0 and cc._last_summary_error is None
     assert db.get_compression_failure_cooldown("S1") is None
-    assert pc.maybe_prepare(_agent(cc), grown, origin="test") is None, "backs off"
+    assert pc.maybe_prepare(_agent(cc, _GROWN_TOKENS), grown, origin="test") is None, "backs off"
     assert call.call_count == 1
 
 

@@ -76,14 +76,16 @@ class _Window:
 class PreparedSummary(_Window):
     summary: str  # prefixed handoff text, exactly as ``_generate_summary`` returns it
     body: str  # bare body the next compaction extends iteratively
+    prompt_tokens: int = 0  # provider-reported prompt size when the pass was planned
 
 
 class _PendingPass:
     """The one running pass allowed to publish: its planned window, completion and cancel events, and
     the progress and prompt-reading hooks of a compaction waiting on it."""
 
-    def __init__(self, window: _Window) -> None:
+    def __init__(self, window: _Window, prompt_tokens: int) -> None:
         self.window = window
+        self.prompt_tokens = prompt_tokens
         self.done = threading.Event()
         # Set once nothing can use the pass any more; its summary stream is closed (the aux hard-cancel path).
         self.cancelled = threading.Event()
@@ -288,8 +290,8 @@ class PreparedCompaction:
             or getattr(compressor, "_micro_compact_enabled", False)
         ):
             return True  # another path owns compaction, or history is rewritten every turn
-        if compressor.awaiting_real_usage_after_compression:
-            return True
+        if compressor.awaiting_real_usage_after_compression or compressor._fallback_compression_streak >= 2:
+            return True  # no real usage yet, or the summary model is benched after repeated fallbacks
         tokens = compressor.last_prompt_tokens
         band_floor = int(compressor.threshold_tokens * (1 - PREPARE_BAND_RATIO))
         if tokens <= 0 or compressor.threshold_tokens <= 0 or tokens < band_floor:
@@ -309,6 +311,11 @@ class PreparedCompaction:
                 if self._pending is not None:
                     return None
                 completed = self._entry
+            tokens = compressor.last_prompt_tokens
+            if completed is not None and 0 <= tokens - completed.prompt_tokens < MIN_EXTENSION_DELTA_TOKENS:
+                # The prompt has barely grown since the candidate's boundary was the cut: keep it without
+                # re-planning and re-fingerprinting the transcript before every tool batch.
+                return None
             working, _, start, end = compressor._plan_compaction_window(messages)
             if start >= end:
                 return None
@@ -343,7 +350,7 @@ class PreparedCompaction:
                 if self._pending is not None:
                     _slots.release()
                     return None
-                token = self._pending = _PendingPass(_Window(start, end, window_fingerprint))
+                token = self._pending = _PendingPass(_Window(start, end, window_fingerprint), tokens)
             from agent.memory_provider import spawn_context_thread
 
             # Profile and secret scope ride the contextvars into the pass.
@@ -387,7 +394,9 @@ class PreparedCompaction:
             if token.cancelled.is_set():
                 logger.info("prepared compaction: pass cancelled after %.1fs (superseded)", time.monotonic() - started)
             elif summary:
-                entry = PreparedSummary(start, end, window_fingerprint, summary, worker._previous_summary)
+                entry = PreparedSummary(
+                    start, end, window_fingerprint, summary, worker._previous_summary, token.prompt_tokens,
+                )
                 logger.info("prepared compaction: pass completed window=%d-%d in %.1fs",
                             start, end, time.monotonic() - started)
             else:

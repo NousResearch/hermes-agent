@@ -716,23 +716,23 @@ def _systemd_unit_owned_by_update(scope_cmd: list, svc_name: str) -> bool:
     listed, not because it ran the updated code. Foreign or unreadable ownership prints a notice
     and leaves the unit alone; it is not a failed restart.
     """
-    from hermes_cli.update_fleet_scope import describe_skipped_runtime, systemd_unit_hermes_home, home_in_update_scope
+    from hermes_cli.update_fleet_scope import announce_skipped_runtime, systemd_unit_hermes_home, home_in_update_scope
     home = systemd_unit_hermes_home(scope_cmd, svc_name)
     if home is not None and home_in_update_scope(home):
         return True
-    print(describe_skipped_runtime("systemd unit", svc_name, home))
+    announce_skipped_runtime("systemd unit", svc_name, home)
     return False
 
 
 def _scoped_manual_gateway_pids(pids, *, keep=(), quiet: bool = False) -> list[int]:
     """*pids* whose live home this update owns (plus *keep*, PIDs already mapped to this
     install's profile PID files); every other gateway process is named and left running."""
-    from hermes_cli.update_fleet_scope import describe_skipped_runtime, partition_gateway_pids_by_scope
+    from hermes_cli.update_fleet_scope import announce_skipped_runtime, partition_gateway_pids_by_scope
     keep = set(keep)
     owned, foreign = partition_gateway_pids_by_scope([pid for pid in pids if pid not in keep])
     if not quiet:
         for pid, home in foreign:
-            print(describe_skipped_runtime("gateway process", f"PID {pid}", home))
+            announce_skipped_runtime("gateway process", f"PID {pid}", home)
     return [pid for pid in pids if pid in keep or pid in owned]
 
 
@@ -1468,6 +1468,9 @@ class _GatewayRestartOutcome:
     #: (``_drain_or_signal_gateway_for_update`` branch 1): they restart only after this process
     #: exits, so the fleet matrix renders them as pending instead of STALE (#119597).
     self_restart_pending_pids: set = field(default_factory=set)
+    #: Units the restart phase itself could not restart. Verification warns about the ones its fleet
+    #: probe does not prove current: a timed-out ``systemctl`` call can still bring its unit up.
+    unrestarted_units: list = field(default_factory=list)
 
     def fleet_probe_signals(self) -> tuple:
         """``(pre_restart_pids, killed_pids)`` with the unmapped stops removed — the signals that
@@ -1749,7 +1752,7 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
         if out.failed_or_stale_units:
             # Owed restart (C3): verification records the follow-up; the /update marker stays committed.
             out.incomplete = True
-        _warn_incomplete_gateway_fleet_restart(out.failed_or_stale_units)
+        out.unrestarted_units = list(out.failed_or_stale_units)
         out.record_receipt()
         _force_kill_stuck_gateways(out.killed_pids)
 

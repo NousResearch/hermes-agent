@@ -4,6 +4,7 @@ import { $registryVersion } from '@/contrib/registry'
 import { allKeybindActions, defaultBindings, keybindAction, type KeybindBindings } from '@/lib/keybinds/actions'
 import { canonicalizeCombo } from '@/lib/keybinds/combo'
 import { arraysEqual, persistString, storedString } from '@/lib/storage'
+import { syncJsonSetting } from '@/store/desktop-settings-sync'
 
 const STORAGE_KEY = 'hermes.desktop.keybinds'
 
@@ -34,7 +35,7 @@ function readStoredOverrides(): Record<string, string[]> {
   }
 }
 
-const storedOverrides = readStoredOverrides()
+let storedOverrides = readStoredOverrides()
 
 // Defaults overlaid with the user's stored overrides. Unknown / stale action
 // ids are dropped; actions added in a later release pick up their shipped
@@ -85,6 +86,46 @@ function persistBindings(bindings: KeybindBindings): void {
 export const $bindings = atom<KeybindBindings>(loadBindings())
 
 $bindings.subscribe(persistBindings)
+
+// Write-through server mirror, with self-heal on an empty/orphaned local
+// store (see desktop-settings-sync.ts). `get`/`isEmpty` read the STORED
+// OVERRIDES (the diff from shipped defaults persistBindings actually writes),
+// not the full $bindings snapshot — $bindings always holds every action's
+// resolved combo (defaults merged with overrides), so it is never "empty"
+// even on a brand-new origin with zero user customization. `set` merges an
+// imported server value the same way loadBindings does (unknown ids dropped,
+// Object.hasOwn so an intentionally-cleared `[]` import is kept, not treated
+// as absent), then routes through $bindings.set so the existing subscribe
+// persists it — no second write path to keep in sync.
+syncJsonSetting<KeybindBindings>({
+  configKey: 'desktop.keybinds',
+  get: () => readStoredOverrides(),
+  set: overrides => {
+    // Preserve late-registered action ids before persistBindings rereads storage.
+    storedOverrides = overrides
+    persistString(STORAGE_KEY, JSON.stringify(overrides))
+    const next = defaultBindings()
+
+    for (const id of Object.keys(next)) {
+      if (Object.hasOwn(overrides, id)) {
+        next[id] = overrides[id]
+      }
+    }
+
+    // Late-registered contributed actions (plugins) are missing from
+    // defaultBindings() at this point — carry their imported override
+    // forward the same way persistBindings does on the write side.
+    for (const [id, combos] of Object.entries(overrides)) {
+      if (!(id in next)) {
+        next[id] = combos
+      }
+    }
+
+    $bindings.set(next)
+  },
+  isEmpty: overrides => Object.keys(overrides).length === 0,
+  onChange: listener => $bindings.listen(listener)
+})
 
 /** Live combos for an action: explicit binding → stored override → default. */
 export function bindingsFor(id: string, bindings: KeybindBindings = $bindings.get()): string[] {

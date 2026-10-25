@@ -254,6 +254,17 @@ class ManifestGate:
     log: Optional[tuple] = None  # (level, message, *args)
 
 
+IN_BOTH_LISTS = "listed in both plugins.enabled and plugins.disabled — disabled wins"
+
+
+def plugins_in_both_lists() -> list[str]:
+    """Keys of the plugins the loader skips because both lists name them, by the loader's own
+    config read and name matching (path key, bare leaf, manifest name)."""
+    winners = resolve_manifest_winners(collect_directory_manifests())
+    disabled, enabled = _get_disabled_plugins(), _get_enabled_plugins()
+    return [key for key, manifest in winners.items() if gate_manifest(manifest, disabled, enabled).error == IN_BOTH_LISTS]
+
+
 def gate_manifest(
     manifest: PluginManifest, disabled: set[str], enabled: Optional[set[str]]
 ) -> ManifestGate:
@@ -280,7 +291,7 @@ def gate_manifest(
             # Contradictory config (#131980): the disable wins, but a silent DEBUG skip hides the
             # conflict — the plugin "loads nowhere" while plugins.enabled still lists it. Fail loud.
             return _placeholder(
-                "listed in both plugins.enabled and plugins.disabled — disabled wins",
+                IN_BOTH_LISTS,
                 logging.WARNING,
                 "Plugin '%s' is listed in both plugins.enabled and plugins.disabled; the disable "
                 "wins and it will not load — remove it from one of the two lists",

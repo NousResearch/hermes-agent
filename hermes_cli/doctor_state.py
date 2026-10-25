@@ -664,12 +664,9 @@ def _check_plugins_disabled_by_update(should_fix: bool, f: Finding) -> None:
 @doctor_check("")  # best-effort: an unreadable config is the config check's finding
 def _check_plugins_in_both_lists(should_fix: bool, f: Finding) -> None:
     """A plugin in both plugins.enabled and plugins.disabled loads nowhere (the disable wins). Older
-    updates left plugins in that state when they had to turn them off."""
-    from hermes_cli.doctor import HERMES_HOME
-    from pm.plugins_state import read_home_selection
-    plugins = (read_home_selection(HERMES_HOME) or {}).get("plugins") or {}
-    disabled = set(plugins.get("disabled") or ())
-    both = [name for name in plugins.get("enabled") or () if name in disabled]
+    updates left plugins in that state when they had to turn them off. Judged by the loader's gate."""
+    from hermes_cli.plugins_discovery import plugins_in_both_lists
+    both = plugins_in_both_lists()
     if not both:
         return
     _section("Plugins Listed as Both Enabled and Disabled")

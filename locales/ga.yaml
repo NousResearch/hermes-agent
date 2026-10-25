@@ -662,6 +662,8 @@ gateway:
     poll_title_single: "Roghnaigh ceann amháin:"
     poll_title_multi: "Roghnaigh gach ceann a bhaineann leis:"
     poll_skip: "⏭️ Scipeáil"
+    poll_done: "✅ Déanta"
+    poll_pick_first: "Roghnaigh do roghanna ar dtús, ansin ✅ Déanta."
     hint_multi: "Ceadaítear roghanna iolracha — freagair leis na huimhreacha scartha le camóga nó spásanna (m.sh. \"1, 3\"), le téacs na rogha, nó le do fhreagra féin."
     option_line: "  {index}. {choice}"
     question: "❓ {question}"

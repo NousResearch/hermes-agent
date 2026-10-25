@@ -749,17 +749,21 @@ class SignalAdapter(BasePlatformAdapter):
         mapped back to the choice and resolves the clarify directly; typed replies (number, label,
         free text) keep working through the gateway text intercept. Open-ended prompts, too many
         options, polls disabled, or a failed poll send fall back to the base numbered list."""
-        if (not choices or not self.clarify_polls_enabled
-                or len(choices) + 2 > self._POLL_MAX_OPTIONS):
+        if not choices or not self.clarify_polls_enabled:
             return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
         from tools import clarify_gateway as _cg
         pending = _cg.get_pending(clarify_id)
         multi = bool(pending and pending.multi_select)
         _cg.mark_awaiting_text(clarify_id)
         await self._stop_typing_indicator(chat_id)
-        # Two fixed trailing options: Other (typed answer) and Skip (same as typing "skip").
-        options = [str(c).strip() for c in choices] + [t("gateway.clarify.poll_other"),
-                                                       t("gateway.clarify.poll_skip")]
+        # Fixed trailing options: Other (typed answer), Skip (same as typing "skip") and, for multi-select,
+        # Done: Signal polls have no submit button, so nothing counts until Done is ticked.
+        extras = [t("gateway.clarify.poll_other"), t("gateway.clarify.poll_skip")]
+        if multi:
+            extras.append(t("gateway.clarify.poll_done"))
+        if len(choices) + len(extras) > self._POLL_MAX_OPTIONS:
+            return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
+        options = [str(c).strip() for c in choices] + extras
         title = (question or "").strip()
         # The gateway appends the 'Reply "skip"' hint; the Skip option replaces it in a poll.
         skip_hint = t("gateway.clarify.skip_hint")
@@ -812,6 +816,8 @@ class SignalAdapter(BasePlatformAdapter):
             entry["task"] = None
         if not indexes:  # deselection: wait for the next tap
             return
+        if entry["multi"] and n - 1 not in indexes:  # multi-select: wait for Done
+            return
         if not entry.get("ack"):
             # Instant feedback while the debounce runs: 👀 on the poll + typing dots.
             entry["ack"] = True
@@ -829,8 +835,9 @@ class SignalAdapter(BasePlatformAdapter):
             return
         entry["task"] = None
         from tools import clarify_gateway as _cg
-        other_idx, skip_idx = len(entry["options"]) - 2, len(entry["options"]) - 1
-        picked = [entry["choices"][i] for i in indexes if i < other_idx]
+        nc = len(entry["choices"])
+        other_idx, skip_idx = nc, nc + 1
+        picked = [entry["choices"][i] for i in indexes if i < nc]
         if not picked and skip_idx in indexes:  # Skip: same sentinel as typing "skip"
             if _cg.resolve_gateway_clarify(entry["clarify_id"], _cg.SKIPPED):
                 entry["done"] = True
@@ -841,6 +848,9 @@ class SignalAdapter(BasePlatformAdapter):
                 await self._terminate_clarify_poll(ts, entry)
             else:
                 entry["done"] = True
+            return
+        if not picked and other_idx not in indexes:  # multi-select: Done ticked with nothing else
+            await self.send(entry["chat_id"], t("gateway.clarify.poll_pick_first"))
             return
         if not picked:  # only "Other": the clarify is already in text-capture mode
             _cg.mark_awaiting_text(entry["clarify_id"])

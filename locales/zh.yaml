@@ -662,6 +662,8 @@ gateway:
     poll_title_single: "请选择一项："
     poll_title_multi: "请选择所有适用项："
     poll_skip: "⏭️ 跳过"
+    poll_done: "✅ 完成"
+    poll_pick_first: "请先勾选选项，再点 ✅ 完成。"
     hint_multi: "可多选——回复以逗号或空格分隔的编号（例如 \"1, 3\"）、选项文字，或你自己的答案。"
     option_line: "  {index}. {choice}"
     question: "❓ {question}"

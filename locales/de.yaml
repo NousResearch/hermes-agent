@@ -662,6 +662,8 @@ gateway:
     poll_title_single: "Wählen Sie eine Option:"
     poll_title_multi: "Wählen Sie alle zutreffenden:"
     poll_skip: "⏭️ Überspringen"
+    poll_done: "✅ Fertig"
+    poll_pick_first: "Wählen Sie zuerst Ihre Optionen, dann ✅ Fertig."
     hint_multi: "Mehrfachauswahl möglich — antworten Sie mit den Nummern, getrennt durch Kommas oder Leerzeichen (z. B. \"1, 3\"), dem Optionstext oder Ihrer eigenen Antwort."
     option_line: "  {index}. {choice}"
     question: "❓ {question}"

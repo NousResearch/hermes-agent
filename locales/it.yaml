@@ -662,6 +662,8 @@ gateway:
     poll_title_single: "Scegline una:"
     poll_title_multi: "Scegli tutte quelle pertinenti:"
     poll_skip: "⏭️ Salta"
+    poll_done: "✅ Fatto"
+    poll_pick_first: "Seleziona prima le opzioni, poi ✅ Fatto."
     hint_multi: "Selezione multipla consentita — rispondi con i numeri separati da virgole o spazi (es. \"1, 3\"), il testo dell'opzione o una tua risposta."
     option_line: "  {index}. {choice}"
     question: "❓ {question}"

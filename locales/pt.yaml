@@ -662,6 +662,8 @@ gateway:
     poll_title_single: "Escolha uma:"
     poll_title_multi: "Escolha todas as que se aplicam:"
     poll_skip: "⏭️ Pular"
+    poll_done: "✅ Pronto"
+    poll_pick_first: "Marque primeiro suas opções e depois ✅ Pronto."
     hint_multi: "Várias seleções permitidas — responda com os números separados por vírgulas ou espaços (ex.: \"1, 3\"), com o texto da opção ou com sua própria resposta."
     option_line: "  {index}. {choice}"
     question: "❓ {question}"

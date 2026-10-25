@@ -662,6 +662,8 @@ gateway:
     poll_title_single: "하나를 선택하세요:"
     poll_title_multi: "해당하는 항목을 모두 선택하세요:"
     poll_skip: "⏭️ 건너뛰기"
+    poll_done: "✅ 완료"
+    poll_pick_first: "먼저 항목을 선택한 다음 ✅ 완료를 누르세요."
     hint_multi: "여러 개를 선택할 수 있어요 — 쉼표나 공백으로 구분한 번호(예: \"1, 3\"), 선택지 텍스트, 또는 직접 작성한 답으로 답해 주세요."
     option_line: "  {index}. {choice}"
     question: "❓ {question}"

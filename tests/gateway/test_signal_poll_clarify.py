@@ -127,6 +127,9 @@ async def test_multi_select_returns_json_array(monkeypatch):
     assert a.calls[0][1]["noMulti"] is False
     await a._handle_poll_vote(_vote([0, 2]), USER, "", USER)
     await _settle()
+    assert not cg._entries[cid].event.is_set()  # nothing counts until Done
+    await a._handle_poll_vote(_vote([0, 2, 5]), USER, "", USER)
+    await _settle()
     assert json.loads(cg._entries[cid].response) == ["Red", "Blue"]
 
 
@@ -292,7 +295,7 @@ async def test_real_choice_beats_skip_in_multi_select(monkeypatch):
     a = _adapter(monkeypatch)
     cid = _register(["Red", "Green", "Blue"], multi=True)
     await a.send_clarify(USER, "q", ["Red", "Green", "Blue"], cid, "s")
-    await a._handle_poll_vote(_vote([1, 4]), USER, "", USER)  # Green + Skip
+    await a._handle_poll_vote(_vote([1, 4, 5]), USER, "", USER)  # Green + Skip + Done
     await _settle()
     assert json.loads(cg._entries[cid].response) == ["Green"]
 
@@ -311,5 +314,53 @@ async def test_nine_choices_fall_back_to_numbered_list(monkeypatch):
     a = _adapter(monkeypatch)
     choices = [f"c{i}" for i in range(9)]  # 9 + Other + Skip > Signal's 10-option cap
     cid = _register(choices)
+    await a.send_clarify(USER, "q", choices, cid, "s")
+    assert not any(m == "sendPollCreate" for m, _ in a.calls)
+
+
+@pytest.mark.asyncio
+async def test_multi_select_poll_has_done_option(monkeypatch):
+    from agent.i18n import t
+    a = _adapter(monkeypatch)
+    cid = _register(["Red", "Green"], multi=True)
+    await a.send_clarify(USER, "q", ["Red", "Green"], cid, "s")
+    opts = a.calls[0][1]["option"]
+    assert opts[-1] == t("gateway.clarify.poll_done") and len(opts) == 5
+    single = _register(["Red", "Green"])
+    a.calls.clear()
+    await a.send_clarify(USER, "q", ["Red", "Green"], single, "s")
+    assert t("gateway.clarify.poll_done") not in a.calls[0][1]["option"]
+
+
+@pytest.mark.asyncio
+async def test_multi_select_done_alone_asks_to_pick_first(monkeypatch):
+    from agent.i18n import t
+    a = _adapter(monkeypatch)
+    cid = _register(["Red", "Green"], multi=True)
+    await a.send_clarify(USER, "q", ["Red", "Green"], cid, "s")
+    await a._handle_poll_vote(_vote([4]), USER, "", USER)  # Done only (Red, Green, Other, Skip, Done)
+    await _settle()
+    assert not cg._entries[cid].event.is_set()
+    assert a.send.await_args.args[1] == t("gateway.clarify.poll_pick_first")
+    await a._handle_poll_vote(_vote([1, 4]), USER, "", USER)
+    await _settle()
+    assert json.loads(cg._entries[cid].response) == ["Green"]
+
+
+@pytest.mark.asyncio
+async def test_multi_select_skip_with_done(monkeypatch):
+    a = _adapter(monkeypatch)
+    cid = _register(["Red", "Green"], multi=True)
+    await a.send_clarify(USER, "q", ["Red", "Green"], cid, "s")
+    await a._handle_poll_vote(_vote([3, 4]), USER, "", USER)  # Skip + Done
+    await _settle()
+    assert cg._entries[cid].response == cg.SKIPPED
+
+
+@pytest.mark.asyncio
+async def test_eight_choices_multi_select_falls_back(monkeypatch):
+    a = _adapter(monkeypatch)
+    choices = [f"c{i}" for i in range(8)]  # 8 + Other + Skip + Done > 10
+    cid = _register(choices, multi=True)
     await a.send_clarify(USER, "q", choices, cid, "s")
     assert not any(m == "sendPollCreate" for m, _ in a.calls)

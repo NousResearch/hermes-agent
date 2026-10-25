@@ -662,6 +662,8 @@ gateway:
     poll_title_single: "اختر واحدًا:"
     poll_title_multi: "اختر كل ما ينطبق:"
     poll_skip: "⏭️ تخطي"
+    poll_done: "✅ تم"
+    poll_pick_first: "اختر خياراتك أولًا، ثم ✅ تم."
     hint_multi: "يُسمح بتحديد أكثر من خيار — أجب بالأرقام مفصولة بفواصل أو مسافات (مثلًا \"1, 3\")، أو بنص الخيار، أو بإجابتك الخاصة."
     option_line: "  {index}. {choice}"
     question: "❓ {question}"

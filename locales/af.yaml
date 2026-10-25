@@ -662,6 +662,8 @@ gateway:
     poll_title_single: "Kies een:"
     poll_title_multi: "Kies almal wat van toepassing is:"
     poll_skip: "⏭️ Slaan oor"
+    poll_done: "✅ Klaar"
+    poll_pick_first: "Merk eers jou keuses, dan ✅ Klaar."
     hint_multi: "Veelvuldige keuses toegelaat — antwoord met die nommers geskei deur kommas of spasies (bv. \"1, 3\"), die opsieteks, of jou eie antwoord."
     option_line: "  {index}. {choice}"
     question: "❓ {question}"

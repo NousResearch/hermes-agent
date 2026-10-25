@@ -187,11 +187,11 @@ When the agent asks a multiple-choice question with the `clarify` tool, Hermes s
 
 - Hermes reacts 👀 on the poll as soon as a vote arrives (and shows typing), waits about 1.5 seconds so a quick change of vote still counts (the latest tap wins), then swaps the reaction to ✅ and closes the poll.
 - **Other** switches to a typed answer; **Skip** skips the question (the same as replying `skip`). Typing a number, an option's text, or free text keeps working too.
-- Multi-select questions become multi-select polls; the answer is every option ticked.
+- Multi-select questions become multi-select polls with a final **✅ Done** option (Signal polls have no submit button): tick everything that applies, then Done. Nothing counts until Done is ticked.
 - Only allowlisted senders in the same chat can answer, and a vote that arrives after the question was answered, expired, or superseded is ignored — it never starts a new agent turn.
 - Questions longer than 200 characters are sent as a normal message followed by a short poll.
 
-Polls need **signal-cli 0.14 or newer** (JSON-RPC `sendPollCreate`). On older versions, if the poll send fails, or with more than 8 choices, Hermes falls back to the numbered-list prompt. To always use the numbered list, set `SIGNAL_CLARIFY_POLLS=false` (or `platforms.signal.extra.clarify_polls: false`).
+Polls need **signal-cli 0.14 or newer** (JSON-RPC `sendPollCreate`). On older versions, if the poll send fails, or with more than 8 choices (7 for multi-select), Hermes falls back to the numbered-list prompt. To always use the numbered list, set `SIGNAL_CLARIFY_POLLS=false` (or `platforms.signal.extra.clarify_polls: false`).
 
 ### Long Messages
 

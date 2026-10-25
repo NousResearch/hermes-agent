@@ -662,6 +662,8 @@ gateway:
     poll_title_single: "Birini seçin:"
     poll_title_multi: "Uygun olanların hepsini seçin:"
     poll_skip: "⏭️ Atla"
+    poll_done: "✅ Tamam"
+    poll_pick_first: "Önce seçimlerinizi işaretleyin, sonra ✅ Tamam."
     hint_multi: "Birden fazla seçim yapılabilir — numaraları virgül veya boşlukla ayırarak (örn. \"1, 3\"), seçenek metnini veya kendi yanıtınızı yazın."
     option_line: "  {index}. {choice}"
     question: "❓ {question}"

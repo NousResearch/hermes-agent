@@ -47,7 +47,7 @@ def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
 def _run_staleness_harness(script: str) -> dict[str, Any]:
     harness = (
         "import { classifyProbeRejection, shouldProbe, isZombieSuspect, "
-        "createProbeMessageId } "
+        "createProbeMessageId, isStreamReady } "
         f"from {json.dumps(_MODULE.as_uri())};\n"
         + script
     )
@@ -75,31 +75,103 @@ def test_probe_message_id_is_guid_shaped_and_unique() -> None:
     assert out["first"] != out["second"]
 
 def test_probe_rejection_classification_is_strict() -> None:
-    """Only not-found-shaped rejections prove liveness; everything else is
-    inconclusive — a rejected probe is NEVER treated as alive (#45580's
-    original /probe treated any rejection as alive, which was too loose)."""
+    """Server-answered rejections prove liveness; transport failures and
+    FAILED_PRECONDITION are inconclusive. A rejected probe is NEVER treated as
+    alive merely because it was rejected (#45580's original /probe treated any
+    rejection as alive, which was too loose)."""
     out = _run_staleness_harness(
         """
         const results = {
           notFoundCode: classifyProbeRejection({ code: 5, message: "5 NOT_FOUND: nope" }),
           notFoundText: classifyProbeRejection(new Error("message not found")),
           sdkNotFound: classifyProbeRejection({ code: "notFound", message: "missing" }),
+          spectrumGuidError: classifyProbeRejection(
+            new Error("[spectrum-imessage] Expected message resource GUID")),
+          invalidArgumentCode: classifyProbeRejection(
+            { code: 3, message: "3 INVALID_ARGUMENT: Expected message resource GUID" }),
+          sdkInvalidArgument: classifyProbeRejection({ code: "invalidArgument", message: "bad id" }),
+          spectrumStampedOther: classifyProbeRejection(
+            new Error("[spectrum-imessage] message resource not resolvable")),
           unavailable: classifyProbeRejection({ code: 14, message: "14 UNAVAILABLE: connect failed" }),
           deadline: classifyProbeRejection({ code: 4, message: "4 DEADLINE_EXCEEDED" }),
+          failedPrecondition: classifyProbeRejection(
+            { code: 9, message: "9 FAILED_PRECONDITION: line not provisioned" }),
+          stampedTransport: classifyProbeRejection(
+            new Error("[spectrum-imessage] unavailable: connection dropped")),
+          stampedTimeout: classifyProbeRejection(new Error("[spectrum-imessage] request timed out")),
+          econnreset: classifyProbeRejection(new Error("read ECONNRESET")),
           generic: classifyProbeRejection(new Error("socket hang up")),
           weird: classifyProbeRejection("string error"),
         };
         process.stdout.write(JSON.stringify(results));
         """
     )
-    # Completed round-trips (server said not-found for our synthetic id).
-    for name in ("notFoundCode", "notFoundText", "sdkNotFound"):
+    # Completed round-trips: the server answered our synthetic id (not-found,
+    # INVALID_ARGUMENT, or any Spectrum-stamped server error).
+    for name in (
+        "notFoundCode",
+        "notFoundText",
+        "sdkNotFound",
+        "spectrumGuidError",
+        "invalidArgumentCode",
+        "sdkInvalidArgument",
+        "spectrumStampedOther",
+    ):
         assert out[name]["alive"] is True, name
         assert out[name]["inconclusive"] is False, name
-    # Everything else: not alive AND explicitly inconclusive.
-    for name in ("unavailable", "deadline", "generic", "weird"):
+    # No round-trip proven: not alive AND explicitly inconclusive. A transport
+    # failure or FAILED_PRECONDITION stays inconclusive even when the SDK
+    # stamps it with `[spectrum-*]` provenance.
+    for name in (
+        "unavailable",
+        "deadline",
+        "failedPrecondition",
+        "stampedTransport",
+        "stampedTimeout",
+        "econnreset",
+        "generic",
+        "weird",
+    ):
         assert out[name]["alive"] is False, name
         assert out[name]["inconclusive"] is True, name
+
+def test_stream_readiness_is_true_only_for_healthy() -> None:
+    """`stream.ready` is the explicit readiness boolean: true ONLY for a
+    currently-healthy stream. starting/recovering/degraded are all NOT ready
+    (the existing `ok` flag stays as-is for the adapter/senders)."""
+    out = _run_staleness_harness(
+        """
+        const results = {
+          healthy: isStreamReady("healthy"),
+          starting: isStreamReady("starting"),
+          recovering: isStreamReady("recovering"),
+          degraded: isStreamReady("degraded"),
+          unknown: isStreamReady("something-else"),
+        };
+        process.stdout.write(JSON.stringify(results));
+        """
+    )
+    assert out["healthy"] is True
+    assert out["starting"] is False
+    assert out["recovering"] is False
+    assert out["degraded"] is False
+    assert out["unknown"] is False
+    # `ready` is strictly narrower than the legacy `ok` flag (state !==
+    # "degraded"), which the adapter and out-of-process senders still consume.
+    out2 = _run_staleness_harness(
+        """
+        const states = ["starting", "healthy", "recovering", "degraded"];
+        const rows = {};
+        for (const state of states) {
+          rows[state] = { ok: state !== "degraded", ready: isStreamReady(state) };
+        }
+        process.stdout.write(JSON.stringify(rows));
+        """
+    )
+    assert out2["healthy"] == {"ok": True, "ready": True}
+    assert out2["degraded"] == {"ok": False, "ready": False}
+    assert out2["starting"] == {"ok": True, "ready": False}
+    assert out2["recovering"] == {"ok": True, "ready": False}
 
 def test_should_probe_requires_silence_past_threshold_and_cooldown() -> None:
     out = _run_staleness_harness(
@@ -156,6 +228,9 @@ def _healthz_payload(**staleness: Any) -> dict[str, Any]:
         "ok": True,
         "stream": {
             "ok": True,
+            # Explicit readiness boolean (true only for `healthy`); the adapter
+            # keeps gating on the legacy `ok`/`state` fields.
+            "ready": True,
             "state": "healthy",
             "degradedForMs": 0,
             "staleness": {

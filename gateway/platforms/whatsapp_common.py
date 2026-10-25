@@ -286,10 +286,70 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         return result
 
 
+_BRIDGE_MIRROR_MANIFEST = ".hermes-mirror.json"
+
+
+def _bridge_source_files(root: Path) -> list[Path]:
+    """Bridge source files relative to ``root``: everything except ``node_modules`` and dotfiles."""
+    files: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d != "node_modules" and not d.startswith("."))
+        files.extend(Path(dirpath, name).relative_to(root) for name in filenames if not name.startswith("."))
+    return sorted(files)
+
+
+def _refresh_bridge_mirror(install_bridge: Path, mirror: Path) -> None:
+    """Sync the HERMES_HOME bridge mirror with the install tree.
+
+    The mirror used to be copied once and never touched again, so every later image upgrade left the bridge
+    that actually runs on its first-install source. Files are synced by content; ``node_modules`` is left
+    alone (the adapter reinstalls when package.json changes). A mirror file whose content no longer matches
+    what was last synced was edited in place — it is kept beside the new copy as ``<name>.local-<timestamp>``
+    rather than silently overwritten. Mirrors created before the manifest existed have no record, so any
+    differing file is kept that way once.
+    """
+    import hashlib
+    import json
+    import shutil
+    import time
+
+    def digest(path: Path) -> str:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    manifest_path = mirror / _BRIDGE_MIRROR_MANIFEST
+    try:
+        synced = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(synced, dict):
+            synced = {}
+    except (OSError, ValueError):
+        synced = {}
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    current: Dict[str, str] = {}
+    for rel in _bridge_source_files(install_bridge):
+        key = rel.as_posix()
+        src, dst = install_bridge / rel, mirror / rel
+        current[key] = digest(src)
+        if dst.is_file():
+            dst_digest = digest(dst)
+            if dst_digest == current[key]:
+                continue
+            if synced.get(key) != dst_digest:
+                kept = dst.with_name(f"{dst.name}.local-{stamp}")
+                dst.replace(kept)
+                logger.warning("WhatsApp bridge mirror: %s was edited locally; kept as %s", dst, kept.name)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dst.with_name(f".{dst.name}.tmp")
+        shutil.copy2(src, tmp)
+        os.replace(tmp, dst)
+        logger.info("WhatsApp bridge mirror: updated %s", key)
+    if current != synced:
+        manifest_path.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def resolve_whatsapp_bridge_dir() -> Path:
     """Bridge directory for CLI and adapter. A read-only install tree (e.g. Docker
-    /opt/hermes) is mirrored to HERMES_HOME so npm install works."""
-    import shutil
+    /opt/hermes) is mirrored to HERMES_HOME so npm install works, and the mirror is
+    re-synced on every resolve so an upgraded install tree reaches the running bridge."""
     from hermes_constants import get_hermes_home
     install_bridge = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
     hermes_home_bridge = get_hermes_home() / "scripts" / "whatsapp-bridge"
@@ -299,11 +359,13 @@ def resolve_whatsapp_bridge_dir() -> Path:
         return install_bridge
     except OSError:
         pass
-    if hermes_home_bridge.exists():
-        return hermes_home_bridge
+    existed = hermes_home_bridge.exists()
     try:
-        hermes_home_bridge.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(install_bridge, hermes_home_bridge, dirs_exist_ok=False)
+        hermes_home_bridge.mkdir(parents=True, exist_ok=True)
+        _refresh_bridge_mirror(install_bridge, hermes_home_bridge)
         return hermes_home_bridge
-    except Exception:
+    except Exception as exc:
+        if existed:
+            logger.warning("WhatsApp bridge mirror refresh failed; using the existing mirror as-is: %s", exc)
+            return hermes_home_bridge
         return install_bridge

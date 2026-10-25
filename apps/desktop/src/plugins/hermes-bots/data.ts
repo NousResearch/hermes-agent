@@ -723,6 +723,8 @@ interface UnionAgentRow {
    *  only source of a REMOTE row's title, since profiles.list is asked of the
    *  active gateway alone. */
   profileMetadata?: Pick<RosterRow, 'display_name' | 'has_avatar' | 'title' | 'ui_meta'>
+  /** False when the source lists the profile but does not serve it. */
+  reachable?: boolean
   targetProfile?: string
 }
 
@@ -830,7 +832,12 @@ async function fetchRosterSnapshot(activeConnectionId: null | string | undefined
       const merged = mergeMultiSourceRoster(local, union, activeConnectionId, previous)
       const sources = Array.isArray(union?.sources) ? union.sources : []
       traceRosterSnapshot(local, sources, activeConnectionId, merged?.profiles || [])
-      const profiles = (merged?.profiles || []).map(row => annotateBotSource(row, sources))
+
+      const profiles = applyUnservedAgents(
+        (merged?.profiles || []).map(row => annotateBotSource(row, sources)),
+        Array.isArray(union?.agents) ? union.agents : []
+      )
+
       await reconcileBotMeta(profiles, issuedAt)
 
       return {
@@ -1487,6 +1494,30 @@ export function sourceByConnection(sources: GatewaySource[] | null | undefined):
     (Array.isArray(sources) ? sources : [])
       .filter(source => source?.connectionId)
       .map(source => [String(source.connectionId), source])
+  )
+}
+
+/** A source can be up and still not serve a profile. Those rows stay listed.
+ *  Absence is not that signal: a native roster omits the field, and one poll
+ *  can list a profile on only one of the two inventories. */
+export function applyUnservedAgents(
+  rows: RosterRow[],
+  agents: { connectionId?: string; profile?: string; reachable?: boolean }[]
+): RosterRow[] {
+  const unserved = new Set(
+    agents
+      .filter(agent => agent.reachable === false)
+      .map(agent => `${String(agent.connectionId || '').trim()}::${String(agent.profile || '').trim()}`)
+  )
+
+  if (unserved.size === 0) {
+    return rows
+  }
+
+  return rows.map(row =>
+    unserved.has(`${String(row.connectionId || '').trim()}::${String(row.name || '').trim()}`)
+      ? { ...row, sourceReachable: false }
+      : row
   )
 }
 

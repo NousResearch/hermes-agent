@@ -1295,6 +1295,9 @@ export interface DesktopRosterAgent {
   profile: string
   targetProfile?: string
   handle: string
+  // False when this source lists the profile but does not serve it.
+  // Absent means the source's own reachable flag.
+  reachable?: boolean
 }
 
 export interface DesktopAgentRoster {

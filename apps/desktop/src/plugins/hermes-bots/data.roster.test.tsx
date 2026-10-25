@@ -60,6 +60,7 @@ interface UnionAgent {
   connectionLabel?: string
   handle: string
   profile: string
+  reachable?: boolean
 }
 
 interface Union {
@@ -697,6 +698,33 @@ describe('the roster only caches rows from the connection it is keyed under', ()
     expect(client.getQueryData(localKey)).toBeUndefined()
     expect(hostMock.request).not.toHaveBeenCalled()
     expect(hostMock.requestProfile.mock.calls.every(([route]) => route.connectionId === 'vps')).toBe(true)
+  })
+})
+
+describe('a profile this gateway does not serve', () => {
+  it('stays listed and is marked unreachable while served profiles stay reachable', async () => {
+    const rows = await mergedRoster(
+      { profiles: [{ name: 'default' }, { name: 'research' }, { name: 'solo' }] },
+      {
+        agents: [
+          { connectionId: 'local', connectionKind: 'local', handle: 'hermes', profile: 'default' },
+          { connectionId: 'local', connectionKind: 'local', handle: 'research', profile: 'research' },
+          {
+            connectionId: 'local',
+            connectionKind: 'local',
+            handle: 'solo',
+            profile: 'solo',
+            reachable: false
+          }
+        ],
+        primaryConnectionId: 'local',
+        sources: [{ connectionId: 'local', kind: 'local', reachable: true }]
+      }
+    )
+
+    expect(rows.map(row => row.name)).toEqual(['default', 'research', 'solo'])
+    expect(rows.find(row => row.name === 'research')?.sourceReachable).toBe(true)
+    expect(rows.find(row => row.name === 'solo')?.sourceReachable).toBe(false)
   })
 })
 

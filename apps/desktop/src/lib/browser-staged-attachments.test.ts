@@ -48,6 +48,10 @@ async function installBrowser(withProvenance = true) {
       return new Response(JSON.stringify({ dataUrl: 'data:text/plain;base64,cGF5bG9hZA==' }))
     }
 
+    if (url.pathname.endsWith('/api/status')) {
+      return new Response(JSON.stringify({ gateway_shared_with: null }), { status: 200 })
+    }
+
     throw new Error(`Unexpected fetch: ${url}`)
   })
 
@@ -56,6 +60,10 @@ async function installBrowser(withProvenance = true) {
   $connection.set(await window.hermesDesktop.getConnection('owner'))
 
   return fetchMock
+}
+
+function transportCalls(fetchMock: { mock: { calls: [RequestInfo | URL, RequestInit?][] } }) {
+  return fetchMock.mock.calls.filter(([input]) => !String(input).includes('/api/status'))
 }
 
 afterEach(() => {
@@ -146,8 +154,9 @@ describe('browser staged attachment transport', () => {
       })
       expect(result.refText).toBe(refText)
       expect(result.stagedUpload).toEqual(source)
-      expect(fetchMock).toHaveBeenCalledTimes(1)
-      const [input, init] = fetchMock.mock.calls[0]
+      const calls = transportCalls(fetchMock)
+      expect(calls).toHaveLength(1)
+      const [input, init] = calls[0]
       const uploadUrl = new URL(String(input))
       expect(uploadUrl.pathname).toBe('/api/chat/file-upload')
       expect(uploadUrl.searchParams.get('profile')).toBe('owner')
@@ -183,7 +192,7 @@ describe('browser staged attachment transport', () => {
     }
 
     expect(requestGateway).toHaveBeenCalledTimes(2)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(transportCalls(fetchMock)).toHaveLength(1)
   })
 
   it('retains the legacy byte transport when an older upload endpoint supplies only a path', async () => {
@@ -196,7 +205,7 @@ describe('browser staged attachment transport', () => {
     expect(requestGateway).toHaveBeenCalledWith('file.attach', {
       name: sourceName, path, session_id: 'runtime', data_url: 'data:text/plain;base64,cGF5bG9hZA=='
     })
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(transportCalls(fetchMock)).toHaveLength(2)
   })
 
   it('retries a failed attach from the same source without another upload or download', async () => {
@@ -213,7 +222,7 @@ describe('browser staged attachment transport', () => {
     expect(attachment.stagedUpload).toEqual(source)
     expect(attachment.attachedSessionId).toBeUndefined()
     await expect(uploadComposerAttachment(attachment, opts)).resolves.toMatchObject({ refText })
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(transportCalls(fetchMock)).toHaveLength(1)
     expect(requestGateway.mock.calls.every(([, params]) => params.staged_upload === source)).toBe(true)
   })
 
@@ -243,7 +252,7 @@ describe('browser staged attachment transport', () => {
     expect(requestGateway).toHaveBeenLastCalledWith('file.attach', {
       name: sourceName, session_id: 'new-runtime', staged_upload: source
     })
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(transportCalls(fetchMock)).toHaveLength(1)
   })
 
   it.each(['another Hermes backend', 'Profile not found'])(
@@ -256,7 +265,7 @@ describe('browser staged attachment transport', () => {
         remote: true, requestGateway, sessionId: 'runtime'
       })).rejects.toThrow(message)
       expect(requestGateway).toHaveBeenCalledTimes(1)
-      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(transportCalls(fetchMock)).toHaveLength(1)
     }
   )
 

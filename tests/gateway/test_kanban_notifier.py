@@ -624,6 +624,80 @@ def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch
     assert remaining == []
 
 
+def test_notifier_progress_heartbeat_is_opt_in_and_never_wakes_origin(tmp_path, monkeypatch):
+    """Opted-in milestones are visible; defaults and liveness beats stay quiet."""
+    db_path = tmp_path / "heartbeat-progress.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="long research",
+            assignee="research",
+            session_id="agent:main:telegram:group:chat-1",
+        )
+        kbn.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+            chat_type="group",
+            delivery_mode="notify+wake",
+            notify_progress=True,
+        )
+        kb._append_event(conn, tid, "heartbeat", None)
+        kb._append_event(
+            conn,
+            tid,
+            "heartbeat",
+            {"note": "3 of 8 sources verified; comparing evidence limits next"},
+        )
+        kb._append_event(conn, tid, "heartbeat", None)
+        quiet_tid = kb.create_task(conn, title="quiet research", assignee="research")
+        kbn.add_notify_sub(
+            conn, task_id=quiet_tid, platform="telegram", chat_id="chat-2",
+            delivery_mode="notify+wake",
+        )
+        kb._append_event(
+            conn, quiet_tid, "heartbeat", {"note": "must remain opt-in"},
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert tid in adapter.sent[0]["text"]
+    assert "3 of 8 sources verified" in adapter.sent[0]["text"]
+    assert quiet_tid not in adapter.sent[0]["text"]
+    assert adapter.handled == [], "progress must not spend a model turn"
+
+    conn = kbc.connect()
+    try:
+        _, remaining = kbn.unseen_events_for_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="chat-1",
+            kinds=["heartbeat"],
+        )
+        _, quiet_remaining = kbn.unseen_events_for_sub(
+            conn,
+            task_id=quiet_tid,
+            platform="telegram",
+            chat_id="chat-2",
+            kinds=["heartbeat"],
+        )
+    finally:
+        conn.close()
+    assert remaining == []
+    assert quiet_remaining == []
+
+
 # ---------------------------------------------------------------------------
 # #111125 — a repeated-block circuit breaker establishes that orchestration
 # attention is needed, NOT that a human decision exists. The formatter must

@@ -134,6 +134,23 @@ export function kanbanWorktreeDir(path: string): null | string {
 export const DEFAULT_BRANCH_LABEL = 'main'
 
 /**
+ * Codicon for a lane's leading glyph. A plain folder (`isGit === false`, the
+ * backend's non-git heuristic lane) is not a branch, so it gets a folder mark
+ * instead of the branch one.
+ */
+export function laneGlyph(group: Pick<SidebarSessionGroup, 'isGit' | 'isHome' | 'isKanban'>): string {
+  if (group.isKanban) {
+    return 'checklist'
+  }
+
+  if (group.isHome) {
+    return 'home'
+  }
+
+  return group.isGit === false ? 'folder' : 'git-branch'
+}
+
+/**
  * The branch "+" on a lane should `git switch` to before opening a session, or
  * null to open on whatever the checkout is on now. A main-checkout lane label
  * is a display value: a row with no recorded `git_branch` falls back to

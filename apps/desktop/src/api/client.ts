@@ -33,6 +33,16 @@ const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 // agent-turn ceiling (agent.gateway_timeout = 1800s) so the ack timeout only
 // ever fires when the turn itself would have been abandoned server-side.
 export const PROMPT_SUBMIT_REQUEST_TIMEOUT_MS = 1_800_000
+// Attach RPCs upload the file's base64 inside the request frame itself, so the
+// deadline must bound TRANSIT, not handling: a 256 MiB attach is ~341 MiB of
+// base64 riding one ws frame over an SSH-tunnel forward, which easily outruns
+// the generic 30s default on a slow uplink. Bounding by that default aborts
+// mid-frame and surfaces as "request timed out" while the bytes are still in
+// flight — the same false-timeout class as prompt.submit above, except the
+// abort path takes the renderer down with it (render-process-gone
+// EXC_BREAKPOINT, reproducible with a large attach on a remote gateway).
+// 10 min covers the raw cap at a sustained ~5 Mbps uplink.
+export const ATTACH_REQUEST_TIMEOUT_MS = 600_000
 
 export const GATEWAY_NOT_CONNECTED_MESSAGE = 'Hermes gateway is not connected'
 

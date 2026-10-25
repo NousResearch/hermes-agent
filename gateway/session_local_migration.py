@@ -39,7 +39,8 @@ def require_history_claim(authority, conn, actor, sid):
         return
     if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (BINDING_PREFIX + sid,)).fetchone():
         return  # authorize_history checks the already committed importer identity.
-    if _owner_user(row) and row['user_id'] in (actor.subject, _login_label(actor.subject)):
+    own_profile = row['profile_name'] in (None, '', authority.db._own_profile_name() or 'default')
+    if own_profile and _owner_user(row) and row['user_id'] in (actor.subject, _login_label(actor.subject)):
         return  # The login that created it (a served remote Desktop); authorize_history re-checks it.
     if getattr(authority, '_native_legacy_transports', {}).get(actor.transport_id) != actor:
         raise RuntimeStoreError('permission_denied')

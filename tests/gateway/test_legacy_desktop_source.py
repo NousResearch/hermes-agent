@@ -97,6 +97,8 @@ def test_a_served_login_controls_its_own_stamped_chat_over_http(tmp_path):
     try:
         db.create_session('alice-row', source='desktop', user_id='basic:alice')
         db.create_session('unstamped', source='desktop')
+        # Restored or copied from another profile: the adoption gate answers not_found for it.
+        db.create_session('alice-other-profile', source='desktop', user_id='basic:alice', profile_name='other')
         authority = SimpleNamespace(profile_id=str(tmp_path), db=db, sessions={})
         caps = frozenset({'session:read', 'session:create', 'session:control'})
         alice, bob, host = (Principal(subject, str(tmp_path), caps, 'http')
@@ -107,7 +109,8 @@ def test_a_served_login_controls_its_own_stamped_chat_over_http(tmp_path):
             return _authorize_control(authority, actor, SessionRef(str(tmp_path), sid), params)
 
         assert control(alice, 'alice-row') is True
-        for stranger, sid in ((bob, 'alice-row'), (host, 'alice-row'), (alice, 'unstamped')):
+        for stranger, sid in ((bob, 'alice-row'), (host, 'alice-row'), (alice, 'unstamped'),
+                              (alice, 'alice-other-profile')):
             with pytest.raises(RuntimeStoreError, match='permission_denied'):
                 control(stranger, sid)
     finally:

@@ -65,7 +65,27 @@ class GatewayDashboardMount:
         # session token is a bearer credential any loopback peer (any OS user) could read from
         # GET /, so the gateway-hosted listener never publishes it.
         web.app.state.withhold_session_token = True
-        web._configure_auth_gate(self._state.bound_host, False, None, None)
+        try:
+            web._configure_auth_gate(self._state.bound_host, False, None, None)
+        except SystemExit as refusal:
+            # A gated bind with no auth provider is decided entirely by configuration, so it is
+            # permanent. ``_configure_auth_gate`` reports it as ``SystemExit(<message>)``; left alone,
+            # that string code travels up to ``run_gateway``'s SystemExit handler, which maps every
+            # non-int code to 1. The units this repo generates pair Restart=always with
+            # StartLimitIntervalSec=0 and rely on RestartPreventExitStatus=EX_CONFIG as their only
+            # backstop, so exit 1 turned a correct refusal into an unbounded restart loop — and
+            # ``os._exit`` skipped CPython's print-the-message behaviour, leaving the actionable text
+            # only in logs/gateway-exit-diag.log. Print it where an operator reads it, then exit 78
+            # like every other config-derived gateway refusal (#142281).
+            if isinstance(refusal.code, int):
+                # Someone in the gate chose a code on purpose (75 = "restart me"); not ours to rewrite.
+                raise
+            from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+
+            message = refusal.code if isinstance(refusal.code, str) else ""
+            if message:
+                print(message, file=sys.stderr, flush=True)
+            raise SystemExit(GATEWAY_FATAL_CONFIG_EXIT_CODE) from None
         web.app.state.gateway_runner = self.runner
         web.app.state.session_authority = getattr(self.runner, "session_authority", None)
         web.app.state.bound_host = self._state.bound_host

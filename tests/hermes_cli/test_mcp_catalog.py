@@ -791,6 +791,105 @@ class TestCatalogDiagnostics:
 
 
 # ---------------------------------------------------------------------------
+# Manifest trust (manifest_version 2)
+# ---------------------------------------------------------------------------
+
+
+_HTTP_OAUTH = {"transport": {"type": "http", "url": "https://mcp.example.com/mcp"}, "auth": {"type": "oauth"}}
+
+
+class TestManifestTrust:
+    def test_untrusted_reaches_every_install_path(self, catalog_dir):
+        """``trust: untrusted`` lands in the block the terminal install writes, the connection card
+        saves and the gateway preset copies, so the native gate asks before write-capable calls."""
+        _write_manifest(catalog_dir, "demo", _basic_manifest(manifest_version=2, trust="untrusted", **_HTTP_OAUTH))
+        _write_manifest(catalog_dir, "plain", _basic_manifest("plain", **_HTTP_OAUTH))
+        from hermes_cli.config import load_config
+        from hermes_cli.mcp_catalog import _build_server_config, card_install_config, install_entry
+
+        entry = _entry("demo")
+        assert entry.trust == "untrusted"
+        assert _build_server_config(entry, None) == {**_build_server_config(_entry("plain"), None), "trust": "untrusted"}
+        assert card_install_config(entry)["trust"] == "untrusted"
+
+        install_entry(entry, enable=True)
+        assert load_config()["mcp_servers"]["demo"] == {
+            "url": "https://mcp.example.com/mcp", "auth": "oauth", "trust": "untrusted", "enabled": True}
+
+    def test_no_trust_or_full_installs_the_version_1_block(self, catalog_dir):
+        """Entries without ``trust`` (either version) or with ``trust: full`` install exactly what they
+        did before version 2: no ``trust`` key, so the server keeps Hermes' default."""
+        _write_manifest(catalog_dir, "v1", _basic_manifest("v1"))
+        _write_manifest(catalog_dir, "v2", _basic_manifest("v2", manifest_version=2))
+        _write_manifest(catalog_dir, "full", _basic_manifest("full", manifest_version=2, trust="full"))
+        from hermes_cli.config import load_config
+        from hermes_cli.mcp_catalog import _build_server_config, install_entry
+
+        blocks = []
+        for name in ("v1", "v2", "full"):
+            entry = _entry(name)
+            assert entry.trust == "full"
+            blocks.append(_build_server_config(entry, None))
+            install_entry(entry, enable=True)
+            assert "trust" not in load_config()["mcp_servers"][name]
+        assert blocks[0] == blocks[1] == blocks[2]
+
+    def test_trust_in_a_version_1_manifest_is_rejected(self, catalog_dir):
+        """A version-1 Hermes ignores unknown keys and would install the entry ungated, so ``trust``
+        needs version 2, which that Hermes refuses."""
+        path = _write_manifest(catalog_dir, "demo", _basic_manifest(trust="untrusted"))
+        from hermes_cli.mcp_catalog import CatalogError, _parse_manifest, catalog_diagnostics, list_catalog
+
+        with pytest.raises(CatalogError, match="'trust' requires manifest_version 2"):
+            _parse_manifest(path)
+        assert list_catalog() == []
+        assert [kind for (_n, kind, _m) in catalog_diagnostics()] == ["invalid"]
+
+    @pytest.mark.parametrize("value", ["UNTRUSTED", "banana", "", True, ["untrusted"]])
+    def test_trust_value_must_be_exact(self, catalog_dir, value):
+        path = _write_manifest(catalog_dir, "demo", _basic_manifest(manifest_version=2, trust=value))
+        from hermes_cli.mcp_catalog import CatalogError, _parse_manifest
+
+        with pytest.raises(CatalogError, match="trust must be 'untrusted' or 'full'"):
+            _parse_manifest(path)
+
+    def test_older_hermes_refuses_instead_of_installing_ungated(self, catalog_dir, monkeypatch):
+        """A Hermes that predates version 2 skips the untrusted entry with the future_manifest
+        diagnostic (the picker's "requires a newer Hermes"), as this one skips the next version."""
+        import hermes_cli.mcp_catalog as mc
+
+        _write_manifest(catalog_dir, "demo", _basic_manifest(manifest_version=2, trust="untrusted"))
+        _write_manifest(catalog_dir, "next", _basic_manifest("next", manifest_version=mc._MANIFEST_VERSION + 1))
+        assert [e.name for e in mc.list_catalog()] == ["demo"]
+        assert [(n, kind) for (n, kind, _m) in mc.catalog_diagnostics()] == [("next", "future_manifest")]
+
+        monkeypatch.setattr(mc, "_MANIFEST_VERSION", 1)
+        assert mc.list_catalog() == []
+        assert {n: kind for (n, kind, _m) in mc.catalog_diagnostics()} == {
+            "demo": "future_manifest", "next": "future_manifest"}
+        assert mc.get_entry("demo") is None
+
+    def test_reinstall_keeps_tool_selection_and_trust(self, catalog_dir):
+        """A reinstall keeps the user's tool selection and re-applies the manifest's trust; the tools
+        filter written after the (failed) probe must not drop it."""
+        _write_manifest(catalog_dir, "demo", _basic_manifest(manifest_version=2, trust="untrusted"))
+        import hermes_cli.mcp_catalog as mc
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg.setdefault("mcp_servers", {})["demo"] = {
+            "command": "npx", "args": ["-y", "demo-mcp"], "enabled": True, "tools": {"include": ["tool_a"]},
+        }
+        save_config(cfg)
+
+        mc.install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["tools"] == {"include": ["tool_a"]}
+        assert server["trust"] == "untrusted"
+
+
+# ---------------------------------------------------------------------------
 # Picker — custom (non-catalog) MCP rows
 # ---------------------------------------------------------------------------
 

@@ -1,6 +1,6 @@
 # Nous-approved MCP catalog entry.
 # Presence in this directory = approval. Merged via PR review.
-manifest_version: 1
+manifest_version: 2
 
 name: tripo
 description: Generate, texture, rig, animate, and convert 3D models with Tripo.
@@ -14,6 +14,10 @@ transport:
 
 auth:
   type: oauth
+
+# Generation and processing tools spend Tripo credits: every tool call without
+# readOnlyHint: true asks the user first. `trust` needs manifest_version 2.
+trust: untrusted
 
 suggest:
   keywords:
@@ -29,8 +33,10 @@ post_install: |
   session so the tools load.
 
   Generation and processing tools spend credits from your Tripo account.
-  The server asks the agent to show a plan of every billed step and wait
-  for your confirmation; balance, usage and task status are free.
+  Hermes asks you before each call that can spend credits or change data
+  (trust: untrusted); plan, balance, usage and task status run without
+  asking. The server also asks the agent to show a plan of every billed
+  step and wait for your confirmation.
 
   China mainland accounts (tripo3d.com): change mcp_servers.tripo.url to
   https://developers.tripo3d.com/mcp in config.yaml, then run

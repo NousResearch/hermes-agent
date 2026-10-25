@@ -208,3 +208,21 @@ def test_provider_gate_accepts_the_alias_key(monkeypatch):
     monkeypatch.setenv("MITTWALD_AI_API_KEY", "alias-key")
     from tools.transcription_tools import _get_provider
     assert _get_provider({"provider": "mittwald"}) == "mittwald"
+
+
+def test_configured_cohere_model_reaches_the_handler(monkeypatch, tmp_path):
+    """``stt.mittwald.model: cohere-transcribe-03-2026`` is sent as-is, not swapped for the Whisper default."""
+    import tools.transcription_tools as tt
+
+    audio = tmp_path / "speech.wav"
+    audio.write_bytes(b"\x00" * 16)
+    calls: dict = {}
+
+    def _fake(file_path, model_name, *, language=None, prompt=None):
+        calls["model"] = model_name
+        return {"success": True, "transcript": "ok", "provider": "mittwald"}
+
+    monkeypatch.setattr(tt, "_transcribe_mittwald", _fake)
+    tt._dispatch_stt_provider(str(audio), "mittwald", {"mittwald": {"model": "cohere-transcribe-03-2026"}})
+
+    assert calls == {"model": "cohere-transcribe-03-2026"}

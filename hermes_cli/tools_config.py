@@ -282,7 +282,7 @@ TOOL_CATEGORIES = {
             _row("Mistral Voxtral", "paid", "voxtral-mini-latest — multilingual",
                  [_key("MISTRAL_API_KEY", "Mistral API key", "https://console.mistral.ai/")], stt_provider="mistral"),
             _row("DeepInfra", "paid", "Live STT catalog from api.deepinfra.com", [_DEEPINFRA_KEY], stt_provider="deepinfra"),
-            _row("mittwald AI Hosting", "paid", "whisper-large-v3-turbo, EU-hosted (max 10 min per file)",
+            _row("mittwald AI Hosting", "paid", "whisper-large-v3-turbo or cohere-transcribe-03-2026, EU-hosted",
                  [_MITTWALD_KEY], stt_provider="mittwald"),
         ],
     },

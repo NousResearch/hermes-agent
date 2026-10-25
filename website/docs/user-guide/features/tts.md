@@ -518,7 +518,7 @@ stt:
     model: "grok-voice-transcribe-2.0"  # or grok-voice-transcribe-1.0
     language: ""              # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else "en"
   mittwald:
-    model: "whisper-large-v3-turbo"
+    model: "whisper-large-v3-turbo"  # or cohere-transcribe-03-2026
     language: ""              # optional ISO-639-1 hint; blank = auto-detect
     # base_url: "..."         # wins over MITTWALD_STT_BASE_URL and MITTWALD_BASE_URL
 ```
@@ -552,7 +552,7 @@ HF_HUB_DISABLE_XET=1
 
 **xAI Grok STT** — Requires `XAI_API_KEY` (or xAI OAuth). Posts to `https://api.x.ai/v1/stt` as multipart/form-data and sends `model` (default `grok-voice-transcribe-2.0`; pin `grok-voice-transcribe-1.0` with `stt.xai.model` or `STT_XAI_MODEL`). Hermes always names the model, so a server-default change never silently switches what you run. With `stt.language: ""` (auto-detect) the `format` flag is dropped, since xAI requires a language for text formatting. Good choice if you're already using xAI for chat or TTS and want one API key for everything. Auto-detection order puts it after Mistral — explicitly set `stt.provider: xai` to force it.
 
-**mittwald AI Hosting** — Requires `MITTWALD_LLM_API_KEY`. Serves `whisper-large-v3-turbo` from German data centres on the same key as [mittwald chat](../../integrations/providers.md#mittwald-ai-hosting). Uploads are capped at 25 MB (Hermes) and 10 minutes of audio (mittwald), and `language` takes an ISO-639-1 code.
+**mittwald AI Hosting** — Requires `MITTWALD_LLM_API_KEY`. Serves `whisper-large-v3-turbo` (default) and `cohere-transcribe-03-2026` from German data centres on the same key as [mittwald chat](../../integrations/providers.md#mittwald-ai-hosting); `language` takes an ISO-639-1 code. Both cap uploads at 25 MB; Whisper takes up to 30 minutes of audio, Cohere Transcribe up to 95 minutes, and Hermes splits longer recordings. Cohere Transcribe has a lower word error rate in German and English but covers only 14 languages (`ar`, `de`, `el`, `en`, `es`, `fr`, `it`, `ja`, `ko`, `nl`, `pl`, `pt`, `vi`, `zh`; anything else is a 400) and is in mittwald's test phase, so its behaviour may still change.
 
 **Custom local CLI fallback** — Set `HERMES_LOCAL_STT_COMMAND` if you want Hermes to call a local transcription command directly. The command template supports `{input_path}`, `{output_dir}`, `{language}`, and `{model}` placeholders. Hermes tokenizes the rendered template into an argument list and executes it without a shell, so operators such as `|`, `>`, `&&`, and `;` are passed as literal arguments. Your command must write a `.txt` transcript somewhere under `{output_dir}`.
 

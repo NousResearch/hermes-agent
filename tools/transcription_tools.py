@@ -235,7 +235,7 @@ _CLOUD_PROVIDER_SPECS = {
     "mittwald": (_has_mittwald_key, _has_mittwald_key,
                  "STT provider 'mittwald' configured but MITTWALD_LLM_API_KEY/MITTWALD_AI_API_KEY not set "
                  "(or openai package missing)",
-                 "No local STT available, using mittwald AI Hosting Whisper API")}
+                 "No local STT available, using mittwald AI Hosting STT API")}
 
 # Explicit selections whose resolution is more than a probe + warning.
 _EXPLICIT_RESOLVERS = {

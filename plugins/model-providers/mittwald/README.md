@@ -44,7 +44,7 @@ Model IDs are case-sensitive and go out verbatim.
 
 | Endpoint | Model | Wired into Hermes as |
 |----------|-------|----------------------|
-| `/v1/audio/transcriptions` | `whisper-large-v3-turbo` | built-in STT provider `mittwald` |
+| `/v1/audio/transcriptions` | `whisper-large-v3-turbo`, `cohere-transcribe-03-2026` | built-in STT provider `mittwald` |
 | `/v1/audio/speech` | `Qwen3-TTS-12Hz-1.7B-CustomVoice` | built-in TTS provider `mittwald` |
 | `/v1/embeddings` | `Qwen3-Embedding-8B` (4096 dims) | not wired — the bundled mem0 provider moved to the plugin catalog |
 | `/v1/rerank` | `Qwen3-VL-Reranker-2B` | not wired — Hermes has no rerank consumer |
@@ -55,6 +55,7 @@ list. Both unwired models are reachable with the same key if you call them direc
 
 ## Limits worth knowing
 
-- STT uploads: 25 MB (Hermes' own cap) and 10 minutes of audio (mittwald's).
+- STT uploads: 25 MB; 30 minutes of audio for Whisper, 95 minutes for Cohere Transcribe.
+  Hermes splits longer recordings. Cohere Transcribe (test phase) accepts 14 languages only.
 - TTS `voice` is mandatory server-side; `language` takes a word form (`German`), not an
   ISO code — Hermes maps the common codes for you.

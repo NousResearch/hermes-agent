@@ -252,7 +252,7 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   // Speech-to-text backends — kept in sync with BUILTIN_STT_PROVIDERS in
   // tools/transcription_common.py (local_command is auto-detected, not picked).
   'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs', 'deepinfra', 'mittwald'],
-  'stt.mittwald.model': ['whisper-large-v3-turbo'],
+  'stt.mittwald.model': ['whisper-large-v3-turbo', 'cohere-transcribe-03-2026'],
   // How the desktop voice conversation is wired — tools/voice_live.py owns the
   // gpt-live branch (one full-duplex voice model delegating to Hermes).
   'voice.voice_chat_mode': ['chained', 'gpt-live'],

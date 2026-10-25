@@ -384,11 +384,11 @@ def _transcribe_deepinfra(
 def _transcribe_mittwald(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
 ) -> dict[str, Any]:
-    """Transcribe via mittwald AI Hosting (Whisper on vLLM), then delegate to :func:`_transcribe_openai`.
+    """Transcribe via mittwald AI Hosting (Whisper or Cohere Transcribe), then delegate to :func:`_transcribe_openai`.
 
-    Only ``json``/``verbose_json`` are served — the shared handler already picks ``json`` for
-    everything but ``whisper-1``, so no per-provider response-format handling is needed. The
-    endpoint caps uploads at 10 minutes of audio, tighter than Hermes' own 25 MB ceiling.
+    Whisper serves only ``json``/``verbose_json`` — the shared handler already picks ``json`` for
+    everything but ``whisper-1``, so no per-provider response-format handling is needed. Per-model
+    duration caps live in ``transcription_chunking``.
     """
     from hermes_cli.config import get_env_value
     from tools.transcription_tools import _load_stt_config

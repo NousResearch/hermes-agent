@@ -1671,7 +1671,7 @@ platform_toolsets:
 # =============================================================================
 # Automatically transcribe voice messages on messaging platforms.
 # Providers: local (free, faster-whisper) | groq (free tier) | openai (Whisper API) | mistral (Voxtral Transcribe)
-#            | xai | elevenlabs | deepinfra | mittwald (EU-hosted whisper-large-v3-turbo)
+#            | xai | elevenlabs | deepinfra | mittwald (EU-hosted Whisper or Cohere Transcribe)
 # Set the corresponding API key in .env: GROQ_API_KEY, OPENAI_API_KEY, MISTRAL_API_KEY, or MITTWALD_LLM_API_KEY.
 stt:
   enabled: true
@@ -1740,7 +1740,8 @@ stt:
   #   # live result. Pin only when you need a specific Whisper variant.
   #   model: ""
   # mittwald:
-  #   # EU-hosted whisper-large-v3-turbo. Uploads cap at 10 minutes of audio.
+  #   # EU-hosted. whisper-large-v3-turbo: 30 min of audio per upload;
+  #   # cohere-transcribe-03-2026 (test phase, 14 languages): 95 min. Longer files are split.
   #   model: "whisper-large-v3-turbo"
   #   language: ""            # blank = stt.language > auto-detect; ISO-639-1 to force
   #   base_url: ""            # wins over MITTWALD_STT_BASE_URL and MITTWALD_BASE_URL

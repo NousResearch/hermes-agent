@@ -136,7 +136,7 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
     "stt.mistral.model": _select("Mistral Voxtral transcription model", *STT_MODEL_CATALOG["mistral"]),
     "stt.xai.model": _select("xAI transcription model", *STT_MODEL_CATALOG["xai"]),
     "stt.elevenlabs.model_id": _select("ElevenLabs Scribe model", *STT_MODEL_CATALOG["elevenlabs"]),
-    "stt.mittwald.model": _select("mittwald AI Hosting Whisper model", *STT_MODEL_CATALOG["mittwald"]),
+    "stt.mittwald.model": _select("mittwald AI Hosting transcription model", *STT_MODEL_CATALOG["mittwald"]),
     "display.skin": _select("CLI visual theme", "default", "ares", "mono", "slate"),
     "dashboard.theme": _select(
         "Web dashboard visual theme", "default", "midnight", "ember", "mono", "cyberpunk", "rose"

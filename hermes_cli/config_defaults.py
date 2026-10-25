@@ -1204,7 +1204,7 @@ DEFAULT_CONFIG = {
             # optional "base_url" key overrides DEEPINFRA_BASE_URL for STT only
         },
         "mittwald": {
-            "model": "whisper-large-v3-turbo",
+            "model": "whisper-large-v3-turbo",  # or cohere-transcribe-03-2026 (mittwald test phase)
             "language": "",  # auto-detect; set "en", "de", ... (ISO 639-1) to force
             # optional "base_url" key overrides MITTWALD_BASE_URL for STT only
         },

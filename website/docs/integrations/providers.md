@@ -397,7 +397,7 @@ The API key is created per project in mStudio under **AI-Hosting**; it is not on
 
 `reasoning_effort` is supported, including `none` — which actually switches Qwen's thinking off rather than just hiding it.
 
-The same key also serves the voice and embedding endpoints: `whisper-large-v3-turbo` for [speech-to-text](../user-guide/features/tts.md#speech-to-text) and `Qwen3-TTS-12Hz-1.7B-CustomVoice` for [text-to-speech](../user-guide/features/tts.md#text-to-speech). The hosted embedding (`Qwen3-Embedding-8B`), OCR (`GLM-OCR`) and reranker (`Qwen3-VL-Reranker-2B`) models are reachable with the same key but have no Hermes consumer — documents go through the vision models instead.
+The same key also serves the voice and embedding endpoints: `whisper-large-v3-turbo` and `cohere-transcribe-03-2026` for [speech-to-text](../user-guide/features/tts.md#speech-to-text) and `Qwen3-TTS-12Hz-1.7B-CustomVoice` for [text-to-speech](../user-guide/features/tts.md#text-to-speech). The hosted embedding (`Qwen3-Embedding-8B`), OCR (`GLM-OCR`) and reranker (`Qwen3-VL-Reranker-2B`) models are reachable with the same key but have no Hermes consumer — documents go through the vision models instead.
 
 ### xAI (Grok) — Responses API + Prompt Caching
 

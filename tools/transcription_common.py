@@ -55,7 +55,7 @@ STT_MODEL_CATALOG = {
     "mistral": ["voxtral-mini-latest", "voxtral-mini-2602"],
     "xai": ["grok-voice-transcribe-2.0", "grok-voice-transcribe-1.0"],
     "elevenlabs": ["scribe_v2", "scribe_v1"],
-    "mittwald": ["whisper-large-v3-turbo"]}
+    "mittwald": ["whisper-large-v3-turbo", "cohere-transcribe-03-2026"]}
 # ElevenLabs historically uses ``model_id`` instead of ``model``.
 STT_MODEL_CONFIG_KEY = {"elevenlabs": "model_id"}
 

@@ -80,7 +80,7 @@ it('opens the requested profile on this host without carrying another session or
   // A gated host opens the window directly; a launch-link tab hands it a session first.
   bootstrap.__HERMES_AUTH_REQUIRED__ = true
   window.history.replaceState(null, '', '/hermes?profile=active&win=secondary&watch=1#/session-1')
-  const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+  const open = vi.spyOn(window, 'open').mockImplementation(() => ({}) as Window)
   expect(installBrowserDesktopBridge()).toBe(true)
 
   const originalUrl = window.location.href

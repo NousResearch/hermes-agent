@@ -8,11 +8,27 @@ interface BrowserWindowOptions {
   privateSession: boolean
 }
 
+const POPUP_BLOCKED = 'Webapp window did not open. Allow popups for this site and try again.'
+
+// `noopener` makes a successful open return null (HTML window open step 18),
+// so a blocked popup is indistinguishable. Sever opener on the handle instead.
+function openWebappWindow(href: string): Window | null {
+  const opened = window.open(href, '_blank')
+
+  if (!opened) {return null}
+
+  opened.opener = null
+
+  return opened
+}
+
 /** Open synchronously in the user gesture; never rely on an opener/storage copy. */
 export function createBrowserWindowOpener({ api, basePath, privateSession }: BrowserWindowOptions) {
   return (target: URL): Promise<{ ok: true }> => {
     if (!privateSession) {
-      window.open(target.href, '_blank', 'noopener,noreferrer')
+      if (!openWebappWindow(target.href)) {
+        return Promise.reject(new Error(POPUP_BLOCKED))
+      }
 
       return Promise.resolve({ ok: true })
     }
@@ -35,7 +51,7 @@ export function createBrowserWindowOpener({ api, basePath, privateSession }: Bro
         if (error) {reject(error)} else {resolve({ ok: true })}
       }
 
-      const timeout = window.setTimeout(() => finish(new Error('Webapp window did not open. Allow popups for this site and try again.')), 30_000)
+      const timeout = window.setTimeout(() => finish(new Error(POPUP_BLOCKED)), 30_000)
 
       channel.onmessage = event => {
         if (settled) {return}
@@ -58,7 +74,9 @@ export function createBrowserWindowOpener({ api, basePath, privateSession }: Bro
       }
 
       try {
-        window.open(launch.href, '_blank', 'noopener,noreferrer')
+        if (!openWebappWindow(launch.href)) {
+          finish(new Error(POPUP_BLOCKED))
+        }
       } catch (error) {
         finish(error instanceof Error ? error : new Error(String(error)))
       }

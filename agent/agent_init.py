@@ -37,7 +37,7 @@ from agent.agent_init_ollama import _clamp_compressor_to_ollama_num_ctx, _config
 from agent.primary_runtime_snapshot import _snapshot_primary_runtime
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
-from agent.agent_init_memory_provider import resolve_memory_provider
+from agent.agent_init_memory_provider import external_memory_allowed, resolve_memory_provider
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig, ToolCallGuardrailController
@@ -1313,12 +1313,12 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
 
     # External memory provider plugin (one at a time, alongside built-in): memory.provider.
     agent._memory_manager = None
-    if memory_manager is not None and not skip_memory:
+    if memory_manager is not None and external_memory_allowed(skip_memory, platform):
         # A caller that rebuilds the agent per turn (gateway api_server) hands back the session's
         # already-initialized manager: providers keep their prefetch/retain state across turns instead
         # of being re-initialized (#120116). No initialize_all — the providers are already bound.
         agent._memory_manager = memory_manager
-    elif not skip_memory:
+    elif external_memory_allowed(skip_memory, platform):
         try:
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
             if not is_core_memory_provider(_mem_provider_name):

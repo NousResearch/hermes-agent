@@ -7,6 +7,16 @@ import logging
 logger = logging.getLogger("run_agent")
 
 
+def external_memory_allowed(skip_memory: bool, platform: str | None) -> bool:
+    """Machine-origin briefs are not personal conversation. Gate construction AND reuse:
+    a borrowed human manager owns queues and teardown state outside its providers."""
+    from agent.session_source import session_source_for
+    from agent.delegation_context import is_delegated_child_process_context
+
+    return (not skip_memory and platform != "subagent" and not is_delegated_child_process_context()
+            and session_source_for(platform) not in {"tool", "subagent", "kanban"})
+
+
 # Deduped: the gateway builds a fresh AIAgent per message, so it would warn every turn.
 _warned_unavailable_providers: set[tuple[str, str, str]] = set()
 

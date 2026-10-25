@@ -648,19 +648,59 @@ def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[dict[s
     return None
 
 
-def _resolve_anthropic_pool_token(*, skip_borrowed: bool = False) -> Optional[str]:
-    """First available Anthropic OAuth token from credential_pool, read-only: enumerates with ``clear_expired=False,
-    refresh=False`` (never ``select()``) so diagnostic call sites (account_usage, ``hermes models``) never mutate
-    auth.json or hit the network; refresh-on-expiry belongs to the API call path's pool recovery."""
+def _resolve_anthropic_pool_token(*, skip_borrowed: bool = False, model: Optional[str] = None) -> Optional[str]:
+    """Anthropic OAuth token from credential_pool, honoring the pool's selection strategy.
+
+    Without *model* this stays the original read-only enumeration (``clear_expired=False,
+    refresh=False``, never ``select()``) so diagnostic call sites (account_usage, ``hermes models``)
+    never mutate auth.json or hit the network.
+
+    With *model* (an actual API-call path — the only callers that pass one), this delegates to
+    ``CredentialPool.select()`` so the configured ``credential_pool_strategies.anthropic``
+    (``least_used``/``round_robin``/``random``) is honored on every new session/turn, not only on
+    rotation after a live 429/401/402. Historically this function always hand-picked the first
+    `priority`-ordered entry here regardless of strategy, so a second pooled Anthropic account only
+    ever got used once — right after the first one got rate-limited — and then sat idle forever
+    once the cooldown lifted, because nothing re-ran ``select()`` for it (#hermes-429-pool-starve).
+    """
     try:
         from agent.credential_pool import AUTH_TYPE_OAUTH, load_pool
-        entries, _pending = load_pool("anthropic")._available_entries(clear_expired=False, refresh=False)
+        pool = load_pool("anthropic")
+    except Exception:
+        logger.debug("Failed to read Anthropic credential_pool", exc_info=True)
+        return None
+    exclude_sources = frozenset({"claude_code"}) if skip_borrowed else frozenset()
+    if model:
+        entry = pool.select(model=model, exclude_sources=exclude_sources)
+        if entry is not None:
+            token = (getattr(entry, "access_token", None) or "").strip()
+            entry_source_path = spent_rotation_source_path(getattr(entry, "source", None))
+            consumed = any(
+                is_rotation_consumed_uncommitted(secret, source_path=entry_source_path)
+                for secret in (token, getattr(entry, "refresh_token", None))
+            )
+            if token and not consumed:
+                # select()'s request_count bump is in-memory only (persist=False) — it relies on a
+                # LATER exhaustion/rotation/refresh elsewhere in the same long-lived pool object to
+                # flush it. load_pool() here builds a brand-new instance read fresh off disk, so
+                # without an explicit flush the bump is lost the moment this call returns and the
+                # next new session/turn would see both entries at count 0 again and re-pick the same
+                # one — the exact starvation bug this patch exists to fix. Persist it now so
+                # least_used/round_robin actually advance across separate resolve calls.
+                pool._persist()
+                return token
+            logger.debug(
+                "Skipping strategy-selected Anthropic pool entry %s: rotated-but-uncommitted "
+                "credential; falling back to priority-ordered scan", getattr(entry, "id", "?"),
+            )
+        # Strategy selection found nothing usable (empty pool, or the chosen entry was mid-rotation):
+        # fall through to the plain priority-ordered scan below as a safety net.
+    try:
+        entries, _pending = pool._available_entries(clear_expired=False, refresh=False, exclude_sources=exclude_sources)
     except Exception:
         logger.debug("Failed to read Anthropic credential_pool", exc_info=True)
         return None
     for entry in entries:
-        if skip_borrowed and entry.source == "claude_code":
-            continue
         # access_token may be an explicit null on a persisted entry; None.strip() would crash the resolver.
         token = (getattr(entry, "access_token", None) or "").strip()
         if getattr(entry, "auth_type", None) != AUTH_TYPE_OAUTH or not token:
@@ -713,7 +753,7 @@ def resolve_anthropic_token(*, model: Optional[str] = None) -> Optional[str]:
         return _available_anthropic_token(api_key, model)
     # The pool's claude_code row mirrors the same externally owned refresh grant.
     return _available_anthropic_token(
-        _resolve_anthropic_pool_token(skip_borrowed=True) or _resolve_claude_code_token_from_credentials(_read_creds()),
+        _resolve_anthropic_pool_token(skip_borrowed=True, model=model) or _resolve_claude_code_token_from_credentials(_read_creds()),
         model,
     )
 

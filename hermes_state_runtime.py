@@ -5,6 +5,7 @@ SessionDB transaction owner, including its inode guard and SQLite retry policy.
 """
 import json
 import uuid
+from enum import Enum
 from typing import NamedTuple, Optional
 
 from agent.conversation_compression_archive import ABSORBED_ROW_IDS
@@ -20,15 +21,34 @@ class SessionGoneEvent(NamedTuple):
     reason: str
 
 
+class AdmissionConflict(str, Enum):
+    """The closed set of *proven* admission conflicts (``RuntimeStoreError.conflict``).
+
+    A reason code alone cannot say whether a conflict can clear: ``admission_conflict`` is raised
+    both for a notice whose owner, route or pin is merely unproven — a later route or a rightful pin
+    can still satisfy that — and for an offered payload whose digest differs from the immutable one
+    already stored at this exact ``(principal, target, request)`` identity, which waiting never
+    changes. Only the transaction that compared the stored digest may say which; callers must never
+    infer it from the reason text, elapsed time, an event-supplied flag or ownership.
+    """
+
+    IMMUTABLE_PAYLOAD = 'immutable_payload'
+
+
 class RuntimeStoreError(ValueError):
     """A refusal by the state authority. ``reason`` is the bounded wire code (callers compare it as a
     string); ``field`` and ``detail`` name the check that fired and why, so a client and the gateway
-    log can tell the reasons' many checks apart instead of reporting the bare code."""
+    log can tell the reasons' many checks apart instead of reporting the bare code. ``conflict``
+    carries ``AdmissionConflict``'s closed proof alongside the unchanged public reason."""
 
-    def __init__(self, reason: str, *, field: str | None = None, detail: str | None = None):
+    def __init__(self, reason: str, *, field: str | None = None, detail: str | None = None,
+                 conflict: AdmissionConflict | None = None):
         self.reason = reason
         self.field = _one_line(field, 80)
         self.detail = _one_line(detail, 160)
+        # A member of the closed enum or nothing: a string that merely spells a member (from a
+        # client frame, a log line or a caller's own guess) is discarded, never trusted.
+        self.conflict = conflict if isinstance(conflict, AdmissionConflict) else None
         super().__init__(reason)
 
 
@@ -150,7 +170,12 @@ def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
             WHERE principal_id=? AND target_session_id=? AND request_id=?''', (principal_id, session_id, request_id)).fetchone()
         if old is not None:
             if old['payload_digest'] != digest:
-                raise RuntimeStoreError('admission_conflict')
+                # The stored payload at this exact identity is immutable, so a different digest can
+                # never be admitted here however long a caller waits: the one conflict this store
+                # proves cannot clear. Every other refusal below keeps the bare code deliberately —
+                # an unproven owner, route or generation may still settle.
+                raise RuntimeStoreError('admission_conflict', field='payload_digest',
+                                        conflict=AdmissionConflict.IMMUTABLE_PAYLOAD)
             if _replay_guard is not None:
                 _replay_guard(conn)
             return _row(old)

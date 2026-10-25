@@ -69,6 +69,47 @@ function EventBody({ event, notice }: { event: CanonicalGroupEvent; notice?: str
 // Previews download the whole file over RPC; larger or unsized images keep only Download.
 const IMAGE_PREVIEW_MAX_BYTES = 5 * 1024 * 1024
 
+// Automatic previews share one small download budget across the renderer, in request order;
+// a file already downloading is joined rather than requested again. Manual Download stays outside it.
+type Preview = Awaited<ReturnType<typeof fetchCanonicalGroupAttachment>>
+const previewDownloads = new Map<string, Promise<Preview>>()
+const previewWaiters: Array<() => void> = []
+let previewSlots = 2
+
+function releasePreviewSlot() {
+  const next = previewWaiters.shift()
+
+  if (next) {next()} else {previewSlots++}
+}
+
+function queuePreview(key: string, fetch: () => Promise<Preview>, onPreview: (preview: Preview) => void) {
+  let cancelled = false
+  const deliver = (download: Promise<Preview>) => void download.then(preview => { if (!cancelled) {onPreview(preview)} }, () => undefined)
+
+  const run = () => {
+    let download = previewDownloads.get(key)
+
+    if (download) {releasePreviewSlot()} else {
+      download = fetch().finally(() => { previewDownloads.delete(key); releasePreviewSlot() })
+      previewDownloads.set(key, download)
+    }
+
+    deliver(download)
+  }
+
+  const running = previewDownloads.get(key)
+
+  if (running) {deliver(running)} else if (previewSlots > 0) {previewSlots--; run()} else {previewWaiters.push(run)}
+
+  // A preview that leaves before its turn gives up its place without sending a request.
+  return () => {
+    cancelled = true
+    const at = previewWaiters.indexOf(run)
+
+    if (at >= 0) {previewWaiters.splice(at, 1)}
+  }
+}
+
 function ImagePreview({ binding, eventId, attachment, disabled }: {
   binding: CanonicalGroupBinding; eventId: string; attachment: CanonicalGroupAttachment; disabled: boolean
 }) {
@@ -79,30 +120,30 @@ function ImagePreview({ binding, eventId, attachment, disabled }: {
   const { connectionId, profile, roomId } = binding
   const previewable = !!attachmentId && size !== undefined && size <= IMAGE_PREVIEW_MAX_BYTES
 
-  // History loads the whole room: fetch only near the viewport, which also bounds concurrent downloads.
+  // History loads the whole room: fetch only near the viewport. Leaving it before the bytes arrive releases the queued slot.
   useEffect(() => {
     const el = box.current
 
-    if (near || disabled || !el) {return}
-    const observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) {setNear(true)} }, { rootMargin: '200px' })
+    if (src || disabled || !el) {return}
+    const observer = new IntersectionObserver(entries => setNear(entries[entries.length - 1].isIntersecting), { rootMargin: '200px' })
     observer.observe(el)
 
     return () => observer.disconnect()
-  }, [near, disabled])
+  }, [src, disabled])
 
   useEffect(() => {
     if (disabled || !near || !attachmentId || !previewable) {return}
-    let cancelled = false
     let url = ''
+    const key = JSON.stringify([connectionId, profile, roomId, eventId, attachmentId])
+
     // A failed preview leaves the Download button as the way to the file.
-    void fetchCanonicalGroupAttachment({ connectionId, profile, roomId }, eventId, attachmentId).then(({ bytes, mime }) => {
-      if (cancelled) {return}
+    const cancel = queuePreview(key, () => fetchCanonicalGroupAttachment({ connectionId, profile, roomId }, eventId, attachmentId), ({ bytes, mime }) => {
       url = URL.createObjectURL(new Blob([bytes], { type: mime }))
       setSrc(url)
-    }, () => undefined)
+    })
 
     // Dropping `near` makes a re-shown room wait on the observer again, not refetch every preview seen so far at once.
-    return () => { cancelled = true; URL.revokeObjectURL(url); setSrc(''); setNear(false) }
+    return () => { cancel(); URL.revokeObjectURL(url); setSrc(''); setNear(false) }
   }, [connectionId, profile, roomId, eventId, attachmentId, disabled, near, previewable])
 
   return previewable ? <div ref={box}>{src && <img alt={attachment.name} className="max-h-64 max-w-full rounded object-contain" src={src} />}</div> : null

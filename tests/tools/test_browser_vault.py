@@ -255,6 +255,29 @@ class TestClassifier:
 # ---------------------------------------------------------------------------
 
 class TestBrowserVaultTools:
+    def test_focus_uses_actual_attached_url_not_requested_origin(self):
+        from tools import browser_vault_tool
+
+        class _Supervisor:
+            def focus_page(self, origin, *, accept):
+                assert origin == "https://bank.example"
+                return {"ok": True, "url": "https://evil.example/login"}
+
+        with patch.object(browser_vault_tool, "_ensure_supervisor", return_value=_Supervisor()), \
+             patch.object(browser_vault_tool, "_current_page_origin", return_value=None):
+            assert browser_vault_tool._focus_bound_origin("t", "https://bank.example", "login") == "https://evil.example"
+
+    def test_focus_rechecks_live_origin_after_stale_navigation(self):
+        from tools import browser_vault_tool
+
+        class _Supervisor:
+            def focus_page(self, origin, *, accept):
+                return {"ok": True, "url": "https://bank.example/login"}
+
+        with patch.object(browser_vault_tool, "_ensure_supervisor", return_value=_Supervisor()), \
+             patch.object(browser_vault_tool, "_current_page_origin", return_value="https://evil.example"):
+            assert browser_vault_tool._focus_bound_origin("t", "https://bank.example", "login") == "https://evil.example"
+
     def test_check_fn_follows_the_browser_not_the_item_count(self, tmp_path):
         """The vault tools ride with the browser toolset: an empty vault must still expose
         browser_vault_save_login (that is how the first login gets saved), and no browser means no tools."""
@@ -773,6 +796,23 @@ class TestTwoFactor:
         assert out["success"] and out["source"] == "local" and asked == []
         code = re.search(r'"value": "(\d{6})"', seen["expr"]).group(1)
         assert code not in raw  # the code went to the page, not to the model
+
+    def test_saved_authenticator_key_is_not_minted_on_an_unbound_origin(self, store):
+        from agent.vault_backends import backend_for_handle
+        from tools import browser_vault_tool
+
+        meta = store.add_item("login", "bank", {"identifier_type": "username", "identifier": "u",
+                                               "password": "pw", "otp_secret": "JBSWY3DPEHPK3PXP"},
+                              origin="https://bank.example")
+        backend = backend_for_handle(meta.id)
+        assert backend is not None
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_focus_bound_origin", return_value="https://evil.example"), \
+             patch.object(browser_vault_tool, "_current_page_origin", return_value="https://evil.example"), \
+             patch.object(backend, "resolve_otp", side_effect=AssertionError("OTP must not be minted")):
+            out = json.loads(browser_vault_tool.browser_vault_enter_code(meta.id, task_id="t"))
+
+        assert out["error_type"] == "origin_mismatch"
 
     def test_without_a_key_the_user_is_asked_and_split_boxes_get_one_digit_each(self, store):
         from agent.vault_backends import unlock as unlock_mod

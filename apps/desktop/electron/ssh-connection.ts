@@ -1038,6 +1038,15 @@ class SshConnection {
   }
 
   async exec(remoteCommand, { timeoutMs, stdinData }: any = {}) {
+    const result = await this.execResult(remoteCommand, { timeoutMs, stdinData })
+
+    if (!sshCloseOk(result)) { throw this._fail(result) }
+
+    return result.stdout
+  }
+
+  /** Preserve remote protocol verdicts; transport/auth failures still reject. */
+  async execResult(remoteCommand, { timeoutMs, stdinData }: any = {}) {
     if (this._posixRemote === null) {
       try {
         const probe: any = await runSsh(buildExecArgs(this, 'uname -s', this._connectTimeoutMs), {
@@ -1069,11 +1078,11 @@ class SshConnection {
       throw this._fail(error)
     }
 
-    if (!sshCloseOk(result)) {
+    if (result.code === 255 || sshCloseSignal(result)) {
       throw this._fail(result)
     }
 
-    return result.stdout
+    return result
   }
 
   // Spawn one persistent `ssh -N -L` child for a no-mux tunnel and wait for it

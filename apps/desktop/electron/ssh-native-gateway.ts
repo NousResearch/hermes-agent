@@ -91,31 +91,24 @@ export async function connectNativeSshGateway(opts: {
 
   const hermesPath = await locateHermes(ssh, opts.remoteHermesPath)
   const launcher = expandRemotePath(hermesPath)
-  let output: string
+  const run = () => ssh.execResult(`${launcher} --profile ${shq(profile)} gateway ensure --json`, { timeoutMs: 75_000 })
+  const first = await run()
 
-  try {
-    output = await ssh.exec(`${launcher} --profile ${shq(profile)} gateway ensure --json`, { timeoutMs: 75_000 })
-  } catch (error) {
-    // Only positively identified older runtimes keep their existing legacy path.
-    if (/invalid choice.*ensure|unrecognized arguments:.*--json/i.test(String((error as Error).message))) {
-      return null
-    }
-
-    throw error
-  }
+  // Only positively identified older runtimes keep their existing legacy path.
+  if (first.code === 2 && /invalid choice.*ensure|unrecognized arguments:.*--json/i.test(first.stderr)) { return null }
 
   const restartOwner = async (ownerProfile: string) => {
     await ssh.exec(`${launcher} --profile ${shq(ownerProfile)} gateway restart --detach`, { timeoutMs: 120_000 })
   }
 
-  let first: string | undefined = output
+  let initial: typeof first | undefined = first
 
   const native = await ensureLocalGateway(async () => {
     opts.signal?.throwIfAborted()
-    const stdout = first ?? await ssh.exec(`${launcher} --profile ${shq(profile)} gateway ensure --json`, { timeoutMs: 75_000 })
-    first = undefined
+    const result = initial ?? await run()
+    initial = undefined
 
-    return { code: 0, stdout }
+    return result
   }, undefined, createStaleGatewayRestarter(async ownerProfile => {
     opts.signal?.throwIfAborted()
     await restartOwner(ownerProfile)

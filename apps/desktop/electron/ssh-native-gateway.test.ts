@@ -62,6 +62,9 @@ function fixture(override: Record<string, unknown> = {}) {
 
       return JSON.stringify({ state: 'ready', endpoint, ...override })
     },
+    async execResult(command: string) {
+      return { code: override.state === 'draining' ? 6 : 0, stdout: await this.exec(command), stderr: '' }
+    },
     openPipe(command: string) {
       commands.push(command)
 
@@ -147,6 +150,14 @@ test('non-ready and non-loopback owners cannot open a forward or mint', async ()
     expect(f.forwards).toHaveLength(0)
     expect(f.helper.requests).toHaveLength(0)
   }
+})
+
+test('an after-turn restart wait remains attachable despite ensure exit 6', async () => {
+  const f = fixture({ state: 'draining', reason_code: 'restart_wait' })
+  const connection = await f.connect()
+  expect(connection?.gatewayEndpoint.instance_id).toBe('owner-1')
+  expect(f.forwards).toEqual([[23456, 12345]])
+  connection?.dispose()
 })
 
 test('WS tickets keep the resolved remote profile while explicit restart remains available', async () => {

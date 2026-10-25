@@ -411,7 +411,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
     const alias = this.transportProfileAlias
 
     return alias && !method.startsWith('client.') && method !== 'gateway.ping'
-      && (params.profile === undefined || canonicalProfile(params.profile) === alias.display)
+      && params.profile !== undefined && canonicalProfile(params.profile) === alias.display
       ? { ...params, profile: alias.backend } : params
   }
 

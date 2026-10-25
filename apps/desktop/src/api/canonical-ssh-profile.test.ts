@@ -21,6 +21,14 @@ test('an SSH display alias routes its first create and subsequent mutation to th
 
     sent.push(frame)
 
+    if (['ping', 'runtime.describe'].includes(frame.method)) {
+      socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id,
+        ...(Object.keys(frame.params).length ? { error: { code: 4001, message: 'invalid_params' } }
+          : { result: { pong: true } }) }))
+
+      return
+    }
+
     const snapshot = {
       session_id: 's', stored_session_id: 's', revision: 2, execution_generation: 5, messages: [], prompts: [],
       info: { profile_name: 'writer', profile_id: '/remote/profiles/writer' }
@@ -56,6 +64,8 @@ test('an SSH display alias routes its first create and subsequent mutation to th
     ])
     expect(events[0].profile).toBe('default')
     expect(canonicalOwnerProfile(events[0])).toBe('default')
+    await expect(client.request('ping')).resolves.toEqual({ pong: true })
+    await expect(client.request('runtime.describe')).resolves.toEqual({ pong: true })
   } finally {
     client.close()
 

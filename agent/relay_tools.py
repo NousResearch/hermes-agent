@@ -13,6 +13,17 @@ from agent import relay_llm, relay_runtime
 logger = logging.getLogger(__name__)
 
 
+def _tool_metadata(metadata: dict[str, Any] | None, session: Any, runtime: Any) -> dict[str, Any]:
+    """Tool scope metadata: the caller's keys plus the session identity Relay projects on tool spans."""
+    tool_metadata = _jsonable(metadata or {})
+    identity = relay_runtime.session_identity_metadata(
+        getattr(session, "session_id", ""), getattr(runtime, "profile_key", None)
+    )
+    for key, value in identity.items():
+        tool_metadata.setdefault(key, value)
+    return tool_metadata
+
+
 def execute(
     tool_name: str, args: dict[str, Any], callback: Callable[[dict[str, Any]], Any], *,
     session_id: str, tool_call_id: str | None = None, metadata: dict[str, Any] | None = None,
@@ -49,7 +60,8 @@ def execute(
         managed = _run_awaitable(
             runtime.run_in_session_async(
                 session, runtime.relay.tools.execute, tool_name, _jsonable(args), invoke,
-                handle=parent, metadata=_jsonable(metadata or {}), tool_call_id=tool_call_id or None,
+                handle=parent, metadata=_tool_metadata(metadata, session, runtime),
+                tool_call_id=tool_call_id or None,
             )
         )
     except BaseException as exc:

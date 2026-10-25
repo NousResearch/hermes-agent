@@ -34,6 +34,7 @@ import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/p
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
+import { $sessionTabAgentNames, setSessionTabAgentNames } from '@/store/session-tab-agent-names'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
 import { $textDirection, setTextDirection, TEXT_DIRECTIONS, type TextDirection } from '@/store/text-direction'
 import { $hideThreadTimeline, setHideThreadTimeline } from '@/store/thread-timeline'
@@ -422,6 +423,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const reasoningCollapsedShadowed = useStore($modeShadowed('reasoningCollapsedByDefault'))
   const interfaceMode = useStore($interfaceMode)
   const sessionListDensity = useStore($sessionListDensity)
+  const sessionTabAgentNames = useStore($sessionTabAgentNames)
   const tabStripDefault = useStore($tabStripDefault)
   const titlebarAppActionsSide = useStore($titlebarAppActionsSide)
   const zoomPercent = useStore($zoomPercent)
@@ -919,6 +921,16 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               id={settingElementId(ids.backdrop)}
               label={a.backdropTitle}
               onChange={setBackdrop}
+            />
+          )}
+
+          {show('chat-display') && (
+            <ToggleRow
+              checked={sessionTabAgentNames}
+              description={a.sessionTabAgentNamesDesc}
+              id={settingElementId(ids.sessionTabAgentNames)}
+              label={a.sessionTabAgentNamesTitle}
+              onChange={setSessionTabAgentNames}
             />
           )}
 

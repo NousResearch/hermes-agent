@@ -58,6 +58,38 @@ skill → service-gated tool (`check_fn` answers reachability/opt-in, never per-
 `tools/AGENTS.md`) → plugin → MCP server in the catalog → new core tool (fundamental, broadly useful,
 unreachable otherwise).
 
+## Working in the Production Tree — Read Before You Check Out a Branch
+
+**Never use the production tree as a checkout.** The directory
+`/home/serveradmin/.hermes/hermes-agent` is the live source for the whole
+agent fleet (gateways, dispatcher, kanban, watchers). Checking a fix branch
+into it silently clobbers whatever was deployed — that bug class caused two
+silent-fix-loss incidents on 2026-09-17 and 2026-09-23.
+
+If you are working under this repo as a kanban worker, your task workspace
+is already provided by the dispatcher as a worktree under
+`~/.hermes/hermes-agent/.worktrees/<task-id>` (or the repo's equivalent
+`.worktrees/<task-id>`). Work there.
+
+If you are an operator editing the production tree directly (reviewing a
+hotfix, applying a security patch), follow the
+[Canonical Deploy Branch wiki page](docs/wiki/services/canonical-deploy-branch.md):
+commit to `canonical-deploy-t_7161d9a9` (or whatever `HERMES_DEPLOY_BRANCH`
+names), push, then re-point the deployed tree — do not check out a
+non-canonical branch and leave it there.
+
+**As of t_ff7d30cc this rule is mechanically enforced** for kanban-spawned
+workers: the dispatcher wraps every worker in an unprivileged user+mount
+namespace where the production tree is `EROFS` at the syscall level. A worker
+attempting `git checkout`, `git reset --hard`, `git pull`, or
+`git update-ref canonical-deploy` inside the production tree is denied by
+the kernel, not by convention. The carve-out set (the only writable paths)
+is the per-task worktree plus a minimal git bookkeeping set under
+`<agent_home>/.git/`. Config gate `kanban.worker_isolation = off|warn|enforce`;
+env kill switch `HERMES_WORKER_ISOLATION=off`. See the wiki page for the
+full set + caveats (lost supplementary groups, no `git fetch` inside the
+sandbox, cron scheduler is a separate spawn path).
+
 ## Development Environment
 
 `source ./activate` (fish: `activate.fish`, PowerShell: `activate.ps1`) provisions and activates the

@@ -559,11 +559,17 @@ class InProcessCronScheduler(CronScheduler):
             # Deliver via the profile's OWN adapters; NEVER fall back to the default profile's
             # (wrong bot). A credentialless satellite may ride the PRIMARY adapter only for targets
             # an exact enabled route maps here; else fail closed (delivery skipped this tick).
+            # The ProfileAdapterMap truthiness (LOCAL-only == empty placeholder) keeps a
+            # satellite that only ran local worker sessions on the shared-route path.
             if profile_name is None or profile_name == default_profile:
                 return adapters
             tick_adapters = (profile_adapters or {}).get(profile_name) or {}
             if not tick_adapters and adapters:
-                return SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
+                from gateway.config import Platform
+                local_adapter = (profile_adapters or {}).get(profile_name, {}).get(Platform.LOCAL)
+                return SharedRouteAdapters(
+                    adapters, _primary_profile_routes_for_current_home(), local_adapter=local_adapter,
+                )
             return tick_adapters
 
         # Recovery + heartbeat per profile; one broken store must not abort startup for the others.

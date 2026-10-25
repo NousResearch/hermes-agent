@@ -1262,7 +1262,8 @@ class GatewayAdapterLifecycleMixin:
             configs = self._profile_configs = {}
         configs[profile_name] = profile_cfg
         multiplex = self._multiplex_on()
-        profile_map = self._profile_adapters.setdefault(profile_name, {})
+        from gateway.session_local import ensure_profile_adapter_map
+        profile_map = ensure_profile_adapter_map(self._profile_adapters, profile_name)
         connected = 0
         for platform, platform_config in profile_cfg.platforms.items():
             if not platform_config.enabled:
@@ -1481,7 +1482,8 @@ class GatewayAdapterLifecycleMixin:
                     if adapter is None:
                         return
                     if success and self._running:
-                        profile_map = self._profile_adapters.setdefault(profile_name, {})
+                        from gateway.session_local import ensure_profile_adapter_map
+                        profile_map = ensure_profile_adapter_map(self._profile_adapters, profile_name)
                         if platform not in profile_map:
                             profile_map[platform] = adapter
                             hand_over_held_inbound(predecessor, adapter)

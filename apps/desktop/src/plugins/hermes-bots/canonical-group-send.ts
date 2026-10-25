@@ -15,6 +15,9 @@ export interface PreparedCanonicalGroupSend {
    *  one less when the gateway proves a request admitted nothing (`admitted: false`) or it never
    *  left. Zero: nothing of it is in the room. Entries journaled before this count read as one. */
   attempts?: number
+  /** Set when the last request that may have posted it was withdrawn: its words went back for
+   *  editing, so a later open restores them as a draft, not as a Send to retry. */
+  handedBack?: true
 }
 
 function journalKey(binding: CanonicalGroupBinding): string {
@@ -76,7 +79,8 @@ async function compareAndSet(
 function validEntry(binding: CanonicalGroupBinding, key: string, entry: PreparedCanonicalGroupSend | undefined) {
   if (entry && (journalKey(entry.binding) !== key || entry.params.room_id !== binding.roomId ||
     !entry.params.event_id || !entry.params.payload || typeof entry.params.payload !== 'object' ||
-    (entry.attempts !== undefined && !(Number.isSafeInteger(entry.attempts) && entry.attempts >= 0)))) {
+    (entry.attempts !== undefined && !(Number.isSafeInteger(entry.attempts) && entry.attempts >= 0)) ||
+    (entry.handedBack !== undefined && (entry.handedBack !== true || entry.attempts !== 0)))) {
     throw new Error('Invalid canonical group Send entry')
   }
 
@@ -168,7 +172,9 @@ async function countRequests(binding: CanonicalGroupBinding, eventId: string, st
 
     // An entry journaled before the count may have been sent by requests nobody counted.
     if (step < 0 && (entry.attempts === undefined || !attempts)) {return attempts}
-    const { applied } = await compareAndSet(key, JSON.stringify(entry), JSON.stringify({ ...entry, attempts: attempts + step }))
+    const { handedBack: _, ...rest } = entry
+    const next = attempts + step ? { ...rest, attempts: attempts + step } : { ...rest, attempts: 0, handedBack: true as const }
+    const { applied } = await compareAndSet(key, JSON.stringify(entry), JSON.stringify(next))
 
     if (applied) {return attempts + step}
   }

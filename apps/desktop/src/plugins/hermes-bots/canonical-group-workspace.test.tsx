@@ -678,6 +678,39 @@ it('holds the next Send until a Stop still fencing behind the last one has finis
   await waitFor(() => expect(request.mock.calls.filter(call => call[1] === 'groups.send')).toHaveLength(2))
 })
 
+it('reopens a message the gateway proved unsent as an editable draft, not a restored unconfirmed Send, on plain HTTP', async () => {
+  vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) })
+  const binding = { connectionId: 'remote', profile: 'team', roomId: 'refused-reopen' }
+  const refusedBefore = Object.assign(new Error('refused'), { code: 4001, data: { reason: 'refused', admitted: false } })
+  request.mockImplementation(async (_route, method) => method === 'groups.state' ? { room: { name: 'Room' }, driver_status: { working: true } }
+    : method === 'groups.log' ? { events: [] } : method === 'groups.send' ? Promise.reject(refusedBefore) : {})
+  const view = render(<CanonicalGroupWorkspace binding={binding} />)
+  let box = screen.getByRole('textbox') as HTMLTextAreaElement
+  await waitFor(() => expect(box.disabled).toBe(false))
+  fireEvent.change(box, { target: { value: 'Draft' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(box.disabled).toBe(false))
+  await waitFor(async () => expect((await readCanonicalGroupSend(binding))?.attempts).toBe(0))
+  view.unmount()
+
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  box = screen.getByRole('textbox') as HTMLTextAreaElement
+  await waitFor(() => expect(box.value).toBe('Draft'))
+  await waitFor(() => expect(box.disabled).toBe(false))
+  expect(screen.queryByText(/unconfirmed send was restored/)).toBeNull()
+  expect(screen.getByRole('button', { name: 'Send' })).toBeTruthy()
+
+  request.mockImplementation(async (_route, method, params) => method === 'groups.state'
+    ? { room: { name: 'Room' }, driver_status: { working: true } } : method === 'groups.log' ? { events: [] } : receipt(params))
+  fireEvent.change(box, { target: { value: 'Edited draft' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(box.value).toBe(''))
+  const sends = request.mock.calls.filter(call => call[1] === 'groups.send').map(call => call[2])
+  expect(sends.map(params => params.payload.text)).toEqual(['Draft', 'Edited draft'])
+  expect(sends[1].event_id).not.toBe(sends[0].event_id)
+  expect(await readCanonicalGroupSend(binding)).toBeUndefined()
+})
+
 // Send outcomes. Seams: `host.requestProfile` is the gateway transport; `window.hermesDesktop.preparedSubmissions`
 // is the native journal's IPC (an in-memory compare-and-set owner here), or absent for the browser-storage
 // journal. A refusal carries `admitted: false` only when the gateway refused before the user event committed
@@ -825,7 +858,7 @@ it('hands a refused converged intent back for editing without losing either wind
 })
 
 // AM3: also when its room closed before the refusal arrived.
-it('keeps a first Send refused after its room closed for the next open, where Retry hands it back', async () => {
+it('keeps a first Send refused after its room closed for the next open, as an editable draft', async () => {
   const binding = { connectionId: 'local', profile: 'team', roomId: 'closed-mid-send' }
   let refuse!: () => void
   room((_params, attempt) => attempt === 1
@@ -840,11 +873,14 @@ it('keeps a first Send refused after its room closed for the next open, where Re
   await waitFor(async () => expect((await readCanonicalGroupSend(binding))?.attempts).toBe(0))
 
   const scope = await openRoom(binding)
-  const retry = await within(scope).findByRole('button', { name: 'Retry' }) as HTMLButtonElement
-  await waitFor(() => expect(retry.disabled).toBe(false))
-  fireEvent.click(retry)
-  await within(scope).findByText(REFUSED)
+  await waitFor(() => expect(editor(scope).disabled).toBe(false))
   expect(editor(scope).value).toBe('Typed before closing')
+  expect(within(scope).queryByRole('button', { name: 'Retry' })).toBeNull()
+  expect(within(scope).queryByText(/unconfirmed send was restored/)).toBeNull()
+  // Sending the draft replaces the handed-back intent rather than resending it.
+  fireEvent.click(within(scope).getByRole('button', { name: 'Send' }))
+  await within(scope).findByText(REFUSED)
+  expect(new Set(sentIds()).size).toBe(2)
   expect((await readCanonicalGroupSend(binding))?.attempts).toBe(0)
 })
 

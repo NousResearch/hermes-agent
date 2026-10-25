@@ -101,15 +101,21 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 
   // Send stays locked until the journal is read: a pending intent must never be sent twice. A
   // failed read only reads again; it never writes, so a journal that recovers keeps its intent.
+  // eslint-disable-next-line no-restricted-syntax -- journal hydration, not a reactive store mirror
   useEffect(() => {
     let cancelled = false
     setJournalError('')
     void readCanonicalGroupSend(binding).then(entry => {
       if (cancelled) {return}
 
-      if (entry) {
+      // An intent handed back for editing (nothing of it in the room) reopens as an editable draft.
+      if (entry?.handedBack) {editing.current = entry.params.event_id}
+      else if (entry) {
         setPending(entry)
         setRestoredPending(true)
+      }
+
+      if (entry) {
         setDraft(String(entry.params.payload.text ?? ''))
         setAttachments((entry.params.payload.attachments as Attachment[] | undefined) ?? [])
       }

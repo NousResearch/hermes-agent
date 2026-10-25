@@ -2002,6 +2002,24 @@ def _apply_pin_update(job: dict[str, Any], updates: dict[str, Any]) -> None:
         updates["provider"], updates["model"] = None, None
 
 
+def _drop_stale_base_url_override(job: dict[str, Any], updates: dict[str, Any]) -> None:
+    """An endpoint override belongs to the provider it was pinned to. Replacing that binding —
+    switching providers, or releasing the pin to follow the default route — must drop the stored
+    ``base_url`` too: the new pair would otherwise save cleanly yet be rejected by the runtime
+    credential guard only at fire time, leaving a job that can never run (#138441). An explicit
+    ``base_url`` in the same update wins; an unchanged provider keeps an intentional override.
+    """
+    if "provider" not in updates or "base_url" in updates:
+        return
+    if not _normalize_base_url(job.get("base_url")):
+        return
+    old_provider = _normalize_job_optional_text(job.get("provider"))
+    new_provider = _normalize_job_optional_text(updates.get("provider"))
+    if new_provider == old_provider:
+        return
+    updates["base_url"] = None
+
+
 def _normalize_job_updates(job: dict[str, Any], updates: dict[str, Any]) -> None:
     """Normalize updates in place like create_job; invalid values raise BEFORE the merge. ``repeat``
     accepts the stored dict or a bare value (coerced, completed counter preserved)."""
@@ -2094,6 +2112,7 @@ def update_job(job_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]
         _rederive_repeat_for_schedule_change(job, updates)
         _normalize_job_updates(job, updates)
         _apply_pin_update(job, updates)
+        _drop_stale_base_url_override(job, updates)
         updated = _apply_skill_fields({**job, **updates})
         _reject_terminal_activation(job, updated, job_id)
         # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.

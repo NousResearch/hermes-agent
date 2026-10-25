@@ -26,7 +26,7 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
-from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
+from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER, KANBAN_WORKER_RECLAIMED_EXIT_TRAILER
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
@@ -142,6 +142,9 @@ class DispatchResult:
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
     a failure — a long quota window must never trip the circuit breaker."""
+    reclaimed_before_start: list[str] = field(default_factory=list)
+    """Task ids whose stale worker self-exited because its run was reclaimed before
+    registration; released to ``ready`` WITHOUT counting a failure (t_8ebbdbcf 1952)."""
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
@@ -257,6 +260,9 @@ def _exit_code_kind(code: int) -> tuple[str, int]:
 _EXIT_TRAILER_RE = re.compile(
     r"^" + re.escape(KANBAN_WORKER_EXIT_TRAILER) + r"(\d+)\s*$", re.MULTILINE,
 )
+_RECLAIMED_EXIT_TRAILER_RE = re.compile(
+    r"^" + re.escape(KANBAN_WORKER_RECLAIMED_EXIT_TRAILER) + r" pid=(\d+)\s*$", re.MULTILINE,
+)
 
 
 def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional[int]:
@@ -273,6 +279,24 @@ def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional
         return None
     matches = _EXIT_TRAILER_RE.findall(raw or "")
     return int(matches[-1]) if matches else None
+
+
+def _worker_log_reclaimed_before_start(task_id: str, pid: int, board: Optional[str] = None) -> bool:
+    """True when the log tail carries the registration guard's reclaimed marker for THIS pid.
+
+    A stale spawn whose run was reclaimed before it could register exits 0 without an rc
+    trailer (the log by then belongs to the successor run), which the sweep used to book as
+    a plain ``pid N not alive`` crash (t_8ebbdbcf run 1952). The marker carries the exiting
+    process's own pid, so a stale spawn's marker can never be honoured for the pid that
+    replaced it, or vice versa.
+    """
+    try:
+        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
+    except OSError:
+        # A filesystem hiccup must not kill the sweep; an unreadable log simply
+        # cannot confirm the marker (the death then falls through to normal rules).
+        return False
+    return any(int(m) == int(pid) for m in _RECLAIMED_EXIT_TRAILER_RE.findall(raw or ""))
 
 
 def reap_worker_zombies() -> list[int]:
@@ -390,19 +414,53 @@ def _worker_alive(pid: Optional[int], started_at) -> bool:
     return not _pid_recycled(pid, started_at)
 
 
+# A transient fingerprint read failure on a LIVE process (psutil hiccup) must not decide a
+# reclaim by itself: one short retry rides it out before the fail-closed answer. The sweep
+# that killed a running worker off one unreadable probe was t_8ebbdbcf run 1953 (swept at
+# spawn +51 s; the worker lived another 70 s and exited rc=0).
+_FINGERPRINT_READ_RETRY_SECONDS = 0.5
+
+
+def _reread_fingerprint_once(read, pid: int):
+    """``read(pid)`` with one retry after a short pause when it comes back unreadable."""
+    value = read(pid)
+    if value is None:
+        time.sleep(_FINGERPRINT_READ_RETRY_SECONDS)
+        value = read(pid)
+    return value
+
+
 def _pid_recycled(pid: Optional[int], started_at) -> bool:
-    """True when a live ``pid`` is NOT the process fingerprinted at spawn (or the fingerprint can no
-    longer be read). Signalling it would hit a stranger. ``None`` fingerprint = legacy row, never
-    recycled; the UNVERIFIED marker is always foreign. An integer fingerprint (rows written before the
-    boot witness was added) compares the start time only."""
+    """True when a live ``pid`` is NOT the process fingerprinted at spawn (or the fingerprint stays
+    unreadable after one retry). Signalling it would hit a stranger. ``None`` fingerprint = legacy
+    row, never recycled; the UNVERIFIED marker is always foreign. An integer fingerprint (rows
+    written before the boot witness was added) compares the start time only."""
     if started_at is None or not pid:
         return False
     if started_at == UNVERIFIED_WORKER_FINGERPRINT:
         return True
     if isinstance(started_at, str) and "|" in started_at:
-        return _process_fingerprint(int(pid)) != started_at
+        current = _reread_fingerprint_once(_process_fingerprint, int(pid))
+        if current is None:
+            return True
+        if current == started_at:
+            return False
+        # Exact-string mismatch is not proof of a recycle: same-host start-time readings can
+        # drift ~1 s between the spawn-time capture and a later probe (macOS ``kern.boottime``
+        # adjustment, #117505), so compare the start-time halves with the drift tolerance. The
+        # instantiation epoch must still match exactly — another boot/container is foreign by
+        # definition — and a genuinely recycled PID's start time is minutes away, far past it.
+        rec_epoch, _, rec_start = started_at.rpartition("|")
+        cur_epoch, _, cur_start = current.rpartition("|")
+        if rec_epoch != cur_epoch:
+            return True
+        from gateway.status import start_time_fingerprints_match
+        try:
+            return not start_time_fingerprints_match(rec_start, cur_start)
+        except (TypeError, ValueError):
+            return True
     from gateway.status import _start_times_agree, get_process_start_time
-    current = get_process_start_time(int(pid))
+    current = _reread_fingerprint_once(get_process_start_time, int(pid))
     if current is None:
         return True
     try:
@@ -960,7 +1018,9 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     ).fetchall()
     for row in rows:
         outcome = row["outcome"] or ""
-        if outcome == "rate_limited":
+        if outcome in ("rate_limited", "reclaimed_before_start"):
+            # A quota wall and a stale spawn racing its own reclaim say nothing
+            # about the task; neither may break nor extend the violation streak.
             continue
         if outcome == "crashed" and (
             _kb._json_dict(row["metadata"]).get("protocol_violation")
@@ -1051,12 +1111,20 @@ class _DeadWorker:
     terminal_provider: bool = False
     """``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``: the provider rejected the worker's
     credential/model — trips the breaker on this first occurrence."""
+    reclaimed_before_start: bool = False
+    """The registration guard self-exited: its run was reclaimed before the worker could
+    register. Requeued WITHOUT counting a failure or feeding gave_up (t_8ebbdbcf 1952)."""
 
     @property
     def run_outcome(self) -> str:
         # A rate-limited requeue is recorded as ``rate_limited`` so board history
-        # doesn't show a phantom crash for a quota wall.
-        return "rate_limited" if self.rate_limited else "crashed"
+        # doesn't show a phantom crash for a quota wall; a stale spawn that self-exited
+        # because its run was reclaimed is ``reclaimed_before_start`` for the same reason.
+        if self.rate_limited:
+            return "rate_limited"
+        if self.reclaimed_before_start:
+            return "reclaimed_before_start"
+        return "crashed"
 
 
 def _classify_dead_worker(
@@ -1070,7 +1138,7 @@ def _classify_dead_worker(
     worker see WHY instead of a bare label; a rate-limited requeue does not need it.
     """
     dead = _classify_dead_worker_exit(pid, claimer, exit_code, task_id=task_id, board=board)
-    if task_id and not dead.rate_limited:
+    if task_id and not dead.rate_limited and not dead.reclaimed_before_start:
         worker_output = _worker_final_output(task_id, board=board)
         if worker_output:
             dead.error_text += f" Worker's last output: {worker_output!r}"
@@ -1098,7 +1166,22 @@ def _classify_dead_worker_exit(
     kind, code = _classify_worker_exit(pid)
     if exit_code is not None:
         kind, code = _exit_code_kind(int(exit_code))
-    elif kind == "unknown" and task_id:
+    if task_id and kind in ("unknown", "clean_exit") and _worker_log_reclaimed_before_start(
+        task_id, pid, board=board,
+    ):
+        # Registration-guard self-exit (cli_single_query): the worker found its run already
+        # reclaimed and exited before touching the task. Not a crash — the successor run owns
+        # the card now; requeue without counting a failure or feeding gave_up (t_8ebbdbcf 1952).
+        return _DeadWorker(
+            "reclaimed_before_start", 0,
+            f"pid {pid} self-exited at startup: its run was reclaimed before worker registration "
+            "(stale spawn raced a takeover) — requeued without counting a failure",
+            "reclaimed_before_start",
+            {"pid": pid, "claimer": claimer, "reclaimed_before_start": True,
+             "exit_kind": "reclaimed_before_start", "exit_code": 0},
+            reclaimed_before_start=True,
+        )
+    if kind == "unknown" and task_id:
         logged = _worker_log_exit_code(task_id, board=board)
         if logged is not None:
             kind, code = _exit_code_kind(logged)
@@ -1155,6 +1238,8 @@ class _CrashSweep:
 
     crashed: list[str] = field(default_factory=list)
     rate_limited: list[str] = field(default_factory=list)
+    # Registration-guard self-exits: requeued without a failure (never crash-accounted).
+    reclaimed_before_start: list[str] = field(default_factory=list)
     # ``(task_id, pid, claimer, dead_worker)``: accounted after the txn via
     # ``_record_task_failure`` (needs its own write_txn).
     crash_details: list[tuple[str, int, str, _DeadWorker]] = field(default_factory=list)
@@ -1222,7 +1307,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 "outcome": dead.run_outcome,
                 "retry_status": retry_status,
             })
-            if dead.rate_limited or dead.protocol_violation:
+            if dead.rate_limited or dead.protocol_violation or dead.reclaimed_before_start:
                 # Stamp last_failure_error WITHOUT touching ``consecutive_failures``:
                 # a rate-limited requeue must show ``check_respawn_guard`` a quota
                 # blocker; a below-budget protocol violation never reaches
@@ -1234,6 +1319,8 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 )
             if dead.rate_limited:
                 sweep.rate_limited.append(row["id"])
+            elif dead.reclaimed_before_start:
+                sweep.reclaimed_before_start.append(row["id"])
             else:
                 sweep.crashed.append(row["id"])
                 sweep.crash_details.append((row["id"], pid, row["claim_lock"], dead))
@@ -1338,6 +1425,7 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     # requeues did NOT count a failure and are NOT crashes.
     detect_crashed_workers._last_auto_blocked = auto_blocked  # type: ignore[attr-defined]
     detect_crashed_workers._last_rate_limited = sweep.rate_limited  # type: ignore[attr-defined]
+    detect_crashed_workers._last_reclaimed_before_start = sweep.reclaimed_before_start  # type: ignore[attr-defined]
     # Fired only now, after the reclaim txn AND breaker accounting have
     # committed, so subscribers always observe fully durable board state.
     if sweep.exited_hook_payloads and _kb._kanban_observer_consumed("on_kanban_worker_exited"):
@@ -2229,6 +2317,7 @@ def _run_reclaim_phase(
     # went back to ``ready`` and the respawn guard defers them until quota clears.
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
+    result.reclaimed_before_start.extend(getattr(detect_crashed_workers, "_last_reclaimed_before_start", []))
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
 

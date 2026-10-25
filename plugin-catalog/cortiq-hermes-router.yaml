@@ -1,6 +1,6 @@
 name: cortiq-hermes-router
 repo: https://github.com/infosave2007/cortiq-hermes-router
-sha: c35ba331a23f03e443214a0fae35c4df21090273
+sha: 54eb926043c9357c25fa1eeee61c55c938859c01
 description: >-
   AllaiGate model routing for Hermes — inexpensive models for simple tasks,
   stronger models for complex work. Classifies each turn (POST /v1/route),
@@ -11,7 +11,7 @@ maintainer: infosave2007
 tier: community
 category: models
 docs_url: https://github.com/infosave2007/cortiq-hermes-router#readme
-version: "0.2.0"
+version: "0.2.1"
 platforms: []
 capabilities:
   provides_tools: []

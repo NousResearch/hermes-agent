@@ -17,6 +17,10 @@ from gateway.session_contract import Principal
 from hermes_state_runtime import list_session_admissions
 
 KEY = 'c' * 32
+ONE_PX_PNG = bytes.fromhex(
+    '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489'
+    '0000000d49444154789c6360f8cf00000004000101f9b9e4'
+    '0000000049454e44ae426082')
 
 
 @pytest_asyncio.fixture
@@ -76,6 +80,56 @@ async def _settle_quietly(bot):
     await async_wait_until(lambda: _quiet(bot), timeout=10, what='receipt tasks and drains to go idle')
 
 
+async def _fail_original_while_draining(bot, params):
+    """Leave one real delivery failed and retry-eligible, with recovery owning the retry."""
+    import gateway.session_finite as finite
+    from gateway.session_bot import deliver
+
+    started, gate = asyncio.Event(), asyncio.Event()
+    execute = finite.execute_finite_admission
+
+    async def held(authority, ref, row):
+        if not row['request_id'].endswith(':retry'):
+            started.set()
+            await gate.wait()
+        return await execute(authority, ref, row)
+
+    finite.execute_finite_admission = held
+    try:
+        bot.errors[:] = ['Error code: 429 - rate limit exceeded']
+        first = await deliver(bot.connection, params)
+        await asyncio.wait_for(started.wait(), 5)
+        bot.authority.runner._draining = True
+        gate.set()
+        await _settled(bot, 1)
+        await _settle_quietly(bot)
+        return first
+    finally:
+        finite.execute_finite_admission = execute
+
+
+async def _recover_with_original_row_override(bot, monkeypatch, override):
+    """Override only the retry's post-eligibility admission lookup, preserving real delivery flow."""
+    from gateway import session_bot
+
+    real_get = session_bot.get_session_admission
+    calls = 0
+
+    def get(db, *, admission_id):
+        nonlocal calls
+        calls += 1
+        row = real_get(db, admission_id=admission_id)
+        # Recovery reads the original result first, checks retry eligibility second, then binds the
+        # committed attachment row. This is the lookup whose absence/malformed value must refuse.
+        return override(row) if calls == 3 else row
+
+    monkeypatch.setattr(session_bot, 'get_session_admission', get)
+    from gateway.session_bot import recover_bot_deliveries
+    await recover_bot_deliveries(bot.authority)
+    await _settle_quietly(bot)
+    return calls
+
+
 async def _settled(bot, count):
     from gateway.session_bot import _result
     from tools.bot_live_delivery import read_delivery_result
@@ -104,6 +158,326 @@ async def test_transient_failure_retries_exactly_once_and_the_receipt_follows_th
     await recover_bot_deliveries(bot.authority)
     await _settle_quietly(bot)
     assert len(_admissions(bot)) == 2
+
+
+@pytest.mark.asyncio
+async def test_bot_image_delivery_commits_replays_and_rejects_changed_staging_bytes(bot):
+    """The Bot relay carries an image through the same local automation envelope as its text.
+
+    Replaying the delivery is idempotent, while replacing the still-staged file at the same path
+    cannot silently change the already admitted bytes.
+    """
+    from pathlib import Path
+
+    from gateway.platforms.base import cache_image_from_bytes
+    from gateway.session_automation import restore_local_automation
+    from gateway.session_bot import deliver
+    from gateway.session_contract import SessionRef
+    from hermes_state_runtime import get_session_admission, RuntimeStoreError
+
+    staged = cache_image_from_bytes(ONE_PX_PNG, '.png')
+    params = {'id': KEY, 'profile': 'default', 'message': 'look at this',
+              'attachments': [{'path': staged, 'mime': 'image/png'}]}
+    first = await deliver(bot.connection, params)
+    row = get_session_admission(bot.authority.db, admission_id=first['admission_id'])
+    assert row is not None and row['payload']['attachments_v1']['media_types'] == ['image/png']
+    restored = restore_local_automation(bot.authority, SessionRef('default', bot.chat), row)
+    assert restored.media_types == ['image/png'] and len(restored.media_urls) == 1
+    await _settled(bot, 1)
+    assert (await deliver(bot.connection, params))['admission_id'] == first['admission_id']
+
+    Path(staged).write_bytes(ONE_PX_PNG + b'changed')
+    with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+        await deliver(bot.connection, params)
+
+
+@pytest.mark.asyncio
+async def test_bot_image_retry_recaptures_exact_bytes_after_terminal_cleanup(bot):
+    """A transient Bot failure gets one derived admission with the original image identity.
+
+    The first terminal admission may have released its native bytes before the retry runs; the
+    trusted producer may recapture only the unchanged staging file and preserves the digest.
+    """
+    from gateway.platforms.base import cache_image_from_bytes
+    from gateway.session_bot import deliver
+
+    staged = cache_image_from_bytes(ONE_PX_PNG, '.png')
+    params = {'id': KEY, 'profile': 'default', 'message': 'retry this image',
+              'attachments': [{'path': staged, 'mime': 'image/png'}]}
+    bot.errors[:] = ['Error code: 429 - rate limit exceeded']
+    first = await deliver(bot.connection, params)
+    receipt = await _settled(bot, 2)
+    rows = _admissions(bot)
+    assert receipt['status'] == 'settled' and receipt['retry_admission_id']
+    assert first['admission_id'] == rows[0]['admission_id']
+    assert [row['request_id'] for row in rows] == ['bot:' + KEY, 'bot:' + KEY + ':retry']
+    assert all(row['payload']['attachments_v1']['media_types'] == ['image/png'] for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_bot_image_retry_lost_staged_and_retained_bytes_is_durably_refused(bot):
+    """When neither exact source remains, recovery records one final identity conflict."""
+    from pathlib import Path
+
+    from gateway.platforms.base import cache_image_from_bytes
+    from gateway.session_bot import recover_bot_deliveries
+    from hermes_state_runtime import get_session_admission
+    from tools.bot_live_delivery import read_delivery_result
+
+    staged = cache_image_from_bytes(ONE_PX_PNG, '.png')
+    params = {'id': KEY, 'profile': 'default', 'message': 'lost image bytes',
+              'attachments': [{'path': staged, 'mime': 'image/png'}]}
+    first = await _fail_original_while_draining(bot, params)
+    original = get_session_admission(bot.authority.db, admission_id=first['admission_id'])
+    assert original is not None
+    for reference in original['payload']['attachments_v1']['media']:
+        Path(reference['path']).unlink(missing_ok=True)
+    Path(staged).unlink(missing_ok=True)
+    bot.authority.runner._draining = False
+
+    await recover_bot_deliveries(bot.authority)
+    await _settle_quietly(bot)
+    receipt = await asyncio.to_thread(read_delivery_result, bot.home, KEY)
+    assert (receipt['status'], receipt['admission_id'], receipt['error']) == (
+        'failed', first['admission_id'], 'Error code: 429 - rate limit exceeded'), receipt
+    assert receipt['retry']['refused'] == 'admission_conflict', receipt
+    assert not receipt.get('retry_admission_id')
+    assert [row['request_id'] for row in _admissions(bot)] == ['bot:' + KEY]
+    refusal = receipt['retry']
+
+    await recover_bot_deliveries(bot.authority)
+    await _settle_quietly(bot)
+    again = await asyncio.to_thread(read_delivery_result, bot.home, KEY)
+    assert (again['retry'], again['admission_id'], again['error']) == (
+        refusal, first['admission_id'], receipt['error']), again
+    assert [row['request_id'] for row in _admissions(bot)] == ['bot:' + KEY]
+
+
+@pytest.mark.asyncio
+async def test_bot_image_retry_changed_staging_refusal_is_persisted_by_recovery(bot):
+    """Recovery refuses a changed staged path and a second recovery cannot admit it."""
+    from pathlib import Path
+
+    from gateway.platforms.base import cache_image_from_bytes
+    from gateway.session_bot import recover_bot_deliveries
+    from tools.bot_live_delivery import read_delivery_result
+
+    staged = cache_image_from_bytes(ONE_PX_PNG, '.png')
+    params = {'id': KEY, 'profile': 'default', 'message': 'changed during recovery',
+              'attachments': [{'path': staged, 'mime': 'image/png'}]}
+    await _fail_original_while_draining(bot, params)
+    Path(staged).write_bytes(ONE_PX_PNG + b'changed-before-recovery')
+    bot.authority.runner._draining = False
+    await recover_bot_deliveries(bot.authority)
+    await _settle_quietly(bot)
+    receipt = await asyncio.to_thread(read_delivery_result, bot.home, KEY)
+    assert receipt['retry']['refused'] == 'admission_conflict', receipt
+    assert [row['request_id'] for row in _admissions(bot)] == ['bot:' + KEY]
+    retry_marker = receipt['retry']
+
+    await recover_bot_deliveries(bot.authority)
+    await _settle_quietly(bot)
+    again = await asyncio.to_thread(read_delivery_result, bot.home, KEY)
+    assert again['retry'] == retry_marker
+    assert [row['request_id'] for row in _admissions(bot)] == ['bot:' + KEY]
+
+
+@pytest.mark.asyncio
+async def test_bot_image_retry_missing_admission_row_is_refused_by_recovery(bot, monkeypatch):
+    """A missing original row after eligibility is a durable conflict, never ordinary recapture."""
+    from gateway.platforms.base import cache_image_from_bytes
+    from tools.bot_live_delivery import read_delivery_result
+
+    staged = cache_image_from_bytes(ONE_PX_PNG, '.png')
+    params = {'id': KEY, 'profile': 'default', 'message': 'missing original row',
+              'attachments': [{'path': staged, 'mime': 'image/png'}]}
+    first = await _fail_original_while_draining(bot, params)
+    bot.authority.runner._draining = False
+    calls = await _recover_with_original_row_override(bot, monkeypatch, lambda _row: None)
+    receipt = await asyncio.to_thread(read_delivery_result, bot.home, KEY)
+    assert calls >= 3 and receipt['retry']['refused'] == 'admission_conflict', receipt
+    assert first['admission_id'] == _admissions(bot)[0]['admission_id']
+    assert [row['request_id'] for row in _admissions(bot)] == ['bot:' + KEY]
+
+
+@pytest.mark.asyncio
+async def test_bot_image_retry_malformed_manifest_is_refused_by_recovery(bot, monkeypatch):
+    """A malformed committed reference is terminal evidence, not permission to recapture."""
+    from gateway.platforms.base import cache_image_from_bytes
+    from tools.bot_live_delivery import read_delivery_result
+
+    staged = cache_image_from_bytes(ONE_PX_PNG, '.png')
+    params = {'id': KEY, 'profile': 'default', 'message': 'malformed original manifest',
+              'attachments': [{'path': staged, 'mime': 'image/png'}]}
+    await _fail_original_while_draining(bot, params)
+    bot.authority.runner._draining = False
+
+    def malformed(row):
+        return {**row, 'payload': {**row['payload'], 'attachments_v1': {
+            'media': [{'path': '/outside/foreign.png', 'sha256': '0' * 64, 'size': 1}],
+            'media_types': ['image/png'],
+        }}}
+
+    calls = await _recover_with_original_row_override(bot, monkeypatch, malformed)
+    receipt = await asyncio.to_thread(read_delivery_result, bot.home, KEY)
+    assert calls >= 3 and receipt['retry']['refused'] == 'admission_conflict', receipt
+    assert [row['request_id'] for row in _admissions(bot)] == ['bot:' + KEY]
+
+
+@pytest.mark.asyncio
+async def test_bot_image_retry_toctou_refusal_is_persisted_by_recovery(bot, monkeypatch):
+    """A replacement after identity hashing fails the recapture and is durably refused."""
+    from pathlib import Path
+
+    from gateway import session_ingress_media
+    from gateway.platforms.base import cache_image_from_bytes
+    from gateway.session_bot import recover_bot_deliveries
+    from hermes_state_runtime import RuntimeStoreError
+    from tools.bot_live_delivery import read_delivery_result
+
+    staged = cache_image_from_bytes(ONE_PX_PNG, '.png')
+    params = {'id': KEY, 'profile': 'default', 'message': 'replace during recovery',
+              'attachments': [{'path': staged, 'mime': 'image/png'}]}
+    await _fail_original_while_draining(bot, params)
+    bot.authority.runner._draining = False
+    original_hashes = session_ingress_media._attachment_hashes
+    calls = 0
+
+    def hash_then_replace(paths):
+        nonlocal calls
+        calls += 1
+        hashes = original_hashes(paths)
+        Path(staged).write_bytes(ONE_PX_PNG + b'replaced-after-identity')
+        return hashes
+
+    def committed_media_missing(_references):
+        raise RuntimeStoreError('media_missing')
+
+    monkeypatch.setattr(session_ingress_media, '_attachment_hashes', hash_then_replace)
+    monkeypatch.setattr(session_ingress_media, 'restore_native_media', committed_media_missing)
+    await recover_bot_deliveries(bot.authority)
+    await _settle_quietly(bot)
+    receipt = await asyncio.to_thread(read_delivery_result, bot.home, KEY)
+    assert calls == 1 and receipt['retry']['refused'] == 'admission_conflict', receipt
+    assert [row['request_id'] for row in _admissions(bot)] == ['bot:' + KEY]
+
+
+@pytest.mark.asyncio
+async def test_bot_image_retry_rejects_changed_staging_before_derived_capture(bot):
+    """A derived retry is bound to the first admission's committed digest, not a mutable staging path."""
+    from pathlib import Path
+
+    from gateway.platforms.base import cache_image_from_bytes
+    from gateway.session_bot import deliver
+    from gateway.session_ingress_media import admit_attachments
+    from hermes_state_runtime import RuntimeStoreError, get_session_admission
+
+    staged = cache_image_from_bytes(ONE_PX_PNG, '.png')
+    params = {'id': KEY, 'profile': 'default', 'message': 'changed before retry',
+              'attachments': [{'path': staged, 'mime': 'image/png'}]}
+    first = await deliver(bot.connection, params)
+    await _settled(bot, 1)
+    row = get_session_admission(bot.authority.db, admission_id=first['admission_id'])
+    Path(staged).write_bytes(ONE_PX_PNG + b'changed-before-retry')
+    with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+        admit_attachments(params['attachments'], admitted=lambda: row, restore_committed=True)
+
+
+@pytest.mark.asyncio
+async def test_bot_image_retry_rejects_replacement_between_identity_and_capture(bot, monkeypatch):
+    """Recapture revalidates the bytes after the identity check, closing a pathname replacement race."""
+    from pathlib import Path
+
+    from gateway import session_ingress_media
+    from gateway.platforms.base import cache_image_from_bytes
+    from gateway.session_bot import deliver
+    from hermes_state_runtime import RuntimeStoreError, get_session_admission
+
+    staged = cache_image_from_bytes(ONE_PX_PNG, '.png')
+    params = {'id': KEY, 'profile': 'default', 'message': 'replace during capture',
+              'attachments': [{'path': staged, 'mime': 'image/png'}]}
+    first = await deliver(bot.connection, params)
+    await _settled(bot, 1)
+    row = get_session_admission(bot.authority.db, admission_id=first['admission_id'])
+    original_hashes = session_ingress_media._attachment_hashes
+
+    def hash_then_replace(paths):
+        hashes = original_hashes(paths)
+        Path(staged).write_bytes(ONE_PX_PNG + b'replaced-between-check-and-capture')
+        return hashes
+
+    def committed_media_missing(_references):
+        raise RuntimeStoreError('media_missing')
+
+    monkeypatch.setattr(session_ingress_media, '_attachment_hashes', hash_then_replace)
+    monkeypatch.setattr(session_ingress_media, 'restore_native_media', committed_media_missing)
+    with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+        session_ingress_media.admit_attachments(
+            params['attachments'], admitted=lambda: row, restore_committed=True)
+
+
+@pytest.mark.asyncio
+async def test_legacy_migration_ignores_malformed_unversioned_attachments(tmp_path, monkeypatch):
+    """Old text tickets may contain foreign extras, but migration must never route them as images."""
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from gateway import session_bot
+
+    key = 'd' * 32
+    path = tmp_path / f'{key}.json'
+    legacy = {
+        'id': key, 'delivery_id': key, 'status': 'queued', 'message': 'legacy text',
+        'created_at': 1, 'sequence': 1,
+        'owner': {'profile_home': str(tmp_path), 'session_id': 'sid', 'principal_id': 'uid:1000'},
+        'attachments': [{'path': '/outside/foreign.bin', 'mime': 'application/octet-stream', 'extra': True}],
+        'attachments_v1': {'media': [{'path': '/outside/foreign.bin'}], 'media_types': ['image/png']},
+        'native_text_v1': {'media': ['/outside/foreign.bin']}, 'foreign_extra': 'drop me',
+    }
+    captured = {}
+
+    async def scan(_authority, _home):
+        return tmp_path, [(path, legacy)], None
+
+    async def target(_authority, _actor):
+        return SimpleNamespace(session_id='sid'), SimpleNamespace(), SimpleNamespace(session_id='sid')
+
+    async def admit(*_args, **kwargs):
+        captured.update(kwargs)
+
+    @contextmanager
+    def no_active(*_args, **_kwargs):
+        yield False
+
+    monkeypatch.setattr(session_bot, '_scan_owner_receipts', scan)
+    monkeypatch.setattr(session_bot, '_target', target)
+    monkeypatch.setattr(session_bot, '_admit', admit)
+    monkeypatch.setattr('hermes_cli.active_sessions.active_session_liveness_guard', no_active)
+
+    authority = SimpleNamespace(db=SimpleNamespace(get_compression_tip=lambda _sid: 'sid'))
+    await session_bot._migrate(authority, SimpleNamespace(), tmp_path, tmp_path)
+    assert captured['legacy']['message'] == 'legacy text'
+    assert 'attachments' not in captured['legacy']
+    assert 'attachments_v1' not in captured['legacy']
+    assert set(captured['legacy']) <= session_bot._LEGACY_TEXT_FIELDS
+    assert 'attachments' not in captured
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('attachments', [
+    [],
+    [{'path': '/tmp/image.png'}],
+    [{'path': '/tmp/image.png', 'mime': 'text/plain'}],
+    [{'path': '/tmp/image.png', 'mime': 'image/png', 'extra': True}],
+])
+async def test_bot_image_delivery_rejects_malformed_attachment_shape_before_admission(bot, attachments):
+    from gateway.session_bot import deliver
+    from hermes_state_runtime import RuntimeStoreError
+
+    with pytest.raises(RuntimeStoreError, match='invalid_params'):
+        await deliver(bot.connection, {'id': KEY, 'profile': 'default', 'message': 'bad',
+                                       'attachments': attachments})
+    assert _admissions(bot) == []
 
 
 @pytest.mark.asyncio

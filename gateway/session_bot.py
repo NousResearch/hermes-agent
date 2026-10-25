@@ -36,6 +36,22 @@ _OWNER_STATE_REFUSALS = frozenset({
     'storage_unavailable', 'runtime_coordination_required', 'session_busy', 'not_found',
 })
 _PRODUCER_MAX_CHARS = 1024 * 1024
+_BOT_ATTACHMENT_MIMES = frozenset({'image/png', 'image/jpeg', 'image/gif', 'image/webp'})
+_LEGACY_TEXT_FIELDS = frozenset({
+    'id', 'delivery_id', 'owner', 'profile_home', 'session_id', 'principal_id',
+    'message', 'status', 'created_at', 'sequence', 'author', 'notification_category',
+})
+
+
+def _attachment_shape_error(attachments):
+    if attachments is None:
+        return None
+    if (not isinstance(attachments, list) or not attachments or len(attachments) > 10
+            or any(not isinstance(item, dict) or set(item) != {'path', 'mime'}
+                   or not isinstance(item['path'], str)
+                   or item['mime'] not in _BOT_ATTACHMENT_MIMES for item in attachments)):
+        return 'attachments have an invalid shape'
+    return None
 
 
 def _canonical_record_error(path, record, required_strings=('admission_id', 'profile_home', 'session_id', 'principal_id')):
@@ -53,6 +69,8 @@ def _canonical_record_error(path, record, required_strings=('admission_id', 'pro
         return 'missing canonical fields: ' + ', '.join(missing)
     if not isinstance(record.get('message'), str):
         return 'message is not a string'
+    if _attachment_shape_error(record.get('attachments')) is not None:
+        return 'attachments have an invalid shape'
     status = record.get('status')
     if not isinstance(status, str) or status not in _CANONICAL_RECEIPT_STATUSES:
         return f'unknown canonical status {status!r}'
@@ -166,6 +184,16 @@ def _legacy_order(path, record):
     fields). A pin without an integer order holds every legacy ticket until it resolves."""
     order = record.get('sequence', record.get('created_at'))
     return (order, path.name) if isinstance(order, int) and not isinstance(order, bool) else (float('-inf'), '')
+
+
+def _legacy_text_record(record):
+    """Keep migration within the existing legacy text-ticket contract.
+
+    Legacy tickets predate structured media.  An allowlist is deliberate here: stripping one known
+    spelling still lets a foreign writer persist ``attachments_v1`` or another media-bearing extra
+    in the canonical receipt.
+    """
+    return {key: value for key, value in record.items() if key in _LEGACY_TEXT_FIELDS}
 
 
 def _home(authority, actor, profile):
@@ -522,11 +550,35 @@ async def _maybe_retry(authority, home, path, record):
             # can perform the same derived retry, rather than exposing an interim failure.
             record.update(status='claimed', reply='')
             return
+        if exc.reason == 'admission_conflict':
+            await _refuse_retry(authority, home, record, identity, exc.reason)
+            return
         record['retry'] = {'identity': identity, 'refused': exc.reason}
         await write_receipt(home, record)
         return
+    attachments = record.get('attachments') or []
+    attachment_row = (get_session_admission(authority.db, admission_id=record['admission_id'])
+                      if attachments else None)
+    if attachments:
+        from gateway.session_ingress_media import validate_committed_attachment_payload
+        if (not isinstance(attachment_row, dict)
+                or attachment_row.get('admission_id') != record['admission_id']):
+            await _refuse_retry(authority, home, record, identity, 'admission_conflict')
+            return
+        payload = attachment_row.get('payload')
+        committed = payload.get('attachments_v1') if isinstance(payload, dict) else None
+        try:
+            validate_committed_attachment_payload(
+                committed, media_types=[item['mime'] for item in attachments])
+        except RuntimeStoreError as exc:
+            if exc.reason == 'admission_conflict':
+                await _refuse_retry(authority, home, record, identity, exc.reason)
+                return
+            raise
     event = MessageEvent(text=record['message'], source=live.source, internal=True,
-        message_id=identity, metadata={'gateway_session_key': live.route, 'gateway_session_id': entry.session_id})
+        message_id=identity, metadata={'gateway_session_key': live.route, 'gateway_session_id': entry.session_id},
+        media_urls=[item['path'] for item in attachments],
+        media_types=[item['mime'] for item in attachments])
     from gateway.session_automation import automation_notification_metadata
     event.metadata.update(automation_notification_metadata(record))
     if record.get('author') is not None:
@@ -535,8 +587,12 @@ async def _maybe_retry(authority, home, path, record):
     record.update(status='queued', reply='')
     await write_receipt(home, record)
     try:
-        receipt = await authority.admit_automation(authority.runner._adapter_for_source(live.source), event, identity)
+        receipt = await authority.admit_automation(authority.runner._adapter_for_source(live.source), event, identity,
+                                                   attachment_row=attachment_row)
     except RuntimeStoreError as exc:
+        if exc.reason == 'admission_conflict':
+            await _refuse_retry(authority, home, record, identity, exc.reason)
+            return
         if exc.reason != 'queue_full':
             raise
         # Nothing was admitted: keep the delivery pending (as for a drain) so the next wake or
@@ -548,6 +604,17 @@ async def _maybe_retry(authority, home, path, record):
         _watch_reply(authority, home, record['delivery_id'], receipt.admission_id)
     await write_receipt(home, record)
     remember_receipt(authority, home, record)
+
+
+async def _refuse_retry(authority, home, record, identity, reason):
+    """Persist a deterministic retry refusal before the caller's ordinary receipt projection.
+
+    The original failed admission remains the sender's answer, while the refusal marker prevents a
+    later owner recovery from trying the same derived identity again.
+    """
+    record['retry'] = {'identity': identity, 'refused': reason}
+    record.update(_result(authority, record))
+    await write_receipt(home, record)
 
 
 async def _record_reply(authority, home, key, future):
@@ -635,7 +702,8 @@ async def _migrate(authority, actor, home, root):
             await write_receipt(home, record, expect='claimed')
             continue
         await _admit(authority, actor, home, root, _delivery_id(record['delivery_id']),
-                     record['message'], ref, live, entry, author=parse_turn_author(record.get('author')), legacy=record,
+                     record['message'], ref, live, entry, author=parse_turn_author(record.get('author')),
+                     legacy=_legacy_text_record(record),
                      notification_category=record.get('notification_category', 'result'))
 
 
@@ -703,20 +771,25 @@ async def deliver(connection, params):
     return await asyncio.shield(track_mutation(connection.authority, _deliver(connection, params)))
 
 
-def _require_same_delivery(record, actor, message, author, category):
-    """A delivery id names one delivery: the same message, principal, author and category (the
-    mailbox writer's identity), whether its receipt is admission-backed or refused."""
+def _require_same_delivery(authority, record, actor, message, author, category, attachments):
+    """A delivery id names one delivery: the same message, principal, author, category and image
+    references (the mailbox writer's identity), whether its receipt is admission-backed or refused."""
     if (record['message'] != message or record['principal_id'] != actor.subject
             or record.get('author') != author
-            or record.get('notification_category', 'result') != category):
+            or record.get('notification_category', 'result') != category
+            or record.get('attachments') != attachments):
         raise RuntimeStoreError('admission_conflict')
+    if attachments and record.get('admission_id'):
+        from gateway.session_ingress_media import verify_attachment_identity
+        verify_attachment_identity(attachments, get_session_admission(
+            authority.db, admission_id=record['admission_id']))
 
 
 def _delivery_params(authority, actor, params):
-    """``(home, key, message, author, category)`` of one ``deliver``/``settle`` request: the
+    """``(home, key, message, author, category, attachments)`` of one ``deliver``/``settle`` request: the
     delivery's full identity, validated the same way for both verbs."""
     home = _home(authority, actor, params.get('profile'))
-    if set(params) - {'id', 'profile', 'message', 'session_id', 'author', 'notification_category'}:
+    if set(params) - {'id', 'profile', 'message', 'session_id', 'author', 'notification_category', 'attachments'}:
         raise RuntimeStoreError('invalid_params')
     from gateway.session_automation import automation_notification_metadata
     notification = automation_notification_metadata(params)
@@ -735,7 +808,12 @@ def _delivery_params(authority, actor, params):
     author = parse_turn_author(params.get('author'))
     if params.get('author') is not None and (not isinstance(params['author'], dict) or author is None):
         raise RuntimeStoreError('invalid_params')
-    return home, key, message, author, category
+    attachments = params.get('attachments')
+    if attachments is not None:
+        if _attachment_shape_error(attachments) is not None:
+            raise RuntimeStoreError('invalid_params')
+        attachments = [dict(item) for item in attachments]
+    return home, key, message, author, category, attachments
 
 
 def _refused_answer(record):
@@ -749,7 +827,7 @@ async def _receipt_answer(authority, actor, home, record, identity, retry_path=N
     (``refuse_pin``, ``settle``), which is the id's answer for good. Both check the identity."""
     if record is None or not (record.get('admission_id') or record.get('refused') is True):
         return None
-    _require_same_delivery(record, actor, *identity)
+    _require_same_delivery(authority, record, actor, *identity)
     if not record.get('admission_id'):
         return _refused_answer(record)
     authority.authorize(actor, SessionRef(authority.profile_id, record['session_id']), 'session:submit')
@@ -760,8 +838,8 @@ async def _receipt_answer(authority, actor, home, record, identity, retry_path=N
 
 async def _deliver(connection, params):
     authority, actor = connection.authority, connection.actor
-    home, key, message, author, category = _delivery_params(authority, actor, params)
-    identity = (message, author, category)
+    home, key, message, author, category, attachments = _delivery_params(authority, actor, params)
+    identity = (message, author, category, attachments)
     authority._require_admission_open()
     async with mailbox_lock(authority):
         root, record = await read_receipt(home, key)
@@ -783,7 +861,7 @@ async def _deliver(connection, params):
             if pinned != entry.session_id and not _moved_aside_by_this_door(authority, holder, pinned):
                 raise RuntimeStoreError('admission_conflict')
             return await _admit(authority, actor, home, root, key, message, ref, live, entry, author=author,
-                                notification_category=category)
+                                notification_category=category, attachments=attachments)
         except RuntimeStoreError as exc:
             raise await _held_by_another_writer(home, key, exc) or exc
 
@@ -814,21 +892,21 @@ async def _settle(connection, params):
     ``session:submit`` principal of the profile can settle an id it never delivered: the trust
     ``deliver`` already grants it over that id."""
     authority, actor = connection.authority, connection.actor
-    home, key, message, author, category = _delivery_params(authority, actor, params)
+    home, key, message, author, category, attachments = _delivery_params(authority, actor, params)
     async with mailbox_lock(authority):
         _, record = await read_receipt(home, key)
         if record is None:
-            record = _not_sent_record(authority, actor, home, key, message, author, category)
+            record = _not_sent_record(authority, actor, home, key, message, author, category, attachments)
             await write_receipt(home, record)
             logging.getLogger(__name__).info('Bot Chat delivery %s settled as not sent (%s)', key, record['reason'])
-        _require_same_delivery(record, actor, message, author, category)
-        answer = await _receipt_answer(authority, actor, home, record, (message, author, category))
+        _require_same_delivery(authority, record, actor, message, author, category, attachments)
+        answer = await _receipt_answer(authority, actor, home, record, (message, author, category, attachments))
         if answer is None:
             raise RuntimeStoreError('unknown_execution')
         return answer
 
 
-def _not_sent_record(authority, actor, home, key, message, author, category):
+def _not_sent_record(authority, actor, home, key, message, author, category, attachments):
     """The never-admitted id's terminal receipt, in ``refuse_pin``'s shape. Refuses (unknown) when
     the FIFO holds a ``bot:<id>`` row anyway or there is no Bot Chat to name."""
     with authority.db._read_ctx() as conn:
@@ -843,6 +921,8 @@ def _not_sent_record(authority, actor, home, key, message, author, category):
     record.update(automation_notification_metadata({'notification_category': category}))
     if author is not None:
         record['author'] = dict(author)
+    if attachments is not None:
+        record['attachments'] = [dict(item) for item in attachments]
     return record
 
 
@@ -863,13 +943,15 @@ async def _held_by_another_writer(home, key, exc):
 
 
 async def _admit(authority, actor, home, root, key, message, ref, live, entry, author=None, legacy=None,
-                 notification_category='result'):
+                 notification_category='result', attachments=None):
     from gateway.session_automation import automation_notification_metadata
     notification = automation_notification_metadata({'notification_category': notification_category})
     path = root / f'{key}.json'
     event = MessageEvent(text=message, source=live.source, internal=True,
         message_id='bot:' + key, metadata={'gateway_session_key': live.route,
-                                         'gateway_session_id': entry.session_id})
+                                         'gateway_session_id': entry.session_id},
+        media_urls=[item['path'] for item in attachments or []],
+        media_types=[item['mime'] for item in attachments or []])
     event.metadata.update(notification)
     if author is not None:
         event.metadata['turn_author'] = dict(author)
@@ -882,6 +964,8 @@ async def _admit(authority, actor, home, root, key, message, ref, live, entry, a
         record['operator'] = True  # admitted on operator access: its one retry keeps it (``_maybe_retry``)
     if author is not None:
         record['author'] = dict(author)
+    if attachments is not None:
+        record['attachments'] = [dict(item) for item in attachments]
     # Preserve a foreign cancellation or claim that won after our legacy scan.
     if not await write_receipt(home, record, expect=(legacy or {}).get('status')):
         if legacy is not None:

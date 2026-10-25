@@ -5299,6 +5299,7 @@ export interface CanonicalBotDeliverParams {
   session_id?: string | null
   author?: Record<string, unknown> | null
   notification_category?: string | null
+  attachments?: CanonicalAttachment[] | null
 }
 /** A delivery's receipt. It names its admission, unless ``refused``: the FIFO refused the delivery before anything was committed (``gateway/session_bot.py``), a terminal ``failed`` receipt with no admission that the relay settles as the sender's answer. */
 export interface CanonicalBotDeliverResult {

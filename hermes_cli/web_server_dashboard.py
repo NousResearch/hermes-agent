@@ -225,7 +225,8 @@ def mount_spa(application: FastAPI):
         if theme_bootstrap:
             html = html.replace("</head>", f"{theme_bootstrap}</head>", 1)
         html = html.replace("</head>", f"{bootstrap_script}</head>", 1)
-        return HTMLResponse(html, headers=_NO_STORE)
+        from hermes_cli.webapp_page_policy import page_headers
+        return HTMLResponse(html, headers=page_headers(application.state, _NO_STORE))
 
     # Built CSS contains absolute ``url(/fonts/...)`` / ``url(/ds-assets/...)`` references that
     # browsers resolve against the document origin — wrong under a proxy prefix. Intercept CSS

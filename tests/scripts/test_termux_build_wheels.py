@@ -101,3 +101,16 @@ def test_source_pin_rejects_moved_revision_and_missing_locked_metadata(tmp_path)
     lock.write_text("package = []\n", encoding="utf-8")
     with pytest.raises(ValueError, match="lock"):
         builder.normalize_reqs(export, lock, resolved)
+
+
+def test_native_import_gate_maps_distribution_names_to_import_modules(monkeypatch, capsys):
+    import importlib
+
+    probed = []
+    monkeypatch.setattr(importlib, "import_module", probed.append)
+    builder.import_native_modules(
+        ["rpds-py", "pillow-heif", "pydantic-core", "cffi", "ruamel-yaml-clib"])
+    # rpds-py is the distribution name; the importable package is "rpds".
+    # A missing entry would probe a nonexistent "rpds_py" and fail the gate
+    # once the mcp extra joins the Termux payload.
+    assert probed == ["rpds", "_pillow_heif", "pydantic_core", "_cffi_backend", "_ruamel_yaml"]

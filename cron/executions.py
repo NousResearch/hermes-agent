@@ -34,6 +34,11 @@ MAX_TERMINAL_EXECUTIONS = 1000
 HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
 # Floor for the live-owner stale-claim bound (#115692); see _live_owner_stale_after_seconds.
 LIVE_OWNER_STALE_CLAIM_FLOOR_SECONDS = 7200.0
+# FIX-2075: in-flight guard skip trace — a terminal 'failed' row that was never
+# started (started_at NULL). It records a CONSUMED slot, not an execution attempt:
+# 'latest row' consumers (ownership, delivery settlement, list display, claim
+# sweep) must exclude it or the newer skip row shadows the still-running attempt.
+FIRE_SKIP_ERROR_PREFIX = "Fire skipped:"
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
@@ -576,8 +581,13 @@ def give_up_execution(execution_id: str, *, reason: str) -> bool:
 
 def list_executions(
     *, job_id: Optional[str] = None, limit: int = 50, before_claimed_at: Optional[str] = None,
+    exclude_fire_skips: bool = False,
 ) -> list[dict[str, Any]]:
-    """Return indexed, newest-first execution history with cursor pagination."""
+    """Return indexed, newest-first execution history with cursor pagination.
+
+    ``exclude_fire_skips`` (FIX-2075): drop in-flight guard skip traces (never-started
+    terminal 'failed' rows) — they are slot-consumption records, not attempts. History
+    consumers (``hermes cron runs``) keep the default and see every row."""
     clauses: list[str] = []
     params: list[Any] = []
     if job_id is not None:
@@ -587,6 +597,9 @@ def list_executions(
         # Same (instant, text) key as the ORDER BY, so a page never skips or repeats a row.
         clauses.append("(julianday(claimed_at), claimed_at) < (julianday(?), ?)")
         params.extend([str(before_claimed_at)] * 2)
+    if exclude_fire_skips:
+        clauses.append("NOT (status='failed' AND started_at IS NULL AND error LIKE ?)")
+        params.append(FIRE_SKIP_ERROR_PREFIX + "%")
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
     params.append(max(1, min(int(limit), 500)))
     # Stamps carry the local offset, which changes at DST and on a timezone change, so text order
@@ -610,8 +623,11 @@ def get_execution(execution_id: str) -> Optional[dict[str, Any]]:
     return dict(row) if row is not None else None
 
 
-def latest_execution(job_id: str) -> Optional[dict[str, Any]]:
-    rows = list_executions(job_id=job_id, limit=1)
+def latest_execution(job_id: str, exclude_fire_skips: bool = False) -> Optional[dict[str, Any]]:
+    """The job's latest execution attempt. With ``exclude_fire_skips`` (FIX-2075), a newer
+    in-flight skip trace cannot shadow a still-running attempt for ownership, delivery
+    settlement and status-display consumers."""
+    rows = list_executions(job_id=job_id, limit=1, exclude_fire_skips=exclude_fire_skips)
     return rows[0] if rows else None
 
 
@@ -622,7 +638,8 @@ def live_inflight_execution(job_id: str) -> Optional[dict[str, Any]]:
     heartbeat yet stays owned, while a run whose process died (watchdog kill, crash) does not.
     Read-only — unlike ``recover_interrupted_executions`` it never rewrites a row.
     """
-    record = latest_execution(job_id)
+    # FIX-2075: ownership must never read a skip trace (never started) as the live attempt.
+    record = latest_execution(job_id, exclude_fire_skips=True)
     if not record or record.get("status") not in ("claimed", "running"):
         return None
     if not _owner_is_live(int(record["pid"]), record.get("process_started_at")):
@@ -630,14 +647,16 @@ def live_inflight_execution(job_id: str) -> Optional[dict[str, Any]]:
     return record
 
 
-def latest_executions(job_ids: list[str]) -> dict[str, dict[str, Any]]:
-    """Load latest execution for many jobs in one query."""
+def latest_executions(job_ids: list[str], exclude_fire_skips: bool = False) -> dict[str, dict[str, Any]]:
+    """Load latest execution for many jobs in one query. ``exclude_fire_skips`` (FIX-2075) as
+    in :func:`list_executions`."""
     clean = [str(job_id) for job_id in dict.fromkeys(job_ids) if job_id]
     if not clean:
         return {}
     placeholders = ",".join("?" for _ in clean)
-    # One windowed sort: a per-row correlated ORDER BY julianday() cannot use the index and
-    # grows quadratically with history (~90 ms at 1000 rows).
+    skip_filter = (
+        " AND NOT (status='failed' AND started_at IS NULL AND error LIKE ?)"
+        if exclude_fire_skips else "")
     with _transaction() as conn:
         rows = conn.execute(
             f"""SELECT e.* FROM executions e WHERE e.id IN (
@@ -646,8 +665,8 @@ def latest_executions(job_ids: list[str]) -> dict[str, dict[str, Any]]:
                              PARTITION BY job_id
                              ORDER BY julianday(claimed_at) DESC, claimed_at DESC, id DESC
                            ) AS rn
-                    FROM executions WHERE job_id IN ({placeholders}))
+                    FROM executions WHERE job_id IN ({placeholders}){skip_filter})
                   WHERE rn=1)""",
-            clean,
+            [*clean, *( [FIRE_SKIP_ERROR_PREFIX + "%"] if exclude_fire_skips else [])],
         ).fetchall()
     return {row["job_id"]: dict(row) for row in rows}

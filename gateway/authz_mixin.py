@@ -226,7 +226,16 @@ class GatewayAuthorizationMixin:
             adapters = profile_adapters[profile_name]
             if adapters or not self._is_shared_bot_satellite(profile_name):
                 return adapters
-            return self._primary_adapters()
+            # Shared-bot satellite whose entry holds only the LOCAL placeholder (own cron/worker
+            # sessions): real platforms drain through the primary's live adapters, but LOCAL must
+            # keep the profile's own LocalSessionAdapter — its intake policies are per-authority
+            # (a default-profile LocalSessionAdapter rejects the satellite's cron-owner with
+            # "Unauthorized user ... on local", killing every satellite agent cron run).
+            from gateway.config import Platform
+            own_local = adapters.get(Platform.LOCAL) if hasattr(adapters, "get") else None
+            if own_local is None:
+                return self._primary_adapters()
+            return {**self._primary_adapters(), Platform.LOCAL: own_local}
         # Identity captured at construction, not the per-turn HERMES_HOME-derived name.
         primary_profile = getattr(self, "_primary_profile_name", None)
         if not primary_profile:

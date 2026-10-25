@@ -1962,7 +1962,7 @@ def list_jobs(include_disabled: bool = False) -> list[dict[str, Any]]:
     try:
         from cron.executions import latest_executions
 
-        latest = latest_executions([job.get("id", "") for job in jobs])
+        latest = latest_executions([job.get("id", "") for job in jobs], exclude_fire_skips=True)
     except Exception:
         latest = {}
     for job in jobs:
@@ -2402,7 +2402,30 @@ def _advance_after_run(job: dict[str, Any], now: str, *, ladder_rung: bool = Fal
             _complete_job_record(job)
             return
 
-    job["next_run_at"] = compute_next_run(job["schedule"], now)
+    new_next = compute_next_run(job["schedule"], now)
+    # FIX-2075: for cron-lattice jobs, a completion that lands just PAST the
+    # pre-advanced slot must not re-anchor across it. The tick set next_run_at to
+    # that slot before dispatch (at-most-once); when a run overruns into the slot,
+    # recomputing from the completion time jumps past it, and the next tick sees a
+    # future next_run_at and never fires the slot — no run, no ledger row, no log
+    # (the 2026-10-25 22:40 soul-audit gap: a 58-min run finished 18s after the
+    # 22:40:00 slot, 35s before the 22:40:53 tick). Keep the stored slot while it
+    # is still on/behind the natural lattice within the catch-up grace window; the
+    # next due scan then fires the catch-up run get_due_jobs() promises for
+    # overran runs (#33315). Interval jobs keep the completion-based re-anchor —
+    # their rolling lattice drifts by design and their cadence is unchanged.
+    if new_next is not None and job.get("schedule", {}).get("kind") == "cron":
+        stored_dt = _parse_aware(job.get("next_run_at"))
+        new_dt = _parse_aware(new_next)
+        now_dt = _parse_aware(now)
+        if (
+            stored_dt is not None and new_dt is not None and now_dt is not None
+            and stored_dt <= new_dt
+            and _elapsed_seconds(now_dt, stored_dt)
+            <= _compute_grace_seconds(job["schedule"])
+        ):
+            new_next = job["next_run_at"]
+    job["next_run_at"] = new_next
     if job["next_run_at"] is not None:
         if job.get("state") != "paused":
             job["state"] = "scheduled"

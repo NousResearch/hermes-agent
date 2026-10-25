@@ -26,7 +26,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, NamedTuple, Optional
 
-_IDLE_TTL_S = 30 * 60
+_IDLE_TTL_S = 365 * 24 * 60 * 60  # effectively never — matches user's Bitwarden vaultTimeout=never
 
 _callback_tls = threading.local()
 

@@ -17,6 +17,7 @@ def local_adapter_map(authority):
     """The adapter map a LOCAL session of *authority* lives in: ``runner.adapters`` for the launch
     profile, ``runner._profile_adapters[name]`` for a served secondary (its routed home, so
     ``_adapter_for_source`` / ``_adapters_for_profile`` resolve the right transport)."""
+    from gateway.session_local import ensure_profile_adapter_map
     runner = authority.runner
     registry = getattr(runner, 'session_authorities', None)
     name = registry.profile_name(authority) if registry is not None else None
@@ -25,7 +26,7 @@ def local_adapter_map(authority):
     profile_adapters = getattr(runner, '_profile_adapters', None)
     if profile_adapters is None:
         profile_adapters = runner._profile_adapters = {}
-    return profile_adapters.setdefault(name, {})
+    return ensure_profile_adapter_map(profile_adapters, name)
 
 
 def local_source(authority, chat_id, user_id):

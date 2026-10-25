@@ -193,7 +193,17 @@ async def operation(authority, name, params, actor=None):
         result = saved['result'].get('cron_result') if saved else None
         flags = (saved['result'].get('cron_job_flags') or {}) if saved else {}
         if result is None:
-            result = [False, '', '', row.get('outcome') or 'unknown_execution']
+            # A terminal admission with no stored cron_result: the turn never produced a
+            # scheduler verdict. FIX-773: an intake-dropped satellite cron run settled its
+            # admission 'completed' with an empty answer, and echoing the raw outcome into the
+            # error slot booked the failed run as error="completed" (reads like success).
+            # Describe the anomaly instead of echoing the outcome verbatim.
+            outcome = row.get('outcome') or 'unknown'
+            hint = ("the agent run never produced a verdict - check gateway intake logs"
+                    if outcome in ('completed', 'failed', 'interrupted')
+                    else "check the session transcript")
+            result = [False, '', '',
+                      f"cron turn ended without a scheduler result (admission outcome: {outcome}); {hint}"]
     from cron.scheduler_liveness import owner_progress
     return {'status': row['status'], 'result': result, 'job_flags': flags,
             'progress_at': owner_progress.get(row['request_id'].rsplit(':', 1)[-1])}

@@ -996,7 +996,9 @@ def _latest_executions_for_releasable_claims() -> dict:
         return {}
     try:
         from cron.executions import latest_executions as _latest_execs
-        return _latest_execs(candidates)
+
+        # FIX-2075: skip traces are never the claim's own terminal row.
+        return _latest_execs(candidates, exclude_fire_skips=True)
     except Exception:
         return {}
 
@@ -4256,6 +4258,35 @@ def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     return run_one_job(claimed_job, adapters=adapters, loop=loop, verbose=verbose)
 
 
+def _record_inflight_skip(job: dict, job_label: str) -> None:
+    """FIX-2075: leave a ledger trace for a fire the in-flight dedup guard refused.
+
+    The due scan already pre-advanced next_run_at for this slot (at-most-once), so a
+    dispatch refusal CONSUMES it: without a row the slot vanishes with no run, no
+    ledger entry and only an INFO log line — an invisible monitoring gap. Book a
+    terminal ``failed`` attempt naming the consumed slot so ``hermes cron runs``
+    (soul-audit Step 1A-6 gap check) and L3 can see the skip. This path never goes
+    through run_job's failure delivery, so it raises no incident pings and does not
+    touch the job's last_status / failure_streak in jobs.json.
+    """
+    slot = job.get("_scheduled_instant") or job.get("next_run_at")
+    logger.warning(
+        "Job '%s' already running — skipping; scheduled slot %s consumed without a run (FIX-2075)",
+        job_label, slot)
+    try:
+        from cron.executions import FIRE_SKIP_ERROR_PREFIX
+
+        execution = create_execution(
+            job["id"], source="builtin", scheduled_instant=job.get("_scheduled_instant"))
+        finish_execution(
+            execution["id"], success=False, error=(
+                f"{FIRE_SKIP_ERROR_PREFIX} previous run still in flight (in-flight dedup guard); "
+                f"scheduled slot {slot} was consumed without a run (FIX-2075)."))
+    except Exception as exc:
+        logger.warning(
+            "Job '%s': could not record the in-flight skip in the ledger: %s", job_label, exc)
+
+
 def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, process_job):
     """Submit with the in-flight dedup guard; None if a prior tick's run is still in flight.
     Running-set membership is released in the worker's finally."""
@@ -4303,7 +4334,7 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
         return None
     registration_owner = object()
     if not try_register_running_job(job_id, owner=registration_owner):
-        logger.info("Job '%s' already running — skipping", job_label)
+        _record_inflight_skip(job, job_label)
         return None
     # The home the claim was registered under. The pool worker's ``finally`` runs OUTSIDE
     # ``ctx.run``, where the per-profile cron scope is not bound, so releasing without it would

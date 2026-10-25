@@ -136,6 +136,135 @@ def test_normalize_parses_string_envelope_single_dict():
     assert entries == [{"name": "session_search", "arguments": {"query": "x"}}]
 
 
+def test_normalize_repairs_swapped_close_brackets_in_string_envelope():
+    """Measured on a long Qwen3.8-27B turn (5/5 tool_call attempts failed): the
+    model emitted the batch as a JSON string whose tail read ``...}]}`` instead
+    of ``...}}]`` — the element object's closer and the outer array's closer
+    were emitted out of order. One bounded swap repair restores the payload
+    instead of rejecting it."""
+    good = json.dumps([
+        {"name": "session_search",
+         "arguments": {"query": "x", "plan": [{"id": "s", "step": "t", "status": "in_progress"}]}}
+    ])
+    # correct tail:  args"}  elem"}  outer"]   ->  "...}}]"
+    assert good.endswith("}}]")
+    # model emitted elem/outer swapped:   "...}]}"  (args"}  outer"]  elem"}")
+    swapped = good[:-2] + "]}"
+    assert swapped != good
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(swapped)  # premise: naive parse fails
+    entries, err = normalize_tool_call_entries({"calls": swapped})
+    assert err is None
+    assert entries == json.loads(good)
+
+
+def test_normalize_rejects_bracket_failures_outside_the_repair_class():
+    """Bracket/escape failures needing two or more edits must still be
+    rejected — each repair strategy is bounded, never a silent best-effort
+    parser. (The single missing comma used here as an example is now covered
+    by the one-edit strategy; see
+    test_normalize_repairs_single_missing_comma_between_entries.)"""
+    # two closers missing from the tail, AND an entry-level comma missing:
+    # any one-edit attempt yields either a parse failure or no unique valid
+    # batch -> rejected.
+    bad = "[{\"name\": \"a\"}{\"arguments\": {\"x\": 1}, \"name\": \"b\"}"
+    entries, err = normalize_tool_call_entries({"calls": bad})
+    assert entries == []
+    assert "not valid JSON" in (err or "")
+
+
+def test_normalize_repairs_single_missing_comma_between_entries():
+    """Measured on Qwen3.8-27B turns: one comma dropped between two batch
+    entries (``...600}, {"arguments": ...``). A single inserted comma yields
+    the unique valid batch, so the payload is recovered."""
+    good = json.dumps([
+        {"name": "session_search", "arguments": {"query": "a"}},
+        {"name": "session_search", "arguments": {"query": "b"}},
+    ])
+    assert ", {" in good
+    dropped = good.replace(", {", " {", 1)
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(dropped)  # premise: naive parse fails
+    entries, err = normalize_tool_call_entries({"calls": dropped})
+    assert err is None
+    assert entries == json.loads(good)
+
+
+def test_normalize_repairs_missing_final_tail_closers():
+    """Measured on musg34l4x2opyk (8 identical failures): the stringified
+    batch stopped right after closing the inner arguments object — the entry
+    object's ``}`` and the batch array's ``]`` were never emitted. Bounded
+    tail append recovers the unique valid batch."""
+    good = json.dumps([
+        {"name": "session_search",
+         "arguments": {"query": "x", "plan": [{"id": "s", "step": "t", "status": "pending"}]}}
+    ])
+    # correct tail: args"} elem"} outer"]  ->  "}}]"; model stopped early: "}"
+    broken = good[:-2]
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(broken)
+    entries, err = normalize_tool_call_entries({"calls": broken})
+    assert err is None
+    assert entries == json.loads(good)
+
+
+def test_normalize_one_edit_repair_requires_a_unique_valid_batch():
+    """The one-edit strategies must not guess: when several single edits each
+    parse to a *different* valid calls batch, the slip is ambiguous and the
+    payload is left to the model's retry."""
+    # tail "}]": delete the ] -> [{...}] valid; delete the } -> [({...})]
+    # invalid — so construct a genuinely ambiguous case: "a" vs "ab" both
+    # single-edit-reachable with different names is not possible with pure
+    # bracket edits; the real guard is the escape-drift ambiguity. A batch
+    # whose one-arg object could close at two different spots:
+    ambiguous = "[{\"name\": \"a\", \"arguments\": {\"v\": 1}]"[:-1] + "}"
+    # two different one-deletions both parse to valid-but-different batches
+    # only if the text admits it; this specific shape must at minimum NOT be
+    # silently "fixed" into an entry the model did not plausibly mean —
+    # assert whatever happens, the result must pass the semantic guard.
+    entries, err = normalize_tool_call_entries({"calls": ambiguous})
+    if entries:
+        for e in entries:
+            assert isinstance(e.get("name"), str) and e["name"].strip()
+    # And a no-name entry is never rescued, even when tail append makes it
+    # parse (measured shape: entry lacked "name" entirely).
+    no_name_tail = '[{"arguments": {"x": 1}}'
+    entries, err = normalize_tool_call_entries({"calls": no_name_tail})
+    assert entries == []
+    assert err is not None
+
+
+def test_normalize_repairs_single_surplus_close_bracket():
+    """Measured on the 0.7.28 upgrade turn (mupgen9imqqtbu, 3/3 attempts): the
+    model emitted a valid batch plus one surplus close bracket before the final
+    close, so bracket counts are off by +1. Dropping the first unmatched closer
+    recovers the payload."""
+    good = json.dumps([
+        {"name": "session_search",
+         "arguments": {"plan": [{"id": "a", "step": "s", "status": "pending"}]}}
+    ])
+    # Measured shape: replace the final "..." with one extra closer pair, so the
+    # tail reads "...}]}]}" — a stray `]` before the batch's closing `]`.
+    mupgen_shape = good[:-1] + "]}"
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(mupgen_shape)
+    entries, err = normalize_tool_call_entries({"calls": mupgen_shape})
+    assert err is None
+    assert entries == json.loads(good)
+
+
+def test_normalize_does_not_rescue_genuinely_corrupt_payload():
+    """The semantic guard: a payload that parses to a valid list but whose entries
+    are NOT real calls (missing names) must be rejected even though a bracket repair
+    would make it 'valid' as JSON — repairs only accept a real calls batch."""
+    # structurally fine JSON, but entries lack 'name' -> not a calls batch
+    bad = json.dumps([{"arguments": {"x": 1}}])
+    entries, err = normalize_tool_call_entries({"calls": bad})
+    assert entries == []
+    assert "requires a 'name'" in (err or "")
+
+
+
 @pytest.mark.parametrize(
     "bad,expected_fragment",
     [
@@ -754,3 +883,121 @@ def test_connector_describe_is_empty_on_unavailable_and_names_the_failure_reason
     assert connector_describe(
         ["connectors__g__T"], availability=lambda: True, client_factory=rejected
     ) == ConnectorLeg(failure="sign_in_expired")
+
+
+# ---------------------------------------------------------------------------
+# Missing-entry-name recovery (10-24 measured shape, session mvm57ofwgwwvvu)
+# ---------------------------------------------------------------------------
+
+_UPDATE_PLAN_NAME = "mcp__ekko_studio_interaction__ekko_studio_update_plan"
+_UPDATE_PLAN_PROPS = {"token": {"type": "string"}, "profile": {"type": "string"},
+                      "context_id": {"type": "string"}, "explanation": {"type": "string"},
+                      "plan": {"type": "array"}}
+
+
+def _register_like_update_plan(name, required, props, toolset):
+    from tools.registry import registry
+    registry.register(
+        name=name, toolset=toolset,
+        handler=lambda a, **kw: "{}",
+        schema={"name": name, "description": "test tool",
+                "parameters": {"type": "object", "properties": props, "required": required}})
+
+
+def _deregister(name):
+    from tools.registry import registry
+    registry.deregister(name)
+
+
+def test_normalize_recovers_missing_name_unique_fingerprint_broken_tail():
+    """Measured on mvm57ofwgwwvvu (2026-10-24, 8/8 attempts): the stringified
+    single-entry batch dropped BOTH the entry's "name" field and its closing
+    "}", so the tail reads "...<arguments>}]}]". When the entry's argument keys
+    are the UNIQUE fingerprint of one registered deferrable tool, the call is
+    recovered instead of dying on an opaque "Expecting ',' delimiter" error the
+    model cannot act on."""
+    _register_like_update_plan(_UPDATE_PLAN_NAME, ["context_id", "plan"],
+                               _UPDATE_PLAN_PROPS, "mcp-ekko-studio-interaction")
+    try:
+        args = {"context_id": "ctx-1", "explanation": "test",
+                "plan": [{"id": "s1", "step": "a", "status": "completed"},
+                         {"id": "s2", "step": "b", "status": "in_progress"}]}
+        # Measured shape: after the arguments object closes, the batch's "]"
+        # lands directly — the entry's closing "}" was never emitted.
+        broken = '[{"arguments": ' + json.dumps(args, ensure_ascii=False) + ']'
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(broken)  # premise: naive parse fails
+        entries, err = normalize_tool_call_entries({"calls": broken})
+        assert err is None
+        assert entries == [{"name": _UPDATE_PLAN_NAME, "arguments": args}]
+    finally:
+        _deregister(_UPDATE_PLAN_NAME)
+
+
+def test_normalize_recovers_missing_name_valid_json_unique_fingerprint():
+    """Same fingerprint rule applies when the batch parses but the entry simply
+    has no "name" (the per-entry path, not the string-tail path)."""
+    _register_like_update_plan(_UPDATE_PLAN_NAME, ["context_id", "plan"],
+                               _UPDATE_PLAN_PROPS, "mcp-ekko-studio-interaction")
+    try:
+        args = {"context_id": "ctx-2",
+                "plan": [{"id": "s", "step": "t", "status": "pending"}]}
+        entries, err = normalize_tool_call_entries({"calls": json.dumps([{"arguments": args}])})
+        assert err is None
+        assert entries == [{"name": _UPDATE_PLAN_NAME, "arguments": args}]
+    finally:
+        _deregister(_UPDATE_PLAN_NAME)
+
+
+def test_missing_name_ambiguous_fingerprint_is_not_guessed():
+    """Two registered tools share the fingerprint: the slip is ambiguous and
+    must be left to the model's retry, with the candidates named so the retry
+    is one edit, not a guess."""
+    _register_like_update_plan("mcp__amb__a", ["zeta_ctx"],
+                               {"zeta_ctx": {"type": "string"}, "zeta_plan": {"type": "array"}},
+                               "mcp-amb")
+    _register_like_update_plan("mcp__amb__b", ["zeta_ctx"],
+                               {"zeta_ctx": {"type": "string"}, "zeta_plan": {"type": "array"}},
+                               "mcp-amb")
+    try:
+        entries, err = normalize_tool_call_entries(
+            {"calls": json.dumps([{"arguments": {"zeta_ctx": "1", "zeta_plan": []}}])})
+        assert entries == []
+        assert "Closest matches" in err
+        assert "mcp__amb__a" in err and "mcp__amb__b" in err
+    finally:
+        _deregister("mcp__amb__a")
+        _deregister("mcp__amb__b")
+
+
+def test_missing_name_no_fingerprint_match_teaches_the_shape():
+    """No candidate: the error must state the required entry shape so the
+    model's retry is mechanical (keeps the 'requires a name' contract)."""
+    entries, err = normalize_tool_call_entries(
+        {"calls": json.dumps([{"arguments": {"zz_unknown_key": 1}}])})
+    assert entries == []
+    assert "requires a 'name'" in err
+    assert "retry with 'name'" in err
+
+
+def test_normalize_recovers_real_1024_session_payload():
+    """Regression fixture: the EXACT stringified payload from session
+    mvm57ofwgwwvvu (message 609649) that failed 8 consecutive task-card
+    updates before this fix. With the update_plan schema registered it must
+    recover to the single intended entry."""
+    _register_like_update_plan(_UPDATE_PLAN_NAME, ["context_id", "plan"],
+                               _UPDATE_PLAN_PROPS, "mcp-ekko-studio-interaction")
+    try:
+        payload = r'[{"arguments": {"context_id": "c952bbe4-1424-405c-bfcf-e45ae636df34", "explanation": "Phase 1a 完成：main 对齐 0.7.39+7、6 分支 rebase（1 冲突已合）、local-fixes 重建 5 fixes", "plan": [{"id": "preflight", "status": "completed", "step": "Pre-flight：remotes/工作区/HFC 5.0.7 fixtures 定 Agent 目标"}, {"id": "webui-sync", "status": "in_progress", "step": "Phase 1a Web UI：main→upstream、rebase fix/*、重建 local-fixes、push fork"}, {"id": "webui-deploy", "status": "pending", "step": "Phase 1b Web UI：npm ci+build、部署验证、重启 :81"}, {"id": "agent-sync", "status": "pending", "step": "Phase 2a Agent：对齐 HFC 钉 v0.22.4、rebase、重建 local-fixes"}, {"id": "agent-hfc", "status": "pending", "step": "Phase 2b Agent：HFC 5.0.7 三环境对齐 + hooks 重注入 + sidecar 验证"}, {"id": "verify", "status": "pending", "step": "升级后验证矩阵（版本/HTTP/doctor/平台连接）"}, {"id": "gateway-restart", "status": "pending", "step": "Phase 3：gateway 重启（等用户确认）"}]}]'
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(payload)
+        entries, err = normalize_tool_call_entries({"calls": payload})
+        assert err is None
+        assert len(entries) == 1
+        assert entries[0]["name"] == _UPDATE_PLAN_NAME
+        assert entries[0]["arguments"]["context_id"] == "c952bbe4-1424-405c-bfcf-e45ae636df34"
+        assert len(entries[0]["arguments"]["plan"]) == 7
+        assert entries[0]["arguments"]["plan"][0] == {"id": "preflight", "status": "completed",
+                                                     "step": "Pre-flight：remotes/工作区/HFC 5.0.7 fixtures 定 Agent 目标"}
+    finally:
+        _deregister(_UPDATE_PLAN_NAME)

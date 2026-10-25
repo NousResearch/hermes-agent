@@ -52,17 +52,21 @@ async def test_exec_approval_prompt_uses_visible_content_with_command_and_reason
 
 
 @pytest.mark.asyncio
-async def test_exec_approval_content_stays_within_discord_cap_for_long_reason():
+@pytest.mark.parametrize("purpose", ["", "Review deployment " + "p" * 250])
+async def test_exec_approval_content_stays_within_discord_cap_for_long_reason(purpose):
     """The reason shares the 2000-char content cap with the command preview."""
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
     sent = _capture_channel(adapter)
 
     result = await adapter.send_exec_approval(
-        chat_id="555", command="x" * 5000, session_key="discord:555", description="r" * 5000)
+        chat_id="555", command="x" * 5000, session_key="discord:555", description="r" * 5000,
+        purpose=purpose)
 
     assert result.success is True
     assert len(sent["content"]) <= adapter.MAX_MESSAGE_LENGTH
     assert "xxx" in sent["content"]  # the command preview is not starved to zero
+    if purpose:
+        assert f"Purpose: {purpose}" in sent["content"]
 
 
 

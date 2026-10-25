@@ -158,7 +158,7 @@ class CLITuiMixin:
             return []
         wrap = _wrap_panel_text_keep_ws
         command = state["command"]
-        description = state["description"]
+        description = f"Purpose: {state['purpose']}\n{state['description']}" if state.get("purpose") else state["description"]
         choices = state["choices"]
         selected = state.get("selected", 0)
         show_full = state.get("show_full", False)

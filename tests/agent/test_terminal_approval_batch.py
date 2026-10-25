@@ -16,9 +16,30 @@ from tools import approval
 from tools.thread_context import propagate_context_to_thread
 
 
+@pytest.mark.parametrize("background, expected_command", [(False, "echo ready"), (True, "echo ready &")])
+def test_prepared_guard_preserves_purpose_and_execution_command(monkeypatch, background, expected_command):
+    from agent.terminal_approval_batch import _TerminalSlot
+    from tools import terminal_tool as tt
+
+    batch = SimpleNamespace(agent=SimpleNamespace(_interrupt_requested=False, session_id="purpose-command"),
+                            cancelled=threading.Event())
+    slot = _TerminalSlot(batch, None, 0)
+    slot.release.set()
+    ref = SimpleNamespace(call_id="purpose-command", args={
+        "command": "echo ready &", "background": background, "purpose": "Check readiness",
+    })
+    monkeypatch.setattr(tt, "_get_env_config", lambda: {"env_type": "local"})
+    with patch.object(tt, "_check_all_guards", return_value={"approved": True}) as guards:
+        slot.prepare(ref)
+
+    guards.assert_called_once_with(expected_command, "local", False, purpose="Check readiness")
+    assert slot.guard_key == (expected_command, "local", False)
+    assert ref.args["command"] == "echo ready &"
+
+
 def _call(call_id, command):
     return SimpleNamespace(id=call_id, type="function", function=SimpleNamespace(
-        name="terminal", arguments=json.dumps({"command": command})))
+        name="terminal", arguments=json.dumps({"command": command, "purpose": f"Purpose for {call_id}"})))
 
 
 def _agent():
@@ -121,6 +142,7 @@ def test_desktop_publishes_final_commands_before_wait_and_runs_in_order(tmp_path
             first = published.get(timeout=10)
             second = published.get(timeout=5)
             assert [first["command"], second["command"]] == list(commands.values())
+            assert [first["purpose"], second["purpose"]] == ["Purpose for first", "Purpose for second"]
             assert policy == list(commands)
             assert executed == []
             assert approval.ack_gateway_approval(key, second["request_id"])

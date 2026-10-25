@@ -1,12 +1,12 @@
 name: freshdesk
 repo: https://github.com/aedelgod/hermes-plugin-freshdesk
-sha: "005bee2c6a1d0857dbafd6bfac7a2e2e37619991"
-description: "Generic Freshdesk API v2 tools for Hermes Agent. Unaffiliated community connector, not a Freshworks product. Disclosure: calls the account's native Freshdesk HTTPS origin with profile-scoped secrets FRESHDESK_DOMAIN and FRESHDESK_API_KEY; downloads an attachment into the Hermes cache only from that ticket's own attachment hosts; the two write tools escalate to Hermes human approval and fail closed when no person is present. No third-party dependencies, shell commands, telemetry, or self-updater."
+sha: "86d2f5312c1a1184516bef649ecb16f3fccc9011"
+description: "Generic Freshdesk API v2 tools for Hermes Agent. Unaffiliated community connector, not a Freshworks product. Disclosure — calls the account's native Freshdesk HTTPS origin with profile-scoped secrets FRESHDESK_DOMAIN and FRESHDESK_API_KEY; downloads an attachment into the Hermes cache only from that ticket's own attachment hosts; the five write tools (private note, create ticket, public reply that Freshdesk emails to the ticket's requester, time entry, status/priority update) escalate to Hermes human approval and fail closed when no person is present. No third-party dependencies, shell commands, telemetry, or self-updater."
 maintainer: GFORGOV
 tier: community
 category: tools
 requires_hermes: ">=0.21.4"
-version: "0.1.1"
+version: "0.2.0"
 readme: true
 docs_url: https://github.com/aedelgod/hermes-plugin-freshdesk#readme
 platforms: []
@@ -20,6 +20,9 @@ capabilities:
     - freshdesk_download_attachment
     - freshdesk_add_private_note
     - freshdesk_create_ticket
+    - freshdesk_reply_to_ticket
+    - freshdesk_add_time_entry
+    - freshdesk_update_ticket
   provides_hooks:
     - pre_tool_call
   provides_middleware: []

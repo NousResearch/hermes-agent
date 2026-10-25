@@ -222,6 +222,7 @@ class TestStdioPgroupReaping:
             _stdio_pgids.clear()
             _stdio_starttimes.clear()
 
+    @pytest.mark.platforms("posix")
     def test_kill_orphaned_skips_recycled_pid(self):
         """PID-reuse guard (#43044): a recycled PID (start-time changed) is NOT signalled.
 
@@ -252,6 +253,7 @@ class TestStdioPgroupReaping:
         mock_killpg.assert_not_called()
         mock_kill.assert_not_called()
 
+    @pytest.mark.platforms("posix")
     def test_kill_orphaned_signals_when_start_time_matches(self):
         """The orphan IS signalled when its leader start-time still matches."""
         from tools.mcp_tool_lifecycle import (
@@ -273,6 +275,7 @@ class TestStdioPgroupReaping:
 
         mock_killpg.assert_any_call(fake_pid, signal.SIGTERM)
 
+    @pytest.mark.platforms("posix")
     def test_kill_orphaned_without_baseline_keeps_legacy_behaviour(self):
         """No recorded start time (macOS / capture raced exit) -> best-effort killpg."""
         from tools.mcp_tool_lifecycle import (
@@ -294,6 +297,7 @@ class TestStdioPgroupReaping:
         mock_killpg.assert_any_call(fake_pid, signal.SIGTERM)
 
 
+    @pytest.mark.platforms("posix")
     def test_killpg_used_when_pgid_tracked(self, monkeypatch):
         """SIGTERM and SIGKILL route through killpg when pgid is known."""
         from tools.mcp_tool_lifecycle import _kill_orphaned_mcp_children, _orphan_stdio_pids, _stdio_pgids
@@ -330,6 +334,7 @@ class TestStdioPgroupReaping:
             assert fake_pid not in _orphan_stdio_pids
             assert fake_pid not in _stdio_pgids
 
+    @pytest.mark.platforms("posix")
     def test_killpg_skipped_when_pgid_matches_gateway_own_pgroup(self, monkeypatch):
         """#47134: when a tracked MCP child shares the gateway's OWN process
         group, killpg(pgid) would signal the gateway itself and crash it.

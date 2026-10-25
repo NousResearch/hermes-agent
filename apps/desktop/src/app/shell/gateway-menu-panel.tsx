@@ -1,12 +1,13 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 
-import { StatusDot, type StatusTone } from '@/components/status-dot'
+import { StatusDot } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import { LogView } from '@/components/ui/log-view'
 import { Tip } from '@/components/ui/tooltip'
 import { getLogs } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { LayoutDashboard, Power, RefreshCw } from '@/lib/icons'
+import { platformStatusTone } from '@/lib/platform-status'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { cn } from '@/lib/utils'
 import { reconnectGateway } from '@/store/gateway-reconnect'
@@ -70,15 +71,6 @@ function useGatewayLogTail(): string[] {
   }, [])
 
   return lines
-}
-
-const PLATFORM_TONE: Record<string, StatusTone> = {
-  connected: 'good',
-  connecting: 'warn',
-  retrying: 'warn',
-  pending_restart: 'warn',
-  startup_failed: 'bad',
-  fatal: 'bad'
 }
 
 const prettyState = (state: string) => state.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase())
@@ -171,20 +163,19 @@ export function GatewayMenuPanel({
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
-          {!gatewayOpen && (
-            <Tip label={copy.reconnectGateway}>
-              <Button
-                aria-label={copy.reconnectGateway}
-                className="text-muted-foreground hover:text-foreground"
-                disabled={reconnecting}
-                onClick={reconnect}
-                size="icon-xs"
-                variant="ghost"
-              >
-                <RefreshCw className={cn(reconnecting && 'animate-spin')} />
-              </Button>
-            </Tip>
-          )}
+          {/* An open transport can still be wedged; recovery must remain reachable. */}
+          <Tip label={copy.reconnectGateway}>
+            <Button
+              aria-label={copy.reconnectGateway}
+              className="text-muted-foreground hover:text-foreground"
+              disabled={reconnecting}
+              onClick={reconnect}
+              size="icon-xs"
+              variant="ghost"
+            >
+              <RefreshCw className={cn(reconnecting && 'animate-spin')} />
+            </Button>
+          </Tip>
           <Tip label={copy.openSystem}>
             <Button
               aria-label={copy.openSystem}
@@ -248,7 +239,7 @@ export function GatewayMenuPanel({
               <li className="flex items-center justify-between gap-2 text-xs" key={name}>
                 <span className="truncate capitalize">{name}</span>
                 <span className="flex items-center gap-1.5 text-[0.66rem] text-muted-foreground">
-                  <StatusDot tone={PLATFORM_TONE[platform.state] || 'muted'} />
+                  <StatusDot tone={platformStatusTone({ state: platform.state })} />
                   {prettyState(platform.state)}
                 </span>
               </li>

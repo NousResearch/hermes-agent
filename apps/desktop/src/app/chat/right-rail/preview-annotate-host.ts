@@ -95,6 +95,15 @@ export async function hideAnnotateDraft(guest: PreviewAnnotateGuest): Promise<vo
   `)
 }
 
+/** Guest calls are best-effort dressing: never let one fail the capture. */
+async function tryGuest(guest: PreviewAnnotateGuest, code: string): Promise<void> {
+  try {
+    await guest.executeJavaScript(code)
+  } catch {
+    // The overlay may be mid-teardown or the guest gone. Shoot anyway.
+  }
+}
+
 export async function captureAnnotateCrop(
   guest: PreviewAnnotateGuest,
   rect: AnnotatePinChrome['rect']
@@ -103,5 +112,15 @@ export async function captureAnnotateCrop(
     throw new Error('preview capture is unavailable')
   }
 
-  return guest.capture(padRect(rect))
+  // Bracket the shot: the overlay hides saved pins and waits for a paint, so
+  // the crop carries this comment's marker and no neighbour's. `endCapture`
+  // runs even when the capture throws, or one failed crop leaves every saved
+  // pin invisible on the page.
+  await tryGuest(guest, 'window.__hermesAnnotate ? window.__hermesAnnotate.beginCapture() : null')
+
+  try {
+    return await guest.capture(padRect(rect))
+  } finally {
+    await tryGuest(guest, 'window.__hermesAnnotate && window.__hermesAnnotate.endCapture()')
+  }
 }

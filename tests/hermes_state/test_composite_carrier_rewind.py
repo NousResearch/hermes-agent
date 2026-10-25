@@ -12,12 +12,8 @@ from agent.context_compressor import (
     _MERGED_SUMMARY_DELIMITER,
     _SUMMARY_END_MARKER,
 )
-from hermes_state import (
-    CompressionSessionClosedError,
-    SessionCompressionInProgressError,
-    SessionDB,
-    SessionTurnLeaseLostError,
-)
+from hermes_state import SessionCompressionInProgressError, SessionDB
+from hermes_state_errors import CompressionSessionClosedError, SessionTurnLeaseLostError
 
 
 def _carrier(ask: str = "REAL ASK") -> str:

@@ -7,7 +7,8 @@
  * without either half knowing about a bot row.
  */
 
-import { Codicon, ConnectionGlyph, DisclosureCaret, RowButton, Tip } from '@hermes/plugin-sdk'
+import { cn, Codicon, ConnectionGlyph, DisclosureCaret, RowButton, Tip } from '@hermes/plugin-sdk'
+import type { ReactNode } from 'react'
 
 import { botHandle, botRosterKey, botSourceStatus, filterBots } from './data'
 import { displayName } from './labels'
@@ -222,22 +223,28 @@ export function GatewayKindGlyph({ className, kind }: GatewayKindGlyphProps) {
 /** Foldable roster heading. It organizes rows visually but never supplies or
  * reconstructs ownership; every action still receives the full bot row. */
 interface RosterSectionHeaderProps {
+  /** Trailing control drawn beside the heading (outside its button — a
+   *  button cannot nest a button). User sections put their ⋯ menu here. */
+  action?: ReactNode
   collapsed: boolean
   count: number
   gatewayKind?: string
   icon?: string
   label: string
+  onDoubleClick?: () => void
   onToggle: () => void
   status?: { available: boolean; label: string }
   tip?: string
 }
 
 export function RosterSectionHeader({
+  action,
   collapsed,
   count,
   gatewayKind,
   icon,
   label,
+  onDoubleClick,
   onToggle,
   status,
   tip
@@ -245,8 +252,12 @@ export function RosterSectionHeader({
   const button = (
     <RowButton
       aria-expanded={!collapsed}
-      className="mt-1 flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary) transition-colors hover:bg-(--chrome-action-hover) hover:text-(--ui-text-secondary)"
+      className={cn(
+        'flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary) transition-colors hover:bg-(--chrome-action-hover) hover:text-(--ui-text-secondary)',
+        action ? 'flex-1' : 'mt-1'
+      )}
       onClick={onToggle}
+      onDoubleClick={onDoubleClick}
     >
       <DisclosureCaret open={!collapsed} />
       {gatewayKind ? (
@@ -269,7 +280,18 @@ export function RosterSectionHeader({
     </RowButton>
   )
 
-  return tip ? <Tip label={tip}>{button}</Tip> : button
+  const heading = tip ? <Tip label={tip}>{button}</Tip> : button
+
+  // With a trailing action, heading and action share one hover group so the
+  // action can reveal on hover of the whole row.
+  return action ? (
+    <div className="group/section mt-1 flex w-full min-w-0 items-center gap-1 pr-1">
+      {heading}
+      {action}
+    </div>
+  ) : (
+    heading
+  )
 }
 
 interface GatewaySectionHeadingProps {

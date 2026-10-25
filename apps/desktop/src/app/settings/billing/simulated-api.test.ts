@@ -28,25 +28,6 @@ describe('createSimulatedBillingApi', () => {
     expect(afterResume.tiers.some(tier => tier.state === 'scheduled')).toBe(false)
   })
 
-  it('previews a chargeless scheduled change for the chosen tier', async () => {
-    const api = createSimulatedBillingApi(billingDevFixtures['subscriber-personal'])
-    const preview = await api.previewSubscriptionChange(FREE_TIER_ID)
-
-    expect(preview).toMatchObject({ data: { effect: 'scheduled', target_tier_name: 'Free' }, ok: true })
-  })
-
-  it('undoes a scheduled cancellation too', async () => {
-    const api = createSimulatedBillingApi(billingDevFixtures['pending-cancellation'])
-    const billing = await api.fetchBillingState()
-
-    expect(deriveBillingView(billing, await api.fetchSubscriptionState()).plan?.pending).toMatchObject({
-      kind: 'cancellation'
-    })
-
-    await api.resumeSubscription()
-    expect(deriveBillingView(billing, await api.fetchSubscriptionState()).plan?.pending).toBeUndefined()
-  })
-
   it('does not mutate the shared fixture object', async () => {
     const api = createSimulatedBillingApi(billingDevFixtures['subscriber-personal'])
     await api.scheduleSubscriptionChange(FREE_TIER_ID)

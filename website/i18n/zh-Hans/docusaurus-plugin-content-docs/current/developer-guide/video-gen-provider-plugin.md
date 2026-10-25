@@ -9,7 +9,7 @@ description: "如何为 Hermes Agent 构建视频生成后端插件"
 视频生成 provider 插件注册一个后端，用于处理所有 `video_generate` 工具调用。内置 provider（xAI、FAL）以插件形式提供。将目录放入 `plugins/video_gen/<name>/` 即可添加新 provider 或覆盖内置 provider。
 
 :::tip
-视频生成与[图像生成 Provider 插件](/developer-guide/image-gen-provider-plugin)几乎一一对应——如果你已构建过图像生成后端，对其结构应已了然于胸。主要区别在于：`capabilities()` 方法用于声明模态（modality）/宽高比/时长，以及路由约定（传入 `image_url` 则使用图生视频，省略则使用文生视频——provider 在内部选择正确的端点）。
+视频生成与[图像生成 Provider 插件](./image-gen-provider-plugin.md)几乎一一对应——如果你已构建过图像生成后端，对其结构应已了然于胸。主要区别在于：`capabilities()` 方法用于声明模态（modality）/宽高比/时长，以及路由约定（传入 `image_url` 则使用图生视频，省略则使用文生视频——provider 在内部选择正确的端点）。
 :::
 
 ## 统一接口（一个工具，两种模态）

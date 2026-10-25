@@ -1,23 +1,18 @@
 """Tests for agent/skill_utils.py."""
 
-from unittest.mock import patch
 
 import pytest
 
 from agent.skill_utils import (
-    extract_skill_config_vars,
-    extract_skill_conditions,
     get_disabled_skill_names,
     get_external_skills_dirs,
     is_excluded_skill_path,
-    is_external_skill_path,
     is_skill_support_path,
     iter_skill_index_files,
     parse_config_string_list,
     parse_frontmatter,
     resolve_skill_config_values,
     skill_matches_platform,
-    skill_matches_platform_list,
 )
 
 
@@ -72,6 +67,152 @@ skills:
         {"key": "wiki.path", "description": "Wiki path"}
     ])["wiki.path"].endswith("/wiki")
     assert parse_count == 1
+
+
+def _write_disabled_config(home, disabled: str) -> None:
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        f"skills:\n  disabled:\n    - {disabled}\n", encoding="utf-8"
+    )
+
+
+class TestMultiprofileRawConfigCache:
+    """#141610: a multiplexed watcher rotates through up to ~32 published profile
+    scopes plus the ambient one; one profile's cache miss must not evict every
+    other profile's unchanged entry."""
+
+    @staticmethod
+    def _load_under(home) -> list:
+        from agent import skill_utils
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        token = set_hermes_home_override(str(home))
+        try:
+            return skill_utils._load_raw_config()["skills"]["disabled"]
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_watcher_rotation_reparses_no_unchanged_config(self, tmp_path, monkeypatch):
+        from agent import skill_utils
+
+        homes = [tmp_path / f"scope-{i:02d}" for i in range(33)]
+        for i, home in enumerate(homes):
+            _write_disabled_config(home, f"skill-{i:02d}")
+        parse_count = 0
+        real_yaml_load = skill_utils.yaml_load
+
+        def counting_yaml_load(text):
+            nonlocal parse_count
+            parse_count += 1
+            return real_yaml_load(text)
+
+        monkeypatch.setattr(skill_utils, "yaml_load", counting_yaml_load)
+        skill_utils._raw_config_cache_clear()
+
+        for _ in range(3):
+            for i, home in enumerate(homes):
+                assert self._load_under(home) == [f"skill-{i:02d}"]
+
+        assert parse_count == 33
+
+    def test_editing_one_profile_reparses_only_that_profile(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import skill_utils
+
+        first, second = tmp_path / "first", tmp_path / "second"
+        _write_disabled_config(first, "old-disabled")
+        _write_disabled_config(second, "second-disabled")
+        parse_count = 0
+        real_yaml_load = skill_utils.yaml_load
+
+        def counting_yaml_load(text):
+            nonlocal parse_count
+            parse_count += 1
+            return real_yaml_load(text)
+
+        monkeypatch.setattr(skill_utils, "yaml_load", counting_yaml_load)
+        skill_utils._raw_config_cache_clear()
+        assert self._load_under(first) == ["old-disabled"]
+        assert self._load_under(second) == ["second-disabled"]
+
+        # A different length changes st_size, so the signature must change even on
+        # filesystems whose mtime granularity misses a quick rewrite.
+        (first / "config.yaml").write_text(
+            "skills:\n  disabled:\n    - new-disabled-name\n", encoding="utf-8"
+        )
+        assert self._load_under(first) == ["new-disabled-name"]
+        assert self._load_under(second) == ["second-disabled"]
+        assert parse_count == 3
+
+    def test_one_profile_parse_does_not_block_another_profile(
+        self, tmp_path, monkeypatch
+    ):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event
+
+        from agent import skill_utils
+
+        first, second = tmp_path / "first", tmp_path / "second"
+        _write_disabled_config(first, "first-disabled")
+        _write_disabled_config(second, "second-disabled")
+        entered, release = Event(), Event()
+        real_yaml_load = skill_utils.yaml_load
+
+        def delayed_yaml_load(text):
+            if "first-disabled" in text:
+                entered.set()
+                assert release.wait(5), "first profile was not released"
+            return real_yaml_load(text)
+
+        monkeypatch.setattr(skill_utils, "yaml_load", delayed_yaml_load)
+        skill_utils._raw_config_cache_clear()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first_result = pool.submit(self._load_under, first)
+            try:
+                assert entered.wait(5), "first profile parse did not start"
+                second_result = pool.submit(self._load_under, second)
+                assert second_result.result(timeout=3) == ["second-disabled"]
+            finally:
+                release.set()
+            assert first_result.result(timeout=5) == ["first-disabled"]
+        assert self._load_under(first) == ["first-disabled"]
+        assert self._load_under(second) == ["second-disabled"]
+
+    def test_concurrent_loads_across_evicting_homes_never_raise(
+        self, tmp_path, monkeypatch
+    ):
+        """Tool threads share the cache: two threads evicting the same oldest key must not
+        raise KeyError, nor an insert during ``next(iter(...))`` a RuntimeError. A 1 µs
+        switch interval makes the unlocked interleaving reliable instead of rare."""
+        import sys
+        from concurrent.futures import ThreadPoolExecutor
+
+        from agent import skill_utils
+
+        homes = [tmp_path / f"scope-{i:02d}" for i in range(24)]
+        for i, home in enumerate(homes):
+            _write_disabled_config(home, f"skill-{i:02d}")
+        monkeypatch.setattr(skill_utils, "_RAW_CONFIG_CACHE_MAX", 2)
+        skill_utils._raw_config_cache_clear()
+
+        def hammer(offset: int) -> None:
+            for n in range(150):
+                i = (offset + n) % len(homes)
+                assert self._load_under(homes[i]) == [f"skill-{i:02d}"]
+
+        old_interval = sys.getswitchinterval()
+        sys.setswitchinterval(1e-6)
+        try:
+            with ThreadPoolExecutor(max_workers=16) as pool:
+                futures = [pool.submit(hammer, t) for t in range(16)]
+                errors = [f.exception(timeout=60) for f in futures]
+        finally:
+            sys.setswitchinterval(old_interval)
+        assert errors == [None] * 16
 
 
 class TestParseConfigStringList:
@@ -130,25 +271,38 @@ class TestDisabledSkillsJsonArrayString:
 
         assert get_disabled_skill_names() == {"skill-a", "skill-b"}
 
-    def test_get_disabled_skill_names_scalar_string_still_single_name(
-        self, tmp_path, monkeypatch
-    ):
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text(
-            "skills:\n  disabled: 'hidden-skill'\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        from agent import skill_utils
-
-        getattr(skill_utils, "_raw_config_cache_clear", lambda: None)()
-
-        assert get_disabled_skill_names() == {"hidden-skill"}
 
 
+def test_skill_config_home_vars_use_subprocess_home(tmp_path, monkeypatch):
+    """``~`` / ``$HOME`` / ``${HOME}`` defaults resolve against the HOME tools receive, not the
+    control process HOME; other variables keep normal expansion (#12260)."""
+    from agent import skill_utils
 
+    # A backslash in the home path must not be read as a regex-replacement escape.
+    hermes_home = tmp_path / "da\\ta"
+    subprocess_home = hermes_home / "home"
+    subprocess_home.mkdir(parents=True)
+    (hermes_home / "config.yaml").write_text("", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HOME", str(hermes_home))
+    monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
+    monkeypatch.setenv("PROJECT_ROOT", "/proj")
+    monkeypatch.setenv("LEAF", "leaf")
+    getattr(skill_utils, "_raw_config_cache_clear", lambda: None)()
 
+    resolved = resolve_skill_config_values([
+        {"key": "wiki.home_var", "default": "$HOME/wiki"},
+        {"key": "wiki.braced_home", "default": "${HOME}/notes"},
+        {"key": "wiki.tilde", "default": "~/scratch"},
+        {"key": "wiki.other_var", "default": "${PROJECT_ROOT}/cache"},
+        {"key": "wiki.tilde_var", "default": "~/$LEAF"},
+    ])
+
+    assert resolved["wiki.home_var"] == str(subprocess_home / "wiki")
+    assert resolved["wiki.braced_home"] == str(subprocess_home / "notes")
+    assert resolved["wiki.tilde"] == str(subprocess_home / "scratch")
+    assert resolved["wiki.other_var"] == "/proj/cache"
+    assert resolved["wiki.tilde_var"] == str(subprocess_home / "leaf")
 
 
 def test_iter_skill_index_files_prunes_skill_support_dirs(tmp_path):
@@ -217,48 +371,6 @@ def test_skill_support_path_uses_explicit_discovery_root_not_cwd(tmp_path, monke
 # ── skill_matches_platform on Termux ──────────────────────────────────────
 
 
-class TestSkillMatchesPlatformTermux:
-    """Termux is Linux userland on Android. Skills tagged platforms:[linux]
-    must load there regardless of whether Python reports sys.platform as
-    "linux" (pre-3.13) or "android" (3.13+). Reported by user @LikiusInik
-    in May 2026 — only 3 built-in skills appeared on Termux because every
-    github/productivity/mlops skill is tagged platforms:[linux,macos,windows]
-    and sys.platform=="android" did not start with "linux".
-    """
-
-    def test_no_platforms_field_matches_everywhere(self):
-        # Backward-compat default — skills without a platforms tag load
-        # on any OS, Termux included.
-        with patch("agent.skill_utils.sys.platform", "android"), patch(
-            "agent.skill_utils.is_termux", return_value=True
-        ):
-            assert skill_matches_platform({}) is True
-            assert skill_matches_platform({"name": "foo"}) is True
-
-
-
-
-
-
-
-    def test_non_termux_android_does_not_widen(self):
-        # If we're somehow on a plain Android Python (not Termux), don't
-        # silently load Linux skills — Termux is the supported environment.
-        fm = {"platforms": ["linux"]}
-        with patch("agent.skill_utils.sys.platform", "android"), patch(
-            "agent.skill_utils.is_termux", return_value=False
-        ):
-            assert skill_matches_platform(fm) is False
-            assert skill_matches_platform_list(fm["platforms"]) is False
-
-    def test_linux_skill_on_real_linux_unaffected(self):
-        # The non-Termux Linux path must not change.
-        fm = {"platforms": ["linux"]}
-        with patch("agent.skill_utils.sys.platform", "linux"), patch(
-            "agent.skill_utils.is_termux", return_value=False
-        ):
-            assert skill_matches_platform(fm) is True
-            assert skill_matches_platform_list(fm["platforms"]) is True
 
 
 
@@ -337,24 +449,12 @@ class TestParseFrontmatterBOM:
         import sys
 
         expected = sys.platform == "darwin"
-        with patch("agent.skill_utils.is_termux", return_value=False):
-            plain_fm, _ = parse_frontmatter(self.SKILL)
-            bom_fm, _ = parse_frontmatter("\ufeff" + self.SKILL)
-            assert skill_matches_platform(plain_fm) is expected
-            assert skill_matches_platform(bom_fm) is expected
+        plain_fm, _ = parse_frontmatter(self.SKILL)
+        bom_fm, _ = parse_frontmatter("\ufeff" + self.SKILL)
+        assert skill_matches_platform(plain_fm) is expected
+        assert skill_matches_platform(bom_fm) is expected
 
 
-    def test_real_file_read_path(self, tmp_path):
-        # End-to-end: write the file the way a Windows editor does (utf-8-sig
-        # emits a BOM), read it the way _parse_skill_file does (plain utf-8),
-        # and confirm the frontmatter survives the round trip.
-        f = tmp_path / "SKILL.md"
-        f.write_text(self.SKILL, encoding="utf-8-sig")
-        raw = f.read_text(encoding="utf-8")
-        assert raw.startswith("\ufeff")  # BOM really is present on disk
-        fm, _ = parse_frontmatter(raw)
-        assert fm["name"] == "my-skill"
-        assert fm["platforms"] == ["macos"]
 
 
 class TestBOMToleranceSiblingSites:

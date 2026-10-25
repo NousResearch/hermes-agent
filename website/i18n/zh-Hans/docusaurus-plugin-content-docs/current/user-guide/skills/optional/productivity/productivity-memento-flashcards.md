@@ -218,10 +218,18 @@ python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/youtube_quiz.py
 
 返回 `{"title": "...", "transcript": "..."}` 或错误信息。
 
-如果脚本报告 `missing_dependency`，告知用户安装：
+如果脚本报告 `missing_dependency`，通过 `terminal` 使用 PM 准备好的源码检出中的 Python，
+准备已声明的 `youtube` extra，再重新激活：
+
 ```bash
-pip install youtube-transcript-api
+python -c "import pm; pm.sync_venv(['youtube'], explicit=True)"
+source ./activate
+python -c "import youtube_transcript_api; print(youtube_transcript_api.__file__)"
 ```
+
+准备前按照[包管理](https://hermes-agent.nousresearch.com/docs/reference/package-management#developer-workflow)
+选择独立开发数据目录。重试时使用该 Python 和 `skill_view` 返回的实际 skill 目录。
+远程或沙箱终端需在其主机上准备独立辅助环境；不要向 Hermes 选中的环境 pip 安装。
 
 **第 3 步：** 从字幕生成 5 道测验题。使用以下规则：
 
@@ -311,7 +319,7 @@ python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.p
 
 - **切勿直接编辑 `cards.json`** — 始终使用脚本子命令以避免数据损坏
 - **字幕获取失败** — 部分 YouTube 视频没有英文字幕或字幕已禁用；告知用户并建议换一个视频
-- **可选依赖** — `youtube_quiz.py` 需要 `youtube-transcript-api`；如果缺失，告知用户运行 `pip install youtube-transcript-api`
+- **可选依赖** — `youtube_quiz.py` 需要 `youtube-transcript-api`；缺失时使用上述 PM 准备和解释器检查。
 - **大量导入** — 包含数千行的 CSV 导入可正常工作，但 JSON 输出可能较冗长；为用户总结结果
 - **视频 ID 提取** — 同时支持 `youtube.com/watch?v=ID` 和 `youtu.be/ID` 两种 URL 格式
 
@@ -328,7 +336,7 @@ python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.p
 如果从仓库检出进行测试，运行：
 
 ```bash
-pytest tests/skills/test_memento_cards.py tests/skills/test_youtube_quiz.py -q
+scripts/run_tests.sh tests/skills/test_memento_cards.py tests/skills/test_youtube_quiz.py -q
 ```
 
 Agent 级别验证：

@@ -95,6 +95,7 @@ export const tr: Translations = {
   status: {
     actionFailed: "İşlem başarısız",
     actionFinished: "Tamamlandı",
+    actionFinishedOwed: "Güncellendi, ancak bekleyen adımlar var (bitirmek için `hermes update` komutunu yeniden çalıştırın)",
     actions: "İşlemler",
     agent: "Agent",
     activeSessions: "Aktif Oturumlar",
@@ -162,9 +163,14 @@ export const tr: Translations = {
     deleteSelectedConfirmMessage:
       "Bu, seçilen {count} oturumu ve tüm mesajlarını kalıcı olarak siler. Bu işlem geri alınamaz.",
     selectedSessionsDeleted: "{count} oturum silindi",
+    selectedSessionsSkippedActive: "{deleted} silindi; bir tur çalıştığı için {count} tutuldu",
     failedToDeleteSelected: "Seçilen oturumlar silinemedi",
     resumeInChat: "Sohbette Devam Et",
     newChat: "Yeni sohbet",
+    workspace: "çalışma alanı",
+    workspaceDefault: "Varsayılan",
+    workspaceRescan: "Depoları yeniden tara",
+    workspaceCustom: "Başka yol…",
     previousPage: "Önceki sayfa",
     nextPage: "Sonraki sayfa",
     roles: {
@@ -324,6 +330,8 @@ export const tr: Translations = {
     disableRuntime: "Devre dışı bırak",
     enableAfterInstall: "Yüklemeden sonra etkinleştir",
     enableRuntime: "Etkinleştir",
+    toggleTakesEffectAfterRestart:
+      "Kaydedildi — değişikliği uygulamak için ağ geçidini yeniden başlatın.",
     forceReinstall: "Yeniden yüklemeyi zorla (önce mevcut klasörü sil)",
     headline:
       "Hermes eklentilerini keşfedin, yükleyin, etkinleştirin ve güncelleyin (`hermes plugins` ile eşdeğer).",

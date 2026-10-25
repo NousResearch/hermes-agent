@@ -1,0 +1,32 @@
+name: whatsapp-agent-platform
+repo: https://github.com/ahtishamdilawar/hermes-whatsapp-agent-platform
+sha: 4d8fc1c482ed06a34b6609b1dcdf59e370de7d40
+version: "0.2.0"
+requires_hermes: ">=0.21.4"
+title: WhatsApp Agent Platform
+description: >-
+  Community platform plugin (not affiliated with Meta or Nous Research) connecting a WhatsApp Agent to
+  Hermes through Meta's WhatsApp Agent Platform API (/agent/v1): long-poll inbound (no public URL),
+  text and media. Disclosure — sends the API key and message content, files included, only to Meta:
+  api.whatsapp.com, plus lookaside.fbsbx.com for downloads (per WhatsApp's Third-Party Agents Terms,
+  agent chats are not end-to-end encrypted); stores the poll cursor, recent message ids and the
+  creator's id under HERMES_HOME; no other network egress, no telemetry, no self-update. Exception:
+  Hermes fetches image URLs in replies (SSRF-guarded, no key), revealing the server's IP to that host.
+  Files go only to the creator; Meta keeps uploads up to 30 days. Received files are cached under
+  HERMES_HOME (deleted after ~24 h while the gateway runs) and may reach the configured model, vision
+  or speech-to-text provider. WHATSAPP_AGENT_PLATFORM_MEDIA_ENABLED=false disables media. By default
+  only the agent's creator (verified through Meta's API) can message Hermes;
+  WHATSAPP_AGENT_PLATFORM_ALLOWED_USERS or WHATSAPP_AGENT_PLATFORM_ALLOW_ALL_USERS widens that
+  explicitly. The agent API key is saved to the Hermes .env; the state file under HERMES_HOME is 0600
+  and never contains the key.
+maintainer: ahtishamdilawar
+tier: community
+category: platform
+docs_url: https://github.com/ahtishamdilawar/hermes-whatsapp-agent-platform/blob/4d8fc1c482ed06a34b6609b1dcdf59e370de7d40/README.md
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - WHATSAPP_AGENT_PLATFORM_API_KEY

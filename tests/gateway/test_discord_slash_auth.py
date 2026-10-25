@@ -85,7 +85,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 @pytest.fixture(autouse=True)
@@ -185,7 +185,7 @@ def _stub_pairing_store(monkeypatch, approved_ids):
         def is_approved(self, platform, user_id):
             return platform == "discord" and str(user_id) in approved
 
-    import gateway.pairing as pairing
+    from gateway import pairing
 
     monkeypatch.setattr(pairing, "PairingStore", _FakePairingStore)
 
@@ -241,6 +241,40 @@ async def test_role_member_passes(adapter):
     interaction = _make_interaction("999999999")
     interaction.user.roles = [SimpleNamespace(id=1234)]
     assert await adapter._check_slash_authorization(interaction, "/help") is True
+
+
+def _gateway_authorizes(source):
+    """The real gateway authz verdict for a runner with no allowlist and no pairing store."""
+    from gateway.run import GatewayRunner
+
+    return object.__new__(GatewayRunner)._is_user_authorized(source)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("builder", ["slash", "thread_starter"])
+@pytest.mark.parametrize("actor_roles,gateway_admits", [
+    ([1234], True),   # role-only member the slash gate admits
+    ([7], False),     # unrelated role: the builder must not mint a grant for this actor
+])
+async def test_native_event_carries_this_actors_role_grant(adapter, builder, actor_roles, gateway_admits):
+    """Regression for #118958: a role-only member passes the slash gate, and the event a native
+    builder dispatches must carry that verdict, or the gateway answers with a pairing code."""
+    adapter._allowed_role_ids = {1234}
+    interaction = _make_interaction("999999999")
+    interaction.user.roles = [SimpleNamespace(id=r) for r in actor_roles]
+    interaction.user.display_name = "member"
+    interaction.guild.name = "guild"
+    dispatched = []
+    adapter.handle_message = AsyncMock(side_effect=dispatched.append)
+
+    if builder == "slash":
+        dispatched.append(adapter._build_slash_event(interaction, "/reset"))
+    else:
+        thread = SimpleNamespace(id=555, name="topic", guild=interaction.guild, topic=None,
+                                 parent=SimpleNamespace(id=100, name="general", guild=interaction.guild))
+        await adapter._dispatch_thread_session(interaction, thread, "hello")
+
+    assert [_gateway_authorizes(event.source) for event in dispatched] == [gateway_admits]
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +359,7 @@ def test_visibility_hide_tolerates_unsetable_command(adapter, caplog):
 
 
 # os import for test_visibility_hide_off_by_default_is_noop
-import os  # noqa: E402
+import os
 
 
 # ---------------------------------------------------------------------------
@@ -432,7 +466,7 @@ def _capture_skill_registration(adapter, monkeypatch, entries):
         # (categories_dict, uncategorized_list, hidden_count)
         return ({}, list(entries), 0)
 
-    import hermes_cli.commands as _hc
+    import hermes_cli.commands_platforms as _hc
     monkeypatch.setattr(
         _hc, "discord_skill_commands_by_category", fake_categories,
     )
@@ -514,9 +548,9 @@ async def test_skill_handler_rejects_before_dispatch_for_unauthorized(
     interaction.response.send_message.assert_awaited_once()
     args, kwargs = interaction.response.send_message.call_args
     assert kwargs.get("ephemeral") is True
-    assert "not authorized" in (
+    assert "hermes pairing approve discord" in (
         args[0] if args else kwargs.get("content", "")
-    ).lower()
+    )
     # Critically: nothing was dispatched, and the auth message did NOT
     # mention the skill name "alpha" (no catalog leak).
     assert dispatched == []

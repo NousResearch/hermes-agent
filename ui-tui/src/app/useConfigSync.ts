@@ -4,6 +4,8 @@ import { useEffect, useRef } from 'react'
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
+import { syncTuiLocale } from '../i18n/loader.js'
+import { t } from '../i18n/runtime.js'
 import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult } from '../lib/rpc.js'
 
@@ -16,7 +18,7 @@ import {
   type StatusBarMode
 } from './interfaces.js'
 import { turnController } from './turnController.js'
-import { patchUiState } from './uiStore.js'
+import { getUiState, patchUiState } from './uiStore.js'
 
 const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
   bottom: 'bottom',
@@ -152,14 +154,23 @@ const quietRpc = async <T extends Record<string, any> = Record<string, any>>(
 // an unrelated MCP edit. So `accepted` only moves on a confirmed reload —
 // to the server's loaded_rev (what discovery actually read), falling back
 // to the requested rev for older gateways. Retries are decoupled from
-// mtime: every poll re-compares, so a transiently broken server heals on
-// the next tick.
+// mtime: every poll re-compares, so a transiently broken server heals.
+//
+// A refused revision backs off (doubling up to MCP_RETRY_MAX_MS) instead of
+// retrying at poll rate: one parked MCP server made every open TUI re-send
+// reload.mcp every 5 s forever, each a gateway WARNING and a full reconcile
+// (#141769). A new revision retries at once.
+
+const MCP_RETRY_BASE_MS = 5000
+const MCP_RETRY_MAX_MS = 5 * 60_000
 
 export interface McpRevState {
   /** Last revision the server CONFIRMED it loaded (or boot baseline). */
   accepted: string
   /** A reload RPC is outstanding — don't stack another every poll tick. */
   inFlight: boolean
+  /** The revision whose reload was last refused, its consecutive refusals, and when it may retry. */
+  refused?: { failures: number; rev: string; retryAt: number }
 }
 
 export const syncMcpReload = async (
@@ -167,9 +178,16 @@ export const syncMcpReload = async (
   sid: string,
   nextMcpRev: string,
   state: McpRevState,
-  onReloaded?: () => void
+  onReloaded?: () => void,
+  now: () => number = Date.now
 ): Promise<void> => {
   if (!nextMcpRev || nextMcpRev === state.accepted || state.inFlight) {
+    return
+  }
+
+  const refused = state.refused?.rev === nextMcpRev ? state.refused : undefined
+
+  if (refused && now() < refused.retryAt) {
     return
   }
 
@@ -184,10 +202,19 @@ export const syncMcpReload = async (
 
     if (r?.status === 'reloaded') {
       state.accepted = String(r.loaded_rev || nextMcpRev)
+      state.refused = undefined
       onReloaded?.()
+    } else {
+      // Failure (null) or confirm_required: leave `accepted` unchanged so the
+      // same revision retries, after a backoff.
+      const failures = (refused?.failures ?? 0) + 1
+
+      state.refused = {
+        failures,
+        rev: nextMcpRev,
+        retryAt: now() + Math.min(MCP_RETRY_BASE_MS * 2 ** failures, MCP_RETRY_MAX_MS)
+      }
     }
-    // Failure (null) or confirm_required: leave `accepted` unchanged so the
-    // next poll tick retries the same revision.
   } finally {
     state.inFlight = false
   }
@@ -253,10 +280,32 @@ const _pasteCollapseCharsFromConfig = (cfg: ConfigFullResponse | null): number =
 export async function hydrateFullConfig(
   gw: GatewayClient,
   setBell: (v: boolean) => void,
-  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
+  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
+  setBellOnPrompt?: (v: boolean) => void,
+  scope?: { sid: string; isCurrent: () => boolean }
 ): Promise<ConfigFullResponse | null> {
-  const cfg = await quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' })
-  applyDisplay(cfg, setBell, setVoiceRecordKey)
+  const params = scope ? { session_id: scope.sid } : {}
+
+  const [cfg, busy] = await Promise.all([
+    quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full', ...params }),
+    gw.isCanonical && scope ? quietRpc(gw, 'config.get', { key: 'busy', ...params }) : null
+  ])
+
+  if (scope && !scope.isCurrent()) {
+    return null
+  }
+
+  applyDisplay(cfg, setBell, setVoiceRecordKey, setBellOnPrompt, !gw.isCanonical)
+
+  if (gw.isCanonical && BUSY_MODES.has(busy?.value)) {
+    patchUiState({ busyInputMode: busy!.value })
+  }
+
+  // Same fail-safe as the voice key: a null config (transient RPC failure)
+  // keeps the last language rather than snapping back to English.
+  if (cfg) {
+    void syncTuiLocale(gw, cfg.config?.display?.language)
+  }
 
   return cfg
 }
@@ -264,12 +313,16 @@ export async function hydrateFullConfig(
 export const applyDisplay = (
   cfg: ConfigFullResponse | null,
   setBell: (v: boolean) => void,
-  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
+  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
+  setBellOnPrompt?: (v: boolean) => void,
+  applyBusy = true
 ) => {
   const d = cfg?.config?.display ?? {}
   const approvals = cfg?.config?.approvals
 
   setBell(!!d.bell_on_complete)
+
+  setBellOnPrompt?.(!!d.bell_on_prompt)
 
   applyConfiguredTuiTheme(d.tui_theme)
 
@@ -286,7 +339,7 @@ export const applyDisplay = (
 
   patchUiState({
     battery: !!d.battery,
-    busyInputMode: normalizeBusyInputMode(d.busy_input_mode),
+    ...(applyBusy ? { busyInputMode: normalizeBusyInputMode(d.busy_input_mode) } : {}),
     compact: !!d.tui_compact,
     // Fail safe: only YAML boolean false disables the prompt. A transient
     // config RPC failure (cfg=null) preserves the last known policy instead
@@ -311,9 +364,28 @@ export const applyDisplay = (
   })
 }
 
+/** T9: on the shared owner the voice bit is the session's gateway `/voice` mode (`config.get
+ *  key=voice`), not the owner process's HERMES_VOICE env, which Ink's own env never reflected. */
+export const hydrateVoiceMode = async (
+  gw: GatewayClient,
+  setVoiceEnabled: (v: boolean) => void,
+  scope: { isCurrent: () => boolean; sid: string }
+) => {
+  if (!gw.isCanonical) {
+    return
+  }
+
+  const r = await quietRpc<{ value?: string }>(gw, 'config.get', { key: 'voice', session_id: scope.sid })
+
+  if (r && scope.isCurrent()) {
+    setVoiceEnabled(r.value === 'voice_only' || r.value === 'all')
+  }
+}
+
 export function useConfigSync({
   gw,
   setBellOnComplete,
+  setBellOnPrompt,
   setVoiceEnabled,
   setVoiceRecordKey,
   sid
@@ -326,12 +398,17 @@ export function useConfigSync({
       return
     }
 
+    let active = true
+    const scope = { sid, isCurrent: () => active && getUiState().sid === sid }
+
     // Keep startup cheap: voice.toggle status probes optional audio/STT deps and
     // can run long enough to delay prompt.submit on the single stdio RPC pipe.
     // Environment flags are enough to initialize the UI bit; the heavier status
     // check still runs when the user opens /voice.
     setVoiceEnabled(process.env.HERMES_VOICE === '1')
-    quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
+    void hydrateVoiceMode(gw, setVoiceEnabled, scope)
+    quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime', session_id: sid }).then(r => {
+      if (!scope.isCurrent()) {return}
       mtimeRef.current = Number(r?.mtime ?? 0)
       // Seed the MCP revision baseline too: after a normal boot mtime is
       // already non-zero, so the poller's baseline branch never runs, and an
@@ -339,16 +416,24 @@ export function useConfigSync({
       // mcp_rev) look like an MCP change and fire a needless reload.mcp.
       mcpRevRef.current.accepted = String(r?.mcp_rev ?? '')
     })
-    void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey)
-  }, [gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid])
+    void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setBellOnPrompt, scope)
+
+    return () => {
+      active = false
+    }
+  }, [gw, setBellOnComplete, setBellOnPrompt, setVoiceEnabled, setVoiceRecordKey, sid])
 
   useEffect(() => {
     if (!sid) {
       return
     }
 
+    let active = true
+    const scope = { sid, isCurrent: () => active && getUiState().sid === sid }
+
     const id = setInterval(() => {
-      quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
+      quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime', session_id: sid }).then(r => {
+        if (!scope.isCurrent()) {return}
         const next = Number(r?.mtime ?? 0)
         const nextMcpRev = String(r?.mcp_rev ?? '')
 
@@ -369,7 +454,7 @@ export function useConfigSync({
         // server confirms the revision was loaded.
         if (nextMcpRev) {
           void syncMcpReload(gw, sid, nextMcpRev, mcpRevRef.current, () =>
-            turnController.pushActivity('MCP reloaded after config change')
+            turnController.pushActivity(t('status.mcpReloaded'))
           )
         }
 
@@ -383,21 +468,25 @@ export function useConfigSync({
         // reload-on-any-change there (no ack tracking possible).
         if (!nextMcpRev) {
           quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', { session_id: sid, confirm: true }).then(
-            r => r && turnController.pushActivity('MCP reloaded after config change')
+            r => r && turnController.pushActivity(t('status.mcpReloaded'))
           )
         }
 
-        void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey)
+        void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setBellOnPrompt, scope)
       })
     }, MTIME_POLL_MS)
 
-    return () => clearInterval(id)
-  }, [gw, setBellOnComplete, setVoiceRecordKey, sid])
+    return () => {
+      active = false
+      clearInterval(id)
+    }
+  }, [gw, setBellOnComplete, setBellOnPrompt, setVoiceRecordKey, sid])
 }
 
 export interface UseConfigSyncOptions {
   gw: GatewayClient
   setBellOnComplete: (v: boolean) => void
+  setBellOnPrompt?: (v: boolean) => void
   setVoiceEnabled: (v: boolean) => void
   setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void
   sid: null | string

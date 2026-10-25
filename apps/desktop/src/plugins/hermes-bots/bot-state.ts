@@ -18,12 +18,18 @@ import type { RosterRow } from './types'
 // fresh mount doesn't mark ancient history unread.
 export const rosterWatermarks = new Map<string, number>()
 
+// Last preview text we actually surfaced (toasted) per bot, used to suppress
+// duplicate activity toasts when last_active keeps advancing (a busy bridge
+// re-pinging the same message) but the visible content is unchanged. Seeded on
+// the first poll alongside rosterWatermarks.
+export const lastToastedPreview = new Map<string, string>()
+
 // Bot Mode sessions are ALWAYS hidden from the global Sessions sidebar:
 // canonical Bot Chats are plugin-owned forever-chats and group-chat member
 // sessions are room plumbing — neither is a scratch conversation, and a
 // 6-member room would otherwise dump six identical "Group: ..." rows into
 // recents. Backed by the core generic `hidden` session flag (session.create
-// hidden:true / session.set_hidden). Older gateways ignore the flag and the
+// hidden:true / REST PATCH /api/sessions/{id}). Older gateways ignore the flag and the
 // sessions simply stay visible there.
 
 /** Bot the Routines tile is scoped to. Follows the live gateway profile
@@ -46,6 +52,7 @@ export const $botsPaneVisible = atom(false)
  *  canonical chat was resolved). This transient view observation is never an
  *  identity preference. */
 export const $openBotChat = atom<{ key: string; openedRegistryId: string; openedSessionId?: string } | null>(null)
+export { $pendingBotOpen } from './shared'
 /** A session owns the main workspace. The roster highlight and the Cronjobs
  *  lifecycle both key off this rather than reading host.state conditionally
  *  from render. */

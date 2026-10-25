@@ -7,7 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 
 
@@ -56,12 +57,29 @@ class CaptureQueuedNativeImageAgent:
         self.tools = []
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        # The real AIAgent.run_conversation accepts the persist_* kwargs the gateway adds for a
+        # message with a raw inbound id (queued follow-ups now carry theirs); tolerate them.
         type(self).calls.append(message)
         return {
             "final_response": f"done-{len(type(self).calls)}",
             "messages": [],
             "api_calls": 1,
+        }
+
+
+class CompressionExhaustedAgent(CaptureQueuedNativeImageAgent):
+    pending_steer = None
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        type(self).calls.append(message)
+        return {
+            "final_response": "context exhausted",
+            "messages": [{"role": "user", "content": "oversized"}],
+            "api_calls": 1,
+            "failed": True,
+            "compression_exhausted": True,
+            "pending_steer": type(self).pending_steer,
         }
 
 
@@ -149,3 +167,86 @@ async def test_queued_followup_uses_pending_event_session_key_for_native_images(
     assert queued_message[0]["type"] == "text"
     assert queued_message[0]["text"].startswith("describe this")
     assert any(part.get("type") == "image_url" for part in queued_message)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("leftover_steer", [None, "use the short answer"])
+async def test_compression_exhaustion_defers_queued_event_for_fresh_session(
+    monkeypatch, tmp_path, leftover_steer
+):
+    CompressionExhaustedAgent.calls = []
+    CompressionExhaustedAgent.pending_steer = leftover_steer
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = CompressionExhaustedAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    adapter = CaptureAdapter()
+    runner = _make_runner(adapter)
+    session_key = "agent:main:telegram:group:-1001"
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+    )
+    pending_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+    pending_event = MessageEvent(
+        text="answer this after reset",
+        message_type=MessageType.PHOTO,
+        source=pending_source,
+        media_urls=[str(tmp_path / "queued-image.png")],
+        media_types=["image/png"],
+        raw_message={"native": "metadata"},
+        message_id="queued-after-exhaustion",
+        platform_update_id=4242,
+    )
+    overflow_event = MessageEvent(
+        text="second in fifo",
+        message_type=MessageType.TEXT,
+        source=pending_source,
+        message_id="queued-second",
+    )
+    runner._enqueue_fifo(session_key, pending_event, adapter)
+    runner._enqueue_fifo(session_key, overflow_event, adapter)
+
+    result = await runner._run_agent(
+        message="oversized turn",
+        context_prompt="",
+        history=[{"role": "user", "content": "old context"}],
+        source=source,
+        session_id="bloated-session",
+        session_key=session_key,
+    )
+
+    assert result["compression_exhausted"] is True
+    assert len(CompressionExhaustedAgent.calls) == 1, (
+        "the queued turn must not recurse into the exhausted session"
+    )
+    if leftover_steer is None:
+        assert adapter._pending_messages[session_key] is pending_event, (
+            "the exact native event must survive for the post-reset adapter drain"
+        )
+        assert runner._queued_events[session_key] == [overflow_event], (
+            "deferral must not promote or reorder later FIFO events"
+        )
+    else:
+        # The agent already took the accepted /steer out of its buffer: it keeps its usual place
+        # ahead of the queued event instead of vanishing with the exhausted turn.
+        head = adapter._pending_messages[session_key]
+        assert head.text == leftover_steer
+        assert runner._queued_events[session_key] == [pending_event, overflow_event]

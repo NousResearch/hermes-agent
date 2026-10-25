@@ -1,6 +1,8 @@
 import type { HermesConnection } from '@/global'
 
 export const TITLEBAR_HEIGHT = 34
+/** Permanent native drag target beside a top-edge tab strip. */
+export const TITLEBAR_DRAG_HANDLE_WIDTH = 48
 export const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 /** Titlebar tool hit target (both axes). */
 export const TITLEBAR_CONTROL_SIZE = 24
@@ -107,3 +109,6 @@ export function titlebarControlsPosition(
     top
   }
 }
+
+/** Rebind panel measurements after titlebar nodes or their positions change. */
+export const TITLEBAR_CHROME_CHANGED_EVENT = 'hermes:titlebar-chrome-changed'

@@ -70,8 +70,9 @@ URLs.
    (b) a broad `"First Last" <ZIP OR unique-address>` search (no `site:`) surfaces **brokers not yet in
    your DB** (e.g. information.com, peoplefinders.com) - record those as bonus exposures. Note: empty
    `site:` results are INCONCLUSIVE (many broker pages aren't indexed / are `noindex`), not `not_found`.
-2. If the page is JS-rendered or returns nothing useful, `browser_navigate` + `browser_snapshot`
-   (and `browser_type`/`browser_click` to run the site's search box).
+2. If the page is JS-rendered or returns nothing useful, use `browser_exec`: `new_tab(url)` +
+   `wait_for_load()`, then `page_info()` / `js()` to read the results (`fill_input()` + a `js()`
+   click to run the site's search box).
 3. If blocked by stealth/Cloudflare, use the `scrapling` skill via `terminal`. **If the broker record
    has `search.antibot` set (e.g. `datadome`), results are behind a device-check CAPTCHA**: a
    cloud/stealth browser (Browserbase) or `scrapling` may get through; if none is available, do **not**
@@ -99,8 +100,9 @@ If a listing genuinely does not exist: `pdd.py record <subject> <broker> not_fou
 A constructed search URL that 404s almost always means the **URL pattern is wrong**, not that the
 person is absent. Never record `not_found` off a 404. Instead:
   1. Re-check the broker's `search.url_patterns` / `url_format_quirks` and rebuild the URL.
-  2. Fall back to the **on-site search box**: `browser_navigate` to the search page, `browser_type`
-     the raw query, `browser_click` Search, then read the **canonical result URL** the site lands on.
+  2. Fall back to the **on-site search box**: in one `browser_exec` call, `new_tab()` the search page,
+     `fill_input()` the raw query, click Search via `js()`, `wait_for_load()`, then read the
+     **canonical result URL** the site lands on (`js('location.href')`).
   3. Only after the site's own search returns an empty result set do you record `not_found`.
   4. If a pattern was wrong, fix it in `references/brokers/<id>.json` (`url_patterns` +
      `url_format_quirks`) so the next run is correct - see the rule below.
@@ -156,10 +158,11 @@ re-deriving the listing URL). If a `found` turns out to be a false positive, cor
 
 ## web_form
 
-1. `browser_navigate` to `optout.url`; `browser_snapshot` to read the form.
-2. Fill only the planned `disclosure_fields` with `browser_type`/`browser_click`; for `profile_url`,
-   paste the confirmed listing URL from evidence.
-3. Submit; `browser_snapshot` to confirm the success state; screenshot to `evidence/`.
+1. `browser_exec`: `new_tab(optout.url)` + `wait_for_load()`; read the form with `page_info()` /
+   `js()` (field names, labels, required flags).
+2. Fill only the planned `disclosure_fields` with `fill_input()` (checkboxes/radios via a `js()`
+   click); for `profile_url`, paste the confirmed listing URL from evidence.
+3. Submit; `page_info()` to confirm the success state; `capture_screenshot()` into `evidence/`.
 4. `pdd.py record <subject> <broker> submitted --disclosed <field> --disclosed <field> --channel web_form`.
 5. If the broker requires email verification, follow **Verification loop** below.
 
@@ -198,7 +201,7 @@ actually sends depends on `email_mode`:
 
 1. **browser mode (no password, autonomous):** the command returns a recipient-locked `compose`
    payload (`to`/`subject`/`body`). Compose a NEW message in the operator's **logged-in webmail** via
-   `browser_*` (paste `compose.body` exactly, disclosing nothing beyond it) and send. No credentials
+   `browser_exec` (paste `compose.body` exactly, disclosing nothing beyond it) and send. No credentials
    stored. Requires the inbox signed in in the browser Hermes uses.
 2. **programmatic mode (SMTP creds):** the command SMTP-sends it directly, no human.
 3. **draft_only fallback:** `pdd.py render-email <subject> <broker> --listing <url>`; a digest entry
@@ -209,13 +212,13 @@ Then follow the **Verification loop** if the broker emails a confirmation link.
 ## Verification loop (email_verification brokers)
 
 - **browser mode (autonomous, no password):** open the broker's confirmation email in the operator's
-  webmail (`browser_*`), then `pdd.py verify-link <subject> <broker> --text '<email body>'` returns
-  the anti-phishing-scored link. `browser_navigate` it **in the same browser** (several brokers, e.g.
+  webmail (`browser_exec`), then `pdd.py verify-link <subject> <broker> --text '<email body>'` returns
+  the anti-phishing-scored link. Open it with `browser_exec` (`goto_url(link)`) **in the same browser** (several brokers, e.g.
   PeopleConnect, bind the session to the browser that opens the link), finish the flow, record
   `awaiting_processing`.
 - **programmatic mode (IMAP):** `pdd.py poll-verification <subject>` polls IMAP for every in-flight
   case, extracts the link (anti-phishing scored: only opt-out-looking links on the broker's own
-  domains), and auto-advances `submitted → verification_pending`. Then `browser_navigate` the link in
+  domains), and auto-advances `submitted → verification_pending`. Then open the link with `browser_exec` in
   the agent's own browser, finish the flow, record `awaiting_processing`.
 - **draft_only:** the digest tells the operator to click the link in the subject's inbox; the agent
   records `awaiting_processing` on their word.
@@ -281,10 +284,10 @@ run stalling in Phase 2.
   multi-step flows that matter (e.g. PeopleConnect guided-mode, whose verify link is session- and
   device-bound to the browser that opens it - a cloud browser both fails the challenge and breaks the
   binding).
-- **How to drive the operator's browser (CDP).** Point Hermes's browser tools at the operator's real
-  Chrome over the DevTools protocol: launch
-  `chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.hermes/chrome-debug"` and connect the
-  browser backend to `127.0.0.1:9222`. Use a **dedicated debug profile** (`chrome-debug`), NOT the
+- **How to drive the operator's browser (CDP).** Point Hermes's browser (`browser_exec`) at the
+  operator's real Chrome over the DevTools protocol: launch
+  `chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.hermes/chrome-debug"` and attach Hermes
+  with `/browser connect` (or `browser.cdp_url` / `BROWSER_CDP_URL`) to `127.0.0.1:9222`. Use a **dedicated debug profile** (`chrome-debug`), NOT the
   operator's Default Chrome profile, and have the operator sign into their webmail (and any needed
   broker accounts) in that profile once. That single browser then carries residential IP + real
   fingerprint + logged-in sessions, which is precisely what Phase-2 flows need. (This is a Hermes-side
@@ -293,7 +296,7 @@ run stalling in Phase 2.
   binary, starts it detached on the dedicated profile, waits for the debug port, and prints the CDP
   endpoint (`webSocketDebuggerUrl`). `pdd.py cdp --check` reports whether a debug browser is already
   live (and never launches a second one); `pdd.py cdp --print` just emits the exact command for the
-  operator to run themselves. Point the browser tools at the `endpoint` it returns.
+  operator to run themselves. Attach Hermes's browser to the `endpoint` it returns (`/browser connect`).
 - **Always-available fallback:** if no CDP browser is wired up, use the operator-in-the-loop path
   (scan ladder 3b) - hand over paste-ready URLs and field-by-field least-disclosure guidance, pausing
   before submit. It never fails; it just needs a human present.

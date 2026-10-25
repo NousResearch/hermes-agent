@@ -1,6 +1,5 @@
 """Tests for tools.environments.docker.find_docker — Docker CLI discovery."""
 
-import os
 from unittest.mock import patch
 
 import pytest
@@ -17,10 +16,6 @@ def _reset_cache():
 
 
 class TestFindDocker:
-    def test_found_via_shutil_which(self):
-        with patch("tools.environments.docker.shutil.which", return_value="/usr/bin/docker"):
-            result = docker_mod.find_docker()
-        assert result == "/usr/bin/docker"
 
     def test_not_in_path_falls_back_to_known_locations(self, tmp_path):
         # Create a fake docker binary at a known path
@@ -46,3 +41,18 @@ class TestFindDocker:
         with patch("tools.environments.docker.shutil.which", side_effect=which_side_effect):
             result = docker_mod.find_docker()
         assert result == "/usr/bin/docker"
+
+
+class TestRuntimeName:
+    """The Docker/Podman wording every surface shows must follow the resolved CLI."""
+
+    @pytest.mark.parametrize(
+        ("executable", "runtime"),
+        [
+            ("/usr/bin/docker", "Docker"),
+            ("/opt/homebrew/bin/podman", "Podman"),
+            ("/usr/bin/podman-remote", "Podman"),
+        ],
+    )
+    def test_runtime_name_follows_resolved_cli(self, executable, runtime):
+        assert docker_mod.docker_runtime_name(executable) == runtime

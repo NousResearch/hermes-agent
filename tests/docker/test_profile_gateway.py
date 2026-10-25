@@ -1,25 +1,17 @@
-"""Harness: per-profile gateway start/stop inside the container.
+"""Harness: a named profile does not get a gateway of its own inside the container.
 
-Phase 4 wires `hermes -p <profile> gateway start/stop` through the s6
-ServiceManager dispatch path inside the container — so the lifecycle
-commands now bring up an s6-supervised gateway rather than refusing
-with the pre-Phase-4 informational message.
+Multiplex-only (#118273, #118433): ONE gateway per container serves every profile. ``hermes
+profile create`` still registers the profile's s6 slot (so ``--force`` has something to drive),
+but ``hermes -p <profile> gateway start`` without ``--force`` refuses, names the escape, and
+leaves the slot's want-state DOWN. ``--force`` is the only path to a second, supervised
+per-profile gateway, and that path keeps working (its slot wants up, and stop takes it down).
 
-These tests were marked ``xfail(strict=True)`` through Phase 0–3 and
-flip to plain ``test_…`` once Phase 4 lands (now).
+NB: The harness profile has no model/auth configured. A ``--force``-started supervised
+process may spin up (svstat ``up``) or exit fast and be throttled (``down …, want up``). We
+assert the *want* intent the lifecycle command set, NOT the supervised process's health.
 
-NB: The harness profile has no model/auth configured. Depending on
-how the gateway run script handles missing config, the supervised
-process may either spin up successfully (and svstat reports ``up``)
-or exit fast and get throttled by s6 (and svstat reports ``down …,
-want up``). Both states are valid "user asked for gateway up" results
-— what we assert is the *want* intent the lifecycle command set, NOT
-the supervised process's health. ``s6-svc -u`` records ``want up`` in
-the supervise/status file regardless of the run-script outcome.
-
-Every ``docker exec`` here runs as the unprivileged ``hermes`` user
-(via :func:`docker_exec_sh` in conftest); see the conftest module
-docstring.
+Every ``docker exec`` here runs as the unprivileged ``hermes`` user (via
+:func:`docker_exec_sh` in conftest); see the conftest module docstring.
 """
 from __future__ import annotations
 
@@ -85,7 +77,7 @@ def _wait_for_want_state(container_name: str, want_up: bool, timeout: float = 15
     )
 
 
-def test_profile_create_then_gateway_start(
+def test_named_profile_gateway_start_refuses_without_force(
     built_image: str, container_name: str,
 ) -> None:
     start_container(built_image, container_name, cmd="sleep 120")
@@ -93,25 +85,29 @@ def test_profile_create_then_gateway_start(
     r = _sh(container_name, f"hermes profile create {PROFILE}")
     assert r.returncode == 0, f"profile create failed: {r.stderr}"
 
-    # Profile create's s6-register hook should have produced a service slot.
+    # Profile create's s6-register hook still produces the slot (registered DOWN).
     r = _sh(container_name, f"test -d /run/service/gateway-{PROFILE}")
     assert r.returncode == 0, "s6 service slot not created on profile create"
 
     r = _sh(container_name, f"hermes -p {PROFILE} gateway start", timeout=60)
-    assert r.returncode == 0, (
-        f"gateway start failed: stderr={r.stderr!r} stdout={r.stdout!r}"
-    )
+    assert r.returncode != 0, f"a named profile started its own gateway: {r.stdout!r}"
+    assert not _svstat_wants_up(container_name), (
+        f"refused start still flipped the slot's want-state: {_svstat(container_name)!r}")
 
-    # After start, s6's intent is "up" — even if the supervised gateway
-    # process spin-fails (no model/auth in the test profile), the
-    # supervision-state contract holds. See ``_svstat_wants_up`` for
-    # why we accept both ``up …`` (currently up) and ``down …, want
-    # up`` (down but s6 wants up).
+
+def test_named_profile_gateway_force_start_then_stop(
+    built_image: str, container_name: str,
+) -> None:
+    start_container(built_image, container_name, cmd="sleep 120")
+    r = _sh(container_name, f"hermes profile create {PROFILE}")
+    assert r.returncode == 0, f"profile create failed: {r.stderr}"
+
+    r = _sh(container_name, f"hermes -p {PROFILE} gateway start --force", timeout=60)
+    assert r.returncode == 0, (
+        f"--force gateway start failed: stderr={r.stderr!r} stdout={r.stdout!r}"
+    )
     _wait_for_want_state(container_name, want_up=True)
 
     r = _sh(container_name, f"hermes -p {PROFILE} gateway stop", timeout=30)
     assert r.returncode == 0
-
     _wait_for_want_state(container_name, want_up=False)
-
-

@@ -28,6 +28,7 @@ vi.mock('@/themes/context', () => ({
 
 const deps = {
   archiveSelectedSession: vi.fn(),
+  interruptActiveSession: vi.fn(),
   openNewSessionTab: vi.fn(),
   requestGateway: vi.fn(),
   startFreshSession: vi.fn(),

@@ -26,7 +26,7 @@ def _gateway_frames():
         # _admitted -> _publish_pending: the queued row (its public input text) before any claim.
         {"jsonrpc": "2.0", "method": "event", "params": {
             "type": "session.info", "session_id": SID, "payload": {
-                "running": False, "pending": [{"admission_id": "adm-9", "input_id": "x", "text": MODEL_TEXT}]}}},
+                "running": False, "pending": [{"admission_id": "adm-9", "status": "queued", "input_id": "x", "text": MODEL_TEXT}]}}},
         frame("message.start", {"display_kind": "process_complete", "display_text": DISPLAY, "text": MODEL_TEXT},
               generation=9, admission="adm-9"),
         frame("message.delta", {"text": "STEP13 notified "}, generation=9, admission="adm-9"),

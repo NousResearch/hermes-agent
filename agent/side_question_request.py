@@ -3,10 +3,12 @@
 
 The fork replays the turn snapshot captured at finalization (system prompt, ``tools[]``,
 messages) verbatim plus one user prompt, so the request reads the parent's warm prompt cache.
-It runs the turn loop's own request phases (assembly, ``build_api_request`` with its
-middleware and ``pre_api_request`` hook, ``perform_api_call``) exactly once: no tool dispatch
-(tool calls in the response are dropped), no retries, no fallback model, no compression, no
-persistence. Usage is attributed to the parent session as ``side_question``.
+It runs the turn loop's own request phases (assembly, the payload build with its LLM
+middleware, ``perform_api_call``) exactly once: no tool dispatch (tool calls in the response
+are dropped), no retries, no fallback model, no compression, no persistence. Like any other
+side call it reports through ``pre/post_auxiliary_call`` (``aux_task="side_question"``), never
+the turn-scoped ``pre/post_api_request``, and its usage is attributed to the parent session as
+``side_question``.
 """
 
 from __future__ import annotations
@@ -109,14 +111,15 @@ def _build_fork(parent: Any, capture: SideQuestionCapture) -> Any:
 
 
 def _send(fork: Any, capture: SideQuestionCapture, prompt: str, audit: _Audit) -> Any:
-    """Assemble, build and perform ONE request on the fork; the response, or None on refusal."""
+    """Assemble, build and perform ONE request on the fork; the normalized reply, or None on
+    refusal / a cancelled call."""
     from agent import relay_llm
+    from agent.auxiliary_hooks import finish_aux_call_hooks, start_aux_call_hooks
     from agent.side_question import trim_snapshot_for_fork
     from agent.turn_api_call import perform_api_call
-    from agent.turn_api_request import build_api_request
+    from agent.turn_api_request import build_request_payload
     from agent.turn_context import _PER_TURN_RESET_STATE
     from agent.turn_request_assembly import assemble_api_request
-    from agent.turn_response_intake import _fire_post_api_request_hook
     from agent.turn_retry_state import TurnRetryState
     from agent.turn_truncation import normalize_response_for_agent
     from agent.turn_usage import record_response_usage
@@ -125,8 +128,8 @@ def _send(fork: Any, capture: SideQuestionCapture, prompt: str, audit: _Audit) -
     task_id = str(uuid.uuid4())
     api_request_id = f"{turn_id}:api:1"
     # Turn state a fork that never ran a turn lacks: the per-turn counters the request phases
-    # read, the replay-canonicalization clock (build_api_messages), the ids hooks and relay key
-    # on, and a non-streaming transport.
+    # read, the replay-canonicalization clock (build_api_messages), the ids middleware and relay
+    # key on, and a non-streaming transport.
     for name, value in _PER_TURN_RESET_STATE:
         setattr(fork, name, value)
     fork._current_turn_timestamp = time.time()
@@ -139,18 +142,20 @@ def _send(fork: Any, capture: SideQuestionCapture, prompt: str, audit: _Audit) -
         _plugin_user_context=None, moa_config=None, active_system_prompt=fork._cached_system_prompt,
         original_user_message=prompt, pending_moa_prepared_request=None, request_logger=logger,
     )
-    api_start_time = time.time()
-    built = build_api_request(
+    built = build_request_payload(
         fork, api_messages=assembled.api_messages, _moa_prepared_request=None,
-        tools_for_api=assembled.tools_for_api, system_message=None, messages=messages,
-        original_user_message=prompt, approx_tokens=assembled.approx_tokens,
-        total_chars=assembled.total_chars, retry_count=0, api_call_count=1,
-        api_request_id=api_request_id, api_start_time=api_start_time, effective_task_id=task_id,
-        turn_id=turn_id,
+        tools_for_api=assembled.tools_for_api, system_message=None, api_call_count=1,
+        api_request_id=api_request_id, effective_task_id=task_id, turn_id=turn_id,
     )
     if has_server_side_tools(built.api_kwargs):
         audit.outcome = "refused:server_side_tools"
         return None
+    hooks = start_aux_call_hooks(
+        aux_task=SIDE_QUESTION_ORIGIN, metadata={"api_request_id": api_request_id}, client=fork.client,
+        kwargs=built.api_kwargs, provider=str(fork.provider or ""), model=str(fork.model or ""),
+        api_mode=str(fork.api_mode or ""), streaming=False,
+    )
+    api_start_time = time.time()
     try:
         verdict = perform_api_call(
             fork, api_kwargs=built.api_kwargs, _original_api_kwargs=built._original_api_kwargs,
@@ -158,28 +163,27 @@ def _send(fork: Any, capture: SideQuestionCapture, prompt: str, audit: _Audit) -
             _retry=TurnRetryState(), thinking_spinner=None, retry_count=0, api_call_count=1,
             api_request_id=api_request_id, effective_task_id=task_id, turn_id=turn_id, interrupted=False,
         )
-    except BaseException:
+    except BaseException as exc:
+        finish_aux_call_hooks(hooks, error=exc)
         relay_llm.complete_logical_call(api_request_id, outcome="failed")
         raise
     if verdict.action == "break" or verdict.response is None:
+        finish_aux_call_hooks(hooks)
         relay_llm.complete_logical_call(api_request_id, outcome="cancelled")
         audit.outcome = "error"
         return None
     response = verdict.response
-    api_duration = time.time() - api_start_time
     record_response_usage(
-        fork, response, messages=messages, api_call_count=1, api_duration=api_duration,
+        fork, response, messages=messages, api_call_count=1, api_duration=time.time() - api_start_time,
         compression_attempts=0, max_compression_attempts=0,
     )
     relay_llm.complete_logical_call(api_request_id, outcome="success")
     assistant_message = normalize_response_for_agent(fork, response)
-    # Pair the pre_api_request the build fired, so observers never see a dangling request.
-    _fire_post_api_request_hook(
-        fork, response, assistant_message, assistant_message.finish_reason,
-        api_messages=built.api_messages, api_call_count=1, api_duration=api_duration,
-        api_start_time=api_start_time, api_request_id=api_request_id, effective_task_id=task_id,
-        turn_id=turn_id,
-    )
+    # The reply is in the transport's native shape: hand the observers the normalized view.
+    finish_aux_call_hooks(hooks, response, normalized=(
+        assistant_message, assistant_message.finish_reason,
+        fork._usage_summary_for_api_request_hook(response),
+    ))
     return assistant_message
 
 

@@ -377,14 +377,14 @@ def test_agent_as_provider_is_refused(provider, issued):
 def test_server_side_tool_in_final_request_is_refused(provider, issued, monkeypatch):
     parent = _make_parent()
     _run_parent_turn(parent, provider, tool_round=False)
-    real_build = __import__("agent.turn_api_request", fromlist=["build_api_request"]).build_api_request
+    real_build = __import__("agent.turn_api_request", fromlist=["build_request_payload"]).build_request_payload
 
     def _with_native_search(*args, **kwargs):
         built = real_build(*args, **kwargs)
         built.api_kwargs["tools"] = [*built.api_kwargs["tools"], {"type": "web_search"}]
         return built
 
-    monkeypatch.setattr("agent.turn_api_request.build_api_request", _with_native_search)
+    monkeypatch.setattr("agent.turn_api_request.build_request_payload", _with_native_search)
     sent = len(provider.requests)
     assert redeem_side_question(issued[-1], SIDE_PROMPT, plugin_id="next-prompt") is None
     assert len(provider.requests) == sent

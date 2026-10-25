@@ -593,6 +593,11 @@ and recorded in its usage as `side_question`. You can't pick the
 model, tools, system prompt or output length: changing any of them
 would miss the warm cache. Ask for brevity in the prompt.
 
+Observability plugins see the call as an auxiliary call:
+`pre_auxiliary_call` / `post_auxiliary_call` fire with
+`aux_task="side_question"`, and the turn-scoped `pre_api_request` /
+`post_api_request` do not fire for it.
+
 ## Where this fits in the plugin surface
 
 Existing `ctx.*` methods extend an existing Hermes subsystem:

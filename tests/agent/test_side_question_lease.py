@@ -236,3 +236,60 @@ def test_post_llm_call_hook_redeems_its_token_end_to_end(monkeypatch):
     assert json.loads(answers.read_text()) == "Ask why it is 42."
     assert requests[-1]["messages"][-1] == {"role": "user", "content": "Suggest the next prompt."}
     side_question_lease._leases.clear()
+
+
+def test_side_request_fires_auxiliary_hooks_not_turn_request_hooks(monkeypatch):
+    """Turn-scoped observers (``pre/post_api_request``) see only the turn's own request; the
+    side request reports through ``pre/post_auxiliary_call`` with ``aux_task='side_question'``."""
+    from run_agent import AIAgent
+
+    events = Path(os.environ["HERMES_HOME"]) / "events.jsonl"
+    plugin_dir = Path(os.environ["HERMES_HOME"]) / "plugins" / "observer"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text(
+        yaml.safe_dump({"name": "observer", "capabilities": [CAP]}), encoding="utf-8")
+    (plugin_dir / "__init__.py").write_text(
+        "import json, pathlib\n\n"
+        f"EVENTS = pathlib.Path({str(events)!r})\n\n"
+        "def _log(name, **kw):\n"
+        "    row = {'event': name, 'aux_task': kw.get('aux_task'), 'usage': kw.get('usage')}\n"
+        "    with EVENTS.open('a') as fh:\n"
+        "        fh.write(json.dumps(row, default=str) + '\\n')\n\n"
+        "def register(ctx):\n"
+        "    for name in ('pre_api_request', 'post_api_request', 'pre_auxiliary_call', 'post_auxiliary_call'):\n"
+        "        ctx.register_hook(name, lambda _n=name, **kw: _log(_n, **kw))\n"
+        "    def _on_post_llm_call(**kwargs):\n"
+        "        ctx.side_question(kwargs['side_question_token'], 'Suggest the next prompt.')\n"
+        "    ctx.register_hook('post_llm_call', _on_post_llm_call)\n",
+        encoding="utf-8",
+    )
+    _load(["observer"], granted=["observer"])
+
+    usage = SimpleNamespace(prompt_tokens=900, completion_tokens=7, total_tokens=907)
+    replies = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=None),
+                                                 finish_reason="stop")], model="test/model", usage=usage)
+        for text in ("The answer is 42.", "Ask why it is 42.")
+    ]
+    client = MagicMock()
+    client.chat.completions.create.side_effect = lambda **kw: replies.pop(0)
+    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **k: None)
+    with (
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI", return_value=client),
+        patch("agent.model_metadata.fetch_model_metadata", return_value={}),
+    ):
+        parent = AIAgent(api_key="k", base_url="https://openrouter.ai/api/v1", model="test/model",
+                         quiet_mode=True, skip_context_files=True, skip_memory=True)
+        parent._cached_system_prompt = "You are helpful."
+        parent.skip_background_review = True
+        parent.run_conversation("what is the answer?")
+
+    rows = [json.loads(line) for line in events.read_text().splitlines()]
+    assert replies == []  # the side request was sent
+    assert [r["event"] for r in rows] == [
+        "pre_api_request", "post_api_request", "pre_auxiliary_call", "post_auxiliary_call"]
+    assert rows[2]["aux_task"] == rows[3]["aux_task"] == "side_question"
+    assert rows[3]["usage"]["output_tokens"] == 7
+    side_question_lease._leases.clear()

@@ -1,0 +1,18 @@
+name: hermes-context-persistence
+repo: https://github.com/alfonsodg/hermes-context-persistence
+sha: efe55c3e7e599c63caa013af9fdcd423a65bfef0
+description: >-
+  Re-inject AGENTS.md context after compaction using the post_compaction hook
+  to prevent context loss in long sessions.
+maintainer: alfonsodg
+tier: community
+category: tools
+docs_url: https://github.com/alfonsodg/hermes-context-persistence#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_compaction
+  provides_middleware: []
+  requires_env: []

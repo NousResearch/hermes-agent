@@ -1,22 +1,22 @@
 name: sgme
 repo: https://github.com/freehul/sgme
-sha: 6ef74f8f6089c765670abc13e639eefad3f6123b
+sha: f12c9bfa2cc9f4a59420376cb91176abb882948b
 subdir: adapters/hermes
-version: "1.10.5"
+version: "1.10.6"
 description: "SGME (拾光记忆) self-hosted long-term memory engine — tagged memories with provenance, per-turn recall, automatic session refinement, a skills library, wiki knowledge base, care signals, communication roles and a three-pool task system (ideas/demands/projects), all behind one HTTP service you own. The plugin is a thin bridge: no LLM, no database, everything heavy runs in your SGME server (local or remote). Disclosure — the plugin talks only to the SGME server you configure (default http://127.0.0.1:9910, env SGME_BASE_URL for remote); credentials are read through Hermes's secret scope (env names SGME_AGENT_KEY / SGME_ADMIN_KEY, never written to disk); session turns are appended to your SGME server and refined into memories at session end (an LLM you configure on the SGME side does the distilling); no third-party services, no telemetry."
 maintainer: freehul
 tier: community
 category: memory
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/freehul/sgme/blob/main/AI-INSTALL/README.md
-image: https://raw.githubusercontent.com/freehul/sgme/6ef74f8f6089c765670abc13e639eefad3f6123b/assets/selling-point-01-trace.png
+image: https://raw.githubusercontent.com/freehul/sgme/f12c9bfa2cc9f4a59420376cb91176abb882948b/assets/selling-point-01-trace.png
 screenshots:
-  - https://raw.githubusercontent.com/freehul/sgme/6ef74f8f6089c765670abc13e639eefad3f6123b/assets/selling-point-00-seamless-switching.png
-  - https://raw.githubusercontent.com/freehul/sgme/6ef74f8f6089c765670abc13e639eefad3f6123b/assets/selling-point-02-shared-memory.png
-  - https://raw.githubusercontent.com/freehul/sgme/6ef74f8f6089c765670abc13e639eefad3f6123b/assets/selling-point-03-unified-search.png
-  - https://raw.githubusercontent.com/freehul/sgme/6ef74f8f6089c765670abc13e639eefad3f6123b/assets/selling-point-05-skillhub.png
-  - https://raw.githubusercontent.com/freehul/sgme/6ef74f8f6089c765670abc13e639eefad3f6123b/assets/selling-point-07-scenario-inject.png
-  - https://raw.githubusercontent.com/freehul/sgme/6ef74f8f6089c765670abc13e639eefad3f6123b/assets/selling-point-11-persona-insight.png
+  - https://raw.githubusercontent.com/freehul/sgme/f12c9bfa2cc9f4a59420376cb91176abb882948b/assets/selling-point-00-seamless-switching.png
+  - https://raw.githubusercontent.com/freehul/sgme/f12c9bfa2cc9f4a59420376cb91176abb882948b/assets/selling-point-02-shared-memory.png
+  - https://raw.githubusercontent.com/freehul/sgme/f12c9bfa2cc9f4a59420376cb91176abb882948b/assets/selling-point-03-unified-search.png
+  - https://raw.githubusercontent.com/freehul/sgme/f12c9bfa2cc9f4a59420376cb91176abb882948b/assets/selling-point-05-skillhub.png
+  - https://raw.githubusercontent.com/freehul/sgme/f12c9bfa2cc9f4a59420376cb91176abb882948b/assets/selling-point-07-scenario-inject.png
+  - https://raw.githubusercontent.com/freehul/sgme/f12c9bfa2cc9f4a59420376cb91176abb882948b/assets/selling-point-11-persona-insight.png
 capabilities:
   provides_tools: []
   provides_hooks: []

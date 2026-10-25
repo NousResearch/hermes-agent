@@ -27,8 +27,8 @@ class SessionAuthorities:
         self.launch_key = hermes_home_key(launch_home)
         self._by_key: dict[str, object] = {}
         self._names: dict[str, str | None] = {}
-        # Set when a None slot is filled or dropped. Hot-serve publishes the slot before
-        # the authority exists, and a host-scoped attach waits on this instead of reading it.
+        # One event per slot reserved by ``add(home, None)`` while its authority is being built: set
+        # when ``replace`` fills the slot or ``remove`` drops it (the build failed).
         self._starting: dict[str, asyncio.Event] = {}
         # A multiplexing runtime (configured, or one that ever served a second home) keeps the
         # scoped-lookup contract after its secondaries are removed: an unserved home is None.
@@ -45,18 +45,13 @@ class SessionAuthorities:
         if key != self.launch_key:
             self.multiplexed = True
 
-    def _finish_start(self, key) -> None:
-        event = self._starting.pop(key, None)
-        if event is not None:
-            event.set()
-
     def replace(self, home, authority) -> None:
         """Fill the slot reserved by ``add(home, None, name=...)`` once the authority exists."""
         key = hermes_home_key(home)
         if key not in self._by_key or self._by_key[key] is not None:
             raise RuntimeError(f'no reserved session authority slot for {home}')
         self._by_key[key] = authority
-        self._finish_start(key)
+        self._end_start(key)
 
     def remove(self, home):
         """Drop *home*'s slot (a parked boot, a hot-unserved profile); returns the authority or None.
@@ -65,25 +60,20 @@ class SessionAuthorities:
         if key == self.launch_key:
             raise RuntimeError('the launch session authority cannot be removed')
         self._names.pop(key, None)
-        removed = self._by_key.pop(key, None)
-        self._finish_start(key)
-        return removed
+        self._end_start(key)
+        return self._by_key.pop(key, None)
+
+    def _end_start(self, key) -> None:
+        started = self._starting.pop(key, None)
+        if started is not None:
+            started.set()
 
     def starting(self, profile):
-        """Event for the unbuilt slot *profile* names, or None when nothing is waiting on it.
-
-        ``replace`` and ``remove`` set the event. A waiter then routes against the registry
-        as it stands: the new authority, or no such profile."""
+        """``(key, started)`` for the reserved slot *profile* names while its authority is still being
+        built, else None. ``started`` is set once the build ends: filled, or dropped because it failed."""
         from hermes_cli.profiles import profile_matches_home
-        for key, authority in list(self._by_key.items()):
-            if authority is not None:
-                continue
-            event = self._starting.get(key)
-            if event is None or event.is_set():
-                continue
-            if profile_matches_home(profile, Path(key)):
-                return event
-        return None
+        return next(((key, started) for key, started in list(self._starting.items())
+                     if profile_matches_home(profile, Path(key))), None)
 
     def profile_name(self, authority):
         """Served profile name for *authority*; None for the launch profile (its adapters are
@@ -92,10 +82,13 @@ class SessionAuthorities:
         return None if key == self.launch_key else self._names.get(key)
 
     def __len__(self) -> int:
-        return len(self._by_key)
+        return sum(authority is not None for authority in self._by_key.values())
 
     def __iter__(self):
-        return iter(self._by_key.values())
+        """The built authorities, retiring ones included. A slot still being built is no authority
+        yet: every walk sees its profile exactly as before ``add`` reserved it (``starting`` names it)."""
+        # A snapshot, as in ``serving``: other threads walk the set while the loop hot-serves.
+        return (authority for authority in list(self._by_key.values()) if authority is not None)
 
     def __contains__(self, home) -> bool:
         return hermes_home_key(home) in self._by_key

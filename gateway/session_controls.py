@@ -157,10 +157,6 @@ class AuthorityConnection:
             raise RuntimeStoreError('profile_mismatch')
         registry = getattr(getattr(self.authority, 'runner', None), 'session_authorities', None)
         for sibling in (registry or ()):
-            # The slot is reserved before the authority exists. Skip it; a host-scoped
-            # attach waits in ``_routed_connection`` instead of reading ``profile_id`` here.
-            if sibling is None:
-                continue
             if sibling is not self.authority and profile_matches_home(profile, Path(sibling.profile_id)):
                 connection = self._siblings.get(sibling.profile_id)
                 # A re-served profile is a new authority under the same id: never keep routing to
@@ -170,19 +166,26 @@ class AuthorityConnection:
                     connection = AuthorityConnection(sibling, self.transport, identity, operator=self._operator)
                     self._siblings[sibling.profile_id] = connection
                 return connection
+        if registry is not None and registry.starting(profile) is not None:
+            # Hot-serve is still building it: retryable, not the final verdict for an unserved profile.
+            # A shared socket holds such a frame until the start ends (``awaits_profile_start``); this
+            # answers one whose wait ran out.
+            raise RuntimeStoreError('runtime_draining', field='profile', detail='the profile is still starting')
         raise RuntimeStoreError('profile_mismatch')
 
-    async def _routed_connection(self, profile):
-        """Sibling connection for *profile*, after a host-scoped attach's in-progress start.
-
-        Hot-serve reserves the slot as None while ``initialize_session_authority`` is still
-        awaiting. The Desktop shared socket and the dashboard gate wait for that start.
-        A profile-bound grant does not: ``_sibling_for`` refuses it as a mismatch."""
-        if self.host_scoped:
-            registry = getattr(getattr(self.authority, 'runner', None), 'session_authorities', None)
-            while registry is not None and (pending := registry.starting(profile)) is not None:
-                await pending.wait()
-        return self._sibling_for(profile)
+    def awaits_profile_start(self, request, held=()):
+        """Whether a shared socket holds *request* off its serial lane: ``(key, started)`` when a
+        host-scoped frame names a profile hot-serve is still building (``started`` is set once the
+        build ends), ``(key, None)`` when it names one of *held*, the starts whose earlier frames the
+        socket still holds, so it queues behind them. None for every other frame."""
+        params = request.get('params') if isinstance(request, dict) else None
+        profile = params.get('profile') if isinstance(params, dict) else None
+        registry = getattr(getattr(self.authority, 'runner', None), 'session_authorities', None)
+        if not (self.host_scoped and isinstance(profile, str) and profile and registry is not None):
+            return None
+        from hermes_cli.profiles import profile_matches_home
+        key = next((key for key in held if profile_matches_home(profile, Path(key))), None)
+        return (key, None) if key is not None else registry.starting(profile)
 
     def handlers(self):
         """Method → handler for every verb ``dispatch`` serves outside the group controls; each
@@ -277,7 +280,7 @@ class AuthorityConnection:
         profile = params.get('profile')
         if isinstance(profile, str) and profile:
             try:
-                routed = await self._routed_connection(profile)
+                routed = self._sibling_for(profile)
             except RuntimeStoreError as exc:
                 _log_refusal(getattr(self.actor, 'profile_id', None), method, exc)
                 return {'jsonrpc': '2.0', 'id': rid, 'error': {

@@ -190,7 +190,7 @@ def _reachable_upload_home(connection, raw_home) -> bool:
     homes = {connection.authority.profile_id}
     if connection.host_scoped:
         registry = getattr(getattr(connection.authority, 'runner', None), 'session_authorities', None)
-        homes |= {sibling.profile_id for sibling in (registry or ()) if sibling is not None}
+        homes |= {sibling.profile_id for sibling in (registry or ())}
     try:
         target = Path(raw_home).resolve()
         return any(Path(home).resolve() == target for home in homes)

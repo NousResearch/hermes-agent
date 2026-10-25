@@ -6,6 +6,7 @@ after accept). Mount as ``@app.websocket("/api/ws") async def ws(ws): await hand
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import concurrent.futures
 import json
@@ -104,6 +105,12 @@ _WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown"})
 _WS_CONCURRENT_READ_LIMIT = 2
 # Reads admitted beyond the running ones; one more parks the reader (as the serial lane did).
 _WS_WAITING_READ_LIMIT = 8
+# A shared socket's frame naming a profile hot-serve is still starting (a chat opened on a profile
+# created a moment ago) waits for that start in a lane of its own: on the serial lane every later
+# control on the socket, other profiles' prompts and interrupts included, would queue behind it.
+# Bounded under the Desktop's 30 s request deadline; a start still running then is refused
+# retryably (``runtime_draining``).
+_WS_PROFILE_START_WAIT_S = 20.0
 # A viewer's answer to an open server→client request (its response frame, a batch clarify's
 # ``clarify.lock``) settles in memory and never queues: the serial lane may be running the very handler
 # that waits for it (a plugin slash command's ``ctx.ask_choice`` under ``slash.exec``).
@@ -441,6 +448,9 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
     # control handler the serial lane is running (it finishes, then the dispatcher stops).
     send_failed: asyncio.Future = asyncio.get_running_loop().create_future()
     stop = object()  # queue sentinel; a JSON ``null`` frame parses to None, so None can't be it
+    # Frames waiting for a profile's start, per start, in arrival order; one lane task drains each.
+    held: dict[str, collections.deque] = {}
+    held_lanes: set[asyncio.Task] = set()
 
     async def _dispatch_one(req: Any) -> None:
         """Dispatch one request and write its inline reply."""
@@ -483,6 +493,46 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         with contextlib.suppress(asyncio.CancelledError, _SendFailed):
             task.result()
 
+    async def _dispatch_after_start(key: str, started: asyncio.Event) -> None:
+        """Dispatch the frames held for one start, in arrival order, once it ends or the wait runs out
+        (the authority then refuses a profile still starting retryably). A frame for that profile read
+        meanwhile joins the queue instead of overtaking it on the serial lane."""
+        try:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(started.wait(), _WS_PROFILE_START_WAIT_S)
+            frames = held[key]
+            while frames:
+                await _dispatch_one(frames[0])
+                frames.popleft()
+        except _SendFailed:
+            if not send_failed.done():
+                send_failed.set_result(None)
+        finally:
+            del held[key]
+
+    def _hold_for_profile_start(req: Any) -> bool:
+        start = authority_connection.awaits_profile_start(req, held) if authority_connection is not None else None
+        if start is None:
+            return False
+        key, started = start
+        if key in held:
+            held[key].append(req)
+        else:
+            held[key] = collections.deque([req])
+            lane = asyncio.create_task(_dispatch_after_start(key, started))
+            held_lanes.add(lane)
+            lane.add_done_callback(held_lanes.discard)
+        return True
+
+    async def _end_held() -> None:
+        """Held frames were read before the disconnect: their lanes finish, as the serial lane finishes
+        its queue, unless the connection itself was cancelled (server shutdown)."""
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            for lane in held_lanes:
+                lane.cancel()
+        await asyncio.gather(*held_lanes, return_exceptions=True)
+
     async def _next_request() -> Any:
         """The next queued frame, or ``stop`` once the read lane failed to send a reply."""
         step = asyncio.ensure_future(pending.get())
@@ -500,6 +550,8 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                 task = asyncio.create_task(_dispatch_concurrent_read(req))
                 concurrent_reads.add(task)
                 task.add_done_callback(_finish_concurrent_read)
+                continue
+            if _hold_for_profile_start(req):
                 continue
             await _dispatch_one(req)
 
@@ -626,6 +678,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             if failure is not None and not isinstance(failure, _SendFailed):
                 _log.error("ws dispatcher failed peer=%s", peer, exc_info=failure)
         await _end_reads()
+        await _end_held()
         if authority_connection is not None:
             # After the dispatcher drained: an in-flight authority call must not see its connection closed.
             await authority_connection.close()

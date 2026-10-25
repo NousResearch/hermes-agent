@@ -96,6 +96,46 @@ it('moves compression queues across cached successors without changing attempted
   }
 })
 
+it('keeps queue order when inputs queued in the same millisecond on two sessions merge', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ink-order-'))
+  vi.stubEnv('HERMES_HOME', home)
+  vi.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000) // a fast machine: every enqueue in one ms
+  resetUiState()
+  patchUiState({ sid: 'old', info: { model: 'test', profile_name: 'alpha', skills: {}, tools: {} } })
+  let queue!: ReturnType<typeof useQueue>
+
+  function Harness() {
+    queue = useQueue()
+
+    return <Text>{queue.queuedDisplay.join('|')}</Text>
+  }
+
+  const instance = renderSync(<Harness />, {
+    stdin: new PassThrough() as any,
+    stdout: Object.assign(new PassThrough(), { columns: 80, rows: 20, isTTY: false }) as any,
+    stderr: new PassThrough() as any,
+    patchConsole: false
+  })
+
+  try {
+    const original = captureDestination()
+    const first = queue.enqueue('first')
+    patchUiState({ sid: 'next' })
+    const second = queue.enqueue('second')
+    expect(second.createdAt).toBeGreaterThan(first.createdAt!)
+    patchUiState({ sid: 'old' })
+    pending.migratePendingInputs(original, 'next')
+    patchUiState({ sid: 'next' })
+    expect(queue.queueRef.current.map(item => item.text)).toEqual(['first', 'second'])
+  } finally {
+    instance.unmount()
+    vi.restoreAllMocks()
+    resetUiState()
+    vi.unstubAllEnvs()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
 it('uses the canonical profile home through symlinks, including a missing descendant', () => {
   const root = mkdtempSync(join(tmpdir(), 'ink-home-'))
   const real = join(root, 'real')

@@ -1375,6 +1375,45 @@ def _audio_playback_guard(request, monkeypatch):
     yield
 
 
+# ── Live Nous services fence ─────────────────────────────────────────────────
+# A test home starts with no Nous identity, so any path that ends in a hosted
+# connector action (connect, rename, status, the tool's first call) mints a REAL
+# guest on the production Portal: up to GUEST_MINT_TIMEOUT_SECONDS per test,
+# red whenever the Portal is slow, and a new guest identity on production on
+# every CI run. The same holds for billing, plan limits, the dashboard OAuth
+# provider and every other client built on a Nous URL. Refusing the name lookup
+# covers all of them at once (httpx, urllib, aiohttp and asyncio all resolve
+# through socket.getaddrinfo), and fails exactly like an offline host, which is
+# the path production already handles. Tests of these clients stub the
+# transport (tests/hermes_cli/anon_portal.py routes httpx at a fake Portal), so
+# they never reach the lookup. Live canaries opt in with ``@pytest.mark.live``.
+_NOUS_SERVICE_DOMAINS = ("nousresearch.com", "staging-nousresearch.com")
+
+
+def _is_nous_service_host(host) -> bool:
+    name = (host.decode() if isinstance(host, bytes) else str(host or "")).lower().rstrip(".")
+    return any(name == domain or name.endswith("." + domain) for domain in _NOUS_SERVICE_DOMAINS)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_nous_services(request, monkeypatch):
+    if request.node.get_closest_marker("live"):
+        return
+    import socket
+
+    real_getaddrinfo = socket.getaddrinfo
+
+    def fenced_getaddrinfo(host, *args, **kwargs):
+        if _is_nous_service_host(host):
+            raise socket.gaierror(
+                socket.EAI_NONAME,
+                f"test fence: {host!r} is a live Nous service; stub the HTTP layer "
+                "(tests/hermes_cli/anon_portal.py) or mark the test live")
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", fenced_getaddrinfo)
+
+
 @pytest.fixture(autouse=True)
 def _isolate_computer_use_approval_state():
     """Reset the computer-use explicit approval callback after every test.

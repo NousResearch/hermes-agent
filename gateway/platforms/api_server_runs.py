@@ -1121,7 +1121,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             def _tool_complete(call_id, name, args, result):
                 from agent.display import _detect_tool_failure
                 is_error, _ = _detect_tool_failure(name, result)
-                tool_cb("tool.completed", name, None, args, tool_call_id=call_id, is_error=bool(is_error))
+                tool_cb("tool.completed", name, None, args, tool_call_id=call_id, is_error=bool(is_error),
+                        result=result)
 
             with observe_api_controls(run.admission, _control_cb):
                 result, usage = await observe_api_turn(

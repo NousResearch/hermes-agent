@@ -116,6 +116,53 @@ async def test_run_sse_carries_controls_tool_payloads_and_authoritative_cancella
     assert 'run.cancelled' in names and 'run.completed' not in names
 
 
+@pytest.mark.asyncio
+async def test_run_sse_tool_completed_carries_the_tool_result_preview(api, owner):
+    """A canonical run's `tool.completed` preview is the tool's own result text: `/v1/runs` clients
+    have no other way to read it (#144404)."""
+    admitted = admit_api_turn(api, session_id='sse-preview', user_message='hello', conversation_history=[])
+    _, ref, _row = admitted
+    launch, queue = _launch(api, admitted)
+
+    async def handle(event):
+        from gateway.session_results import execution_result
+        turn = _turn_runner(owner, ref)
+        args = {'command': 'echo hello; echo END-MARK'}
+        turn.combined_tool_start_callback('call-7', 'terminal', args)
+        turn.combined_tool_complete_callback('call-7', 'terminal', args, {'output': 'hello\nEND-MARK', 'exit_code': 0})
+        execution_result.get()['result'] = {'final_response': 'done'}
+        return 'done'
+    owner.runner._handle_message = handle
+    await _execute_run(api, launch, _api_server=_api_server)
+    await asyncio.sleep(0)  # call_soon_threadsafe projections land on the loop
+    completed = next((e for e in _events(queue) if e['event'] == 'tool.completed'), None)
+    assert completed is not None, _events(queue)
+    assert 'END-MARK' in completed['preview'], completed
+
+
+@pytest.mark.asyncio
+async def test_run_sse_tool_completed_preview_is_bounded(api, owner):
+    """The public run stream keeps the preview bounded, whatever the tool returned."""
+    admitted = admit_api_turn(api, session_id='sse-preview-long', user_message='hello', conversation_history=[])
+    _, ref, _row = admitted
+    launch, queue = _launch(api, admitted)
+
+    async def handle(event):
+        from gateway.session_results import execution_result
+        turn = _turn_runner(owner, ref)
+        args, result = {'command': 'cat big'}, {'output': 'x' * 4000, 'exit_code': 0}
+        turn.combined_tool_start_callback('call-8', 'terminal', args)
+        turn.combined_tool_complete_callback('call-8', 'terminal', args, result)
+        execution_result.get()['result'] = {'final_response': 'done'}
+        return 'done'
+    owner.runner._handle_message = handle
+    await _execute_run(api, launch, _api_server=_api_server)
+    await asyncio.sleep(0)
+    completed = next((e for e in _events(queue) if e['event'] == 'tool.completed'), None)
+    assert completed is not None, _events(queue)
+    assert len(completed['preview']) == 500 and completed['preview'].endswith('...'), completed
+
+
 def _wrap(api, run_id, loop, sink):
     from gateway.platforms.api_server_runs import _make_run_event_callback
     inner = _make_run_event_callback(api, run_id, loop, _api_server=_api_server)

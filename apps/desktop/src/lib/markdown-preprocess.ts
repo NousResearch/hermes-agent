@@ -1135,16 +1135,27 @@ function normalizeFenceBlocks(text: string): string {
 }
 
 export function preprocessMarkdown(text: string): string {
-  const cleaned = stripReasoningBlocks(text).replace(PREVIEW_MARKER_RE, '')
+  const hasCrLf = text.includes('\r\n')
+  const normalizedLineEndings = text.replace(/\r\n?/g, '\n')
+  const lineEnding = hasCrLf ? '\r\n' : '\n'
+  const cleaned = stripReasoningBlocks(normalizedLineEndings).replace(PREVIEW_MARKER_RE, '')
   const scrubbed = scrubBacktickNoise(cleaned)
   const normalizedFences = normalizeFenceBlocks(scrubbed)
   const strippedEmptyFences = stripEmptyFenceBlocks(normalizedFences)
+
+  const hasTextFence = strippedEmptyFences.split('\n').some(line => {
+    const match = line.match(FENCE_LINE_RE)
+    const language = (match?.[3] || '').trim().split(/\s+/, 1)[0] || ''
+
+    return sanitizeLanguageTag(language) === 'text'
+  })
+
   // Anchors come from the response's `Sources` section only: a marker
   // survives the orphan strip exactly when this response lists a matching
   // `[n] url` entry there (see collectSourceListIds).
   const sourceListIds = collectSourceListIds(strippedEmptyFences)
 
-  return splitFencedCode(strippedEmptyFences)
+  const preprocessed = splitFencedCode(strippedEmptyFences)
     .map(({ code, text: part }) => {
       // Fence blocks pass through untouched.
       if (code) {
@@ -1163,6 +1174,8 @@ export function preprocessMarkdown(text: string): string {
       )
     })
     .join('')
+
+  return hasCrLf && !hasTextFence ? preprocessed.replace(/\n/g, lineEnding) : preprocessed
 }
 
 /**

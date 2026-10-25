@@ -8,7 +8,7 @@ import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { hiddenPaneProps } from '@/components/pane-shell/pane-visibility'
 import { $activeTreeGroup, $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 import { I18nProvider } from '@/i18n'
-import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
+import { $settledClarifyResults, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { $profiles } from '@/store/profile'
 import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
@@ -59,6 +59,7 @@ afterEach(() => {
   resetServerRequestsForTests()
   $activeSessionId.set(null)
   $gateway.set(null)
+  $settledClarifyResults.set({})
   messageRunning = true
   vi.clearAllMocks()
 })
@@ -249,6 +250,49 @@ describe('ClarifyTool live card stays mounted across settle', () => {
     })
 
     await waitFor(() => expect(screen.getByRole('button', { name: /^.*eu/ }).hasAttribute('disabled')).toBe(false))
+  })
+
+  it('shows the next question after the chat bar settled the first', () => {
+    // The chat bar settles a one-question card as soon as it is answered. The
+    // gateway then delivers the next question as a new request on this same
+    // tool row. That question has to be answerable.
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn().mockResolvedValue({ ok: true }) } as never)
+    setClarifyRequest({
+      questions: [{ choices: ['staging', 'production'], multiSelect: false, qid: 'request-1', question: 'Which deployment target?' }],
+      requestId: 'request-1',
+      sessionId: 'session-1'
+    })
+    const args = {
+      questions: [
+        { question: 'Which deployment target?', choices: ['staging', 'production'] },
+        { question: 'Which region?', choices: ['us', 'eu'] }
+      ]
+    }
+    const props = { ...liveClarifyProps(), args, argsText: JSON.stringify(args) }
+
+    renderClarify(<ClarifyTool {...props} />)
+
+    act(() => {
+      $settledClarifyResults.set({
+        'request-1': {
+          outcome: 'submitted',
+          responses: [{ question: 'Which deployment target?', status: 'answered', user_response: 'staging' }]
+        }
+      })
+      clearClarifyRequest('request-1', 'session-1')
+    })
+    act(() => {
+      setClarifyRequest({
+        questions: [{ choices: ['us', 'eu'], multiSelect: false, qid: 'request-2', question: 'Which region?' }],
+        requestId: 'request-2',
+        sessionId: 'session-1'
+      })
+    })
+
+    expect(screen.getByText('Which region?')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^.*eu/ }).hasAttribute('disabled')).toBe(false)
+    expect(document.querySelector('[data-clarify-settled]')).toBeNull()
   })
 })
 

@@ -138,6 +138,8 @@ FIRECRAWL_API_URL=http://localhost:3002
 
 When `FIRECRAWL_API_URL` is set, the API key is optional (disable server auth with `USE_DB_AUTHENTICATION=false`).
 
+If Hermes itself runs in a container, `localhost` here has the same pitfall — use `http://host.docker.internal:3002` (see the [note under SearXNG](#searxng-free-self-hosted)).
+
 ---
 
 ### SearXNG (free, self-hosted)
@@ -249,6 +251,10 @@ web:
 ```
 
 Or set via `hermes tools` → Web Search & Extract → SearXNG.
+
+:::note Hermes running inside a container?
+`localhost` refers to the Hermes container's own network namespace, not the host, so `SEARXNG_URL=http://localhost:8888` fails with `Connection refused`. Use `http://host.docker.internal:8888` instead (supported natively by Docker Desktop on macOS/Windows; on Linux add `extra_hosts: ["host.docker.internal:host-gateway"]` to the Hermes service), or put SearXNG and Hermes on a shared user-defined Docker network and use the SearXNG container name as the host.
+:::
 
 ---
 

@@ -153,7 +153,11 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         if meta is None or storage is None:
             return
         existing = storage.load_oauth_metadata()
-        if existing is None or str(existing.token_endpoint) != str(meta.token_endpoint):
+        # The issuer is compared too: a server can move its issuer while keeping the token endpoint
+        # (Composio: login.composio.dev -> connect.composio.dev), and a stale cached issuer makes
+        # ``enforce_refresh_token_issuer`` strip every freshly granted refresh token on the next cold load.
+        if existing is None or any(str(getattr(existing, f)) != str(getattr(meta, f))
+                                   for f in ("issuer", "token_endpoint", "authorization_endpoint")):
             storage.save_oauth_metadata(meta)
 
     async def _is_invalid_client_at_token_endpoint(self, response: Any) -> bool:

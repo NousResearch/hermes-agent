@@ -151,3 +151,27 @@ class TestManagerOAuthProviderMetadata:
         loaded = storage.load_oauth_metadata()
         assert loaded is not None
         assert str(loaded.token_endpoint) == "https://flow.example.com/token"
+
+
+    def test_persist_replaces_cached_metadata_when_only_issuer_changed(self, tmp_path, monkeypatch):
+        """A server that moves its issuer but keeps the token endpoint must not leave the old issuer
+        cached: the next cold load would bind it and strip the refresh token just granted."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("moved-issuer")
+        storage.save_oauth_metadata(OAuthMetadata.model_validate({
+            "issuer": "https://login.example.com/",
+            "authorization_endpoint": "https://login.example.com/oauth2/authorize",
+            "token_endpoint": "https://login.example.com/oauth2/token",
+            "response_types_supported": ["code"],
+        }))
+        fresh = OAuthMetadata.model_validate({
+            "issuer": "https://connect.example.com",
+            "authorization_endpoint": "https://login.example.com/oauth2/authorize",
+            "token_endpoint": "https://login.example.com/oauth2/token",
+            "response_types_supported": ["code"],
+        })
+        provider = _manager_provider_with_context(storage, oauth_metadata=fresh)
+
+        provider._persist_oauth_metadata_if_changed()
+
+        assert str(storage.load_oauth_metadata().issuer).rstrip("/") == "https://connect.example.com"

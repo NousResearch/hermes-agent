@@ -551,6 +551,8 @@ def _reap_terminal_worker_row(conn, row, host_prefix: str, signal_fn, reaped: li
             )
     if alive:
         reaped.append(row["task_id"])
+    from agent.subscription_capacity_runtime import release_recovered_kanban_capacity
+    release_recovered_kanban_capacity(_kb.kanban_home(), row["task_id"], row["id"])
 
 
 def _worker_survived_termination(termination: dict) -> bool:
@@ -723,6 +725,8 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         # own. If the breaker trips this flips the task to ``blocked`` and emits
         # ``gave_up`` on top of the ``timed_out`` already emitted.
         if cur.rowcount == 1:
+            from agent.subscription_capacity_runtime import release_recovered_kanban_capacity
+            release_recovered_kanban_capacity(_kb.kanban_home(), tid, run_id)
             _record_task_failure(
                 conn, tid,
                 error=error,
@@ -895,6 +899,8 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
             )
             _kb._append_event(conn, tid, "reconciled", payload, run_id=run_id)
             reconciled.append(tid)
+        from agent.subscription_capacity_runtime import release_recovered_kanban_capacity
+        release_recovered_kanban_capacity(_kb.kanban_home(), tid, run_id)
         _kb._log.info(
             "kanban reconcile: requeued orphaned running task %s "
             "(claim_lock=%r, worker_pid=%r)", tid, row["claim_lock"], pid,
@@ -1131,6 +1137,7 @@ class _CrashSweep:
 def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> _CrashSweep:
     """Release every host-local ``running`` task whose worker PID is dead."""
     sweep = _CrashSweep()
+    capacity_releases: list[tuple[str, int]] = []
     with _kb.write_txn(conn):
         rows = conn.execute(
             "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee "
@@ -1169,6 +1176,8 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 error=dead.error_text,
                 metadata=dict(dead.event_payload),
             )
+            if run_id is not None:
+                capacity_releases.append((row["id"], run_id))
             _kb._append_event(conn, row["id"], dead.event_kind, dead.event_payload, run_id=run_id)
             sweep.exited_hook_payloads.append({
                 "task_id": row["id"],
@@ -1195,6 +1204,9 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             else:
                 sweep.crashed.append(row["id"])
                 sweep.crash_details.append((row["id"], pid, row["claim_lock"], dead))
+    from agent.subscription_capacity_runtime import release_recovered_kanban_capacity
+    for task_id, run_id in capacity_releases:
+        release_recovered_kanban_capacity(_kb.kanban_home(), task_id, run_id)
     return sweep
 
 
@@ -2063,6 +2075,13 @@ def _dispatch_lane_task(
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
     try:
+        from agent.subscription_capacity_runtime import (
+            SubscriptionCapacityUnavailable, is_native_subscription_task,
+        )
+        if spawn_fn is not None and is_native_subscription_task(claimed):
+            raise SubscriptionCapacityUnavailable(
+                "custom Kanban spawn_fn cannot bypass native subscription capacity admission"
+            )
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:
             _set_worker_pid(conn, claimed.id, int(pid))
@@ -2076,10 +2095,11 @@ def _dispatch_lane_task(
         return True
     except Exception as exc:
         from tools.process_registry import RestartSafeScopeUnavailable
+        from agent.subscription_capacity_runtime import SubscriptionCapacityUnavailable
 
         # The host refused the spawn (no restart-safe scope): nothing about the
         # card ran, so it must not spend the card's retry budget (#114720).
-        infrastructure = isinstance(exc, RestartSafeScopeUnavailable)
+        infrastructure = isinstance(exc, (RestartSafeScopeUnavailable, SubscriptionCapacityUnavailable))
         if infrastructure:
             _kb._log.warning("kanban dispatcher: spawn of %s deferred, host cannot place the worker: %s", claimed.id, exc)
         if _record_task_failure(
@@ -2836,8 +2856,19 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     cmd = _restart_safe_worker_argv(task, cmd)
     from tools.process_registry import systemd_user_bus_env
     env = systemd_user_bus_env(env)
-    log_f = _open_worker_log(task, board)
+    # This is the final pre-spawn boundary: restart-safe wrapping and environment construction
+    # have succeeded, but no child or model request exists yet.
+    from agent.subscription_capacity_runtime import (
+        CAPACITY_LEASE_ENV, prepare_kanban_worker_capacity, release_prepared_capacity,
+    )
+    capacity_payload = prepare_kanban_worker_capacity(
+        task, shared_root=_kb.kanban_home(), profile_home=profile_home,
+    )
+    if capacity_payload:
+        env[CAPACITY_LEASE_ENV] = capacity_payload
+    log_f = None
     try:
+        log_f = _open_worker_log(task, board)
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
             cmd,
             cwd=workspace if os.path.isdir(workspace) else None,
@@ -2849,11 +2880,18 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
             creationflags=subprocess.CREATE_NO_WINDOW if _kb._IS_WINDOWS else 0,
         )
     except FileNotFoundError:
-        log_f.close()
+        if log_f is not None:
+            log_f.close()
+        release_prepared_capacity(capacity_payload)
         raise RuntimeError(
             "`hermes` executable not found on PATH. "
             "Install Hermes Agent or activate its venv before running the kanban dispatcher."
         )
+    except BaseException:
+        if log_f is not None:
+            log_f.close()
+        release_prepared_capacity(capacity_payload)
+        raise
     # Intentionally NOT closing log_f: the child keeps writing after return;
     # the OS-level FD stays open in the child until it exits.
     if _kb._IS_WINDOWS:

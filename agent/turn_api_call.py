@@ -81,6 +81,11 @@ def perform_api_call(
         nonlocal thinking_spinner
         thinking_spinner = stop_thinking_spinner(agent, thinking_spinner)
 
+    # Kanban subscription workers carry a dispatcher-issued durable lease.  Revalidate it at
+    # the last common boundary before middleware or any provider transport can run.
+    from agent.subscription_capacity_runtime import check_worker_capacity_phase
+    check_worker_capacity_phase(agent)
+
     _use_streaming = _should_stream(agent)
 
     def _perform_api_call(next_api_kwargs):

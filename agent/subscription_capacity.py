@@ -1,15 +1,8 @@
 """Fail-closed admission and cross-process leases for subscription workers.
 
-This preparation-only library deliberately does not launch workers or resolve paid gateway aliases.
-It turns already-normalized :mod:`agent.account_usage` snapshots into a deterministic admission
-decision. No production worker path consumes it until an authorized orchestrator explicitly wires
-acquire, phase checks and release around that worker's lifecycle.
-
-The generic Kanban dispatcher is not that consumer: each card carries one already-selected
-provider/model (including paid providers), and its first lifecycle observer runs after spawn. Wiring
-this router there would silently reinterpret operator routing and could not enforce pre-spawn
-candidate selection plus in-worker phase checks. A delivery orchestrator must supply those explicit
-candidates and own the complete lease lifecycle.
+The router is provider-neutral.  The Kanban integration in
+``agent.subscription_capacity_runtime`` applies it only to explicitly selected native subscription
+providers; paid gateways and aliases remain separate operator-selected routes.
 """
 
 from __future__ import annotations

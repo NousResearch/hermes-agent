@@ -175,6 +175,12 @@ class TurnFacadeMixin:
                 finish_task_run(**task_context, error=exc)
             raise
         finally:
+            # A guarded Kanban worker owns capacity only for this quiet-mode turn.  This outer
+            # finally covers admission early returns, validation failures, interrupts and provider
+            # exceptions that never reach the normal conversation finalizer.
+            with suppress(Exception):
+                from agent.subscription_capacity_runtime import release_worker_capacity
+                release_worker_capacity()
             try:
                 if relay_turn is not None:
                     relay_runtime.SESSION_COORDINATOR.end_turn(relay_turn, outcome=relay_outcome)

@@ -468,10 +468,10 @@ def _download_progress_hook(job: dict[str, Any]):
     return tick
 
 
-def _download_job(job: dict[str, Any], plan) -> None:
+def _download_job(job: dict[str, Any], plan, *, keep_retrying: bool = True) -> None:
     """Model bytes use the same resumable transfer as pinned PM archives."""
     running = _RUNNING.get(job["job_id"], {})
-    dl = Download([Source(url, dest) for url, dest, _ in plan], pause_event=running.get("pause"))
+    dl = Download([Source(url, dest) for url, dest, _ in plan], pause_event=running.get("pause"), keep_retrying=keep_retrying)
     dl.run(progress=_download_progress_hook(job))
 
 
@@ -479,7 +479,7 @@ def _download_optional(job: dict[str, Any], plan) -> bool:
     """Download files that only speed generation up, such as a DFlash draft. A failure leaves the
     model running without them, so it is logged instead of failing the job; a pause still pauses."""
     try:
-        _download_job(job, plan)
+        _download_job(job, plan, keep_retrying=False)
     except DownloadPaused:
         raise
     except (RuntimeError, OSError) as exc:  # the downloader's transfer, hash and rename failures, and disk errors

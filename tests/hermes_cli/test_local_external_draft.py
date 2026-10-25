@@ -283,7 +283,7 @@ def test_the_update_job_downloads_missing_drafts_then_restarts_the_server(client
     monkeypatch.setattr(lm.binaries, "installed_engine", lambda backend: engine)
     monkeypatch.setattr(lm, "_install_engine_job", lambda job, backend: engine)
     fetched, events = [], []
-    monkeypatch.setattr(lm, "_download_job", lambda job, plan: fetched.extend(plan))
+    monkeypatch.setattr(lm, "_download_job", lambda job, plan, **kwargs: fetched.extend(plan))
     monkeypatch.setattr(lm.bootstrap, "get_supervisor", lambda: object())
     monkeypatch.setattr(lm.bootstrap, "refresh_local_runtime", lambda: events.append("restart"))
 
@@ -303,8 +303,9 @@ def test_a_draft_that_fails_to_download_leaves_the_model_downloaded(client, monk
     monkeypatch.setattr(lm.bootstrap, "assets_dir", lambda: assets)
     monkeypatch.setattr(lm, "_refresh_runtime", lambda *args: None)
 
-    def download(job, plan):
+    def download(job, plan, *, keep_retrying=True):
         if any(dest.name == ENTRY.draft.local_name for _, dest, _ in plan):
+            assert not keep_retrying
             raise RuntimeError("download failed from https://huggingface.co/lab/Hybrid-DFlash-GGUF: HTTP Error 404")
         for _, dest, _ in plan:
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -326,7 +327,7 @@ def _update_job(monkeypatch, *, serving: str, on_download=None):
     monkeypatch.setattr(lm, "_runtime_target", lambda backend=None: ("b11671", "cpu"))
     monkeypatch.setattr(lm.binaries, "installed_engine", lambda backend: engine)
     monkeypatch.setattr(lm, "_install_engine_job", lambda job, backend: engine)
-    monkeypatch.setattr(lm, "_download_job", on_download or (lambda job, plan: None))
+    monkeypatch.setattr(lm, "_download_job", on_download or (lambda job, plan, **kwargs: None))
     monkeypatch.setattr(lm.bootstrap, "get_supervisor", lambda: object())
     monkeypatch.setattr(lm.bootstrap, "serving_engine", lambda: SimpleNamespace(tag=serving, backend="cpu"))
     events = []
@@ -337,7 +338,8 @@ def _update_job(monkeypatch, *, serving: str, on_download=None):
 def test_a_pause_between_the_drafts_and_the_restart_still_restarts_on_resume(client, monkeypatch):
     """The pause lands as the last draft finishes. On resume no draft is missing, and the server
     still needs the restart that loads them."""
-    def download(job, plan):
+    def download(job, plan, *, keep_retrying=False):
+        assert not keep_retrying
         for _, dest, _ in plan:
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.touch()
@@ -354,7 +356,8 @@ def test_a_pause_between_the_drafts_and_the_restart_still_restarts_on_resume(cli
     assert events == ["restart"]
 
 
-def _failing_download(job, plan):
+def _failing_download(job, plan, *, keep_retrying=False):
+    assert not keep_retrying
     raise RuntimeError("download failed from https://huggingface.co/lab/Hybrid-DFlash-GGUF: HTTP Error 404")
 
 
@@ -383,7 +386,8 @@ def test_a_failed_draft_download_alone_leaves_the_server_running(client, monkeyp
 def test_a_pause_during_the_draft_download_pauses_the_update(client, monkeypatch):
     from pm.downloader import DownloadPaused
 
-    def paused(job, plan):
+    def paused(job, plan, *, keep_retrying=False):
+        assert not keep_retrying
         raise DownloadPaused("download paused")
 
     _, events = _update_job(monkeypatch, serving="b11370", on_download=paused)

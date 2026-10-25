@@ -188,7 +188,16 @@ class BridgeStore:
             columns = {row[1] for row in conn.execute("PRAGMA table_info(bridge_requests)")}
             if "ingress_json" not in columns:
                 conn.execute("ALTER TABLE bridge_requests ADD COLUMN ingress_json TEXT")
+            from hermes_cli.session_bridge_targets import ensure_schema
+            ensure_schema(conn)
             conn.commit()
+
+    def resolve_ticket_target(self, ticket_ref: str):
+        """Resolve a provider-authenticated target without asking for native IDs."""
+        from hermes_cli.session_bridge_targets import resolve_ticket_target
+
+        with self._connect() as conn:
+            return resolve_ticket_target(conn, ticket_ref)
 
     @staticmethod
     def _row(row: sqlite3.Row) -> BridgeRequest:
@@ -500,6 +509,44 @@ def capabilities() -> dict[str, dict[str, Any]]:
             "question_mode": "unavailable",
             "snapshot_question_mode": "fresh-session-transcript-snapshot-explicit",
             "live_question": claude_live,
+            "target_resolution": {
+                "starts_from": "ticket_ref",
+                "requires": [
+                    "active_assignment", "active_attempt", "native_session_id",
+                    "provider_delivery_handle", "exact_agent_id", "fresh_ownership",
+                    "authenticated_hermes_callable_transport",
+                ],
+                "manual_native_ids": False,
+            },
+            "native_transport_scopes": {
+                "same_team_mailbox": {
+                    "provider_native": True,
+                    "external_hermes_ingress": False,
+                    "address": "exact teammate agent id within one Claude team runtime",
+                    "reason": "Claude exposes this only to agents already inside that team/runtime",
+                },
+                "same_machine_session_socket": {
+                    "provider_native": True,
+                    "external_hermes_ingress": False,
+                    "address": "native session identity plus provider-owned socket delivery handle",
+                    "reason": "the installed runtime has internal authenticated routing but no supported external API",
+                },
+                "account_bridge": {
+                    "provider_native": True,
+                    "external_hermes_ingress": False,
+                    "address": "provider session identity through Claude account/device authentication",
+                    "correlated_reply_guaranteed": False,
+                    "reason": "the installed runtime's internal bridge may be one-way and is not a public Hermes API",
+                },
+            },
+            "inventory_gap": {
+                "claude_agents_fields": ["pid", "cwd", "kind", "startedAt", "sessionId", "name", "status"],
+                "missing_for_routing": [
+                    "ticket_ref", "assignment_id", "attempt_id", "team_name",
+                    "agent_id", "provider_delivery_handle", "reply_capability",
+                    "cancellation_capability", "ownership_attestation",
+                ],
+            },
             "mutates_target": False,
             "result_transport": "subprocess-json",
         },

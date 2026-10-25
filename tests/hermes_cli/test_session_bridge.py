@@ -449,6 +449,11 @@ def test_capabilities_admit_missing_current_voice_connector(monkeypatch):
     assert value["codex"]["live_question"]["available"] is False
     assert value["claude"]["live_question"]["read_only_inventory"] is True
     assert value["claude"]["live_question"]["session_enqueue"] is False
+    scopes = value["claude"]["native_transport_scopes"]
+    assert scopes["same_team_mailbox"]["provider_native"] is True
+    assert scopes["same_team_mailbox"]["external_hermes_ingress"] is False
+    assert scopes["same_machine_session_socket"]["external_hermes_ingress"] is False
+    assert scopes["account_bridge"]["correlated_reply_guaranteed"] is False
     assert value["voice_connector"]["available"] is False
     assert "no callable local ingress" in value["voice_connector"]["reason"]
 

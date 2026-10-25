@@ -2167,6 +2167,27 @@ def _claim_and_open_run(
     return run_id
 
 
+def review_only_profiles() -> frozenset[str]:
+    """Profiles that may only ever review (``kanban.review_only_profiles``).
+
+    :func:`claim_task` refuses to start them on a ``ready`` card. Read on each
+    call so a config edit applies without restarting the dispatcher. Any
+    config error yields the empty set: the guard is opt-in and must never
+    stall the board.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        raw = ((load_config() or {}).get("kanban") or {}).get("review_only_profiles") or []
+    except Exception:
+        return frozenset()
+    if isinstance(raw, str):
+        raw = [raw]
+    return frozenset(
+        name for name in (_canonical_assignee(str(item)) for item in raw if item) if name
+    )
+
+
 def claim_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
@@ -2179,7 +2200,32 @@ def claim_task(
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
+    review_only = review_only_profiles()
     with write_txn(conn):
+        # Review-only profiles never implement. Park the card ``blocked`` (not
+        # left ``ready``, which the dispatcher would re-try every tick) so a
+        # human reassigns it to an implementer. ``claim_review_task`` is the
+        # only path that starts such a profile.
+        if review_only:
+            arow = conn.execute(
+                "SELECT assignee FROM tasks WHERE id = ? AND status = 'ready'", (task_id,),
+            ).fetchone()
+            if arow is not None and _canonical_assignee(arow["assignee"]) in review_only:
+                reason = (
+                    f"{arow['assignee']} is a review-only profile (kanban.review_only_profiles); "
+                    "it cannot implement a card. Reassign to an implementer."
+                )
+                conn.execute(
+                    "UPDATE tasks SET status = 'blocked', block_kind = 'needs_input', "
+                    "block_recurrences = 1 WHERE id = ? AND status = 'ready'", (task_id,),
+                )
+                _append_event(conn, task_id, "claim_rejected", {
+                    "reason": "review_only_profile", "assignee": arow["assignee"],
+                })
+                _append_event(conn, task_id, "blocked", {
+                    "kind": "needs_input", "reason": reason, "source_status": "ready",
+                })
+                return None
         # Single enforcement point: never ready -> running with an undone
         # parent, whichever writer set 'ready'. Demote to 'todo';
         # recompute_ready re-promotes when the parents finish.
@@ -3340,6 +3386,14 @@ def request_review(
                 implementer = arow["profile"] if arow else None
             if implementer is None and trow["assignee"] != reviewer:
                 implementer = trow["assignee"]
+            # Self-review is no review: a profile cannot approve the run it
+            # did itself. Name a different reviewer.
+            if reviewer is not None and implementer is not None \
+                    and _canonical_assignee(implementer) == reviewer:
+                return _ret(
+                    False, f"reviewer {reviewer!r} is the implementer of this card; "
+                    "a profile cannot review its own work. Name a different reviewer.",
+                )
             assignee_sql = ", assignee = ?" if reviewer is not None else ""
             run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
             params: tuple[Any, ...] = (

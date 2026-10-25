@@ -29,6 +29,15 @@ FORWARDED_UV_SETTINGS = frozenset({
 
 _UV_INDEX_KNOBS = ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX")
 
+
+def default_index_override(settings: Mapping[str, str]) -> str | None:
+    """Only a changed default registry makes PM's committed PyPI lock stale."""
+    for key in ("UV_INDEX_URL", "UV_DEFAULT_INDEX"):
+        value = (settings.get(key) or "").strip().rstrip("/")
+        if value and value != "https://pypi.org/simple":
+            return value
+    return None
+
 # pip knob → uv knob, applied only when uv has no value of its own.
 _PIP_TO_UV = (
     ("PIP_EXTRA_INDEX_URL", "UV_EXTRA_INDEX_URL"),

@@ -381,8 +381,13 @@ def _model_output_limit(agent: Any) -> Optional[int]:
 
 def boosted_output_cap(agent: Any, requested_cap: Optional[int], n: int, base: Optional[int] = None) -> int:
     """Output budget for truncation retry ``n`` (1-based): ``base·2ⁿ``, never below the
-    failed request's cap, at most ``max(32768, 2×cap)``, and never above the model's
+    failed request's cap, at most ``max(65536, 2×cap)``, and never above the model's
     known output limit. ``base`` defaults to max_tokens, else the cap actually sent.
+
+    The ceiling floor only binds for small-capped requests (``anchor < 32768``), which
+    is exactly where reasoning-first models need it: they burn a small output cap
+    entirely in the thinking channel before any visible content, so a 32K ceiling
+    starves every retry rung (#90393) while a doubling ladder to 64K converges.
 
     A ceiling equal to the requested cap would re-send the same budget (#72770); a
     ceiling past the model limit only buys a provider 400 (#79715).
@@ -393,7 +398,7 @@ def boosted_output_cap(agent: Any, requested_cap: Optional[int], n: int, base: O
     limit = _model_output_limit(agent)
     if limit and anchor >= limit:
         return anchor  # already at the model ceiling: doubling cannot help
-    boost = min(max(base * (2 ** n), requested_cap or 0), max(32768, anchor * 2))
+    boost = min(max(base * (2 ** n), requested_cap or 0), max(65536, anchor * 2))
     return min(boost, limit) if limit else boost
 
 

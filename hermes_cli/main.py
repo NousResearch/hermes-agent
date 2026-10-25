@@ -142,6 +142,8 @@ def _run_and_exit_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: object = None,
+    output_schema: object = None,
+    output_last_message: object = None,
     resume: object = None,
     reasoning: object = None,
 ) -> None:
@@ -155,6 +157,8 @@ def _run_and_exit_oneshot(
             toolsets=toolsets,
             skills=skills,
             usage_file=usage_file,
+            output_schema=output_schema,
+            output_last_message=output_last_message,
             resume=resume,
             reasoning=reasoning,
         )
@@ -3024,6 +3028,26 @@ def _run_oneshot_from_args(args) -> None:
 
     Bypasses cli.py entirely; the transport launcher never returns.
     """
+    if getattr(args, "output_schema", None) or getattr(args, "output_last_message", None):
+        _confirm_startup_expensive_model_override(args)
+        # -z honors --resume/-c/--in exactly like chat (#105892): normalize BEFORE the
+        # oneshot exit path takes over, else the flags parse fine but silently do nothing
+        # and the turn starts a fresh session (every wire request loses all history).
+        _resolve_chat_session_args(args, use_tui=False)
+        _run_and_exit_oneshot(
+            args.oneshot,
+            model=getattr(args, "model", None),
+            provider=getattr(args, "provider", None),
+            toolsets=getattr(args, "toolsets", None),
+            skills=getattr(args, "skills", None),
+            usage_file=getattr(args, "usage_file", None),
+            output_schema=getattr(args, "output_schema", None),
+            output_last_message=getattr(args, "output_last_message", None),
+            resume=getattr(args, "resume", None),
+            reasoning=getattr(args, "reasoning", None),
+        )
+        return
+
     from hermes_cli.gateway_chat_startup import launch_gateway_chat
     sys.exit(launch_gateway_chat(args))
 

@@ -1,6 +1,8 @@
 import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import { withPlainHttpTabLease } from '@/lib/plain-http-tab-lease'
+
 import {
   type ComposerAttachment,
   draftHasTerminalChips,
@@ -340,13 +342,16 @@ export const getQueuedPrompts = (key: string | null | undefined): QueuedPromptEn
  * them submitting the same entry — and the gateway runs the second copy as its
  * own turn. Web Locks are arbitrated by the browser across windows and freed if
  * the holder closes; a waiting window then finds an entry the holder sent
- * already gone. Without Web Locks there is no other window to exclude.
+ * already gone. Plain HTTP is not a secure context, so `navigator.locks` is
+ * missing there, but two tabs still share the origin. A localStorage lease
+ * is the claim in that case. Electron and HTTPS keep Web Locks.
  */
 export const withQueueDrainClaim = <T>(sid: string, task: (queue: QueuedPromptEntry[]) => Promise<T>): Promise<T> => {
   const run = () => task(current()[sid] ?? [])
+  const name = `${STORAGE_KEY}.drain.${sid}`
   const locks = typeof navigator === 'undefined' ? undefined : navigator.locks
 
-  return locks ? locks.request(`${STORAGE_KEY}.drain.${sid}`, run) : run()
+  return locks ? locks.request(name, run) : withPlainHttpTabLease(name, run)
 }
 
 export const enqueueQueuedPrompt = (

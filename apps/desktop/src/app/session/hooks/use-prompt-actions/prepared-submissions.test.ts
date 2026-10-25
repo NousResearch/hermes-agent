@@ -47,3 +47,173 @@ test('native preparation waits for acknowledgement and never downgrades a write 
   await removePreparedSubmission('key', 'a')
   expect(await readPreparedSubmission('key')).toBeUndefined()
 })
+
+function sharedStorage(): Storage {
+  const rows = new Map<string, string>()
+
+  return {
+    get length() { return rows.size },
+    clear() { rows.clear() },
+    getItem(key: string) {
+      const value = rows.get(key)
+
+      return value === undefined ? null : value
+    },
+    key(index: number) { return [...rows.keys()][index] ?? null },
+    removeItem(key: string) { rows.delete(key) },
+    setItem(key: string, value: string) { rows.set(key, String(value)) }
+  }
+}
+
+function installSharedStorage(): () => void {
+  const real = window.localStorage
+
+  Object.defineProperty(window, 'localStorage', { configurable: true, value: sharedStorage() })
+
+  return () => {
+    Object.defineProperty(window, 'localStorage', { configurable: true, value: real })
+  }
+}
+
+function hideWebLocks(): void {
+  Object.defineProperty(navigator, 'locks', { configurable: true, value: undefined })
+}
+
+const destination = { scopeKey: 'local::default' } as SubmissionDestination
+const owner = { connectionId: 'local', profile: 'default' }
+
+async function twoWindows() {
+  vi.resetModules()
+  const windowA = await import('./prepared-submissions')
+  vi.resetModules()
+  const windowB = await import('./prepared-submissions')
+
+  return { windowA, windowB }
+}
+
+test('two plain-HTTP windows do not adopt one prepared submission', async () => {
+  hideWebLocks()
+  vi.stubGlobal('hermesDesktop', undefined)
+  const restoreStorage = installSharedStorage()
+  const intent = preparedSubmissionKey('stored', destination, 'same text', [])
+
+  const entry: PreparedSubmission = {
+    id: 'sub-1',
+    text: 'same text',
+    attachments: [],
+    params: { submission_id: 'sub-1' },
+    owner
+  }
+
+  try {
+    const { windowA, windowB } = await twoWindows()
+
+    await windowA.writePreparedSubmission(intent, entry)
+    const held = await windowA.adoptPreparedSubmission(intent, 'sub-1')
+    expect(held?.entry.id).toBe('sub-1')
+    expect(await windowB.adoptPreparedSubmission(intent, 'sub-1')).toBeUndefined()
+
+    const [racedA, racedB] = await Promise.all([
+      windowA.adoptPreparedSubmission(intent, 'sub-1'),
+      windowB.adoptPreparedSubmission(intent, 'sub-1')
+    ])
+
+    // The holder already owns it, so a racing adopt from the other window still loses.
+    expect(racedA?.entry.id).toBe('sub-1')
+    expect(racedB).toBeUndefined()
+    await windowA.removePreparedSubmission(intent, 'sub-1')
+  } finally {
+    Reflect.deleteProperty(navigator, 'locks')
+    restoreStorage()
+  }
+})
+
+test('a closed plain-HTTP window leaves its prepared submission adoptable', async () => {
+  hideWebLocks()
+  vi.stubGlobal('hermesDesktop', undefined)
+  const restoreStorage = installSharedStorage()
+  const intent = preparedSubmissionKey('stored', destination, 'same text', [])
+
+  const entry: PreparedSubmission = {
+    id: 'sub-1',
+    text: 'same text',
+    attachments: [],
+    params: { submission_id: 'sub-1' },
+    owner
+  }
+
+  try {
+    const { windowA, windowB } = await twoWindows()
+
+    await windowA.writePreparedSubmission(intent, entry)
+    expect((await windowA.adoptPreparedSubmission(intent, 'sub-1'))?.entry.id).toBe('sub-1')
+    expect(await windowB.adoptPreparedSubmission(intent, 'sub-1')).toBeUndefined()
+    window.dispatchEvent(new Event('pagehide'))
+    const adopted = await windowB.adoptPreparedSubmission(intent, 'sub-1')
+    expect(adopted?.entry.id).toBe('sub-1')
+    await windowB.removePreparedSubmission(adopted!.key, adopted!.entry.id)
+  } finally {
+    Reflect.deleteProperty(navigator, 'locks')
+    restoreStorage()
+  }
+})
+
+test('two plain-HTTP windows do not share one slash retry slot', async () => {
+  hideWebLocks()
+  vi.stubGlobal('hermesDesktop', undefined)
+  const restoreStorage = installSharedStorage()
+  const intent = preparedSubmissionKey('stored', destination, '/skill task', [], { retryText: '/skill task' })
+
+  try {
+    const { windowA, windowB } = await twoWindows()
+
+    const [slotA, slotB] = await Promise.all([
+      windowA.preparedSubmissionSlot(intent),
+      windowB.preparedSubmissionSlot(intent)
+    ])
+
+    expect(slotA).not.toBe(slotB)
+    await windowA.removePreparedSubmission(slotA, 'release-a')
+    await windowB.removePreparedSubmission(slotB, 'release-b')
+  } finally {
+    Reflect.deleteProperty(navigator, 'locks')
+    restoreStorage()
+  }
+})
+
+test('Web Locks still exclude a live window from adopting the same prepared submission', async () => {
+  vi.stubGlobal('hermesDesktop', undefined)
+  const held = new Set<string>()
+
+  const request = vi.fn((name: string, options: { ifAvailable?: boolean }, callback: (lock: { name: string } | null) => unknown) => {
+    if (options?.ifAvailable && held.has(name)) { return callback(null) }
+
+    held.add(name)
+
+    return Promise.resolve(callback({ name })).finally(() => { held.delete(name) })
+  })
+
+  Object.defineProperty(navigator, 'locks', { configurable: true, value: { request } })
+  const intent = preparedSubmissionKey('stored', destination, 'same text', [])
+
+  const entry: PreparedSubmission = {
+    id: 'sub-1',
+    text: 'same text',
+    attachments: [],
+    params: { submission_id: 'sub-1' },
+    owner
+  }
+
+  try {
+    const { windowA, windowB } = await twoWindows()
+
+    await windowA.writePreparedSubmission(intent, entry)
+    expect((await windowA.adoptPreparedSubmission(intent, 'sub-1'))?.entry.id).toBe('sub-1')
+    expect(await windowB.adoptPreparedSubmission(intent, 'sub-1')).toBeUndefined()
+    expect(request).toHaveBeenCalled()
+    expect(Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)).some(key => key?.startsWith('hermes.desktop.tabLease.v1:'))).toBe(false)
+    await windowA.removePreparedSubmission(intent, 'sub-1')
+  } finally {
+    Reflect.deleteProperty(navigator, 'locks')
+  }
+})

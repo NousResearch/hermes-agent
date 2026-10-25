@@ -20,7 +20,8 @@ import {
   simulateComposerQueueReloadForTests,
   unparkQueuedPrompts,
   updateQueuedPrompt,
-  updateQueuedPromptText
+  updateQueuedPromptText,
+  withQueueDrainClaim
 } from './composer-queue'
 
 const SESSION_KEY = 'session-abc'
@@ -574,5 +575,188 @@ describe('composer queue terminal payload persistence', () => {
       })
     ).toBe(true)
     expect(getFrozenQueuedTransport(entry!.id)).toBeUndefined()
+  })
+})
+
+function sharedStorage(): Storage {
+  const rows = new Map<string, string>()
+
+  return {
+    get length() {
+      return rows.size
+    },
+    clear() {
+      rows.clear()
+    },
+    getItem(key: string) {
+      const value = rows.get(key)
+
+      return value === undefined ? null : value
+    },
+    key(index: number) {
+      return [...rows.keys()][index] ?? null
+    },
+    removeItem(key: string) {
+      rows.delete(key)
+    },
+    setItem(key: string, value: string) {
+      rows.set(key, String(value))
+    }
+  }
+}
+
+function installSharedStorage(): () => void {
+  const real = window.localStorage
+
+  Object.defineProperty(window, 'localStorage', { configurable: true, value: sharedStorage() })
+
+  return () => {
+    Object.defineProperty(window, 'localStorage', { configurable: true, value: real })
+  }
+}
+
+function hideWebLocks(): void {
+  Object.defineProperty(navigator, 'locks', { configurable: true, value: undefined })
+}
+
+/** Crash stand-in: the holder stopped renewing, so its record is already expired. */
+function expireLiveLeases(): number {
+  let expired = 0
+
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index)
+
+    if (!key) {
+      continue
+    }
+
+    const raw = window.localStorage.getItem(key)
+
+    if (!raw) {
+      continue
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as { expires?: unknown; owner?: unknown }
+
+      if (typeof parsed.owner !== 'string' || typeof parsed.expires !== 'number') {
+        continue
+      }
+
+      window.localStorage.setItem(key, JSON.stringify({ expires: Date.now() - 1, owner: parsed.owner }))
+      expired += 1
+    } catch {
+      // Queue rows and other records are not leases.
+    }
+  }
+
+  return expired
+}
+
+describe('plain HTTP tabs have no Web Locks', () => {
+  it('does not drain one session from two windows at the same time', async () => {
+    hideWebLocks()
+    const restoreStorage = installSharedStorage()
+
+    try {
+      vi.resetModules()
+      const windowA = await import('./composer-queue')
+      vi.resetModules()
+      const windowB = await import('./composer-queue')
+
+      windowA.enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'send once' })
+
+      let inFlight = 0
+      let maxInFlight = 0
+      const seen: string[][] = []
+
+      const drain = async (
+        queue: { id: string; text: string }[],
+        owner: { removeQueuedPrompt: typeof windowA.removeQueuedPrompt }
+      ) => {
+        inFlight += 1
+        maxInFlight = Math.max(maxInFlight, inFlight)
+        seen.push(queue.map(entry => entry.text))
+        await new Promise(resolve => setTimeout(resolve, 40))
+        const head = queue[0]
+
+        if (head) {
+          owner.removeQueuedPrompt(SESSION_KEY, head.id)
+        }
+
+        inFlight -= 1
+      }
+
+      await Promise.all([
+        windowA.withQueueDrainClaim(SESSION_KEY, queue => drain(queue, windowA)),
+        windowB.withQueueDrainClaim(SESSION_KEY, queue => drain(queue, windowB))
+      ])
+
+      expect(maxInFlight).toBe(1)
+      expect(seen).toEqual([['send once'], []])
+      expect(windowB.getQueuedPrompts(SESSION_KEY)).toEqual([])
+    } finally {
+      Reflect.deleteProperty(navigator, 'locks')
+      restoreStorage()
+    }
+  })
+
+  it('lets the other window drain once a crashed holder lease expires', async () => {
+    hideWebLocks()
+    const restoreStorage = installSharedStorage()
+    let entered = false
+
+    let finishHolder = () => {}
+    let holder: Promise<unknown> = Promise.resolve()
+
+    try {
+      vi.resetModules()
+      const windowA = await import('./composer-queue')
+      vi.resetModules()
+      const windowB = await import('./composer-queue')
+
+      holder = windowA.withQueueDrainClaim(
+        SESSION_KEY,
+        () =>
+          new Promise<void>(resolve => {
+            entered = true
+            finishHolder = resolve
+          })
+      )
+      await vi.waitFor(() => expect(entered).toBe(true))
+      expect(expireLiveLeases()).toBeGreaterThan(0)
+
+      let drained = false
+
+      await windowB.withQueueDrainClaim(SESSION_KEY, async () => {
+        drained = true
+      })
+      expect(drained).toBe(true)
+    } finally {
+      finishHolder()
+      await holder
+      Reflect.deleteProperty(navigator, 'locks')
+      restoreStorage()
+    }
+  })
+
+  it('keeps Web Locks when the browser provides them', async () => {
+    const request = vi.fn((_name: string, callback: () => Promise<unknown>) => callback())
+
+    Object.defineProperty(navigator, 'locks', { configurable: true, value: { request } })
+
+    try {
+      const before = Array.from({ length: window.localStorage.length }, (_, index) => window.localStorage.key(index))
+
+      await expect(withQueueDrainClaim(SESSION_KEY, async () => 'done')).resolves.toBe('done')
+      expect(request).toHaveBeenCalledTimes(1)
+      expect(request.mock.calls[0]?.[0]).toBe(`${QUEUE_STORAGE_KEY}.drain.${SESSION_KEY}`)
+
+      const after = Array.from({ length: window.localStorage.length }, (_, index) => window.localStorage.key(index))
+
+      expect(after.filter(key => !before.includes(key))).toEqual([])
+    } finally {
+      Reflect.deleteProperty(navigator, 'locks')
+    }
   })
 })

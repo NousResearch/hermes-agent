@@ -1,3 +1,4 @@
+import { tryPlainHttpTabLease } from '@/lib/plain-http-tab-lease'
 import type { ComposerAttachment } from '@/store/composer'
 import type { SessionOwnerScope } from '@/store/session-request-router'
 
@@ -155,10 +156,11 @@ export async function readPreparedSubmission(key: string): Promise<PreparedSubmi
   return (await readJournal())[key]
 }
 
-// Uncertain sends this window journaled or adopted: journal key -> release of its Web Lock.
-// The journal is shared by every window of the origin; a held lock marks an entry whose
-// window is alive, and only that window may retry it. A closed window's lock is freed, so its
-// entry stays adoptable after a reload. Without Web Locks there is no other window to exclude.
+// Uncertain sends this window journaled or adopted: journal key -> release of its claim.
+// The journal is shared by every window of the origin; a held claim marks an entry whose
+// window is alive, and only that window may retry it. A closed window's claim is freed, so its
+// entry stays adoptable after a reload. Plain HTTP has no Web Locks, but two tabs still share
+// this origin: the claim is a localStorage lease there. Electron and HTTPS keep Web Locks.
 const owned = new Map<string, () => void>()
 
 function holdPreparedSubmission(key: string): Promise<boolean> {
@@ -167,9 +169,13 @@ function holdPreparedSubmission(key: string): Promise<boolean> {
   if (owned.has(key)) { return Promise.resolve(true) }
 
   if (!locks) {
-    owned.set(key, () => undefined)
+    return tryPlainHttpTabLease(`${STORAGE_KEY}.${key}`).then(release => {
+      if (!release) { return false }
 
-    return Promise.resolve(true)
+      owned.set(key, release)
+
+      return true
+    })
   }
 
   return new Promise<boolean>(acquired => {

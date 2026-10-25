@@ -101,6 +101,20 @@ export class DesktopFileMissingError extends Error {
   }
 }
 
+/** Session transcripts and backend workspaces are not the Desktop host.
+ *  A local connection still has to read those files through the owning
+ *  session. Host-scoped origins keep the host filesystem precheck. */
+export function isSessionWorkspaceOrigin(origin?: {
+  fileScope?: 'host' | 'session'
+  sessionId?: string
+} | null): boolean {
+  if (!origin || origin.fileScope === 'host') {
+    return false
+  }
+
+  return origin.fileScope === 'session' || Boolean(origin.sessionId)
+}
+
 export async function readDesktopDir(path: string): Promise<HermesReadDirResult> {
   if (!isDesktopFsRemoteMode()) {
     return bridge().readDir(path)

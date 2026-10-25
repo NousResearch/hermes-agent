@@ -12,6 +12,8 @@ const { isDesktopFsRemoteMode } = vi.hoisted(() => ({
 
 vi.mock('@/lib/desktop-fs', () => ({
   isDesktopFsRemoteMode,
+  isSessionWorkspaceOrigin: (origin?: { fileScope?: string; sessionId?: string } | null) =>
+    Boolean(origin && origin.fileScope !== 'host' && (origin.fileScope === 'session' || origin.sessionId)),
   readDesktopDir: vi.fn(),
   readDesktopFileDataUrl: vi.fn(),
   readDesktopFileText: vi.fn()
@@ -84,5 +86,23 @@ describe('normalizeOrLocalPreviewTarget non-previewable results', () => {
 
     expect(fabricated?.kind).toBe('file')
     expect(fabricated?.path).toBe('/srv/reports')
+  })
+
+  it('does not treat a missing host path as final for a session workspace', async () => {
+    stubNormalization({
+      kind: 'file',
+      label: 'report.md',
+      path: '/workspace/report.md',
+      previewKind: 'missing',
+      source: '/workspace/report.md',
+      url: 'file:///workspace/report.md'
+    })
+
+    const preview = await normalizeOrLocalPreviewTarget('/workspace/report.md', '/workspace', {
+      sessionId: 'delivery-smoke'
+    })
+
+    expect(preview?.path).toBe('/workspace/report.md')
+    expect(preview?.previewKind).not.toBe('missing')
   })
 })

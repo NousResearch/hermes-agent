@@ -1,6 +1,6 @@
 import DOMPurify from 'dompurify'
 
-import { isDesktopFsRemoteMode, readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
+import { isDesktopFsRemoteMode, isSessionWorkspaceOrigin, readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
 import { isWindowsAbsolutePath } from '@/lib/path-compare'
 import type { PreviewTarget } from '@/store/preview'
 
@@ -304,7 +304,8 @@ async function enrichPreviewTarget(target: PreviewTarget | null): Promise<Previe
 
 export async function normalizeOrLocalPreviewTarget(
   rawTarget: string,
-  cwd?: string | null
+  cwd?: string | null,
+  origin?: { fileScope?: 'host' | 'session'; sessionId?: string } | null
 ): Promise<PreviewTarget | null> {
   try {
     const normalized = await window.hermesDesktop?.normalizePreviewTarget?.(rawTarget, cwd || undefined)
@@ -315,9 +316,18 @@ export async function normalizeOrLocalPreviewTarget(
       // classification below, which would fabricate a text tab for a path
       // that cannot be previewed. A remote backend's paths are not on this
       // machine, so remote mode keeps the fabricated fallback the gateway
-      // read resolves later.
+      // read resolves later. A missing host path is authoritative only for
+      // host-scoped files; session workspaces are resolved by the owning
+      // connection.
       if (normalized.previewKind === 'directory' || normalized.previewKind === 'missing') {
-        return isDesktopFsRemoteMode() ? enrichPreviewTarget(localPreviewTarget(rawTarget, cwd)) : null
+        if (
+          !isDesktopFsRemoteMode() &&
+          (normalized.previewKind === 'directory' || !isSessionWorkspaceOrigin(origin))
+        ) {
+          return null
+        }
+
+        return enrichPreviewTarget(localPreviewTarget(rawTarget, cwd))
       }
 
       return enrichPreviewTarget(normalized)
@@ -326,10 +336,10 @@ export async function normalizeOrLocalPreviewTarget(
     // The main process resolved the target against the real filesystem and
     // found nothing openable (`null`); an absent bridge yields `undefined` from
     // the optional call above instead. In local mode the main process's answer
-    // is authoritative — the fallback below can only fabricate a broken
-    // preview tab (#101683). Remote-backend paths, and a dev server without
-    // the bridge, keep it.
-    if (!isDesktopFsRemoteMode() && normalized === null) {
+    // is authoritative for host paths — the fallback below can only fabricate a
+    // broken preview tab (#101683). Session workspaces, remote-backend paths,
+    // and a dev server without the bridge, keep it.
+    if (!isDesktopFsRemoteMode() && !isSessionWorkspaceOrigin(origin) && normalized === null) {
       return null
     }
   } catch {

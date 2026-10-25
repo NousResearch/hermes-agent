@@ -1802,10 +1802,16 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         a tool call and can re-examine it with vision_analyze."""
         from tools.vision_tools import vision_analyze_tool
         from agent.memory_context import sanitize_context
+        from agent.i18n import get_language
+        from agent.i18n_languages import BUNDLED_LANGUAGE_INFO
 
+        # Describe in the configured Hermes language (default English) rather than letting the
+        # vision model pick one; a pack-only language falls back to its id.
+        lang = get_language()
+        lang_name = BUNDLED_LANGUAGE_INFO.get(lang, (lang,))[0]
         analysis_prompt = (
-            "Concisely describe this image in 2-4 sentences "
-            "(~200 Chinese characters or ~150 English words). "
+            "Concisely describe this image in 2-4 sentences (about 150 words), "
+            f"written in {lang_name}. "
             "Cover the main subject, key visible text/data/code, and overall context. "
             "If it is a chart, diagram, or scientific figure, include the important "
             "labels, legend, and key values. Skip decorative details."

@@ -397,6 +397,33 @@ class TestTeamsSummaryWriter:
         assert body["body"]["contentType"] == "html"
         assert "Weekly Sync" in body["body"]["content"]
 
+    @pytest.mark.anyio
+    async def test_incoming_webhook_summary_localizes_empty_sections(self, monkeypatch):
+        """Empty sections read the catalog's ``none_item``, as the Graph (HTML) rendering does."""
+        import json
+
+        import httpx
+        from agent.i18n import t
+
+        monkeypatch.setenv("HERMES_LANGUAGE", "fr")
+        none_item = t("platform.teams.summary.none_item")
+        assert none_item != "None"
+        posted: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            posted.append(request.read().decode("utf-8"))
+            return httpx.Response(200)
+
+        writer = TeamsSummaryWriter(transport=httpx.MockTransport(handler))
+        payload = TeamsMeetingSummaryPayload(meeting_ref=TeamsMeetingRef(meeting_id="meeting-123"), title="Weekly Sync")
+
+        await writer.write_summary(payload, {
+            "delivery_mode": "incoming_webhook", "incoming_webhook_url": "https://example.webhook.office.com/hook"})
+
+        text = json.loads(posted[0])["text"]
+        assert text.count(f"- {none_item}") == 3
+        assert "- None" not in text
+
 
 # ---------------------------------------------------------------------------
 # Tests: Message Handling

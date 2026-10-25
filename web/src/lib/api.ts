@@ -2419,6 +2419,7 @@ export interface SkillInfo {
   description: string;
   category: string;
   enabled: boolean;
+  usage?: number;
 }
 
 export interface SkillContent {

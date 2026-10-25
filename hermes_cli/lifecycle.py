@@ -27,6 +27,33 @@ def _plugin_hooks(hook_name: str, **kwargs: Any) -> list[Any]:
     return plugins.invoke_hook(hook_name, **kwargs)
 
 
+def collect_render_blocks(section: str, **kwargs: Any) -> str:
+    """Run the ``transform_render`` plugin hook for *section* and join the blocks.
+
+    One render-extension surface for every place Hermes appends plugin text to
+    something it already rendered: ``section="footer"`` (the final gateway reply)
+    and ``section="usage"`` (the ``/usage`` command output) today. Callbacks get
+    ``section`` plus that surface's payload, and return a string block; ``None``
+    or whitespace-only return values contribute nothing, while non-empty blocks
+    are joined with one blank line in registration order.
+
+    Returns ``""`` when no plugin handles the hook, so the no-plugin case costs a
+    single lookup. Fail-open: dispatching itself never raises into the caller
+    (each callback is already isolated by the hook dispatcher), so a broken plugin
+    cannot abort a reply or a command render.
+    """
+    try:
+        if not has_hook("transform_render"):
+            return ""
+        blocks = invoke_hook("transform_render", section=section, **kwargs)
+    except Exception:  # pragma: no cover — defensive, dispatch failure must not surface
+        logger.debug("transform_render(%s) dispatch failed", section, exc_info=True)
+        return ""
+    return "\n\n".join(
+        block for block in (str(raw).strip() for raw in blocks if raw is not None) if block
+    )
+
+
 def invoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
     """Notify first-party observers, then invoke compatibility plugin hooks."""
     from agent.safe_worker_policy import safe_worker_enabled

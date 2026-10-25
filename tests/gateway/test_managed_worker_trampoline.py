@@ -31,7 +31,8 @@ LAUNCHER = ('import subprocess, sys\n'
 
 def _hello(pid):
     proc = psutil.Process(pid)
-    return {'type': 'hello', 'pid': pid, 'birth': proc.create_time(),
+    from hermes_cli.process_identity import process_birth
+    return {'type': 'hello', 'pid': pid, 'birth': process_birth(proc),
             'ancestors': [p.pid for p in proc.parents()[:4]]}
 
 
@@ -63,7 +64,7 @@ def test_owner_binds_reservation_to_verified_descendant_of_the_handle_only(tmp_p
                 reserve_admission_worker(authority, hello=_hello(os.getpid()), **kwargs)
             assert db._read_one('SELECT COUNT(*) FROM worker_executions')[0] == 0
             scope = reserve_admission_worker(authority, hello=_hello(real), **kwargs)
-            assert (scope['pid'], scope['birth']) == (real, psutil.Process(real).create_time())
+            assert (scope['pid'], scope['birth']) == (real, _hello(real)['birth'])
             assert scope['pid'] != launcher.pid
     finally:
         # The real interpreter first, while it is still the launcher's child: killing the launcher

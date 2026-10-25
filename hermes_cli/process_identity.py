@@ -70,18 +70,21 @@ def process_birth(proc) -> float:
     (``psutil._psosx.adjust_proc_create_time``), with a boot-time reference frozen when psutil
     was imported in the CALLING process. After a clock step (NTP, sleep/wake) a long-lived
     gateway owner and a freshly spawned worker read different births for the same process, and
-    the exact identity match refused every managed worker (#140580). The kernel's own start
+    the exact identity match refused every managed worker (#140580). On macOS, the kernel's own start
     (``monotonic=True``: the unadjusted ``kinfo_proc`` epoch start) is what every process sees.
-    Other platforms keep ``create_time()``: Linux and Windows apply no per-process reference.
+    Linux ``create_time()`` adds ``boot_time()`` (``/proc/stat`` btime) on every call, so a clock
+    step can change the birth of an unchanged process. Linux's monotonic start ticks and macOS's
+    kernel start both come from ``create_time(monotonic=True)``; Windows falls back to
+    ``create_time()`` because its implementation lacks that API.
     Raises ``psutil.Error`` like ``create_time()``.
     """
     import psutil
-    if getattr(psutil, "MACOS", False):
+    if getattr(psutil, "MACOS", False) or getattr(psutil, "LINUX", False):
         platform_proc = getattr(proc, "_proc", None)
         if platform_proc is not None:
             try:
                 return float(platform_proc.create_time(monotonic=True))
-            except TypeError:  # a psutil without the monotonic read: fall back to the adjusted one
+            except TypeError:  # a psutil without the monotonic read: fall back to create_time()
                 pass
     return float(proc.create_time())
 

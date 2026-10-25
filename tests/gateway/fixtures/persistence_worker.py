@@ -6,6 +6,7 @@ import sys
 
 import psutil
 
+from hermes_cli.process_identity import process_birth
 
 def writable_fds(home):
     result = []
@@ -45,7 +46,7 @@ for line in sys.stdin:
             transport = module.WorkerRPC(home)
             scope = {'profile_id': str(home), 'session_id': command['session_id'],
                      'execution_id': 'owned-worker', 'generation': 0,
-                     'pid': os.getpid(), 'birth': psutil.Process().create_time(), 'secret': 'private-worker-secret'}
+                     'pid': os.getpid(), 'birth': process_birth(psutil.Process()), 'secret': 'private-worker-secret'}
             registration = transport('worker.register', **scope, kind='compute')
             assert reason(lambda: transport('session.create', request_id='forbidden-worker-create', source='cli')) == 'permission_denied'
             scope['epoch'] = registration['owner_epoch']

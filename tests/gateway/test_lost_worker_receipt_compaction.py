@@ -19,7 +19,9 @@ READ = dict(target='s', include_ancestors=False, include_inactive=False, repair_
 
 
 def hello(process):
-    return {'type': 'hello', 'pid': process.pid, 'birth': psutil.Process(process.pid).create_time(), 'ancestors': [os.getpid()]}
+    from hermes_cli.process_identity import process_birth
+    return {'type': 'hello', 'pid': process.pid, 'birth': process_birth(psutil.Process(process.pid)),
+            'ancestors': [os.getpid()]}
 
 
 def _receipt_sizes(db):

@@ -22,6 +22,7 @@ from tools.async_delegation import _initialize_schema
 
 def test_bridge_publishes_committed_completion_and_rejects_another_principal(tmp_path, monkeypatch):
     from gateway.session_worker_delegation import worker_delegation_request
+    from hermes_cli.process_identity import process_birth
     from tools.process_registry import process_registry
     target = queue.Queue()
     monkeypatch.setattr(process_registry, 'completion_queue', target)
@@ -38,7 +39,7 @@ def test_bridge_publishes_committed_completion_and_rejects_another_principal(tmp
         connection = SimpleNamespace(authority=authority, actor=actor)
         ref = SessionRef('profile', 'parent')
         scope = dict(profile_id='profile', session_id='parent', execution_id='worker', generation=0,
-                     pid=worker.pid, birth=psutil.Process(worker.pid).create_time(), secret='private-worker-secret')
+                     pid=worker.pid, birth=process_birth(psutil.Process(worker.pid)), secret='private-worker-secret')
         claim = _claim(connection, ref, scope)
         register_worker_execution(db, epoch=epoch, execution_id='worker', session_id='parent', generation=0,
                                   kind='compute', adoption_secret=claim)

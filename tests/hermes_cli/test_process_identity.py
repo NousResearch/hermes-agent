@@ -238,7 +238,7 @@ def test_ledger_entries_excludes_a_killed_but_unreaped_process(tmp_path):
 
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
-        created = psutil.Process(child.pid).create_time()
+        created = pi.process_birth(psutil.Process(child.pid))
         child.terminate()
         deadline = time.monotonic() + 10
         while psutil.Process(child.pid).status() != psutil.STATUS_ZOMBIE:

@@ -32,8 +32,9 @@ async def test_worker_register_requires_the_owners_launched_worker(tmp_path, mon
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def scope(pid):
+        from hermes_cli.process_identity import process_birth
         return {'profile_id': 'p', 'session_id': 'owned', 'execution_id': f'compute-{pid}', 'generation': 0,
-                'pid': pid, 'birth': psutil.Process(pid).create_time(), 'secret': 'w' * 32, 'kind': 'compute'}
+                'pid': pid, 'birth': process_birth(psutil.Process(pid)), 'secret': 'w' * 32, 'kind': 'compute'}
     interactive = SimpleNamespace(authority=authority, actor=Principal(
         'human', 'p', frozenset({'session:create', 'session:read', 'session:submit', 'session:control'}), 't'))
     worker = SimpleNamespace(authority=authority, actor=Principal('human', 'p', frozenset({'worker:adopt'}), 't'))

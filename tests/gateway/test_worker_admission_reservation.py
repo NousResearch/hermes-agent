@@ -14,7 +14,9 @@ from hermes_state_runtime import (admit_session_input, begin_runtime_epoch, clai
 
 def hello(process):
     """A direct child's self-introduction (no launcher: chain length 0)."""
-    return {'type': 'hello', 'pid': process.pid, 'birth': psutil.Process(process.pid).create_time(), 'ancestors': [os.getpid()]}
+    from hermes_cli.process_identity import process_birth
+    return {'type': 'hello', 'pid': process.pid, 'birth': process_birth(psutil.Process(process.pid)),
+            'ancestors': [os.getpid()]}
 
 
 def test_started_admission_binds_only_exact_owned_process_and_principal(tmp_path):
@@ -98,6 +100,7 @@ async def test_input_queued_behind_a_live_worker_is_released_then_runs_when_it_f
     from gateway.session_worker import worker_request
     from gateway import session_finite
     from hermes_state_runtime import get_session_admission
+    from hermes_cli.process_identity import process_birth
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     db = SessionDB(tmp_path / 'state.db')
@@ -119,7 +122,7 @@ async def test_input_queued_behind_a_live_worker_is_released_then_runs_when_it_f
     connection = SimpleNamespace(authority=authority, actor=actor)
     ref = SessionRef('p', 'owned')
     scope = {'profile_id': 'p', 'session_id': 'owned', 'execution_id': 'compute', 'generation': 0,
-             'pid': process.pid, 'birth': psutil.Process(process.pid).create_time(), 'secret': 'w' * 32}
+             'pid': process.pid, 'birth': process_birth(psutil.Process(process.pid)), 'secret': 'w' * 32}
     try:
         registered = await worker_request(connection, ref, scope | {'kind': 'compute'}, operation='register')
         # Native ingress waits on the admission it committed; a blocked FIFO must answer it.
@@ -182,6 +185,47 @@ def test_reservation_survives_a_clock_step_on_macos(tmp_path, stale_psutil_boot_
         process.wait(timeout=5)
         db.close()
 
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize('drift', [5.0, -5.0])
+@pytest.mark.asyncio
+async def test_worker_birth_guard_survives_btime_step_on_linux(tmp_path, monkeypatch, drift):
+    import psutil._pslinux
+    from gateway.session_worker import worker_request
+    from gateway.session_worker_reservation import reserve_admission_worker
+    from hermes_cli.process_identity import process_birth
+
+    db = SessionDB(tmp_path / 'state.db')
+    process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        db.create_session('owned', 'cli')
+        epoch = begin_runtime_epoch(db, instance_id='owner')
+        authority = SimpleNamespace(db=db, epoch=epoch, profile_id=str(tmp_path),
+                                    _require_admission_open=lambda: None,
+                                    wake_after_worker=lambda session_id: None)
+        admitted = admit_session_input(db, epoch=epoch, principal_id='human', session_id='owned',
+                                       request_id='input', payload={})
+        claim_session_input(db, epoch=epoch, session_id='owned')
+        scope = reserve_admission_worker(authority, admission_id=admitted['admission_id'], process=process,
+                                         principal_id='human', hello=hello(process))
+        birth = scope['birth']
+        before_create_time = psutil.Process(process.pid).create_time()
+        boot_time = psutil._pslinux.boot_time
+        before_boot_time = boot_time()
+        monkeypatch.setattr(psutil._pslinux, 'boot_time', lambda: before_boot_time + drift)
+        assert psutil.Process(process.pid).create_time() == pytest.approx(before_create_time + drift)
+        assert process_birth(psutil.Process(process.pid)) == birth
+
+        actor = SimpleNamespace(subject='human', profile_id=str(tmp_path), capabilities={'worker:adopt'})
+        connection = SimpleNamespace(authority=authority, actor=actor)
+        identity = {key: value for key, value in scope.items() if key != 'epoch'}
+        receipt = await worker_request(connection, None, identity, operation='adopt')
+        assert receipt['execution_id'] == scope['execution_id']
+    finally:
+        process.stdin.close()
+        process.wait(timeout=5)
+        db.close()
+
 
 @pytest.mark.platforms("macos")
 @pytest.mark.parametrize('drift', [5.0, -5.0])
@@ -209,13 +253,11 @@ def test_process_fingerprints_survive_a_clock_step_on_macos(stale_psutil_boot_re
         process.wait(timeout=5)
 
 
-def test_process_birth_is_create_time_where_psutil_applies_no_reference():
-    """Linux and Windows read ``create_time()`` unchanged, so every stored fingerprint and ledger
-    row written before KB-6 still matches there; on macOS with no step psutil returns the kernel
-    start unchanged too (``adjust_proc_create_time`` ignores |drift| < 1 s)."""
+def test_process_birth_matches_live_process_identity():
+    """The same process identity contract applies regardless of the clock's representation."""
     from gateway.status import get_process_start_time
     from hermes_cli.process_identity import _pid_alive_matches, process_birth
     proc = psutil.Process()
-    assert process_birth(proc) == proc.create_time()
-    assert _pid_alive_matches(os.getpid(), proc.create_time(), strict=True) is True
+    birth = process_birth(proc)
+    assert _pid_alive_matches(os.getpid(), birth, strict=True) is True
     assert get_process_start_time(os.getpid()) is not None

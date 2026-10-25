@@ -48,7 +48,7 @@ def child():
 def _dead_process_identity() -> tuple[int, float]:
     """(pid, create_time) of a real process that is provably dead."""
     proc = subprocess.Popen(["sleep", "300"])
-    create = psutil.Process(proc.pid).create_time()
+    create = pi.process_birth(psutil.Process(proc.pid))
     proc.kill()
     proc.wait()
     # Ensure the corpse is fully reaped (no zombie ambiguity).
@@ -72,10 +72,10 @@ def test_register_child_entry_shape(ledger, child):
     assert e["install"] == pi.install_id()
     assert e["spawner_pid"] == os.getpid()
     assert e["spawner_create"] == pytest.approx(
-        psutil.Process(os.getpid()).create_time(), abs=2.0
+        pi.process_birth(psutil.Process(os.getpid())), abs=2.0
     )
     assert e["create_time"] == pytest.approx(
-        psutil.Process(child.pid).create_time(), abs=2.0
+        pi.process_birth(psutil.Process(child.pid)), abs=2.0
     )
     assert e["registered_at"] == pytest.approx(time.time(), abs=30.0)
     # Visible through the live-verified reader too.

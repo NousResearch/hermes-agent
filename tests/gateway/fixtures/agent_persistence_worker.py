@@ -7,6 +7,7 @@ import sys
 import psutil
 
 from agent.runtime_session_store import RuntimeSessionStore, WorkerRPC
+from hermes_cli.process_identity import process_birth
 
 
 def writable_fds():
@@ -36,7 +37,7 @@ def main():
     rpc = WorkerRPC(home)
     scope = dict(profile_id=str(home), session_id=command['session_id'],
                  execution_id='agent-worker', generation=0, pid=os.getpid(),
-                 birth=psutil.Process().create_time(), secret='private-agent-worker')
+                 birth=process_birth(psutil.Process()), secret='private-agent-worker')
     registered = rpc('worker.register', **scope, kind='compute')
     scope['epoch'] = registered['owner_epoch']
     store = RuntimeSessionStore(rpc, scope, home / 'worker-outboxes' / 'agent-worker')

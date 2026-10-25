@@ -6,6 +6,7 @@ import time
 
 import psutil
 import pytest
+from hermes_cli.process_identity import process_birth
 
 from agent.runtime_session_store import RuntimeSessionStore
 from hermes_state import SessionDB
@@ -25,7 +26,7 @@ def test_lost_ack_reopens_owner_and_replays_same_ledger_receipt(tmp_path):
     register_worker_execution(db, epoch=epoch, execution_id='worker', session_id='parent',
                               generation=0, kind='compute', adoption_secret='private')
     scope = dict(epoch=epoch, execution_id='worker', session_id='parent', generation=0,
-                 pid=os.getpid(), birth=psutil.Process().create_time())
+                 pid=os.getpid(), birth=process_birth(psutil.Process()))
     lost = [True]
     def rpc(method, **params):
         assert method == 'worker.persist'
@@ -75,7 +76,7 @@ def test_receipt_fences_wrong_session_generation_and_owner_epoch(tmp_path):
                                   generation=0, kind='compute', adoption_secret='private')
         scope = dict(epoch=epoch, execution_id='worker', session_id='parent', generation=0,
             sequence=1, operation='delegation.read', payload={'delegation_id': 'none'},
-            worker_pid=os.getpid(), worker_birth=psutil.Process().create_time())
+            worker_pid=os.getpid(), worker_birth=process_birth(psutil.Process()))
         for override, error in [({'session_id': 'foreign'}, 'permission_denied'),
                                 ({'generation': 1}, 'stale_generation'),
                                 ({'epoch': epoch + 1}, 'stale_epoch'),

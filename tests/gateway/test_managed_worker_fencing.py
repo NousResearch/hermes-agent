@@ -14,7 +14,9 @@ from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim
 
 def hello(process):
     """A direct child's self-introduction (no launcher: chain length 0)."""
-    return {'type': 'hello', 'pid': process.pid, 'birth': psutil.Process(process.pid).create_time(), 'ancestors': [os.getpid()]}
+    from hermes_cli.process_identity import process_birth
+    return {'type': 'hello', 'pid': process.pid, 'birth': process_birth(psutil.Process(process.pid)),
+            'ancestors': [os.getpid()]}
 
 
 def test_worker_loss_fences_same_generation_parent_result(tmp_path):

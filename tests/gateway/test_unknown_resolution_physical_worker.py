@@ -14,7 +14,8 @@ import hermes_state_runtime as rt
 
 
 def hello(process):
-    return {'type': 'hello', 'pid': process.pid, 'birth': psutil.Process(process.pid).create_time(),
+    from hermes_cli.process_identity import process_birth
+    return {'type': 'hello', 'pid': process.pid, 'birth': process_birth(psutil.Process(process.pid)),
             'ancestors': [os.getpid()]}
 
 

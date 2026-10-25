@@ -998,6 +998,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         fail_fmt = f"Failed to send shutdown notification to {where}%s:%s: %s"
         if not await self._send_notice_logged(adapter, chat_id, msg, platform_str, fail_fmt, **send_kwargs):
             return False
+        if kind == "home channel":
+            self._shutdown_notice_delivered = True
         logger.info("Sent shutdown notification to %s %s:%s", kind, platform_str, chat_id)
         return True
 
@@ -1028,6 +1030,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         restart_source = self._restart_command_source if self._restart_requested else None
         msg = t("gateway.shutdown.notice_restart" if self._restart_requested else "gateway.shutdown.notice_shutdown")
         restart_key = None
+        self._shutdown_notice_delivered = False  # this pass decides what the next boot owes the user
         if restart_source is not None:
             with suppress(Exception):
                 restart_key = _notice_target_key(
@@ -2132,6 +2135,13 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                     via_service=bool(self._restart_via_service),
                     detached=bool(self._restart_detached),
                 )
+        elif not self._restart_requested and self._shutdown_notice_delivered:
+            # Signal-initiated planned stop (systemd, `hermes update`, docker): the user WAS told
+            # the gateway is going down, so the next boot must still owe them the back-online
+            # notice — the command-driven branch above only covers /restart-requested stops.
+            from gateway.restart_notice import write_planned_restart_marker
+            with _log_suppressed(logging.DEBUG, "Failed to write planned restart notification marker: %s"):
+                write_planned_restart_marker()
         if self._restart_requested and self._restart_via_service:
             # Exit 75 + ``RestartForceExitStatus=75``: systemd replaces us without a racing helper.
             self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE

@@ -1,6 +1,7 @@
 """Tests for /restart notification — the gateway notifies the requester on comeback."""
 
 import json
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -385,5 +386,100 @@ async def test_shutdown_notifications_are_fully_muted_when_flag_disabled():
     await runner._notify_active_sessions_of_shutdown()
 
     adapter.send.assert_not_awaited()
+
+
+# ── signal-initiated stop still owes the back-online notice ───────────────
+
+
+@pytest.mark.asyncio
+async def test_signal_stop_that_delivered_shutdown_notice_writes_pending_marker(tmp_path, monkeypatch):
+    """A systemd/update/docker SIGTERM (not a /restart) that told the user the gateway is going
+    down must still leave ``.restart_pending.json`` so the next boot sends "Gateway online"."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+    monkeypatch.setattr("gateway.status.release_gateway_runtime_lock", lambda: None)
+    monkeypatch.setattr("gateway.status.flush_runtime_status_async", AsyncMock(return_value=True))
+
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._restart_requested = False
+    runner._signal_initiated_shutdown = True
+    runner._restart_command_source = None
+    runner._restart_via_service = False
+    runner._restart_detached = False
+    runner._shutdown_notice_delivered = True  # the "shutting down" line actually reached the home
+    runner._exit_reason = "Gateway stopped"
+    runner._draining = False
+    runner._increment_restart_failure_counts = MagicMock()
+    runner._update_runtime_status = MagicMock()
+
+    ctx = gateway_run.GatewayShutdownMixin._StopContext(deferred_count=lambda: 0)
+    ctx.started_at = time.monotonic()
+
+    await runner._stop_persist_exit_state(ctx)
+
+    marker = tmp_path / ".restart_pending.json"
+    assert marker.exists(), "signal stop that notified the user must arm the back-online replay"
+    data = json.loads(marker.read_text(encoding="utf-8"))
+    assert data["via_service"] is False and data["detached"] is False
+
+
+@pytest.mark.asyncio
+async def test_signal_stop_without_shutdown_notice_writes_no_marker(tmp_path, monkeypatch):
+    """When nothing reached the user (home channel muted / no transport), the signal stop must NOT
+    promise a back-online notice the user was never told about."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+    monkeypatch.setattr("gateway.status.release_gateway_runtime_lock", lambda: None)
+    monkeypatch.setattr("gateway.status.flush_runtime_status_async", AsyncMock(return_value=True))
+
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._restart_requested = False
+    runner._signal_initiated_shutdown = True
+    runner._restart_command_source = None
+    runner._restart_via_service = False
+    runner._restart_detached = False
+    runner._shutdown_notice_delivered = False
+    runner._exit_code = 0
+    runner._exit_reason = "Gateway stopped"
+    runner._draining = False
+    runner._increment_restart_failure_counts = MagicMock()
+    runner._update_runtime_status = MagicMock()
+
+    ctx = gateway_run.GatewayShutdownMixin._StopContext(deferred_count=lambda: 0)
+    ctx.started_at = time.monotonic()
+
+    await runner._stop_persist_exit_state(ctx)
+
+    assert not (tmp_path / ".restart_pending.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_command_driven_restart_marker_precedence_preserved(tmp_path, monkeypatch):
+    """The original /restart-requested branch (command source None) still writes the marker
+    regardless of the new signal-stop flag."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+    monkeypatch.setattr("gateway.status.release_gateway_runtime_lock", lambda: None)
+    monkeypatch.setattr("gateway.status.flush_runtime_status_async", AsyncMock(return_value=True))
+
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._restart_requested = True
+    runner._signal_initiated_shutdown = False
+    runner._restart_command_source = None
+    runner._restart_via_service = False
+    runner._restart_detached = False
+    runner._shutdown_notice_delivered = False
+    runner._exit_code = 0
+    runner._exit_reason = "Gateway restart requested"
+    runner._draining = False
+    runner._increment_restart_failure_counts = MagicMock()
+    runner._update_runtime_status = MagicMock()
+
+    ctx = gateway_run.GatewayShutdownMixin._StopContext(deferred_count=lambda: 0)
+    ctx.started_at = time.monotonic()
+
+    await runner._stop_persist_exit_state(ctx)
+
+    assert (tmp_path / ".restart_pending.json").exists()
 
 

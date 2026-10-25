@@ -3364,6 +3364,9 @@ class GatewayRunner(
     _restart_detached: bool = False
     _restart_via_service: bool = False
     _detached_restart_helper_started: bool = False
+    # Home-channel shutdown notice actually delivered this stop; the back-online
+    # notice must follow whatever the user was told (see _stop_persist_exit_state).
+    _shutdown_notice_delivered: bool = False
     _restart_command_source: Optional[SessionSource] = None
     _stop_task: Optional[asyncio.Task] = None
     _restart_task: Optional[asyncio.Task] = None

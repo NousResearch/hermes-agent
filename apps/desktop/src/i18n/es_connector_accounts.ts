@@ -6,6 +6,8 @@ export const esConnectorAccounts: NonNullable<TranslationOverrides['connectorsPa
   addAnother: 'Añadir otra cuenta',
   aliasLabel: 'Nombre de la cuenta',
   aliasHint: 'Minúsculas, números y guiones, hasta 32. Por ejemplo trabajo o casa.',
+  localHint:
+    'Crea una conexión MCP directa independiente, no un conector alojado. Este nombre identifica sus herramientas; elige la cuenta o el espacio de trabajo deseado en la página de inicio de sesión del proveedor. Si falla o se cancela, la nueva entrada permanece para reintentar o quitarla.',
   aliasInvalid: 'Usa minúsculas, números y guiones, empezando por una letra o un número.',
   aliasTaken: 'Ese nombre ya está en uso.',
   add: 'Conectar',

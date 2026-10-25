@@ -6,6 +6,8 @@ export const frConnectorAccounts: NonNullable<TranslationOverrides['connectorsPa
   addAnother: 'Ajouter un autre compte',
   aliasLabel: 'Nom du compte',
   aliasHint: 'Lettres minuscules, chiffres et tirets, 32 au plus. Par exemple travail ou maison.',
+  localHint:
+    'Crée une connexion MCP directe distincte, pas un connecteur hébergé. Ce nom identifie ses outils ; choisissez le compte ou l’espace de travail voulu sur la page de connexion du fournisseur. En cas d’échec ou d’annulation, la nouvelle entrée reste disponible pour réessayer ou la retirer.',
   aliasInvalid:
     'Utilisez des lettres minuscules, des chiffres et des tirets, en commençant par une lettre ou un chiffre.',
   aliasTaken: 'Ce nom est déjà utilisé.',

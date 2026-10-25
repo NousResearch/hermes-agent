@@ -23,6 +23,11 @@ import { zhThemePicker } from './zh_theme_picker'
 import { zhUpdateChannel } from './zh_update_channel'
 
 export const zhOverrides = {
+  connectorsPage: {
+    accounts: {
+      localHint: '创建独立的直接 MCP 连接，而非托管连接器。此名称用于区分工具；请在服务商的登录页面选择所需的账户或工作区。登录失败或取消后，新条目仍可重试或移除。'
+    }
+  },
   catalog: zhCatalog,
   externalOpenFailed: {
     title: '无法打开此链接',

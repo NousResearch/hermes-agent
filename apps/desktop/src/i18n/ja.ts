@@ -24,6 +24,11 @@ import { jaThemePicker } from './ja_theme_picker'
 import { jaUpdateChannel } from './ja_update_channel'
 
 export const jaOverrides = {
+  connectorsPage: {
+    accounts: {
+      localHint: 'ホスト型コネクターではなく、独立した直接 MCP 接続を作成します。この名前はツールの識別用です。プロバイダーのログイン画面で目的のアカウントまたはワークスペースを選択してください。失敗やキャンセル後も、新しい接続を再試行または削除できます。'
+    }
+  },
   catalog: jaCatalog,
   connectors: jaConnectors.connectors,
   externalOpenFailed: {

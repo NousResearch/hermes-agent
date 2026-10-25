@@ -42,6 +42,11 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 }
 
 export const ruOverrides = {
+  connectorsPage: {
+    accounts: {
+      localHint: 'Создаёт отдельное прямое подключение MCP, а не размещённый коннектор. Это имя обозначает его инструменты; выберите нужную учётную запись или рабочее пространство на странице входа провайдера. При ошибке или отмене новая запись остаётся доступной для повторной попытки или удаления.'
+    }
+  },
   catalog: ruCatalog,
   connectors: ruConnectors.connectors,
   sharedMetrics: ruSharedMetrics,

@@ -13,6 +13,11 @@ import { arSettings } from './ar_settings'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 
 export const arOverrides = {
+  connectorsPage: {
+    accounts: {
+      localHint: 'ينشئ اتصال MCP مباشرًا مستقلاً، وليس موصلاً مستضافًا. يميز هذا الاسم أدواته؛ اختر الحساب أو مساحة العمل المطلوبة في صفحة تسجيل الدخول لدى المزود. إذا فشل تسجيل الدخول أو أُلغي، يبقى الإدخال الجديد متاحًا لإعادة المحاولة أو الإزالة.'
+    }
+  },
 
   catalog: {
     add: 'إضافة',

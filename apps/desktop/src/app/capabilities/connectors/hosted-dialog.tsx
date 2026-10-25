@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 
 import type { ProfileScope } from '@/hermes'
 import { translateNow } from '@/i18n'
@@ -38,6 +38,7 @@ export interface HostedConnectorDialogProps {
   hosted: HostedConnectorsView
   installFields?: readonly InstallField[]
   installing?: boolean
+  localAccounts?: ReactNode
   onClose: () => void
   onConnect: () => void
   onDisconnect: () => void
@@ -92,6 +93,7 @@ export function HostedConnectorDialog({
   hosted,
   installFields,
   installing,
+  localAccounts,
   onClose,
   onConnect,
   onDisconnect,
@@ -155,7 +157,7 @@ export function HostedConnectorDialog({
 
   return (
     <ConnectorDialog
-      accounts={<AccountsSection {...accountList.props} />}
+      accounts={way === 'local' ? localAccounts : <AccountsSection {...accountList.props} />}
       advanced={
         installed ? <LocalAdvanced controller={controller} name={serverName} onRemove={onRemoveServer} /> : undefined
       }

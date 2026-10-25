@@ -348,8 +348,7 @@ def test_task_discovery_skips_listing_lines_that_are_not_task_rows(tmp_path, mon
         return SimpleNamespace(returncode=0, stdout=next(text for key, text in out.items() if key in argv).encode())
 
     monkeypatch.setattr(service, "_run", run)
-    monkeypatch.setattr(service.sys, "platform", "win32")
-    found = service.discover_existing_gateway_service(home, deadline=time.monotonic() + 5)
+    found = service._windows(home, time.monotonic() + 5)
     if installed:
         assert found is not None and found.start_argv == ("schtasks.exe", "/Run", "/TN", name)
     else:

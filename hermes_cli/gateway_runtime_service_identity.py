@@ -306,9 +306,10 @@ def read_definition(path: Path) -> bytes:
         return value
 
 
-def _launcher_text(raw: bytes) -> str:
+def launcher_text(raw: bytes) -> str:
     """Current .vbs launchers are UTF-16 with a BOM (wscript.exe reads a BOM-less script in the ANSI
-    code page); launchers written by older versions are UTF-8. Both must verify."""
+    code page); launchers written by older versions, and every other service definition, are UTF-8.
+    Undecodable bytes raise ``ValueError``."""
     if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
         try:
             return raw.decode("utf-16")
@@ -393,6 +394,6 @@ def verify_windows_task(xml: str | bytes, home: Path, account: str, sid: str) ->
     script = _absolute(match[1])
     if script.suffix.lower() != '.vbs':
         _unverified()
-    configured, argv = _vbs_identity(_launcher_text(read_definition(script)))
+    configured, argv = _vbs_identity(launcher_text(read_definition(script)))
     verify_home(home, configured)
     verify_gateway_argv(argv, home)

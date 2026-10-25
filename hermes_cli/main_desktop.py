@@ -541,6 +541,23 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool
             continue
         if release_dir in exe_path.parents:
             victims.append(proc)
+            continue
+        # A foreign helper the app spawned (IME/AV/assistant component) keeps the app's
+        # cwd = release/<name> after the app itself is killed, and Windows refuses to
+        # rename a directory that is any live process's cwd - the stage-and-swap then
+        # dies with WinError 32 (2026-09-22: Sogou IME helper blocked win-unpacked).
+        try:
+            cwd = proc.cwd()
+        except Exception:
+            continue
+        if not cwd:
+            continue
+        try:
+            cwd_path = Path(cwd).resolve()
+        except OSError:
+            continue
+        if cwd_path == release_dir or release_dir in cwd_path.parents:
+            victims.append(proc)
 
     stopped: list[int] = []
     for proc in victims:

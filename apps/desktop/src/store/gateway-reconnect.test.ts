@@ -40,6 +40,20 @@ describe('gateway reconnect controller', () => {
     expect(handler).toHaveBeenCalledTimes(2)
   })
 
+  it('rechecks operation authority before the queued handler can touch a new route', async () => {
+    let current = true
+    const handler = vi.fn()
+    disposers.push(registerGatewayReconnect(handler))
+    const outcome = reconnectGateway({ source: 'restart-followthrough', isCurrent: () => current })
+    current = false
+
+    await outcome
+
+    expect(handler).not.toHaveBeenCalled()
+    await reconnectGateway()
+    expect(handler).toHaveBeenCalledOnce()
+  })
+
   it('only lets the current registration remove itself', async () => {
     const stale = vi.fn()
     const current = vi.fn()

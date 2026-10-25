@@ -8,6 +8,7 @@ import { ruClarify } from './ru_clarify'
 import { ruConnectors } from './ru_connectors'
 import { ruErrorCodes } from './ru_error_codes'
 import { ruFirstRun } from './ru_first_run'
+import { ruMessagingGateway } from './ru_messaging_gateway'
 import { ruModelMenu } from './ru_model_menu'
 import { ruModelSettings } from './ru_model_settings'
 import { ruNotices } from './ru_notices'
@@ -1807,6 +1808,7 @@ export const ruOverrides = {
     }
   },
   messaging: {
+    ...ruMessagingGateway,
     search: 'Поиск в сообщениях...',
     statusFilter: {
       all: 'Все',

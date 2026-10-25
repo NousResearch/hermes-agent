@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { StatusDot, type StatusTone } from '@/components/status-dot'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -21,20 +20,21 @@ import {
   type MessagingPlatformInfo,
   type MessagingPlatformUpdate,
   type PairingUser,
+  resolveOwnerNow,
   revokePairing,
   type TelegramOnboardingApplyResponse,
   updateMessagingPlatform
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
-import { AlertTriangle, ExternalLink, RefreshCw, Save, Trash2 } from '@/lib/icons'
+import { ExternalLink, Save, Trash2 } from '@/lib/icons'
 import { platformStatusTone } from '@/lib/platform-status'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
 import { $settingsRequestProfile } from '@/store/settings-scope'
-import { $gatewayRestarting, runGatewayRestart, watchGatewayRestartOutcome } from '@/store/system-actions'
+import { $gatewayRestarting, runGatewayRestart, runGatewayStart, watchGatewayRestartOutcome } from '@/store/system-actions'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -47,6 +47,7 @@ import { SettingsProfileScope } from '../settings/profile-scope'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { AllowlistField } from './allowlist-field'
+import { GatewayControls } from './gateway-controls'
 import { PlatformAvatar } from './platform-icon'
 import { TelegramQrSetup } from './telegram-qr-setup'
 
@@ -158,6 +159,10 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   // actually happens (dashboard parity). Cleared on a completed restart.
   const [restartNeeded, setRestartNeeded] = useState(false)
   const gatewayRestarting = useStore($gatewayRestarting)
+  // A later scope or successful save makes an earlier action completion stale.
+  const actionEpoch = useRef(0)
+
+  useEffect(() => () => { actionEpoch.current += 1 }, [])
 
   const [pairing, setPairing] = useState<{ approved: PairingUser[]; pending: PairingUser[] }>({
     approved: [],
@@ -173,21 +178,43 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const [saving, setSaving] = useState<string | null>(null)
   const platformIds = useMemo(() => platforms?.map(p => p.id) ?? [], [platforms])
   const [selectedId, setSelectedId] = useRouteEnumParam('platform', platformIds, platformIds[0] ?? '')
+  const messagingGatewayStopped = platforms?.some(platform => platform.enabled && !platform.gateway_running) ?? false
 
   const restartGatewayNow = useCallback(async () => {
     // runGatewayRestart never rejects: it toasts the failure and settles the
     // statusbar indicator; the banner stays if the restart did not complete.
-    const ok = await runGatewayRestart()
+    const epoch = actionEpoch.current
+    const ok = await runGatewayRestart(resolveOwnerNow({ profile: scopeProfile }))
 
-    if (ok) {
+    if (ok && actionEpoch.current === epoch) {
       setRestartNeeded(false)
-      window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
+      window.setTimeout(() => {
+        if (actionEpoch.current === epoch) {
+          void refreshPlatformsRef.current(true)
+        }
+      }, 4000)
     }
-  }, [])
+  }, [scopeProfile])
+
+  const startGatewayNow = useCallback(async () => {
+    const epoch = actionEpoch.current
+    const ok = await runGatewayStart(resolveOwnerNow({ profile: scopeProfile }))
+
+    if (ok && actionEpoch.current === epoch) {
+      setRestartNeeded(false)
+      window.setTimeout(() => {
+        if (actionEpoch.current === epoch) {
+          void refreshPlatformsRef.current(true)
+        }
+      }, 4000)
+    }
+  }, [scopeProfile])
 
   // A multiplexed named profile is re-served from its new config at once (`hot_served`): no restart
   // banner; re-read status once the adapter had a moment to connect. Anything else needs a restart.
   const settleAfterUpdate = useCallback((hotServed: boolean | undefined) => {
+    actionEpoch.current += 1
+
     if (hotServed) {
       window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
 
@@ -278,6 +305,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const [prevScope, setPrevScope] = useState(scopeProfile)
 
   if (prevScope !== scopeProfile) {
+    actionEpoch.current += 1
     setPrevScope(scopeProfile)
     setPlatforms(null)
     setPairing({ approved: [], pending: [] })
@@ -606,23 +634,14 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                   )
                 }
               >
-                {restartNeeded && (
-                  <Alert variant="warning">
-                    <AlertTriangle />
-                    <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
-                      <span>{m.restartNeeded}</span>
-                      <Button
-                        disabled={gatewayRestarting}
-                        onClick={() => void restartGatewayNow()}
-                        size="sm"
-                        variant="secondary"
-                      >
-                        <RefreshCw className={gatewayRestarting ? 'animate-spin' : undefined} />
-                        {gatewayRestarting ? m.restarting : m.restartNow}
-                      </Button>
-                    </AlertDescription>
-                  </Alert>
-                )}
+                <GatewayControls
+                  busy={gatewayRestarting}
+                  copy={m}
+                  onRestart={restartGatewayNow}
+                  onStart={startGatewayNow}
+                  restartNeeded={restartNeeded}
+                  stopped={messagingGatewayStopped}
+                />
                 {selected && (
                   <PlatformDetail
                     approved={approvedByPlatform[selected.id] ?? []}

@@ -9,6 +9,7 @@ import { deErrorCodes } from './de_error_codes'
 import { deErrorLayers } from './de_error_layers'
 import { deFirstRun } from './de_first_run'
 import { deLocalModels } from './de_local_models'
+import { deMessagingGateway } from './de_messaging_gateway'
 import { deModelMenu } from './de_model_menu'
 import { deModelSettings } from './de_model_settings'
 import { deNotices } from './de_notices'
@@ -2876,6 +2877,7 @@ export const deOverrides = {
     }
   },
   messaging: {
+    ...deMessagingGateway,
     search: 'Messaging durchsuchen...',
     statusFilter: {
       all: 'Alle',

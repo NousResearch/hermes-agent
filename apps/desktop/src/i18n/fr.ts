@@ -10,6 +10,7 @@ import { frErrorCodes } from './fr_error_codes'
 import { frErrorLayers } from './fr_error_layers'
 import { frFirstRun } from './fr_first_run'
 import { frLocalModels } from './fr_local_models'
+import { frMessagingGateway } from './fr_messaging_gateway'
 import { frModelMenu } from './fr_model_menu'
 import { frModelSettings } from './fr_model_settings'
 import { frNotices } from './fr_notices'
@@ -2884,6 +2885,7 @@ export const frOverrides = {
     }
   },
   messaging: {
+    ...frMessagingGateway,
     search: 'Rechercher dans la messagerie...',
     statusFilter: {
       all: 'Tous',

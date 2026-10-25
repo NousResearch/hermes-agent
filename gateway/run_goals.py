@@ -152,7 +152,7 @@ class GatewayGoalsMixin:
         # A local chat has no message handler: its owner admits the tick (``admit_heartbeat``).
         if adapter is None or not (adapter._message_handler or local):
             return
-        if local and viewer_driven(adapter.authority, source.chat_id):
+        if local and viewer_driven(adapter.authority, source.chat_id, "viewer_heartbeat"):
             return  # the classic CLI's watchdog fires it: that CLI paints only the turns it submits
         if getattr(self, 'session_authority', None) is not None:
             from gateway.run_heartbeat_acceptance import admit_heartbeat

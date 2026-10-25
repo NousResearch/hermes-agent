@@ -33,11 +33,11 @@ _FIELDS = frozenset({"session_id", "profile", "kind", "call", "args", "kwargs"})
 _ERRORS = (RuntimeError, ValueError, IndexError)
 
 
-def viewer_driven(authority, session_id) -> bool:
-    """Whether a local viewer drives this session's goal/loop judging (see the module doc): only while
-    that viewer's connection still holds its subscription, so a TUI or Desktop attached after it left
-    gets the gateway's own post-turn hooks again."""
-    connection = getattr(authority, "viewer_automation", {}).get(session_id) if authority is not None else None
+def viewer_driven(authority, session_id, registry="viewer_automation") -> bool:
+    """Whether a local viewer drives this session's goal/loop judging (see the module doc), or with
+    ``viewer_heartbeat`` its heartbeat ticks: only while that viewer's connection still holds its
+    subscription, so a TUI or Desktop attached after it left gets the gateway's own drivers again."""
+    connection = getattr(authority, registry, {}).get(session_id) if authority is not None else None
     return bool(connection is not None and connection.subscriptions.get(session_id))
 
 
@@ -150,6 +150,11 @@ async def automation(connection, ref, params):
     if not hasattr(authority, "viewer_automation"):
         authority.viewer_automation = {}
     authority.viewer_automation[ref.session_id] = connection
+    if kind == "heartbeat" and call == "due_prompt":
+        # Only a running CLI watchdog polls due_prompt: from then on the gateway poller leaves the ticks to it.
+        if not hasattr(authority, "viewer_heartbeat"):
+            authority.viewer_heartbeat = {}
+        authority.viewer_heartbeat[ref.session_id] = connection
     runner = authority.runner
     home = Path(authority.profile_id)
 

@@ -75,10 +75,7 @@ async def test_overdue_heartbeat_fires_once_with_a_classic_cli_also_polling(tmp_
     assert len(_heartbeat_admissions(authority, ref)) + bool(cli['value']) == 1
 
 
-@pytest.mark.asyncio
-async def test_a_classic_cli_driving_its_heartbeat_keeps_the_tick(tmp_path, monkeypatch):
-    """The classic CLI paints only the ticks its own watchdog fires, so the poller leaves them to it."""
-    from gateway.run_heartbeat_restore import restore_heartbeat_watches
+async def _attached_cli(tmp_path, monkeypatch):
     from gateway.session_controls import AuthorityConnection
     from gateway.session_local import create_local_session
     from hermes_cli import goals
@@ -89,17 +86,40 @@ async def test_a_classic_cli_driving_its_heartbeat_keeps_the_tick(tmp_path, monk
     cli = AuthorityConnection(authority, object(), {'user_id': 'human', 'profile_id': 'default'})
     ref = create_local_session(authority, cli.actor, dict(request_id='cli', source='cli', model='fixture', toolsets=[]))
     cli.subscriptions[ref.session_id] = 'sub-1'
-    _overdue_heartbeat(ref.session_id)
-    await restore_heartbeat_watches(runner)
 
-    async def automation(call):
+    async def automation(kind, call):
         reply = await cli.dispatch({'id': 1, 'method': 'session.automation', 'params': {
-            'session_id': ref.session_id, 'kind': 'heartbeat', 'call': call, 'args': [], 'kwargs': {}}})
+            'session_id': ref.session_id, 'kind': kind, 'call': call, 'args': [], 'kwargs': {}}})
         return reply['result']
-    await automation('state')  # the attached CLI's heartbeat manager
+    return runner, authority, ref, automation
+
+
+@pytest.mark.asyncio
+async def test_a_classic_cli_driving_its_heartbeat_keeps_the_tick(tmp_path, monkeypatch):
+    """The classic CLI paints only the ticks its own watchdog fires, so the poller leaves them to it."""
+    from gateway.run_heartbeat_restore import restore_heartbeat_watches
+    from hermes_cli.heartbeat import HeartbeatManager
+    runner, authority, ref, automation = await _attached_cli(tmp_path, monkeypatch)
+    HeartbeatManager(ref.session_id).set('status tick', 60)
+    await restore_heartbeat_watches(runner)
+    assert (await automation('heartbeat', 'due_prompt'))['value'] is None  # the CLI's watchdog polls, not due yet
+    _overdue_heartbeat(ref.session_id)
     await runner._heartbeat_poll_once(runner._heartbeat_watch)
     assert not _heartbeat_admissions(authority, ref)
-    assert 'status tick' in (await automation('due_prompt'))['value']
+    assert 'status tick' in (await automation('heartbeat', 'due_prompt'))['value']
+
+
+@pytest.mark.asyncio
+async def test_a_classic_cli_without_a_heartbeat_watchdog_leaves_the_tick_to_the_poller(tmp_path, monkeypatch):
+    """A CLI reopening a chat runs goal/loop reads but starts its watchdog only on /heartbeat set or resume."""
+    from gateway.run_heartbeat_restore import restore_heartbeat_watches
+    runner, authority, ref, automation = await _attached_cli(tmp_path, monkeypatch)
+    _overdue_heartbeat(ref.session_id)
+    await restore_heartbeat_watches(runner)
+    await automation('goal', 'state')
+    await automation('loop', 'state')
+    await runner._heartbeat_poll_once(runner._heartbeat_watch)
+    assert _heartbeat_admissions(authority, ref)
 
 
 @pytest.mark.asyncio

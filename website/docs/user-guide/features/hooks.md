@@ -1776,7 +1776,10 @@ def my_callback(
 When CLI streaming is enabled, an append-only transform is printed after the
 streamed body. A transform that replaces the response is printed in full after
 the streamed body, labeled as a post-stream transformation, so replacement
-content is never silently lost.
+content is never silently lost. In the TUI, the desktop app and messaging chats
+that edit a streamed message in place, the streamed reply is replaced by the
+rewrite when the turn completes. The hook runs on the finished text, so the
+unrewritten reply is visible while it streams.
 
 ```python
 import os, re

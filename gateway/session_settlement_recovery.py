@@ -78,6 +78,10 @@ def completion_payload(row, settled, response, captured):
             complete['response_previewed'] = True
         if captured_result.get('response_transformed'):
             complete['response_transformed'] = True
+            # The stream carried the raw reply and the turn counts as delivered (``response`` is
+            # None): this frame is the only carrier of the rewrite the session stored.
+            if not response and (final := captured_result.get('final_response')):
+                complete['text'] = complete['content'] = final
         if isinstance(captured_result.get('warning'), str) and captured_result['warning']:
             complete['warning'] = captured_result['warning']
         if isinstance(captured_result.get('billing_block'), dict):

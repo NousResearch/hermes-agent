@@ -373,6 +373,13 @@ def snapshot_automation(authority, adapter, event, identity):
     source = deepcopy(envelope['source'])
     # Never anchor the wake to the stale human message; ``to_dict`` already omits a null anchor.
     source.pop('message_id', None)
+    if 'relay' in provenance:
+        # The relay seal binds the source dict, so the anchor-stripped source needs its own
+        # seal: the borrowed human seal would never re-verify, and the re-verification
+        # refuses with ``profile_mismatch`` — the automation row is the FIFO head, so the
+        # refusal pauses the session and every later message queues behind it for good.
+        from gateway.session_ingress_context import reseal_relay_provenance
+        provenance = reseal_relay_provenance(provenance, source, adapter)
     # Producer timestamps and platform reply IDs change on retry. Neither belongs
     # in the identity/fingerprint of the same immutable completion.
     envelope = {'source': source, 'route': entry.session_key,

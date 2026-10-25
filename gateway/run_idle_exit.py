@@ -149,12 +149,16 @@ def _store_gates_busy(homes) -> str | None:
     return None
 
 
+def _attaching(runner) -> bool:
+    tickets = getattr(runner, "session_ticket_store", None)
+    return tickets is not None and tickets.outstanding()
+
+
 def _client_busy(runner, window: float) -> str | None:
     clients = getattr(runner, "_idle_exit_clients", 0)
     if clients:
         return f"{clients} client(s) attached"
-    tickets = getattr(runner, "session_ticket_store", None)
-    if tickets is not None and tickets.outstanding():
+    if _attaching(runner):
         return "client attaching"
     quiet = time.monotonic() - getattr(runner, "_idle_exit_last_activity", 0.0)
     if quiet < window:
@@ -167,10 +171,14 @@ def busy_reason(runner, *, window: float, count_clients: bool = True) -> str | N
 
     ``count_clients=False``: a restart is pending, and an attached or returning client is exactly who
     needs the fresh gateway; every duty nothing would restart (adapters, cron, admissions) still counts.
+    A client mid-attach (unredeemed ticket) still holds it: its first connect would be refused with
+    no rediscovery, while an attached client waits out the drain and starts the fresh gateway.
     """
     try:
         if count_clients and (reason := _client_busy(runner, window)):
             return reason
+        if not count_clients and _attaching(runner):
+            return "client attaching"
         if runner._draining or not runner._running:
             return "already stopping"
         if runner._active_work_count():

@@ -57,7 +57,21 @@ async def test_pending_restart_retires_once_the_turn_ends_even_with_a_client_att
         await async_wait_until(lambda: work[1] >= 4, timeout=10, what="two restart probes")
         assert not watcher.done() and runner.session_runtime_descriptor["state"] == "ready"  # turn in flight
 
+        # A client mid-attach (minted, not redeemed) holds it: its refused first connect never rediscovers.
+        store = runner.session_ticket_store
+        store.mint(profile_id=next(iter(store.profile_ids)), subject="cli", purpose="interactive")
+        checks = [0]
+        real_outstanding = store.outstanding
+
+        def outstanding():
+            checks[0] += 1
+            return real_outstanding()
+        monkeypatch.setattr(store, "outstanding", outstanding)
         work[0] = 0
+        await async_wait_until(lambda: checks[0] >= 4, timeout=10, what="probes while attaching")
+        assert not watcher.done() and stops == []
+
+        store.revoke()
         await asyncio.wait_for(watcher, 5)
         await runner._idle_exit_stop_task
     assert stops == [True]

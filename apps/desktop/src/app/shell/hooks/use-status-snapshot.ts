@@ -5,6 +5,7 @@ import { type I18nContextValue, useI18n } from '@/i18n'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { $freeTierStatus, refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
 import { $setupReadyTick } from '@/store/live-sync'
+import { reportBackendCodeSkew } from '@/store/updates'
 import { dismissNotification, notify } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
 import type { StatusResponse } from '@/types/hermes'
@@ -145,6 +146,7 @@ export function useStatusSnapshot(
 
         if (statusResult.status === 'fulfilled') {
           const next = statusResult.value
+          reportBackendCodeSkew(next.code_skew)
           // Preserve reference identity on a no-op: the 60s tick re-reads a
           // usually-unchanged snapshot, and a fresh object for the same content
           // re-renders every consumer for nothing.

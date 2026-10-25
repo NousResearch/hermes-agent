@@ -273,6 +273,46 @@ def test_codex_api_preflight_sanitizes_tuple_values_in_tool_schemas():
     ]
 
 
+def test_codex_api_preflight_survives_deeply_nested_tool_schema_and_summary():
+    # A deep ``tools[].parameters`` schema (e.g. from an external/MCP tool) or a replayed
+    # reasoning summary must not crash the preflight with RecursionError (#137058).
+    def _deep_schema(levels: int) -> dict:
+        node: dict = {"type": "string"}
+        for _ in range(levels):
+            node = {"type": "object", "properties": {"x": node}}
+        return node
+
+    def _deep_summary(levels: int) -> list:
+        node: dict = {"type": "summary_text", "text": "hi"}
+        for _ in range(levels):
+            node = {"type": "summary_text", "text": {"nested": node}}
+        return [node]
+
+    kwargs = {
+        "model": "gpt-5-codex",
+        "instructions": "test",
+        "input": [
+            {"role": "user", "content": "hello"},
+            {
+                "type": "reasoning",
+                "encrypted_content": "opaque",
+                "summary": _deep_summary(600),
+            },
+        ],
+        "tools": [{
+            "type": "function",
+            "name": "deep",
+            "parameters": _deep_schema(600),
+        }],
+        "store": False,
+    }
+
+    normalized = _preflight_codex_api_kwargs(kwargs, sanitize_harmony_tokens=True)
+
+    assert normalized["model"] == "gpt-5-codex"
+    assert "tools" in normalized
+
+
 def test_codex_api_preflight_rejects_reserved_token_in_structural_key():
     kwargs = {
         "model": "gpt-5-codex",

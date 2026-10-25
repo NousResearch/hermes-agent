@@ -243,20 +243,27 @@ def _neutralize_harmony_tokens(text: str) -> str:
     return "".join(result) + text[cursor:]
 
 
-def _neutralize_harmony_structure(value: Any) -> Any:
+_HARMONY_STRUCTURE_MAX_DEPTH = 512
+
+
+def _neutralize_harmony_structure(value: Any, _depth: int = 0) -> Any:
     """Neutralize JSON-like values (tuples → lists). A reserved token in an object *key* is
     rejected, not rewritten — renaming could desync a tool schema from the executor contract."""
     if isinstance(value, str):
         return _neutralize_harmony_tokens(value)
     if isinstance(value, (list, tuple)):
-        return [_neutralize_harmony_structure(item) for item in value]
+        if _depth >= _HARMONY_STRUCTURE_MAX_DEPTH:
+            return [item for item in value]
+        return [_neutralize_harmony_structure(item, _depth + 1) for item in value]
     if isinstance(value, dict):
         if any(isinstance(key, str) and _neutralize_harmony_tokens(key) != key for key in value):
             raise ValueError(
                 "Reserved Harmony tokens in a JSON object key cannot be "
                 "neutralized without changing its contract."
             )
-        return {key: _neutralize_harmony_structure(item) for key, item in value.items()}
+        if _depth >= _HARMONY_STRUCTURE_MAX_DEPTH:
+            return {key: item for key, item in value.items()}
+        return {key: _neutralize_harmony_structure(item, _depth + 1) for key, item in value.items()}
     return value
 
 

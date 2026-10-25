@@ -3513,6 +3513,7 @@ export interface SessionContextBreakdownResult {
   context_source: string
   model: string
   context_files?: ContextFileSource[]
+  prompt_cache?: PromptCacheWindow | null
 }
 export interface ContextCategory {
   color: string
@@ -3528,6 +3529,13 @@ export interface ContextFileSource {
   est_tokens: number
   loaded: boolean
   status: string
+}
+/** ``agent.prompt_cache_window.prompt_cache_window``: epoch seconds of the cached prefix's expiry. */
+export interface PromptCacheWindow {
+  ttl: string
+  ttl_seconds: number
+  refreshed_at: number
+  expires_at: number
 }
 export interface SessionCompressParams {
   session_id: string

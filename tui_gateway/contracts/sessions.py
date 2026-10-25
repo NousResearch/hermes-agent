@@ -535,6 +535,15 @@ class ContextFileSource(Result):
     status: str
 
 
+class PromptCacheWindow(Result):
+    """``agent.prompt_cache_window.prompt_cache_window``: epoch seconds of the cached prefix's expiry."""
+
+    ttl: str
+    ttl_seconds: int
+    refreshed_at: float
+    expires_at: float
+
+
 class SessionContextBreakdownResult(Result):
     """``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds)
     plus the per-file context manifest (empty until the agent exists)."""
@@ -548,6 +557,7 @@ class SessionContextBreakdownResult(Result):
     context_source: str
     model: str
     context_files: list[ContextFileSource] = []
+    prompt_cache: PromptCacheWindow | None = None
 
 
 method("session.context_breakdown", params=SessionContextBreakdownParams, result=SessionContextBreakdownResult,

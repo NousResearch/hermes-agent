@@ -428,6 +428,8 @@ gateway:
       provider_usage_plus_estimate: "sağlayıcı kullanımı + tahmini yeni mesajlar"
     source_line: "Kaynak: {source}; kategori sayıları yerel tahminlerdir."
     hint_all: "Skill ve araç seti başına maliyetler için /context all kullanın."
+    cache_warm: "İstem önbelleği: etkin, {remaining} içinde sona erer ({ttl} saklama)."
+    cache_expired: "İstem önbelleği: {ago} önce sona erdi ({ttl} saklama); sonraki mesaj tüm istemi yeniden işler."
   status:
     header: "📊 **Hermes Gateway Durumu**"
     matrix_scope_header: "**Matrix kapsamı:**"

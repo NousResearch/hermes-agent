@@ -428,6 +428,8 @@ gateway:
       provider_usage_plus_estimate: "Anbieter-Nutzung + geschätzte neue Nachrichten"
     source_line: "Quelle: {source}; Kategoriewerte sind lokale Schätzungen."
     hint_all: "Verwenden Sie /context all für Kosten pro Skill und pro Toolset."
+    cache_warm: "Prompt-Cache: warm, läuft in {remaining} ab ({ttl} Aufbewahrung)."
+    cache_expired: "Prompt-Cache: vor {ago} abgelaufen ({ttl} Aufbewahrung); die nächste Nachricht verarbeitet den gesamten Prompt neu."
   status:
     header: "📊 **Hermes-Gateway-Status**"
     matrix_scope_header: "**Matrix-Geltungsbereich:**"

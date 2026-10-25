@@ -431,6 +431,8 @@ gateway:
       provider_usage_plus_estimate: "szolgáltatói használat + becsült új üzenetek"
     source_line: "Forrás: {source}; a kategóriánkénti számok helyi becslések."
     hint_all: "A /context all parancs skillenkénti és eszközkészletenkénti költségeket is mutat."
+    cache_warm: "Prompt-gyorsítótár: aktív, {remaining} múlva lejár ({ttl} megőrzés)."
+    cache_expired: "Prompt-gyorsítótár: {ago} óta lejárt ({ttl} megőrzés); a következő üzenet újra feldolgozza a teljes promptot."
   status:
     header: "📊 **Hermes Gateway állapot**"
     matrix_scope_header: "**Matrix-hatókör:**"

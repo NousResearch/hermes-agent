@@ -428,6 +428,8 @@ gateway:
       provider_usage_plus_estimate: "utilizzo del provider + stima dei nuovi messaggi"
     source_line: "Fonte: {source}; i conteggi per categoria sono stime locali."
     hint_all: "Usa /context all per i costi per skill e per toolset."
+    cache_warm: "Cache del prompt: attiva, scade tra {remaining} (conservazione {ttl})."
+    cache_expired: "Cache del prompt: scaduta {ago} fa (conservazione {ttl}); il prossimo messaggio rielabora l'intero prompt."
   status:
     header: "📊 **Stato del Gateway Hermes**"
     matrix_scope_header: "**Ambito Matrix:**"

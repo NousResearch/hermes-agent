@@ -432,6 +432,8 @@ gateway:
       provider_usage_plus_estimate: "provider usage + estimated new messages"
     source_line: "Source: {source}; category counts are local estimates."
     hint_all: "Use /context all for per-skill and per-toolset costs."
+    cache_warm: "Prompt cache: warm, expires in {remaining} ({ttl} retention)."
+    cache_expired: "Prompt cache: expired {ago} ago ({ttl} retention); the next message re-processes the full prompt."
   status:
     header: "📊 **Hermes Gateway Status**"
     matrix_scope_header: "**Matrix scope:**"

@@ -73,11 +73,45 @@ _PROPERTIES: dict[str, Any] = {
             "external cua-driver list_windows lookup has already identified the window."
         ),
     },
+    "max_elements": {
+        "type": "integer",
+        "description": (
+            "Only for action='capture'. Bound on how many accessibility nodes the driver walks "
+            "(depth-first; the tree is a prefix of the unbounded one). Use it to get a usable "
+            "capture when a window's UIA provider is slow and the default walk times out."
+        ),
+    },
+    "max_depth": {
+        "type": "integer",
+        "description": (
+            "Only for action='capture'. Bound on accessibility-tree walk depth; nodes deeper than "
+            "this are omitted. Same timeout escape hatch as max_elements, by tree level instead of "
+            "count."
+        ),
+    },
     "element": {
         "type": "integer",
         "description": (
-            "The 1-based SOM index returned by the last `capture(mode='som')` call. Strongly "
-            "preferred over raw coordinates."
+            "The element index returned by the last capture (driver indices may start at 0). Prefer this "
+            "over raw coordinates: the backend automatically attaches the snapshot token when available. "
+            "A stale index can be refused (`snapshot_id_required`) — re-capture rather than guessing pixels."
+        ),
+    },
+    "element_token": {
+        "type": "string",
+        "description": (
+            "Opaque per-snapshot element handle from the last capture's `elements[].element_token` "
+            "(e.g. 's00000001:6'). Carries the snapshot with the index, so a superseded capture fails "
+            "closed as stale instead of silently re-resolving to a different element. Use the token "
+            "EXACTLY as returned — never construct one from indices, screenshot or cache file names."
+        ),
+    },
+    "snapshot_id": {
+        "type": "string",
+        "description": (
+            "The snapshot handle from the last capture (`elements[].element_token` prefixes it). "
+            "Fallback provenance for `element=` actions on drivers that accept snapshot_id but not "
+            "element_token. Stale snapshots are refused; re-capture to refresh."
         ),
     },
     "coordinate": {
@@ -86,8 +120,11 @@ _PROPERTIES: dict[str, Any] = {
         "minItems": 2,
         "maxItems": 2,
         "description": (
-            "Pixel coordinates [x, y] relative to the captured window screenshot (top-left "
-            "origin). Only use this if no element index is available."
+            "Pixel coordinates [x, y] in WINDOW-LOCAL SCREENSHOT pixels — the same space as the "
+            "image the last capture returned for this window (top-left of the screenshot is 0,0). "
+            "Element `bounds` are NOT this space: they are screen-absolute native pixels; convert "
+            "with the frame/scale note the capture prints, or prefer `element`/`element_token`. "
+            "Only use coordinates if no element index is available."
         ),
     },
     "button": {

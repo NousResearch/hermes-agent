@@ -87,8 +87,11 @@ def commit_local_session(db, *, epoch, receipt):
 def client_request(request_json, derived=None):
     """A frozen create request as the client sent it: an owner-resolved ``-m`` route (``model_requested``)
     compares by the name the client typed, not by the model and the *derived* fields (a receipt from
-    before ``route_derived``: the endpoint) its ``${VAR}`` refs expanded to at the time."""
+    before ``route_derived``: the endpoint) its ``${VAR}`` refs expanded to at the time. ``desktop_local``
+    (``gateway.session_policy.LOCAL_DESKTOP_CHAT``), which an earlier owner stamped into the request, was
+    never sent."""
     request = json.loads(request_json)
+    request.pop('desktop_local', None)
     if derived is None:
         request.pop('route_derived', None)
     if 'model_requested' in request:

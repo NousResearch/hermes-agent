@@ -27,7 +27,7 @@ import { computed } from 'nanostores'
 
 import { stableArray, stableRecord } from '@/lib/stable-array'
 
-import { $backgroundRunningSessionIds } from './composer-status'
+import { $backgroundRunningSessionIds, $backgroundStatusBySession } from './composer-status'
 import { $messagingSessions, $sessions, $unreadFinishedSessionIds, lineageAliases } from './session'
 import {
   $attentionSessionIds,
@@ -64,6 +64,56 @@ export const $delegatingSessionIds = computed(
     }
 
     return (delegatingIds = stableArray(delegatingIds, [...ids]))
+  }
+)
+
+/** Active delegated work attached to each stored session row. Runtime stores
+ * key work by the gateway session id, while sidebar rows use stored ids; map
+ * both through lineage aliases so compression cannot make the count vanish. */
+export interface SessionLiveWork {
+  background: number
+  subagents: number
+}
+
+let liveWorkById: Readonly<Record<string, SessionLiveWork>> = {}
+export const $sessionLiveWorkById = computed(
+  [$subagentsBySession, $backgroundStatusBySession, $sessionStates, $sessions],
+  (subagents, background, states, sessions) => {
+    const totals = new Map<string, SessionLiveWork>()
+
+    const add = (runtimeId: string, work: SessionLiveWork) => {
+      if (work.subagents === 0 && work.background === 0) {
+        return
+      }
+
+      for (const alias of lineageAliases(states[runtimeId]?.storedSessionId ?? runtimeId, sessions)) {
+        const previous = totals.get(alias) ?? { background: 0, subagents: 0 }
+        totals.set(alias, {
+          background: previous.background + work.background,
+          subagents: previous.subagents + work.subagents
+        })
+      }
+    }
+
+    for (const [runtimeId, items] of Object.entries(subagents)) {
+      add(runtimeId, { background: 0, subagents: activeSubagentCount(items) })
+    }
+
+    for (const [runtimeId, items] of Object.entries(background)) {
+      add(runtimeId, { background: items.filter(item => item.state === 'running').length, subagents: 0 })
+    }
+
+    const next: Record<string, SessionLiveWork> = {}
+
+    for (const [id, work] of totals) {
+      const previous = liveWorkById[id]
+      next[id] =
+        previous?.background === work.background && previous.subagents === work.subagents
+          ? previous
+          : Object.freeze(work)
+    }
+
+    return (liveWorkById = stableRecord(liveWorkById, next))
   }
 )
 

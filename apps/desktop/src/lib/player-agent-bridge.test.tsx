@@ -5,6 +5,7 @@ import { group, split } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { usePlayerAgentBridge } from '@/lib/player-agent-bridge'
+import { composerHost } from '@/sdk/composer'
 import { $activeSessionId, $connection, $selectedStoredSessionId } from '@/store/session'
 import { $focusedRuntimeId, $sessionTiles } from '@/store/session-states'
 
@@ -51,6 +52,74 @@ describe('player linking to the visible chat', () => {
     noteActiveTreeGroup(null)
     $sessionTiles.set([])
     $connection.set(null)
+    vi.restoreAllMocks()
+  })
+
+  it('inserts into the exact linked runtime session through the acknowledged composer route', async () => {
+    const insertText = vi.spyOn(composerHost, 'insertText').mockResolvedValue(true)
+    const { result } = renderHook(() => usePlayerAgentBridge())
+    await act(async () => { await result.current.link() })
+
+    let inserted = false
+    await act(async () => { inserted = await result.current.seedPrompt('Open this in HermesTV') })
+
+    expect(inserted).toBe(true)
+    expect(insertText).toHaveBeenCalledWith('runtime-a', 'Open this in HermesTV', { mode: 'block' })
+  })
+
+  it('uses the primary runtime address for composer insertion', async () => {
+    const insertText = vi.spyOn(composerHost, 'insertText').mockResolvedValue(true)
+    $sessionTiles.set([])
+    $activeSessionId.set('primary-runtime')
+    $connection.set({ mode: 'local', baseUrl: 'http://127.0.0.1:43177' } as never)
+    $layoutTree.set(group(['workspace'], { active: 'workspace', id: 'primary-group' }))
+    noteActiveTreeGroup('primary-group')
+    const { result } = renderHook(() => usePlayerAgentBridge())
+    await waitFor(() => expect(result.current.scope?.sessionId).toBe('primary-runtime'))
+    await act(async () => { await result.current.link() })
+
+    let inserted = false
+    await act(async () => { inserted = await result.current.seedPrompt('Review the current video') })
+
+    expect(insertText).toHaveBeenCalledWith('primary-runtime', 'Review the current video', { mode: 'block' })
+    expect(inserted).toBe(true)
+  })
+
+  it('returns false when no composer claims the addressed prompt', async () => {
+    const { result } = renderHook(() => usePlayerAgentBridge())
+    await act(async () => { await result.current.link() })
+
+    await expect(result.current.seedPrompt('No composer is mounted')).resolves.toBe(false)
+  })
+
+  it('returns false when the linked scope changes before the composer acknowledges', async () => {
+    const insertText = vi.spyOn(composerHost, 'insertText')
+    let acknowledge!: (inserted: boolean) => void
+    insertText.mockReturnValue(new Promise(resolve => { acknowledge = resolve }))
+    const { result } = renderHook(() => usePlayerAgentBridge())
+    await act(async () => { await result.current.link() })
+
+    let pending!: Promise<boolean>
+    act(() => { pending = result.current.seedPrompt('Keep this with chat A') })
+    expect(insertText).toHaveBeenCalledWith('runtime-a', 'Keep this with chat A', { mode: 'block' })
+    act(() => noteActiveTreeGroup('chat-b-group'))
+    await waitFor(() => expect(result.current.linked).toBe(false))
+    await act(async () => { acknowledge(true) })
+
+    await expect(pending).resolves.toBe(false)
+  })
+
+  it('does not insert while unlinked or after switching to a different chat', async () => {
+    const insertText = vi.spyOn(composerHost, 'insertText').mockResolvedValue(true)
+    const { result } = renderHook(() => usePlayerAgentBridge())
+    await expect(result.current.seedPrompt('Do not seed')).resolves.toBe(false)
+    expect(insertText).not.toHaveBeenCalled()
+
+    await act(async () => { await result.current.link() })
+    act(() => noteActiveTreeGroup('chat-b-group'))
+    await waitFor(() => expect(result.current.linked).toBe(false))
+    await expect(result.current.seedPrompt('Do not seed into chat B')).resolves.toBe(false)
+    expect(insertText).not.toHaveBeenCalled()
   })
 
   it('links a real tile runtime and retains its exact owner while clicking the player', async () => {

@@ -17,7 +17,7 @@ export interface MediaPlayerController {
   link(): Promise<unknown>
   unlink(): Promise<unknown>
   request(operation: PlayerAgentOperation): Promise<PlayerAgentResponse>
-  seedPrompt(text: string): boolean
+  seedPrompt(text: string): Promise<boolean>
   setupMediaHelpers(): Promise<PlayerMediaJobCapabilities>
   revealMediaJob(jobId: string): Promise<boolean>
   clearLocalData(): Promise<PlayerSnapshot>
@@ -202,10 +202,12 @@ export function createDesktopMedia(pluginId: string, track: (dispose: () => void
       link: () => runActive(agent.link),
       unlink: () => runActive(agent.unlink),
       request: operation => runActive(() => agent.request(operation)),
-      seedPrompt: text => {
+      seedPrompt: async text => {
         if (disposed) {return false}
 
-        return agent.seedPrompt(text)
+        const inserted = await agent.seedPrompt(text)
+
+        return !disposed && inserted
       },
       setupMediaHelpers: () => runActive(agent.setupMediaHelpers),
       revealMediaJob: id => (disposed ? Promise.resolve(false) : runActive(() => agent.revealMediaJob(id))),

@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 import { computed } from 'nanostores'
 import { useCallback, useEffect, useState } from 'react'
 
-import { appendComposerDraft } from '@/store/composer'
+import { composerHost } from '@/sdk/composer'
 import { activeGatewayConnectionId, activeGatewayProfileKey } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $activeSessionId, $connection, $sessions } from '@/store/session'
@@ -82,7 +82,7 @@ export interface PlayerAgentBridgeController {
   unlink(): Promise<PlayerAwarenessLinkState>
   request(operation: PlayerAgentOperation): Promise<PlayerAgentResponse>
   /** Append a user-approved, unsent prompt only while the linked scope is still active. */
-  seedPrompt(text: string): boolean
+  seedPrompt(text: string): Promise<boolean>
   setupMediaHelpers(): Promise<PlayerMediaJobCapabilities>
   revealMediaJob(jobId: string): Promise<boolean>
   clearLocalData(): Promise<PlayerSnapshot>
@@ -155,13 +155,13 @@ export function usePlayerAgentBridge(): PlayerAgentBridgeController {
   }, [scope])
 
   const seedPrompt = useCallback(
-    (text: string) => {
+    async (text: string) => {
       const currentScope = $trustedActiveScope.get()
 
       if (!text.trim() || !scope || !sameScope(scope, linkedScope) || !sameScope(scope, currentScope)) {return false}
-      appendComposerDraft(text)
+      const inserted = await composerHost.insertText(scope.sessionId, text, { mode: 'block' })
 
-      return true
+      return inserted && sameScope(scope, linkedScope) && sameScope(scope, $trustedActiveScope.get())
     },
     [scope]
   )

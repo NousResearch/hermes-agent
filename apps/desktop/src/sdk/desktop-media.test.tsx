@@ -12,7 +12,7 @@ const agent = {
   link: vi.fn(async () => 'linked'),
   unlink: vi.fn(async () => 'unlinked'),
   request: vi.fn(async () => ({ operation: 'context' })),
-  seedPrompt: vi.fn(() => true),
+  seedPrompt: vi.fn(async () => true),
   setupMediaHelpers: vi.fn(async () => ({ available: true })),
   revealMediaJob: vi.fn(async () => true),
   clearLocalData: vi.fn(async () => closedSnapshot())
@@ -238,6 +238,21 @@ describe('desktop media adapter', () => {
     await expect(hook.result.current.command({ type: 'status' })).rejects.toThrow('disposed')
     await expect(hook.result.current.request({ type: 'context' })).rejects.toThrow('disposed')
     nextView.unmount()
+  })
+
+  it('does not report a prompt insertion after the media capability is disposed', async () => {
+    let acknowledge!: (inserted: boolean) => void
+    agent.seedPrompt.mockReturnValue(new Promise(resolve => { acknowledge = resolve }))
+    const media = create('prompt-disposal')
+    const hook = renderHook(() => media.usePlayer())
+    let pending!: Promise<boolean>
+    act(() => { pending = hook.result.current.seedPrompt('Use HermesTV context once') })
+
+    disposers[disposers.length - 1]()
+    act(() => { acknowledge(true) })
+
+    await expect(pending).resolves.toBe(false)
+    hook.unmount()
   })
 
   it('does not let a late status response roll back a newer state event', async () => {

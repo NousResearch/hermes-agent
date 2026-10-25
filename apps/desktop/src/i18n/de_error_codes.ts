@@ -8,6 +8,10 @@ export const deErrorCodes: Partial<ThreadCopy['errorCodes']> = {
     title: 'Dieser Chat gehört zu einer geplanten Aufgabe',
     body: 'Er führt nur diese Aufgabe aus, daher wurde Ihre Nachricht nicht ausgeführt. Starten Sie einen neuen Chat, um sie zu senden.'
   },
+  session_read_only: {
+    title: 'Dieser Chat ist schreibgeschützt',
+    body: 'Er ist gespeicherter Verlauf, den Hermes anzeigen, aber nicht fortsetzen kann, daher wurde Ihre Nachricht nicht ausgeführt. Starten Sie einen neuen Chat, um sie zu senden.'
+  },
   workspace_unavailable: {
     title: 'Der Ordner dieses Chats fehlt',
     body: 'Der Ordner, in dem dieser Chat arbeitet, wurde verschoben oder gelöscht, daher wurde Ihre Nachricht nicht ausgeführt. Legen Sie den Ordner neu an oder geben Sie dem Chat mit „In Projekt verschieben“ einen anderen, und versuchen Sie es dann erneut.'

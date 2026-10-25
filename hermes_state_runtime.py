@@ -57,6 +57,20 @@ def _json(value):
         raise RuntimeStoreError('invalid_params') from exc
 
 
+def _sqlite_text(text):
+    """*text* as a value sqlite can bind: lone surrogates from surrogateescape-decoded tool
+    output pass ``json.dumps`` but sqlite encodes TEXT strictly, so binding them raises
+    inside the write transaction and wedges settlement unrecoverably (#144413). Only the
+    stored copy is replaced (U+FFFD); payload digests keep deriving from the caller's exact
+    ``_json`` text, so exact-retry identity is unchanged."""
+    try:
+        text.encode('utf-8')
+    except UnicodeEncodeError:
+        from agent.message_sanitization import _sanitize_surrogates
+        return _sanitize_surrogates(text)
+    return text
+
+
 def _epoch(conn, epoch):
     row = conn.execute('SELECT epoch FROM runtime_epoch WHERE singleton=1').fetchone()
     if type(epoch) is not int or row is None or row[0] != epoch:
@@ -166,7 +180,7 @@ def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
         conn.execute('''INSERT INTO session_admissions(admission_id,request_id,principal_id,
             target_session_id,lineage_json,payload_json,payload_digest,intent,status,owner_epoch)
             VALUES(?,?,?,?,?,?,?,?,'queued',?)''',
-            (admission_id, request_id, principal_id, session_id, json.dumps([session_id]), encoded, digest, intent, epoch))
+            (admission_id, request_id, principal_id, session_id, json.dumps([session_id]), _sqlite_text(encoded), digest, intent, epoch))
         return _row(_admission(conn, admission_id))
     return db._execute_write(write)
 
@@ -260,7 +274,7 @@ def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, 
             encoded = _json(encode_result(compact_result(result, user_message=json.loads(row['payload_json']).get('text'))))
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) '
                          'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-                         (RESULT_PREFIX + admission_id, encoded))
+                         (RESULT_PREFIX + admission_id, _sqlite_text(encoded)))
         conn.execute("UPDATE session_admissions SET status='terminal',outcome=? WHERE admission_id=?", (outcome, admission_id))
         settle_steer_transfers(conn, epoch=epoch, generation=generation, transfers=_transfers, outcome=outcome)
         conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (row['target_session_id'],))
@@ -546,7 +560,7 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
                   'execution_generation': updated['runtime_generation'] if updated else expected_generation,
                   'operation': operation, **projection}
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
-                     (key, _json({'digest': digest, 'result': result})))
+                     (key, _sqlite_text(_json({'digest': digest, 'result': result}))))
         return result, event
     result, event = db._execute_write(write)
     if event is not None:
@@ -597,7 +611,7 @@ def _import_legacy_row(conn, row, epoch, principal_id):
     conn.execute("""INSERT INTO session_admissions(admission_id,request_id,principal_id,
         target_session_id,lineage_json,payload_json,payload_digest,intent,status,outcome,owner_epoch,generation)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", (row['admission_id'], row['admission_id'], principal_id,
-        target, json.dumps(chain), encoded, digest, intent, status, row['outcome'], epoch, generation))
+        target, json.dumps(chain), _sqlite_text(encoded), digest, intent, status, row['outcome'], epoch, generation))
     if generation is not None:
         conn.execute('UPDATE sessions SET runtime_generation=MAX(runtime_generation,?) WHERE id=?', (generation, target))
 
@@ -626,8 +640,8 @@ def import_legacy_session_admissions(db, *, epoch: int, source_path, principal_i
         executions = []
         if source.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='executions'").fetchone():
             executions = [dict(r) for r in source.execute('SELECT * FROM executions ORDER BY root')]
-        fingerprint = hashlib.sha256(_json({'rows': rows, 'executions': executions}).encode('utf-8')).hexdigest()
-        marker = _json({'source': str(source_path), 'fingerprint': fingerprint, 'imported_id_count': len(rows), 'principal_id': principal_id})
+        fingerprint = hashlib.sha256(_sqlite_text(_json({'rows': rows, 'executions': executions})).encode('utf-8')).hexdigest()
+        marker = _sqlite_text(_json({'source': str(source_path), 'fingerprint': fingerprint, 'imported_id_count': len(rows), 'principal_id': principal_id}))
         def write(conn):
             _epoch(conn, epoch)
             old = conn.execute('SELECT value FROM state_meta WHERE key=?', (_IMPORT_KEY,)).fetchone()
@@ -676,8 +690,8 @@ def resolve_unknown_session_input(db, *, epoch: int, admission_id: str, generati
             from hermes_state_terminal import compact_result, encode_result
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) '
                          'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-                         (RESULT_PREFIX + admission_id, _json(encode_result(compact_result(
-                             stored, user_message=json.loads(row['payload_json']).get('text'))))))
+                         (RESULT_PREFIX + admission_id, _sqlite_text(_json(encode_result(compact_result(
+                             stored, user_message=json.loads(row['payload_json']).get('text')))))))
         if _terminal_write is not None:
             _terminal_write(conn, row)
         _retire_admission_workers(conn, row, row['owner_epoch'])

@@ -7,7 +7,6 @@ status looked healthy, every API client was gone, nothing retried. The startup s
 gate — every platform, not just api_server — so the same failure on any other platform is reported
 the same way.
 """
-import asyncio
 import logging
 import time
 from unittest.mock import AsyncMock
@@ -18,6 +17,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.run import GatewayRunner
 from gateway.status import flush_runtime_status_async, read_runtime_status
+from tests.waiting import async_wait_until
 
 
 class _PortTakenAdapter(BasePlatformAdapter):
@@ -207,11 +207,10 @@ async def test_last_platform_parked_during_an_external_drain_keeps_draining_unti
     assert await runner.start() is True
 
     async def _drain_watcher_settles(active):
-        for _ in range(50):  # the watcher polls the marker every second
-            if runner._external_drain_active is active:
-                return
-            await asyncio.sleep(0.1)
-        raise AssertionError(f"external drain never became {active}")
+        # the watcher polls the marker every second
+        await async_wait_until(
+            lambda: runner._external_drain_active is active, what=f"external drain to become {active}"
+        )
 
     try:
         await _drain_watcher_settles(True)

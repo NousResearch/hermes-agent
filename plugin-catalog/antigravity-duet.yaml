@@ -1,22 +1,23 @@
 name: antigravity-duet
 repo: https://github.com/benfirad/hermes-plugin-antigravity-duet
-sha: 722eaabc4f522624debd03b4095961b9179b5149
-title: Antigravity Duet Queue & Multi-Model Bridge
+sha: 2cc0bfad54ffcd8db939feecdfc52f342fd7700b
+title: Antigravity Duet / Duffy Queue & Ruflo Swarm Bridge
 description: >-
-  Autonomous background task queue (Claude Duet-style worker) with Human-in-the-Loop
-  approval gates (duet_queue tool and /duet command) plus a multi-model Antigravity
-  CLI fallback bridge (gemini-3.8-flash-high -> claude-sonnet-5-5-high ->
-  gemini-3.1-pro-high -> claude-opus-5-5-high -> gpt-oss-120b-medium). Disclosure —
-  when the optional background worker or local bridge is launched by the user,
-  inference runs through Google's official agy CLI under its existing sign-in and
-  counts against the user's Antigravity/Gemini subscription; the plugin never reads,
-  copies, links, or modifies any OAuth token files, keychains, or .env secrets.
+  Autonomous background task queue (Duet / Duffy Do-For-You worker) with Human-in-the-Loop
+  approval gates (duet_queue tool, /duffy and /duet commands), Ruflo multi-agent swarm
+  orchestration (ruflo_swarm tool), and a multi-model Antigravity CLI fallback bridge
+  (gemini-3.8-flash-high -> claude-sonnet-5-5-high -> gemini-3.1-pro-high ->
+  claude-opus-5-5-high -> gpt-oss-120b-medium). Disclosure — when the optional background
+  worker, local bridge, or Ruflo swarm tool is invoked by the user, inference runs through
+  the locally installed agy or ruflo CLI under its existing sign-in and counts against the
+  user's subscription; the plugin never reads, copies, links, or modifies any OAuth token
+  files, keychains, or .env secrets.
 maintainer: benfirad
 tier: community
 category: automation
 requires_hermes: ">=0.21.0"
 docs_url: https://github.com/benfirad/hermes-plugin-antigravity-duet#readme
-version: "0.1.0"
+version: "0.2.0"
 readme: true
 platforms:
   - linux
@@ -24,6 +25,7 @@ platforms:
 capabilities:
   provides_tools:
     - duet_queue
+    - ruflo_swarm
   provides_hooks: []
   provides_middleware: []
   requires_env: []

@@ -1,0 +1,611 @@
+{
+  "graze_description": {
+    "message": "1-kattintás, kedvenc, lendület és könyvjelző a masztodonhoz, nem számít, milyen példányt hívsz haza.",
+    "description": "Graze main home description"
+  },
+  "mastodon_instance_name_description": {
+    "message": "A Mastodon példány neve",
+    "description": "Instance Name description."
+  },
+  "need_help": {
+    "message": "Segítsek?",
+    "description": "Need help anchor link"
+  },
+  "connect_account_btn": {
+    "message": "Csatlakozási Fiók",
+    "description": "Submit button that connects to the new account."
+  },
+  "back_to_account_btn": {
+    "message": "Vissza a Fiókhoz",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "not_yet_on_mastodon": {
+    "message": "Még nem Mastodonon?",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "instance_error": {
+    "message": "A példány nem található, ellenőrizze a címet, majd próbálkozzon újra.",
+    "description": "Error message that gets displayed when trying to connect to invalid instance name."
+  },
+  "accounts_container_title": {
+    "message": "Számlák"
+  },
+  "add_account": {
+    "message": "+ FIÓK HOZZÁADÁSA",
+    "description": "Link to add account."
+  },
+  "show_notifications": {
+    "message": "Értesítések megjelenítése",
+    "description": "Toggle button for notifications."
+  },
+  "nevermind": {
+    "message": "Mindegy",
+    "description": "Nevermind button when logging out a user."
+  },
+  "remove_account": {
+    "message": "Fiók Eltávolítása",
+    "description": "Remove account button when logging out a user."
+  },
+  "by": {
+    "message": "által"
+  },
+  "or": {
+    "message": "vagy"
+  },
+  "send_feedback": {
+    "message": "Visszajelzés küldése",
+    "description": "Send feedback anchor link."
+  },
+  "report_bug": {
+    "message": "Hiba jelentése",
+    "description": "Report bug anchor link."
+  },
+  "get_support": {
+    "message": "Támogatás támogatása",
+    "description": "Get support anchor link."
+  },
+  "donate": {
+    "message": "Donát",
+    "description": "Donate anchor link."
+  },
+  "graze_on_connect_success_1": {
+    "message": "A Graze for Mastodon készen áll a használatra!",
+    "description": "Success message when successfully connected to the server. -P1"
+  },
+  "graze_on_connect_success_2": {
+    "message": "Ez a lap bezárul",
+    "description": "Success message when successfully connected to the server. -P2"
+  },
+  "graze_on_connect_success_3": {
+    "message": "másodpercek",
+    "description": "Success message when successfully connected to the server. -P3"
+  },
+  "example": {
+    "message": "pl.",
+    "description": "For example (e.g.) placeholder in input field."
+  },
+  "follow": {
+    "message": "Köd",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "follows_you": {
+    "message": "Követni téged",
+    "description": "Follows you overlay"
+  },
+  "unfollow": {
+    "message": "Visszavonás",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "mention": {
+    "message": "Emlés",
+    "description": "Mention menu item on Mastodon webpage."
+  },
+  "direct_message": {
+    "message": "Közvetlen üzenet",
+    "description": "Direct message menu item on Mastodon webpage."
+  },
+  "share": {
+    "message": "Megosztás",
+    "description": "Share menu item on Mastodon webpage."
+  },
+  "mute": {
+    "message": "Némítás",
+    "description": "Mute menu item on Mastodon webpage."
+  },
+  "block": {
+    "message": "Blokkol",
+    "description": "Block menu item on Mastodon webpage."
+  },
+  "report": {
+    "message": "Jelentés",
+    "description": "Report menu item on Mastodon webpage."
+  },
+  "block_domain": {
+    "message": "Blokktartomány",
+    "description": "Block domain menu item on Mastodon webpage."
+  },
+  "open_original_page": {
+    "message": "Eredeti oldal megnyitása",
+    "description": "Open original page menu item on Mastodon webpage."
+  },
+  "copy_link": {
+    "message": "Hivatkozás a bejegyzésre",
+    "description": "Copy link to post menu item on Mastodon webpage."
+  },
+  "embed": {
+    "message": "Beágyazás",
+    "description": "Embed menu item on Mastodon webpage."
+  },
+  "feature_on_profile": {
+    "message": "Kiemelés a profilodon",
+    "description": "Feature on profile menu item on Mastodon webpage."
+  },
+  "change_subscribed_languages": {
+    "message": "Jegyzett nyelvek módosítása",
+    "description": "Change subscribed languages menu item on Mastodon webpage."
+  },
+  "hide_boosts_from": {
+    "message": "Emlékeztető elrejtése",
+    "description": "Hide boosts from menu item on Mastodon webpage."
+  },
+  "add_or_remove_from_lists": {
+    "message": "Hozzáadás vagy eltávolítás listákból",
+    "description": "Add or Remove from lists menu item on Mastodon webpage."
+  },
+  "hour": {
+    "message": "óra",
+    "description": "hour in time."
+  },
+  "under": {
+    "message": "alatt",
+    "description": "context: less than"
+  },
+  "user_voted": {
+    "message": "Ön erre a válaszra szavazott",
+    "description": "Title of the icon of the voted poll answer."
+  },
+  "settings": {
+    "message": "Beállítások",
+    "description": "settings title."
+  },
+  "theme": {
+    "message": "Téma"
+  },
+  "graze_theme_p": {
+    "message": "A tűz automatikusan illeszkedik a témához, felülbírálhatod, ha akarod.",
+    "description": "options theme section paragraph"
+  },
+  "mastodon_dark": {
+    "message": "Masztodon sötét",
+    "description": "Dropdown menu theme options"
+  },
+  "mastodon_light": {
+    "message": "Masztodon fény",
+    "description": "Dropdown menu theme options"
+  },
+  "graze_color_p": {
+    "message": "Mastodon Theme alezredes felülírása",
+    "description": "options color section paragraph"
+  },
+  "home_instance_color_p": {
+    "message": "Override your home instance color.",
+    "description": "options home instance color paragraph"
+  },
+  "language": {
+    "message": "Nyelv"
+  },
+  "Afrikaans": {
+    "message": "Afrikaans"
+  },
+  "Arabic": {
+    "message": "Arab"
+  },
+  "Bengali": {
+    "message": "Bengáli"
+  },
+  "Bulgarian": {
+    "message": "Bolgár"
+  },
+  "Chinese_Simplified": {
+    "message": "Egyszerűsített kínai"
+  },
+  "Chinese_Traditional": {
+    "message": "Kínai hagyományos"
+  },
+  "Czech": {
+    "message": "Cseh"
+  },
+  "Danish": {
+    "message": "Dán"
+  },
+  "Dutch": {
+    "message": "Holland"
+  },
+  "English": {
+    "message": "Angol"
+  },
+  "Finnish": {
+    "message": "Finn"
+  },
+  "French": {
+    "message": "Francia"
+  },
+  "German": {
+    "message": "Német"
+  },
+  "Greek": {
+    "message": "Görög"
+  },
+  "Hawaiian": {
+    "message": "Hawaii"
+  },
+  "Hebrew": {
+    "message": "Héber"
+  },
+  "Hindi": {
+    "message": "Hindi"
+  },
+  "Hungarian": {
+    "message": "Magyar"
+  },
+  "Icelandic": {
+    "message": "Izlandi"
+  },
+  "Indonesian": {
+    "message": "Indonéz"
+  },
+  "Italian": {
+    "message": "Olasz"
+  },
+  "Japanese": {
+    "message": "Japán"
+  },
+  "Korean": {
+    "message": "Koreai"
+  },
+  "Malay": {
+    "message": "Malay"
+  },
+  "Maori": {
+    "message": "Maori"
+  },
+  "Norwegian": {
+    "message": "Norvég"
+  },
+  "Polish": {
+    "message": "Lengyel"
+  },
+  "Portuguese": {
+    "message": "Portugál"
+  },
+  "Portuguese_Brazilian": {
+    "message": "Portugál, brazil"
+  },
+  "Romanian": {
+    "message": "Román"
+  },
+  "Russian": {
+    "message": "Orosz"
+  },
+  "Serbian_Cyrillic": {
+    "message": "Szerb (cirill)"
+  },
+  "Spanish_Modern": {
+    "message": "Spanyol (Modern)"
+  },
+  "Swedish": {
+    "message": "Svéd"
+  },
+  "Tamil": {
+    "message": "Tamil"
+  },
+  "Thai": {
+    "message": "Thai"
+  },
+  "Turkish": {
+    "message": "Török"
+  },
+  "Ukrainian": {
+    "message": "Ukrán"
+  },
+  "Urdu_India": {
+    "message": "Urdu (India)"
+  },
+  "Vietnamese": {
+    "message": "Vietnámi"
+  },
+  "Welsh": {
+    "message": "Welsh"
+  },
+  "convenience": {
+    "message": "Kényelem"
+  },
+  "graze_convenience_p": {
+    "message": "A Graze a mastodon felhasználónevet a weben lévő hivatkozásokra készítheti.",
+    "description": "options theme section paragraph"
+  },
+  "linkify_user_label": {
+    "message": "Mastodon felhasználónevek Linkify",
+    "description": "Checkbox label for linkify "
+  },
+  "linkify_user": {
+    "message": "A Graze a mastodon felhasználónevet a weben lévő hivatkozásokra készítheti.",
+    "description": "Checkbox description for linkify "
+  },
+  "display_hovercards_label": {
+    "message": "Hoverkártyák megjelenítése",
+    "description": "Checkbox label for display hovercards"
+  },
+  "display_hovercards": {
+    "message": "A Hoverkártyák gyors információkat jelenthetnek a felhasználóról, ha az egérmutatót a név fölé viszi.",
+    "description": "Checkbox description for hovercards"
+  },
+  "show_federated_notification": {
+    "message": "A felugró ablak megjelenítése azon példányok esetében, amelyekkel nem vagy szövetségben",
+    "description": "Checkbox description for federated peers notification"
+  },
+  "show_federated_notification_label": {
+    "message": "Javasoljon példányokat a föderációhoz, amikor meglátogatja",
+    "description": "Checkbox label for federated peers notification"
+  },
+  "show_missing_account_notification": {
+    "message": "A Graze-hez hozzá nem adott fiókba bejelentkezve felugró ablak megjelenítése",
+    "description": "Checkbox description for missing account notification"
+  },
+  "show_missing_account_notification_label": {
+    "message": "Fióki gyors bejelentkezés felugró ablak megjelenítése",
+    "description": "Checkbox label for missing account peers notification"
+  },
+  "graze_language_p": {
+    "message": "Automatikus nyelv felülbírálása a Graze-ben",
+    "description": "options language section paragraph"
+  },
+  "reply_from": {
+    "message": "Ha egy távoli kiszolgálón vagy \"Ezen az oldalon\" gombra kattint, akkor a Graze gyors választ tud nyitni, vagy a saját példányára vihet.",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_graze": {
+    "message": "Válasz Graze-től",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_home": {
+    "message": "Válasz otthonról példányból",
+    "description": "Reply from toggle button description"
+  },
+  "redirect_explore_description": {
+    "message": "A távoli példányon a Helyi idővonal jobban tükrözi az adott példány felhasználóit és tartalmát.",
+    "description": "Redirect to explore checkbox description"
+  },
+  "redirect_explore_label": {
+    "message": "Redirect <strong>Robbanás</strong> - <strong>Helyi</strong> idővonal",
+    "description": "Redirect explore checkbox description"
+  },
+  "content": {
+    "message": "Tartalom",
+    "description": "Content title"
+  },
+  "graze_content_p": {
+    "message": "Tegye a távoli példánytartalom megjelenítését a sajátjához, vagy keverje össze.",
+    "description": "options language section paragraph"
+  },
+  "content_writing_label": {
+    "message": "Tartalom megjelenítése a Tartalomfigyelmeztetések mögött (CW)",
+    "description": "Content writing label"
+  },
+  "play_gifs": {
+    "message": "GIF-ek automatikus lejátszás",
+    "description": "Play GIFS label"
+  },
+  "display_NSFW": {
+    "message": "NSFW/Érzékeny képek megjelenítése",
+    "description": "Display NSFW label"
+  },
+  "set_active": {
+    "message": "Aktív fiók beállítása",
+    "description": "Active account message"
+  },
+  "drag_title": {
+    "message": "Húzza az újrarendezést",
+    "description": "Drag title"
+  },
+  "messages_title": {
+    "message": "Üzenetek {username}-re",
+    "description": "Messages title"
+  },
+  "notifications_title": {
+    "message": "Értesítések {username}",
+    "description": "Notifications title"
+  },
+  "take_actions": {
+    "message": "MŰVELETEK A SZÁMLÁRÓL",
+    "description": "Notifications title"
+  },
+  "taking_actions": {
+    "message": "A műveletek {username}.",
+    "description": "Notifications title"
+  },
+  "show_rounded_avatars_label": {
+    "message": "Kerek avatar képek megjelenítése",
+    "description": "Checkbox label for showing rounded avatars"
+  },
+  "show_graze_context_menu_p": {
+    "message": "Hivatkozás, kép és szöveg kódrészlet megjelenítése előugró menüből a weben",
+    "description": "Checkbox paragraph for show graze context menu"
+  },
+  "show_graze_context_menu_label": {
+    "message": "Graze környezet menü megjelenítése",
+    "description": "Checkbox label for show graze context menu"
+  },
+  "redirect_automatically_p": {
+    "message": "Üres (nem egyesített) profilok átirányítása a saját példányokra a biztonságos kattintásra",
+    "description": "Checkbox paragraph for redirect automatically to unfederated profiles"
+  },
+  "redirect_automatically_label": {
+    "message": "Automatikus átirányítás",
+    "description": "Checkbox label for redirect automatically to unfederated profiles"
+  },
+  "expand_mastodon_links_p": {
+    "message": "Hivatkozások kibontása a Mastodon állomásokra az időbeosztásokban",
+    "description": "Checkbox paragraph for expanded mastodon link previews"
+  },
+  "expand_mastodon_links_label": {
+    "message": "Kiterjesztett soros bejegyzések megjelenítése",
+    "description": "Checkbox label for expanded link mastodon previews"
+  },
+  "dedupe_label": {
+    "message": "Dedupe poszt képek és linkek előnézete",
+    "description": "Checkbox label for deduping post images and link mastodon previews"
+  },
+  "expand_link_preview_p": {
+    "message": "Alapértelmezett hivatkozáselőnézetek felülírása nagyobb képekkel és teljes kódrészlet szöveggel",
+    "description": "Checkbox paragraph for expand link previews"
+  },
+  "expand_link_preview_label": {
+    "message": "Gazdag hivatkozás előnézetek megjelenítése",
+    "description": "Checkbox label for expand link previews"
+  },
+  "show_alt_text_p": {
+    "message": "A Graze az \"Alt Text\" képleírásokat a könnyebb olvasásra szolgáló eszköztippek alatt található képfájlokban jeleníti meg.",
+    "description": "Checkbox label for show alt text"
+  },
+  "show_alt_text_label": {
+    "message": "Képleírások megjelenítése a képek alatt",
+    "description": "Checkbox label for show alt text"
+  },
+  "invalid_version_number_error": {
+    "message": "A Graze csak a Mastodon 4.0.0 vagy magasabb verziójú példányaival kompatibilis",
+    "description": "Error message for incompatible Mastodon version"
+  },
+  "no_instance_found_error": {
+    "message": "Nem találja ezt a példányt, kérjük, ellenőrizze a címet, és próbálja meg újra.",
+    "description": "Error message for unfound instance"
+  },
+  "general_error": {
+    "message": "Hiba történt. Kérjük, próbálja meg később újra.",
+    "description": "General error message"
+  },
+  "posts": {
+    "message": "Bejegyzések",
+    "description": "Posts title"
+  },
+  "followers": {
+    "message": "Követő",
+    "description": "Followers title"
+  },
+  "following": {
+    "message": "Követve",
+    "description": "Following title"
+  },
+  "no_thanks": {
+    "message": "Nem, köszönöm",
+    "description": "No thanks button"
+  },
+  "go_to_profile_directory": {
+    "message": "Menj a profil könyvtárba",
+    "description": "Go to profile directory button"
+  },
+  "go_to_local_timeline": {
+    "message": "Menjen a helyi idővonalra",
+    "description": "Go to local timeline button"
+  },
+  "follow_account_local_feed": {
+    "message": "Kövessen egy fiókot a helyi hírfolyamból, hogy elkezdje látni a tartalmat a fő hírfolyamában.",
+    "description": "Federated popup description"
+  },
+  "not_federated": {
+    "message": "Nem egyesített a $username$",
+    "description": "Not federated popup title",
+    "placeholders": {
+      "username": {
+        "content": "$1"
+      }
+    }
+  },
+  "add_account_to_graze_description": {
+    "message": "Ebből a fiókból bármelyik példányon végezhet műveleteket.",
+    "description": "Add account to graze description"
+  },
+  "add_account_to_graze_title": {
+    "message": "Adja hozzá a $display_name$ a Graze-hez?",
+    "description": "Add account to graze title. Expects <span>display name</span> as a placeholder",
+    "placeholders": {
+      "display_name": {
+        "content": "$1",
+        "example": "<span>Mastodon</span>"
+      }
+    }
+  },
+  "add_to_graze": {
+    "message": "Hozzáadás a Graze-hez",
+    "description": "Add to graze button"
+  },
+  "account_switching_non_supported": {
+    "message": "Account switching is disabled on non supported instances",
+    "description": "Account switching disabled on unsupported instances"
+  },
+  "account_switching_logged_in": {
+    "message": "Account switching is disabled on logged in instances",
+    "description": "Account switching disabled when user is logged in"
+  },
+  "file_not_image_error": {
+    "message": "File is not an image",
+    "description": "File upload error message"
+  },
+  "upload_aborted_error": {
+    "message": "The upload was aborted.",
+    "description": "File upload aborted message"
+  },
+  "file_read_error": {
+    "message": "An error occurred while reading the file.",
+    "description": "File reading error message"
+  },
+  "image_empty_error": {
+    "message": "Image is empty",
+    "description": "Image empty error message"
+  },
+  "image_load_aborted_error": {
+    "message": "Image load was aborted.",
+    "description": "Image load aborted message"
+  },
+  "image_load_error": {
+    "message": "An error occurred while loading image.",
+    "description": "Image load error message"
+  },
+  "participants": {
+    "message": "Participants",
+    "description": "Participants title"
+  },
+  "posts_today": {
+    "message": "Posts today",
+    "description": "Posts today title"
+  },
+  "learn_more_about_hashtag": {
+    "message": "Learn more about #$hashtag$ hashtag across the",
+    "description": "Hashtag hovercard description",
+    "placeholders": {
+      "hashtag": {
+        "content": "$1"
+      }
+    }
+  },
+  "show_more": {
+    "message": "...more",
+    "description": "Truncated bio more text"
+  },
+  "mirror_content_settings_p": {
+    "message": "",
+    "description": "Intro text for mirroring content settings"
+  },
+  "mirror_sensitive_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring sensitive media display"
+  },
+  "mirror_cw_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring CW expansion"
+  },
+  "mirror_gif_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring GIF autoplay"
+  }
+}

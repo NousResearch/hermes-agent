@@ -52,6 +52,7 @@ def make_adapter_skeleton(
     adapter._allow_bots = allow_bots
     adapter._allow_all_dm = allow_all_dm
     adapter._require_mention = require_mention
+    adapter._smart_mention = False
     return adapter
 
 

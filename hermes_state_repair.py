@@ -569,6 +569,15 @@ def preflight_db_writability(db_path: Path, *, db_label: str = "state.db", direc
     for p, is_dir in [(db_path.parent, True), *files]:
         if (is_dir and not p.is_dir()) or _rw_or_vanished(p):
             continue
+        # Another startup may quarantine an invalid file after the candidate
+        # list above is built.  A missing file is not a read-only file; the
+        # startup lock will serialize this opener with the replacement DB.
+        try:
+            p.stat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            pass  # Preserve the actionable refusal for inaccessible paths.
         x = "x" if is_dir else ""
         in_scope = False
         with contextlib.suppress(OSError, ValueError):

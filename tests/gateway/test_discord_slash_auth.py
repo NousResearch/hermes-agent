@@ -584,3 +584,34 @@ async def test_skill_handler_known_and_unknown_produce_same_rejection(
     assert known_kwargs == unknown_kwargs
 
 
+
+
+# ---------------------------------------------------------------------------
+# Stale ``None`` discord module (plugin-load dependency probe)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_gate_survives_stale_none_discord_module(adapter, monkeypatch):
+    """Regression: a ``discord`` of ``None`` must not crash the slash gate.
+
+    ``adapter_slash_auth`` imports discord at module level and falls back to
+    ``discord = None`` on ImportError. The gateway imports platform plugins once
+    during its dependency probe, before the runtime venv is on ``sys.path``, so that
+    import fails and the ``None`` sticks for the life of the process even though
+    discord.py is installed. The gate then raised
+    ``AttributeError: 'NoneType' object has no attribute 'DMChannel'`` inside the slash
+    handler; discord.py swallowed it, the interaction was never acknowledged, and the
+    client showed "The application did not respond". The module is now resolved at call
+    time so the stale value self-heals.
+    """
+    from plugins.platforms.discord import adapter_slash_auth
+
+    adapter._allowed_user_ids = {"100200300"}
+    monkeypatch.setattr(adapter_slash_auth, "discord", None)
+
+    interaction = _make_interaction("100200300")
+    assert await adapter._check_slash_authorization(interaction, "/sethome") is True
+    interaction.response.send_message.assert_not_awaited()
+    # Repaired in place: later callers see a real module, not the probe's leftovers.
+    assert adapter_slash_auth.discord is not None

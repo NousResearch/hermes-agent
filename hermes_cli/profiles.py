@@ -85,7 +85,7 @@ _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] =  frozenset({
 # duplicate deliveries) the moment its gateway starts. The empty dir is recreated below.
 _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "state.db", "state.db-wal", "state.db-shm", "sessions", "backups", "state-snapshots", "checkpoints",
-    "cron",
+    "cron", "webapp",  # webapp/: the source gateway's sign-in state (credential, native grants, Portal callback)
 })
 
 # Marker written by `hermes profile create --no-skills`. When present at a profile root,
@@ -166,7 +166,7 @@ PROFILE_CREDENTIAL_PATHS = frozenset({
     "teams_pipeline_store.json",    # Graph subscription client_state (webhook shared secret)
     "mcp-tokens",                   # MCP OAuth tokens
     "vault",                        # vault.key + vault.json.enc
-    "browser-profile", "browser_auth", "bot-desktop",  # browser cookies / logins
+    "browser-profile", "browser_auth", "bot-desktop", "webapp",  # browser cookies / logins, Webapp sign-in
     "browser-profiles", "browser_profiles",  # live CDP profiles, Browser Use CLI dir (Cookies, Login Data)
     "pairing", "platforms/pairing", "feishu_comment_pairing.json",
     "whatsapp/session", "platforms/whatsapp/session", "matrix/store", "platforms/matrix/store",
@@ -1263,7 +1263,7 @@ def _copytree_keep_junctions(src: Path, dst: Path, ignore, dirs_exist_ok: bool =
             logger.warning("clone: skipped junction %s -> %s (%s)", link, target, exc)
 
 
-def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
+def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> Optional[dict]:
     """--clone-all: full copytree minus infrastructure/history, then strip runtime files
     and cloned single-use OAuth grants."""
     _copytree_keep_junctions(source_dir, profile_dir, _clone_all_copytree_ignore(source_dir))
@@ -1287,6 +1287,11 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
             "profile %s: dropped cloned single-use OAuth grants %s "
             "(inherits the root grant instead)", canon, stripped,
         )
+    from agent.vault_store import VaultError, VaultStore
+    try:  # a keychain-mode vault's copied pointer names the source's entry: the clone gets its own
+        return VaultStore(profile_dir / "vault").own_copied_key(get_profile_dir(canon) / "vault")
+    except VaultError as exc:
+        raise ValueError(f"Cannot copy the vault from {source_dir}: {exc}") from exc
 
 
 def _strip_multiplex_flag(config_path: Path) -> None:
@@ -1439,10 +1444,12 @@ def create_profile(
     # on every create and every 30 s, and ``_iter_named_profile_dirs`` only lists valid ids (no leading
     # dot), so it can never adopt the half-copied tree and start adapters on credentials the strip
     # below has not removed yet.
-    staging = _clone_staging_dir(profile_dir)
+    from hermes_cli.profiles_initialization import clone_staging_dir, discard_unpublished_vault_key, finish_profile_layout
+    staging = clone_staging_dir(profile_dir)
+    clone_key = None  # the keychain entry made for this clone's vault, if any
     try:
         if clone_all and source_dir:
-            _clone_all_into(source_dir, staging, canon)
+            clone_key = _clone_all_into(source_dir, staging, canon)
         else:
             _bootstrap_profile_dir(staging, source_dir, sync_imports=sync_imports)
         if source_dir is not None and not clone_channels:
@@ -1450,10 +1457,10 @@ def create_profile(
             stripped = strip_channel_settings(staging, include_state=clone_all, source_dir=source_dir)
             if stripped:
                 logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
-        from hermes_cli.profiles_initialization import finish_profile_layout
         finish_profile_layout(staging, no_skills=no_skills, clone_all=clone_all, description=description, soul=soul)
         os.rename(staging, profile_dir)
     except BaseException:
+        discard_unpublished_vault_key(clone_key)
         shutil.rmtree(staging, ignore_errors=True)
         raise
 
@@ -1465,18 +1472,6 @@ def create_profile(
     # rescans periodically, so a missed signal only delays serving).
     _notify_multiplexer(canon)
     return profile_dir
-
-
-def _clone_staging_dir(profile_dir: Path) -> Path:
-    """Fresh ``profiles/.<name>.staging-<pid>`` beside the final dir (same filesystem, so the publish
-    rename is atomic). A leftover from a crashed create is discarded."""
-    staging = profile_dir.parent / f".{profile_dir.name}.staging-{os.getpid()}"
-    profile_dir.parent.mkdir(parents=True, exist_ok=True)
-    if staging.is_symlink() or staging.is_file():
-        staging.unlink()
-    elif staging.is_dir():
-        shutil.rmtree(staging, ignore_errors=True)
-    return staging
 
 
 def _notify_multiplexer(canon: str) -> None:

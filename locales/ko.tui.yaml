@@ -1337,6 +1337,7 @@ userMessages.promptTimeout.sudo: "비밀번호 프롬프트가 닫혔어요: 제
 userMessages.promptTimeout.vaultCode: "인증 코드 프롬프트가 닫혔어요: 제한 시간 안에 답이 없어서 로그인을 건너뛰었어요. 코드가 준비되면 요청을 다시 보내세요."
 userMessages.promptTimeout.vaultSaveLogin: "로그인 저장 프롬프트가 닫혔어요: 제한 시간 안에 답이 없어서 아무것도 저장하지 않았어요. 준비되면 요청을 다시 보내세요."
 userMessages.promptTimeout.vaultUnlockPrompt: "잠금 해제 프롬프트가 닫혔어요: 제한 시간 안에 답이 없어서 비밀번호 관리자가 잠긴 상태로 남았어요. 잠금을 해제할 준비가 되면 요청을 다시 보내세요."
+userMessages.rpc.launchCredentialsChanged: "이 채팅은 시작할 때 사용한 API 키를 더 이상 사용할 수 없어서(변경되었거나 삭제됨) 실행되지 않았습니다. 채팅은 스스로 다른 키로 바뀌지 않습니다. /new를 입력해 현재 키로 새 채팅을 시작하세요."
 userMessages.rpc.notConnected: "지금 Hermes가 연결되어 있지 않아서 전송되지 않았어요. 자동으로 다시 연결되니 잠시 후 다시 시도하고, 계속되면 /logs 를 입력하세요."
 userMessages.rpc.sessionNotFound: "이 채팅은 더 이상 백엔드에 연결되어 있지 않아요 (유휴 상태였거나 백엔드가 다시 시작됐어요). 기록은 저장되어 있으니 /resume 을 입력해 다시 열어 주세요."
 userMessages.rpc.shellBackendRefused: "! 명령은 게이트웨이 호스트에서 실행되지만 이 세션의 터미널 백엔드는 {0}이므로 명령을 실행하지 않았습니다. 대신 에이전트에게 실행을 요청하세요. 에이전트의 터미널은 {0} 안에서 실행됩니다."

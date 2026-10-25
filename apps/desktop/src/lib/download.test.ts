@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { downloadFilename, imageFilename } from './use-image-download'
+import { downloadFilename, imageFilename } from './download'
 
 describe('imageFilename', () => {
   it('takes the last path segment of a URL', () => {

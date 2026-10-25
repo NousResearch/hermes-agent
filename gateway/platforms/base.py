@@ -4164,10 +4164,14 @@ class BasePlatformAdapter(ABC):
         lo, hi = bounds
         return random.uniform(lo / 1000.0, hi / 1000.0)
 
-    async def _synthesize_auto_tts(self, text_content: str) -> tuple[list[str], Optional[str]]:
+    async def _synthesize_auto_tts(self, text_content: str, *, event: Optional[MessageEvent] = None) -> tuple[list[str], Optional[str]]:
         """Synthesize auto-TTS audio -> ``(existing_paths, requested_path)``; empty/None on failure
         (logged, never raised). Path built platform-aware HERE: HERMES_SESSION_PLATFORM is cleared
-        post-handler."""
+        post-handler.
+
+        ``event`` lets platform adapters pre-empt file synthesis with their own delivery
+        (e.g. Discord streaming into the voice channel) by returning no paths.
+        """
         paths: list[str] = []
         requested_path = None
         try:

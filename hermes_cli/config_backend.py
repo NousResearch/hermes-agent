@@ -28,13 +28,6 @@ PathLike = Union[str, "os.PathLike[str]"]
 
 
 @dataclass(frozen=True)
-class UserLayer:
-    """One read of a profile's user layer."""
-    doc: Any                    # the parsed root as written (None for an empty document)
-    version: tuple[Any, ...]    # the cache signature this doc was read at
-
-
-@dataclass(frozen=True)
 class Changes:
     """A write to one profile's user layer.
 
@@ -52,10 +45,12 @@ class Changes:
 class ConfigBackend(Protocol):
     name: str
 
-    def read_user_layer(self, home: Path) -> UserLayer: ...
+    def read_user_doc(self, home: Path) -> Any:
+        """The parsed user layer as written (None for an empty document); version checks are separate."""
+        ...
 
     def read_user_doc_readonly(self, home: Path) -> Any:
-        """``read_user_layer(home).doc`` re-read only when ``version`` changes; never mutate it."""
+        """``read_user_doc(home)`` re-read only when ``version`` changes; never mutate it."""
         ...
 
     def version(self, home: Path) -> tuple[Any, ...]:
@@ -108,10 +103,8 @@ class FileBackend:
     def config_path(self, home: Path) -> Path:
         return Path(home) / CONFIG_FILENAME
 
-    def read_user_layer(self, home: Path) -> UserLayer:
-        path = self.config_path(home)
-        version = self.version_path(path)
-        return UserLayer(doc=self.read_path(path), version=version)
+    def read_user_doc(self, home: Path) -> Any:
+        return self.read_path(self.config_path(home))
 
     def read_user_doc_readonly(self, home: Path) -> Any:
         return self.read_path_readonly(self.config_path(home))
@@ -165,7 +158,7 @@ def _route(config_path: PathLike) -> tuple[ConfigBackend, Path]:
 def read_config_doc(config_path: PathLike) -> Any:
     """Parsed root of a config file (None when empty); raises like ``open`` + ``fast_safe_load``."""
     backend, home = _route(config_path)
-    return backend.read_user_layer(home).doc
+    return backend.read_user_doc(home)
 
 
 def read_config_doc_readonly(config_path: PathLike) -> Any:

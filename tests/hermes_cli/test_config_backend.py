@@ -86,9 +86,9 @@ class _RecordingBackend(cb.FileBackend):
     def _rec(self, op, home):
         self.calls.append((op, Path(home)))
 
-    def read_user_layer(self, home):
+    def read_user_doc(self, home):
         self._rec("read", home)
-        return super().read_user_layer(home)
+        return super().read_user_doc(home)
 
     def read_user_doc_readonly(self, home):
         self._rec("read", home)
@@ -240,6 +240,22 @@ class TestReaderGate:
         bad.write_text(f"def a(self, home):\n    {body}\n", encoding="utf-8")
         with patch.object(guard, "ROOT", tmp_path):
             assert len(guard.scan_file(bad)) == 1
+
+    def test_scopes_follow_python(self, tmp_path):
+        # An attribute bound in __init__ is seen by every method; a comprehension's name stays inside it.
+        guard = self._guard()
+        src = tmp_path / "hermes_cli" / "scoped.py"
+        src.parent.mkdir()
+        src.write_text(
+            "from hermes_cli.config_backend import read_config_doc\n"
+            "class A:\n    def __init__(self, home):\n        self.cfg = home / 'config.yaml'\n"
+            "    def read(self):\n        return self.cfg.read_text()\n"
+            "def b(home, p):\n    docs = [read_config_doc(p) for p in (home / 'config.yaml',)]\n"
+            "    return docs, p.read_text()\n",
+            encoding="utf-8")
+        with patch.object(guard, "ROOT", tmp_path):
+            problems = guard.scan_file(src)
+        assert [int(p.split(":")[1]) for p in problems] == [6], problems
 
     def test_backend_calls_are_clean(self, tmp_path):
         guard = self._guard()

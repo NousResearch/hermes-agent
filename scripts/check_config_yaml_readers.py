@@ -80,13 +80,18 @@ def _func_name(node: ast.AST) -> str | None:
     return None
 
 
+_COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+# Each binds its own names: a comprehension's target never leaks into the enclosing function.
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef, *_COMPREHENSIONS)
+
+
 def _scope_nodes(scope: ast.AST):
-    """Nodes of *scope* without descending into nested function/class bodies."""
+    """Nodes of *scope* without descending into nested function/class/comprehension scopes."""
     stack = list(ast.iter_child_nodes(scope))
     while stack:
         node = stack.pop()
         yield node
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+        if not isinstance(node, _SCOPES):
             stack.extend(ast.iter_child_nodes(node))
 
 
@@ -147,6 +152,11 @@ class _Scanner:
             if len(names) == before:
                 return names
 
+    def class_attrs(self, cls: ast.ClassDef, inherited: set[str]) -> set[str]:
+        """``self.<attr>`` bound to a config path in any method: every method of the class sees it."""
+        methods = (n for n in cls.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)))
+        return {name for m in methods for name in self.config_names(m, inherited) if name.startswith("self.")}
+
     def _bind(self, target: ast.AST, value: ast.AST, names: set[str]) -> None:
         """Add *target* (a name, ``self.attr``, or an unpacked tuple element) when *value* is a config path."""
         if isinstance(target, (ast.Tuple, ast.List)):
@@ -201,10 +211,12 @@ class _Scanner:
 
         def walk(scope: ast.AST, inherited: set[str]) -> None:
             names = self.config_names(scope, inherited)
+            if isinstance(scope, ast.ClassDef):
+                names |= self.class_attrs(scope, names)
             for node in _scope_nodes(scope):
                 if isinstance(node, ast.Call):
                     self.check_call(node, names)
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+                if isinstance(node, _SCOPES):
                     walk(node, names)
 
         walk(tree, set())

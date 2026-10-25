@@ -94,7 +94,7 @@ class PluginSelection:
                                          enabled=selection["enabled"], disabled=selection["disabled"])
 
     def publish(self, project: Path) -> None:
-        if selection_snapshot() != self.configs or read_bytes_or_none(self.path) != self.previous:
+        if selection_snapshot() != self.configs or read_bytes_or_none(self.path) != self.previous:  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
             raise ValueError("plugin configuration changed while preparing publication; retry")
         row = {"config": str(self.path),
                "previous": base64.b64encode(self.previous).decode() if self.previous is not None else None,

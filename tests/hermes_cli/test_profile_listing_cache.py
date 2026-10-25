@@ -93,7 +93,7 @@ def test_config_model_cache_is_keyed_on_the_backend_version_not_the_local_file(p
     assert profiles._read_config_model(profile_dir) == ("gpt-4o", "openai")
     version = [("v2",)]
     monkeypatch.setattr(config_backend, "config_version", lambda path: version[0])
-    monkeypatch.setattr(config_backend.FileBackend, "read_user_layer", lambda self, home: config_backend.UserLayer(
-        doc={"model": {"provider": "anthropic", "default": "claude-opus-4.6"}}, version=version[0]))
+    monkeypatch.setattr(config_backend.FileBackend, "read_user_doc",
+                        lambda self, home: {"model": {"provider": "anthropic", "default": "claude-opus-4.6"}})
 
     assert profiles._read_config_model(profile_dir) == ("claude-opus-4.6", "anthropic")

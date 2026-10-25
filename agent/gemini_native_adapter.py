@@ -11,6 +11,7 @@ import base64
 import contextlib
 import json
 import logging
+import math
 import re
 import time
 import uuid
@@ -820,6 +821,24 @@ def _error_info(err_obj: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     return reason, metadata
 
 
+def _retry_info_delay(err_obj: dict[str, Any]) -> Optional[float]:
+    """Seconds from the first ``google.rpc.RetryInfo`` detail's ``retryDelay`` (``"45.140474876s"``), else None.
+
+    Google's structured twin of the ``Please retry in 45.14s`` prose in ``error.message``. The prose is
+    what callers read first, but it sits ~430 chars into the message and error text is capped at 500, so
+    a longer model name can truncate it; the structured field cannot be truncated."""
+    details = err_obj.get("details")
+    for detail in details if isinstance(details, list) else []:
+        if not isinstance(detail, dict) or not str(detail.get("@type") or "").endswith("/google.rpc.RetryInfo"):
+            continue
+        match = re.match(r"^(\d+(?:\.\d+)?)\s*s?$", str(detail.get("retryDelay") or "").strip(), re.IGNORECASE)
+        seconds = float(match.group(1)) if match else 0.0
+        # "0s" means "retry now", not a declared window: leave retry_after unset so nothing
+        # records a reset that has already passed.
+        return seconds if math.isfinite(seconds) and seconds > 0 else None
+    return None
+
+
 def _error_object(body_text: str) -> dict[str, Any]:
     """The ``error`` object of a Google JSON error body, or ``{}``."""
     try:
@@ -841,7 +860,11 @@ def gemini_http_error(
     err_obj = _error_object(body_text)
     err_status, err_message = (str(err_obj.get(k) or "").strip() for k in ("status", "message"))
     reason, metadata = _error_info(err_obj)
+    # Header first (rare on Gemini), then the structured google.rpc.RetryInfo delay: Google's prose
+    # ("Please retry in 45.14s") sits ~430 chars into the message and callers cap error text at 500.
     retry_after = parse_retry_after_seconds(response.headers)
+    if retry_after is None:
+        retry_after = _retry_info_delay(err_obj)
     message = (
         f"Gemini HTTP {status} ({err_status or 'error'}): {err_message}" if err_message
         else f"Gemini returned HTTP {status}: {body_text[:500]}"

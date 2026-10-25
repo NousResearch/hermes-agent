@@ -1,0 +1,20 @@
+name: cortiq-hermes-router
+repo: https://github.com/infosave2007/cortiq-hermes-router
+sha: 19a2cded103f112f2c3b55dbb4e7b5a2e4e6ea61
+description: >-
+  AllaiGate model routing for Hermes — inexpensive models for simple tasks,
+  stronger models for complex work. Classifies each turn (POST /v1/route),
+  picks a model from your globalTiers/taskRules and rewrites the outgoing
+  request via llm_request middleware. Config: ~/.config/cortiq-hermes-router/config.json,
+  key: CORTIQ_ROUTER_KEY.
+maintainer: infosave2007
+tier: community
+category: models
+docs_url: https://github.com/infosave2007/cortiq-hermes-router#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: [llm_request]
+  requires_env: [CORTIQ_ROUTER_KEY]

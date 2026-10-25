@@ -1796,6 +1796,31 @@ def register(ctx):
 
 The hook is guarded on a non-empty, non-interrupted response — it will not fire on stop-button interrupts or empty turns. Exceptions are logged as warnings and do not break agent execution.
 
+#### Holding the reply until it is rewritten (`hold_stream=True`) {#hold-stream}
+
+The hook runs on the finished reply, so with streaming on the user watches the unrewritten text arrive and then sees it replaced. A plugin that must see the reply before the user does (redaction, policy filters) declares it when it registers:
+
+```python
+def register(ctx):
+    ctx.register_hook("transform_llm_output", redact, hold_stream=True)
+```
+
+While a plugin loaded in a profile holds the stream, that profile's sessions show the reply only as the rewritten final:
+
+| Surface | While the reply is held | When the turn ends |
+|---|---|---|
+| Messaging (Telegram, Discord, Slack, Matrix, …) | The platform's typing indicator; no draft, edit or native stream message | The rewrite is sent once as a normal message (a long one splits like any reply) |
+| Slack over Relay | Typing indicator; no `chat.*Stream` message | The rewrite, sent once |
+| TUI, desktop app, classic CLI, ACP editors | The usual busy/thinking indicator; no reply text | The rewrite, shown once |
+| API server (`/v1/chat/completions`, `/v1/responses`, streaming) | The response stream is open with no text | The rewrite is the response's only text |
+
+What else is held:
+
+- **Commentary** (model text sent between tool calls, `display.interim_assistant_messages`) never passes through `transform_llm_output`, so a held turn drops it.
+- **Tool progress and reasoning** are not the reply and keep their own settings (`display.tool_progress`, `display.show_reasoning`). Turn them off as well if model output the plugin never saw must not reach the user.
+
+`hold_stream` applies to `transform_llm_output` only; on any other hook it is ignored with a warning. Plugins that register `transform_llm_output` without it keep normal streaming.
+
 ### API-request observer hooks
 
 #### `pre_api_request`

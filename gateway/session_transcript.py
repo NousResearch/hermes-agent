@@ -9,7 +9,7 @@ import json
 import logging
 import threading
 import time
-from agent.turn_context import extract_api_content_sidecar
+from agent.message_content import extract_api_content_sidecar
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:

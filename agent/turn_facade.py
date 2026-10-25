@@ -96,6 +96,11 @@ class TurnFacadeMixin:
                 return admission.early_result
             lease = admission.lease
             conversation_history = admission.conversation_history
+            from agent.turn_facade_lease import prepare_pending_delivery_input
+            user_message, persist_user_message, persist_user_display_metadata = prepare_pending_delivery_input(
+                self, lease, user_message, persist_user_message,
+                persist_user_display_kind, persist_user_display_metadata,
+            )
 
             relay_session_cwd, relay_turn_cwd = resolve_relay_scope_cwds(
                 self,

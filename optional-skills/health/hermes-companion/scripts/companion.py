@@ -3261,6 +3261,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--notes", default="")
     parser.add_argument("--serve", action="store_true", help="Start the Direct Connection HTTP daemon (Linux, Windows, macOS)")
     parser.add_argument("--pair", action="store_true", help="Display pairing URL, auth token, and QR code for iOS Direct Connection")
+    parser.add_argument("--qr-file", type=Path, help="Write pairing QR code to image file (.png or .svg)")
+    parser.add_argument("--endpoint", help="Public pairing endpoint URL (e.g. https://host); overrides --host/--port")
     parser.add_argument("--host", default="0.0.0.0", help="Host address to bind HTTP daemon (default 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8787, help="Port to listen on for HTTP daemon (default 8787)")
     parser.add_argument("--token", help="Bearer token for HTTP daemon (generated if missing)")
@@ -3277,7 +3279,11 @@ def main(argv: Optional[Sequence[str]] = None, now: Optional[datetime] = None) -
     if argv_list and argv_list[0] in ("serve", "pair"):
         argv_list[0] = f"--{argv_list[0]}"
 
-    args = build_parser().parse_args(argv_list)
+    parser = build_parser()
+    args = parser.parse_args(argv_list)
+
+    if getattr(args, "qr_file", None) and not getattr(args, "pair", False):
+        parser.error("--qr-file is only valid with --pair")
 
     if getattr(args, "serve", False):
         try:
@@ -3292,8 +3298,12 @@ def main(argv: Optional[Sequence[str]] = None, now: Optional[datetime] = None) -
             from companion_server import run_pairing_assistant
         except ImportError:
             from server.companion_server import run_pairing_assistant
-        run_pairing_assistant(port=args.port, token=args.token)
-        return 0
+        try:
+            run_pairing_assistant(port=args.port, token=args.token, endpoint=args.endpoint, qr_file=getattr(args, "qr_file", None))
+            return 0
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
     if args.places is None:
         args.places = default_places_file()
     else:

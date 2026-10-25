@@ -35,13 +35,13 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 from urllib.parse import parse_qs, urlparse
 
 try:
-    from server.qr import QRCode, generate_qr_ascii
+    from server.qr import QRCode, generate_qr_ascii, write_qr_file
 except ImportError:
-    from qr import QRCode, generate_qr_ascii  # type: ignore[no-redef]
+    from qr import QRCode, generate_qr_ascii, write_qr_file  # type: ignore[no-redef]
 
 DEFAULT_PORT: int = 8787
 DEFAULT_HOST: str = "0.0.0.0"
@@ -568,21 +568,62 @@ def run_server(
         print("Hermes Companion HTTP daemon terminated cleanly.")
 
 
+def resolve_pairing_endpoint(
+    port: int = DEFAULT_PORT,
+    host_override: Optional[str] = None,
+    endpoint: Optional[str] = None,
+) -> str:
+    """Resolve direct connection pairing endpoint URL.
+
+    Resolution order:
+      1. Explicit endpoint argument.
+      2. HERMES_COMPANION_PUBLIC_URL environment variable.
+      3. Fallback: http://{host_override or get_local_ip()}:{port}.
+
+    When an override is used (1 or 2):
+      - Strip leading/trailing whitespace and trailing slashes.
+      - Require scheme to start with http:// or https:// (raises ValueError otherwise).
+      - Use verbatim without appending :port.
+    """
+    raw_endpoint = endpoint
+    if raw_endpoint is None:
+        env_val = os.environ.get("HERMES_COMPANION_PUBLIC_URL")
+        if env_val is not None and env_val.strip():
+            raw_endpoint = env_val
+
+    if raw_endpoint is not None:
+        clean = raw_endpoint.strip().rstrip("/")
+        if not (clean.startswith("http://") or clean.startswith("https://")):
+            raise ValueError(
+                f"Invalid pairing endpoint URL: '{raw_endpoint}'. Must start with http:// or https://"
+            )
+        return clean
+
+    ip = host_override or get_local_ip()
+    return f"http://{ip}:{port}"
+
+
 def run_pairing_assistant(
     port: int = DEFAULT_PORT,
     token: Optional[str] = None,
     host_override: Optional[str] = None,
-) -> None:
+    endpoint: Optional[str] = None,
+    qr_file: Optional[Union[str, Path]] = None,
+) -> Dict[str, str]:
     """Output pairing payload and ASCII QR code for terminal scanning."""
     auth_token = get_or_create_token(token)
-    ip = host_override or get_local_ip()
-    endpoint = f"http://{ip}:{port}"
+    resolved_endpoint = resolve_pairing_endpoint(port=port, host_override=host_override, endpoint=endpoint)
 
     pairing_payload = {
-        "endpoint": endpoint,
+        "endpoint": resolved_endpoint,
         "token": auth_token,
     }
     payload_json = json.dumps(pairing_payload, separators=(",", ":"))
+
+    resolved_qr_file: Optional[Path] = None
+    if qr_file:
+        resolved_qr_file = write_qr_file(payload_json, qr_file)
+        pairing_payload["qr_file"] = str(resolved_qr_file)
 
     print()
     print("=" * 60)
@@ -592,10 +633,28 @@ def run_pairing_assistant(
     print("Scan this QR code from the Hermes Companion iOS app:")
     print("Settings -> Sync Provider -> Direct Connection -> Scan Pairing QR Code")
     print()
+    if resolved_qr_file:
+        print(f"Pairing file: {resolved_qr_file}")
+        print()
 
-    # Try native Swift QR generator on macOS first if available for pixel-perfect quality
     rendered_qr: Optional[str] = None
-    if sys.platform == "darwin" and shutil.which("swift"):
+
+    # Prefer shelling out to qrencode CLI when available
+    if shutil.which("qrencode"):
+        try:
+            res = subprocess.run(
+                ["qrencode", "-t", "ANSIUTF8", "-l", "L", "-m", "4", payload_json],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                rendered_qr = res.stdout.rstrip()
+        except Exception:
+            pass
+
+    # On macOS, try native Swift QR generator if qrencode was not found
+    if not rendered_qr and sys.platform == "darwin" and shutil.which("swift"):
         try:
             swift_script = """
 import CoreImage
@@ -603,7 +662,7 @@ import Foundation
 let raw = CommandLine.arguments[1]
 let filter = CIFilter(name: "CIQRCodeGenerator")!
 filter.setValue(raw.data(using: .utf8)!, forKey: "inputMessage")
-filter.setValue("M", forKey: "inputCorrectionLevel")
+filter.setValue("L", forKey: "inputCorrectionLevel")
 let output = filter.outputImage!
 let extent = output.extent
 let width = Int(extent.width)
@@ -612,7 +671,7 @@ var bitmap = [UInt8](repeating: 0, count: width * height * 4)
 let context = CIContext()
 context.render(output, toBitmap: &bitmap, rowBytes: width * 4, bounds: extent, format: .RGBA8, colorSpace: nil)
 for y in stride(from: 0, to: height, by: 2) {
-    var line = ""
+    var line = "\\u{001B}[40;37;1m"
     for x in 0..<width {
         let topDark = bitmap[(y * width + x) * 4] < 128
         let botDark = (y + 1 < height) ? (bitmap[((y + 1) * width + x) * 4] < 128) : false
@@ -621,39 +680,48 @@ for y in stride(from: 0, to: height, by: 2) {
         else if topDark && !botDark { line += "▄" }
         else { line += "▀" }
     }
+    line += "\\u{001B}[0m"
     print(line)
 }
 """
             res = subprocess.run(["swift", "-e", swift_script, payload_json], capture_output=True, text=True, timeout=5)
             if res.returncode == 0 and res.stdout.strip():
-                rendered_qr = res.stdout.strip()
+                rendered_qr = res.stdout.rstrip()
         except Exception:
             pass
 
+    # Fall back to pure-Python generator
     if not rendered_qr:
-        # Fall back to pure-Python generator
         try:
             rendered_qr = generate_qr_ascii(payload_json)
-        except Exception as exc:
-            print(f"Notice: Terminal QR generation skipped ({exc})")
+        except Exception:
+            pass
 
     if rendered_qr:
         print(rendered_qr)
         print()
+    else:
+        print("Notice: QR code generation unavailable. Enter endpoint + token manually in Settings -> Sync Provider -> Direct Connection")
+        print()
 
     print("-" * 60)
     print("Direct Connection Configuration Parameters:")
-    print(f"  • Endpoint URL: {endpoint}")
+    print(f"  • Endpoint URL: {resolved_endpoint}")
     print(f"  • Bearer Token: {auth_token}")
+    if resolved_qr_file:
+        print(f"  • Pairing File: {resolved_qr_file}")
     print(f"  • Raw JSON:     {payload_json}")
     print("-" * 60)
     print()
+    return pairing_payload
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Hermes Companion Direct Connection HTTP Daemon")
     parser.add_argument("--serve", action="store_true", help="Start the HTTP server")
     parser.add_argument("--pair", action="store_true", help="Display pairing QR code and token")
+    parser.add_argument("--qr-file", type=Path, help="Write pairing QR code to image file (.png or .svg)")
+    parser.add_argument("--endpoint", help="Public pairing endpoint URL (e.g. https://host); overrides --host/--port")
     parser.add_argument("--host", default=DEFAULT_HOST, help=f"Host address to bind (default {DEFAULT_HOST})")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"Port to listen on (default {DEFAULT_PORT})")
     parser.add_argument("--token", help="Pre-shared Bearer token (generated if not provided)")
@@ -661,9 +729,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     args = parser.parse_args(argv)
 
-    if args.pair or (len(sys.argv) > 1 and sys.argv[1] == "pair"):
-        run_pairing_assistant(port=args.port, token=args.token)
-        return 0
+    is_pair = getattr(args, "pair", False) or (len(sys.argv) > 1 and sys.argv[1] == "pair")
+    if getattr(args, "qr_file", None) and not is_pair:
+        parser.error("--qr-file is only valid with --pair")
+
+    if is_pair:
+        try:
+            run_pairing_assistant(
+                port=args.port,
+                token=args.token,
+                endpoint=getattr(args, "endpoint", None),
+                qr_file=getattr(args, "qr_file", None),
+            )
+            return 0
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
 
     # Default action or --serve
     run_server(host=args.host, port=args.port, token=args.token, storage_dir=args.storage_dir)

@@ -970,6 +970,299 @@ def test_environment_diagnostics_and_doctor() -> None:
         check("missing explanation contains guidance", "iPhone" in explanation or "macOS" in explanation)
 
 
+def test_direct_connection_pairing_endpoint_resolution() -> None:
+    import io
+    from contextlib import redirect_stdout
+    import companion_server
+
+    orig_env = os.environ.get("HERMES_COMPANION_PUBLIC_URL")
+    orig_get_local_ip = companion_server.get_local_ip
+    try:
+        # 1. Fallback: neither endpoint arg nor env var is provided
+        os.environ.pop("HERMES_COMPANION_PUBLIC_URL", None)
+        companion_server.get_local_ip = lambda: "192.168.1.42"
+        resolved = companion_server.resolve_pairing_endpoint(port=8787)
+        check("pairing fallback resolves to http://<local-ip>:<port>", resolved == "http://192.168.1.42:8787")
+
+        # Fallback with host_override
+        resolved_host = companion_server.resolve_pairing_endpoint(port=9000, host_override="10.0.0.1")
+        check("pairing fallback honours host_override", resolved_host == "http://10.0.0.1:9000")
+
+        # 2. Explicit endpoint argument
+        ep1 = companion_server.resolve_pairing_endpoint(endpoint="https://hermescompanion.funktional.dev", port=8787)
+        check("explicit endpoint used verbatim without port", ep1 == "https://hermescompanion.funktional.dev")
+
+        # Trailing slash handling
+        ep2 = companion_server.resolve_pairing_endpoint(endpoint="https://hermescompanion.funktional.dev/", port=8787)
+        check("explicit endpoint strips single trailing slash", ep2 == "https://hermescompanion.funktional.dev")
+
+        ep3 = companion_server.resolve_pairing_endpoint(endpoint="https://hermescompanion.funktional.dev///", port=8787)
+        check("explicit endpoint strips multiple trailing slashes", ep3 == "https://hermescompanion.funktional.dev")
+
+        # Whitespace handling
+        ep4 = companion_server.resolve_pairing_endpoint(endpoint="  https://hermescompanion.funktional.dev/  ", port=8787)
+        check("explicit endpoint strips surrounding whitespace", ep4 == "https://hermescompanion.funktional.dev")
+
+        # http scheme works
+        ep_http = companion_server.resolve_pairing_endpoint(endpoint="http://proxy.local:8080/", port=8787)
+        check("http scheme accepted", ep_http == "http://proxy.local:8080")
+
+        # 3. Environment variable resolution
+        os.environ["HERMES_COMPANION_PUBLIC_URL"] = "https://env.funktional.dev/"
+        ep_env = companion_server.resolve_pairing_endpoint(endpoint=None, port=8787)
+        check("env var endpoint used when no explicit endpoint", ep_env == "https://env.funktional.dev")
+
+        os.environ["HERMES_COMPANION_PUBLIC_URL"] = "  https://env.funktional.dev///  "
+        ep_env_clean = companion_server.resolve_pairing_endpoint(endpoint=None, port=8787)
+        check("env var strips whitespace and trailing slashes", ep_env_clean == "https://env.funktional.dev")
+
+        # 4. Explicit endpoint overrides env var
+        os.environ["HERMES_COMPANION_PUBLIC_URL"] = "https://env.funktional.dev"
+        ep_override = companion_server.resolve_pairing_endpoint(endpoint="https://explicit.funktional.dev", port=8787)
+        check("explicit endpoint overrides env var", ep_override == "https://explicit.funktional.dev")
+
+        # Blank env var falls back to local IP
+        os.environ["HERMES_COMPANION_PUBLIC_URL"] = "   "
+        ep_blank_env = companion_server.resolve_pairing_endpoint(endpoint=None, port=8787)
+        check("blank env var falls back to local IP", ep_blank_env == "http://192.168.1.42:8787")
+
+        # 5. Invalid scheme handling
+        invalid_schemes = [
+            "ftp://hermescompanion.funktional.dev",
+            "hermescompanion.funktional.dev",
+            "ws://hermescompanion.funktional.dev",
+            "",
+            "   ",
+            "http://",
+            "https://",
+            "://bad",
+        ]
+        for inv in invalid_schemes:
+            threw = False
+            try:
+                companion_server.resolve_pairing_endpoint(endpoint=inv, port=8787)
+            except ValueError:
+                threw = True
+            check(f"invalid endpoint '{inv}' raises ValueError", threw)
+
+        # Invalid scheme via env var
+        os.environ["HERMES_COMPANION_PUBLIC_URL"] = "ftp://invalid-env.com"
+        threw_env = False
+        try:
+            companion_server.resolve_pairing_endpoint(endpoint=None, port=8787)
+        except ValueError:
+            threw_env = True
+        check("invalid env var URL raises ValueError", threw_env)
+
+        # 6. End-to-end run_pairing_assistant and companion.main CLI tests
+        os.environ.pop("HERMES_COMPANION_PUBLIC_URL", None)
+
+        # Test CLI with explicit --endpoint
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = companion.main(["--pair", "--endpoint", "https://hermescompanion.funktional.dev"])
+        check("companion.py --pair --endpoint exits 0", code == 0)
+        cli_out = buf.getvalue()
+        check("cli output includes public endpoint in raw json", '"endpoint":"https://hermescompanion.funktional.dev"' in cli_out)
+        check("cli output does not append :8787 to public endpoint", ":8787" not in cli_out)
+        check("cli output contains ascii QR or notice", "Direct Connection Configuration Parameters:" in cli_out)
+        import qr
+        decoded_cli = qr.decode_qr_ascii(cli_out)
+        check("cli output QR decodes to exact endpoint", json.loads(decoded_cli).get("endpoint") == "https://hermescompanion.funktional.dev")
+
+        # Test CLI with HERMES_COMPANION_PUBLIC_URL env var
+        os.environ["HERMES_COMPANION_PUBLIC_URL"] = "https://hermescompanion.funktional.dev"
+        buf_env = io.StringIO()
+        with redirect_stdout(buf_env):
+            code_env = companion.main(["--pair"])
+        check("companion.py --pair with env var exits 0", code_env == 0)
+        cli_env_out = buf_env.getvalue()
+        check("env var output includes public endpoint in raw json", '"endpoint":"https://hermescompanion.funktional.dev"' in cli_env_out)
+        check("env var output does not append :8787", ":8787" not in cli_env_out)
+        decoded_env_cli = qr.decode_qr_ascii(cli_env_out)
+        check("env var output QR decodes to exact endpoint", json.loads(decoded_env_cli).get("endpoint") == "https://hermescompanion.funktional.dev")
+
+    finally:
+        companion_server.get_local_ip = orig_get_local_ip
+        if orig_env is None:
+            os.environ.pop("HERMES_COMPANION_PUBLIC_URL", None)
+        else:
+            os.environ["HERMES_COMPANION_PUBLIC_URL"] = orig_env
+
+
+GOLDEN_V1_M_MASK0_TEST: Final = [
+    "#######...#...#######",
+    "#.....#.#.#.#.#.....#",
+    "#.###.#....#..#.###.#",
+    "#.###.#..##...#.###.#",
+    "#.###.#.##.##.#.###.#",
+    "#.....#..#.#..#.....#",
+    "#######.#.#.#.#######",
+    ".........##..........",
+    "#.#.#.#...#.#...#..#.",
+    "..####.#..##.#.#...##",
+    "#.#...######.###.####",
+    "...###..######.##..#.",
+    "#.#.#.#..###.###.#.##",
+    "........#.....#..#..#",
+    "#######..#..#...##.##",
+    "#.....#...#...#....#.",
+    "#.###.#.###.#.#.##.##",
+    "#.###.#...##.#.#...#.",
+    "#.###.#.####.###..#.#",
+    "#.....#...####.###.#.",
+    "#######.####.###..###",
+]
+
+
+def test_qr_encoder_and_decoder_regression() -> None:
+    import io
+    import json
+    import shutil
+    from contextlib import redirect_stdout
+    from unittest.mock import patch
+    import qr
+
+    # 1. Golden matrix fixture comparison generated by qrencode (v1-M, mask 0 for 'test')
+    q_test = qr.QRCode("test", version=1, ecc_level=0)
+    expected_matrix = [[ch == "#" for ch in row] for row in GOLDEN_V1_M_MASK0_TEST]
+    check("golden matrix dimension matches 21x21", len(q_test.modules) == 21 and len(q_test.modules[0]) == 21)
+
+    mismatches = 0
+    for r in range(21):
+        for c in range(21):
+            if q_test.modules[r][c] != expected_matrix[r][c]:
+                mismatches += 1
+    check("QRCode('test') matches qrencode golden fixture module-by-module", mismatches == 0)
+
+    # 2. Pure-Python decode of golden fixture and generated codes
+    decoded_golden = qr.decode_qr(expected_matrix)
+    check("decode_qr decodes golden matrix to 'test'", decoded_golden == "test")
+    check("decode_qr decodes QRCode('test').modules to 'test'", qr.decode_qr(q_test.modules) == "test")
+    check("decode_qr_ascii decodes QRCode('test').to_ascii() to 'test'", qr.decode_qr_ascii(q_test.to_ascii()) == "test")
+
+    # 3. Real pairing JSON payload decode test
+    real_payload = json.dumps(
+        {"endpoint": "https://hermescompanion.funktional.dev", "token": "4f2e9b1a" * 8},
+        separators=(",", ":"),
+    )
+    q_real = qr.QRCode(real_payload)
+    check("real pairing payload selects Version 6 ECC L", q_real.version == 6 and q_real.ecc_level == 1)
+    check("decode_qr decodes real pairing payload matrix", qr.decode_qr(q_real.modules) == real_payload)
+    check("decode_qr_ascii decodes real pairing payload ASCII", qr.decode_qr_ascii(q_real.to_ascii()) == real_payload)
+
+    # 4. Pure-Python fallback path via companion CLI (mocking shutil.which to simulate Linux/Windows without qrencode or swift)
+    with patch("shutil.which", return_value=None):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = companion.main(["--pair", "--endpoint", "https://hermescompanion.funktional.dev"])
+        check("companion.py --pair pure-Python fallback exits 0", code == 0)
+        py_cli_out = buf.getvalue()
+        decoded_py = qr.decode_qr_ascii(py_cli_out)
+        decoded_json = json.loads(decoded_py)
+        check("pure-Python QR decodes to public endpoint", decoded_json.get("endpoint") == "https://hermescompanion.funktional.dev")
+        check("pure-Python QR decodes to bearer token", decoded_json.get("token", "").startswith("hermes_sec_"))
+
+    # 5. qrencode shell-out path (if installed)
+    if shutil.which("qrencode"):
+        buf_qr = io.StringIO()
+        with redirect_stdout(buf_qr):
+            code_qr = companion.main(["--pair", "--endpoint", "https://hermescompanion.funktional.dev"])
+        check("companion.py --pair with qrencode exits 0", code_qr == 0)
+        qr_cli_out = buf_qr.getvalue()
+        decoded_qrencode = qr.decode_qr_ascii(qr_cli_out)
+        decoded_qr_json = json.loads(decoded_qrencode)
+        check("qrencode QR decodes to public endpoint", decoded_qr_json.get("endpoint") == "https://hermescompanion.funktional.dev")
+        check("qrencode QR decodes to bearer token", decoded_qr_json.get("token", "").startswith("hermes_sec_"))
+
+
+def test_qr_file_generation_and_validation() -> None:
+    import io
+    import json
+    import os
+    import shutil
+    import struct
+    import tempfile
+    from contextlib import redirect_stderr, redirect_stdout
+    from unittest.mock import patch
+    import qr
+    from companion_server import get_or_create_token
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+
+        # 1. Mode 0600 and PNG signature & expected dimensions via CLI --pair --qr-file
+        png_path = tmp_path / "pair.png"
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = companion.main(["--pair", "--endpoint", "https://example.test", "--qr-file", str(png_path)])
+        png_abs = os.path.abspath(str(png_path))
+        check("--qr-file with .png exits 0", code == 0)
+        cli_out = buf.getvalue()
+        check("cli output contains Pairing file line", f"Pairing file: {png_abs}" in cli_out)
+        check("cli output still contains terminal QR", "Direct Connection Configuration Parameters:" in cli_out)
+        check("--qr-file creates a 0600 file", (os.stat(png_path).st_mode & 0o777) == 0o600)
+
+        png_bytes = png_path.read_bytes()
+        check("PNG has a valid signature", png_bytes.startswith(b"\x89PNG\r\n\x1a\n"))
+        width, height = struct.unpack(">II", png_bytes[16:24])
+        token = get_or_create_token()
+        expected_payload = json.dumps({"endpoint": "https://example.test", "token": token}, separators=(",", ":"))
+        expected_qr = qr.QRCode(expected_payload)
+        expected_dim = (expected_qr.size + 8) * 3
+        check("PNG has expected dimensions", width == expected_dim and height == expected_dim)
+
+        # 2. Pure-Python stdlib PNG writer fallback (when qrencode is absent)
+        py_png_path = tmp_path / "pair_pure.png"
+        with patch("shutil.which", return_value=None):
+            buf_py = io.StringIO()
+            with redirect_stdout(buf_py):
+                code_py = companion.main(["--pair", "--endpoint", "https://example.test", "--qr-file", str(py_png_path)])
+            check("pure-Python --qr-file .png exits 0", code_py == 0)
+            check("pure-Python PNG file exists", py_png_path.is_file())
+            check("pure-Python PNG is mode 0600", (os.stat(py_png_path).st_mode & 0o777) == 0o600)
+            py_bytes = py_png_path.read_bytes()
+            check("pure-Python PNG has valid signature", py_bytes.startswith(b"\x89PNG\r\n\x1a\n"))
+            py_w, py_h = struct.unpack(">II", py_bytes[16:24])
+            check("pure-Python PNG has expected dimensions", py_w == expected_dim and py_h == expected_dim)
+
+        # 3. SVG generation, 0600 permissions, parse back to same matrix, and decode_qr
+        svg_path = tmp_path / "pair.svg"
+        buf_svg = io.StringIO()
+        with redirect_stdout(buf_svg):
+            code_svg = companion.main(["--pair", "--endpoint", "https://example.test", "--qr-file", str(svg_path)])
+        check("--qr-file with .svg exits 0", code_svg == 0)
+        check("SVG file is mode 0600", (os.stat(svg_path).st_mode & 0o777) == 0o600)
+        svg_content = svg_path.read_text(encoding="utf-8")
+        parsed_matrix = qr.parse_qr_svg(svg_content)
+        check("SVG parses back to the same matrix", parsed_matrix == expected_qr.modules)
+        decoded_svg = qr.decode_qr(parsed_matrix)
+        check("SVG decodes with existing decode_qr", decoded_svg == expected_payload)
+
+        # 4. Bad extension fails clearly
+        bad_path = tmp_path / "pair.txt"
+        err_buf = io.StringIO()
+        with redirect_stderr(err_buf):
+            code_bad = companion.main(["--pair", "--qr-file", str(bad_path)])
+        check("bad extension fails clearly with non-zero exit", code_bad != 0)
+        check("bad extension error message mentions extension", "Invalid QR file extension" in err_buf.getvalue() or "must be .png or .svg" in err_buf.getvalue())
+
+        try:
+            qr.write_qr_file("test", tmp_path / "bad.xyz")
+            raised_bad = False
+        except ValueError:
+            raised_bad = True
+        check("write_qr_file raises ValueError on bad extension", raised_bad)
+
+        # 5. --qr-file without --pair fails clearly
+        try:
+            companion.main(["--qr-file", str(png_path)])
+            no_pair_failed = False
+        except SystemExit as exc:
+            no_pair_failed = (exc.code != 0)
+        check("--qr-file without --pair fails clearly", no_pair_failed)
+
+
 def main() -> int:
     test_still_home_after_hours()
     test_walking_at_home()
@@ -1005,6 +1298,9 @@ def main() -> int:
     test_icloud_placeholder_cache_fallback()
     test_turn_based_concurrency_guards_and_sequence_indexing()
     test_environment_diagnostics_and_doctor()
+    test_direct_connection_pairing_endpoint_resolution()
+    test_qr_encoder_and_decoder_regression()
+    test_qr_file_generation_and_validation()
     print("ok")
     return 0
 

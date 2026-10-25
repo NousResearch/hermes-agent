@@ -1,10 +1,11 @@
 # Hermes Companion files
 
-The Hermes Companion iPhone app writes these files into the iCloud ubiquity container. The skill has no other source. Timestamps are ISO-8601 UTC with a `Z` suffix. Age is `now` in UTC minus that timestamp.
+The Hermes Companion iPhone app writes these files into the iCloud ubiquity container (when using Apple iCloud) or receives them via the Direct Connection daemon (when using Direct Connection sync). Timestamps are ISO-8601 UTC with a `Z` suffix. Age is `now` in UTC minus that timestamp.
 
-Default directory:
+Default directories:
 
-`~/Library/Mobile Documents/iCloud~com~hermes~HermesCompanion/Documents/`
+- **Apple iCloud (macOS):** `~/Library/Mobile Documents/iCloud~com~hermes~HermesCompanion/Documents/`
+- **Direct Connection (Linux, Windows, macOS):** `~/.hermes/hermes-companion/data/` (or `--storage-dir`)
 
 ## latest_location.json
 

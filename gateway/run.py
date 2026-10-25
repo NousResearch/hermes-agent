@@ -595,7 +595,7 @@ def _format_exec_approval_fallback(
     steps a surface without buttons needs."""
     from gateway.platforms.base_exec_approval import (
         approval_timeout_seconds, ea_header_text, ea_reason_label_text, format_approval_deadline_line)
-    cmd_preview = command[:200] + "..." if len(command) > 200 else command
+    cmd_preview = BasePlatformAdapter._truncate_preview(command, BasePlatformAdapter._EA_CMD_BUDGET)  # as on a card
     heading = (t("gateway.exec_approval.smart_deny_heading") if smart_denied
                else f"⚠️ **{ea_header_text()}**")
 
@@ -1559,11 +1559,11 @@ def _restart_notification_pending() -> bool:
 
 
 def _planned_restart_notification_path() -> Path:
-    return _hermes_home / ".restart_pending.json"
+    from gateway.restart_notice import planned_restart_marker_path
+    return planned_restart_marker_path(_hermes_home)
 
 
 def _planned_restart_notification_pending() -> bool:
-    """Return True when a non-chat planned restart should notify home channels."""
     return _planned_restart_notification_path().exists()
 
 
@@ -2009,7 +2009,6 @@ def _bridge_terminal_config_to_env(_terminal_cfg: dict) -> None:
         "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
         "docker_image": "TERMINAL_DOCKER_IMAGE",
         "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
-        "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "modal_image": "TERMINAL_MODAL_IMAGE",
         "daytona_image": "TERMINAL_DAYTONA_IMAGE",
         "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
@@ -2783,13 +2782,11 @@ def _is_control_interrupt_message(message: Optional[str]) -> bool:
 
 def _strip_response_attachments_for_direct_send(response: str, adapter) -> str:
     """Return the visible text portion of a response before direct send().
-    Only explicit ``MEDIA:`` attachments are stripped; bare paths/URLs stay visible. No broad regex after
-    ``extract_media()``: it deliberately preserves protected code spans and unvalidated tags.
-
-    Queued follow-up resends only replay explicit ``MEDIA:`` attachments in this path. Keep bare local paths
-    and ordinary image URLs visible because the post-stream uploader intentionally ignores them (#20834).
+    Explicit ``MEDIA:`` attachments and the image tags ``extract_images`` attaches are stripped, because
+    the post-stream uploader delivers both; bare local paths stay visible (it ignores them, #20834). No
+    broad regex after ``extract_media()``: it deliberately preserves protected code spans and unvalidated tags.
     """
-    _, cleaned = adapter.extract_media(response)
+    _, cleaned = BasePlatformAdapter.extract_images(adapter.extract_media(response)[1])
     return cleaned.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "").strip()
 
 
@@ -2901,15 +2898,14 @@ from gateway.session_worker_construct import checkpoint_agent_kwargs as _checkpo
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:
-    """Read model from config.yaml (single source of truth), else temporary AIAgents (e.g. /compress)
-    use the hardcoded default, which fails under openai-codex."""
-    cfg = config if config is not None else _load_gateway_config()
-    model_cfg = cfg.get("model", {})
-    if isinstance(model_cfg, str):
-        return model_cfg
-    elif isinstance(model_cfg, dict):
-        return model_cfg.get("default") or model_cfg.get("model") or ""
-    return ""
+    """The profile's model when nothing else names one: config.yaml (single source of truth), else the
+    claimed welcome trial's. Temporary AIAgents (e.g. /compress) otherwise use the hardcoded default,
+    which fails under openai-codex."""
+    from hermes_cli.anon_auth import trial_model
+    model_cfg = (config if config is not None else _load_gateway_config()).get("model", {})
+    if isinstance(model_cfg, dict):
+        model_cfg = model_cfg.get("default") or model_cfg.get("model")
+    return (model_cfg if isinstance(model_cfg, str) else "") or trial_model()
 
 
 def _channel_override_lookup_keys(
@@ -3985,11 +3981,10 @@ class GatewayRunner(
         # True keeps CLI/unknown paths working; stateless adapters (api_server) declare False.
         _adapter = (getattr(self, "adapters", None) or {}).get(context.source.platform)
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
-        # #98619: an admitted API turn carries its session-id provenance in the admission settings,
-        # and its rebound browser-controller identity; every other platform leaves both undeclared.
+        # #98619: an admitted API turn carries its session-id provenance in the admission settings;
+        # every other platform leaves it undeclared.
         from gateway.session_api_turn import api_session_vars
-        _api_vars = api_session_vars()
-        _history_delivery = _api_vars.pop("session_history_delivery", None)
+        _history_delivery = api_session_vars().get("session_history_delivery")
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
@@ -4008,7 +4003,7 @@ class GatewayRunner(
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
-            cron_session="", session_history_delivery=_history_delivery, **_api_vars)
+            cron_session="", session_history_delivery=_history_delivery)
 
     def _clear_session_env(self, tokens: list) -> None:
         """Restore session context variables to their pre-handler values."""

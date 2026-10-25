@@ -33,15 +33,17 @@ After separate review and authorization:
 
 1. Copy this directory into a private temporary directory with mode `0700`.
 2. Install exactly the pinned dependency there with lifecycle scripts disabled.
-3. Replace both absolute placeholders in `mcp.json.template`; do not use an
-   operator or production project directory.
+3. Replace every placeholder in `mcp.json.template` from one authenticated
+   Roots ticket read. Generate a fresh 256-bit nonce and one correlation ID for
+   this single question. Do not write either value to logs or use an operator
+   or production project directory.
 4. Launch one background subscription-authenticated Claude session from an
    empty temporary working directory. Use only the reply tool, refuse inbound
    cross-session messages, and load only the temporary MCP config:
 
 ```text
 claude --bg --restricted --permission-mode dontAsk \
-  --strict-mcp-config \
+  --setting-sources "" --strict-mcp-config \
   --mcp-config /PRIVATE_TMP/mcp.json \
   --settings '{"crossSessionInbound":"refuse"}' \
   --tools mcp__esn0407_channel__reply \
@@ -53,7 +55,8 @@ claude --bg --restricted --permission-mode dontAsk \
 5. Send one envelope, at most 4 KiB, over the private Unix socket. It must bind
    the exact Roots ticket, assignment, attempt, owner, revision and authority
    event digest; its authority is `answer-only-no-changes`; TTL is at most 30
-   seconds. Ask for a fixed short marker and no action.
+   seconds. The envelope must also echo the one-time nonce and pre-registered
+   correlation ID. Ask for a fixed short marker and no action.
 6. Keep the socket open for the correlated reply. For cancellation, send the
    cancel envelope or close the connection. The Channel cannot retract an event
    already delivered to Claude; it invalidates the waiter and rejects a late
@@ -71,8 +74,10 @@ claude --bg --restricted --permission-mode dontAsk \
   does not declare `claude/channel/permission`, so it cannot relay approvals.
 - Restricted mode, `dontAsk`, the tool allowlist and empty setting sources keep
   the disposable worker from gaining file, shell, browser or inherited project
-  authority. These launch controls supplement provider identity; prompt wording
-  alone cannot establish authority or non-interruption.
+  authority. Administrator-managed settings still apply and must be inventoried
+  before launch; stop if they widen the disposable worker's authority. These
+  launch controls supplement provider identity; prompt wording alone cannot
+  establish authority or non-interruption.
 
 ## Required proof
 

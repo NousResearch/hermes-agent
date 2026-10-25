@@ -508,21 +508,19 @@ def capabilities() -> dict[str, dict[str, Any]]:
                 },
                 "hermes_managed_app_server_thread": {
                     "provider_native": True,
-                    "protocol_callable": True,
+                    "protocol_candidate": True,
                     "production_adapter": False,
                     "existing_app_owned_worker": False,
+                    "acceptance_evidence": False,
                     "delivery": "thread/queue/add with clientUserMessageId",
                     "reply": "app-server item and turn events",
                     "caller_stop_waiting": True,
                     "late_reply_invalidation": True,
                     "delivery_retraction_after_dispatch": False,
-                    "disposable_probe": {
-                        "result": "passed",
-                        "turns": 1,
-                        "tools": 0,
-                        "cleanup": "thread deleted and temporary directory removed",
-                    },
-                    "reason": "verified only when Hermes owns the app-server and thread from creation",
+                    "reason": (
+                        "one bounded observation was not retained as a raw provider receipt; "
+                        "installed generated schemas omit the experimental queue method"
+                    ),
                 },
             },
             "mutates_target": False,
